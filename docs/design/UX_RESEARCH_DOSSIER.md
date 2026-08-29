@@ -436,12 +436,12 @@ Never invent certainty the system does not have. "Held for review" is a better w
 
 Nothing above is implemented. No UI has been built, per the brief.
 
-## Decisions still needing Adam
+## Decisions, resolved by Adam August 29, 2026
 
-1. **Focus ring color.** Brand red, or a neutral two-tone ring that passes 3:1 on any backdrop. Recommendation is the neutral two-tone ring, with red reserved for selection rather than focus.
-2. **Welcome screen gradient.** Moodboard region J is blue and indigo, which conflicts with the red decision. Recommendation is to keep the composition and move the gradient to near-black and dark red.
-3. **Target size.** WCAG 2.2 AA is 24 px. Recommendation is 44 px on controller-reachable controls, which costs density on desktop.
-4. **Left-handed and axis-inversion modes**, which the accessibility baselines treat as standard and the blueprint does not mention.
+1. **Focus ring: neutral two-tone.** Not brand red. Red is reserved for selection. Specified in [`DESIGN_TOKENS.md`](./DESIGN_TOKENS.md) section 1.8.
+2. **Welcome screen gradient: near-black to dark red.** Moodboard region J composition kept, hue moved off blue. Token in section 1.9.
+3. **Target size: 44 px on controller-reachable controls**, deferring to the research. 24 px retained for mouse-only affordances. Section 4. Costs roughly a third of the rows on a dense settings page, accepted.
+4. **Left-handed and axis-inversion presets: not shipping.** Adam: someone can do it themselves. Full remapping already reaches both, so this removes one-click presets only, not the capability.
 
 ## Sources
 
