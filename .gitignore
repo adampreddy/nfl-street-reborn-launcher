@@ -1,0 +1,46 @@
+# Secrets, never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+credentials.json
+
+# Game data and user-provided content, never commit
+*.iso
+*.rvz
+*.gcm
+*.wbfs
+*.dol
+*.raw
+*.nsmp
+
+# Large binary trees
+/runtime/
+/vendor/dolphin/
+**/reshade-shaders/
+**/Load/Textures/
+
+# Build output
+/target/
+/dist/
+/build/
+/release/
+node_modules/
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Local state
+*.db
+*.db-shm
+*.db-wal
+*.log
+.DS_Store
+Thumbs.db
+
+# Design and brand assets are the one binary class this repo carries
+!docs/design/*.png
+!assets/*.png
