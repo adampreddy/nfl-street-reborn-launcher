@@ -5,7 +5,8 @@
 **Date:** August 29, 2026
 **Governing brief:** [`CLAUDE_UX_RESEARCH_BRIEF.md`](./CLAUDE_UX_RESEARCH_BRIEF.md)
 **Covers brief deliverables:** 1 (source matrix), 2 (moodboard decomposition), 3 (design principles), 4 (UX language guide)
-**Still outstanding:** 5 (information architecture), 6 (design tokens), 7 (component specification), 8 (wireframes), 9 (responsive and controller audit), 10 (anti-vibecoding review)
+**Also delivered since:** 6 (design tokens), see [`DESIGN_TOKENS.md`](./DESIGN_TOKENS.md)
+**Still outstanding:** 5 (information architecture), 7 (component specification), 8 (wireframes), 9 (responsive and controller audit), 10 (anti-vibecoding review)
 
 ### Evidence discipline
 
