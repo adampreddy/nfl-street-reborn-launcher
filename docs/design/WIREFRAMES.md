@@ -139,16 +139,23 @@ The Apple Design Award research said the standard is acting without reading. So 
 │  Graphics                                                        │
 │  We tested your PC for «8 seconds». Here's what fits.            │
 │                                                                  │
-│  ( ) Performance      Lowest settings. Best for older PCs        │
-│                       and handhelds. Effects are off.            │
+│   ┌────────────────────────────────────────────────────────┐    │
+│   │ Performance      Lowest settings. Best for older PCs   │    │
+│   │                  and handhelds. Effects are off.       │    │
+│   └────────────────────────────────────────────────────────┘    │
+│  ╱┌────────────────────────────────────────────────────────┐    │
+│  ╱│ Balanced         RECOMMENDED FOR YOUR PC               │    │
+│  ╱│                  Sharp at «1080p», smooth frame rate.  │    │
+│  ╱└────────────────────────────────────────────────────────┘    │
+│   ┌────────────────────────────────────────────────────────┐    │
+│   │ Quality          Higher resolution and effects.        │    │
+│   │                  May drop frames in busy moments.      │    │
+│   └────────────────────────────────────────────────────────┘    │
+│   ┌────────────────────────────────────────────────────────┐    │
+│   │ Ultra            Everything on. For strong PCs.        │    │
+│   └────────────────────────────────────────────────────────┘    │
 │                                                                  │
-│  (•) Balanced         Recommended for your PC.                   │
-│      RECOMMENDED      Sharp at «1080p», smooth frame rate.       │
-│                                                                  │
-│  ( ) Quality          Higher resolution and effects.             │
-│                       May drop frames in busy moments.           │
-│                                                                  │
-│  ( ) Ultra            Everything on. For strong PCs.             │
+│   ╱ = sheared selection edge. Selected card only.                │
 │                                                                  │
 │  Detected: «Ryzen 5 5600», «RTX 3060», «16 GB»                  │
 │  You can change this any time in Settings.                       │
@@ -157,7 +164,7 @@ The Apple Design Award research said the standard is acting without reading. So 
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Why:** the recommended option is preselected and labeled, per the blueprint. The detected hardware line is shown so the recommendation is checkable rather than magic. Each option says what it costs, not just what it gives.
+**Why:** single column rather than a two-by-two grid, per the V1 resolution, and because four options of unequal text length grid badly. The recommended option is preselected and labeled, per the blueprint. The detected hardware line is shown so the recommendation is checkable rather than magic. Each option says what it costs, not just what it gives.
 
 ---
 

@@ -20,9 +20,14 @@ The brief says: "Before any design is approved, perform a written review against
 
 **Severity:** medium. Structure is legitimately transferable and the moodboard is a directional authority, but "structure yes, skin no" is a thin defense when the structure is this specific.
 
-**Resolution required before high-fidelity:** differentiate on at least two axes. Proposed: option cards go to a single-column stack at content widths under 900 px rather than always gridding, and the check badge moves from a corner badge to a filled left edge bar, which also reads better at 10 feet than a small corner mark. Both changes are functional improvements, not cosmetic distancing.
+**Resolution: applied.** Both changes are in [`COMPONENT_SPECIFICATION.md`](./COMPONENT_SPECIFICATION.md) section 4.
 
-**Status: OPEN.**
+1. The corner check badge is replaced by a 4 px full-height sheared left edge. It is visible at television distance where a corner mark is not, and it carries the Reborn shear, which a badge cannot.
+2. Layout is width-driven rather than a fixed grid. Below 900 px of content width the group stacks. That is not a stylistic choice: Steam Deck at 1280 px minus a 200 px rail leaves under 1000 px, and Windows at 150% scaling leaves less.
+
+Both are functional improvements that happen to remove the resemblance. The graphics-preset wireframe is redrawn to match.
+
+**Status: CLOSED.**
 
 ---
 
@@ -121,7 +126,7 @@ Yes. Persistent rail, top bar with search and status, dense settings, and a bott
 Yes. Full-bleed hero, foreground panel, one dominant action, status as chips rather than forms. It is the closest thing in the product to a console detail page, which is what moodboard regions B and I both point at.
 
 **3. Does onboarding feel guided and conversational like Discord without copying Discord?**
-**Guided yes, without copying no, not yet.** This is V1. The structure is Discord's. Two differentiating changes are proposed and not yet applied.
+**Now yes.** The structure was Discord's; the selection mark and the layout rule have both changed, and both changed for functional reasons that hold on their own.
 
 **4. Are settings compact, calm, and deliberate?**
 Yes. Category rail, always-visible descriptions, inline controls, restrained color, group separation by spacing.
@@ -166,14 +171,18 @@ Four small places, none of them decoration, all of them repeating one angle that
 
 | # | Item | Status |
 |---|---|---|
-| V1 | Option cards too close to Discord | **OPEN.** Two differentiating changes proposed, not applied |
+| V1 | Option cards too close to Discord | **CLOSED.** Sheared left edge replaces the corner badge; layout is width-driven |
 | V2 | Home close to the generic hero-plus-rails shape | Open, low severity, recommendation made |
 | V3 | Icon system | **CLOSED** with recorded risk. Stock set, mitigated |
 | V4 | Invented data | **PARTIALLY CLOSED.** Box score rebuilt from real captures. Elo and queue figures remain invented |
 | V5 | Contrast computed, not measured | Open, blocked on implementation |
 | V6 | No Reborn motif | **CLOSED.** Shear at 12 degrees, four uses, four prohibitions |
 
-**One blocker remains for high-fidelity: V1.** The onboarding option cards are still Discord's layout with the colors changed.
+**No blockers remain for high-fidelity design.**
+
+V2 is a low-severity recommendation. V5 cannot close without a build and is listed first in the audit's outstanding items. Everything else is closed.
+
+**The brief still requires human review before generated design work is treated as approved. This document is the request for that review, not a substitute for it.**
 
 The brief requires human review before treating generated design work as approved. **This document is the request for that review, not a substitute for it.**
 

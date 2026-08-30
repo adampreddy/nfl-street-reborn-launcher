@@ -124,32 +124,77 @@ Default focus on both Home and Play. Never loses focus to a carousel.
 
 ## 4. Option card
 
-The onboarding and mode-selection primitive, from moodboard region C.
+The onboarding and mode-selection primitive.
+
+**Origin and how it differs.** The first draft of this component was moodboard
+region C, which is a screenshot of Discord's server onboarding, with the colors
+changed. The anti-vibecoding review flagged that as violation V1. Two changes
+were made, both of which are functional improvements rather than cosmetic
+distancing:
+
+1. **The selection mark is a filled left edge, not a corner badge.** A small
+   corner checkmark is the weakest possible selection signal at television and
+   Steam Deck distance. A full-height left edge is visible from across a room,
+   and it carries the Reborn shear from `DESIGN_TOKENS.md` section 11, which a
+   corner badge cannot.
+2. **Layout is width-driven, not fixed to a grid.** Below 900 px of content
+   width the group stacks to a single column instead of forcing a two-by-two
+   grid into a space that cannot hold it. That matters because Steam Deck at
+   1280 px with a 200 px rail leaves under 1000 px, and Windows at 150%
+   scaling leaves less.
+
+### Anatomy
 
 ```text
-┌──────────────────────────────────┐
-│ [icon]  Title                 ✓ │
-│         One or two lines of      │   min-height 88
-│         supporting text.         │
-└──────────────────────────────────┘
+╱┌──────────────────────────────────┐
+╱│ [icon]  Title                    │
+╱│         One or two lines of      │   min-height 88
+╱│         supporting text.         │
+╱└──────────────────────────────────┘
+ ↑
+ sheared selection edge, 4px, red-500, present only when selected
 ```
 
-`radius-lg`, `surface-2`, `border-default`, padding `space-4`. Icon 28 px, top-aligned. Check badge appears only when selected.
+`radius-lg`, `surface-2`, `border-default`, padding `space-4`. Icon 28 px,
+top-aligned. The selection edge sits outside the card's left border so it does
+not eat into the content box.
+
+### States
 
 | State | Appearance |
 |---|---|
 | Rest | `surface-2`, `border-default` |
 | Hover | `surface-3` |
-| Focused | + ring, 1.02 scale |
-| Selected | `red-500` border 2 px, `red-500` 12% fill, check badge |
-| Selected and focused | both |
+| Focused | + neutral two-tone ring, 1.02 scale |
+| Selected | 4 px sheared `red-500` left edge, `red-500` 12% fill, `border-strong` |
+| Selected and focused | both. The ring sits outside the selection edge |
 | Disabled | `surface-1`, `text-disabled`, reason shown below the card |
 
-**Three signals for selection**, border plus fill plus badge, which is what satisfies "never color alone" and makes the state readable in grayscale.
+**Three signals for selection**, edge plus fill plus border weight, which
+satisfies "never color alone" and stays readable in grayscale.
 
-Groups of two to four. Never more than four; beyond that it becomes a list.
+### Layout
 
-**Controller:** D-pad or stick moves between cards, A selects. In single-select groups, selection follows focus only if the user presses A, never on focus alone, because focus-selects makes it impossible to browse options.
+| Content width | Arrangement |
+|---|---|
+| 900 px and above | Two columns, up to four cards |
+| Below 900 px | Single column stack, full width |
+| Any width, 2 cards | Side by side above 900 px, stacked below |
+
+Never more than four cards. Beyond four it becomes a list, because a controller
+user cannot hold more than four spatial positions without hunting.
+
+### Behavior
+
+**Controller:** D-pad or stick moves between cards, A selects. In single-select
+groups **selection never follows focus**; the user must press A. Focus-selects
+makes it impossible to browse options without committing to each one in turn.
+
+**Keyboard:** arrow keys move within the group, Space or Enter selects, Tab
+leaves the group. Radio-group semantics for single select, checkbox semantics
+for multi.
+
+**Screen reader:** announces group label, position, and selected state.
 
 ---
 
