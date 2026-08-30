@@ -93,7 +93,11 @@ enum Command {
     },
 
     /// List controllers, named the way the emulator names them.
-    Devices,
+    Devices {
+        /// Ask this Reborn Dolphin what it calls the devices. Strongly preferred.
+        #[arg(long)]
+        runtime: Option<PathBuf>,
+    },
 
     /// Recent play sessions, including ones that ended badly.
     Sessions,
@@ -118,7 +122,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::AuditRuntime { path } => audit_runtime(&path),
         Command::Controller { out, ports } => controller(out, ports),
         Command::Sessions => sessions(&platform),
-        Command::Devices => list_devices(),
+        Command::Devices { runtime } => list_devices(&platform, runtime.as_deref()),
         Command::Play {
             iso,
             runtime,
@@ -301,18 +305,51 @@ fn audit_runtime(path: &std::path::Path) -> reborn_core::Result<std::process::Ex
     Ok(PROBLEM)
 }
 
-fn list_devices() -> reborn_core::Result<std::process::ExitCode> {
-    let scan = DeviceScanner::scan();
+fn list_devices(
+    platform: &Platform,
+    runtime: Option<&std::path::Path>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());
 
-    if scan.devices.is_empty() {
+    // Asking the runtime is the authoritative answer. The built in scan only
+    // knows about XInput, and this machine shows why that is not enough: one
+    // Xbox pad also reports through a WGInput backend the launcher has no way
+    // to know about.
+    let scan = match runtime {
+        Some(exe) => match reborn_core::devices::scan_via_runtime(platform, exe, &scratch) {
+            Ok(s) => s,
+            Err(why) => {
+                println!("Could not ask the runtime: {why}");
+                println!("Falling back to the built in scan, which only sees XInput.");
+                println!();
+                DeviceScanner::scan()
+            }
+        },
+        None => DeviceScanner::scan(),
+    };
+
+    let pads = scan.playable_pads();
+    if pads.is_empty() {
         println!("No controllers found.");
     } else {
-        println!("{} controller(s):", scan.devices.len());
-        for d in &scan.devices {
-            println!("  {:<28} {}", d.device_string(), d.family.label());
+        println!("{} controller(s) to use, in port order:", pads.len());
+        for (n, d) in pads.iter().enumerate() {
+            println!(
+                "  port {}  {:<34} {}",
+                n + 1,
+                d.device_string(),
+                d.family.label()
+            );
         }
+    }
+
+    let aside = scan.set_aside();
+    if !aside.is_empty() {
         println!();
-        println!("The left column is the Device line written into GCPadNew.ini.");
+        println!("Also detected, not used:");
+        for (d, why) in aside {
+            println!("  {:<34} {}", d.device_string(), why);
+        }
     }
 
     if !scan.is_complete() {
@@ -321,6 +358,8 @@ fn list_devices() -> reborn_core::Result<std::process::ExitCode> {
         for (backend, reason) in &scan.not_searched {
             println!("  {}: {}", backend.source(), reason);
         }
+        println!();
+        println!("Pass --runtime <Dolphin.exe> for the authoritative list.");
     }
     Ok(OK)
 }

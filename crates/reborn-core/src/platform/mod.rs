@@ -299,6 +299,18 @@ pub trait ProcessHost: Send + Sync {
 
     /// Whether a process with this identifier is still running.
     fn is_running(&self, handle: &ProcessHandle) -> bool;
+
+    /// Run a program to completion and capture what it printed.
+    ///
+    /// Separate from `spawn` because the game is watched and never read,
+    /// while a short query is read and never watched. One method doing both
+    /// would have to buffer the output of a process that runs for an hour.
+    fn run_capturing(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        env: &BTreeMap<String, OsString>,
+    ) -> Result<CapturedRun>;
 }
 
 /// An opaque handle to a spawned child.
@@ -457,5 +469,20 @@ impl LockGuard {
     /// The file backing this lock.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// The result of running a program that was expected to finish quickly.
+#[derive(Debug, Clone)]
+pub struct CapturedRun {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit: ExitKind,
+}
+
+impl CapturedRun {
+    /// Whether the program finished successfully.
+    pub fn succeeded(&self) -> bool {
+        self.exit == ExitKind::Normal
     }
 }

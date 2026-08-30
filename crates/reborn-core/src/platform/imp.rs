@@ -209,6 +209,31 @@ impl ProcessHost for RealProcessHost {
         // otherwise; a consumed one is not.
         handle.inner.is_some()
     }
+
+    fn run_capturing(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        env: &BTreeMap<String, OsString>,
+    ) -> Result<CapturedRun> {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        if let Some(dir) = program.parent() {
+            cmd.current_dir(dir);
+        }
+        let output = cmd.output().map_err(|source| Error::Io {
+            path: program.to_path_buf(),
+            source,
+        })?;
+        Ok(CapturedRun {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit: classify_exit(&output.status),
+        })
+    }
 }
 
 /// Turn an exit status into something the user can be told.
