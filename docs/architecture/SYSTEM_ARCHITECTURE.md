@@ -71,7 +71,7 @@ Four processes. The boundaries are what make the product survivable.
 |---|---|
 | `NSR_UpdateChecker.exe`, current entry point | **Retire.** A and B replace it |
 | `NflsStatUpload` inside Dolphin | **Retire from C, port the logic to B** |
-| `NflsStatTracker` inside Dolphin | **Reuse unchanged.** Capture stays next to game memory |
+| `NflsStatTracker` inside Dolphin | **Wrap, additive.** Capture stays next to game memory, but it does need a source change: one new top-level `reborn_match` key emitted alongside `schema`. The schema string stays exactly `nsr.game.v1`, no existing key is renamed, removed, reordered or redefined, and the `si_capture_hash` hashed set is untouched. Any plan built on "no Dolphin source change is needed for capture" is wrong |
 
 ---
 
@@ -152,7 +152,7 @@ Replaces the fake patcher entirely. Since the game ships finished, this service 
 | Existing | Verdict |
 |---|---|
 | `rebornpatcherv6.py` | **Retire.** `fake_patch()` never opened the user's file |
-| `build_iso_fields.py`, `build_iso_with_game12.py` | **Wrap.** Used by music rebuild only, never by install |
+| `build_iso_fields.py`, `build_iso_with_game12.py` | **Port.** The FST and `Game.toc` writing logic and the two gate rules move into a launcher-owned repacker; neither script file ships. Python inside the bundled runtime for v1, not a Rust rewrite, per Decided row 12.12 |
 
 ### 5.2 Runtime supervision
 
@@ -187,7 +187,9 @@ Signed manifests, hash verification, atomic staging and swap, one prior version 
 | Existing | Verdict |
 |---|---|
 | `NSR_UpdateChecker.exe` | **Retire.** No source located |
-| Inno Setup `rebornsetupv10.iss` | **Wrap and reduce** to installing the launcher only |
+| Inno Setup, the tool | **Reuse** |
+| `rebornsetupv10.iss`, the script | **Replace.** A new script, carrying over only the `AppId` GUID, and only alongside `UsePreviousAppDir=no`, `UsePreviousData=no`, `DisableDirPage=yes`, no `DelTree` anywhere, and a build-time assertion of all four. Without `UsePreviousAppDir=no` the retained AppId makes Inno restore `{app}` to the old data root |
+| `BackupUserData`, `RestoreUserData`, `CleanTexturesOnUpdate`, the uninstall `DelTree({app})`, `ShellExec('runas', JSGME.exe)` | **Retire** |
 | JSGME plus `!BACKUP`, `!INSTLOGS` | **Retire.** The 13 packages migrate to the new format |
 
 ### 5.5 Music
@@ -208,10 +210,12 @@ Backend on Railway owns identity, matchmaking, Elo, lobbies, chat, and results. 
 |---|---|
 | `nfl-street-reborn-online` client | **Rebuild**, all three copies as reference |
 | `server/elo.js`, `socket/*.js`, `db/schema.sql` | **Harvest**, then rebuild against Postgres |
-| `netplay_uia.ps1` | **Study, then replace.** UI automation is Windows only |
-| `NflsPlayHide` | **Reuse and extend.** Already resolves port to in-game team |
-| `NflsStatTracker` | **Reuse unchanged** |
-| `ingest.php` on the league site | **Leave alone.** Out of launcher scope |
+| `netplay_uia.ps1` | **Retire.** Kept outside the product as the calibration record of what Dolphin's NetPlay dialog looks like, which is a preservation obligation and not a verdict |
+| `NflsPlayHide` | **Wrap.** Already resolves port to in-game team; the mapping is exposed as a stable interface for the results protocol |
+| `NflsUiSplit` | **Reuse.** Ships. Now present in `Source/Core/VideoCommon/CMakeLists.txt`, Windows internals behind existing `_WIN32` guards. Explicitly not a release gate |
+| Shipped runtime `NFL Street Reborn Dolphin.exe` (`8705a96b...`, Qt5) | **Replace** by the selected runtime `617321bf...`. A runtime migration, not a file swap |
+| `NflsStatTracker` | **Wrap, additive.** See section 2 |
+| `ingest.php` on the league site | **Reuse.** Deployment untouched and out of launcher scope. Its proven design is harvested by the new ladder endpoint: canonical `si_capture_hash`, idempotency through a UNIQUE key rather than a SELECT, "review" counted as success by the uploader, prefix-tolerant team resolution, and the 512 KB payload cap |
 
 ### 5.7 Xbox Dev Mode
 

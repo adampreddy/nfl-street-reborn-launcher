@@ -249,7 +249,7 @@ The launcher itself, being a separate program that runs Dolphin as a child proce
 
 | Behavior | Status |
 |---|---|
-| Stat capture | Preserved unchanged |
+| Stat capture | Preserved, with one additive source change: a new top-level `reborn_match` key. The schema string, every existing key, and the `si_capture_hash` set are untouched |
 | Stat upload history, `uploaded.txt` ledger | Preserved, moves to the launcher queue |
 | Play-call hiding | Preserved and extended |
 | Fair Input Delay NetPlay | Preserved. Rollback stays out of scope |
