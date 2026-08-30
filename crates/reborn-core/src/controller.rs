@@ -150,8 +150,16 @@ impl Mapping {
         use GcInput::*;
         let pairs: &[(GcInput, &str)] = &[
             (ButtonA, "`Button A`"),
-            (ButtonB, "`Button X`"),
-            (ButtonX, "`Button B`"),
+            // NOT swapped. The X/B swap is done inside the game, by a
+            // match-gated DOL cave, and the note recording that work says
+            // plainly it was done "so the Dolphin controller remap can be
+            // turned off". Swapping here too cancels it out during a match
+            // and wrongly swaps in the menus, which stay vanilla.
+            //
+            // Checked against the working install's own GCPadNew.ini, which
+            // binds Button B to B and Button X to X.
+            (ButtonB, "`Button B`"),
+            (ButtonX, "`Button X`"),
             (ButtonY, "`Button Y`"),
             (ButtonZ, "`Shoulder R`"),
             (Start, "Start"),
@@ -505,6 +513,32 @@ impl GcPadConfig {
             }
 
             let dz = f64::from(profile.tuning.deadzone_percent);
+            // The analog trigger axes. The digital Triggers/L and R above are
+            // the click; these are the travel, and without them a trigger held
+            // part way reads as nothing. Present in the working install and
+            // absent here until the two were compared.
+            out.push_str(
+                "Triggers/L-Analog = `Shoulder L`
+",
+            );
+            out.push_str(
+                "Triggers/R-Analog = `Shoulder R`
+",
+            );
+
+            // Square gate calibration, the values Dolphin writes itself.
+            // 141.42 is the diagonal, 100 * sqrt(2). Without these the stick
+            // is treated as a circle and the corners cannot be reached.
+            const GATE: &str = "100.00 141.42 100.00 141.42 100.00 141.42 100.00 141.42";
+            out.push_str(&format!(
+                "Main Stick/Calibration = {GATE}
+"
+            ));
+            out.push_str(&format!(
+                "C-Stick/Calibration = {GATE}
+"
+            ));
+
             out.push_str(&format!("Main Stick/Dead Zone = {dz:.2}\n"));
             out.push_str(&format!("C-Stick/Dead Zone = {dz:.2}\n"));
             out.push_str(&format!(
@@ -542,13 +576,21 @@ mod tests {
         );
     }
 
-    /// The B and X swap is deliberate, taken from the working Xbox.ini. It is
-    /// how NFL Street has always been played here.
+    /// The launcher must NOT swap B and X.
+    ///
+    /// An earlier version did, and this test asserted it. The swap is done
+    /// inside the game by a match-gated DOL cave, and the note recording that
+    /// work states it was done "so the Dolphin controller remap can be turned
+    /// off". Doing it here as well cancels it out during a match and wrongly
+    /// swaps in the menus, which stay vanilla.
+    ///
+    /// Ground truth is the working install's own GCPadNew.ini, which binds
+    /// Button B to B and Button X to X.
     #[test]
-    fn the_b_and_x_swap_is_preserved() {
+    fn b_and_x_are_not_swapped_because_the_game_does_it() {
         let m = Mapping::default_gamepad();
-        assert_eq!(m.get(GcInput::ButtonB), Some("`Button X`"));
-        assert_eq!(m.get(GcInput::ButtonX), Some("`Button B`"));
+        assert_eq!(m.get(GcInput::ButtonB), Some("`Button B`"));
+        assert_eq!(m.get(GcInput::ButtonX), Some("`Button X`"));
         assert_eq!(m.get(GcInput::ButtonA), Some("`Button A`"));
         assert_eq!(m.get(GcInput::ButtonY), Some("`Button Y`"));
     }
@@ -699,8 +741,17 @@ mod tests {
             );
         }
         assert!(
-            ini.contains("Buttons/B = `Button X`"),
-            "swap preserved:\n{ini}"
+            ini.contains("Buttons/B = `Button B`"),
+            "the game swaps B and X itself; the config must not:
+{ini}"
+        );
+        // Without the analog axes a partly held trigger reads as nothing.
+        assert!(ini.contains("Triggers/L-Analog"), "{ini}");
+        assert!(ini.contains("Triggers/R-Analog"), "{ini}");
+        // Without calibration the stick is a circle and the corners are lost.
+        assert!(
+            ini.contains("Main Stick/Calibration = 100.00 141.42"),
+            "{ini}"
         );
     }
 
