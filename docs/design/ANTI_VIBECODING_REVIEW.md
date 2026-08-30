@@ -50,9 +50,9 @@ The brief says: "Before any design is approved, perform a written review against
 
 **Severity:** medium, and it is the single most likely way this product ends up looking generated.
 
-**Resolution required:** the twelve highest-traffic glyphs get drawn or licensed as a set with a consistent weight and terminal style: play, repair, install, controller, music, stats, ranked, casual, private, online, warning, error. A conventional set may sit beneath them for long-tail icons, provided stroke weight and corner radius are matched. Named in [`COMPONENT_SPECIFICATION.md`](./COMPONENT_SPECIFICATION.md) open items.
+**Resolution: Adam chose a stock set and accepted the risk.** Mitigation is specified in [`DESIGN_TOKENS.md`](./DESIGN_TOKENS.md) section 12: one family only, icons never carry meaning alone, and the motif rather than the icons does the identifying. The twelve glyphs remain a later upgrade.
 
-**Status: OPEN.**
+**Status: CLOSED, with recorded risk. This is the weakest point in the visual system.**
 
 ---
 
@@ -66,7 +66,9 @@ The brief says: "Before any design is approved, perform a written review against
 
 **Resolution required before high-fidelity:** export real data. The stat pipeline already produces real box scores, the site has real ratings, and the `MODS` folder has real packages. Every mockup should use them, including the ugly cases.
 
-**Status: OPEN, and it is the one most likely to be skipped.**
+**Resolution: partially closed.** Real captured data was exported and section 12 of the wireframes was rebuilt from it. Doing so immediately invalidated the box score: it showed Total yards, Passing and Rushing, none of which exist in the capture schema. Three further layout facts came out of real data, including that 60 of 98 stat cells in a real game are zero, which forced a zero-dimming rule.
+
+**Status: PARTIALLY CLOSED.** Elo ratings, queue wait times and player counts on Home, Online and the lobby remain invented, because no online system exists to export them from.
 
 ---
 
@@ -154,22 +156,24 @@ The logo's `R` has a hard diagonal shear. That angle is the only distinctive geo
 
 Four small places, none of them decoration, all of them repeating one angle that comes from the logo. That is a motif rather than a texture, and it survives the "not covering every surface in graffiti" constraint.
 
-**Status: OPEN, recommendation made, needs Adam.**
+**Status: CLOSED.** Adam approved the shear motif. Specified in [`DESIGN_TOKENS.md`](./DESIGN_TOKENS.md) section 11 at 12 degrees, with the four permitted uses and four explicit prohibitions. Unverified on a rendered screen.
 
 ---
 
 ## Verdict
 
-**Not approved for high-fidelity design.** Four open items must close first:
+**Updated August 29, 2026 after Adam's decisions.**
 
-| # | Item | Blocks |
+| # | Item | Status |
 |---|---|---|
-| V1 | Option cards too close to Discord | Onboarding mockups |
-| V3 | No icon system, default path is prohibited | All mockups |
-| V4 | Invented data in wireframes | All mockups |
-| V6 | No Reborn-specific visual motif | The answer to fidelity question 7 |
+| V1 | Option cards too close to Discord | **OPEN.** Two differentiating changes proposed, not applied |
+| V2 | Home close to the generic hero-plus-rails shape | Open, low severity, recommendation made |
+| V3 | Icon system | **CLOSED** with recorded risk. Stock set, mitigated |
+| V4 | Invented data | **PARTIALLY CLOSED.** Box score rebuilt from real captures. Elo and queue figures remain invented |
+| V5 | Contrast computed, not measured | Open, blocked on implementation |
+| V6 | No Reborn motif | **CLOSED.** Shear at 12 degrees, four uses, four prohibitions |
 
-V2 has a recommendation and is low severity. V5 is blocked on implementation and cannot close at this stage.
+**One blocker remains for high-fidelity: V1.** The onboarding option cards are still Discord's layout with the colors changed.
 
 The brief requires human review before treating generated design work as approved. **This document is the request for that review, not a substitute for it.**
 
@@ -177,6 +181,10 @@ The brief requires human review before treating generated design work as approve
 
 ## What Adam needs to decide
 
-1. **The shear motif (V6).** Take the logo's angle into focus bars, dividers, progress, and scrims? This is the decision that most determines whether the product looks like Reborn or like a template.
-2. **Icons (V3).** Commission or draw twelve glyphs, or accept a conventional set and carry the risk?
-3. **Real data (V4).** Can I export a real roster, real match results, and the real mod catalog for the mockups? The stat pipeline and the site both already have them.
+All three questions from the first version of this review are answered:
+motif yes, stock icons, real data approved and pulled.
+
+**What is left:**
+
+1. **V1, the option cards.** I proposed two changes: single-column stacking below 900 px instead of always gridding, and moving the check badge from a corner mark to a filled left edge, which also reads better at 10 feet. Both are functional improvements rather than cosmetic distancing. Approve, or say if you would rather they stay as they are and accept the resemblance.
+2. **A question the real data raised, not a design question.** Michael Penix Jr. is recorded with 2 sacks and 5 interceptions thrown, and Bijan Robinson with 1 sack, in a real capture. Quarterbacks recording sacks suggests the tracker may be attributing defensive plays by roster slot rather than by player. Worth checking before these numbers reach a public profile.

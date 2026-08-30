@@ -17,6 +17,8 @@ The brief says "do not choose arbitrary values, explain the visual and accessibi
 | Target size | 44 px on controller-reachable controls | Adam, deferring to the research |
 | Welcome gradient | Near-black to dark red | Adam |
 | Left-handed and axis-inversion presets | **Not shipping.** Full remapping covers it | Adam |
+| Icon system | **Stock set**, risk accepted and mitigated in section 11 | Adam |
+| Reborn motif | **The shear angle from the logo's R** | Adam |
 
 ---
 
@@ -340,9 +342,96 @@ Cross-checked against the brief's prohibited outcomes. Each row names the token 
 
 ---
 
+## 11. The Reborn motif
+
+The anti-vibecoding review found that the system as specified would produce a
+competent, accessible, generic dark launcher. Red plus near-black plus a clean
+sans is a good system and it is nobody's in particular. Adam approved a single
+motif to fix that.
+
+### The angle
+
+The logo's `R` is sheared. That slant is the only distinctive geometry Reborn
+owns, and it comes from the brand rather than from a mood.
+
+| Token | Value |
+|---|---|
+| `motif-shear` | `12deg` |
+| `motif-skew` | `transform: skewX(-12deg)` |
+
+**Rationale for 12 degrees:** measured off the logo's `R` stem, rounded to a
+whole number so it composes predictably. Steeper reads as a novelty font;
+shallower is invisible at small sizes and at distance.
+
+### Where it is used, and only here
+
+Four places. All of them are functional elements that already exist, so the
+motif costs no additional visual furniture.
+
+| Element | Application |
+|---|---|
+| **Selection edge bar** | The 3 px left bar on a selected nav item, settings group, or option card is sheared rather than rectangular |
+| **Section divider terminal** | Settings group dividers end in a sheared terminal instead of a square cut |
+| **Progress leading edge** | The advancing end of a determinate progress fill is sheared. The trailing end is not |
+| **Hero scrim** | The gradient under hero text runs on the shear angle rather than straight vertical |
+
+### Where it is forbidden
+
+- **Never on the focus ring.** Focus must be geometrically simple and instantly
+  readable. A sheared ring reads as a rendering artifact.
+- **Never on cards, buttons, inputs, or panels.** Skewed containers break text
+  baselines and target-area hit testing.
+- **Never on text.** No skewed type anywhere.
+- **Never more than once in a single component.** A card with a sheared
+  selection bar does not also get a sheared divider.
+
+### Why this survives the guardrails
+
+The blueprint says NFL Street personality should come from art, motion,
+texture, typography and content rather than covering every surface in graffiti.
+Four functional elements carrying one angle is a motif, not a texture. It is
+also cheap to remove if it reads badly on real screens, because nothing depends
+on it structurally.
+
+**Unverified:** how the shear reads at 1280x800 on an actual Steam Deck, and
+whether a 12 degree shear on a 4 px progress edge is visible at all. Both need
+a rendered screen.
+
+---
+
+## 12. Icon system
+
+**Decision: a stock set.** Adam accepted the risk rather than commissioning
+twelve glyphs.
+
+The anti-vibecoding brief names "generic Lucide icons as the entire identity
+system" as a prohibited outcome, so accepting a stock set means the mitigation
+has to be real rather than nominal.
+
+### Mitigation
+
+1. **One family only.** A single stock set, one stroke weight, one corner
+   radius, one terminal style. The prohibited failure is *mixing* sets, and
+   that is the one thing fully in our control.
+2. **Icons are never the only label.** Every navigation item, status, and
+   action carries a word except in the collapsed icon rail, where the label
+   appears on focus. An icon set cannot carry an identity it is never asked to
+   carry alone.
+3. **The motif does the identifying, not the icons.** Section 11 exists partly
+   because the icons will not distinguish the product.
+4. **Twelve glyphs stay on the list as a later upgrade:** play, repair,
+   install, controller, music, stats, ranked, casual, private, online, warning,
+   error. Replacing those twelve later changes the product's character without
+   touching the other hundred.
+
+**Honest assessment:** this is the weakest point in the visual system. It is a
+deliberate, recorded tradeoff rather than an oversight.
+
+---
+
 ## Open items
 
-1. **Inter needs confirming** as the shipped face, or a substitute chosen. It is open licensed and safe, but it is also a common choice and the brief warns against defaults reading as templated. A distinctive alternative for headings only is worth considering.
+1. **Inter needs confirming** as the shipped face, or a substitute chosen. It is open licensed and safe, but it is also a common choice and the brief warns against defaults reading as templated. Given that icons are now a stock set too, a distinctive heading face carries more weight than it did.
 2. **The logo is raster only** at 4096x4096. Window icons and Deck-scale rendering will be soft until a vector exists.
 3. **Contrast figures above are computed, not measured in situ.** They need verification against real rendered screens during the accessibility audit, deliverable 9.
 4. **No implementation.** These are specifications. Nothing has been built.

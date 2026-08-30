@@ -435,6 +435,25 @@ Every slider has a numeric readout because sticks are imprecise.
 
 ## 12. Match history and box score
 
+**Rebuilt from real captured data.** Everything below comes from
+`User\LeagueGameStats\Falcons_vs_Chargers_001.json`, a real capture dated
+August 5, 2026. Nothing here is invented.
+
+### The correction real data forced
+
+The first draft of this screen showed **Total yards, Passing, Rushing**. Those
+statistics **do not exist**. The Reborn capture schema (`nsr.game.v1`) records
+twelve per-player categories and none of them is yardage:
+
+```
+pass_td   rush_td   rec_td   pick_six   fum_td        interceptions
+tackles   sacks     fumbles  thrown_int forced_fumbles fumble_rec
+```
+
+This is exactly the failure the anti-vibecoding guardrails warn about.
+Invented data made a plausible-looking layout that would have broken the moment
+real data arrived. It was caught by exporting real data, not by review.
+
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ NSR   Stats                       [search]  ● Online  ↓   [me]   │
@@ -443,43 +462,79 @@ Every slider has a numeric readout because sticks are imprecise.
 │  Play    │                                                       │
 │  Online  │  All modes ▾   All time ▾   Online and offline ▾      │
 │  Mods    │  ┌───────────────────────────────────────────────────┐│
-│  Music   │  │ W │ «EAGLES 34 – 21 GIANTS» │ Ranked │«+18»│«2h» ││
+│  Music   │  │ ⚠ │ FALCONS 36 – 24 CHARGERS │Offline│Held │Aug 5││
 │ ▸Stats   │  ├───────────────────────────────────────────────────┤│
-│ ──────── │  │ L │ «BEARS 17 – 28 JETS»    │ Ranked │«-14»│«5h» ││
-│  Settings│  ├───────────────────────────────────────────────────┤│
-│          │  │ ⚠ │ «RAMS 21 – 21 CHIEFS»   │ Ranked │Held │«1d» ││
+│ ──────── │  │ W │ OUTLAWS 36 – 12 SHADOW   │ Ranked│ +18 │Jul27││
+│  Settings│  │   │ KNIGHTS                  │       │     │     ││
 │          │  ├───────────────────────────────────────────────────┤│
-│          │  │ W │ «EAGLES 40 – 12 CPU»    │ Offline│  —  │«2d» ││
+│          │  │ L │ OUTLAWS 21 – 36 STREET   │ Ranked│ -14 │Jul27││
+│          │  │   │ CRUSADE                  │       │     │     ││
 │          │  └───────────────────────────────────────────────────┘│
-└──────────┴───────────────────────────────────────────────────────┘
-```
-
-Box score at L3:
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  ‹ Back      «EAGLES 34 – 21 GIANTS»     Ranked · «2h ago»      │
-│                                                                  │
-│  «Bill» «+18» → «1,247»          «Marcus» «-18» → «1,198»       │
-│                                                                  │
-│  Team                        «EAGLES»          «GIANTS»          │
-│  Total yards                    «312»             «244»          │
-│  Passing                        «188»             «160»          │
-│  Rushing                        «124»              «84»          │
-│  Turnovers                        «1»               «3»          │
-│                                                                  │
-│  Players                    Yds   TD   Rec   Tkl   INT           │
-│  «M. Vick»       «EAGLES»  «188»  «3»   «0»   «0»   «0»          │
-│  «T. Owens»      «EAGLES»   «96»  «2»   «7»   «1»   «0»          │
-│  «B. Dawkins»    «EAGLES»    «0»  «0»   «0»   «6»   «2»          │
-│                                                                  │
-│  [ Report a problem ]                                            │
+├──────────┴───────────────────────────────────────────────────────┤
+│ (A) Open  (B) Back  (LT/RT) Tab                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Numbers are tabular. The leader in each column is emphasized by weight, not by a highlight fill. Offline rows show no rating delta and are labeled, never merged with ranked.
+**The first row is a real held-for-review case, not a mockup of one.** That
+capture has `"sides_verified": false`, meaning the tracker could not confirm
+which player controlled which team. Under the results policy that is exactly
+a hold. The design has to show this state because the real pipeline produces
+it, and the first row of real data was already an instance of it.
 
----
+### Box score, real numbers
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ‹ Back      FALCONS 36 – 24 CHARGERS      Offline · Aug 5       │
+│                                                                  │
+│  ⚠ Held for review                                               │
+│    We couldn't confirm which player controlled which team, so    │
+│    this result isn't counted. Nothing has changed.               │
+│    [ Report a problem ]                                          │
+│                                                                  │
+│  FALCONS                     Pass  Rush  Rec  Tkl  Sack  INT  FUM│
+│  Michael Penix Jr.             2     0    1    2    2     0    0 │
+│  Bijan Robinson                0     2    1    2    1     0    1 │
+│  Drake London                  1     0    1    0    0     0    1 │
+│  Jessie Bates III              0     0    0    2    0     0    1 │
+│  James Pearce Jr.              0     0    0    1    1     0    0 │
+│  A.J. Terrell Jr.              0     0    0    1    0     0    0 │
+│  Jalon Walker                  0     0    0    4    1     0    0 │
+│                                                                  │
+│  CHARGERS                    Pass  Rush  Rec  Tkl  Sack  INT  FUM│
+│  Tuli Tuipulotu                0     0    0    4    2     0    0 │
+│  Khalil Mack                   0     0    0    0    0     0    0 │
+│  Justin Herbert                2     0    0    2    0     0    2 │
+│  Omarion Hampton               0     1    1    1    0     0    1 │
+│  Derwin James Jr.              0     0    0    4    0     4    0 │
+│  Quentin Johnston              0     0    1    4    0     1    1 │
+│  Donte Jackson                 0     0    0    2    0     0    0 │
+│                                                                  │
+│  Also tracked: pick-six, fumble-return TD, forced fumbles,       │
+│  fumble recoveries, interceptions thrown.        [ Show all ▾ ]  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Three layout facts real data exposed
+
+1. **Names are long.** "Michael Penix Jr." and "Tuli Tuipulotu" are 17 and 14
+   characters. The name column needs 22 characters, not the 12 a mock roster
+   would have suggested.
+2. **Most cells are zero.** In this real game, 60 of 98 stat cells are 0.
+   Rendering a dense grid of zeros is unreadable, so **zeros are
+   `text-tertiary` and non-zeros are `text-primary`**. That single rule is
+   what makes the table scannable, and no invented dataset would have
+   surfaced the need for it.
+3. **Twelve categories will not fit.** Seven columns fit at desktop width with
+   a 22-character name column. The remaining five go behind "Show all," and on
+   Steam Deck the name column pins and the rest scroll.
+
+**One oddity worth flagging to Adam, not a design issue:** Michael Penix Jr.
+is recorded with 2 sacks and 5 interceptions thrown, and Bijan Robinson with
+1 sack. Quarterbacks recording sacks suggests the capture is attributing some
+defensive plays by roster slot rather than by the player who made them, or
+that both players used the same slot on defense. Worth checking against the
+tracker before these numbers appear on a public profile.
 
 ## 13. Settings, basic and advanced
 
@@ -671,7 +726,7 @@ All 17 covered.
 
 ## Open items
 
-1. **Real content is placeholder-shaped.** Player names, ratings, and mod titles are drawn from real Reborn material where known, but ratings and match results are invented. The brief requires realistic Reborn data as early as possible, so these should be replaced with a real export before visual mockups.
+1. **Section 12 now uses fully real captured data** and the invented yardage columns are gone. Sections 6, 8, and 9 still contain invented Elo ratings, queue wait times, and player counts, because no real online system exists yet to export them from. Those are the remaining instances of the invented-data violation.
 2. **The tour** referenced on the completion screen is unspecified.
 3. **Chat during the match countdown** is still unresolved from the IA open items.
 4. No visual design, no color, no artwork. Low fidelity by requirement.
