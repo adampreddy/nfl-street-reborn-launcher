@@ -151,9 +151,12 @@ INSTALL ROOT          installer owns it, replaceable wholesale
   app.prior/            the previous bundle, kept for rollback
 
 DATA ROOT             launcher owns it, survives uninstall by default
-  Windows   %APPDATA%\NFL Street Reborn          <- already used today
-  macOS     ~/Library/Application Support/NFL Street Reborn
-  Linux     $XDG_DATA_HOME/NFL Street Reborn
+  Windows   %APPDATA%\NFL Street Reborn Launcher
+  macOS     ~/Library/Application Support/NFL Street Reborn Launcher
+  Linux     $XDG_DATA_HOME/NFL Street Reborn Launcher
+
+  NOT %APPDATA%\NFL Street Reborn, which is 2.1's own live Dolphin user
+  tree. See the corrected verdict in section 9.
 
   downloads/<component>/<version>/
   staging/<component>/<version>/
@@ -240,7 +243,7 @@ case, and it has to be budgeted as such.
 
 | Existing | Verdict |
 |---|---|
-| `%APPDATA%\NFL Street Reborn` root | **Reuse the root, restructure inside it.** Migration reads the old shape |
+| `%APPDATA%\NFL Street Reborn` root | **CORRECTED. Do not reuse. Migrate out of it.** Earlier text here said to reuse the root and restructure inside it. That is a data-loss bug, found by running the CLI against a real machine. The folder is a live Dolphin user tree with a JSGME `MODS` directory holding the player's installed mods. Windows paths are case insensitive, so the launcher's `mods/` is that `MODS/`, and `mods/staging` and `mods/active` are classed derived, which means a cache purge may delete them. Launcher data now lives in its own root, and this folder is only ever a migration source |
 | `User\GC` memory cards | **Reuse**, moved to `saves/` |
 | `User\Load\Textures\GN7E69` | **Reuse**, moved to `library/textures/GN7E69/` as pristine |
 | JSGME `!BACKUP`, `!INSTLOGS` | **Retire.** Composition makes both unnecessary |

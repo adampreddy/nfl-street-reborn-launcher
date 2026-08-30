@@ -211,8 +211,27 @@ should say so plainly rather than letting a player discover it.
 
 ## 9. What I need from you
 
-1. **B1, B2, B3 above.** Those three block release, not code.
-2. **H1:** five minutes on a Mac or a Linux box, if you can find one.
-3. **Approval to start writing the launcher**, Windows-first with the platform seams abstracted from the first commit.
+1. **B5 (NEW, blocking CI today).** GitHub Actions stopped running. Every job on
+   every platform now fails in about two seconds with no steps executed:
+
+   > The job was not started because recent account payments have failed or your
+   > spending limit needs to be increased.
+
+   No code change can fix this. Until it is cleared, nothing gets built on any
+   platform, and the macOS Objective-C fix committed on August 30 2026 is
+   **pushed but unverified**.
+
+   Worth knowing before you just raise the limit: `adampreddy/reborn-dolphin` is
+   **private**, and private repositories bill macOS runners at ten times the
+   Linux rate, which is what drained it. **Public repositories get unlimited free
+   Actions minutes.** GPLv2+ already obliges you to publish the Dolphin source
+   once binaries ship, so making it public removes the licensing obligation and
+   the CI bill in one move. That is blocked on B1, credential rotation, which you
+   chose to defer. B1 is now blocking two things rather than one.
+
+2. **B1, B2, B3 above.** Those three block release, not code.
+3. **H1:** five minutes on a Mac or a Linux box, if you can find one.
+4. **Approval to start writing the launcher**, Windows-first with the platform
+   seams abstracted from the first commit.
 
 Everything else can be decided while code is being written.
