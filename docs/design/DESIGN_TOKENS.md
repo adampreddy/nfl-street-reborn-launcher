@@ -136,9 +136,9 @@ Red was rejected for focus because a red ring on the red-heavy hero art would fa
 **Focus versus selection are different things and look different:**
 
 - **Focus** is where the stick is pointing right now. Neutral two-tone ring, plus a lift to `surface-3`, plus a 1.02 scale.
-- **Selection** is what you have chosen. `red-500` border at 2 px, a `red-500` at 12% fill, and a check badge at the corner.
+- **Selection** is what you have chosen. A 4 px sheared `red-500` left edge (see section 11), a `red-500` at 12% fill, and `border-strong`.
 
-An option card can be focused, selected, or both, and all three read differently. This is the Discord onboarding pattern from moodboard region C, with the check badge as the third signal.
+An option card can be focused, selected, or both, and all three read differently. The corner check badge that appeared in the first draft was replaced under anti-vibecoding violation V1; a full-height sheared edge reads at television distance where a corner mark does not.
 
 ### 1.9 Welcome gradient
 

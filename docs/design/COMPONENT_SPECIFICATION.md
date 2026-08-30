@@ -19,7 +19,7 @@ These are stated once here rather than repeated in every component.
 | | Appearance |
 |---|---|
 | Focus | `focus-ring-outer` 3 px white with 1 px black inset, 2 px offset, plus lift to `surface-3`, plus 1.02 scale, `motion-instant` |
-| Selection | `red-500` 2 px border, `red-500` at 12% fill, check badge at the top-right corner |
+| Selection | 4 px sheared `red-500` left edge, `red-500` at 12% fill, `border-strong` |
 | Both | Both render. The ring sits outside the selection border |
 
 **One state layer at a time**, from the Material 3 research. If an element is focused and then hovered, hover shows until the pointer leaves, then focus returns. They never composite into a third appearance.
