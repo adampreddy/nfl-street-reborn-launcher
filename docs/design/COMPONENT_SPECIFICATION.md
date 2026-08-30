@@ -253,7 +253,7 @@ Three forms, used in different places.
 
 **Named tasks, not raw console output**, per the blueprint. A failed task shows `error` with a reason and a Retry that resumes rather than restarts.
 
-**Indeterminate.** A 2 px bar with a travelling highlight. Used only where progress genuinely cannot be known. Under reduced motion it becomes a static bar with the label "Working."
+**Indeterminate.** A 2 px bar with a traveling highlight. Used only where progress genuinely cannot be known. Under reduced motion it becomes a static bar with the label "Working."
 
 **Never a spinner alone with no label.** Every busy state names what it is doing.
 
@@ -329,7 +329,7 @@ Row height 44 minimum, padding `space-3`, separated by `border-subtle`, grouped 
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│ W  │ EAGLES  34 – 21  GIANTS  │ Ranked  +18  │ 2h ago│
+│ W  │ EAGLES  34 - 21  GIANTS  │ Ranked  +18  │ 2h ago│
 └──────────────────────────────────────────────────────┘
 ```
 

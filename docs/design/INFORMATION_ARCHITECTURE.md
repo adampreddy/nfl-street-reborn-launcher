@@ -78,7 +78,7 @@ Full map:
 | L1 section root | nothing, and the hint strip omits Back |
 | L2 page | returns to the section's default page |
 | L3 detail | returns to L2 with focus restored to the originating item |
-| Modal | dismisses, cancelling |
+| Modal | dismisses, canceling |
 | Blocking modal | nothing, it is not dismissible |
 | Onboarding step | previous step, if the step is safely reversible |
 | During a queue | leaves the queue, with confirmation |

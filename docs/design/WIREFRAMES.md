@@ -469,12 +469,12 @@ real data arrived. It was caught by exporting real data, not by review.
 │  Play    │                                                       │
 │  Online  │  All modes ▾   All time ▾   Online and offline ▾      │
 │  Mods    │  ┌───────────────────────────────────────────────────┐│
-│  Music   │  │ ⚠ │ FALCONS 36 – 24 CHARGERS │Offline│Held │Aug 5││
+│  Music   │  │ ⚠ │ FALCONS 36 - 24 CHARGERS │Offline│Held │Aug 5││
 │ ▸Stats   │  ├───────────────────────────────────────────────────┤│
-│ ──────── │  │ W │ OUTLAWS 36 – 12 SHADOW   │ Ranked│ +18 │Jul27││
+│ ──────── │  │ W │ OUTLAWS 36 - 12 SHADOW   │ Ranked│ +18 │Jul27││
 │  Settings│  │   │ KNIGHTS                  │       │     │     ││
 │          │  ├───────────────────────────────────────────────────┤│
-│          │  │ L │ OUTLAWS 21 – 36 STREET   │ Ranked│ -14 │Jul27││
+│          │  │ L │ OUTLAWS 21 - 36 STREET   │ Ranked│ -14 │Jul27││
 │          │  │   │ CRUSADE                  │       │     │     ││
 │          │  └───────────────────────────────────────────────────┘│
 ├──────────┴───────────────────────────────────────────────────────┤
@@ -492,7 +492,7 @@ it, and the first row of real data was already an instance of it.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  ‹ Back      FALCONS 36 – 24 CHARGERS      Offline · Aug 5       │
+│  ‹ Back      FALCONS 36 - 24 CHARGERS      Offline · Aug 5       │
 │                                                                  │
 │  ⚠ Held for review                                               │
 │    We couldn't confirm which player controlled which team, so    │
