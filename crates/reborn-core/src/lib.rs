@@ -18,13 +18,16 @@
 //!   deleting a user's custom soundtrack.
 //! - [`runtime`]: generated emulator configuration, direct boot, and the
 //!   packaging audit that keeps the debug markers out of a release.
+//! - [`controller`]: device identity, one default mapping that is overridable
+//!   at any time, and generated GCPadNew.ini.
 //!
-//! Not written yet: the supervisor process, the controller service, mods,
+//! Not written yet: the supervisor process, SDL device enumeration, mods,
 //! music, online, and the Xbox wizard.
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod controller;
 pub mod library;
 pub mod manifest;
 pub mod platform;
