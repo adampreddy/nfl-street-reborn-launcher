@@ -45,6 +45,27 @@ impl RealPaths {
 /// between them sees the same folder.
 const PRODUCT: &str = "NFL Street Reborn";
 
+/// The directory name for the launcher's own data.
+///
+/// Deliberately NOT `PRODUCT`. The shipped 2.1 build already owns
+/// `%APPDATA%\NFL Street Reborn`, and it is a live Dolphin user tree: `User`,
+/// `Games`, `Sys`, screenshots, and a JSGME `MODS` folder holding the player's
+/// installed mods.
+///
+/// Sharing it looked reasonable and is not. Windows paths are case insensitive,
+/// so the launcher's `mods/` IS that `MODS/`, and `mods/staging` and
+/// `mods/active` are classed derived, which means purgeable. A cache purge
+/// would delete files out of the middle of the player's real mod library.
+///
+/// Confirmed on a real install rather than reasoned about: listing `mods` in
+/// that folder returns `!BACKUP`, `!INSTLOGS`, `Aqua Football`, and the rest of
+/// the JSGME tree.
+///
+/// Keeping the names apart also makes migration honest. The 2.1 folder is the
+/// source and this is the destination, and a copy whose source and destination
+/// are the same directory is not a migration.
+const PRODUCT_DATA: &str = "NFL Street Reborn Launcher";
+
 impl Paths for RealPaths {
     fn install_root(&self) -> Result<PathBuf> {
         #[cfg(windows)]
@@ -78,26 +99,26 @@ impl Paths for RealPaths {
     fn data_root(&self) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            // %APPDATA%\NFL Street Reborn is where 2.1 already puts things, so
-            // migration reads the shape it finds rather than a new location.
+            // Not %APPDATA%\NFL Street Reborn: that is 2.1's live user tree.
+            // See PRODUCT_DATA.
             let base = RealPaths::env_path("APPDATA")
                 .ok_or(Error::NoHomeDirectory)
                 .or_else(|_| RealPaths::home().map(|h| h.join("AppData").join("Roaming")))?;
-            Ok(base.join(PRODUCT))
+            Ok(base.join(PRODUCT_DATA))
         }
         #[cfg(target_os = "macos")]
         {
             Ok(RealPaths::home()?
                 .join("Library")
                 .join("Application Support")
-                .join(PRODUCT))
+                .join(PRODUCT_DATA))
         }
         #[cfg(target_os = "linux")]
         {
             let base = RealPaths::env_path("XDG_DATA_HOME")
                 .map(Ok)
                 .unwrap_or_else(|| RealPaths::home().map(|h| h.join(".local").join("share")))?;
-            Ok(base.join(PRODUCT))
+            Ok(base.join(PRODUCT_DATA))
         }
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {

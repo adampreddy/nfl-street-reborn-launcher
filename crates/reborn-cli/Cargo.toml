@@ -1,0 +1,16 @@
+[package]
+name = "reborn-cli"
+description = "Command line front end for the NFL Street Reborn Launcher core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rebornctl"
+path = "src/main.rs"
+
+[dependencies]
+reborn-core = { path = "../reborn-core" }
+clap = { version = "4", features = ["derive"] }

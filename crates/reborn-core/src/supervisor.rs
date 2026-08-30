@@ -250,6 +250,29 @@ impl Supervisor {
         run_dir: &Path,
         clock: C,
     ) -> Result<Startup> {
+        // Refuse to run inside a 2.1 install.
+        //
+        // The data root used to be exactly that folder, which meant the
+        // launcher's `mods/` was the player's JSGME `MODS/`, because Windows
+        // paths are case insensitive. `mods/staging` and `mods/active` are
+        // classed derived, so a cache purge could have deleted files out of a
+        // real mod library. The default path is fixed, but the default is not
+        // the only way to get here, so the dangerous case is refused rather
+        // than merely avoided.
+        let data_root = run_dir.parent().unwrap_or(run_dir);
+        if crate::migration::LegacyInstall::detect(data_root).is_some() {
+            return Err(Error::PlainIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to use {} for launcher data: it is an existing \
+                     NFL Street Reborn 2.1 install. The launcher would write \
+                     into the player's live Dolphin tree, and a cache purge \
+                     could delete their mods. Migrate from it instead.",
+                    data_root.display()
+                ),
+            )));
+        }
+
         std::fs::create_dir_all(run_dir).map_err(|source| Error::Io {
             path: run_dir.to_path_buf(),
             source,
@@ -612,5 +635,25 @@ mod tests {
         let ended = serde_json::to_value(&r).unwrap();
         assert_eq!(ended["end"]["kind"], "crashed");
         assert_eq!(ended["end"]["detail"], "boom");
+    }
+    /// The launcher must not adopt a 2.1 install as its own data root. Doing so
+    /// put `mods/staging` and `mods/active`, both purgeable, inside the
+    /// player's JSGME mod library.
+    #[test]
+    fn a_legacy_install_is_refused_as_a_data_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("NFL Street Reborn");
+        std::fs::create_dir_all(legacy.join("User").join("GC")).unwrap();
+        std::fs::create_dir_all(legacy.join("MODS").join("!INSTLOGS")).unwrap();
+
+        let p = platform();
+        let err = Supervisor::acquire_at(&p, &legacy.join("cache"), SystemClock)
+            .expect_err("a 2.1 install must not be adopted as launcher data");
+        let msg = err.to_string();
+        assert!(msg.contains("2.1 install"), "unhelpful message: {msg}");
+        assert!(
+            msg.contains("Migrate from it"),
+            "no way forward given: {msg}"
+        );
     }
 }

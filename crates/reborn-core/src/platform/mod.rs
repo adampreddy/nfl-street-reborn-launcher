@@ -134,6 +134,8 @@ pub enum DataDir {
     MusicPacks,
     /// Memory cards. Never deleted without a separate explicit confirmation.
     Saves,
+    /// Screenshots the player took. Not regenerable, so not derived.
+    Screenshots,
     StatsQueue,
     Versions,
     Recovery,
@@ -166,6 +168,7 @@ impl DataDir {
             DataDir::Recovery => "recovery",
             DataDir::BackupsXbox => "backups/xbox",
             DataDir::Cache => "cache",
+            DataDir::Screenshots => "screenshots",
             DataDir::Logs => "logs",
             DataDir::Config => "config",
         }
@@ -192,6 +195,7 @@ impl DataDir {
         DataDir::Recovery,
         DataDir::BackupsXbox,
         DataDir::Cache,
+        DataDir::Screenshots,
         DataDir::Logs,
         DataDir::Config,
     ];
@@ -205,7 +209,11 @@ impl DataDir {
     pub fn is_user_data(self) -> bool {
         matches!(
             self,
-            DataDir::Saves | DataDir::MusicSources | DataDir::MusicPacks | DataDir::StatsQueue
+            DataDir::Saves
+                | DataDir::Screenshots
+                | DataDir::MusicSources
+                | DataDir::MusicPacks
+                | DataDir::StatsQueue
         )
     }
 

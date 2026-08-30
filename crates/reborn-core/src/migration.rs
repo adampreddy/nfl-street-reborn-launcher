@@ -157,7 +157,7 @@ impl MigrationPlan {
                 order: 2,
                 what: "Screenshots",
                 from: install.root.join("User").join("ScreenShots"),
-                to: DataDir::Cache,
+                to: DataDir::Screenshots,
                 irreplaceable: true,
                 why: "Not regenerable, and small",
             });
@@ -476,5 +476,44 @@ mod tests {
         let bytes =
             copy_tree_no_clobber(&dir.path().join("absent"), &dir.path().join("to")).unwrap();
         assert_eq!(bytes, 0);
+    }
+    /// Migration exists to rescue things the player cannot get back. Putting
+    /// one of those in a directory classed derived undoes the whole point,
+    /// because derived directories are what a cache purge is allowed to delete.
+    ///
+    /// This was real: screenshots were marked irreplaceable and copied into
+    /// `cache`. Found by printing a real plan with the CLI, not by a test,
+    /// which is why the rule is now a test.
+    #[test]
+    fn nothing_irreplaceable_lands_in_a_purgeable_directory() {
+        for install in [
+            LegacyInstall {
+                root: PathBuf::from("legacy"),
+                has_memory_cards: true,
+                has_screenshots: true,
+                has_textures: true,
+                has_applied_mods: false,
+                has_jsgme_backup: true,
+            },
+            LegacyInstall {
+                root: PathBuf::from("legacy"),
+                has_memory_cards: true,
+                has_screenshots: true,
+                has_textures: false,
+                has_applied_mods: true,
+                has_jsgme_backup: true,
+            },
+        ] {
+            let plan = MigrationPlan::build(&install);
+            for step in plan.irreplaceable_steps() {
+                assert!(
+                    !step.to.is_derived(),
+                    "{} is irreplaceable but is copied into {}, which a cache \
+                     purge may delete",
+                    step.what,
+                    step.to.relative()
+                );
+            }
+        }
     }
 }
