@@ -291,16 +291,15 @@ impl Launcher {
     /// No game list, no NetPlay browser, no configuration window. The player
     /// never sees Dolphin's own interface in an ordinary flow.
     pub fn args(config: &LaunchConfig) -> Vec<OsString> {
-        let mut args: Vec<OsString> = Vec::new();
-
-        // Portable user directory, so the launcher's generated config is the
-        // one that applies and a system-wide Dolphin install is untouched.
-        args.push("-u".into());
-        args.push(config.user_dir.clone().into_os_string());
-
-        // Boot the image directly.
-        args.push("-e".into());
-        args.push(config.game_path.clone().into_os_string());
+        // -u is a portable user directory, so the launcher's generated config
+        // is the one that applies and a system-wide Dolphin install is left
+        // alone. -e boots the image directly, with no game list in between.
+        let mut args: Vec<OsString> = vec![
+            "-u".into(),
+            config.user_dir.clone().into_os_string(),
+            "-e".into(),
+            config.game_path.clone().into_os_string(),
+        ];
 
         if config.fullscreen {
             args.push("-b".into());
