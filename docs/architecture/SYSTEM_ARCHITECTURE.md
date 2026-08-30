@@ -32,6 +32,44 @@ Locked with Adam during discovery. These are constraints, not options.
 
 ---
 
+## 1A. Decided-row reversals, awaiting sign-off
+
+The architecture work reversed twelve rows the questionnaire records as
+**Decided**. Each reversal may well be correct, but a document is not allowed to
+overturn a settled decision quietly, so they are collected here in one place for
+one approval pass rather than scattered across six files.
+
+**The rule going forward:** no architecture document may reverse a Decided row
+without naming the row number inline, stating the evidence, and tagging it
+"Needs Adam's sign-off".
+
+| Row | Was decided | Architecture now says | Why |
+|---|---|---|---|
+| 8.1, 8.2, 8.3 | Import once, retain a verified base, accept ISO/RVZ/folder/disc | No import, no retained base | Forced by the locked ship-the-image decision. Consequential, not discretionary |
+| 9.2 | The online build is named `NSRONLINE.iso` | Name retired | Identifier hygiene in a signed-manifest system |
+| 18.1 | Eight independently updateable components | Seven | The game-content diff does not exist, so it cannot be a component |
+| 7.2 | Seven Xbox wizard modes | Five | Two modes only made sense with Device Portal, which is out of scope |
+| 7.9 | Console pairing credentials in the Windows credential store | Retired | Nothing pairs with a console any more |
+| 17.9 | `statread1` is a separate research capture path | Not separate | Evidence review |
+| 15.3, 15.9 | Region and ping are priority matchmaking inputs; input delay derived from ping | De-scoped to post-launch | Schedule |
+| 16.5 | An explicit quit in ranked is likely a forfeit | No automatic forfeit | Held-for-review is safer while the evidence chain is unproven |
+| 11.6 | Thirteen mod packages migrate | Eleven | Two of the thirteen directories are JSGME control folders, `!BACKUP` and `!INSTLOGS` |
+| 4.2 | Fair Input Delay is on the cannot-regress list | Removed from that list | Needs Adam. This one looks wrong |
+| 7.1 | Xbox payload size | 2.9 GB figure changed | Measurement |
+
+**Two reversals were rejected and the original decision stands:**
+
+- **14.9.** The launcher never posts to `ingest.php`. A document had it routing there; that contradicts the Decided row and it has been restored.
+- **12.12.** No native Rust rewrite of the music chain on the launch path. Python inside the bundled runtime for v1, native as the follow-up.
+
+**Recommended reading order for approval:** 4.2 first, because removing Fair
+Input Delay from the cannot-regress list is the only reversal that looks like an
+error rather than a consequence. Then 15.3, 15.9 and 16.5 together, since all
+three shrink what online means on day one.
+
+---
+
+
 ## 2. Process model
 
 Four processes. The boundaries are what make the product survivable.
@@ -98,45 +136,115 @@ Bundling a Python runtime inside a Tauri application is not elegant. It exists s
 
 ## 4. Filesystem
 
+**This section is the single authority for the on-disk layout.** Three other
+documents previously restated it and all three differed. They now reference this
+section rather than repeat it.
+
 ```text
 INSTALL ROOT          installer owns it, replaceable wholesale
   Windows   %LOCALAPPDATA%\Programs\NFL Street Reborn Launcher
   macOS     /Applications/NFL Street Reborn Launcher.app
   Linux     AppImage or Flatpak
 
+  app/                  the running bundle
+  app.staging/          a verified new bundle, briefly
+  app.prior/            the previous bundle, kept for rollback
+
 DATA ROOT             launcher owns it, survives uninstall by default
   Windows   %APPDATA%\NFL Street Reborn          <- already used today
   macOS     ~/Library/Application Support/NFL Street Reborn
   Linux     $XDG_DATA_HOME/NFL Street Reborn
 
-  library/offline/     shipped offline build          managed
-  library/online/      NSRONLINE.iso                  managed
-  library/work/        extracted tree, music only      derived, purgeable
-  runtime/             platform Reborn Dolphin        managed
-  mods/{packages,staging,active}/                     mixed
-  music/{sources,packs}/  sources are USER            never delete
-  saves/               memory cards                   never delete
-  stats/{queue,local.db}                              never delete
-  cache/ downloads/ logs/                             purgeable
-  backups/ config/                                    preserve
+  downloads/<component>/<version>/
+  staging/<component>/<version>/
+  library/offline/                    shipped offline image      managed
+  library/online/                     shipped online image       managed
+  library/textures/<gameid>/          pristine, READ ONLY        managed
+  library/xbox/                       Xbox payload               managed
+  library/work/                       extracted tree, music only derived
+  runtime/<platform>/                 Reborn Dolphin             managed
+  mods/staging/<id>/<version>/        unverified download
+  mods/packages/<id>/<version>/       validated payloads
+  mods/active/<gameid>/               the composed tree Dolphin loads
+  mods/activation.json                ordered active ids and versions
+  music/sources/                      USER FILES, never delete
+  music/packs/
+  music/state.json                    recorded rebuild hashes
+  music/queue.json                    pending slot changes
+  saves/                              memory cards, NEVER DELETE
+  stats/queue/                        captures awaiting upload
+  stats/local.db
+  versions/<component>/current.json
+  versions/<component>/prior/         every component EXCEPT the launcher
+  recovery/<timestamp>/
+  backups/xbox/<ISO timestamp>/
+  xbox/journal-<volume-identity>.json
+  cache/  logs/  config/              purgeable except config
 ```
 
-**`library/base/` is gone** from the map in discovery. Shipping the finished image means there is no user-provided base to retain.
+**`library/base/` is gone** from the map in discovery. Shipping the finished
+image means there is no user-provided base to retain.
 
-**`library/work/` is new**, created by the music decision. It holds the extracted game tree, roughly 1.5 GB, created on first music edit and purgeable afterwards.
+### The launcher updates itself without ever crossing volumes
 
-**The two rules that matter:**
+An atomic rename cannot cross a filesystem. INSTALL ROOT and DATA ROOT are
+frequently on different volumes, so a swap that renames between them is not
+atomic and can leave the product in neither state.
 
-1. Install root and data root are separate, so the uninstaller can never reach saves. The current installer runs `DelTree({app})` over a folder containing memory cards; this makes that impossible rather than merely discouraged.
-2. Anything under `saves/`, `music/sources/`, and `stats/` requires an explicit separate confirmation to remove. They are the only things a user cannot regenerate.
+**The launcher's prior version therefore never lives under DATA ROOT**, and
+`versions/launcher/prior/` does not exist. The sequence:
+
+1. Stage and verify the new bundle under `staging/launcher/<version>/` in DATA ROOT.
+2. The supervisor **copies** it into `INSTALL ROOT/app.staging/` and re-verifies every hash at the destination.
+3. The launcher exits.
+4. The supervisor renames `app` to `app.prior` and `app.staging` to `app`. Both are same-directory renames on one volume.
+5. The supervisor starts the new launcher and waits for an explicit ready handshake.
+6. On failure it reverses both renames.
+
+Every other component stages and swaps entirely inside DATA ROOT, so the
+same-volume precondition holds for all of them without a special case.
+
+### Mods compose, they never overwrite
+
+`library/textures/<gameid>/` is pristine, manifest-verified, and **read only**.
+Nothing ever writes into it.
+
+`mods/active/<gameid>/` is a **composed** tree: hardlinks to every pristine file,
+with active package files placed over the ones they override. It is the only
+texture tree Dolphin is pointed at. Deactivating a mod deletes the composed tree
+and rebuilds it from `mods/activation.json`.
+
+**There is no reverse map and no backup folder, because nothing is ever
+displaced.** That is the whole reason this model is chosen over JSGME's, which
+needed `!BACKUP` precisely because it wrote into the tree it had to restore.
+
+**The cost, stated honestly:** a hardlink cannot cross a filesystem, so the
+pristine and composed trees must share a volume. On exFAT and FAT32, where
+hardlinks are unavailable, composition falls back to a full copy of roughly
+2.0 GB. On a handheld with an SD card that is the common case, not the edge
+case, and it has to be budgeted as such.
+
+### Ownership classes
+
+| Class | Examples | Rule |
+|---|---|---|
+| User-provided | `music/sources/` | Never delete without a separate explicit confirmation |
+| User-generated | `saves/`, `stats/` | Never delete. Preserved across uninstall by default |
+| Managed | `runtime/`, `library/`, `mods/packages/` | Launcher owns it. Safe to replace atomically |
+| Derived | `library/work/`, `mods/active/`, `cache/` | Regenerable. Safe to purge for disk space |
+
+**Two verified failure modes this model exists to prevent:**
+
+1. The current uninstaller runs `DelTree({app}, True, True, True)` over an app folder containing `User\GC` memory cards. Separating install root from data root makes that impossible rather than merely discouraged.
+2. The current updater deletes `MODS\` including JSGME's `!BACKUP`, leaving overlaid files with no restore path. Composition removes the failure entirely, since the pristine tree was never touched.
 
 | Existing | Verdict |
 |---|---|
-| `%APPDATA%\NFL Street Reborn` layout | **Reuse the root, restructure inside it.** Migration reads the old shape |
-| `User\GC` memory cards | **Reuse, move to `saves/`** |
-| `User\Load\Textures\GN7E69` | **Reuse, move under `library/`** |
+| `%APPDATA%\NFL Street Reborn` root | **Reuse the root, restructure inside it.** Migration reads the old shape |
+| `User\GC` memory cards | **Reuse**, moved to `saves/` |
+| `User\Load\Textures\GN7E69` | **Reuse**, moved to `library/textures/GN7E69/` as pristine |
+| JSGME `!BACKUP`, `!INSTLOGS` | **Retire.** Composition makes both unnecessary |
 
----
 
 ## 5. Subsystems
 

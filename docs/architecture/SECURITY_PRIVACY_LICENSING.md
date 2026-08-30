@@ -154,7 +154,7 @@ All four disc images in the selected runtime are **exactly 1,459,978,240 bytes**
 ```text
 manifest.json                        signature: manifest.json.sig (detached)
 {
-  "schema":       "reborn.manifest.v1",
+  "schema":       "nsr.component.v1",
   "component":    "offline-content",
   "install_root": "library/offline",
   "version":      "2.2.0",
@@ -248,7 +248,7 @@ Nothing registers a URI scheme today. **Verified by absence:** no `setAsDefaultP
 |---|---|
 | Container | Zip, no encryption, no external attributes honored |
 | Manifest | Required, at the root, naming id, version, display name, author, target game id, declared file list with hashes |
-| Allowed install root | `library/textures/<game-id>/` only, mapped from the package's own relative paths |
+| Allowed install root | `mods/staging/<id>/<version>/` only, mapped from the package's own relative paths. **Never `library/textures/<gameid>/`**, which is pristine, manifest-verified and read only |
 | Allowed extensions | `.png`, `.dds` for v1. Adding one later is a version bump, not a config toggle |
 | Entry count cap | Proposed, unset. Must exist |
 | Uncompressed size cap | Proposed, unset. Must exist, and must be checked against the declared total before extraction begins |
@@ -276,7 +276,7 @@ REJECT the whole package if any entry:
 
 ### Install mechanics
 
-Extract to `mods/staging/<id>/`, verify every hash against the manifest, then atomically swap into `mods/active/`. Record the exact reverse map so uninstall removes precisely what was added and restores precisely what was displaced. **JSGME's `!BACKUP` is the right idea implemented badly, and the current installer `DelTree`s it on update (verified: `rebornsetupv10.iss` line 199 removes the entire `MODS` folder).** Losing the restore data is how an overlay manager becomes a one-way operation.
+Extract to `mods/staging/<id>/<version>/`, verify every hash against the manifest, then promote to `mods/packages/<id>/<version>/`. **There is no reverse map and no backup folder, because nothing is ever displaced.** Activation composes `mods/active/<gameid>/` by hardlinking the pristine tree and placing active package files over the ones they override; deactivation deletes that composed tree and rebuilds it from `mods/activation.json`. JSGME needed `!BACKUP` precisely because it wrote into the tree it then had to restore. Composition removes the failure rather than bookkeeping around it. See [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) section 4.
 
 **Open:** whether community packages are signed, and by whom. First-party packages are signed with the section 5 key. The mod package format itself is Open per questionnaire 11.7, so everything above is **proposed**, not a description of anything built.
 
