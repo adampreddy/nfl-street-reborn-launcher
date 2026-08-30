@@ -26,6 +26,10 @@
 //! - [`supervisor`]: the single-instance lock, and the session record that
 //!   survives the launcher going down with the game.
 //!
+//! - [`devices`]: finding controllers and naming them the way the emulator
+//!   names them, which is the difference between a pad that works and a file
+//!   that looks correct and binds nothing.
+//!
 //! Not written yet: SDL device enumeration, mods,
 //! music, online, and the Xbox wizard.
 
@@ -33,6 +37,7 @@
 #![warn(missing_debug_implementations)]
 
 pub mod controller;
+pub mod devices;
 pub mod library;
 pub mod manifest;
 pub mod migration;

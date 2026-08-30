@@ -22,7 +22,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use reborn_core::controller::{ControllerProfile, DeviceFamily, DeviceIdentity, GcPadConfig};
+use reborn_core::controller::{ControllerProfile, GcPadConfig};
+use reborn_core::devices::DeviceScanner;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
 use reborn_core::runtime::{
     ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, RuntimePackager,
@@ -91,6 +92,9 @@ enum Command {
         dry_run: bool,
     },
 
+    /// List controllers, named the way the emulator names them.
+    Devices,
+
     /// Recent play sessions, including ones that ended badly.
     Sessions,
 }
@@ -114,6 +118,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::AuditRuntime { path } => audit_runtime(&path),
         Command::Controller { out, ports } => controller(out, ports),
         Command::Sessions => sessions(&platform),
+        Command::Devices => list_devices(),
         Command::Play {
             iso,
             runtime,
@@ -296,26 +301,74 @@ fn audit_runtime(path: &std::path::Path) -> reborn_core::Result<std::process::Ex
     Ok(PROBLEM)
 }
 
+fn list_devices() -> reborn_core::Result<std::process::ExitCode> {
+    let scan = DeviceScanner::scan();
+
+    if scan.devices.is_empty() {
+        println!("No controllers found.");
+    } else {
+        println!("{} controller(s):", scan.devices.len());
+        for d in &scan.devices {
+            println!("  {:<28} {}", d.device_string(), d.family.label());
+        }
+        println!();
+        println!("The left column is the Device line written into GCPadNew.ini.");
+    }
+
+    if !scan.is_complete() {
+        println!();
+        println!("Not everything was searched, so an empty result is inconclusive:");
+        for (backend, reason) in &scan.not_searched {
+            println!("  {}: {}", backend.source(), reason);
+        }
+    }
+    Ok(OK)
+}
+
 fn controller(out: Option<PathBuf>, ports: u8) -> reborn_core::Result<std::process::ExitCode> {
-    let profiles: Vec<ControllerProfile> = (1..=ports)
-        .map(|port| {
-            ControllerProfile::new(
-                DeviceIdentity {
-                    guid: format!("placeholder-guid-{port}"),
-                    serial: None,
-                    name: "Xbox Wireless Controller".to_string(),
-                    family: DeviceFamily::Xbox,
-                },
-                port,
-            )
-        })
+    let scan = DeviceScanner::scan();
+
+    if scan.devices.is_empty() {
+        println!("No controllers found, so there is nothing to write.");
+        if !scan.is_complete() {
+            println!();
+            for (backend, reason) in &scan.not_searched {
+                println!("{}: {}", backend.source(), reason);
+            }
+        }
+        return Ok(PROBLEM);
+    }
+
+    // Ports are filled in the order the emulator would find the devices. A pad
+    // in XInput slot 2 with nothing in 0 or 1 becomes port 1, because the port
+    // is the GameCube socket and the slot is the Windows one.
+    let profiles: Vec<ControllerProfile> = scan
+        .devices
+        .iter()
+        .take(ports as usize)
+        .enumerate()
+        .map(|(i, d)| ControllerProfile::new(d.identity(), (i + 1) as u8))
         .collect();
 
-    // SDL device enumeration is not written yet, so the device string is a
-    // placeholder. Said out loud rather than left to look real, because a
-    // GCPadNew.ini with a made-up device line boots to no controller at all and
-    // gives no clue why.
-    let ini = GcPadConfig::generate(&profiles, |id| format!("SDL/0/{}", id.name));
+    let by_key: std::collections::BTreeMap<String, String> = scan
+        .devices
+        .iter()
+        .map(|d| (d.identity().profile_key(), d.device_string()))
+        .collect();
+
+    let ini = GcPadConfig::generate(&profiles, |id| {
+        by_key
+            .get(&id.profile_key())
+            .cloned()
+            // Never invent one. A made up Device line parses fine and binds
+            // nothing, which is indistinguishable from a broken controller.
+            .unwrap_or_else(|| "UNKNOWN-DEVICE".to_string())
+    });
+
+    for (i, d) in scan.devices.iter().take(ports as usize).enumerate() {
+        println!("port {} -> {}", i + 1, d.device_string());
+    }
+    println!();
 
     match out {
         Some(path) => {
@@ -324,16 +377,11 @@ fn controller(out: Option<PathBuf>, ports: u8) -> reborn_core::Result<std::proce
                 source,
             })?;
             println!("Wrote {}", path.display());
-            println!();
-            println!("The Device lines are placeholders. Real device strings need SDL");
-            println!("enumeration, which is not written yet, so this file will not bind");
-            println!("a real pad.");
         }
         None => print!("{ini}"),
     }
     Ok(OK)
 }
-
 fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
     match Supervisor::acquire(platform)? {
         Startup::AlreadyRunning { .. } => {
@@ -454,8 +502,15 @@ fn play(
     println!();
     println!("Game     {}", iso.display());
     println!("Runtime  {}", runtime.display());
-    println!("Preset   {} ({}x internal)", graphics.label(), graphics.internal_resolution());
-    println!("Display  {}", if fullscreen { "fullscreen" } else { "windowed" });
+    println!(
+        "Preset   {} ({}x internal)",
+        graphics.label(),
+        graphics.internal_resolution()
+    );
+    println!(
+        "Display  {}",
+        if fullscreen { "fullscreen" } else { "windowed" }
+    );
     println!("User dir {}", user_dir.display());
 
     if dry_run {
