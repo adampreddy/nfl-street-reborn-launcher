@@ -65,6 +65,9 @@ enum Command {
 
     /// Print the GCPadNew.ini the launcher would generate.
     Controller {
+        /// Ask this Reborn Dolphin what it calls the devices. Strongly preferred.
+        #[arg(long)]
+        runtime: Option<PathBuf>,
         /// Write to this path instead of standard output.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -120,7 +123,11 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::Status => status(&platform),
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
-        Command::Controller { out, ports } => controller(out, ports),
+        Command::Controller {
+            runtime,
+            out,
+            ports,
+        } => controller(&platform, runtime.as_deref(), out, ports),
         Command::Sessions => sessions(&platform),
         Command::Devices { runtime } => list_devices(&platform, runtime.as_deref()),
         Command::Play {
@@ -309,24 +316,11 @@ fn list_devices(
     platform: &Platform,
     runtime: Option<&std::path::Path>,
 ) -> reborn_core::Result<std::process::ExitCode> {
-    let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());
-
     // Asking the runtime is the authoritative answer. The built in scan only
     // knows about XInput, and this machine shows why that is not enough: one
     // Xbox pad also reports through a WGInput backend the launcher has no way
     // to know about.
-    let scan = match runtime {
-        Some(exe) => match reborn_core::devices::scan_via_runtime(platform, exe, &scratch) {
-            Ok(s) => s,
-            Err(why) => {
-                println!("Could not ask the runtime: {why}");
-                println!("Falling back to the built in scan, which only sees XInput.");
-                println!();
-                DeviceScanner::scan()
-            }
-        },
-        None => DeviceScanner::scan(),
-    };
+    let scan = resolve_devices(platform, runtime)?;
 
     let pads = scan.playable_pads();
     if pads.is_empty() {
@@ -364,33 +358,28 @@ fn list_devices(
     Ok(OK)
 }
 
-fn controller(out: Option<PathBuf>, ports: u8) -> reborn_core::Result<std::process::ExitCode> {
-    let scan = DeviceScanner::scan();
-
-    if scan.devices.is_empty() {
-        println!("No controllers found, so there is nothing to write.");
-        if !scan.is_complete() {
-            println!();
-            for (backend, reason) in &scan.not_searched {
-                println!("{}: {}", backend.source(), reason);
-            }
-        }
-        return Ok(PROBLEM);
+/// Build GCPadNew.ini from whatever the runtime says is plugged in.
+///
+/// Returns the file contents and the port assignment, or None when there is
+/// nothing to bind. Shared by `controller` and `play` so the file a player
+/// inspects is byte for byte the file a launch uses.
+fn build_gcpad(
+    scan: &reborn_core::devices::Enumeration,
+    ports: u8,
+) -> Option<(String, Vec<(u8, String)>)> {
+    let pads = scan.playable_pads();
+    if pads.is_empty() {
+        return None;
     }
 
-    // Ports are filled in the order the emulator would find the devices. A pad
-    // in XInput slot 2 with nothing in 0 or 1 becomes port 1, because the port
-    // is the GameCube socket and the slot is the Windows one.
-    let profiles: Vec<ControllerProfile> = scan
-        .devices
+    let profiles: Vec<ControllerProfile> = pads
         .iter()
         .take(ports as usize)
         .enumerate()
         .map(|(i, d)| ControllerProfile::new(d.identity(), (i + 1) as u8))
         .collect();
 
-    let by_key: std::collections::BTreeMap<String, String> = scan
-        .devices
+    let by_key: std::collections::BTreeMap<String, String> = pads
         .iter()
         .map(|d| (d.identity().profile_key(), d.device_string()))
         .collect();
@@ -400,12 +389,38 @@ fn controller(out: Option<PathBuf>, ports: u8) -> reborn_core::Result<std::proce
             .get(&id.profile_key())
             .cloned()
             // Never invent one. A made up Device line parses fine and binds
-            // nothing, which is indistinguishable from a broken controller.
+            // nothing, which looks exactly like a broken controller.
             .unwrap_or_else(|| "UNKNOWN-DEVICE".to_string())
     });
 
-    for (i, d) in scan.devices.iter().take(ports as usize).enumerate() {
-        println!("port {} -> {}", i + 1, d.device_string());
+    let assignment = pads
+        .iter()
+        .take(ports as usize)
+        .enumerate()
+        .map(|(i, d)| ((i + 1) as u8, d.device_string()))
+        .collect();
+    Some((ini, assignment))
+}
+
+fn controller(
+    platform: &Platform,
+    runtime: Option<&std::path::Path>,
+    out: Option<PathBuf>,
+    ports: u8,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let scan = resolve_devices(platform, runtime)?;
+
+    let Some((ini, assignment)) = build_gcpad(&scan, ports) else {
+        println!("No controllers found, so there is nothing to write.");
+        if !scan.is_complete() {
+            println!();
+            println!("Pass --runtime <Dolphin.exe> for the authoritative list.");
+        }
+        return Ok(PROBLEM);
+    };
+
+    for (port, device) in &assignment {
+        println!("port {port} -> {device}");
     }
     println!();
 
@@ -420,6 +435,26 @@ fn controller(out: Option<PathBuf>, ports: u8) -> reborn_core::Result<std::proce
         None => print!("{ini}"),
     }
     Ok(OK)
+}
+
+/// Get the device list, preferring the runtime's own answer.
+fn resolve_devices(
+    platform: &Platform,
+    runtime: Option<&std::path::Path>,
+) -> reborn_core::Result<reborn_core::devices::Enumeration> {
+    let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());
+    Ok(match runtime {
+        Some(exe) => match reborn_core::devices::scan_via_runtime(platform, exe, &scratch) {
+            Ok(s) => s,
+            Err(why) => {
+                println!("Could not ask the runtime: {why}");
+                println!("Falling back to the built in scan, which only sees XInput.");
+                println!();
+                DeviceScanner::scan()
+            }
+        },
+        None => DeviceScanner::scan(),
+    })
 }
 fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
     match Supervisor::acquire(platform)? {
@@ -536,6 +571,42 @@ fn play(
             source,
         })?;
         println!("wrote {}", path.display());
+    }
+
+    // The controller file is written from what the runtime says is plugged in
+    // right now, using the very runtime about to be launched. That is the
+    // whole point: plug a pad in, press play, and it is bound, with no setup
+    // step and no guide to follow.
+    //
+    // Asked at launch rather than remembered, because a pad can be swapped
+    // between sessions and a remembered device string that no longer matches
+    // binds nothing without saying so.
+    let scan = resolve_devices(platform, Some(runtime))?;
+    match build_gcpad(&scan, 4) {
+        Some((ini, assignment)) => {
+            let path = config_dir.join("GCPadNew.ini");
+            std::fs::write(&path, ini).map_err(|source| reborn_core::Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+            println!("wrote {}", path.display());
+            for (port, device) in &assignment {
+                println!("  port {port} -> {device}");
+            }
+        }
+        None => {
+            println!();
+            println!("No controller detected.");
+            println!();
+            // Seen for real during development: a wireless pad that had been
+            // working idled off between one command and the next, and the
+            // runtime stopped listing it. Worth saying, because the natural
+            // assumption is that the launcher broke.
+            println!("If a controller is plugged in, it may have gone to sleep. Press its");
+            println!("home button to wake it, then run this again.");
+            println!();
+            println!("The game will still start, with nothing bound to a pad.");
+        }
     }
 
     println!();
