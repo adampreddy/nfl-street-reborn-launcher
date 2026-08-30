@@ -6,7 +6,8 @@
 **Governing brief:** [`CLAUDE_UX_RESEARCH_BRIEF.md`](./CLAUDE_UX_RESEARCH_BRIEF.md)
 **Covers brief deliverables:** 1 (source matrix), 2 (moodboard decomposition), 3 (design principles), 4 (UX language guide)
 **Also delivered since:** 5 (information architecture), see [`INFORMATION_ARCHITECTURE.md`](./INFORMATION_ARCHITECTURE.md) · 6 (design tokens), see [`DESIGN_TOKENS.md`](./DESIGN_TOKENS.md) · 7 (component specification), see [`COMPONENT_SPECIFICATION.md`](./COMPONENT_SPECIFICATION.md) · 8 (wireframes), see [`WIREFRAMES.md`](./WIREFRAMES.md)
-**Still outstanding:** 9 (responsive and controller audit), 10 (anti-vibecoding review)
+**Also delivered:** 9 (controller, responsive and accessibility audit), see [`CONTROLLER_AND_ACCESSIBILITY_AUDIT.md`](./CONTROLLER_AND_ACCESSIBILITY_AUDIT.md) · 10 (anti-vibecoding review), see [`ANTI_VIBECODING_REVIEW.md`](./ANTI_VIBECODING_REVIEW.md)
+**All ten brief deliverables are now drafted.** The anti-vibecoding review returns NOT APPROVED for high-fidelity design with four open items.
 
 ### Evidence discipline
 
