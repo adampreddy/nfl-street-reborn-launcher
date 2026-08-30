@@ -392,9 +392,9 @@ mod tests {
     #[test]
     fn repair_bytes_counts_only_what_would_be_refetched() {
         let dir = tempfile::tempdir().unwrap();
-        let a = write(dir.path(), "a.dat", &vec![b'a'; 100]);
-        let b = write(dir.path(), "b.dat", &vec![b'b'; 250]);
-        let cfile = write(dir.path(), "c.dat", &vec![b'c'; 999]);
+        let a = write(dir.path(), "a.dat", &[b'a'; 100]);
+        let b = write(dir.path(), "b.dat", &[b'b'; 250]);
+        let cfile = write(dir.path(), "c.dat", &[b'c'; 999]);
         std::fs::remove_file(dir.path().join("b.dat")).unwrap();
 
         let c = component(false, vec![a, b, cfile]);

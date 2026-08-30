@@ -16,8 +16,10 @@
 //! - [`manifest`]: the signed release and component schemas.
 //! - [`library`]: verify and repair, including the rule that keeps repair from
 //!   deleting a user's custom soundtrack.
+//! - [`runtime`]: generated emulator configuration, direct boot, and the
+//!   packaging audit that keeps the debug markers out of a release.
 //!
-//! Not written yet: the runtime supervisor, the controller service, mods,
+//! Not written yet: the supervisor process, the controller service, mods,
 //! music, online, and the Xbox wizard.
 
 #![forbid(unsafe_code)]
@@ -26,6 +28,7 @@
 pub mod library;
 pub mod manifest;
 pub mod platform;
+pub mod runtime;
 
 pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,
