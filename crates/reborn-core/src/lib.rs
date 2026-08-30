@@ -13,13 +13,18 @@
 //!
 //! - [`platform`]: the five seams, Windows implemented, macOS and Linux
 //!   compiling.
+//! - [`manifest`]: the signed release and component schemas.
+//! - [`library`]: verify and repair, including the rule that keeps repair from
+//!   deleting a user's custom soundtrack.
 //!
-//! Everything else in the architecture, the library service, the runtime
-//! supervisor, the controller service, is not written yet.
+//! Not written yet: the runtime supervisor, the controller service, mods,
+//! music, online, and the Xbox wizard.
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod library;
+pub mod manifest;
 pub mod platform;
 
 pub use platform::{
