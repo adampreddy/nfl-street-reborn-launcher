@@ -24,8 +24,10 @@ use clap::{Parser, Subcommand};
 
 use reborn_core::controller::{ControllerProfile, DeviceFamily, DeviceIdentity, GcPadConfig};
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
-use reborn_core::runtime::RuntimePackager;
-use reborn_core::supervisor::{Startup, Supervisor};
+use reborn_core::runtime::{
+    ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, RuntimePackager,
+};
+use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
 #[derive(Parser, Debug)]
@@ -70,6 +72,25 @@ enum Command {
         ports: u8,
     },
 
+    /// Boot the game, watch it, and record how the session ended.
+    Play {
+        /// The game image to boot.
+        #[arg(long)]
+        iso: PathBuf,
+        /// The Reborn Dolphin executable.
+        #[arg(long)]
+        runtime: PathBuf,
+        /// performance, balanced, quality, or ultra.
+        #[arg(long, default_value = "balanced")]
+        preset: String,
+        /// Start windowed instead of fullscreen.
+        #[arg(long)]
+        windowed: bool,
+        /// Write the generated configuration and stop, without launching.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Recent play sessions, including ones that ended badly.
     Sessions,
 }
@@ -93,6 +114,13 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::AuditRuntime { path } => audit_runtime(&path),
         Command::Controller { out, ports } => controller(out, ports),
         Command::Sessions => sessions(&platform),
+        Command::Play {
+            iso,
+            runtime,
+            preset,
+            windowed,
+            dry_run,
+        } => play(&platform, &iso, &runtime, &preset, !windowed, dry_run),
     }
 }
 
@@ -338,6 +366,141 @@ fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> 
             }
             Ok(OK)
         }
+    }
+}
+
+/// Boot the game and stay with it until it exits.
+///
+/// This is Play Now with no UI in front of it. It does the same three things
+/// the eventual front end will do, in the same order: take the single-instance
+/// lock, write configuration the runtime will actually read, and hold the
+/// session open until the game is gone.
+fn play(
+    platform: &Platform,
+    iso: &std::path::Path,
+    runtime: &std::path::Path,
+    preset: &str,
+    fullscreen: bool,
+    dry_run: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let graphics = match preset.to_lowercase().as_str() {
+        "performance" => GraphicsPreset::Performance,
+        "balanced" => GraphicsPreset::Balanced,
+        "quality" => GraphicsPreset::Quality,
+        "ultra" => GraphicsPreset::Ultra,
+        other => {
+            eprintln!("unknown preset {other:?}. Use performance, balanced, quality, or ultra.");
+            return Ok(PROBLEM);
+        }
+    };
+
+    for (what, path) in [("game image", iso), ("runtime", runtime)] {
+        if !path.exists() {
+            eprintln!("no {what} at {}", path.display());
+            return Ok(PROBLEM);
+        }
+    }
+
+    // The lock comes first. Two copies of the game booting the same portable
+    // user directory write the same memory card, and the loser's franchise is
+    // whatever happens to be flushed last.
+    let Startup::Owner(supervisor) = Supervisor::acquire(platform)? else {
+        eprintln!("a launcher is already running. Close it first.");
+        return Ok(PROBLEM);
+    };
+
+    if let Some(lost) = supervisor.recover_unfinished()? {
+        println!("Recovered an unfinished session ({}).", lost.id);
+        println!("The launcher stopped while the game was running last time.");
+        println!();
+    }
+
+    let user_dir = platform
+        .paths
+        .data_root()?
+        .join(DataDir::Runtime.relative())
+        .join("user");
+    std::fs::create_dir_all(&user_dir).map_err(|source| reborn_core::Error::Io {
+        path: user_dir.clone(),
+        source,
+    })?;
+
+    let config = LaunchConfig {
+        build: GameBuild::Offline,
+        graphics,
+        fullscreen,
+        game_path: iso.to_path_buf(),
+        user_dir: user_dir.clone(),
+        match_context: None,
+    };
+
+    // Regenerated every launch. Anything changed inside Dolphin is discarded,
+    // which is what makes the launcher's settings page the only source of
+    // truth rather than one of two competing ones.
+    let config_dir = user_dir.join("Config");
+    std::fs::create_dir_all(&config_dir).map_err(|source| reborn_core::Error::Io {
+        path: config_dir.clone(),
+        source,
+    })?;
+    for (name, contents) in ConfigGenerator::generate(&config) {
+        let path = config_dir.join(&name);
+        std::fs::write(&path, contents).map_err(|source| reborn_core::Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        println!("wrote {}", path.display());
+    }
+
+    println!();
+    println!("Game     {}", iso.display());
+    println!("Runtime  {}", runtime.display());
+    println!("Preset   {} ({}x internal)", graphics.label(), graphics.internal_resolution());
+    println!("Display  {}", if fullscreen { "fullscreen" } else { "windowed" });
+    println!("User dir {}", user_dir.display());
+
+    if dry_run {
+        println!();
+        println!("Dry run. Nothing was launched.");
+        return Ok(OK);
+    }
+
+    let record = supervisor.begin(GameBuild::Offline)?;
+    println!();
+    println!("Starting. This process stays until the game exits.");
+
+    let handle = Launcher::launch(platform, runtime, &config)?;
+    println!("Running as process {}.", handle.pid());
+
+    let exit = platform.processes.wait(handle)?;
+    let finished = supervisor.finish(record, &exit)?;
+
+    println!();
+    let minutes = finished.duration_ms().unwrap_or(0) as f64 / 60_000.0;
+    println!("Session ended after {minutes:.1} minutes.");
+
+    match finished.end.as_ref() {
+        Some(SessionEnd::Exited { code: Some(0) }) => {
+            println!("The game closed normally.");
+            Ok(OK)
+        }
+        Some(end) if end.needs_recovery() => {
+            println!("Something went wrong:");
+            match end.outcome() {
+                reborn_core::runtime::SessionOutcome::ShowRecovery { detail } => {
+                    println!("  {detail}");
+                }
+                other => println!("  {other:?}"),
+            }
+            println!();
+            println!("Recorded. `rebornctl sessions` will show it.");
+            Ok(PROBLEM)
+        }
+        Some(SessionEnd::Exited { code }) => {
+            println!("The game exited with status {}.", code.unwrap_or(-1));
+            println!("That is a failure, not a crash.");
+            Ok(PROBLEM)
+        }
+        _ => Ok(OK),
     }
 }
 

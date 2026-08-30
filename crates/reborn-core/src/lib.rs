@@ -241,7 +241,12 @@ mod tests {
         };
         let handle = p
             .processes
-            .spawn(std::path::Path::new(program), &args, None)
+            .spawn(
+                std::path::Path::new(program),
+                &args,
+                None,
+                &Default::default(),
+            )
             .expect("spawn");
         assert!(handle.pid() > 0);
         assert_eq!(p.processes.wait(handle).expect("wait"), ExitKind::Normal);
@@ -257,7 +262,12 @@ mod tests {
         };
         let handle = p
             .processes
-            .spawn(std::path::Path::new(program), &args, None)
+            .spawn(
+                std::path::Path::new(program),
+                &args,
+                None,
+                &Default::default(),
+            )
             .expect("spawn");
         let kind = p.processes.wait(handle).expect("wait");
         assert_eq!(kind, ExitKind::Error { code: 3 });

@@ -30,6 +30,7 @@
 //! because it keeps the port honest: the seam list cannot drift without the
 //! other platforms failing to build.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -280,8 +281,18 @@ impl ExitKind {
 /// Launching and supervising the game.
 pub trait ProcessHost: Send + Sync {
     /// Start a child process and return an opaque handle.
-    fn spawn(&self, program: &Path, args: &[OsString], cwd: Option<&Path>)
-        -> Result<ProcessHandle>;
+    ///
+    /// `env` is added to the inherited environment. It is a parameter rather
+    /// than something the caller sets globally because the launcher is one
+    /// process that may start several children, and mutating its own
+    /// environment to configure a child is a race.
+    fn spawn(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        cwd: Option<&Path>,
+        env: &BTreeMap<String, OsString>,
+    ) -> Result<ProcessHandle>;
 
     /// Block until the child exits, then classify how it ended.
     fn wait(&self, handle: ProcessHandle) -> Result<ExitKind>;

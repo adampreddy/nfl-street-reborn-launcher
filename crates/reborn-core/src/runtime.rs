@@ -339,9 +339,10 @@ impl Launcher {
             });
         }
         let args = Self::args(config);
+        let env = Self::env(config);
         platform
             .processes
-            .spawn(runtime_exe, &args, runtime_exe.parent())
+            .spawn(runtime_exe, &args, runtime_exe.parent(), &env)
     }
 }
 
@@ -583,6 +584,64 @@ mod tests {
         assert!(
             err.to_string().contains("not installed"),
             "the message should name the real problem: {err}"
+        );
+    }
+    /// `env()` existed, was documented as how the match context reaches the
+    /// emulator, and `launch()` never passed it. An online session would have
+    /// booted with no context and no error.
+    ///
+    /// This spawns a real child that inspects the variable and reports through
+    /// its exit code, because the exit code is the one channel the process seam
+    /// actually exposes.
+    ///
+    /// The structural fix matters more than this test: `spawn` now takes `env`
+    /// as a required parameter, so no caller can start a child without having
+    /// decided what environment it gets. The old signature made the omission
+    /// invisible.
+    #[test]
+    fn the_match_context_actually_reaches_the_child_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = dir.path().join("match.json");
+
+        let config = LaunchConfig {
+            build: GameBuild::Online,
+            graphics: GraphicsPreset::Balanced,
+            fullscreen: false,
+            game_path: dir.path().join("game.iso"),
+            user_dir: dir.path().join("user"),
+            match_context: Some(context),
+        };
+
+        let env = Launcher::env(&config);
+        assert!(env.contains_key("NSR_MATCH_CONTEXT"));
+
+        let platform = Platform::detect();
+        let (program, args): (&str, Vec<OsString>) = if cfg!(windows) {
+            (
+                "cmd",
+                vec![
+                    "/C".into(),
+                    "echo %NSR_MATCH_CONTEXT%| findstr /C:match.json >nul".into(),
+                ],
+            )
+        } else {
+            (
+                "sh",
+                vec![
+                    "-c".into(),
+                    "case \"$NSR_MATCH_CONTEXT\" in *match.json*) exit 0;; *) exit 9;; esac".into(),
+                ],
+            )
+        };
+
+        let handle = platform
+            .processes
+            .spawn(std::path::Path::new(program), &args, None, &env)
+            .expect("spawn");
+        assert_eq!(
+            platform.processes.wait(handle).expect("wait"),
+            ExitKind::Normal,
+            "the child did not see NSR_MATCH_CONTEXT"
         );
     }
 }

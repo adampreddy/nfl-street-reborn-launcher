@@ -173,11 +173,15 @@ impl ProcessHost for RealProcessHost {
         program: &Path,
         args: &[OsString],
         cwd: Option<&Path>,
+        env: &BTreeMap<String, OsString>,
     ) -> Result<ProcessHandle> {
         let mut cmd = std::process::Command::new(program);
         cmd.args(args);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
+        }
+        for (key, value) in env {
+            cmd.env(key, value);
         }
         let child = cmd.spawn().map_err(|source| Error::Io {
             path: program.to_path_buf(),
