@@ -64,6 +64,68 @@ Source/Core/DolphinQt/DolphinQt.vcxproj Source/VSProps/Base.Dolphin.props
 
 ---
 
+## 2A. There is a SECOND Dolphin tree, and it was also uncommitted
+
+Found on August 30 while checking whether Fair Input Delay is Reborn work. It is
+not, but the check turned up something larger.
+
+| | |
+|---|---|
+| Path | `C:\Users\Adam\nflstreet2_clean\dolphin` |
+| Upstream | Modern Dolphin, `144d19433a`, dated **2026-06-14** |
+| Configured remote | `michaelpenixfan2390/dolphin`, Adam's own account under its old handle, **public** |
+| State when found | Every Reborn file untracked, seven upstream files modified, nothing committed |
+| Preserved as | `6de5eb643b` on `nfls-reborn/preserve-netcode-2026-08-30`, pushed to the **private** `adampreddy/reborn-dolphin-netcode` |
+
+### What is in it
+
+About **108 KB of original C++**, which is larger than the 98 KB preserved from
+the ExGL fork, and it is different work.
+
+| File | Bytes |
+|---|---|
+| `Source/Core/Core/NflsSymmetrize.cpp` | 50,429 |
+| `Source/Core/Core/NflsLink.cpp` | 20,483 |
+| `Source/Core/Core/NflsCaves.h` | 7,404 |
+| `Source/Core/Core/NflsGuard.cpp` | 6,415 |
+| `Source/Core/Core/NflsPlayHide.cpp` | 4,556 |
+| `Source/Core/VideoCommon/NetPlayPlayCallUI.cpp/.h` | 4,726 |
+| `NflsSoak`, `NflsDesync`, plus headers | ~5,800 |
+
+Plus `Data/Sys/GameSettings/FR4N31.ini`, the online build's game ID.
+
+`NflsSymmetrize.cpp` at 50 KB is the largest single Reborn source file anywhere
+on the machine.
+
+### Two consequences, and the second one is strategic
+
+**1. The discovery inventory was wrong about how many Dolphin trees exist.** It
+recorded one. There are two. Any statement in this document set that the netcode
+work is fully preserved at `eca379f` is incorrect: `eca379f` touches **no**
+NetPlay source file at all, verified by `git show --stat`. The desync, link and
+lockstep layers live in the other tree.
+
+**2. A modern rebase target may already exist.** The cross-platform probe found
+that nine of ten build blockers in the ExGL fork were its 2022-era age meeting
+2026 toolchains: CMake 4 against pre-3.5 externals, stricter compilers, glibc,
+Homebrew's fmt, the macOS deployment target. This second tree is on a June 2026
+base and would not have most of them.
+
+**That makes section 7's "do not rebase before September 12" worth revisiting.**
+The recommendation was made on the assumption that rebasing meant re-deriving
+the Reborn work against years of upstream churn. If the work already exists on a
+modern base, the question changes from "should we rebase" to "which tree is the
+product built from", which is a much cheaper question and a much better one.
+
+**Unverified and important:** how the two trees' shared files diverge.
+`NflsPlayHide.cpp` exists in both at different sizes (4,556 here, 4,277 in the
+ExGL fork), so they have diverged and neither is automatically the newer.
+Nothing has been merged, compared line by line, or built. This needs a real
+comparison before either tree is chosen as the base.
+
+---
+
+
 ## 3. What the cross-platform build actually proved
 
 **START_HERE checklist items 4 and 5**, answered with evidence rather than inspection. Ten CI rounds on real GitHub runners.

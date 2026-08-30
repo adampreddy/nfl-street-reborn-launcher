@@ -54,7 +54,7 @@ without naming the row number inline, stating the evidence, and tagging it
 | 15.3, 15.9 | Region and ping are priority matchmaking inputs; input delay derived from ping | De-scoped to post-launch | Schedule |
 | 16.5 | An explicit quit in ranked is likely a forfeit | No automatic forfeit | Held-for-review is safer while the evidence chain is unproven |
 | 11.6 | Thirteen mod packages migrate | Eleven | Two of the thirteen directories are JSGME control folders, `!BACKUP` and `!INSTLOGS` |
-| 4.2 | Fair Input Delay is on the cannot-regress list | Removed from that list | Needs Adam. This one looks wrong |
+| 4.2 | Fair Input Delay is on the cannot-regress list | **Reversal REJECTED by Adam. It stays on the list.** | Adam requires it. The audit was factually right that it is stock upstream (`NetPlayDialog.cpp` line 184, unmodified against `7f4875e`, and the preservation commit `eca379f` touches no NetPlay source), but that makes keeping it FREE rather than pointless: it cannot regress as long as nothing touches the NetPlay mode or its default, and listing it is what makes that a checked constraint instead of an assumption |
 | 7.1 | Xbox payload size | 2.9 GB figure changed | Measurement |
 
 **Two reversals were rejected and the original decision stands:**
