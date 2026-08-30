@@ -81,7 +81,7 @@ Ranked by what actually hurts.
 
 | # | Risk | Status |
 |---|---|---|
-| 0 | **There are TWO Dolphin source trees and the architecture assumed one.** The second holds the desync, link and lockstep work, about 108 KB, on a June 2026 upstream base. Preserved August 30 at `6de5eb643b` | **Which tree is the product built from is now an open question** |
+| 0 | A second Dolphin tree exists at `nflstreet2_clean\dolphin` holding abandoned netcode experiments, about 108 KB, on a June 2026 base. **Not the product**, per Adam. Preserved at `6de5eb643b` purely so the experiments are not lost | Closed as a risk. Kept as an archive |
 | 1 | **Nobody has run the Linux or macOS build.** Builds, not works | **Unverifiable without hardware** |
 | 2 | **PlayStation support is entirely unbuilt.** Twelve-scenario matrix untested | Needs real devices |
 | 3 | **Three credential sets unrotated.** Compiled-in bearer token, `JWT_SECRET`, Discord client secret | Blocks lawful distribution |
@@ -102,7 +102,7 @@ Ranked by what actually hurts.
 | B1 | **Rotate the three credential sets** | The Dolphin repo must be public for GPL corresponding source once binaries ship. Rotation gates that. Ten minutes of work sitting on the critical path |
 | B2 | **Approve or reject the eleven remaining Decided-row reversals** in `SYSTEM_ARCHITECTURE.md` section 1A | Row 4.2 is already resolved: Adam requires Fair Input Delay, so that reversal is rejected and it stays on the cannot-regress list. Eleven others remain |
 | B3 | **What "finished on all platforms" means** given nobody can run two of the three | Determines whether Linux and macOS ship flagged or not at all |
-| B4 | **Which Dolphin tree is the product?** `dolphin-exgl` (2022 base, builds on all three platforms, has the stat tracker) or `nflstreet2_clean\dolphin` (June 2026 base, has the netcode work, never built by CI) | The whole runtime plan hangs on it, and neither tree has both halves. `NflsPlayHide.cpp` exists in both at different sizes, so they have diverged and neither is automatically newer |
+| B4 | **RESOLVED by Adam, August 30.** The product is `dolphin-exgl`, the tree behind `DOLPHIN ONLINE TEST\CREATION LEAGUE AND NEW DOLPHIN`. Adam on the second tree: "None of this shit works." It is abandoned experimental work | Closed. No further decision needed |
 
 **High. Needed within days, not before the first commit.**
 
