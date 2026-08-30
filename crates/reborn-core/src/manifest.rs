@@ -366,7 +366,10 @@ mod tests {
         let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
         assert!(c.check_install_root("library/offline").is_ok());
         let err = c.check_install_root("saves").unwrap_err();
-        assert!(matches!(err, ManifestError::WrongInstallRoot { .. }), "{err:?}");
+        assert!(
+            matches!(err, ManifestError::WrongInstallRoot { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -386,7 +389,12 @@ mod tests {
                 sha256: Sha256Hex::from_bytes(b""),
             });
         }
-        assert_eq!(c.traversal_offenders().len(), 4, "{:?}", c.traversal_offenders());
+        assert_eq!(
+            c.traversal_offenders().len(),
+            4,
+            "{:?}",
+            c.traversal_offenders()
+        );
     }
 
     #[test]
@@ -405,7 +413,9 @@ mod tests {
         let release = Release::parse(release_json.as_bytes()).unwrap();
 
         // The genuine manifest is accepted.
-        let ok = release.accept_component("offline-content", &comp_bytes).unwrap();
+        let ok = release
+            .accept_component("offline-content", &comp_bytes)
+            .unwrap();
         assert!(ok.customizable);
 
         // One byte different, and it is refused.
@@ -440,7 +450,10 @@ mod tests {
         let err = release
             .accept_component("offline-content", &comp_bytes)
             .unwrap_err();
-        assert!(matches!(err, ManifestError::WrongComponent { .. }), "{err:?}");
+        assert!(
+            matches!(err, ManifestError::WrongComponent { .. }),
+            "{err:?}"
+        );
     }
 
     /// Replay protection. A genuinely signed older release must still be
@@ -454,7 +467,10 @@ mod tests {
         assert!(release.check_sequence(10).is_ok(), "11 is newer than 10");
         assert!(release.check_sequence(11).is_err(), "equal is not newer");
         let err = release.check_sequence(12).unwrap_err();
-        assert!(matches!(err, ManifestError::StaleSequence { .. }), "{err:?}");
+        assert!(
+            matches!(err, ManifestError::StaleSequence { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -78,7 +78,9 @@ impl LegacyInstall {
         let backup = mods.join("!BACKUP");
         let instlogs = mods.join("!INSTLOGS");
         let non_empty = |p: &Path| {
-            p.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false)
+            p.read_dir()
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false)
         };
         let has_applied_mods = non_empty(&instlogs);
 
@@ -312,11 +314,7 @@ mod tests {
         }
         if with_backup && with_mods {
             std::fs::create_dir_all(backup.join("PS Controls")).unwrap();
-            std::fs::write(
-                backup.join("PS Controls").join("original.dds"),
-                b"pristine",
-            )
-            .unwrap();
+            std::fs::write(backup.join("PS Controls").join("original.dds"), b"pristine").unwrap();
         }
 
         LegacyInstall::detect(dir).expect("should detect a legacy install")
@@ -343,7 +341,10 @@ mod tests {
         assert!(install.has_memory_cards);
         assert!(install.has_screenshots);
         assert!(install.has_textures);
-        assert!(!install.has_applied_mods, "an empty !INSTLOGS means nothing is applied");
+        assert!(
+            !install.has_applied_mods,
+            "an empty !INSTLOGS means nothing is applied"
+        );
         assert!(
             !install.has_jsgme_backup,
             "an empty !BACKUP is not a usable backup, which is how the shipped folder looks"
@@ -442,7 +443,10 @@ mod tests {
         let bytes = copy_tree_no_clobber(&from, &to).unwrap();
         assert_eq!(bytes, 8);
         assert_eq!(std::fs::read(to.join("a.raw")).unwrap(), b"12345");
-        assert_eq!(std::fs::read(to.join("nested").join("b.raw")).unwrap(), b"678");
+        assert_eq!(
+            std::fs::read(to.join("nested").join("b.raw")).unwrap(),
+            b"678"
+        );
     }
 
     /// Migration may run twice. The second run must not replace a newer save
@@ -469,7 +473,8 @@ mod tests {
     #[test]
     fn copying_a_missing_source_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let bytes = copy_tree_no_clobber(&dir.path().join("absent"), &dir.path().join("to")).unwrap();
+        let bytes =
+            copy_tree_no_clobber(&dir.path().join("absent"), &dir.path().join("to")).unwrap();
         assert_eq!(bytes, 0);
     }
 }

@@ -528,7 +528,9 @@ mod tests {
 
         let violations = RuntimePackager::audit(dir.path()).unwrap();
         assert_eq!(violations.len(), 2, "{violations:#?}");
-        assert!(violations.iter().any(|v| v.path.contains("nsr_track_offline")));
+        assert!(violations
+            .iter()
+            .any(|v| v.path.contains("nsr_track_offline")));
         assert!(violations
             .iter()
             .any(|v| v.reason.contains("land on a real fixture")));

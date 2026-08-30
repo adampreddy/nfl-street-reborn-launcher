@@ -272,7 +272,8 @@ impl ExitKind {
 /// Launching and supervising the game.
 pub trait ProcessHost: Send + Sync {
     /// Start a child process and return an opaque handle.
-    fn spawn(&self, program: &Path, args: &[OsString], cwd: Option<&Path>) -> Result<ProcessHandle>;
+    fn spawn(&self, program: &Path, args: &[OsString], cwd: Option<&Path>)
+        -> Result<ProcessHandle>;
 
     /// Block until the child exits, then classify how it ended.
     fn wait(&self, handle: ProcessHandle) -> Result<ExitKind>;
@@ -329,6 +330,19 @@ pub trait FileOps: Send + Sync {
     /// Meaningful on Windows, where an open file cannot be replaced. On Unix it
     /// is advisory at best, and the honest answer is usually `false`.
     fn is_locked(&self, path: &Path) -> bool;
+
+    /// Take an exclusive advisory lock on `path`, creating it if needed.
+    ///
+    /// Returns `Ok(None)` when another live process already holds the lock.
+    ///
+    /// Why a lock and not a recorded process id: a stale pid file cannot be
+    /// told apart from a live one, because the operating system reuses process
+    /// ids. A process that dies without cleaning up leaves a pid that may
+    /// already belong to something unrelated, so "is that pid alive" is the
+    /// wrong question. An OS-held lock is released when the holder dies for any
+    /// reason, including a kill, a power cut, or a crash, so the question
+    /// becomes "can I take it", which has no false positive.
+    fn lock_exclusive(&self, path: &Path) -> Result<Option<LockGuard>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,5 +418,25 @@ impl std::fmt::Debug for Platform {
             .field("platform", &CURRENT_PLATFORM)
             .field("exe_suffix", &self.paths.exe_suffix())
             .finish()
+    }
+}
+
+/// An exclusive lock held for as long as this value is alive.
+///
+/// The lock is advisory and is released by the operating system when the
+/// holding process exits, however it exits. Dropping the guard closes the file,
+/// which releases the lock; the file itself is deliberately left on disk,
+/// because deleting it would race another process that has already opened it.
+#[derive(Debug)]
+pub struct LockGuard {
+    #[allow(dead_code)]
+    pub(crate) file: std::fs::File,
+    pub(crate) path: PathBuf,
+}
+
+impl LockGuard {
+    /// The file backing this lock.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }

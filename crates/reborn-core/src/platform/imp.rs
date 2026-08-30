@@ -113,7 +113,10 @@ impl Paths for RealPaths {
         }
         #[cfg(target_os = "macos")]
         {
-            Ok(RealPaths::home()?.join("Library").join("Caches").join(PRODUCT))
+            Ok(RealPaths::home()?
+                .join("Library")
+                .join("Caches")
+                .join(PRODUCT))
         }
         #[cfg(target_os = "linux")]
         {
@@ -144,7 +147,12 @@ impl Paths for RealPaths {
 struct RealProcessHost;
 
 impl ProcessHost for RealProcessHost {
-    fn spawn(&self, program: &Path, args: &[OsString], cwd: Option<&Path>) -> Result<ProcessHandle> {
+    fn spawn(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        cwd: Option<&Path>,
+    ) -> Result<ProcessHandle> {
         let mut cmd = std::process::Command::new(program);
         cmd.args(args);
         if let Some(dir) = cwd {
@@ -345,6 +353,37 @@ impl FileOps for RealFileOps {
             false
         }
     }
+
+    fn lock_exclusive(&self, path: &Path) -> Result<Option<LockGuard>> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|source| Error::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        match try_lock(&file) {
+            Ok(true) => Ok(Some(LockGuard {
+                file,
+                path: path.to_path_buf(),
+            })),
+            Ok(false) => Ok(None),
+            Err(source) => Err(Error::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
+    }
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
@@ -392,5 +431,26 @@ pub fn platform() -> Platform {
         processes: Box::new(RealProcessHost),
         files: Box::new(RealFileOps),
         drives: Box::new(StubRemovableDrives),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exclusive locking, implemented for all three platforms
+// ---------------------------------------------------------------------------
+
+/// `Ok(true)` if the lock was taken, `Ok(false)` if someone else holds it.
+///
+/// This goes through `fs4` rather than calling `LockFileEx` and `flock`
+/// directly, because doing it by hand would mean `unsafe`, and this crate
+/// forbids `unsafe` outright. A file lock is not worth spending that guarantee
+/// on. The lock is held by the kernel either way, so it is still released on
+/// process death by any means, which is the property the supervisor needs.
+fn try_lock(file: &std::fs::File) -> std::io::Result<bool> {
+    use fs4::fs_std::FileExt;
+    match FileExt::try_lock_exclusive(file) {
+        Ok(true) => Ok(true),
+        Ok(false) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) => Err(e),
     }
 }

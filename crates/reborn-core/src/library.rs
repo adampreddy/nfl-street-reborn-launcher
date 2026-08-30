@@ -96,7 +96,10 @@ pub enum FileVerdict {
     /// Absent. Damage regardless of anything else.
     Missing,
     /// Present, wrong size or hash, and not explained by a recorded rebuild.
-    Damaged { expected: Sha256Hex, actual: Sha256Hex },
+    Damaged {
+        expected: Sha256Hex,
+        actual: Sha256Hex,
+    },
     /// Present, does not match the manifest, and that is expected: the user
     /// customized it and the launcher recorded the result.
     UserModified,
@@ -384,7 +387,10 @@ mod tests {
         let c = component(false, vec![shipped]);
         let report = Verifier::new(dir.path(), &state).verify(&c).unwrap();
         assert!(
-            matches!(report.verdicts["NSRONLINE.iso"], FileVerdict::Damaged { .. }),
+            matches!(
+                report.verdicts["NSRONLINE.iso"],
+                FileVerdict::Damaged { .. }
+            ),
             "a rebuild record must not excuse a change to a non-customizable file"
         );
     }

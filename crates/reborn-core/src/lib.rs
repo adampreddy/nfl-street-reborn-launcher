@@ -23,7 +23,10 @@
 //! - [`migration`]: moving a 2.1 install, saves first, mods un-applied before
 //!   textures are trusted.
 //!
-//! Not written yet: the supervisor process, SDL device enumeration, mods,
+//! - [`supervisor`]: the single-instance lock, and the session record that
+//!   survives the launcher going down with the game.
+//!
+//! Not written yet: SDL device enumeration, mods,
 //! music, online, and the Xbox wizard.
 
 #![forbid(unsafe_code)]
@@ -35,6 +38,7 @@ pub mod manifest;
 pub mod migration;
 pub mod platform;
 pub mod runtime;
+pub mod supervisor;
 
 pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,

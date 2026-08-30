@@ -272,7 +272,9 @@ impl DeviceFamily {
             DeviceFamily::PlayStation
         } else if n.contains("steam deck") {
             DeviceFamily::SteamDeck
-        } else if n.contains("nintendo") || n.contains("switch") || n.contains("joy-con")
+        } else if n.contains("nintendo")
+            || n.contains("switch")
+            || n.contains("joy-con")
             || n.contains("pro controller")
         {
             DeviceFamily::Nintendo
@@ -436,9 +438,15 @@ impl ConflictDetector {
     /// Steam virtual controller.
     pub fn inspect(device_names: &[String]) -> Vec<InputConflict> {
         let mut found = Vec::new();
-        let lower: Vec<String> = device_names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let lower: Vec<String> = device_names
+            .iter()
+            .map(|n| n.to_ascii_lowercase())
+            .collect();
 
-        if lower.iter().any(|n| n.contains("steam virtual") || n.contains("steam controller")) {
+        if lower
+            .iter()
+            .any(|n| n.contains("steam virtual") || n.contains("steam controller"))
+        {
             found.push(InputConflict {
                 what: "Steam Input",
                 symptom: "every button press registers twice, because Steam adds \
@@ -481,7 +489,10 @@ impl GcPadConfig {
     /// Regenerated on every launch from the launcher's own model, so a change
     /// made inside Dolphin does not persist and the Settings page stays the
     /// single source of truth.
-    pub fn generate(profiles: &[ControllerProfile], device_string: impl Fn(&DeviceIdentity) -> String) -> String {
+    pub fn generate(
+        profiles: &[ControllerProfile],
+        device_string: impl Fn(&DeviceIdentity) -> String,
+    ) -> String {
         let mut out = String::new();
         for profile in profiles.iter().filter(|p| (1..=4).contains(&p.port)) {
             out.push_str(&format!("[GCPad{}]\n", profile.port));
@@ -598,7 +609,10 @@ mod tests {
         let a = identity("DualSense Wireless Controller");
         let key = a.profile_key();
         assert!(key.contains("030000004c05"), "{key}");
-        assert!(!key.contains('1'), "a port number must not appear in the key: {key}");
+        assert!(
+            !key.contains('1'),
+            "a port number must not appear in the key: {key}"
+        );
     }
 
     /// Two identical pads must not share one profile.
@@ -684,7 +698,10 @@ mod tests {
                 input.ini_key()
             );
         }
-        assert!(ini.contains("Buttons/B = `Button X`"), "swap preserved:\n{ini}");
+        assert!(
+            ini.contains("Buttons/B = `Button X`"),
+            "swap preserved:\n{ini}"
+        );
     }
 
     #[test]
