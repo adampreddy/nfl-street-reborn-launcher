@@ -44,3 +44,7 @@ Thumbs.db
 # Design and brand assets are the one binary class this repo carries
 !docs/design/*.png
 !assets/*.png
+
+# Rust
+/target/
+**/*.rs.bk
