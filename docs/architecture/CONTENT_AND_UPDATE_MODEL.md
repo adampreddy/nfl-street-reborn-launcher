@@ -1,5 +1,12 @@
 # Content and Update Model
 
+> **Precedence.** Where this document disagrees with
+> [`RECONCILIATION_RULINGS.md`](./RECONCILIATION_RULINGS.md), **the ruling wins.**
+> Five auditors found 172 internal contradictions across this document set and an
+> adjudicator issued one ruling per conflict. The rulings are applied to this file
+> progressively; until that is finished, read the rulings first for anything
+> touching safety, verdicts, schemas or identifiers.
+
 ## NFL Street Reborn Launcher
 
 **Date:** August 29, 2026

@@ -1,5 +1,12 @@
 # System Architecture
 
+> **Precedence.** Where this document disagrees with
+> [`RECONCILIATION_RULINGS.md`](./RECONCILIATION_RULINGS.md), **the ruling wins.**
+> Five auditors found 172 internal contradictions across this document set and an
+> adjudicator issued one ruling per conflict. The rulings are applied to this file
+> progressively; until that is finished, read the rulings first for anything
+> touching safety, verdicts, schemas or identifiers.
+
 ## NFL Street Reborn Launcher
 
 **Date:** August 29, 2026
@@ -212,7 +219,12 @@ A safe file mover, per Adam. Drive enumeration, explicit picker with nothing pre
 
 | Existing | Verdict |
 |---|---|
-| `Step 2 - Transfer to Xbox` payload | **Reuse as the payload** |
+| `Step 2` layout and configuration shape | **Reuse** |
+| `Step 2\GC\MemoryCardA.USA.raw`, `SRAM.raw` | **Retire.** The author's own saves; shipping them would overwrite returning users |
+| `Step 2\Config\TimePlayed.ini` | **Replace** with a launcher-generated file |
+| `Step 2\Config\Dolphin.ini` `[Analytics]` block | **Replace** |
+| `Step 2\Config\Logger.ini` | **Replace**, console and window logging off |
+| `Step 2\GameSettings\GN7E69.ini` | **Port** into generated configuration |
 | `Step 1` fake patcher | **Retire** |
 | Nested duplicate folder | **Normalize** |
 

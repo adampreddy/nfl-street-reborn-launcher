@@ -1,5 +1,12 @@
 # Security, Privacy and Licensing
 
+> **Precedence.** Where this document disagrees with
+> [`RECONCILIATION_RULINGS.md`](./RECONCILIATION_RULINGS.md), **the ruling wins.**
+> Five auditors found 172 internal contradictions across this document set and an
+> adjudicator issued one ruling per conflict. The rulings are applied to this file
+> progressively; until that is finished, read the rulings first for anything
+> touching safety, verdicts, schemas or identifiers.
+
 ## NFL Street Reborn Launcher
 
 **Date:** August 29, 2026
@@ -166,7 +173,8 @@ manifest.json                        signature: manifest.json.sig (detached)
 - **Detached signature over the manifest**, not over every file. The manifest carries the hashes; signing it once transfers trust to all of them.
 - **Ed25519 proposed.** Small keys, small signatures, no parameter choices to get wrong.
 - **The public key is compiled into the launcher.** This is the one key that is safe to ship, because it verifies and cannot sign.
-- **Fail closed.** A signature failure, a hash mismatch on a managed file, or a missing manifest means refuse and offer repair. There is **no fallback to unsigned**. A client that degrades to unsigned on error has no signature scheme.
+- **Fail closed, with one scoped exception.** A signature failure, a missing manifest, or a hash mismatch on a file in a component where `customizable` is false or absent means refuse and offer repair. There is **no fallback to unsigned**. A client that degrades to unsigned on error has no signature scheme.
+- **The exception exists because repair would otherwise delete custom music.** `customizable` is a mandatory field of `nsr.component.v1` and is true for `offline-content` only. A rebuilt offline image never matches its shipped hash, so an unqualified fail-closed rule would treat every user's custom soundtrack as damage and re-fetch over it. Repair therefore leaves a file alone when its component is `customizable: true` **and** its local SHA-256 equals the launcher's own recorded rebuild hash in `music/state.json`. A mismatch that matches nothing recorded is still damage, and the whole artifact is re-fetched. See [`CONTENT_AND_UPDATE_MODEL.md`](./CONTENT_AND_UPDATE_MODEL.md) section 12.
 
 ### What the signature has to cover, and why `version` is not enough (proposed)
 
@@ -822,7 +830,7 @@ Every existing component this document touches, one verdict each.
 | `reshade-shaders` collection, 62 files, 28,800,956 B | **REUSE on Windows, pending license verification** | **Already distributed** via `rebornsetupv10.iss` line 44. Review is remediation here, not prevention |
 | `reshade-presets` | **REUSE on Windows** | 81 files in the selected runtime, **absent** from the installer source folder, so it is a first distribution rather than an existing one |
 | `wit` zip | **RETIRE from the shipped-component list** | Developer tool, never shipped |
-| Xbox `Step 2\GC\` | **REUSE, never write** | Holds the memory card and SRAM |
+| Xbox `Step 2\GC\MemoryCardA.USA.raw`, `SRAM.raw` | **RETIRE** | The author's own saves. Removed from the payload and absent from every manifest, so the wizard cannot write them by accident. The drive's own `GC\` directory is not an inherited component and carries no verdict, only the preservation rule: read-only to the wizard except in Restore Xbox Save |
 | Questionnaire 7.9 console pairing credentials | **RETIRE** | A file mover has nothing to pair with |
 | `MiltyTheGreat/RebornOnline` and `michaelpenixfan2390/nflstreetrebornlauncher` remotes on the `Downloads` working trees | **RETIRE the local trees.** No verdict is available on the remotes themselves | `.env` is gitignored and was never committed in either tracked tree (**verified**), but both remotes are push-configured and this machine cannot see what they hold. See section 4.1 |
 | Existing `ingest.php` trust model (client asserts, server accepts) | **REPLACE** | The server must decide what may affect a rating. See section 9 |

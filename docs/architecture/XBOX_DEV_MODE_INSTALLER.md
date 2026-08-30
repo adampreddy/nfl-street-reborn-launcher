@@ -1,5 +1,12 @@
 # Xbox Dev Mode Installer
 
+> **Precedence.** Where this document disagrees with
+> [`RECONCILIATION_RULINGS.md`](./RECONCILIATION_RULINGS.md), **the ruling wins.**
+> Five auditors found 172 internal contradictions across this document set and an
+> adjudicator issued one ruling per conflict. The rulings are applied to this file
+> progressively; until that is finished, read the rulings first for anything
+> touching safety, verdicts, schemas or identifiers.
+
 ## NFL Street Reborn Launcher
 
 **Date:** August 29, 2026
@@ -47,7 +54,7 @@ Every existing component this feature touches, with exactly one verdict.
 | Existing component | Verdict | Reason |
 |---|---|---|
 | `Step 2 - Transfer to Xbox` **layout and configuration** | **REUSE** | 13 directories and 11 configuration and settings files, measured: `Config\` holds exactly 10 (`Dolphin`, `DSUClient`, `FreeLook`, `GCKeyNew`, `GCPadNew`, `GFX`, `Logger`, `RetroAchievements`, `TimePlayed`, `WiimoteNew`), plus `GameSettings\GN7E69.ini`. Section 4's per-file table is the authority for the count. This is the only description of a working Xbox layout that exists |
-| `Step 2\GC\MemoryCardA.USA.raw`, `SRAM.raw` | **REPLACE** | Verified to contain the author's real saves (`GN7E-69Options`, `GN7E-69UserIDJerseyMode`). Shipping them overwrites returning users. The launcher ships a blank formatted card instead |
+| `Step 2\GC\MemoryCardA.USA.raw`, `SRAM.raw` | **RETIRE** | Verified to contain the author's real saves (`GN7E-69Options`, `GN7E-69UserIDJerseyMode`). They are removed from the payload entirely and appear in no manifest, so the wizard cannot write them by accident. No replacement card is shipped and none is generated |
 | `Step 2\Config\TimePlayed.ini` | **REPLACE** | Contains `GN7E69 = 0x0000000000458712`. Verified: `0x458712` decodes to **4,556,562**, someone's recorded play time. The unit is unverified: `TimePlayed.cpp` does not exist in the 2022-era Reborn fork, so this document does not claim milliseconds. The same 43 byte file with the identical value also ships in the older `oldski` package |
 | `Step 2\Config\Dolphin.ini` `[Analytics] ID` | **REPLACE** | `d13f3034d7c4d1bc575151c5a3595c43` is distributed identically to every user. Generate per install, or omit the key |
 | `Step 2\Config\Logger.ini` | **REPLACE** | Ships `WriteToConsole = True` and `WriteToWindow = True` in a consumer payload |
@@ -164,7 +171,7 @@ The seven come from the blueprint verbatim at line 1316 and are recorded as Deci
 | 2 | Update Existing Xbox Installation | **Keep** | Reborn layout detected. Back up user state, write changed files only, verify, eject |
 | 3 | Repair Xbox USB | **Keep, reduced** | Hash every file the manifest names, rewrite only the mismatches, and apply the stale-file rules in section 9.5 to everything the manifest does not name |
 | 4 | Back Up Xbox Save | **Keep** | Copy `GC\` (16,777,284 bytes) to the PC data root, timestamped. Cheap, fast, and the only irreplaceable data on the drive |
-| 5 | Restore Xbox Save | **Keep** | Pick a timestamped backup, write `GC\` back. Its own confirm, because it overwrites a card |
+| 5 | Restore Xbox Save | **Keep** | The ONLY path in the whole wizard that writes `GC\`. Its own screen, its own confirm. Before writing it copies the drive's current `GC\` to `<data root>/backups/xbox/<ISO timestamp>/` and verifies that copy by SHA-256. It refuses to proceed if that backup cannot be verified |
 | 6 | Deploy or Reinstall Xbox App | **RETIRE** | No package, no certificate, no Device Portal, and none in scope. Keeping the card would be a lie on the home screen |
 | 7 | Test Xbox Connection | **RETIRE** | There is no connection. The wizard never speaks to a console |
 
@@ -282,7 +289,7 @@ This document tightens it in one place: **preselect nothing, ever, even when exa
 The Xbox wizard never formats a drive.
 The Xbox wizard never deletes a file it did not write, unless the user
   confirms that exact file by name on a screen that lists it.
-The Xbox wizard never overwrites GC\ without a separate confirmation.
+**`GC\` is read-only to the wizard.** It never creates, writes, overwrites, renames, moves or deletes any file under `GC\` on a target drive, in any mode, under any condition, with exactly one exception: mode 5 Restore Xbox Save, which is separately chosen, separately confirmed, and preceded by a verified backup of the card it is about to replace.
 The Xbox wizard never moves or removes a directory it did not create,
   unless the user confirms that specific restructuring by name.
 ```
@@ -346,9 +353,9 @@ Rules:
 
 | Situation | Behavior |
 |---|---|
-| `GC\MemoryCardA.USA.raw` exists on the drive **and passes the validity check below** | **Keep it. Never write over it.** Report "your existing Xbox saves (16 MB) will be kept" |
-| Exists but **fails** the validity check | **Never delete it and never silently replace it.** Rename it to `MemoryCardA.USA.raw.unreadable-<ISO timestamp>`, copy it to the PC backup folder, write a blank card, and say so plainly on screen |
-| Not present | Write a **blank formatted 16,777,216 byte card** generated by the launcher, not the author's |
+| `GC\MemoryCardA.USA.raw` exists on the drive | **Keep it. Never write over it.** Report "your existing Xbox saves (16 MB) will be kept" |
+| Exists but does not look like a memory card | **Do nothing to it.** Report what was found, for example "a file is present at this path that does not look like a memory card". The report is informational and never authorizes a write, a rename, or a delete |
+| Not present | **Write nothing.** The Xbox creates its own card on first save. Report "no Xbox saves found on this drive" |
 | `SRAM.raw` exists | Keep it. 68 bytes, and length is the only check worth making |
 | User explicitly chooses Restore Xbox Save | Back up the current card first, then write, on its own confirm screen |
 
@@ -586,7 +593,7 @@ Nothing is deleted.
 
 Three properties of that screen make it consistent with the contract:
 
-1. **`GC\` moves first, before anything else, and is verified at its destination before the wizard proceeds.** If the move fails, the operation stops with the card intact at its original path.
+1. **`GC\` is COPIED first, never moved, and the copy is verified by SHA-256 at its destination before the wizard proceeds.** If a file already exists at the destination `GC\` path the operation refuses rather than overwriting. The source is never removed. This resolves the contradiction with section 8, which exempts `GC\` from every write path: a copy that leaves the original in place is not a write to the user's card.
 2. **Move, never copy-then-delete-the-original,** where the filesystem supports a same-volume rename. Where it does not, copy and verify the whole tree first, then remove sources file by file, and never remove a source whose copy did not verify.
 3. **"Leave it and write alongside" is a real option, not a dead end.** The wizard writes the correct layout at the root and leaves the old folder untouched. The drive holds two copies and wastes 1.55 GB, which is the user's call to make. Section 9.5 will offer the leftover folder as Stale on a later run, once a manifest describes it.
 
