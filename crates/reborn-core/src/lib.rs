@@ -20,6 +20,8 @@
 //!   packaging audit that keeps the debug markers out of a release.
 //! - [`controller`]: device identity, one default mapping that is overridable
 //!   at any time, and generated GCPadNew.ini.
+//! - [`migration`]: moving a 2.1 install, saves first, mods un-applied before
+//!   textures are trusted.
 //!
 //! Not written yet: the supervisor process, SDL device enumeration, mods,
 //! music, online, and the Xbox wizard.
@@ -30,6 +32,7 @@
 pub mod controller;
 pub mod library;
 pub mod manifest;
+pub mod migration;
 pub mod platform;
 pub mod runtime;
 
