@@ -25,7 +25,9 @@
 use serde::Serialize;
 
 use reborn_core::devices::{DeviceScanner, Enumeration};
-use reborn_core::supervisor::{Startup, Supervisor};
+use reborn_core::runtime::{GameBuild, GraphicsPreset};
+use reborn_core::session::{LaunchRequest, Launched, Session};
+use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
 /// Where the launcher keeps things, and whether that is safe.
@@ -195,9 +197,258 @@ fn sessions() -> Result<Vec<SessionView>, String> {
     }
 }
 
+/// A mod as it actually exists on disk.
+#[derive(Debug, Serialize)]
+struct ModEntry {
+    name: String,
+    applied: bool,
+}
+
+/// Live state for Home.
+///
+/// The anti-vibecoding review, V2, says the Home hero must carry live product
+/// state rather than a promotional carousel, because that is the difference
+/// between Home being useful and Home being a marketing page. V4 says invented
+/// numbers are the failure that looks plausible in review and breaks on real
+/// data.
+///
+/// So every field here is measured or absent. There is no rating, no win-loss
+/// record and no last score, because nothing in this product produces them yet.
+#[derive(Debug, Serialize)]
+struct HomeState {
+    sessions_played: usize,
+    minutes_played: u64,
+    /// None when no session has ever finished.
+    last_played: Option<String>,
+    controllers: usize,
+    mods_installed: usize,
+    mods_applied: usize,
+    runtime_set: bool,
+}
+
+/// Read the real mod library.
+///
+/// The review requires real Reborn content: mod names come from the actual
+/// JSGME `MODS` folder, never invented. JSGME records an install log per
+/// applied mod in `!INSTLOGS`, so applied and merely present are different
+/// facts and are reported separately.
+#[tauri::command]
+fn mods(legacy_root: Option<String>) -> Result<Vec<ModEntry>, String> {
+    let root = match legacy_root {
+        Some(r) => std::path::PathBuf::from(r),
+        None => return Ok(Vec::new()),
+    };
+    let dir = root.join("MODS");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let logs = dir.join("!INSTLOGS");
+    let applied_names: Vec<String> = std::fs::read_dir(&logs)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    e.path()
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // JSGME's own bookkeeping directories are not mods.
+        if name.starts_with('!') {
+            continue;
+        }
+        let applied = applied_names.iter().any(|a| a.eq_ignore_ascii_case(&name));
+        out.push(ModEntry { name, applied });
+    }
+    out.sort_by_key(|m| m.name.to_lowercase());
+    Ok(out)
+}
+
+#[tauri::command]
+fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<HomeState, String> {
+    let p = Platform::detect();
+
+    let (sessions_played, minutes_played, last_played) = match Supervisor::acquire(&p)
+        .map_err(|e| e.to_string())?
+    {
+        Startup::Owner(s) => {
+            let _ = s.recover_unfinished();
+            let history = s.history().unwrap_or_default();
+            let minutes: u64 = history.iter().filter_map(|r| r.duration_ms()).sum::<u64>() / 60_000;
+            let last = history.last().map(|r| r.id.clone());
+            (history.len(), minutes, last)
+        }
+        Startup::AlreadyRunning { .. } => (0, 0, None),
+    };
+
+    let devices_report = devices(runtime.clone())?;
+    let mod_list = mods(legacy_root)?;
+
+    Ok(HomeState {
+        sessions_played,
+        minutes_played,
+        last_played,
+        controllers: devices_report.pads.len(),
+        mods_installed: mod_list.len(),
+        mods_applied: mod_list.iter().filter(|m| m.applied).count(),
+        runtime_set: runtime.is_some(),
+    })
+}
+
+/// The result of pressing Play.
+#[derive(Debug, Serialize)]
+struct LaunchResult {
+    /// True when the game actually ran.
+    started: bool,
+    /// A sentence for the player. Always set.
+    message: String,
+    /// Present only when the game ran.
+    minutes: Option<f64>,
+    /// True when the session ended in a way worth showing a recovery page for.
+    needs_recovery: bool,
+    /// Which pad went to which port.
+    pads: Vec<String>,
+    /// False when the pad list came from the built in scan rather than the
+    /// runtime, so the interface can say the binding may be incomplete.
+    pads_authoritative: bool,
+}
+
+fn preset_from(name: &str) -> GraphicsPreset {
+    match name.to_lowercase().as_str() {
+        "performance" => GraphicsPreset::Performance,
+        "quality" => GraphicsPreset::Quality,
+        "ultra" => GraphicsPreset::Ultra,
+        _ => GraphicsPreset::Balanced,
+    }
+}
+
+/// Write the configuration a launch would use, and start nothing.
+///
+/// Exists so the interface can show what will happen before it happens, which
+/// is the same courtesy the command line already offered with --dry-run.
+#[tauri::command]
+async fn prepare_launch(
+    runtime: String,
+    game: String,
+    preset: String,
+    fullscreen: bool,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let req = LaunchRequest {
+            runtime_exe: std::path::PathBuf::from(runtime),
+            game_path: std::path::PathBuf::from(game),
+            graphics: preset_from(&preset),
+            fullscreen,
+            build: GameBuild::Offline,
+        };
+        Session::prepare(&p, &req)
+            .map(|w| w.files.iter().map(|f| f.display().to_string()).collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Start the game and answer when it stops.
+///
+/// Runs on a blocking thread rather than the interface thread. The sequence has
+/// to hold the single-instance lock and the open session record for as long as
+/// the game runs, which means something must block; it just must not be the
+/// thread drawing the window.
+#[tauri::command]
+async fn launch(
+    runtime: String,
+    game: String,
+    preset: String,
+    fullscreen: bool,
+) -> Result<LaunchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let req = LaunchRequest {
+            runtime_exe: std::path::PathBuf::from(runtime),
+            game_path: std::path::PathBuf::from(game),
+            graphics: preset_from(&preset),
+            fullscreen,
+            build: GameBuild::Offline,
+        };
+
+        match Session::run(&p, &req).map_err(|e| e.to_string())? {
+            Launched::Refused(r) => Ok(LaunchResult {
+                started: false,
+                message: r.message(),
+                minutes: None,
+                needs_recovery: false,
+                pads: Vec::new(),
+                pads_authoritative: false,
+            }),
+            Launched::Finished {
+                end,
+                minutes,
+                pads,
+                pads_authoritative,
+                ..
+            } => {
+                let needs_recovery = end.needs_recovery();
+                let message = match &end {
+                    SessionEnd::Exited { code: Some(0) } => {
+                        format!("Session ended after {minutes:.0} minutes.")
+                    }
+                    SessionEnd::Exited { code } => format!(
+                        "The game exited with status {}. That is a failure, not a crash.",
+                        code.unwrap_or(-1)
+                    ),
+                    SessionEnd::Crashed { detail } => {
+                        format!("The game crashed: {detail}")
+                    }
+                    SessionEnd::Terminated => {
+                        "The game was closed by something outside the launcher.".to_string()
+                    }
+                    SessionEnd::Interrupted => {
+                        "The launcher stopped while the game was running.".to_string()
+                    }
+                };
+                Ok(LaunchResult {
+                    started: true,
+                    message,
+                    minutes: Some(minutes),
+                    needs_recovery,
+                    pads: pads
+                        .iter()
+                        .map(|(port, dev)| format!("Port {port}: {dev}"))
+                        .collect(),
+                    pads_authoritative,
+                })
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![paths, devices, sessions])
+        .invoke_handler(tauri::generate_handler![
+            paths,
+            devices,
+            sessions,
+            mods,
+            home_state,
+            prepare_launch,
+            launch
+        ])
         .run(tauri::generate_context!())
         .expect("the launcher window could not start");
 }

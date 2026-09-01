@@ -1,60 +1,58 @@
-/* Design tokens, taken from docs/design/DESIGN_TOKENS.md.
+/* =============================================================================
+ * NFL STREET REBORN LAUNCHER — direction A
  *
- * These are copied rather than invented. The two-accent rule is the governing
- * constraint: red means Reborn and it means act, teal means data. They are
- * never interchangeable, because a red pixel on a chart reads as "loss" in a
- * competitive stats context.
- *
- * The trap the tokens call out explicitly: red-500 is roughly 3.9:1 on the
- * shell, which clears 3:1 for a control boundary but FAILS 4.5:1 for text. So
- * red-500 is a fill only, and red text uses red-300. Getting that backwards is
- * named in the tokens as the single most likely accessibility failure here.
- */
+ * Implementation of ./DESIGN.md. Taste was settled there; this file only
+ * carries it out. If a value here is not in that document, it is a bug.
+ * ========================================================================== */
+
+@font-face {
+  font-family: "Anton";
+  src: url("fonts/Anton.woff2") format("woff2");
+  font-weight: 400;
+  font-display: block; /* the hero must not flash a fallback face */
+}
+
+@font-face {
+  font-family: "InterVar";
+  src: url("fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
-  --surface-base: #0b0c0e;
-  --surface-1: #131519;
-  --surface-2: #1a1d22;
-  --surface-3: #22262c;
-  --surface-4: #2b3038;
+  --bg: #0a0b0d;
+  --panel: #131519;
+  --panel-2: #1a1d22;
 
-  --border-subtle: #2a2f36;
-  --border-default: #3a414a;
-  --border-strong: #525b67;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-soft: rgba(255, 255, 255, 0.06);
 
-  --text-primary: #f2f4f7;
-  --text-secondary: #a0a8b4;
-  --text-tertiary: #7c8593;
-  --text-disabled: #525b67;
+  --fg: #f4f5f7;
+  --fg-2: #a4acb8;
+  --fg-3: #767f8c;
 
-  --red-700: #9e1519;
-  --red-600: #c41e24;
-  --red-500: #e0272e;
-  --red-400: #f04a50;
-  --red-300: #ff7a7f;
+  /* red is a FILL and a SELECTION. red as text is --red-ink. */
+  --red: #e0272e;
+  --red-hi: #f04a50;
+  --red-ink: #ff7a7f;
 
-  --teal-700: #0e7a6e;
-  --teal-500: #22c7b4;
-  --teal-400: #4edcc9;
+  /* data only. never a button. */
+  --teal: #22c7b4;
+  --warn: #f5a623;
+  --bad: #ff5a5c;
 
-  --success: #34d399;
-  --warning: #f5a623;
-  --error: #ff4d4f;
-  --info: #7c8ca5;
+  --rail: 236px;
+  --tap: 40px;
+  --r: 8px;
+  --r-lg: 12px;
 
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-12: 48px;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --t1: 90ms;
+  --t2: 160ms;
+  --t3: 220ms;
 
-  --target-min: 44px;
-  --control-height: 36px;
-
-  --rail-width: 200px;
-  --topbar-height: 56px;
-  --hintstrip-height: 40px;
+  --display: "Anton", "Haettenschweiler", "Impact", sans-serif;
+  --ui: "InterVar", "Inter", "Segoe UI", system-ui, sans-serif;
 }
 
 * {
@@ -69,370 +67,680 @@ body {
 }
 
 body {
-  background: var(--surface-base);
-  color: var(--text-primary);
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
-  /* This is a controller-first interface shown at television distance.
-   * Accidental text selection from a drag is noise, and nothing here is
-   * meant to be copied except values, which get their own affordance later. */
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 13px/1.5 var(--ui);
   user-select: none;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ---------------------------------------------------------------------------
- * The shell: top bar, rail, content, hint strip.
- * Grid rather than flex because all four regions are fixed except content, and
- * a grid states that directly instead of implying it through flex-grow.
- * ------------------------------------------------------------------------ */
+/* =============================================================================
+ * THE ART LAYER
+ * The expensive part, and therefore the part that gets skipped. Two scrims,
+ * not one: a single overlay dark enough for text kills the picture.
+ * ========================================================================== */
+
+#backdrop {
+  position: fixed;
+  inset: 0;
+  background-size: cover;
+  background-position: center 58%;
+  filter: saturate(1.14);
+  transition: opacity var(--t3) var(--ease);
+}
+
+#backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+      to top,
+      rgba(10, 11, 13, 0.94) 0%,
+      rgba(10, 11, 13, 0.6) 34%,
+      rgba(10, 11, 13, 0) 74%
+    ),
+    linear-gradient(
+      to right,
+      rgba(10, 11, 13, 0.9) 0%,
+      rgba(10, 11, 13, 0.55) 32%,
+      rgba(10, 11, 13, 0) 66%
+    ),
+    /* the top-right corner, where the readout floats */
+    radial-gradient(
+      120% 90% at 100% 0%,
+      rgba(10, 11, 13, 0.7) 0%,
+      rgba(10, 11, 13, 0.25) 42%,
+      rgba(10, 11, 13, 0) 68%
+    );
+}
+
+/* A working screen has no art of its own, so it gets a flat surface rather
+ * than a backdrop borrowed from another page. */
+#backdrop.flat {
+  background-image: none !important;
+  filter: none;
+  background: var(--bg);
+}
 
 #shell {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--rail-width) 1fr;
-  grid-template-rows: var(--topbar-height) 1fr var(--hintstrip-height);
+  grid-template-columns: var(--rail) 1fr;
+  grid-template-rows: 1fr 44px;
   grid-template-areas:
-    "topbar topbar"
-    "rail   content"
-    "hints  hints";
+    "rail content"
+    "hints hints";
   height: 100vh;
 }
 
-/* Below this width the rail becomes icon-only, per the breakpoints table. */
-@media (max-width: 1024px) {
-  :root {
-    --rail-width: 64px;
-  }
-  .rail-label {
-    display: none;
-  }
+/* =============================================================================
+ * GLASS
+ * backdrop-filter composites every frame. See DESIGN.md section 6: if this
+ * measures badly the fallback is a pre-blurred slice, never a flat panel.
+ * ========================================================================== */
+
+.glass {
+  background: rgba(12, 13, 16, 0.62);
+  backdrop-filter: blur(24px) saturate(1.1);
+  -webkit-backdrop-filter: blur(24px) saturate(1.1);
 }
 
-/* --- top bar --- */
-
-#topbar {
-  grid-area: topbar;
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: 0 var(--space-6);
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.brand {
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--red-300); /* red as TEXT must be red-300, never red-500 */
-  font-size: 14px;
-}
-
-#page-title {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.topbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-/* --- rail --- */
+/* =============================================================================
+ * RAIL
+ * ========================================================================== */
 
 #rail {
   grid-area: rail;
-  background: var(--surface-1);
-  border-right: 1px solid var(--border-subtle);
-  padding: var(--space-3) var(--space-2);
+  border-right: 1px solid var(--line);
+  padding: 22px 0 14px;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.rail-item {
+.brandline {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  height: var(--target-min); /* everything controller-reachable is >= 44px */
-  padding: 0 var(--space-3);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  border: 2px solid transparent;
-  background: none;
-  width: 100%;
-  font: inherit;
-  text-align: left;
+  gap: 10px;
+  padding: 0 20px 26px;
 }
 
-.rail-item:hover {
-  background: var(--surface-3);
-  color: var(--text-primary);
+.brandline img {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: #000;
+  flex: none;
 }
 
-.rail-item[aria-current="page"] {
-  background: var(--surface-3);
-  color: var(--text-primary);
+.brandline .bt {
+  font: 700 12.5px/1.25 var(--ui);
+  letter-spacing: 0.01em;
 }
 
-/* The selected page keeps a red edge so the current location survives focus
- * moving elsewhere. Selected-but-unfocused and focused are different states
- * and must look different, or controller users lose their place. */
-.rail-item[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  width: 3px;
-  height: 24px;
-  background: var(--red-500);
-  border-radius: 0 2px 2px 0;
+.brandline .bt em {
+  display: block;
+  font-style: normal;
+  color: var(--red-ink); /* red as TEXT is --red-ink, never --red */
 }
 
 .rail-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--tap);
+  margin: 0 12px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: 500 13px/1 var(--ui);
+  text-align: left;
+  border-radius: var(--r);
+  cursor: pointer;
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+
+.rail-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--fg);
+}
+
+/* Selection: red at 12 percent plus a red left edge, per the tokens. */
+.rail-item[aria-current="page"] {
+  background: rgba(224, 39, 46, 0.12);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.rail-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-radius: 0 2px 2px 0;
+  background: var(--red);
+  /* the 12deg shear from DESIGN_TOKENS section 11 */
+  transform: skewX(-12deg);
 }
 
 .rail-icon {
-  width: 20px;
-  text-align: center;
+  width: 15px;
+  height: 15px;
   flex: none;
-  opacity: 0.9;
+  display: grid;
+  place-items: center;
+  opacity: 0.8;
+}
+
+.rail-icon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 .rail-divider {
   height: 1px;
-  background: var(--border-subtle);
-  margin: var(--space-2) var(--space-3);
+  background: var(--line-soft);
+  margin: 12px 24px;
 }
 
-.rail-spacer {
-  flex: 1;
+.rail-foot {
+  margin-top: auto;
+  padding: 0 24px;
+  font: 400 11px/1.5 var(--ui);
+  color: var(--fg-3);
 }
 
-/* --- focus ---
- *
- * One visible ring, on every focusable thing, always. A controller user cannot
- * find focus by moving a pointer, so a missing ring is a lost position. Teal
- * rather than red: red is reserved for act, and focus is not an action. */
-:focus-visible,
-.focused {
-  outline: none;
-  border-color: var(--teal-500);
-  box-shadow: 0 0 0 3px rgba(34, 199, 180, 0.28);
+/* Never sheared, per the token prohibitions: a skewed ring reads as a fault. */
+:focus-visible {
+  outline: 3px solid rgba(224, 39, 46, 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
-/* --- content --- */
+/* =============================================================================
+ * CONTENT
+ * ========================================================================== */
 
 #content {
   grid-area: content;
   overflow-y: auto;
-  padding: var(--space-8);
+  overflow-x: hidden;
+  padding: 0 32px;
+  display: flex;
+  flex-direction: column;
 }
 
-.page-heading {
-  font-size: 22px;
-  font-weight: 600;
-  margin: 0 0 var(--space-2);
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-bottom: 28px;
+  min-height: 0;
 }
 
-.page-sub {
-  color: var(--text-secondary);
-  margin: 0 0 var(--space-6);
+/* --- the composited mark ----------------------------------------------------
+ * A blurred copy of the mark sits behind it, so it reads as lit by the scene
+ * rather than pasted onto it. */
+.mark {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  margin-bottom: 20px;
 }
 
-.card {
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
-  padding: var(--space-4);
-  margin-bottom: var(--space-4);
+.mark img {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  object-fit: contain;
 }
 
-.card h3 {
-  margin: 0 0 var(--space-3);
-  font-size: 15px;
-  font-weight: 600;
+.mark::before {
+  content: "";
+  position: absolute;
+  inset: -26px;
+  background: inherit;
+  filter: blur(30px);
+  opacity: 0.75;
 }
 
-.row {
+.eyebrow {
+  font: 600 11px/1 var(--ui);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--red-ink);
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  min-height: var(--target-min);
-  padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
-.row:last-child {
-  border-bottom: none;
+.eyebrow::before {
+  content: "";
+  width: 22px;
+  height: 2px;
+  background: var(--red);
+  transform: skewX(-12deg);
 }
 
-.row .label {
-  color: var(--text-secondary);
-  min-width: 180px;
+/* Anton, and only here. Never below 56px. */
+.hero-title {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(56px, 6.5vw, 104px);
+  line-height: 0.86;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+  margin: 0 0 14px;
+  text-shadow: 0 6px 40px rgba(0, 0, 0, 0.72);
+  max-width: 12ch;
 }
 
-.row .value {
-  color: var(--text-primary);
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 13px;
-  user-select: text; /* paths and device strings exist to be copied */
-  word-break: break-all;
-}
-
-.muted {
-  color: var(--text-tertiary);
-  font-size: 13px;
-}
-
-/* --- status pills --- */
-
-.pill {
-  display: inline-flex;
+.state {
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid transparent;
+  gap: 10px;
+  flex-wrap: wrap;
+  font: 400 13px/1 var(--ui);
+  color: var(--fg-2);
+  margin-bottom: 24px;
 }
 
-.pill.ok {
-  color: var(--success);
-  border-color: rgba(52, 211, 153, 0.35);
-  background: rgba(52, 211, 153, 0.1);
+.state .sep {
+  width: 4px;
+  height: 4px;
+  background: var(--fg-3);
+  transform: skewX(-12deg);
 }
 
-.pill.warn {
-  color: var(--warning);
-  border-color: rgba(245, 166, 35, 0.35);
-  background: rgba(245, 166, 35, 0.1);
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
-.pill.bad {
-  color: var(--error);
-  border-color: rgba(255, 77, 79, 0.35);
-  background: rgba(255, 77, 79, 0.1);
-}
-
-.pill.data {
-  color: var(--teal-400);
-  border-color: rgba(34, 199, 180, 0.35);
-  background: rgba(34, 199, 180, 0.1);
-}
-
-/* --- buttons --- */
+/* --- controls --------------------------------------------------------------*/
 
 .btn {
-  height: var(--target-min);
-  padding: 0 var(--space-6);
-  border-radius: 10px;
-  border: 1px solid var(--border-default);
-  background: var(--surface-3);
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: 600;
+  height: 48px;
+  padding: 0 26px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+  font: 600 14px/1 var(--ui);
+  border-radius: var(--r);
   cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: background var(--t2) var(--ease), transform var(--t1) var(--ease);
 }
 
 .btn:hover {
-  background: var(--surface-4);
+  background: rgba(255, 255, 255, 0.14);
 }
 
-/* red-500 as a FILL with white on top measures about 5:1, which passes */
-.btn.primary {
-  background: var(--red-500);
-  border-color: var(--red-500);
+.btn:active {
+  transform: translateY(1px);
+}
+
+/* The one primary action. Red is the fill; white on it measures about 5:1. */
+.btn.play {
+  background: var(--red);
+  border-color: var(--red);
   color: #fff;
+  font-size: 15px;
+  padding: 0 38px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
-.btn.primary:hover {
-  background: var(--red-400);
-  border-color: var(--red-400);
+.btn.play:hover {
+  background: var(--red-hi);
+  border-color: var(--red-hi);
 }
 
-.btn.primary:active {
-  background: var(--red-600);
+/* --- readout panel ---------------------------------------------------------*/
+
+.readout {
+  position: absolute;
+  top: 28px;
+  right: 32px;
+  width: 300px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+  overflow: hidden;
 }
 
-/* --- hint strip ---
- *
- * Persistent, and the only place button bindings are stated. The research
- * conclusion was that bindings shown once consistently beat per-control hints
- * scattered through the page. */
+.readout h4 {
+  margin: 0 0 12px;
+  font: 600 11px/1 var(--ui);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.rrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  border-bottom: 1px solid var(--line-soft);
+  font: 400 12.5px/1 var(--ui);
+  color: var(--fg-2);
+}
+
+.rrow:last-child {
+  border-bottom: 0;
+}
+
+.rrow .v {
+  margin-left: auto;
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rrow .v.teal {
+  color: var(--teal);
+}
+
+.rrow .v.warn {
+  color: var(--warn);
+}
+
+/* --- shelf: a strip of art along the bottom -------------------------------*/
+
+.shelf {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 14px 16px 16px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.shelf-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.shelf-head h3 {
+  margin: 0;
+  font: 600 11px/1 var(--ui);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.shelf-head .count {
+  font: 400 11px/1 var(--ui);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 150px;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.tile {
+  position: relative;
+  border: 0;
+  padding: 0;
+  border-radius: var(--r);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--panel-2);
+  box-shadow: 0 0 0 1px var(--line);
+  transition: box-shadow var(--t2) var(--ease), transform var(--t1) var(--ease);
+}
+
+.tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24), 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+
+.tile[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--red);
+}
+
+.tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+}
+
+.tile .cap {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 20px 10px 8px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9), rgba(0, 0, 0, 0));
+  font: 600 11.5px/1.2 var(--ui);
+  color: #fff;
+  text-align: left;
+}
+
+/* Derived art for a mod that has none of its own. */
+.ball {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  display: grid;
+  place-items: center;
+  background: var(--panel-2);
+}
+
+.ball svg {
+  width: 58%;
+}
+
+/* --- sheets, for working screens ------------------------------------------*/
+
+.sheet {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.srow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  font: 400 12.5px/1 var(--ui);
+}
+
+.srow:last-child {
+  border-bottom: 0;
+}
+
+.srow:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.srow .name {
+  flex: 1;
+}
+
+.srow .meta {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-title {
+  font: 700 28px/1.2 var(--ui);
+  letter-spacing: -0.015em;
+  margin: 28px 0 6px;
+}
+
+.page-sub {
+  color: var(--fg-2);
+  margin: 0 0 22px;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.section-head h3 {
+  margin: 0;
+  font: 600 15px/1 var(--ui);
+}
+
+/* --- status ---------------------------------------------------------------*/
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 12.5px/1 var(--ui);
+  color: var(--fg-2);
+}
+
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status.on {
+  color: var(--teal);
+}
+
+.status.off {
+  color: var(--fg-3);
+}
+
+.status.bad {
+  color: var(--bad);
+}
+
+/* --- notice ---------------------------------------------------------------*/
+
+.notice {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  overflow: hidden;
+}
+
+.notice strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* =============================================================================
+ * HINT STRIP
+ * ========================================================================== */
+
 #hints {
   grid-area: hints;
   display: flex;
   align-items: center;
-  gap: var(--space-6);
-  padding: 0 var(--space-6);
-  background: var(--surface-1);
-  border-top: 1px solid var(--border-subtle);
-  font-size: 13px;
-  color: var(--text-secondary);
+  gap: 20px;
+  padding: 0 32px;
+  border-top: 1px solid var(--line);
+  font: 400 11.5px/1 var(--ui);
+  color: var(--fg-3);
 }
 
 .hint {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
 }
 
 .glyph {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  background: var(--surface-3);
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-primary);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+  font: 700 10px/1 var(--ui);
 }
 
 .hints-right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: 12px;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
+/* =============================================================================
+ * MOTION
+ * ========================================================================== */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
-.dot.live {
-  background: var(--teal-500);
+.rise {
+  animation: rise var(--t3) var(--ease) both;
 }
 
-.dot.off {
-  background: var(--text-disabled);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-/* --- honesty banner ---
- *
- * Used when a page can only show a partial answer. It is deliberately not
- * styled as an error, because "we did not look everywhere" is not a failure,
- * but it must never be silent. */
-.notice {
-  border: 1px solid var(--border-default);
-  border-left: 3px solid var(--warning);
-  background: var(--surface-2);
-  border-radius: 8px;
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-4);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
+/* =============================================================================
+ * NARROW
+ * A Deck at 1280 leaves under 1050 beside the rail, so the rail collapses and
+ * the readout stops floating.
+ * ========================================================================== */
 
-.notice strong {
-  color: var(--text-primary);
+@media (max-width: 1200px) {
+  :root {
+    --rail: 64px;
+  }
+  .rail-label,
+  .brandline .bt,
+  .rail-foot {
+    display: none;
+  }
+  .rail-item {
+    justify-content: center;
+    padding: 0;
+  }
+  .readout {
+    position: static;
+    width: auto;
+    margin: 24px 0 0;
+  }
 }

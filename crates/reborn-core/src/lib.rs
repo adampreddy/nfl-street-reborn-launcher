@@ -23,6 +23,8 @@
 //! - [`migration`]: moving a 2.1 install, saves first, mods un-applied before
 //!   textures are trusted.
 //!
+//! - [`session`]: the launch sequence, in the core rather than in a front end,
+//!   so the window and the command line cannot drift about what a launch does.
 //! - [`supervisor`]: the single-instance lock, and the session record that
 //!   survives the launcher going down with the game.
 //!
@@ -43,6 +45,7 @@ pub mod manifest;
 pub mod migration;
 pub mod platform;
 pub mod runtime;
+pub mod session;
 pub mod supervisor;
 
 pub use platform::{

@@ -4,31 +4,39 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NFL Street Reborn</title>
+    <link rel="preload" href="fonts/Anton.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div id="shell">
-      <header id="topbar">
-        <span class="brand">NSR</span>
-        <span id="page-title">Home</span>
-        <div class="topbar-right">
-          <span id="runtime-state">no runtime selected</span>
-        </div>
-      </header>
+    <!-- The art layer sits behind the shell, not inside a page, so it survives
+         navigation and can cross-fade between sections. -->
+    <div id="backdrop"></div>
 
-      <nav id="rail" aria-label="Sections"></nav>
+    <div id="shell">
+      <nav id="rail" class="glass" aria-label="Sections">
+        <div class="brandline">
+          <img src="art/cover.png" alt="" />
+          <span class="bt">NFL Street<em>Reborn</em></span>
+        </div>
+        <div id="nav"></div>
+        <div class="rail-foot"><span id="runtime-state">No runtime set</span></div>
+      </nav>
 
       <main id="content" tabindex="-1"></main>
 
-      <footer id="hints">
+      <footer id="hints" class="glass">
         <span class="hint"><span class="glyph">A</span> Select</span>
         <span class="hint"><span class="glyph">B</span> Back</span>
-        <span class="hint"><span class="glyph">LB</span><span class="glyph">RB</span> Section</span>
+        <span class="hint"
+          ><span class="glyph">LB</span><span class="glyph">RB</span> Section</span
+        >
         <span class="hints-right">
-          <span><span class="dot off" id="pad-dot"></span> <span id="pad-state">no controller</span></span>
+          <span id="pad-state" class="status off">No controller</span>
         </span>
       </footer>
     </div>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>

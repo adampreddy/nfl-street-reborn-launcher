@@ -25,9 +25,8 @@ use clap::{Parser, Subcommand};
 use reborn_core::controller::{ControllerProfile, GcPadConfig};
 use reborn_core::devices::DeviceScanner;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
-use reborn_core::runtime::{
-    ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, RuntimePackager,
-};
+use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
+use reborn_core::session::{build_gcpad, LaunchRequest, Launched, Session};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -358,50 +357,6 @@ fn list_devices(
     Ok(OK)
 }
 
-/// Build GCPadNew.ini from whatever the runtime says is plugged in.
-///
-/// Returns the file contents and the port assignment, or None when there is
-/// nothing to bind. Shared by `controller` and `play` so the file a player
-/// inspects is byte for byte the file a launch uses.
-fn build_gcpad(
-    scan: &reborn_core::devices::Enumeration,
-    ports: u8,
-) -> Option<(String, Vec<(u8, String)>)> {
-    let pads = scan.playable_pads();
-    if pads.is_empty() {
-        return None;
-    }
-
-    let profiles: Vec<ControllerProfile> = pads
-        .iter()
-        .take(ports as usize)
-        .enumerate()
-        .map(|(i, d)| ControllerProfile::new(d.identity(), (i + 1) as u8))
-        .collect();
-
-    let by_key: std::collections::BTreeMap<String, String> = pads
-        .iter()
-        .map(|d| (d.identity().profile_key(), d.device_string()))
-        .collect();
-
-    let ini = GcPadConfig::generate(&profiles, |id| {
-        by_key
-            .get(&id.profile_key())
-            .cloned()
-            // Never invent one. A made up Device line parses fine and binds
-            // nothing, which looks exactly like a broken controller.
-            .unwrap_or_else(|| "UNKNOWN-DEVICE".to_string())
-    });
-
-    let assignment = pads
-        .iter()
-        .take(ports as usize)
-        .enumerate()
-        .map(|(i, d)| ((i + 1) as u8, d.device_string()))
-        .collect();
-    Some((ini, assignment))
-}
-
 fn controller(
     platform: &Platform,
     runtime: Option<&std::path::Path>,
@@ -516,156 +471,101 @@ fn play(
         }
     };
 
-    for (what, path) in [("game image", iso), ("runtime", runtime)] {
-        if !path.exists() {
-            eprintln!("no {what} at {}", path.display());
-            return Ok(PROBLEM);
-        }
-    }
-
-    // The lock comes first. Two copies of the game booting the same portable
-    // user directory write the same memory card, and the loser's franchise is
-    // whatever happens to be flushed last.
-    let Startup::Owner(supervisor) = Supervisor::acquire(platform)? else {
-        eprintln!("a launcher is already running. Close it first.");
-        return Ok(PROBLEM);
-    };
-
-    if let Some(lost) = supervisor.recover_unfinished()? {
-        println!("Recovered an unfinished session ({}).", lost.id);
-        println!("The launcher stopped while the game was running last time.");
-        println!();
-    }
-
-    let user_dir = platform
-        .paths
-        .data_root()?
-        .join(DataDir::Runtime.relative())
-        .join("user");
-    std::fs::create_dir_all(&user_dir).map_err(|source| reborn_core::Error::Io {
-        path: user_dir.clone(),
-        source,
-    })?;
-
-    let config = LaunchConfig {
-        build: GameBuild::Offline,
+    let req = LaunchRequest {
+        runtime_exe: runtime.to_path_buf(),
+        game_path: iso.to_path_buf(),
         graphics,
         fullscreen,
-        game_path: iso.to_path_buf(),
-        user_dir: user_dir.clone(),
-        match_context: None,
+        build: GameBuild::Offline,
     };
 
-    // Regenerated every launch. Anything changed inside Dolphin is discarded,
-    // which is what makes the launcher's settings page the only source of
-    // truth rather than one of two competing ones.
-    let config_dir = user_dir.join("Config");
-    std::fs::create_dir_all(&config_dir).map_err(|source| reborn_core::Error::Io {
-        path: config_dir.clone(),
-        source,
-    })?;
-    for (name, contents) in ConfigGenerator::generate(&config) {
-        let path = config_dir.join(&name);
-        std::fs::write(&path, contents).map_err(|source| reborn_core::Error::Io {
-            path: path.clone(),
-            source,
-        })?;
-        println!("wrote {}", path.display());
-    }
-
-    // The controller file is written from what the runtime says is plugged in
-    // right now, using the very runtime about to be launched. That is the
-    // whole point: plug a pad in, press play, and it is bound, with no setup
-    // step and no guide to follow.
-    //
-    // Asked at launch rather than remembered, because a pad can be swapped
-    // between sessions and a remembered device string that no longer matches
-    // binds nothing without saying so.
-    let scan = resolve_devices(platform, Some(runtime))?;
-    match build_gcpad(&scan, 4) {
-        Some((ini, assignment)) => {
-            let path = config_dir.join("GCPadNew.ini");
-            std::fs::write(&path, ini).map_err(|source| reborn_core::Error::Io {
-                path: path.clone(),
-                source,
-            })?;
-            println!("wrote {}", path.display());
-            for (port, device) in &assignment {
-                println!("  port {port} -> {device}");
-            }
+    // A dry run writes the configuration and starts nothing, which is the same
+    // sequence up to the spawn. Sharing it is the point: a dry run that
+    // exercised different code would prove nothing about a real launch.
+    if dry_run {
+        let written = Session::prepare(platform, &req)?;
+        for f in &written.files {
+            println!("wrote {}", f.display());
         }
-        None => {
+        for (port, device) in &written.pads {
+            println!("  port {port} -> {device}");
+        }
+        if written.no_controller {
             println!();
             println!("No controller detected.");
             println!();
-            // Seen for real during development: a wireless pad that had been
-            // working idled off between one command and the next, and the
-            // runtime stopped listing it. Worth saying, because the natural
-            // assumption is that the launcher broke.
             println!("If a controller is plugged in, it may have gone to sleep. Press its");
             println!("home button to wake it, then run this again.");
-            println!();
-            println!("The game will still start, with nothing bound to a pad.");
         }
-    }
-
-    println!();
-    println!("Game     {}", iso.display());
-    println!("Runtime  {}", runtime.display());
-    println!(
-        "Preset   {} ({}x internal)",
-        graphics.label(),
-        graphics.internal_resolution()
-    );
-    println!(
-        "Display  {}",
-        if fullscreen { "fullscreen" } else { "windowed" }
-    );
-    println!("User dir {}", user_dir.display());
-
-    if dry_run {
+        if !written.pads_authoritative {
+            println!();
+            println!("The controller list came from the built in scan, which only sees");
+            println!("XInput, so the binding may be incomplete.");
+        }
+        println!();
+        println!("Game     {}", iso.display());
+        println!("Runtime  {}", runtime.display());
+        println!(
+            "Preset   {} ({}x internal)",
+            graphics.label(),
+            graphics.internal_resolution()
+        );
+        println!(
+            "Display  {}",
+            if fullscreen { "fullscreen" } else { "windowed" }
+        );
         println!();
         println!("Dry run. Nothing was launched.");
         return Ok(OK);
     }
 
-    let record = supervisor.begin(GameBuild::Offline)?;
-    println!();
     println!("Starting. This process stays until the game exits.");
 
-    let handle = Launcher::launch(platform, runtime, &config)?;
-    println!("Running as process {}.", handle.pid());
-
-    let exit = platform.processes.wait(handle)?;
-    let finished = supervisor.finish(record, &exit)?;
-
-    println!();
-    let minutes = finished.duration_ms().unwrap_or(0) as f64 / 60_000.0;
-    println!("Session ended after {minutes:.1} minutes.");
-
-    match finished.end.as_ref() {
-        Some(SessionEnd::Exited { code: Some(0) }) => {
-            println!("The game closed normally.");
-            Ok(OK)
+    match Session::run(platform, &req)? {
+        Launched::Refused(r) => {
+            eprintln!("{}", r.message());
+            Ok(PROBLEM)
         }
-        Some(end) if end.needs_recovery() => {
-            println!("Something went wrong:");
-            match end.outcome() {
-                reborn_core::runtime::SessionOutcome::ShowRecovery { detail } => {
-                    println!("  {detail}");
-                }
-                other => println!("  {other:?}"),
+        Launched::Finished {
+            end,
+            minutes,
+            pads,
+            pads_authoritative,
+            ..
+        } => {
+            for (port, device) in &pads {
+                println!("  port {port} -> {device}");
+            }
+            if !pads_authoritative {
+                println!("(controller list from the built in scan, may be incomplete)");
             }
             println!();
-            println!("Recorded. `rebornctl sessions` will show it.");
-            Ok(PROBLEM)
+            println!("Session ended after {minutes:.1} minutes.");
+
+            match &end {
+                SessionEnd::Exited { code: Some(0) } => {
+                    println!("The game closed normally.");
+                    Ok(OK)
+                }
+                SessionEnd::Exited { code } => {
+                    println!("The game exited with status {}.", code.unwrap_or(-1));
+                    println!("That is a failure, not a crash.");
+                    Ok(PROBLEM)
+                }
+                other => {
+                    println!("Something went wrong:");
+                    match other.outcome() {
+                        reborn_core::runtime::SessionOutcome::ShowRecovery { detail } => {
+                            println!("  {detail}");
+                        }
+                        o => println!("  {o:?}"),
+                    }
+                    println!();
+                    println!("Recorded. `rebornctl sessions` will show it.");
+                    Ok(PROBLEM)
+                }
+            }
         }
-        Some(SessionEnd::Exited { code }) => {
-            println!("The game exited with status {}.", code.unwrap_or(-1));
-            println!("That is a failure, not a crash.");
-            Ok(PROBLEM)
-        }
-        _ => Ok(OK),
     }
 }
 
