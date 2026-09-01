@@ -1,21 +1,55 @@
 //! Concrete implementations of the platform seams.
 //!
-//! What is real and what is a stub, stated plainly so nobody has to read the
-//! code to find out:
+//! What is real and what is not, stated plainly so nobody has to read the code
+//! to find out:
 //!
 //! | Seam | Windows | macOS | Linux |
 //! |---|---|---|---|
 //! | [`Paths`] | real | real | real |
 //! | [`ProcessHost`] | real | real | real |
 //! | [`FileOps`] | real | real | real |
-//! | [`CredentialVault`] | **stub** | **stub** | **stub** |
-//! | [`RemovableDrives`] | **stub** | **stub** | **stub** |
+//! | [`CredentialVault`] | real, exercised | real, never run | real, never run |
+//! | [`RemovableDrives::enumerate_volumes`] | real, exercised | real, never run | real, never run |
+//! | [`RemovableDrives::eject`] | **refuses** | **refuses** | **refuses** |
 //!
-//! The two stubs return [`Error::NotImplemented`] rather than panicking or
-//! pretending to succeed. Credentials are not needed until Discord sign-in, and
-//! drive enumeration is not needed until the Xbox wizard. Writing a plausible
-//! fake for either would be worse than an honest failure, because a credential
-//! vault that silently does not persist is a security bug that tests pass.
+//! "never run" is not hedging. The credential and drive code is one
+//! implementation for all three platforms, because `keyring` and `sysinfo` carry
+//! the per-platform back ends, so there is no separate macOS or Linux branch to
+//! be wrong. But nothing has executed it on either, and this table exists so the
+//! difference between "written" and "verified" stays visible. What was actually
+//! measured here, on Windows: a secret written by one process and read back by a
+//! second one, and a single fixed NTFS volume that the drive seam refuses to
+//! offer.
+//!
+//! # The two dependencies this file adds
+//!
+//! Both exist because this crate forbids `unsafe`, and neither job can be done
+//! from the standard library.
+//!
+//! - `keyring` for the credential store. It is Windows Credential Manager, the
+//!   macOS Keychain and the *nix Secret Service behind one API, and it never
+//!   falls back to something weaker: with no store, every call fails. Hand
+//!   rolling `CredWriteW` through `windows-sys` would mean `unsafe` in this
+//!   crate, and a stored token is not worth spending that guarantee on.
+//! - `sysinfo` for volume enumeration, restricted to its `disk` module. It is
+//!   the one safe crate that reports a removable flag on all three platforms.
+//!
+//! # Why [`RemovableDrives::eject`] still refuses
+//!
+//! Telling Windows to release a volume is `DeviceIoControl` with
+//! `IOCTL_STORAGE_EJECT_MEDIA`, which is `unsafe`, and no safe wrapper for it
+//! exists. The alternative, invoking the shell's Eject verb through a child
+//! `powershell`, was rejected for two concrete reasons: it cannot report whether
+//! it worked, and when the volume is busy Windows raises its own modal dialog
+//! that this launcher can neither see nor dismiss.
+//!
+//! So it returns [`Error::NotImplemented`] and the caller degrades: `xbox` turns
+//! any error into `EjectOutcome::Refused`, whose message points at Windows' own
+//! Eject. That matters because `EjectOutcome::Ejected` says "the drive has been
+//! ejected and is safe to unplug", which must never be printed by code that did
+//! nothing. Every file is closed by then, and since Windows 10 1809 removable
+//! volumes default to quick removal with no write caching, so the copy is
+//! already on the medium when the wizard finishes.
 
 use super::*;
 
@@ -445,31 +479,250 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Stubs, honest about being stubs
+// Credentials, in the operating system's own store or nowhere
 // ---------------------------------------------------------------------------
 
-struct StubCredentialVault;
+/// The service name every launcher credential is filed under.
+///
+/// Reuses [`PRODUCT_DATA`] so the entry names the launcher and not the game. On
+/// Windows the credential shows up in Credential Manager as
+/// `{account}.NFL Street Reborn Launcher`, a name the user can find and delete
+/// without us. Confirmed with `cmdkey /list` after a write.
+const CREDENTIAL_SERVICE: &str = PRODUCT_DATA;
 
-impl CredentialVault for StubCredentialVault {
-    fn store(&self, _account: &str, _secret: &str) -> Result<()> {
-        not_implemented("credential store")
-    }
-    fn retrieve(&self, _account: &str) -> Result<Option<String>> {
-        not_implemented("credential retrieve")
-    }
-    fn delete(&self, _account: &str) -> Result<()> {
-        not_implemented("credential delete")
+/// What the platform's store is called.
+///
+/// An error that says "the credential store" names nothing the user can go and
+/// look at. This one does.
+const CREDENTIAL_STORE_NAME: &str = if cfg!(windows) {
+    "Windows Credential Manager"
+} else if cfg!(target_os = "macos") {
+    "the macOS Keychain"
+} else if cfg!(target_os = "linux") {
+    "the Secret Service (gnome-keyring or kwallet)"
+} else {
+    "this platform's credential store"
+};
+
+/// Secrets in the operating system's store, and nowhere else.
+///
+/// There is no fallback, on purpose. If the platform store cannot be reached,
+/// every method fails and says so. The tempting alternative, a file under the
+/// data root, would turn a Discord token into something any process running as
+/// the user can read, and it would pass every test in this file.
+struct OsCredentialVault;
+
+impl OsCredentialVault {
+    fn entry(account: &str) -> Result<keyring::Entry> {
+        // An empty account name is accepted by the platform store: it files the
+        // secret under the bare service name, which in Credential Manager looks
+        // like `.NFL Street Reborn Launcher`, owned by no feature and
+        // attributable to nothing. Measured, not assumed.
+        if account.is_empty() {
+            return Err(Error::CredentialStore(format!(
+                "a credential needs an account name to be filed under in \
+                 {CREDENTIAL_STORE_NAME}; pass the name of the feature that owns \
+                 the secret, for example \"discord\""
+            )));
+        }
+        keyring::Entry::new(CREDENTIAL_SERVICE, account)
+            .map_err(|e| credential_error("opening the entry for", account, e))
     }
 }
 
-struct StubRemovableDrives;
-
-impl RemovableDrives for StubRemovableDrives {
-    fn enumerate(&self) -> Result<Vec<RemovableDrive>> {
-        not_implemented("removable drive enumeration")
+impl CredentialVault for OsCredentialVault {
+    /// Store a secret, then read it straight back before reporting success.
+    ///
+    /// The read-back is the point. A write the store accepts and does not keep
+    /// is the exact failure this seam exists to prevent, and without the check
+    /// the launcher reports a successful sign-in and then finds nothing on the
+    /// next start, which looks like the sign-in being broken.
+    ///
+    /// The trade, stated: on a store that acknowledges a write but only answers
+    /// reads later, this reports failure for a secret that is in fact stored,
+    /// and the user signs in twice. The other way round is a user who is told
+    /// they are signed in and is not.
+    fn store(&self, account: &str, secret: &str) -> Result<()> {
+        let entry = Self::entry(account)?;
+        entry
+            .set_password(secret)
+            .map_err(|e| credential_error("storing the secret for", account, e))?;
+        match entry.get_password() {
+            Ok(read_back) if read_back == secret => Ok(()),
+            Ok(_) => Err(Error::CredentialStore(format!(
+                "{CREDENTIAL_STORE_NAME} accepted the secret for {account:?} and \
+                 then returned a different one, so it cannot be trusted to hold \
+                 it. Nothing was written anywhere else. Delete the {account:?} \
+                 entry there and try again"
+            ))),
+            Err(e) => Err(credential_error(
+                "reading back the secret just stored for",
+                account,
+                e,
+            )),
+        }
     }
-    fn eject(&self, _mount_point: &Path) -> Result<()> {
-        not_implemented("eject")
+
+    /// Read a secret, or report honestly that there is not one.
+    ///
+    /// `Ok(None)` and an error are different answers and the caller has to tell
+    /// them apart: a player who has never signed in has no token, and showing
+    /// them a store failure sends them hunting for a problem that does not
+    /// exist.
+    fn retrieve(&self, account: &str) -> Result<Option<String>> {
+        let entry = Self::entry(account)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(credential_error("reading the secret for", account, e)),
+        }
+    }
+
+    /// Delete a secret. Already absent counts as done.
+    ///
+    /// Signing out must not fail because there was nothing to sign out of, and a
+    /// caller forced to special-case "it was already gone" will eventually leave
+    /// a token behind instead.
+    fn delete(&self, account: &str) -> Result<()> {
+        let entry = Self::entry(account)?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(credential_error("deleting the secret for", account, e)),
+        }
+    }
+}
+
+/// Turn a credential store failure into a message that names a next step.
+///
+/// `action` is a phrase such as `"storing the secret for"`, so the sentence
+/// begins with which operation failed instead of leaving the caller to guess
+/// from a bare platform error.
+fn credential_error(action: &str, account: &str, error: keyring::Error) -> Error {
+    let advice = match &error {
+        // No store at all. This is the branch that must never quietly become a
+        // file on disk, so it says plainly that nothing was written.
+        keyring::Error::NoDefaultStore => {
+            let why = match keyring::Entry::store_status() {
+                Err(e) => e.to_string(),
+                Ok(()) => "no reason was reported".to_string(),
+            };
+            format!(
+                "{CREDENTIAL_STORE_NAME} could not be opened ({why}). No secret \
+                 was written anywhere else. Unlock it and try again."
+            )
+        }
+        keyring::Error::NoStorageAccess(_) => format!(
+            "{CREDENTIAL_STORE_NAME} refused access, which usually means it is \
+             locked. Unlock it and try again."
+        ),
+        // Measured on Windows with keyring 4.2: the cap is 2560 bytes, that is
+        // 1280 UTF-16 units, and the store refuses rather than truncating. Worth
+        // saying, because a truncated token looks valid and fails at the server
+        // as an authentication error, which sends everyone hunting in the wrong
+        // place.
+        keyring::Error::TooLong(what, limit) => format!(
+            "{CREDENTIAL_STORE_NAME} caps a secret at {limit} bytes ({what}) and \
+             this one is longer. Nothing was truncated and nothing was stored. \
+             Store a reference to the value rather than the value."
+        ),
+        keyring::Error::Ambiguous(_) => format!(
+            "more than one credential in {CREDENTIAL_STORE_NAME} matches \
+             {account:?}, so there is no single answer. Delete the duplicates \
+             there and sign in again."
+        ),
+        keyring::Error::BadEncoding(_) => format!(
+            "the stored value for {account:?} is not text, so this launcher did \
+             not write it. Delete that entry in {CREDENTIAL_STORE_NAME} and sign \
+             in again."
+        ),
+        _ => format!(
+            "Nothing was written anywhere else. If this repeats, delete the \
+             {account:?} entry in {CREDENTIAL_STORE_NAME} and sign in again."
+        ),
+    };
+    Error::CredentialStore(format!("{action} {account:?} failed: {error}. {advice}"))
+}
+
+// ---------------------------------------------------------------------------
+// Removable drives
+// ---------------------------------------------------------------------------
+
+struct RealRemovableDrives;
+
+impl RemovableDrives for RealRemovableDrives {
+    /// Every volume, with the removable flag the operating system reports.
+    ///
+    /// Only the storage numbers are refreshed. `DiskRefreshKind::everything`
+    /// also opens each device to ask whether it is an SSD and to read its i/o
+    /// counters, neither of which the wizard uses, and both of which mean waking
+    /// an idle external disk just to draw a list.
+    ///
+    /// A volume reporting zero capacity is still returned. That is a card reader
+    /// with no card in it, and the wizard has a refusal that tells the user
+    /// their drive reported no size. Dropping it here would turn that into a
+    /// drive silently missing from the picker.
+    fn enumerate_volumes(&self) -> Result<Vec<Volume>> {
+        let disks = sysinfo::Disks::new_with_refreshed_list_specifics(
+            sysinfo::DiskRefreshKind::nothing().with_storage(),
+        );
+
+        let mut volumes: Vec<Volume> = disks
+            .list()
+            .iter()
+            .map(|disk| Volume {
+                kind: if disk.is_removable() {
+                    VolumeKind::Removable
+                } else {
+                    VolumeKind::Fixed
+                },
+                drive: RemovableDrive {
+                    mount_point: disk.mount_point().to_path_buf(),
+                    label: text_or_absent(disk.name()),
+                    total_bytes: disk.total_space(),
+                    free_bytes: disk.available_space(),
+                    filesystem: text_or_absent(disk.file_system()),
+                    // Not knowable through this seam yet, so it says absent.
+                    //
+                    // A drive letter is not an identity and neither is a label:
+                    // two sticks can both be called XBOX-USB, and treating them
+                    // as one drive would make the wizard believe it had already
+                    // written to a drive it has never seen. The real answer is
+                    // the volume GUID path, which the enumerator computes
+                    // internally and does not expose, and which otherwise needs
+                    // GetVolumeNameForVolumeMountPointW and therefore unsafe.
+                    volume_identity: None,
+                },
+            })
+            .collect();
+
+        // Sorted so a second scan lists the same drives in the same order. The
+        // wizard requires an explicit path to be chosen, so order is not what
+        // makes it safe, but a list that reshuffles under a user picking a
+        // destination for 3 GB is its own hazard.
+        volumes.sort_by(|a, b| a.drive.mount_point.cmp(&b.drive.mount_point));
+        Ok(volumes)
+    }
+
+    /// Refuses. The module header has the reasoning and what the caller does
+    /// instead.
+    fn eject(&self, mount_point: &Path) -> Result<()> {
+        let _ = mount_point;
+        not_implemented("ejecting a drive from inside the launcher")
+    }
+}
+
+/// A volume label or filesystem name, with empty meaning absent.
+///
+/// Windows returns an empty string for an unlabeled volume, and `Some("")` would
+/// draw a drive in the picker with a blank where a name should be, which reads
+/// as a label that failed to load rather than a drive that has none.
+fn text_or_absent(value: &std::ffi::OsStr) -> Option<String> {
+    let text = value.to_string_lossy().trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
     }
 }
 
@@ -477,10 +730,10 @@ impl RemovableDrives for StubRemovableDrives {
 pub fn platform() -> Platform {
     Platform {
         paths: Box::new(RealPaths),
-        credentials: Box::new(StubCredentialVault),
+        credentials: Box::new(OsCredentialVault),
         processes: Box::new(RealProcessHost),
         files: Box::new(RealFileOps),
-        drives: Box::new(StubRemovableDrives),
+        drives: Box::new(RealRemovableDrives),
     }
 }
 
@@ -502,5 +755,366 @@ fn try_lock(file: &std::fs::File) -> std::io::Result<bool> {
         Ok(false) => Ok(false),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // Removable drives
+    // -----------------------------------------------------------------------
+
+    fn volume(mount_point: &str, kind: VolumeKind) -> Volume {
+        Volume {
+            kind,
+            drive: RemovableDrive {
+                mount_point: PathBuf::from(mount_point),
+                label: None,
+                total_bytes: 64_000_000_000,
+                free_bytes: 63_000_000_000,
+                filesystem: Some("exFAT".to_string()),
+                volume_identity: None,
+            },
+        }
+    }
+
+    /// A machine with a system disk and a USB stick, so the filter can be tested
+    /// without waiting for someone to plug something in.
+    struct SystemDiskAndStick;
+
+    impl RemovableDrives for SystemDiskAndStick {
+        fn enumerate_volumes(&self) -> Result<Vec<Volume>> {
+            Ok(vec![
+                volume("/system", VolumeKind::Fixed),
+                volume("/media/stick", VolumeKind::Removable),
+            ])
+        }
+        fn eject(&self, _mount_point: &Path) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The failure this seam exists to prevent. The Xbox wizard copies about
+    /// 3 GB to whatever `enumerate` hands it, so a fixed disk appearing in that
+    /// list once is that payload written into somebody's system drive.
+    #[test]
+    fn a_fixed_volume_is_never_offered_as_a_removable_drive() {
+        let offered = SystemDiskAndStick.enumerate().expect("enumerate");
+        assert_eq!(
+            offered.iter().map(|d| &d.mount_point).collect::<Vec<_>>(),
+            vec![&PathBuf::from("/media/stick")],
+            "only the removable volume may be offered"
+        );
+    }
+
+    /// Same rule, against whatever is actually attached to this machine rather
+    /// than a fake. On the machine this was written on that is one fixed NTFS
+    /// volume and no removable drives, so `enumerate` is empty and that is the
+    /// correct answer.
+    #[test]
+    fn the_real_enumerator_offers_no_fixed_volume() {
+        let drives = RealRemovableDrives;
+        let volumes = drives.enumerate_volumes().expect("enumerate_volumes");
+        assert!(
+            !volumes.is_empty(),
+            "a running machine has at least the volume it booted from"
+        );
+        let offered = drives.enumerate().expect("enumerate");
+
+        for volume in &volumes {
+            if volume.kind == VolumeKind::Fixed {
+                assert!(
+                    !offered
+                        .iter()
+                        .any(|d| d.mount_point == volume.drive.mount_point),
+                    "{} is a fixed disk and was offered as removable",
+                    volume.drive.mount_point.display()
+                );
+            }
+        }
+    }
+
+    /// Free space above capacity would mean the two numbers came from different
+    /// units, and the wizard checks free space to decide whether about 3 GB
+    /// fits. It would then start a copy that cannot finish.
+    #[test]
+    fn reported_sizes_are_consistent_and_paths_are_absolute() {
+        for volume in RealRemovableDrives
+            .enumerate_volumes()
+            .expect("enumerate_volumes")
+        {
+            let drive = &volume.drive;
+            assert!(
+                drive.mount_point.is_absolute(),
+                "{} must be an absolute mount point",
+                drive.mount_point.display()
+            );
+            if drive.total_bytes > 0 {
+                assert!(
+                    drive.free_bytes <= drive.total_bytes,
+                    "{} reports {} free of {} total",
+                    drive.mount_point.display(),
+                    drive.free_bytes,
+                    drive.total_bytes
+                );
+            }
+            // An empty label must be absent rather than blank, or the picker
+            // draws a drive with nothing where its name goes.
+            assert_ne!(drive.label.as_deref(), Some(""));
+            assert_ne!(drive.filesystem.as_deref(), Some(""));
+        }
+    }
+
+    /// A picker that reshuffles between scans moves the row under the hand of
+    /// somebody choosing where to write 3 GB.
+    #[test]
+    fn volumes_come_back_in_a_stable_order() {
+        let listed: Vec<PathBuf> = RealRemovableDrives
+            .enumerate_volumes()
+            .expect("enumerate_volumes")
+            .into_iter()
+            .map(|v| v.drive.mount_point)
+            .collect();
+        let mut sorted = listed.clone();
+        sorted.sort();
+        assert_eq!(listed, sorted, "enumeration must be ordered");
+    }
+
+    /// `xbox::eject` turns `Ok(())` into "the drive has been ejected and is safe
+    /// to unplug". Nothing that did not eject anything may return `Ok`.
+    #[test]
+    fn eject_refuses_instead_of_claiming_success() {
+        let err = RealRemovableDrives
+            .eject(Path::new("/no/such/mount"))
+            .expect_err("eject must not claim success");
+        assert!(matches!(err, Error::NotImplemented { .. }), "got {err:?}");
+        let message = err.to_string();
+        assert!(message.contains(CURRENT_PLATFORM), "{message}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Credentials
+    // -----------------------------------------------------------------------
+
+    /// Passed to the child process so it knows which credential to read.
+    const CHILD_ACCOUNT_VAR: &str = "REBORN_VAULT_PROBE_ACCOUNT";
+    const CHILD_SECRET_VAR: &str = "REBORN_VAULT_PROBE_SECRET";
+
+    /// Printed by the child only after it has actually read the secret.
+    ///
+    /// The parent requires this in the child's output rather than trusting the
+    /// exit status, because a test filter that matches nothing also exits zero,
+    /// and a persistence proof that passes when it ran nothing is worse than no
+    /// proof.
+    const CHILD_PROOF: &str = "REBORN-VAULT-PERSISTED";
+
+    /// The child test's full path, used as an exact filter.
+    const CHILD_TEST: &str = "platform::imp::tests::child_reads_the_secret_the_parent_stored";
+
+    /// A name unique to this run, so two test processes, or a second checkout,
+    /// cannot delete each other's credential mid-test.
+    fn probe_account(tag: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("reborn-test-{tag}-{}-{nanos}", std::process::id())
+    }
+
+    /// Whether to stop before touching the credential store.
+    ///
+    /// A Linux box with no Secret Service running genuinely has nowhere to put a
+    /// secret, and that is the platform's state rather than a bug in this file.
+    /// Windows always has a Credential Manager, so there the same condition is a
+    /// real failure and is not skipped.
+    fn no_store_here() -> bool {
+        match keyring::Entry::store_status() {
+            Ok(()) => false,
+            Err(why) => {
+                if cfg!(windows) {
+                    panic!(
+                        "Windows always has a Credential Manager, so this is a \
+                         real failure and must not be skipped: {why}"
+                    );
+                }
+                eprintln!("skipped: no platform credential store here ({why})");
+                true
+            }
+        }
+    }
+
+    #[test]
+    fn a_secret_round_trips_and_delete_actually_removes_it() {
+        if no_store_here() {
+            return;
+        }
+        let vault = OsCredentialVault;
+        let account = probe_account("round-trip");
+        // Shaped like a real bearer token, plus the awkward characters, because
+        // a vault that mangles whitespace fails at the server with an
+        // authentication error and nobody looks here.
+        let secret = "Bot MTIzNDU2Nzg5MC.aBcDeF.gHiJkL-_09 with spaces\n\tand a tab";
+
+        vault.store(&account, secret).expect("store");
+        let read = vault.retrieve(&account);
+        // Cleaned up before asserting: a failed assertion must not leave a
+        // credential behind in the user's own store.
+        let deleted = vault.delete(&account);
+
+        assert_eq!(
+            read.expect("retrieve").as_deref(),
+            Some(secret),
+            "the secret came back changed"
+        );
+        deleted.expect("delete");
+        assert_eq!(
+            vault.retrieve(&account).expect("retrieve after delete"),
+            None,
+            "delete reported success and the secret is still readable"
+        );
+        vault
+            .delete(&account)
+            .expect("deleting an absent credential must be a no-op, or signing out twice fails");
+    }
+
+    /// "Never signed in" and "the store would not answer" are different facts. A
+    /// launcher that cannot tell them apart shows a store error to somebody who
+    /// has simply never signed in.
+    #[test]
+    fn an_account_that_was_never_stored_reads_as_absent_not_as_an_error() {
+        if no_store_here() {
+            return;
+        }
+        let account = probe_account("never-stored");
+        assert_eq!(
+            OsCredentialVault.retrieve(&account).expect("retrieve"),
+            None
+        );
+    }
+
+    /// Refused before the store is touched: an empty account name is accepted by
+    /// Windows Credential Manager and files the secret under the bare service
+    /// name, where it belongs to no feature and nothing can be told to delete
+    /// it.
+    #[test]
+    fn an_empty_account_name_is_refused_rather_than_filed_under_nothing() {
+        let err = OsCredentialVault
+            .store("", "a secret")
+            .expect_err("an unnamed credential must be refused");
+        assert!(matches!(err, Error::CredentialStore(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("account name"),
+            "the message must say what is wrong: {err}"
+        );
+    }
+
+    /// A secret must come back whole or not be stored at all. A silently
+    /// truncated token looks valid and fails at the server, which sends everyone
+    /// hunting in the wrong place.
+    #[test]
+    fn a_secret_is_either_stored_whole_or_refused_never_truncated() {
+        if no_store_here() {
+            return;
+        }
+        let vault = OsCredentialVault;
+        let account = probe_account("too-long");
+        // Windows Credential Manager caps a secret at 2560 bytes, that is 1280
+        // UTF-16 units, measured with keyring 4.2 on this machine. Other
+        // platforms may well accept this, which is why both outcomes are
+        // allowed and only truncation is not.
+        let secret = "x".repeat(4096);
+
+        let stored = vault.store(&account, &secret);
+        let read = vault.retrieve(&account);
+        let _ = vault.delete(&account);
+
+        match stored {
+            Ok(()) => assert_eq!(
+                read.expect("retrieve").as_deref(),
+                Some(secret.as_str()),
+                "the store accepted the secret and must return all of it"
+            ),
+            Err(e) => {
+                let message = e.to_string();
+                assert!(
+                    message.contains("truncated"),
+                    "a refusal must say the secret was not truncated: {message}"
+                );
+            }
+        }
+    }
+
+    /// The invariant that cannot be asserted in one process, only demonstrated:
+    /// the secret is in the operating system's store and not in this process's
+    /// memory. A vault that forgot everything on exit would pass every other
+    /// test in this file.
+    ///
+    /// So this stores a secret and then runs this same test binary again as a
+    /// separate process, which reads it back. The child is `#[ignore]`d so an
+    /// ordinary run does not execute it without the environment it needs.
+    #[test]
+    fn a_stored_secret_outlives_the_process_that_stored_it() {
+        if no_store_here() {
+            return;
+        }
+        let vault = OsCredentialVault;
+        let account = probe_account("persistence");
+        let secret = "persisted-across-a-process-boundary";
+        vault.store(&account, secret).expect("store");
+
+        let exe = std::env::current_exe().expect("this test binary's own path");
+        let run = std::process::Command::new(&exe)
+            .args([CHILD_TEST, "--exact", "--ignored", "--nocapture"])
+            .env(CHILD_ACCOUNT_VAR, &account)
+            .env(CHILD_SECRET_VAR, secret)
+            .output();
+
+        // Cleaned up before asserting, so a failure does not leave a credential
+        // behind in the user's own store.
+        let _ = vault.delete(&account);
+
+        let run = run.expect("running the test binary as a child process");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(
+            run.status.success(),
+            "the child process could not read the secret:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains(CHILD_PROOF),
+            "the child never confirmed the read, so nothing was proved:\n{stdout}"
+        );
+    }
+
+    /// Run only by [`a_stored_secret_outlives_the_process_that_stored_it`], in a
+    /// second process.
+    #[test]
+    #[ignore = "run as a child process to prove the vault persists across processes"]
+    fn child_reads_the_secret_the_parent_stored() {
+        let (Ok(account), Ok(secret)) = (
+            std::env::var(CHILD_ACCOUNT_VAR),
+            std::env::var(CHILD_SECRET_VAR),
+        ) else {
+            // Somebody ran the ignored tests by hand. There is nothing to prove
+            // and nothing to fail, so say so and stop.
+            println!("no account was passed in the environment, nothing to read");
+            return;
+        };
+
+        let read = OsCredentialVault
+            .retrieve(&account)
+            .expect("retrieve in the child process");
+        assert_eq!(
+            read.as_deref(),
+            Some(secret.as_str()),
+            "the secret did not survive the process that stored it"
+        );
+        println!("{CHILD_PROOF}");
     }
 }

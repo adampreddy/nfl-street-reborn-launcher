@@ -1,746 +1,222 @@
-/* =============================================================================
- * NFL STREET REBORN LAUNCHER — direction A
+/* A harness, not a design.
  *
- * Implementation of ./DESIGN.md. Taste was settled there; this file only
- * carries it out. If a value here is not in that document, it is a bug.
- * ========================================================================== */
-
-@font-face {
-  font-family: "Anton";
-  src: url("fonts/Anton.woff2") format("woff2");
-  font-weight: 400;
-  font-display: block; /* the hero must not flash a fallback face */
-}
-
-@font-face {
-  font-family: "InterVar";
-  src: url("fonts/InterVariable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
-}
-
-:root {
-  --bg: #0a0b0d;
-  --panel: #131519;
-  --panel-2: #1a1d22;
-
-  --line: rgba(255, 255, 255, 0.1);
-  --line-soft: rgba(255, 255, 255, 0.06);
-
-  --fg: #f4f5f7;
-  --fg-2: #a4acb8;
-  --fg-3: #767f8c;
-
-  /* red is a FILL and a SELECTION. red as text is --red-ink. */
-  --red: #e0272e;
-  --red-hi: #f04a50;
-  --red-ink: #ff7a7f;
-
-  /* data only. never a button. */
-  --teal: #22c7b4;
-  --warn: #f5a623;
-  --bad: #ff5a5c;
-
-  --rail: 236px;
-  --tap: 40px;
-  --r: 8px;
-  --r-lg: 12px;
-
-  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
-  --t1: 90ms;
-  --t2: 160ms;
-  --t3: 220ms;
-
-  --display: "Anton", "Haettenschweiler", "Impact", sans-serif;
-  --ui: "InterVar", "Inter", "Segoe UI", system-ui, sans-serif;
-}
+ * Deliberately plain: system font, two colours, no artwork. The real interface
+ * is being designed separately in Figma, and a half-styled stand-in would only
+ * compete with it and invite opinions about the wrong thing.
+ *
+ * The only rules here are legibility and that a destructive control cannot be
+ * mistaken for a safe one. */
 
 * {
   box-sizing: border-box;
 }
 
-html,
 body {
   margin: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-body {
-  background: var(--bg);
-  color: var(--fg);
-  font: 400 13px/1.5 var(--ui);
-  user-select: none;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* =============================================================================
- * THE ART LAYER
- * The expensive part, and therefore the part that gets skipped. Two scrims,
- * not one: a single overlay dark enough for text kills the picture.
- * ========================================================================== */
-
-#backdrop {
-  position: fixed;
-  inset: 0;
-  background-size: cover;
-  background-position: center 58%;
-  filter: saturate(1.14);
-  transition: opacity var(--t3) var(--ease);
-}
-
-#backdrop::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-      to top,
-      rgba(10, 11, 13, 0.94) 0%,
-      rgba(10, 11, 13, 0.6) 34%,
-      rgba(10, 11, 13, 0) 74%
-    ),
-    linear-gradient(
-      to right,
-      rgba(10, 11, 13, 0.9) 0%,
-      rgba(10, 11, 13, 0.55) 32%,
-      rgba(10, 11, 13, 0) 66%
-    ),
-    /* the top-right corner, where the readout floats */
-    radial-gradient(
-      120% 90% at 100% 0%,
-      rgba(10, 11, 13, 0.7) 0%,
-      rgba(10, 11, 13, 0.25) 42%,
-      rgba(10, 11, 13, 0) 68%
-    );
-}
-
-/* A working screen has no art of its own, so it gets a flat surface rather
- * than a backdrop borrowed from another page. */
-#backdrop.flat {
-  background-image: none !important;
-  filter: none;
-  background: var(--bg);
-}
-
-#shell {
-  position: relative;
-  display: grid;
-  grid-template-columns: var(--rail) 1fr;
-  grid-template-rows: 1fr 44px;
-  grid-template-areas:
-    "rail content"
-    "hints hints";
   height: 100vh;
-}
-
-/* =============================================================================
- * GLASS
- * backdrop-filter composites every frame. See DESIGN.md section 6: if this
- * measures badly the fallback is a pre-blurred slice, never a flat panel.
- * ========================================================================== */
-
-.glass {
-  background: rgba(12, 13, 16, 0.62);
-  backdrop-filter: blur(24px) saturate(1.1);
-  -webkit-backdrop-filter: blur(24px) saturate(1.1);
-}
-
-/* =============================================================================
- * RAIL
- * ========================================================================== */
-
-#rail {
-  grid-area: rail;
-  border-right: 1px solid var(--line);
-  padding: 22px 0 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.brandline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 20px 26px;
-}
-
-.brandline img {
-  width: 30px;
-  height: 30px;
-  border-radius: 7px;
-  background: #000;
-  flex: none;
-}
-
-.brandline .bt {
-  font: 700 12.5px/1.25 var(--ui);
-  letter-spacing: 0.01em;
-}
-
-.brandline .bt em {
-  display: block;
-  font-style: normal;
-  color: var(--red-ink); /* red as TEXT is --red-ink, never --red */
-}
-
-.rail-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: var(--tap);
-  margin: 0 12px;
-  padding: 0 12px;
-  border: 0;
-  background: transparent;
-  color: var(--fg-2);
-  font: 500 13px/1 var(--ui);
-  text-align: left;
-  border-radius: var(--r);
-  cursor: pointer;
-  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
-}
-
-.rail-item:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--fg);
-}
-
-/* Selection: red at 12 percent plus a red left edge, per the tokens. */
-.rail-item[aria-current="page"] {
-  background: rgba(224, 39, 46, 0.12);
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.rail-item[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 8px;
-  bottom: 8px;
-  width: 4px;
-  border-radius: 0 2px 2px 0;
-  background: var(--red);
-  /* the 12deg shear from DESIGN_TOKENS section 11 */
-  transform: skewX(-12deg);
-}
-
-.rail-icon {
-  width: 15px;
-  height: 15px;
-  flex: none;
   display: grid;
-  place-items: center;
-  opacity: 0.8;
+  grid-template-columns: 1fr 460px;
+  grid-template-rows: 44px 1fr;
+  grid-template-areas:
+    "head head"
+    "main out";
+  font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+  background: #1b1b1d;
+  color: #e8e8ea;
 }
 
-.rail-icon svg {
-  width: 15px;
-  height: 15px;
-  display: block;
+header {
+  grid-area: head;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: #26262a;
+  border-bottom: 1px solid #37373d;
 }
 
-.rail-divider {
-  height: 1px;
-  background: var(--line-soft);
-  margin: 12px 24px;
+header .sub {
+  color: #9a9aa2;
+  font-size: 12px;
 }
 
-.rail-foot {
-  margin-top: auto;
-  padding: 0 24px;
-  font: 400 11px/1.5 var(--ui);
-  color: var(--fg-3);
+.pill {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: #37373d;
 }
 
-/* Never sheared, per the token prohibitions: a skewed ring reads as a fault. */
-:focus-visible {
-  outline: 3px solid rgba(224, 39, 46, 0.55);
-  outline-offset: 2px;
-  border-radius: 4px;
+.pill.ok {
+  background: #1f5133;
+  color: #8ee0ac;
 }
 
-/* =============================================================================
- * CONTENT
- * ========================================================================== */
+.pill.bad {
+  background: #5a2020;
+  color: #ff9a9a;
+}
 
-#content {
-  grid-area: content;
+main {
+  grid-area: main;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0 32px;
-  display: flex;
-  flex-direction: column;
+  padding: 14px;
 }
 
-.stage {
-  flex: 1;
+aside {
+  grid-area: out;
+  border-left: 1px solid #37373d;
+  background: #141416;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  padding-bottom: 28px;
   min-height: 0;
 }
 
-/* --- the composited mark ----------------------------------------------------
- * A blurred copy of the mark sits behind it, so it reads as lit by the scene
- * rather than pasted onto it. */
-.mark {
-  position: relative;
-  width: 132px;
-  height: 132px;
-  margin-bottom: 20px;
-}
-
-.mark img {
-  position: relative;
-  width: 132px;
-  height: 132px;
-  object-fit: contain;
-}
-
-.mark::before {
-  content: "";
-  position: absolute;
-  inset: -26px;
-  background: inherit;
-  filter: blur(30px);
-  opacity: 0.75;
-}
-
-.eyebrow {
-  font: 600 11px/1 var(--ui);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--red-ink);
+.out-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #37373d;
 }
 
-.eyebrow::before {
-  content: "";
-  width: 22px;
-  height: 2px;
-  background: var(--red);
-  transform: skewX(-12deg);
-}
-
-/* Anton, and only here. Never below 56px. */
-.hero-title {
-  font-family: var(--display);
-  font-weight: 400;
-  font-size: clamp(56px, 6.5vw, 104px);
-  line-height: 0.86;
-  letter-spacing: -0.01em;
-  text-transform: uppercase;
-  margin: 0 0 14px;
-  text-shadow: 0 6px 40px rgba(0, 0, 0, 0.72);
-  max-width: 12ch;
-}
-
-.state {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font: 400 13px/1 var(--ui);
-  color: var(--fg-2);
-  margin-bottom: 24px;
-}
-
-.state .sep {
-  width: 4px;
-  height: 4px;
-  background: var(--fg-3);
-  transform: skewX(-12deg);
-}
-
-.actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-/* --- controls --------------------------------------------------------------*/
-
-.btn {
-  height: 48px;
-  padding: 0 26px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--fg);
-  font: 600 14px/1 var(--ui);
-  border-radius: var(--r);
-  cursor: pointer;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  transition: background var(--t2) var(--ease), transform var(--t1) var(--ease);
-}
-
-.btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-.btn:active {
-  transform: translateY(1px);
-}
-
-/* The one primary action. Red is the fill; white on it measures about 5:1. */
-.btn.play {
-  background: var(--red);
-  border-color: var(--red);
-  color: #fff;
-  font-size: 15px;
-  padding: 0 38px;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.btn.play:hover {
-  background: var(--red-hi);
-  border-color: var(--red-hi);
-}
-
-/* --- readout panel ---------------------------------------------------------*/
-
-.readout {
-  position: absolute;
-  top: 28px;
-  right: 32px;
-  width: 300px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: 16px 18px;
-  overflow: hidden;
-}
-
-.readout h4 {
-  margin: 0 0 12px;
-  font: 600 11px/1 var(--ui);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-
-.rrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 30px;
-  border-bottom: 1px solid var(--line-soft);
-  font: 400 12.5px/1 var(--ui);
-  color: var(--fg-2);
-}
-
-.rrow:last-child {
-  border-bottom: 0;
-}
-
-.rrow .v {
+.out-head button {
   margin-left: auto;
-  color: var(--fg);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
 }
 
-.rrow .v.teal {
-  color: var(--teal);
-}
-
-.rrow .v.warn {
-  color: var(--warn);
-}
-
-/* --- shelf: a strip of art along the bottom -------------------------------*/
-
-.shelf {
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: 14px 16px 16px;
-  margin-bottom: 8px;
-  overflow: hidden;
-}
-
-.shelf-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.shelf-head h3 {
+#out {
+  flex: 1;
   margin: 0;
-  font: 600 11px/1 var(--ui);
-  letter-spacing: 0.14em;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11.5px/1.5 Consolas, "Cascadia Mono", monospace;
+  color: #c9c9cf;
+}
+
+h2 {
+  font-size: 12px;
   text-transform: uppercase;
-  color: var(--fg-3);
+  letter-spacing: 0.06em;
+  color: #9a9aa2;
+  margin: 18px 0 6px;
 }
 
-.shelf-head .count {
-  font: 400 11px/1 var(--ui);
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
+h2:first-child {
+  margin-top: 0;
 }
 
-.shelf-strip {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 150px;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  scrollbar-width: thin;
+.note {
+  color: #8a8a92;
+  font-size: 12px;
+  margin: 0 0 8px;
 }
 
-.tile {
-  position: relative;
-  border: 0;
-  padding: 0;
-  border-radius: var(--r);
-  overflow: hidden;
-  cursor: pointer;
-  background: var(--panel-2);
-  box-shadow: 0 0 0 1px var(--line);
-  transition: box-shadow var(--t2) var(--ease), transform var(--t1) var(--ease);
-}
-
-.tile:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24), 0 10px 26px rgba(0, 0, 0, 0.5);
-}
-
-.tile[aria-pressed="true"] {
-  box-shadow: 0 0 0 2px var(--red);
-}
-
-.tile img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 3 / 4;
-  object-fit: cover;
-}
-
-.tile .cap {
-  position: absolute;
-  inset: auto 0 0 0;
-  padding: 20px 10px 8px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.9), rgba(0, 0, 0, 0));
-  font: 600 11.5px/1.2 var(--ui);
-  color: #fff;
-  text-align: left;
-}
-
-/* Derived art for a mod that has none of its own. */
-.ball {
-  width: 100%;
-  aspect-ratio: 3 / 4;
-  display: grid;
-  place-items: center;
-  background: var(--panel-2);
-}
-
-.ball svg {
-  width: 58%;
-}
-
-/* --- sheets, for working screens ------------------------------------------*/
-
-.sheet {
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  overflow: hidden;
-  margin-bottom: 14px;
-}
-
-.srow {
+/* One row per feature. Label, inputs, button. */
+.row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line-soft);
-  font: 400 12.5px/1 var(--ui);
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid #2a2a2e;
 }
 
-.srow:last-child {
-  border-bottom: 0;
+.row .name {
+  width: 190px;
+  flex: none;
 }
 
-.srow:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.srow .name {
+.row .desc {
+  color: #8a8a92;
+  font-size: 11.5px;
   flex: 1;
 }
 
-.srow .meta {
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
+.row input[type="text"] {
+  flex: 1;
+  min-width: 90px;
+  background: #101012;
+  border: 1px solid #3a3a40;
+  color: #e8e8ea;
+  padding: 4px 7px;
+  font: 11.5px Consolas, monospace;
 }
 
-.page-title {
-  font: 700 28px/1.2 var(--ui);
-  letter-spacing: -0.015em;
-  margin: 28px 0 6px;
+.row input[type="checkbox"] {
+  margin: 0 4px 0 0;
 }
 
-.page-sub {
-  color: var(--fg-2);
-  margin: 0 0 22px;
+.row select {
+  background: #101012;
+  border: 1px solid #3a3a40;
+  color: #e8e8ea;
+  padding: 3px 5px;
+  font: 11.5px inherit;
 }
 
-.section-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 10px;
-}
-
-.section-head h3 {
-  margin: 0;
-  font: 600 15px/1 var(--ui);
-}
-
-/* --- status ---------------------------------------------------------------*/
-
-.status {
+.row label.inline {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font: 500 12.5px/1 var(--ui);
-  color: var(--fg-2);
+  gap: 3px;
+  color: #b8b8c0;
+  font-size: 11.5px;
+  white-space: nowrap;
 }
 
-.status::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+button {
+  background: #3a3a42;
+  border: 1px solid #4a4a52;
+  color: #e8e8ea;
+  padding: 4px 12px;
+  font: 12px inherit;
+  cursor: pointer;
+  flex: none;
 }
 
-.status.on {
-  color: var(--teal);
+button:hover:not(:disabled) {
+  background: #47474f;
 }
 
-.status.off {
-  color: var(--fg-3);
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
-.status.bad {
-  color: var(--bad);
+/* Anything that writes, deletes or launches. Red so it cannot be confused
+ * with a read, which is the only visual rule this file needs. */
+button.write {
+  background: #6b2226;
+  border-color: #8a2c31;
 }
 
-/* --- notice ---------------------------------------------------------------*/
-
-.notice {
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--warn);
-  border-radius: var(--r);
-  padding: 10px 14px;
-  margin-bottom: 12px;
-  color: var(--fg-2);
-  font-size: 12.5px;
-  overflow: hidden;
+button.write:hover:not(:disabled) {
+  background: #7e282d;
 }
 
-.notice strong {
-  color: var(--fg);
-  font-weight: 600;
-}
-
-/* =============================================================================
- * HINT STRIP
- * ========================================================================== */
-
-#hints {
-  grid-area: hints;
+.settings-row {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 0 32px;
-  border-top: 1px solid var(--line);
-  font: 400 11.5px/1 var(--ui);
-  color: var(--fg-3);
+  gap: 8px;
+  padding: 4px 0;
 }
 
-.hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.settings-row .name {
+  width: 130px;
+  flex: none;
+  color: #b8b8c0;
 }
 
-.glyph {
-  display: inline-grid;
-  place-items: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.14);
-  color: var(--fg);
-  font: 700 10px/1 var(--ui);
+.settings-row input {
+  flex: 1;
+  background: #101012;
+  border: 1px solid #3a3a40;
+  color: #e8e8ea;
+  padding: 4px 7px;
+  font: 11.5px Consolas, monospace;
 }
 
-.hints-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-/* =============================================================================
- * MOTION
- * ========================================================================== */
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-}
-
-.rise {
-  animation: rise var(--t3) var(--ease) both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* =============================================================================
- * NARROW
- * A Deck at 1280 leaves under 1050 beside the rail, so the rail collapses and
- * the readout stops floating.
- * ========================================================================== */
-
-@media (max-width: 1200px) {
-  :root {
-    --rail: 64px;
-  }
-  .rail-label,
-  .brandline .bt,
-  .rail-foot {
-    display: none;
-  }
-  .rail-item {
-    justify-content: center;
-    padding: 0;
-  }
-  .readout {
-    position: static;
-    width: auto;
-    margin: 24px 0 0;
-  }
+.missing {
+  color: #ffb0b0;
 }

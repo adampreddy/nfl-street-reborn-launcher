@@ -3,39 +3,44 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NFL Street Reborn</title>
-    <link rel="preload" href="fonts/Anton.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="preload" href="fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+    <title>NFL Street Reborn Launcher, harness</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <!-- The art layer sits behind the shell, not inside a page, so it survives
-         navigation and can cross-fade between sections. -->
-    <div id="backdrop"></div>
+    <!--
+      A test harness, not a product interface.
 
-    <div id="shell">
-      <nav id="rail" class="glass" aria-label="Sections">
-        <div class="brandline">
-          <img src="art/cover.png" alt="" />
-          <span class="bt">NFL Street<em>Reborn</em></span>
-        </div>
-        <div id="nav"></div>
-        <div class="rail-foot"><span id="runtime-state">No runtime set</span></div>
-      </nav>
+      Every feature gets one labelled control and every answer is shown raw.
+      There is deliberately no visual design here: the real interface is being
+      designed separately, and a half-styled stand-in would only compete with
+      it. What this needs to be is complete and honest, so a feature can be
+      exercised the moment it exists.
+    -->
+    <header>
+      <strong>NFL Street Reborn Launcher</strong>
+      <span class="sub">test harness. Not the real interface.</span>
+      <span id="bridge" class="pill">checking</span>
+    </header>
 
-      <main id="content" tabindex="-1"></main>
+    <main>
+      <section id="settings">
+        <h2>Paths</h2>
+        <p class="note">
+          Saved in this window only. Needed before Play works.
+        </p>
+        <div id="settings-rows"></div>
+      </section>
 
-      <footer id="hints" class="glass">
-        <span class="hint"><span class="glyph">A</span> Select</span>
-        <span class="hint"><span class="glyph">B</span> Back</span>
-        <span class="hint"
-          ><span class="glyph">LB</span><span class="glyph">RB</span> Section</span
-        >
-        <span class="hints-right">
-          <span id="pad-state" class="status off">No controller</span>
-        </span>
-      </footer>
-    </div>
+      <section id="features"></section>
+    </main>
+
+    <aside>
+      <div class="out-head">
+        <strong>Output</strong>
+        <button id="clear" type="button">Clear</button>
+      </div>
+      <pre id="out">Ready.</pre>
+    </aside>
 
     <script type="module" src="app.js"></script>
   </body>

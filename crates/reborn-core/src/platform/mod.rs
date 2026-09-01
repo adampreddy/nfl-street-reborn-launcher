@@ -24,11 +24,19 @@
 //!
 //! # Status
 //!
-//! Windows is implemented. macOS and Linux compile and return
-//! [`Error::NotImplemented`] so the whole workspace builds on every platform
-//! from day one. A stub that compiles is worth more than an absent module,
-//! because it keeps the port honest: the seam list cannot drift without the
-//! other platforms failing to build.
+//! Every seam is implemented on Windows. The others compile from day one, which
+//! is what keeps the port honest: the seam list cannot drift without the other
+//! platforms failing to build.
+//!
+//! [`CredentialVault`] and [`RemovableDrives`] were stubs until Discord sign-in
+//! and the Xbox wizard needed them. They now go through safe cross-platform
+//! wrapper crates, so macOS and Linux get the same code rather than a rewrite.
+//! Nobody has run them there, and `imp.rs` says so per platform rather than
+//! claiming three ticks for one measurement.
+//!
+//! The one remaining refusal is [`RemovableDrives::eject`], which needs a
+//! driver-level call this crate will not make; `imp.rs` explains why and what
+//! the caller does instead.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -395,16 +403,89 @@ pub struct RemovableDrive {
     /// A value stable across remounts, used to recognize a drive the wizard has
     /// written before. A drive letter is not stable and must never be used for
     /// this.
+    ///
+    /// `None` today on every platform, and that is not a placeholder waiting to
+    /// be filled in with something approximate. The stable answer is the volume
+    /// GUID path, which `sysinfo` computes internally and does not expose, and
+    /// which otherwise needs a Win32 call this crate will not make. A label is
+    /// not a substitute: two sticks can both be called `XBOX-USB`, and treating
+    /// them as one drive is worse than having no identity at all.
+    ///
+    /// What absent costs, so it is not discovered later: `xbox::Target`'s
+    /// journal key is `None` without an identity, so a copy that is interrupted
+    /// starts over instead of resuming. That is the intended degradation, not a
+    /// second bug.
     pub volume_identity: Option<String>,
+}
+
+/// Whether the operating system says a volume can be unplugged.
+///
+/// This distinction is the reason the seam exists. The Xbox wizard copies about
+/// 3 GB to whatever it is handed, so a fixed disk offered once is that payload
+/// written into the middle of somebody's system drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VolumeKind {
+    /// The operating system reported this volume as removable media.
+    Removable,
+    /// Everything else, which deliberately includes "the operating system would
+    /// not say".
+    ///
+    /// There is no `Unknown` variant on purpose. Every enumerator behind this
+    /// seam answers an unknown volume with "not removable", so the failure
+    /// direction is a legitimate USB hard disk that Windows calls a fixed disk
+    /// not appearing in the picker. That is a user who has to be told why their
+    /// drive is missing. The other direction is a wizard writing 3 GB to `C:`.
+    Fixed,
+}
+
+/// A volume, and whether it can be unplugged.
+///
+/// The payload is a [`RemovableDrive`] even when the volume is fixed, because
+/// the measurements are identical and a second struct with the same six fields
+/// is a second struct to keep in step. What the name promises is enforced by
+/// [`RemovableDrives::enumerate`], which is the only thing that hands out a
+/// `RemovableDrive` on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Volume {
+    pub drive: RemovableDrive,
+    pub kind: VolumeKind,
+}
+
+impl Volume {
+    pub fn is_removable(&self) -> bool {
+        self.kind == VolumeKind::Removable
+    }
 }
 
 /// Enumerating drives the Xbox wizard may write to.
 ///
-/// The wizard never auto-selects when more than one removable drive exists, and
-/// system volumes are never offered at all. Both rules are enforced above this
-/// seam; the seam's only job is to report honestly what is present.
+/// The wizard never auto-selects when more than one removable drive exists;
+/// that rule is enforced above this seam. The removable filter itself belongs
+/// here, because this is the only layer that knows what the operating system
+/// actually said.
 pub trait RemovableDrives: Send + Sync {
-    fn enumerate(&self) -> Result<Vec<RemovableDrive>>;
+    /// Every volume the operating system will admit to, removable or not.
+    ///
+    /// This is the method a platform implements. Reporting fixed volumes too is
+    /// not for show: "no drives found" and "one drive found and it is your
+    /// system disk" are different facts, and a picker that shows neither leaves
+    /// the user believing their stick is unplugged.
+    fn enumerate_volumes(&self) -> Result<Vec<Volume>>;
+
+    /// Only the volumes the Xbox wizard may write to.
+    ///
+    /// Deliberately a provided method. If each platform filtered for itself,
+    /// then a port that forgot to would be a port that offers the system drive,
+    /// and nothing about the signature would show it. Written once, it cannot be
+    /// forgotten once.
+    fn enumerate(&self) -> Result<Vec<RemovableDrive>> {
+        Ok(self
+            .enumerate_volumes()?
+            .into_iter()
+            .filter(Volume::is_removable)
+            .map(|volume| volume.drive)
+            .collect())
+    }
 
     /// Flush writes and make the volume safe to unplug.
     fn eject(&self, mount_point: &Path) -> Result<()>;

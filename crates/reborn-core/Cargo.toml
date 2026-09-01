@@ -3,7 +3,12 @@ name = "reborn-core"
 description = "Platform-agnostic core for NFL Street Reborn Launcher"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# NOT rust-version.workspace = true (which is 1.82). keyring and sysinfo both
+# declare 1.88, so 1.82 would be a claim this crate cannot honor: the build
+# fails on 1.82 with a confusing error from inside a dependency instead of a
+# clear one here. The workspace value should follow, but that file is not this
+# crate's to edit.
+rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
 
@@ -15,6 +20,22 @@ sha2.workspace = true
 hex.workspace = true
 fs4 = "0.13"
 tracing.workspace = true
+
+# The platform credential store, for platform::CredentialVault. Cross-platform
+# on purpose: the default `v1` feature compiles in Windows Credential Manager,
+# the macOS Keychain or the *nix Secret Service through target-gated optional
+# dependencies, so a Windows build pulls only the Windows back end and the port
+# needs no new code here. Chosen over calling wincred through windows-sys
+# because this crate forbids unsafe. It has no mock or plaintext fallback: with
+# no store reachable, every call fails, which is the required behavior for a
+# vault.
+keyring = "4.2"
+
+# Volume enumeration with a removable flag, for platform::RemovableDrives, so
+# the Xbox wizard cannot be handed a fixed disk to copy 3 GB onto.
+# default-features = false drops the process, CPU, memory, network, user and
+# component probing; only the disk module is used.
+sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
 [target.'cfg(windows)'.dependencies]
 rusty-xinput = "1.3"
