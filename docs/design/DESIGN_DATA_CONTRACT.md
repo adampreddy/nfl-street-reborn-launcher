@@ -46,7 +46,26 @@ Pink Football        Purple Football     Saints Alternate
 PS Controls          Xbox Controls
 ```
 
-Each has one state: **applied** or **not applied**. Currently 0 of 11 applied.
+Each has one state: **applied** or **not applied**. **Four are currently
+applied**: Aqua Football, Patriots Throwback, Saints Alternate, Xbox Controls.
+
+An earlier version of this document said none were, which was wrong: it was
+read from the shipped distribution's MODS folder, where `!INSTLOGS` is empty,
+and asserted about the live install, where it holds four install logs. The
+launcher had the same bug and reported 0 of 11.
+
+Two states a mods screen therefore has to carry, and neither is hypothetical:
+
+**More than one mod writing the same file.** 20 paths on this machine, and 7
+mods all write the same football texture. JSGME copies them in order and keeps
+whichever landed last without saying so, which is one of the reasons it is being
+replaced. A mods list that shows seven footballs as independently "on" is
+telling the player something untrue.
+
+**Recorded paths with no backup.** Xbox Controls has 19 recorded paths and 0
+backups. That is genuinely ambiguous: JSGME backs up only a file it displaces,
+so an add-only mod legitimately has none, and the install logs cannot say which
+case it is. So this must be surfaced as unknown, never as either safe or lost.
 
 **They have no artwork.** Nine are recoloured footballs and two are button
 prompts. If a mod tile needs an image, it has to be derived from the mod (a
