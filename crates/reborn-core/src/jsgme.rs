@@ -934,10 +934,7 @@ impl ConversionRefusal {
                  again.",
                 folders.join(", ")
             ),
-            ConversionRefusal::NothingImportable {
-                mods_root,
-                skipped,
-            } => format!(
+            ConversionRefusal::NothingImportable { mods_root, skipped } => format!(
                 "Nothing in {} can be imported. {} mod(s) were examined and each \
                  one was skipped, the first because: {}",
                 mods_root.display(),
@@ -1080,7 +1077,11 @@ fn detect_overlaps(mods: &[JsgmeMod], order: &AppliedOrder) -> Vec<PathOverlap> 
         }
     }
 
-    let rank: BTreeMap<&str, u32> = order.entries.iter().map(|(n, i)| (n.as_str(), *i)).collect();
+    let rank: BTreeMap<&str, u32> = order
+        .entries
+        .iter()
+        .map(|(n, i)| (n.as_str(), *i))
+        .collect();
     by_path
         .into_values()
         .filter(|(_, names, _)| names.len() > 1)
@@ -2032,7 +2033,10 @@ mod tests {
 
         assert_eq!(file.bytes, content.len() as u64);
         assert_eq!(file.sha256, Sha256Hex::from_bytes(content));
-        assert_eq!(file.payload.as_str(), "GN7E69/tex1_128x128_m_ffc5151a141db330_14.dds");
+        assert_eq!(
+            file.payload.as_str(),
+            "GN7E69/tex1_128x128_m_ffc5151a141db330_14.dds"
+        );
         assert_eq!(file.mirror_relative, BALL);
     }
 
@@ -2219,7 +2223,11 @@ mod tests {
         };
         assert_eq!(id.as_str(), "jsgme.ps-controls");
         assert_eq!(folders.len(), 2);
-        assert!(refusal.message().contains("Rename"), "{}", refusal.message());
+        assert!(
+            refusal.message().contains("Rename"),
+            "{}",
+            refusal.message()
+        );
     }
 
     /// The id is derived mechanically and namespaced, so an imported mod can
@@ -2405,11 +2413,7 @@ mod tests {
         let first = library
             .conversion_plan(&packages_root, &version())
             .expect("plan");
-        let destination = first
-            .plan()
-            .expect("one importable mod")
-            .packages[0]
-            .files[0]
+        let destination = first.plan().expect("one importable mod").packages[0].files[0]
             .to
             .clone();
         write(&destination, b"an earlier import");
@@ -2417,10 +2421,7 @@ mod tests {
         let second = library
             .conversion_plan(&packages_root, &version())
             .expect("plan");
-        let occupied = second
-            .plan()
-            .expect("still planned")
-            .occupied();
+        let occupied = second.plan().expect("still planned").occupied();
         assert_eq!(occupied.len(), 1);
         assert_eq!(occupied[0].to, destination);
         assert_eq!(
@@ -2583,7 +2584,12 @@ mod tests {
             "Xbox Controls",
             &[("User/Load/Textures/GN7E69/b.png", b"long!")],
         );
-        lay_applied(&mods_root, "Controls", &["User/Load/Textures/GN7E69/a.png"], &[]);
+        lay_applied(
+            &mods_root,
+            "Controls",
+            &["User/Load/Textures/GN7E69/a.png"],
+            &[],
+        );
         lay_applied(
             &mods_root,
             "Xbox Controls",

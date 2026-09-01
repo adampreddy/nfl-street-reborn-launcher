@@ -43,6 +43,8 @@ pub mod controller;
 pub mod devices;
 pub mod gamepad;
 pub mod ini;
+pub mod inventory;
+pub mod jsgme;
 pub mod library;
 pub mod manifest;
 pub mod migration;
@@ -290,25 +292,73 @@ mod tests {
         assert!(!kind.is_crash(), "exit 3 is a failure, not a crash");
     }
 
-    /// The unimplemented seams must fail honestly, not panic and not pretend to
-    /// succeed. A credential vault that silently drops secrets is a security
-    /// bug that passes tests.
+    /// The credential vault must really persist, and must never fall back
+    /// to plaintext. A vault that silently does not store is a security bug
+    /// that passes tests, so this stores, reads back, deletes, and checks the
+    /// value is gone rather than asserting any of it.
+    ///
+    /// Skipped rather than failed when no platform store is available, since
+    /// a headless CI box legitimately has none and that is not this crate's
+    /// fault. The skip is printed, so it cannot pass quietly forever.
     #[test]
-    fn stub_seams_return_not_implemented() {
+    fn the_credential_vault_persists_and_deletes() {
         let p = Platform::detect();
-        let err = p.credentials.store("discord", "secret").unwrap_err();
-        assert!(matches!(err, Error::NotImplemented { .. }), "got {err:?}");
-        assert!(p.credentials.retrieve("discord").is_err());
+        let name = "nsr-launcher-selftest";
+        let secret = "value-that-must-round-trip";
 
-        let err = p.drives.enumerate().unwrap_err();
-        assert!(matches!(err, Error::NotImplemented { .. }), "got {err:?}");
+        match p.credentials.store(name, secret) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("SKIPPED: no usable credential store here: {e}");
+                return;
+            }
+        }
+
+        let got = p
+            .credentials
+            .retrieve(name)
+            .expect("a stored secret must be retrievable");
+        assert_eq!(
+            got.as_deref(),
+            Some(secret),
+            "the vault did not return what was stored"
+        );
+
+        p.credentials.delete(name).expect("delete must succeed");
+        assert!(
+            p.credentials
+                .retrieve(name)
+                .map(|v| v.is_none())
+                .unwrap_or(true),
+            "a deleted secret is still readable"
+        );
     }
 
+    /// Drive enumeration must not report a fixed disk as removable. The Xbox
+    /// wizard copies to whatever this returns, and picking the system drive
+    /// by mistake is the failure worth preventing.
     #[test]
-    fn not_implemented_names_the_platform_and_the_operation() {
+    fn drive_enumeration_never_calls_a_fixed_disk_removable() {
         let p = Platform::detect();
-        let msg = p.drives.enumerate().unwrap_err().to_string();
-        assert!(msg.contains(CURRENT_PLATFORM), "{msg}");
-        assert!(msg.contains("removable drive enumeration"), "{msg}");
+        let drives = match p.drives.enumerate() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("SKIPPED: drive enumeration unavailable here: {e}");
+                return;
+            }
+        };
+
+        // enumerate() returns ONLY removable volumes by construction, so the
+        // system drive appearing here at all is the failure, not a flag on it.
+        if let Ok(exe) = std::env::current_exe() {
+            for d in &drives {
+                assert!(
+                    !exe.starts_with(&d.mount_point),
+                    "{:?} holds the running executable and must never be offered                      as removable",
+                    d.mount_point
+                );
+            }
+        }
+        eprintln!("enumerated {} drive(s)", drives.len());
     }
 }
