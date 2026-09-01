@@ -22,7 +22,6 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use reborn_core::controller::{ControllerProfile, GcPadConfig};
 use reborn_core::devices::DeviceScanner;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
