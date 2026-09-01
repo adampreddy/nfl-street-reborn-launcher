@@ -42,6 +42,7 @@ pub mod content;
 pub mod controller;
 pub mod devices;
 pub mod gamepad;
+pub mod ini;
 pub mod library;
 pub mod manifest;
 pub mod migration;

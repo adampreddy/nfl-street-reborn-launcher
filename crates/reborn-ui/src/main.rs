@@ -309,9 +309,25 @@ fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<Ho
 
 /// The result of pressing Play.
 #[derive(Debug, Serialize)]
+struct PrepareResult {
+    user_dir: String,
+    /// A sentence naming which user folder is in use and why.
+    user_dir_note: String,
+    /// False when the folder is a fresh empty one, which is the state that
+    /// makes the game boot to factory defaults.
+    user_dir_populated: bool,
+    updated: Vec<String>,
+    unchanged: Vec<String>,
+    keys_set: usize,
+    no_controller: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct LaunchResult {
     /// True when the game actually ran.
     started: bool,
+    /// Which user folder the session used. Absent when nothing started.
+    user_dir_note: Option<String>,
     /// A sentence for the player. Always set.
     message: String,
     /// Present only when the game ran.
@@ -344,7 +360,8 @@ async fn prepare_launch(
     game: String,
     preset: String,
     fullscreen: bool,
-) -> Result<Vec<String>, String> {
+    user_dir: Option<String>,
+) -> Result<PrepareResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let req = LaunchRequest {
@@ -353,9 +370,22 @@ async fn prepare_launch(
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
+            user_dir: user_dir.map(std::path::PathBuf::from),
         };
         Session::prepare(&p, &req)
-            .map(|w| w.files.iter().map(|f| f.display().to_string()).collect())
+            .map(|w| PrepareResult {
+                user_dir: w.user_dir.path().display().to_string(),
+                user_dir_note: w.user_dir.explain(),
+                user_dir_populated: w.user_dir.is_populated(),
+                updated: w.files.iter().map(|f| f.display().to_string()).collect(),
+                unchanged: w
+                    .unchanged
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect(),
+                keys_set: w.keys_set,
+                no_controller: w.no_controller,
+            })
             .map_err(|e| e.to_string())
     })
     .await
@@ -374,6 +404,7 @@ async fn launch(
     game: String,
     preset: String,
     fullscreen: bool,
+    user_dir: Option<String>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
@@ -383,11 +414,13 @@ async fn launch(
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
+            user_dir: user_dir.map(std::path::PathBuf::from),
         };
 
         match Session::run(&p, &req).map_err(|e| e.to_string())? {
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
+                user_dir_note: None,
                 message: r.message(),
                 minutes: None,
                 needs_recovery: false,
@@ -399,6 +432,7 @@ async fn launch(
                 minutes,
                 pads,
                 pads_authoritative,
+                user_dir,
                 ..
             } => {
                 let needs_recovery = end.needs_recovery();
@@ -422,6 +456,7 @@ async fn launch(
                 };
                 Ok(LaunchResult {
                     started: true,
+                    user_dir_note: Some(user_dir.explain()),
                     message,
                     minutes: Some(minutes),
                     needs_recovery,

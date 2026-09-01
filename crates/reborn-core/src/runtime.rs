@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::ini::Overlay;
 use crate::platform::{Error, ExitKind, Platform, ProcessHandle, Result};
 
 /// Which game build to boot.
@@ -120,11 +121,77 @@ pub struct LaunchConfig {
 /// A generated INI file, as name and contents.
 pub type GeneratedConfig = BTreeMap<String, String>;
 
+/// Convenience for building an overlay without four lines per key.
+fn set(o: &mut Overlay, section: &str, key: &str, value: impl Into<String>) {
+    o.entry(section.to_string())
+        .or_default()
+        .insert(key.to_string(), value.into());
+}
+
 /// Generates emulator configuration from the launcher's settings model.
 #[derive(Debug)]
 pub struct ConfigGenerator;
 
 impl ConfigGenerator {
+    /// The keys the launcher actually decides, per file.
+    ///
+    /// This replaces generating whole files. Measured on a real install, the
+    /// generated `Dolphin.ini` was 18 lines across 6 sections while the
+    /// player's own was 215 lines across 16, including `[Core]`, `[GameList]`,
+    /// `[Input]` and `[Movie]`. Writing the whole file deleted ten sections of
+    /// tuned settings and the paths to their own game images.
+    ///
+    /// So the launcher states its opinion as keys and merges them, and anything
+    /// it has no opinion about survives untouched. See [`crate::ini`].
+    pub fn overlays(config: &LaunchConfig) -> BTreeMap<String, Overlay> {
+        let mut out: BTreeMap<String, Overlay> = BTreeMap::new();
+
+        let mut dolphin = Overlay::new();
+        set(
+            &mut dolphin,
+            "Display",
+            "Fullscreen",
+            bool_ini(config.fullscreen),
+        );
+        // Analytics off explicitly rather than by omission. The privacy
+        // requirement is no telemetry, and an upstream default that changes
+        // should not quietly turn it on.
+        set(&mut dolphin, "Analytics", "Enabled", "False");
+        set(&mut dolphin, "Analytics", "PermissionAsked", "True");
+        // No error popups, ever. That is a standing product rule, and a panic
+        // handler is a popup.
+        set(&mut dolphin, "Interface", "UsePanicHandlers", "False");
+        set(&mut dolphin, "Interface", "ConfirmStop", "False");
+        out.insert("Dolphin.ini".to_string(), dolphin);
+
+        let mut gfx = Overlay::new();
+        set(
+            &mut gfx,
+            "Settings",
+            "InternalResolution",
+            config.graphics.internal_resolution().to_string(),
+        );
+        set(
+            &mut gfx,
+            "Settings",
+            "MaxAnisotropy",
+            match config.graphics {
+                GraphicsPreset::Performance => "0",
+                GraphicsPreset::Balanced => "2",
+                GraphicsPreset::Quality | GraphicsPreset::Ultra => "4",
+            },
+        );
+        set(&mut gfx, "Settings", "ShaderCompilationMode", "2");
+        set(&mut gfx, "Settings", "WaitForShadersBeforeStarting", "True");
+        // EFB access must stay on. With it off the NFL Challenge portraits
+        // render black and that gets baked into the player's saves, which is
+        // not recoverable from the launcher side.
+        set(&mut gfx, "Hacks", "EFBAccessEnable", "True");
+        out.insert("GFX.ini".to_string(), gfx);
+
+        out
+    }
+
     /// Produce every INI the runtime needs for this session.
     pub fn generate(config: &LaunchConfig) -> GeneratedConfig {
         let mut out = GeneratedConfig::new();

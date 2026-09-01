@@ -67,6 +67,9 @@ fn main() {
         graphics: GraphicsPreset::Balanced,
         fullscreen: false,
         build: GameBuild::Offline,
+        // Let resolution run, so this also proves which folder the real
+        // machine would boot against.
+        user_dir: None,
     };
 
     // First prove the preparation half on its own, so a failure here is not

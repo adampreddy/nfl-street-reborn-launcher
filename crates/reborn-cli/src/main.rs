@@ -88,6 +88,11 @@ enum Command {
         /// Start windowed instead of fullscreen.
         #[arg(long)]
         windowed: bool,
+        /// The Dolphin user folder to boot against. Defaults to the existing
+        /// install's User folder, which is where settings, memory cards and
+        /// texture packs already live.
+        #[arg(long)]
+        user_dir: Option<PathBuf>,
         /// Write the generated configuration and stop, without launching.
         #[arg(long)]
         dry_run: bool,
@@ -134,7 +139,16 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
             preset,
             windowed,
             dry_run,
-        } => play(&platform, &iso, &runtime, &preset, !windowed, dry_run),
+            user_dir,
+        } => play(
+            &platform,
+            &iso,
+            &runtime,
+            &preset,
+            !windowed,
+            dry_run,
+            user_dir.as_deref(),
+        ),
     }
 }
 
@@ -458,6 +472,7 @@ fn play(
     preset: &str,
     fullscreen: bool,
     dry_run: bool,
+    user_dir: Option<&std::path::Path>,
 ) -> reborn_core::Result<std::process::ExitCode> {
     let graphics = match preset.to_lowercase().as_str() {
         "performance" => GraphicsPreset::Performance,
@@ -476,6 +491,7 @@ fn play(
         graphics,
         fullscreen,
         build: GameBuild::Offline,
+        user_dir: user_dir.map(|p| p.to_path_buf()),
     };
 
     // A dry run writes the configuration and starts nothing, which is the same
@@ -483,9 +499,15 @@ fn play(
     // exercised different code would prove nothing about a real launch.
     if dry_run {
         let written = Session::prepare(platform, &req)?;
+        println!("{}", written.user_dir.explain());
+        println!();
         for f in &written.files {
-            println!("wrote {}", f.display());
+            println!("updated {}", f.display());
         }
+        for f in &written.unchanged {
+            println!("already correct {}", f.display());
+        }
+        println!("{} key(s) set", written.keys_set);
         for (port, device) in &written.pads {
             println!("  port {port} -> {device}");
         }
@@ -530,8 +552,10 @@ fn play(
             minutes,
             pads,
             pads_authoritative,
+            user_dir,
             ..
         } => {
+            println!("{}", user_dir.explain());
             for (port, device) in &pads {
                 println!("  port {port} -> {device}");
             }

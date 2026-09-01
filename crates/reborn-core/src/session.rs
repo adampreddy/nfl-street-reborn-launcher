@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use crate::controller::{ControllerProfile, GcPadConfig};
 use crate::devices::{DeviceScanner, Enumeration};
+use crate::ini::IniDocument;
 use crate::platform::{DataDir, Error, Platform, Result};
 use crate::runtime::{
     ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, SessionOutcome,
@@ -46,6 +47,17 @@ pub struct LaunchRequest {
     pub graphics: GraphicsPreset,
     pub fullscreen: bool,
     pub build: GameBuild,
+    /// The Dolphin user directory to boot against.
+    ///
+    /// `None` means "find the one that already exists", which is almost always
+    /// what a player wants and is what this field exists to fix.
+    ///
+    /// The launcher used to create a fresh empty directory here and hand it to
+    /// Dolphin with `-u`. Measured on a real install, that directory held 21
+    /// files while the player's own held 35,015: no memory cards, no
+    /// `GameSettings`, and none of the 27,025 files of their texture pack. The
+    /// game booted to factory defaults with no save data visible.
+    pub user_dir: Option<PathBuf>,
 }
 
 /// Why a launch could not even be attempted.
@@ -94,20 +106,216 @@ pub enum Launched {
         /// True when the pad list came from the runtime rather than the built in
         /// scan, which is the only authoritative source.
         pads_authoritative: bool,
+        /// Which user directory the session booted against.
+        user_dir: UserDir,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
 }
 
 /// Everything written for a launch, reported so a caller can show it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct WrittenConfig {
     pub files: Vec<PathBuf>,
+    /// Files already holding the wanted values, so nothing was written.
+    pub unchanged: Vec<PathBuf>,
+    /// How many individual keys were set. Reported because "3 files written"
+    /// used to mean "3 files replaced", which was the bug.
+    pub keys_set: usize,
     pub pads: Vec<(u8, String)>,
     pub pads_authoritative: bool,
     /// Present when no controller could be found, so the caller can say so
     /// rather than launching silently into nothing.
     pub no_controller: bool,
+    /// Which user directory this launch will boot against, and why.
+    pub user_dir: UserDir,
+}
+
+impl Default for WrittenConfig {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            unchanged: Vec::new(),
+            keys_set: 0,
+            pads: Vec::new(),
+            pads_authoritative: false,
+            no_controller: false,
+            // A path is required, and an empty one is obviously not a real
+            // directory, so a caller that forgets to set it cannot mistake it
+            // for a resolved one.
+            user_dir: UserDir::Fresh(PathBuf::new()),
+        }
+    }
+}
+
+/// Where Dolphin's user directory is.
+///
+/// Resolution order, and the reasoning:
+///
+/// 1. Whatever the caller asked for. A player who has said which folder to use
+///    is never overridden.
+/// 2. An existing install's `User` folder, if one is found. This is the case
+///    that was broken: their settings, memory cards, texture pack and
+///    savestates all live there, and booting beside it looks identical to the
+///    launcher having done nothing.
+/// 3. The launcher's own `runtime/user`, created empty.
+///
+/// Falling through to 3 is reported rather than silent, because a first launch
+/// against an empty directory is a legitimate state and an indistinguishable
+/// one from the bug.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserDir {
+    /// The caller named it.
+    Chosen(PathBuf),
+    /// Found beside an existing install.
+    Existing(PathBuf),
+    /// Nothing was found, so the launcher will use its own empty directory.
+    Fresh(PathBuf),
+}
+
+impl UserDir {
+    pub fn path(&self) -> &Path {
+        match self {
+            UserDir::Chosen(p) | UserDir::Existing(p) | UserDir::Fresh(p) => p,
+        }
+    }
+
+    /// Whether this directory already holds the player's own content.
+    pub fn is_populated(&self) -> bool {
+        !matches!(self, UserDir::Fresh(_))
+    }
+
+    /// A sentence naming which directory is in use and why, so a launch that
+    /// boots to defaults says so instead of looking broken.
+    pub fn explain(&self) -> String {
+        match self {
+            UserDir::Chosen(p) => format!("Using the chosen user folder at {}.", p.display()),
+            UserDir::Existing(p) => {
+                format!("Using the existing user folder at {}.", p.display())
+            }
+            UserDir::Fresh(p) => format!(
+                "No existing user folder was found, so a new empty one at {} \
+                 will be used. Settings, memory cards and texture packs will \
+                 not be present until one is set in Settings.",
+                p.display()
+            ),
+        }
+    }
+}
+
+/// Find the user directory to boot against.
+///
+/// Ranked by evidence of real content, not by which candidate came first.
+///
+/// The first version of this checked for a `Config` directory and took the
+/// first hit. That picked the launcher's OWN `runtime/User`, because the very
+/// bug being fixed had already created a `Config` folder there. A test for
+/// "does this look like a Dolphin user directory" was satisfied by the
+/// wreckage of the thing it was meant to detect.
+///
+/// So the test is now for content only a real install has: a memory card, a
+/// populated texture load path, or per-game settings. A directory holding
+/// nothing but the handful of INIs the launcher itself writes scores zero and
+/// loses to a genuine one.
+pub fn resolve_user_dir(platform: &Platform, chosen: Option<&Path>) -> Result<UserDir> {
+    if let Some(c) = chosen {
+        return Ok(UserDir::Chosen(c.to_path_buf()));
+    }
+
+    let mut best: Option<(u32, PathBuf)> = None;
+    for user in candidate_user_dirs(platform)? {
+        let score = user_dir_score(&user);
+        if score == 0 {
+            continue;
+        }
+        if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+            best = Some((score, user));
+        }
+    }
+
+    if let Some((_, path)) = best {
+        return Ok(UserDir::Existing(path));
+    }
+
+    Ok(UserDir::Fresh(
+        platform
+            .paths
+            .data_root()?
+            .join(DataDir::Runtime.relative())
+            .join("user"),
+    ))
+}
+
+/// How much real player content a directory holds.
+///
+/// Zero means "not a populated user directory", whatever else is in it.
+fn user_dir_score(user: &Path) -> u32 {
+    if !user.is_dir() {
+        return 0;
+    }
+    let mut score = 0;
+
+    // A memory card is the strongest signal and the most important thing to
+    // get right: booting without one shows the player no save data at all.
+    if let Ok(entries) = std::fs::read_dir(user.join("GC")) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            if name.starts_with("memorycard") && name.ends_with(".raw") {
+                score += 100;
+                break;
+            }
+        }
+    }
+
+    // A populated texture load path. Counted shallowly on purpose: a real one
+    // holds tens of thousands of files and walking it to decide a launch would
+    // cost seconds.
+    if has_any_entry(&user.join("Load")) {
+        score += 40;
+    }
+
+    // Per-game settings, which carry the patches a modded game depends on.
+    if has_any_entry(&user.join("GameSettings")) {
+        score += 30;
+    }
+
+    if has_any_entry(&user.join("StateSaves")) {
+        score += 10;
+    }
+
+    score
+}
+
+fn has_any_entry(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+}
+
+/// User directories worth scoring.
+fn candidate_user_dirs(platform: &Platform) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+
+    // The shipped product's own location, named through the environment rather
+    // than hardcoded to one machine's profile.
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let base = PathBuf::from(&appdata);
+        out.push(base.join("NFL Street Reborn").join("User"));
+        // Stock Dolphin, in case that is where a player kept things.
+        out.push(base.join("Dolphin Emulator"));
+    }
+
+    // A runtime unpacked beside the launcher's own data, checked last so its
+    // own scaffolding can never outrank a real install.
+    out.push(
+        platform
+            .paths
+            .data_root()?
+            .join(DataDir::Runtime.relative())
+            .join("User"),
+    );
+
+    Ok(out)
 }
 
 /// The launch sequence.
@@ -119,11 +327,8 @@ impl Session {
     /// written. Split out from [`Session::run`] so a caller can offer a dry run
     /// without duplicating the order.
     pub fn prepare(platform: &Platform, req: &LaunchRequest) -> Result<WrittenConfig> {
-        let user_dir = platform
-            .paths
-            .data_root()?
-            .join(DataDir::Runtime.relative())
-            .join("user");
+        let user = resolve_user_dir(platform, req.user_dir.as_deref())?;
+        let user_dir = user.path().to_path_buf();
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
             path: config_dir.clone(),
@@ -139,14 +344,56 @@ impl Session {
             match_context: None,
         };
 
-        let mut written = WrittenConfig::default();
+        let mut written = WrittenConfig {
+            user_dir: user.clone(),
+            ..Default::default()
+        };
 
-        for (name, contents) in ConfigGenerator::generate(&config) {
+        // Keys, not files. Writing whole files here deleted ten sections of a
+        // real player's Dolphin.ini, including the paths to their own game
+        // images. See crate::ini for the measurements.
+        for (name, overlay) in ConfigGenerator::overlays(&config) {
             let path = config_dir.join(&name);
-            std::fs::write(&path, contents).map_err(|source| Error::Io {
+
+            let existing = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(source) => {
+                    return Err(Error::Io {
+                        path: path.clone(),
+                        source,
+                    })
+                }
+            };
+
+            // A record of what the file looked like before the launcher ever
+            // touched it, written once and never read back automatically.
+            // Automatic restore from a stale copy is its own failure mode.
+            if !existing.is_empty() {
+                let original = path.with_extension("ini.launcher-original");
+                if !original.exists() {
+                    std::fs::write(&original, &existing).map_err(|source| Error::Io {
+                        path: original.clone(),
+                        source,
+                    })?;
+                }
+            }
+
+            let mut doc = IniDocument::parse(&existing);
+            let report = doc.merge(&overlay);
+
+            // Nothing to change means nothing to write. A launcher that
+            // rewrites a config on every start looks like it is corrupting it.
+            if report.is_noop() && !existing.is_empty() {
+                written.unchanged.push(path);
+                continue;
+            }
+
+            std::fs::write(&path, doc.render()).map_err(|source| Error::Io {
                 path: path.clone(),
                 source,
             })?;
+            written.keys_set += report.updated.len() + report.added.len();
             written.files.push(path);
         }
 
@@ -163,6 +410,17 @@ impl Session {
         match build_gcpad(&scan, 4) {
             Some((ini, assignment)) => {
                 let path = config_dir.join("GCPadNew.ini");
+                // The pad file IS wholly owned by the launcher: it is
+                // regenerated from the live device list every launch by
+                // design, because a remembered device string that no longer
+                // matches binds nothing without saying so. Still recorded
+                // once before the first overwrite.
+                if let Ok(prev) = std::fs::read_to_string(&path) {
+                    let original = path.with_extension("ini.launcher-original");
+                    if !original.exists() && !prev.is_empty() {
+                        let _ = std::fs::write(&original, &prev);
+                    }
+                }
                 std::fs::write(&path, ini).map_err(|source| Error::Io {
                     path: path.clone(),
                     source,
@@ -201,17 +459,13 @@ impl Session {
 
         let written = Self::prepare(platform, req)?;
 
-        let user_dir = platform
-            .paths
-            .data_root()?
-            .join(DataDir::Runtime.relative())
-            .join("user");
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
             fullscreen: req.fullscreen,
             game_path: req.game_path.clone(),
-            user_dir,
+            // The same directory prepare just merged into, never a fresh one.
+            user_dir: written.user_dir.path().to_path_buf(),
             match_context: None,
         };
 
@@ -230,6 +484,7 @@ impl Session {
             minutes: finished.duration_ms().unwrap_or(0) as f64 / 60_000.0,
             pads: written.pads,
             pads_authoritative: written.pads_authoritative,
+            user_dir: written.user_dir,
         })
     }
 }
@@ -305,6 +560,9 @@ mod tests {
             graphics: GraphicsPreset::Balanced,
             fullscreen: true,
             build: GameBuild::Offline,
+            // Tests must never pick up whatever real install happens
+            // to be on the machine running them.
+            user_dir: Some(PathBuf::from("test-user-dir")),
         }
     }
 
@@ -378,5 +636,78 @@ mod tests {
             not_searched: Vec::new(),
         };
         assert!(build_gcpad(&empty, 4).is_none());
+    }
+    /// The detection bug, pinned. A directory holding only the INIs the
+    /// launcher itself writes must never be mistaken for a real install: that
+    /// is exactly how the first fix picked its own wreckage.
+    #[test]
+    fn a_config_folder_alone_does_not_look_like_a_real_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("launcher-runtime-user");
+        std::fs::create_dir_all(fake.join("Config")).unwrap();
+        std::fs::write(fake.join("Config").join("Dolphin.ini"), "[Display]\n").unwrap();
+        assert_eq!(user_dir_score(&fake), 0, "a Config folder is not evidence");
+    }
+
+    /// A memory card is the signal that matters most: booting without one
+    /// shows the player no save data at all.
+    #[test]
+    fn a_memory_card_outranks_everything_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("GC")).unwrap();
+        std::fs::write(real.join("GC").join("MemoryCardA.USA.raw"), [0u8; 16]).unwrap();
+
+        let lesser = dir.path().join("lesser");
+        std::fs::create_dir_all(lesser.join("GameSettings")).unwrap();
+        std::fs::write(lesser.join("GameSettings").join("GN7E69.ini"), "x").unwrap();
+        std::fs::create_dir_all(lesser.join("StateSaves")).unwrap();
+        std::fs::write(lesser.join("StateSaves").join("a.sav"), "x").unwrap();
+
+        assert!(
+            user_dir_score(&real) > user_dir_score(&lesser),
+            "a memory card must win: {} vs {}",
+            user_dir_score(&real),
+            user_dir_score(&lesser)
+        );
+    }
+
+    #[test]
+    fn an_absent_directory_scores_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(user_dir_score(&dir.path().join("nope")), 0);
+    }
+
+    /// An empty Load directory is not a texture pack.
+    #[test]
+    fn empty_subdirectories_are_not_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = dir.path().join("u");
+        for d in ["Load", "GameSettings", "StateSaves", "GC"] {
+            std::fs::create_dir_all(u.join(d)).unwrap();
+        }
+        assert_eq!(user_dir_score(&u), 0);
+    }
+
+    /// A chosen directory is never second-guessed, even if it scores nothing.
+    #[test]
+    fn a_chosen_directory_is_used_as_given() {
+        let p = Platform::detect();
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("whatever");
+        let r = resolve_user_dir(&p, Some(&chosen)).unwrap();
+        assert_eq!(r, UserDir::Chosen(chosen.clone()));
+        assert_eq!(r.path(), chosen.as_path());
+    }
+
+    /// Falling back to an empty directory is a legitimate state and an
+    /// indistinguishable one from the bug, so it has to announce itself.
+    #[test]
+    fn a_fresh_directory_says_what_will_be_missing() {
+        let note = UserDir::Fresh(PathBuf::from("x")).explain();
+        assert!(note.contains("memory cards"), "{note}");
+        assert!(note.contains("Settings"), "{note}");
+        assert!(!UserDir::Fresh(PathBuf::from("x")).is_populated());
+        assert!(UserDir::Existing(PathBuf::from("x")).is_populated());
     }
 }
