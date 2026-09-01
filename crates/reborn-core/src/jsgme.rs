@@ -441,6 +441,29 @@ pub struct AppliedState {
 
 impl AppliedState {
     /// Whether JSGME considers anything applied.
+    /// Read the applied state on its own, without scanning payloads.
+    ///
+    /// [`JsgmeLibrary::scan`] hashes every mod file, which is the right cost
+    /// when the caller wants to import. A caller that only needs to know
+    /// whether migration is safe should not pay it, and migration asks this on
+    /// every plan.
+    pub fn read(mods_root: &Path) -> Result<Self> {
+        // Which mod folders are still present. A mod whose folder is gone
+        // cannot be un-applied by JSGME itself, and read_applied_state records
+        // that, so it has to be passed in rather than assumed.
+        let names: Vec<String> = std::fs::read_dir(mods_root)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| !n.starts_with('!'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let present: std::collections::BTreeSet<&str> = names.iter().map(String::as_str).collect();
+        read_applied_state(mods_root, &present)
+    }
+
     pub fn nothing_applied(&self) -> bool {
         self.applied.is_empty()
     }
@@ -462,7 +485,23 @@ impl AppliedState {
     /// The same condition [`crate::migration::MigrationPlan`] blocks on, so the
     /// two cannot disagree about whether an install is safe to migrate.
     pub fn blocker(&self) -> Option<String> {
-        if self.applied.is_empty() || !self.backup_entries.is_empty() {
+        if self.applied.is_empty() {
+            return None;
+        }
+
+        // Deliberately NOT blocking on per-mod coverage.
+        //
+        // I tried that and it was wrong. JSGME writes a backup only when it
+        // DISPLACES an existing file, so an add-only mod has recorded paths and
+        // zero backups and that is entirely normal. On a real install
+        // `Xbox Controls` shows 19 recorded paths and 0 backups, and the install
+        // logs cannot say whether those 19 files existed beforehand.
+        //
+        // An empty !BACKUP alongside applied mods is the one unambiguous signal,
+        // so that is what blocks. The ambiguous case is reported by
+        // `unbacked_paths` and surfaced as a warning, because a false alarm that
+        // stops a migration is its own kind of damage.
+        if !self.backup_entries.is_empty() {
             return None;
         }
         let mut names: Vec<&str> = self.applied.iter().map(|m| m.name.as_str()).collect();
@@ -484,6 +523,34 @@ impl AppliedState {
     }
 
     /// Whether the originals could still be put back.
+    /// Applied mods with recorded paths that have no backup entry, as name and
+    /// count.
+    ///
+    /// This is NOT proof of lost originals and must never be presented as such.
+    /// JSGME backs up only a file it displaces, so an add-only mod legitimately
+    /// has none. What it means is that these paths cannot be un-applied by
+    /// restoring, and whether that matters depends on whether the file existed
+    /// before the mod was applied, which the install logs do not record.
+    ///
+    /// Useful anyway: a caller about to treat the live tree as pristine should
+    /// say which mods it cannot reason about, rather than implying it checked.
+    pub fn unbacked_paths(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = self
+            .applied
+            .iter()
+            .filter_map(|m| {
+                let n = m.recorded_without_backup().len();
+                if n > 0 {
+                    Some((m.name.clone(), n))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     pub fn originals_are_restorable(&self) -> bool {
         self.blocker().is_none()
     }

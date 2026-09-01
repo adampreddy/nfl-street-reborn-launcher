@@ -22,11 +22,30 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
-use serde::Serialize;
+use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
+use reborn_core::content::ContentService;
+use reborn_core::controller::DeviceFamily;
 use reborn_core::devices::{DeviceScanner, Enumeration};
+use reborn_core::gamepad::{
+    action_for, ContextualSlot, Destructive, Direction, InputContext, NavAction, PadButton,
+    RepeatTiming, Step,
+};
+use reborn_core::ini::IniDocument;
+use reborn_core::inventory::ComponentId;
+use reborn_core::library::{FileVerdict, RebuildState, Verifier, VerifyReport};
+use reborn_core::manifest::Component;
+use reborn_core::migration::{LegacyInstall, MigrationPlan};
+use reborn_core::mods::{
+    Activation, ComposeRequest, Composer, Composition, GameId, LinkMethod, ModId, ModPackage,
+    PackageVersion,
+};
+use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::runtime::{GameBuild, GraphicsPreset};
-use reborn_core::session::{LaunchRequest, Launched, Session};
+use reborn_core::session::{LaunchRequest, Launched, Session, UserDir};
+use reborn_core::stats::{Enqueued, EntryState, QueueEntry, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -269,7 +288,17 @@ fn mods(legacy_root: Option<String>) -> Result<Vec<ModEntry>, String> {
         if name.starts_with('!') {
             continue;
         }
-        let applied = applied_names.iter().any(|a| a.eq_ignore_ascii_case(&name));
+        // JSGME names its logs "<Mod> install.log", so the stem is
+        // "<Mod> install" and comparing it to the folder name never matched.
+        // This reported 0 of 11 applied on a machine with 4 applied, which is
+        // worse than no answer: it made a dangerous state look clean.
+        let applied = applied_names.iter().any(|a| {
+            let trimmed = a
+                .strip_suffix(" install")
+                .or_else(|| a.strip_suffix(" Install"))
+                .unwrap_or(a);
+            trimmed.eq_ignore_ascii_case(&name) || a.eq_ignore_ascii_case(&name)
+        });
         out.push(ModEntry { name, applied });
     }
     out.sort_by_key(|m| m.name.to_lowercase());
@@ -473,17 +502,2538 @@ async fn launch(
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Confirmation
+// ---------------------------------------------------------------------------
+
+/// Refuse a command that changes something when the caller has not said yes.
+///
+/// Every command below that deletes, copies, moves or uploads takes a `confirm`
+/// flag and calls this first, before it acquires a lock, builds a plan or opens
+/// a directory. Checking late is the failure this shape prevents: a rebuild that
+/// plans, deletes the composed tree and then notices it was never confirmed has
+/// already destroyed the thing it was asking about.
+///
+/// The message names the flag, because a caller that is told "not confirmed" and
+/// cannot tell what to send next will send something else.
+fn confirmed(confirm: bool, command: &str, what: &str) -> Result<(), String> {
+    if confirm {
+        return Ok(());
+    }
+    Err(format!(
+        "{command} would {what}. Nothing was changed. Show the plan, get the \
+         player's answer, then call {command} again with confirm set to true."
+    ))
+}
+
+/// The one sentence for "a game is running, so this cannot happen now".
+///
+/// Shared, so the several commands that need the single-instance lock cannot
+/// drift into describing the same state three different ways.
+fn already_running() -> String {
+    "Another launcher is running and owns this install. Close it, or wait for \
+     the session to end, then try again."
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// The resolved user directory
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct UserDirView {
+    path: String,
+    /// `chosen`, `existing` or `fresh`. The interface needs the difference:
+    /// `fresh` is the state that boots the game to factory defaults with no
+    /// memory cards visible.
+    kind: &'static str,
+    populated: bool,
+    /// The core's own sentence, not a re-worded one, so the window and the
+    /// command line say the same thing about the same folder.
+    note: String,
+}
+
+fn user_dir_view(dir: &UserDir) -> UserDirView {
+    UserDirView {
+        path: dir.path().display().to_string(),
+        kind: match dir {
+            UserDir::Chosen(_) => "chosen",
+            UserDir::Existing(_) => "existing",
+            UserDir::Fresh(_) => "fresh",
+        },
+        populated: dir.is_populated(),
+        note: dir.explain(),
+    }
+}
+
+/// Which Dolphin user directory a launch would use, without launching.
+///
+/// Separate from `prepare_launch`, which writes files. A Settings page that
+/// wants to show the player which folder is in use must not have to write six
+/// INIs to find out.
+///
+/// Blocking because resolution reads several directories off disk, and on this
+/// machine the real one holds 35,015 files.
+#[tauri::command]
+async fn user_dir(chosen: Option<String>) -> Result<UserDirView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let picked = chosen.map(PathBuf::from);
+        reborn_core::session::resolve_user_dir(&p, picked.as_deref())
+            .map(|d| user_dir_view(&d))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Mod packages and composition
+// ---------------------------------------------------------------------------
+
+/// A package the caller wants in a composition, named the way it is stored.
+///
+/// Two fields rather than one `id@version` string, because a split that guesses
+/// the separator wrong resolves to a directory that does not exist, and the
+/// resulting "package not installed" would be this layer's fault rather than
+/// the library's state.
+#[derive(Debug, Clone, Deserialize)]
+struct PackageRef {
+    id: String,
+    version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ActivePackageView {
+    id: String,
+    version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PackageEntryView {
+    id: String,
+    version: String,
+    name: String,
+    targets: Vec<String>,
+    /// Absent means the package declares no conceptual exclusivity. It is not a
+    /// group called "none": this field drives a pick-one interface only, and an
+    /// invented group would make two unrelated mods refuse each other.
+    conflict_group: Option<String>,
+    files: usize,
+    bytes: u64,
+    /// True when `mods/activation.json` lists this exact id and version.
+    active: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ModLibraryView {
+    packages_root: String,
+    packages: Vec<PackageEntryView>,
+    /// Directories that look like packages and could not be read, with the
+    /// reason. Reported rather than skipped: a mod that silently vanishes from
+    /// the list is indistinguishable from a mod that was never installed.
+    unreadable: Vec<String>,
+    /// What `activation.json` says is on, whether or not the payload is still
+    /// installed. Kept beside `packages` so a stale activation entry is visible
+    /// instead of being quietly dropped.
+    activation: Vec<ActivePackageView>,
+}
+
+/// Enumerate `mods/packages/<id>/<version>/package.json`.
+///
+/// Enumeration only. This makes no choice about which version of a package
+/// wins, because no rule for that exists anywhere in the core yet, and
+/// inventing one here would put it in the layer with no tests. Every version
+/// found is reported and the caller names the one it wants.
+fn read_package_library(root: &Path) -> (Vec<ModPackage>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut unreadable = Vec::new();
+
+    let ids = match std::fs::read_dir(root) {
+        Ok(rd) => rd,
+        // A launcher that has never installed a package has no directory here,
+        // and that is the normal state of a fresh install rather than an error.
+        Err(_) => return (found, unreadable),
+    };
+    for id_entry in ids.flatten() {
+        if !id_entry.path().is_dir() {
+            continue;
+        }
+        let versions = match std::fs::read_dir(id_entry.path()) {
+            Ok(rd) => rd,
+            Err(e) => {
+                unreadable.push(format!("{}: {e}", id_entry.path().display()));
+                continue;
+            }
+        };
+        for version_entry in versions.flatten() {
+            let dir = version_entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if !dir.join(reborn_core::mods::PACKAGE_MANIFEST).exists() {
+                continue;
+            }
+            match ModPackage::load(&dir) {
+                Ok(package) => found.push(package),
+                Err(e) => unreadable.push(format!("{}: {e}", dir.display())),
+            }
+        }
+    }
+    found.sort_by(|a, b| {
+        (a.id.as_str(), a.version.as_str()).cmp(&(b.id.as_str(), b.version.as_str()))
+    });
+    (found, unreadable)
+}
+
+/// The launcher's own mod library, and which packages are switched on.
+///
+/// This is not the same list as the `mods` command above. That one reads the
+/// player's JSGME `MODS` folder, which is 11 directories of loose files with no
+/// manifest, no id and no version. This one reads validated packages under the
+/// launcher's data root, which is the only thing composition can act on. Both
+/// are real and they are different sets, so they are two commands rather than
+/// one that merges them and loses which is which.
+#[tauri::command]
+async fn mod_packages() -> Result<ModLibraryView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+        let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
+        let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+
+        let (packages, unreadable) = read_package_library(&root);
+        Ok(ModLibraryView {
+            packages_root: root.display().to_string(),
+            packages: packages
+                .iter()
+                .map(|pkg| PackageEntryView {
+                    id: pkg.id.to_string(),
+                    version: pkg.version.to_string(),
+                    name: pkg.name.clone(),
+                    targets: pkg.targets.iter().map(|g| g.to_string()).collect(),
+                    conflict_group: pkg.conflict_group.clone(),
+                    files: pkg.files.len(),
+                    bytes: pkg.files.iter().map(|f| f.bytes).sum(),
+                    // Both halves, because an id that is active at a different
+                    // version is a different thing on disk from this one.
+                    active: activation
+                        .active
+                        .iter()
+                        .any(|a| a.id == pkg.id && a.version == pkg.version),
+                })
+                .collect(),
+            unreadable,
+            activation: activation
+                .active
+                .iter()
+                .map(|a| ActivePackageView {
+                    id: a.id.to_string(),
+                    version: a.version.to_string(),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct ModPlanView {
+    game: String,
+    /// False when the core refused. `refusal` then carries the sentence.
+    planned: bool,
+    refusal: Option<String>,
+    /// Absent when there is no plan, rather than an empty string: a blank path
+    /// renders as a real directory that happens to have no name.
+    pristine_root: Option<String>,
+    composed_root: Option<String>,
+    /// `hardlink` or `copy`, absent with no plan. The difference is whether the
+    /// composed tree costs its own bytes.
+    method: Option<&'static str>,
+    total_entries: usize,
+    overlay_entries: usize,
+    pristine_entries: usize,
+    total_bytes: u64,
+    activation: Vec<ActivePackageView>,
+    /// Packages asked for that have no payload for this build. A mod switched
+    /// on that quietly does nothing looks exactly like a broken mod.
+    not_targeted: Vec<String>,
+    /// Declared-group conflicts, which do not stop composition. Carried so they
+    /// cannot be silently dropped.
+    soft_conflicts: Vec<String>,
+}
+
+fn link_method_label(method: LinkMethod) -> &'static str {
+    match method {
+        LinkMethod::Hardlink => "hardlink",
+        LinkMethod::Copy => "copy",
+    }
+}
+
+fn plan_view(game: &GameId, composition: &Composition) -> ModPlanView {
+    let mut view = ModPlanView {
+        game: game.to_string(),
+        planned: false,
+        refusal: composition.refusal().map(|r| r.message()),
+        pristine_root: None,
+        composed_root: None,
+        method: None,
+        total_entries: 0,
+        overlay_entries: 0,
+        pristine_entries: 0,
+        total_bytes: 0,
+        activation: Vec::new(),
+        not_targeted: Vec::new(),
+        soft_conflicts: Vec::new(),
+    };
+    if let Some(plan) = composition.plan() {
+        view.planned = true;
+        view.pristine_root = Some(plan.pristine_root.display().to_string());
+        view.composed_root = Some(plan.composed_root.display().to_string());
+        view.method = Some(link_method_label(plan.method));
+        view.total_entries = plan.entries.len();
+        view.overlay_entries = plan.overlay_count();
+        view.pristine_entries = plan.pristine_count();
+        view.total_bytes = plan.total_bytes();
+        view.activation = plan
+            .activation
+            .iter()
+            .map(|a| ActivePackageView {
+                id: a.id.to_string(),
+                version: a.version.to_string(),
+            })
+            .collect();
+        view.not_targeted = plan.not_targeted.iter().map(|i| i.to_string()).collect();
+        view.soft_conflicts = plan.soft_conflicts.iter().map(|c| c.message()).collect();
+    }
+    view
+}
+
+/// Load the exact packages the caller named.
+///
+/// A missing one is an error naming the directory, not a shorter list. Silently
+/// composing three of four requested mods produces a tree the player did not
+/// ask for and cannot tell apart from one that worked.
+fn load_packages(root: &Path, wanted: &[PackageRef]) -> Result<Vec<ModPackage>, String> {
+    let mut out = Vec::new();
+    for want in wanted {
+        let id = ModId::parse(&want.id).map_err(|e| e.to_string())?;
+        let version = PackageVersion::parse(&want.version).map_err(|e| e.to_string())?;
+        let dir = root.join(id.as_str()).join(version.as_str());
+        let package = ModPackage::load(&dir).map_err(|e| {
+            format!(
+                "{} could not be read as an installed package: {e} Re-import it, \
+                 or leave it out of the list.",
+                dir.display()
+            )
+        })?;
+        out.push(package);
+    }
+    Ok(out)
+}
+
+/// Build a composition request out of what the caller named.
+fn compose_request(
+    platform: &Platform,
+    game: &str,
+    packages: &[PackageRef],
+) -> Result<(GameId, ComposeRequest), String> {
+    let game = GameId::parse(game).map_err(|e| e.to_string())?;
+    let root = reborn_core::mods::packages_root(platform).map_err(|e| e.to_string())?;
+    let loaded = load_packages(&root, packages)?;
+    let req =
+        ComposeRequest::in_data_root(platform, game.clone(), loaded).map_err(|e| e.to_string())?;
+    Ok((game, req))
+}
+
+/// What composing these packages would do, changing nothing.
+///
+/// Read only, so the interface can show the file count, the disk cost and every
+/// conflict before the player commits. A hard conflict comes back as a refusal
+/// with a sentence rather than as an error, because two mods writing one texture
+/// is a state a real library is in, not a fault. On this machine seven of the
+/// eleven JSGME mods write the same football texture.
+#[tauri::command]
+async fn mods_plan(game: String, packages: Vec<PackageRef>) -> Result<ModPlanView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let (game, req) = compose_request(&p, &game, &packages)?;
+        let composition = Composer::plan(&p, &req).map_err(|e| e.to_string())?;
+        Ok(plan_view(&game, &composition))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct ModApplyView {
+    game: String,
+    /// False when the plan was refused, in which case nothing was written.
+    applied: bool,
+    refusal: Option<String>,
+    composed_root: Option<String>,
+    /// Directory entries made, which cost no data bytes.
+    linked: u64,
+    /// Full copies, which do.
+    copied: u64,
+    bytes_copied: u64,
+    overlaid: u64,
+    entries: u64,
+    /// Why hardlinking was abandoned part way, when it was. Present on exFAT
+    /// and FAT32 and across volumes, which on a handheld is the common case
+    /// rather than an edge one.
+    link_failure: Option<String>,
+}
+
+/// Rebuild the composed mod tree from these packages.
+///
+/// Destructive, so it takes an explicit confirm: the composed tree is deleted
+/// and rebuilt. It is not destructive to anything irreplaceable, because the
+/// core refuses outright when the composed root and the pristine texture tree
+/// overlap, and refuses to delete a directory it did not create.
+///
+/// Un-applying one mod is this command with a shorter list. There is
+/// deliberately no per-mod remove: an operation that restores files can fail
+/// half way and leave a tree that is neither state, while a rebuild either
+/// finishes or is discarded and run again.
+///
+/// Blocking, and it holds the single-instance lock for the whole rebuild. Two
+/// launchers composing the directory Dolphin is about to load would interleave
+/// writes, and the loser's composition would be silently half present.
+#[tauri::command]
+async fn mods_apply(
+    game: String,
+    packages: Vec<PackageRef>,
+    confirm: bool,
+) -> Result<ModApplyView, String> {
+    confirmed(
+        confirm,
+        "mods_apply",
+        "delete and rebuild the composed mod tree",
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let (game, req) = compose_request(&p, &game, &packages)?;
+
+        let Startup::Owner(lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+
+        let composition = Composer::plan(&p, &req).map_err(|e| e.to_string())?;
+        let Some(plan) = composition.plan() else {
+            return Ok(ModApplyView {
+                game: game.to_string(),
+                applied: false,
+                refusal: composition.refusal().map(|r| r.message()),
+                composed_root: None,
+                linked: 0,
+                copied: 0,
+                bytes_copied: 0,
+                overlaid: 0,
+                entries: 0,
+                link_failure: None,
+            });
+        };
+
+        let report = Composer::apply(&p, &lock, plan).map_err(|e| e.to_string())?;
+        Ok(ModApplyView {
+            game: report.game.to_string(),
+            applied: true,
+            refusal: None,
+            composed_root: Some(report.composed_root.display().to_string()),
+            linked: report.linked,
+            copied: report.copied,
+            bytes_copied: report.bytes_copied,
+            overlaid: report.overlaid,
+            entries: report.entries(),
+            link_failure: report.link_failure.clone(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct ModUnapplyView {
+    game: String,
+    composed_root: String,
+    /// False when there was nothing there, which is not a failure.
+    removed: bool,
+    /// Packages `activation.json` still lists after the tree is gone.
+    ///
+    /// This command does not edit that file. Deciding what the activation record
+    /// should say after a discard is a rule, and rules belong in
+    /// `reborn_core::mods` where they are tested. Reporting the mismatch lets
+    /// the interface show it instead of the two quietly disagreeing.
+    activation_still_lists: Vec<ActivePackageView>,
+}
+
+/// Remove the composed mod tree entirely, so the game loads the pristine one.
+///
+/// Destructive, so it takes a confirm. The core refuses to delete a directory
+/// that holds files but no marker of its own, which is what stops this becoming
+/// a recursive delete of whatever path it was handed. The shipped 2.1
+/// uninstaller is that bug.
+#[tauri::command]
+async fn mods_unapply(game: String, confirm: bool) -> Result<ModUnapplyView, String> {
+    confirmed(
+        confirm,
+        "mods_unapply",
+        "delete the composed mod tree and go back to the pristine textures",
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let game = GameId::parse(&game).map_err(|e| e.to_string())?;
+        let composed = reborn_core::mods::composed_root(&p, &game).map_err(|e| e.to_string())?;
+        let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
+        let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+
+        let Startup::Owner(lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+        let removed = Composer::discard(&lock, &composed).map_err(|e| e.to_string())?;
+
+        Ok(ModUnapplyView {
+            game: game.to_string(),
+            composed_root: composed.display().to_string(),
+            removed,
+            activation_still_lists: activation
+                .active
+                .iter()
+                .map(|a| ActivePackageView {
+                    id: a.id.to_string(),
+                    version: a.version.to_string(),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct ModVerifyView {
+    game: String,
+    /// False when the plan was refused, so nothing could be compared. The
+    /// interface must not read that as a pass.
+    checked: bool,
+    refusal: Option<String>,
+    composed_root: Option<String>,
+    /// Absent when nothing was checked. A `false` here would claim the tree was
+    /// examined and found wrong.
+    matches_the_plan: Option<bool>,
+    discrepancies: Vec<String>,
+}
+
+/// Check the composed tree against the plan that should have built it.
+///
+/// Read only and safe before a launch. Every mod file is hashed, because a
+/// package manifest gives a trustworthy expected value for those; the pristine
+/// side is checked by count, which is the trade the core documents.
+#[tauri::command]
+async fn mods_verify(game: String, packages: Vec<PackageRef>) -> Result<ModVerifyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let (game, req) = compose_request(&p, &game, &packages)?;
+        let composition = Composer::plan(&p, &req).map_err(|e| e.to_string())?;
+        let Some(plan) = composition.plan() else {
+            return Ok(ModVerifyView {
+                game: game.to_string(),
+                checked: false,
+                refusal: composition.refusal().map(|r| r.message()),
+                composed_root: None,
+                matches_the_plan: None,
+                discrepancies: Vec::new(),
+            });
+        };
+        let verification = Composer::verify(plan).map_err(|e| e.to_string())?;
+        Ok(ModVerifyView {
+            game: game.to_string(),
+            checked: true,
+            refusal: None,
+            composed_root: Some(verification.composed_root.display().to_string()),
+            matches_the_plan: Some(verification.matches_the_plan()),
+            discrepancies: verification
+                .discrepancies
+                .iter()
+                .map(|d| d.message())
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Migration from a 2.1 install
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct MigrationStepView {
+    order: u8,
+    what: String,
+    from: String,
+    /// The data directory it lands in, relative to the data root.
+    to: String,
+    /// Whether losing this would cost the player something unrecoverable.
+    irreplaceable: bool,
+    why: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationSkipView {
+    what: String,
+    why: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationPlanView {
+    /// The folder that was examined. Absent when the caller named none, in
+    /// which case nothing was looked for and `found` being false says nothing
+    /// about the machine.
+    legacy_root_checked: Option<String>,
+    found: bool,
+    has_memory_cards: bool,
+    has_screenshots: bool,
+    has_textures: bool,
+    has_applied_mods: bool,
+    has_jsgme_backup: bool,
+    steps: Vec<MigrationStepView>,
+    skipped: Vec<MigrationSkipView>,
+    needs_mod_unapply: bool,
+    /// The core's own blocking reason, when there is one.
+    blocked: Option<String>,
+    /// After this step number, an interruption costs nothing permanent. Worth
+    /// showing during a copy that is about 2 GB.
+    safe_after_step: Option<u8>,
+    /// Whether `migration_apply` would do anything if it were confirmed.
+    can_apply: bool,
+    /// Why not, when it would not.
+    cannot_apply_because: Option<String>,
+}
+
+/// The single answer to "may this migration run".
+///
+/// One function, called by both `migration_plan` and `migration_apply`, so the
+/// button state and the command cannot disagree about whether copying is safe.
+///
+/// Two states stop it, and the second one is the subtle one:
+///
+/// - `blocked`: mods are applied and JSGME's `!BACKUP` is empty or missing, so
+///   the original textures cannot be restored and the tree on disk is modded.
+/// - `needs_mod_unapply`: mods are applied and a backup does exist. The core's
+///   plan says textures are copied "after mods are un-applied", and **nothing
+///   in this build can perform that un-apply**: `reborn_core::jsgme` reads and
+///   never writes, and the migration module has no un-apply step. Copying
+///   anyway would capture the overlaid state and the pristine tree would be
+///   polluted from birth, which then reads as pristine forever. So it refuses
+///   and says to un-apply in JSGME first.
+fn migration_refusal(plan: &MigrationPlan) -> Option<String> {
+    if let Some(reason) = &plan.blocked {
+        return Some(reason.to_string());
+    }
+    if plan.needs_mod_unapply {
+        return Some(
+            "JSGME mods are applied in the 2.1 install. The textures there are \
+             the modded files, not the originals, and this launcher cannot \
+             un-apply them for you. Open JSGME, un-apply every mod, then run \
+             the migration again."
+                .to_string(),
+        );
+    }
+    if plan.steps.is_empty() {
+        return Some(
+            "There is nothing to migrate from that folder: no memory cards, no \
+             screenshots and no textures were found in it."
+                .to_string(),
+        );
+    }
+    None
+}
+
+fn plan_to_view(root: &Path, plan: Option<&MigrationPlan>) -> MigrationPlanView {
+    let mut view = MigrationPlanView {
+        legacy_root_checked: Some(root.display().to_string()),
+        found: false,
+        has_memory_cards: false,
+        has_screenshots: false,
+        has_textures: false,
+        has_applied_mods: false,
+        has_jsgme_backup: false,
+        steps: Vec::new(),
+        skipped: Vec::new(),
+        needs_mod_unapply: false,
+        blocked: None,
+        safe_after_step: None,
+        can_apply: false,
+        cannot_apply_because: Some(format!(
+            "No NFL Street Reborn 2.1 install was found at {}.",
+            root.display()
+        )),
+    };
+    let Some(plan) = plan else { return view };
+
+    view.found = true;
+    view.has_memory_cards = plan.source.has_memory_cards;
+    view.has_screenshots = plan.source.has_screenshots;
+    view.has_textures = plan.source.has_textures;
+    view.has_applied_mods = plan.source.has_applied_mods;
+    view.has_jsgme_backup = plan.source.has_jsgme_backup;
+    view.needs_mod_unapply = plan.needs_mod_unapply;
+    view.blocked = plan.blocked.clone();
+    view.safe_after_step = plan.safe_after_step();
+    view.steps = plan
+        .steps
+        .iter()
+        .map(|s| MigrationStepView {
+            order: s.order,
+            what: s.what.to_string(),
+            from: s.from.display().to_string(),
+            to: s.to.relative().to_string(),
+            irreplaceable: s.irreplaceable,
+            why: s.why.to_string(),
+        })
+        .collect();
+    view.skipped = plan
+        .skipped
+        .iter()
+        .map(|s| MigrationSkipView {
+            what: s.what.to_string(),
+            why: s.why.to_string(),
+        })
+        .collect();
+    let refusal = migration_refusal(plan);
+    view.can_apply = refusal.is_none();
+    view.cannot_apply_because = refusal;
+    view
+}
+
+/// What migrating a 2.1 install would copy, in order, copying nothing.
+///
+/// `legacy_root` is required rather than guessed. The core knows the standard
+/// location but does not expose it, and spelling `%APPDATA%\NFL Street Reborn`
+/// here would put a second copy of that path in a second layer. When it is
+/// absent nothing is examined, and the view says so instead of reporting "no
+/// install found", which would be a claim about the machine.
+#[tauri::command]
+async fn migration_plan(legacy_root: Option<String>) -> Result<MigrationPlanView, String> {
+    let Some(root) = legacy_root else {
+        return Err(
+            "migration_plan needs the 2.1 install folder. Ask the player to \
+             pick it, or pass the standard location. Reporting \"nothing \
+             found\" without looking would be a claim about their machine."
+                .to_string(),
+        );
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(root);
+        let install = LegacyInstall::detect(&root);
+        let plan = install.as_ref().map(MigrationPlan::build);
+        Ok(plan_to_view(&root, plan.as_ref()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationStepResultView {
+    order: u8,
+    what: String,
+    to: String,
+    files_copied: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct MigrationApplyView {
+    steps: Vec<MigrationStepResultView>,
+    total_files: u64,
+    /// Stated every time, because a player watching a 2 GB copy needs to know
+    /// the source is still intact.
+    note: &'static str,
+}
+
+/// Copy a 2.1 install's irreplaceable data into the launcher's data root.
+///
+/// Destructive in the sense that matters here: it writes, and it writes the
+/// player's memory cards. It never deletes or changes anything in the 2.1
+/// install, and it refuses to overwrite anything already at the destination,
+/// which is what stops a second attempt replacing a newer save with an older
+/// one.
+///
+/// Order is the core's, saves first, so an interruption after step 1 costs
+/// nothing permanent. Blocking, and it holds the single-instance lock: copying
+/// memory cards while a game is running would race Dolphin writing them.
+#[tauri::command]
+async fn migration_apply(legacy_root: String, confirm: bool) -> Result<MigrationApplyView, String> {
+    confirmed(
+        confirm,
+        "migration_apply",
+        "copy memory cards, screenshots and textures out of the 2.1 install",
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let root = PathBuf::from(legacy_root);
+        let Some(install) = LegacyInstall::detect(&root) else {
+            return Err(format!(
+                "No NFL Street Reborn 2.1 install at {}. Nothing was copied.",
+                root.display()
+            ));
+        };
+        let plan = MigrationPlan::build(&install);
+        if let Some(reason) = migration_refusal(&plan) {
+            return Err(format!("{reason} Nothing was copied."));
+        }
+
+        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+
+        let data = p.paths.data_root().map_err(|e| e.to_string())?;
+        let mut steps = Vec::new();
+        let mut total = 0u64;
+        for step in &plan.steps {
+            let dest = data.join(step.to.relative());
+            let copied = reborn_core::migration::copy_tree_no_clobber(&step.from, &dest)
+                .map_err(|e| e.to_string())?;
+            total += copied;
+            steps.push(MigrationStepResultView {
+                order: step.order,
+                what: step.what.to_string(),
+                to: dest.display().to_string(),
+                files_copied: copied,
+            });
+        }
+        Ok(MigrationApplyView {
+            steps,
+            total_files: total,
+            note: "Nothing in the 2.1 install was changed or removed, and \
+                   nothing already present at the destination was overwritten.",
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Library verify and repair
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct LibraryVerifyView {
+    component: String,
+    /// Where the files were looked for, resolved through the core's path guard
+    /// rather than taken from the manifest, so a manifest naming `../../saves`
+    /// cannot point a verify at somebody's memory cards.
+    root: String,
+    healthy: bool,
+    intact: usize,
+    missing: usize,
+    damaged: usize,
+    /// Files that do not match the manifest because the player customized them
+    /// and the launcher recorded the result. These are never repaired: treating
+    /// a rebuilt soundtrack as corruption is what re-downloads 1.5 GB over
+    /// somebody's music.
+    user_modified: usize,
+    missing_paths: Vec<String>,
+    damaged_paths: Vec<String>,
+    user_modified_paths: Vec<String>,
+    /// Bytes a repair would actually re-fetch.
+    repair_bytes: u64,
+    /// Whether a repair is possible at all today. See `library_repair`.
+    repair_available: bool,
+}
+
+/// Count the verdicts, keeping user-modified files out of the repair set.
+///
+/// The per-file verdict list is deliberately not returned. The textures
+/// component on this machine is 27,025 files, and a full verdict row per file
+/// would push tens of megabytes of JSON through the bridge on every verify. The
+/// counts are exact and the three path lists carry every file a screen has
+/// anything to say about.
+fn verify_view(report: &VerifyReport, component: &Component, root: &Path) -> LibraryVerifyView {
+    let mut intact = 0usize;
+    let mut missing = Vec::new();
+    let mut damaged = Vec::new();
+    let mut user_modified = Vec::new();
+
+    for (path, verdict) in &report.verdicts {
+        match verdict {
+            FileVerdict::Intact => intact += 1,
+            FileVerdict::Missing => missing.push(path.clone()),
+            FileVerdict::Damaged { .. } => damaged.push(path.clone()),
+            FileVerdict::UserModified => user_modified.push(path.clone()),
+        }
+    }
+
+    LibraryVerifyView {
+        component: report.component.clone(),
+        root: root.display().to_string(),
+        healthy: report.is_healthy(),
+        intact,
+        missing: missing.len(),
+        damaged: damaged.len(),
+        user_modified: user_modified.len(),
+        missing_paths: missing,
+        damaged_paths: damaged,
+        user_modified_paths: user_modified,
+        repair_bytes: report.repair_bytes(component),
+        repair_available: false,
+    }
+}
+
+/// Verify an installed component against a component manifest.
+///
+/// `manifest_path` is required and there is no default, because no component
+/// manifest is stored anywhere on this machine. `content.rs` takes manifest
+/// bytes from a signed release at update time and keeps only a version pointer
+/// afterwards, so there is nothing on disk to verify against until a release
+/// has been opened. Inventing a file list would report a healthy component that
+/// was never checked.
+///
+/// Blocking: every file whose length already matches gets hashed, and for a
+/// 1.5 GB image that is seconds rather than milliseconds.
+#[tauri::command]
+async fn library_verify(
+    manifest_path: String,
+    root: Option<String>,
+) -> Result<LibraryVerifyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let manifest_path = PathBuf::from(manifest_path);
+        let bytes = std::fs::read(&manifest_path)
+            .map_err(|e| format!("{} could not be read: {e}", manifest_path.display()))?;
+        let component = Component::parse(&bytes).map_err(|e| {
+            format!(
+                "{} is not a readable component manifest: {e}",
+                manifest_path.display()
+            )
+        })?;
+
+        let layout =
+            reborn_core::content::ContentLayout::from_platform(&p).map_err(|e| e.to_string())?;
+        let resolved = match root {
+            Some(r) => PathBuf::from(r),
+            None => layout.live_root(&component).map_err(|e| e.to_string())?,
+        };
+
+        // Without this record there is no way to tell a rebuilt soundtrack from
+        // a corrupted download, because both are simply "not the shipped hash".
+        // An absent record is an empty one, which is correct: nothing has been
+        // rebuilt yet.
+        let state_path = reborn_core::music::music_root(layout.data_root()).join("state.json");
+        let state = RebuildState::load(&state_path).map_err(|e| e.to_string())?;
+
+        let report = Verifier::new(&resolved, &state)
+            .verify(&component)
+            .map_err(|e| e.to_string())?;
+        Ok(verify_view(&report, &component, &resolved))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Repair a component by re-fetching the files that are missing or damaged.
+///
+/// Refuses, and says exactly what is missing. Repair is a content update with
+/// `is_repair` set, and the path into `content.rs` needs two things this
+/// workspace does not have: a `SignatureVerifier`, because a release cannot be
+/// opened without one and no verifier is implemented on purpose while key
+/// custody is unresolved, and a `BlobSource`, because the crate contains no
+/// network code and no URL.
+///
+/// Returning "0 files repaired" instead would be the worst possible answer: the
+/// screen would show a successful repair of a component nothing touched.
+#[tauri::command]
+async fn library_repair(component: String, confirm: bool) -> Result<LibraryVerifyView, String> {
+    confirmed(
+        confirm,
+        "library_repair",
+        "overwrite the installed files of that component",
+    )?;
+    Err(format!(
+        "Cannot repair {component}: no signed release can be opened on this \
+         machine yet. Two pieces are missing, both deliberately: a signature \
+         verifier for nsr.release.v1, which is unimplemented while key custody \
+         is unresolved, and a blob source, because the core holds no network \
+         code. Until both exist, use library_verify to show what is damaged and \
+         reinstall the component by hand."
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// First run
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct PlannedStageView {
+    stage: &'static str,
+    /// One based, over the stages that apply to this machine. Deliberately not
+    /// the wireframes' "of 12": seven of those twelve are specified nowhere, and
+    /// a hardcoded total would be an invented number on screen.
+    position: usize,
+    total: usize,
+    /// Which `WIREFRAMES.md` section drew this stage. Absent means the screen is
+    /// unspecified and whoever builds it is designing rather than implementing.
+    wireframe_section: Option<u8>,
+    irreversible: bool,
+    allows_back: bool,
+    satisfied: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct NextStageView {
+    /// `show`, `reconcile` or `already_complete`.
+    kind: &'static str,
+    stage: Option<&'static str>,
+    position: Option<usize>,
+    total: Option<usize>,
+    /// True when the player has been here before, which is the difference
+    /// between "Continue" and "Get started".
+    resumed: Option<bool>,
+    /// Present only for `reconcile`: this stage writes files and the last run
+    /// stopped inside it, so its work may have partly happened.
+    what_to_do: Option<&'static str>,
+    flow_version: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct PrepTaskView {
+    slug: &'static str,
+    label: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct OnboardingSummaryView {
+    controller: Option<String>,
+    controller_port: Option<u8>,
+    no_controller_because: Option<String>,
+    graphics: Option<String>,
+    /// Absent means the machine was never measured, in which case the
+    /// wireframe's "RECOMMENDED FOR YOUR PC" badge has nothing behind it and
+    /// must not be drawn.
+    graphics_was_recommended: Option<bool>,
+    detected_hardware: Option<String>,
+    migrated_from: Option<String>,
+    migrated_bytes: Option<u64>,
+    game_bytes: Option<u64>,
+    /// Named fields nothing measured. The Ready screen prints absence rather
+    /// than a plausible default.
+    absent: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OnboardingView {
+    complete: bool,
+    completed_flow_version: Option<u32>,
+    /// True when the journal stopped at a line that would not parse. Every
+    /// irreversible stage then routes to `reconcile`, because the journal's
+    /// silence about a stage no longer proves the work never ran.
+    truncated: bool,
+    next: NextStageView,
+    plan: Vec<PlannedStageView>,
+    /// Stages this machine does not have, and why. Reported rather than
+    /// silently dropped: a flow that quietly omits a step is one nobody can
+    /// check.
+    set_aside: Vec<MigrationSkipView>,
+    preparation_remaining: Vec<PrepTaskView>,
+    tasks_done: Vec<PrepTaskView>,
+    /// The folder that was examined for a 2.1 install. Absent when the caller
+    /// named none, in which case first run will not offer migration at all.
+    legacy_root_checked: Option<String>,
+    migration_blocked: Option<String>,
+    summary: OnboardingSummaryView,
+}
+
+fn next_view(next: &Next) -> NextStageView {
+    match next {
+        Next::Show {
+            stage,
+            position,
+            total,
+            resumed,
+        } => NextStageView {
+            kind: "show",
+            stage: Some(stage.slug()),
+            position: Some(*position),
+            total: Some(*total),
+            resumed: Some(*resumed),
+            what_to_do: None,
+            flow_version: None,
+        },
+        Next::Reconcile {
+            stage,
+            position,
+            total,
+            what_to_do,
+        } => NextStageView {
+            kind: "reconcile",
+            stage: Some(stage.slug()),
+            position: Some(*position),
+            total: Some(*total),
+            resumed: None,
+            what_to_do: Some(what_to_do),
+            flow_version: None,
+        },
+        Next::AlreadyComplete { flow_version } => NextStageView {
+            kind: "already_complete",
+            stage: None,
+            position: None,
+            total: None,
+            resumed: None,
+            what_to_do: None,
+            flow_version: Some(*flow_version),
+        },
+    }
+}
+
+/// Where first run has got to, read from its journal on disk.
+///
+/// Read only. The write side, recording that a stage was reached or satisfied,
+/// is not exposed yet: each stage is satisfied by different evidence (the
+/// emulator's own device string and port for a controller, the chosen and the
+/// recommended preset for graphics, the measured byte count for a migration),
+/// and an argument shape guessed here would be the invented-data failure in the
+/// one module built to prevent it.
+#[tauri::command]
+async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let checked = legacy_root.map(PathBuf::from);
+        let env = match checked.as_deref().and_then(LegacyInstall::detect) {
+            Some(install) => Environment::with_legacy_install(install),
+            None => Environment::nothing_found(),
+        };
+
+        let flow = Onboarding::open(&p, env).map_err(|e| e.to_string())?;
+        let progress = flow.progress();
+        let summary = flow.summary();
+
+        Ok(OnboardingView {
+            complete: flow.is_complete(),
+            completed_flow_version: progress.completed_flow_version(),
+            truncated: progress.is_truncated(),
+            next: next_view(&flow.next()),
+            plan: flow
+                .plan()
+                .iter()
+                .map(|p| PlannedStageView {
+                    stage: p.stage.slug(),
+                    position: p.position,
+                    total: p.total,
+                    wireframe_section: p.stage.wireframe_section(),
+                    irreversible: p.stage.is_irreversible(),
+                    allows_back: p.stage.allows_back(),
+                    satisfied: progress.satisfaction(p.stage).is_some(),
+                })
+                .collect(),
+            set_aside: flow
+                .set_aside()
+                .iter()
+                .map(|(stage, why)| MigrationSkipView {
+                    what: stage.slug().to_string(),
+                    why: why.to_string(),
+                })
+                .collect(),
+            preparation_remaining: flow
+                .preparation_remaining()
+                .iter()
+                .map(|t| PrepTaskView {
+                    slug: t.slug(),
+                    label: t.label(),
+                })
+                .collect(),
+            tasks_done: progress
+                .tasks_done()
+                .iter()
+                .map(|t| PrepTaskView {
+                    slug: t.slug(),
+                    label: t.label(),
+                })
+                .collect(),
+            legacy_root_checked: checked.map(|c| c.display().to_string()),
+            migration_blocked: flow.migration_plan().and_then(|plan| plan.blocked.clone()),
+            summary: OnboardingSummaryView {
+                controller: summary.controller.clone(),
+                controller_port: summary.controller_port,
+                no_controller_because: summary.no_controller_because.clone(),
+                graphics: summary
+                    .graphics
+                    .map(|g| format!("{:?}", g.preset()).to_lowercase()),
+                graphics_was_recommended: summary.graphics_was_recommended,
+                detected_hardware: summary.detected_hardware.clone(),
+                migrated_from: summary
+                    .migrated_from
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                migrated_bytes: summary.migrated_bytes,
+                game_bytes: summary.game_bytes,
+                absent: summary.absent().iter().map(|a| a.to_string()).collect(),
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Removable drives
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct DriveView {
+    /// What the player sees, for example `E:` or `/Volumes/XBOX-USB`.
+    mount_point: String,
+    label: Option<String>,
+    total_bytes: u64,
+    free_bytes: u64,
+    filesystem: Option<String>,
+    /// A value stable across remounts. Absent on every platform today, and that
+    /// is not a placeholder: without it an interrupted Xbox copy starts over
+    /// instead of resuming, which is the intended degradation. A label is not a
+    /// substitute, because two sticks can both be called `XBOX-USB`.
+    volume_identity: Option<String>,
+    selectable: bool,
+    /// Why a drive that was found will not be written to. A refused drive stays
+    /// in the list, or the player replugs it forever.
+    why_not: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DrivesView {
+    /// Every volume the operating system would admit to.
+    volumes_seen: usize,
+    /// How many of those it called removable media.
+    removable_seen: usize,
+    /// The rest. "No drives found" and "one drive found and it is your system
+    /// disk" are different facts, and a picker that shows neither leaves the
+    /// player believing their stick is unplugged.
+    fixed_seen: usize,
+    offers: Vec<DriveView>,
+}
+
+/// Removable drives the Xbox wizard may write to, and why any were refused.
+///
+/// Nothing is preselected, even when exactly one drive is present. That rule
+/// lives in the core and this command does not soften it: the wizard copies
+/// about 3 GB, and a fixed disk offered once is that payload written into the
+/// middle of somebody's system drive.
+#[tauri::command]
+async fn removable_drives() -> Result<DrivesView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let volumes = p.drives.enumerate_volumes().map_err(|e| e.to_string())?;
+        let removable = volumes.iter().filter(|v| v.is_removable()).count();
+        let survey = reborn_core::xbox::survey(&p).map_err(|e| e.to_string())?;
+
+        Ok(DrivesView {
+            volumes_seen: volumes.len(),
+            removable_seen: removable,
+            fixed_seen: volumes.len() - removable,
+            offers: survey
+                .offers
+                .iter()
+                .map(|offer| DriveView {
+                    mount_point: offer.drive.mount_point.display().to_string(),
+                    label: offer.drive.label.clone(),
+                    total_bytes: offer.drive.total_bytes,
+                    free_bytes: offer.drive.free_bytes,
+                    filesystem: offer.drive.filesystem.clone(),
+                    volume_identity: offer.drive.volume_identity.clone(),
+                    selectable: offer.is_selectable(),
+                    why_not: offer.why_not(),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// The results queue
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct StatsEntryView {
+    key: String,
+    /// `queued`, `quarantined`, `accepted`, `held`, `rejected` or `stalled`.
+    state: &'static str,
+    /// Why, for the states that carry a reason.
+    reason: Option<String>,
+    attempts: u32,
+    first_seen_ms: u64,
+    last_error: Option<String>,
+    session_id: Option<String>,
+    captured_at: Option<String>,
+    teams: Vec<String>,
+    players: Option<usize>,
+    /// Absent when the entry carries no summary. A capture whose sides could not
+    /// be verified is the case where a quarterback was credited with sacks, so a
+    /// screen showing these values needs to be able to mark them suspect.
+    sides_verified: Option<bool>,
+    needs_review: Option<bool>,
+    flags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default, PartialEq, Eq)]
+struct StatsQueueCounts {
+    /// What the next submission pass would actually try. Only `Queued` counts.
+    depth: usize,
+    quarantined: usize,
+    stalled: usize,
+    accepted: usize,
+    held: usize,
+    rejected: usize,
+    total: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StatsQueueView {
+    dir: String,
+    #[serde(flatten)]
+    counts: StatsQueueCounts,
+    /// Payload files with no entry record. Reported because the alternative is
+    /// bytes on disk that nothing will ever send and nothing mentions.
+    orphaned_payloads: usize,
+    entries: Vec<StatsEntryView>,
+}
+
+fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
+    match state {
+        EntryState::Queued => ("queued", None),
+        EntryState::Quarantined { reason } => ("quarantined", Some(reason.message())),
+        EntryState::Accepted => ("accepted", None),
+        EntryState::Held { reason } => ("held", Some(reason.clone())),
+        EntryState::Rejected { reason } => ("rejected", Some(reason.clone())),
+        EntryState::Stalled { reason } => ("stalled", Some(reason.clone())),
+    }
+}
+
+/// Count the queue by state.
+///
+/// `depth` is the number of entries a submission pass would try, and it counts
+/// `Queued` and nothing else. `Held` means the server stored the result and a
+/// person will decide, which is a **success**: counting it as waiting is
+/// precisely the mistake that sent the uploader into a retry loop and produced
+/// a real outage on this project.
+fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
+    let mut counts = StatsQueueCounts {
+        total: entries.len(),
+        ..Default::default()
+    };
+    for entry in entries {
+        match entry.state {
+            EntryState::Queued => counts.depth += 1,
+            EntryState::Quarantined { .. } => counts.quarantined += 1,
+            EntryState::Stalled { .. } => counts.stalled += 1,
+            EntryState::Accepted => counts.accepted += 1,
+            EntryState::Held { .. } => counts.held += 1,
+            EntryState::Rejected { .. } => counts.rejected += 1,
+        }
+    }
+    counts
+}
+
+/// How many captured results are waiting, and what state each one is in.
+///
+/// Read only. The ledger is applied over the entries by the core, so no caller
+/// can see a state that would send a game twice.
+#[tauri::command]
+async fn stats_queue() -> Result<StatsQueueView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let entries = queue.entries().map_err(|e| e.to_string())?;
+        let orphaned = queue.orphaned_payloads().map_err(|e| e.to_string())?;
+
+        Ok(StatsQueueView {
+            dir: queue.dir().display().to_string(),
+            counts: queue_counts(&entries),
+            orphaned_payloads: orphaned.len(),
+            entries: entries
+                .iter()
+                .map(|e| {
+                    let (state, reason) = entry_state_label(&e.state);
+                    StatsEntryView {
+                        key: e.key.to_string(),
+                        state,
+                        reason,
+                        attempts: e.attempts,
+                        first_seen_ms: e.first_seen_ms,
+                        last_error: e.last_error.clone(),
+                        session_id: e.session_id.clone(),
+                        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
+                        teams: e
+                            .summary
+                            .as_ref()
+                            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
+                            .unwrap_or_default(),
+                        players: e.summary.as_ref().map(|s| s.players),
+                        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
+                        needs_review: e.summary.as_ref().map(|s| s.needs_review),
+                        flags: e
+                            .summary
+                            .as_ref()
+                            .map(|s| s.flags.clone())
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct StatsIngestView {
+    /// Where the captures were read from.
+    from: String,
+    queued: usize,
+    quarantined: usize,
+    already_queued: usize,
+    already_submitted: usize,
+    /// Files that could not be read. These were left exactly where they were.
+    unreadable: usize,
+    /// One sentence per capture, from the core, so nothing here paraphrases a
+    /// result the player will act on.
+    messages: Vec<String>,
+}
+
+/// Move the captures Dolphin wrote into the durable queue.
+///
+/// Takes a confirm because it deletes: a source file is removed once its capture
+/// is safely in the queue, so the folder empties and the same games are not
+/// re-examined after every launch. Nothing is lost if it is interrupted, because
+/// the removal happens after the write and the content key makes a re-read a
+/// no-op.
+///
+/// Holds the single-instance lock, so this cannot run while a game is still
+/// writing into that folder.
+#[tauri::command]
+async fn stats_ingest(
+    user_dir: String,
+    session_id: Option<String>,
+    confirm: bool,
+) -> Result<StatsIngestView, String> {
+    confirmed(
+        confirm,
+        "stats_ingest",
+        "move captured results into the queue and remove them from Dolphin's \
+         capture folder",
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let from = reborn_core::stats::dolphin_capture_dir(Path::new(&user_dir));
+
+        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+
+        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let results = queue
+            .ingest_from(&from, session_id.as_deref())
+            .map_err(|e| e.to_string())?;
+
+        let mut view = StatsIngestView {
+            from: from.display().to_string(),
+            queued: 0,
+            quarantined: 0,
+            already_queued: 0,
+            already_submitted: 0,
+            unreadable: 0,
+            messages: results.iter().map(|r| r.message()).collect(),
+        };
+        for result in &results {
+            match result {
+                Enqueued::Queued(_) => view.queued += 1,
+                Enqueued::Quarantined(_) => view.quarantined += 1,
+                Enqueued::AlreadyQueued(_) => view.already_queued += 1,
+                Enqueued::AlreadySubmitted { .. } => view.already_submitted += 1,
+                Enqueued::CouldNotRead { .. } => view.unreadable += 1,
+            }
+        }
+        Ok(view)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Send everything queued to the league server.
+///
+/// Refuses, and names what is missing. `StatsQueue::submit_pending` takes a
+/// `Submitter`, and that trait is the whole network seam: the core holds no URL,
+/// no credential and no HTTP client, and nothing in this workspace implements
+/// it. Writing one here that always deferred would be worse than refusing,
+/// because the queue page would show a submission pass that ran and moved
+/// nothing.
+#[tauri::command]
+async fn stats_submit(confirm: bool) -> Result<StatsQueueView, String> {
+    confirmed(
+        confirm,
+        "stats_submit",
+        "upload every queued result, which cannot be taken back",
+    )?;
+    Err(
+        "Cannot submit results yet: nothing implements the Submitter seam, so \
+         there is no endpoint and no credential to send them to. The captures \
+         are safe on disk and stats_queue shows how many are waiting. See \
+         docs/architecture/ONLINE_AND_RESULTS_PROTOCOL.md."
+            .to_string(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Music
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct MusicSourceView {
+    /// Path relative to `music/sources`, always forward slashes, so the same
+    /// record reads the same way on every platform.
+    relative_path: String,
+    bytes: u64,
+    /// Always absent from a scan, and not a zero. Length needs a decoder, which
+    /// is the bundled FFmpeg and not this codebase, so nothing renders a running
+    /// time nobody measured.
+    duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct MusicSourcesView {
+    dir: String,
+    files: Vec<MusicSourceView>,
+    total_bytes: u64,
+    /// How many stream slots the game's position table holds. A hard bound: a
+    /// slot number the table cannot hold is a disc that boots and plays garbage.
+    stream_slots: u8,
+}
+
+/// The audio the player has imported, off disk.
+///
+/// An absent directory is an empty list rather than an error: nothing imported
+/// yet is the normal state of a fresh install, and failing here would make the
+/// Music page unopenable before it has ever been used.
+#[tauri::command]
+async fn music_sources() -> Result<MusicSourcesView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+        let dir = reborn_core::music::sources_dir(&data_root);
+        let found = reborn_core::music::scan_sources(&dir).map_err(|e| e.to_string())?;
+
+        Ok(MusicSourcesView {
+            dir: dir.display().to_string(),
+            total_bytes: found.iter().map(|f| f.bytes).sum(),
+            files: found
+                .iter()
+                .map(|f| MusicSourceView {
+                    relative_path: f.relative_path.clone(),
+                    bytes: f.bytes,
+                    duration_ms: f.duration.map(|d| d.as_millis()),
+                })
+                .collect(),
+            stream_slots: reborn_core::music::STREAM_SLOTS,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Write a custom soundtrack into the offline image.
+///
+/// Refuses, from the core, and the message names the three things that are
+/// missing: the per-stream position table layout inside `pathfind.dat`, the
+/// EA-exact sample accounting, and the title, artist and album record layout in
+/// `template.dat`. Guessing any of them produces a disc that mounts, boots and
+/// plays silence, which is the worst kind of failure because it looks like
+/// success.
+///
+/// Exposed rather than omitted so a Music screen can print why the feature is
+/// not built. An empty state and a not-built state are different claims.
+#[tauri::command]
+async fn music_build_pack(confirm: bool) -> Result<String, String> {
+    confirmed(
+        confirm,
+        "music_build_pack",
+        "rewrite the offline game image with a new soundtrack",
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let order = reborn_core::music::TrackOrder::new();
+        match reborn_core::music::write_soundtrack(Path::new("."), &order) {
+            // Unreachable today. Left as a real branch rather than an
+            // unreachable!(), because the day the writer lands this command
+            // must return the hash it produced and not panic.
+            Ok(hash) => Ok(hash.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Content and updates
+// ---------------------------------------------------------------------------
+
+/// Refuse a component name that is not one of the seven that exist.
+///
+/// An unknown name is a typo or a tampered file, and answering it with "nothing
+/// is installed" would be a plausible-looking result for a component the
+/// launcher has never heard of.
+fn known_component(name: &str) -> Result<(), String> {
+    if ComponentId::parse(name).is_some() {
+        return Ok(());
+    }
+    let known: Vec<&str> = ComponentId::ALL.iter().map(|id| id.as_str()).collect();
+    Err(format!(
+        "{name:?} is not a component. The seven are: {}.",
+        known.join(", ")
+    ))
+}
+
+#[derive(Debug, Serialize)]
+struct InstalledVersionView {
+    version: String,
+    /// Carried so replay protection survives a restart. Version strings are not
+    /// ordered by anything a client can trust.
+    sequence: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ContentInstalledView {
+    component: String,
+    /// Absent means nothing is installed. There is deliberately no default: a
+    /// fabricated `0.0.0` would satisfy the type and then be shown to a player
+    /// as though the launcher knew something it does not.
+    installed: Option<InstalledVersionView>,
+    /// What a rollback would go back to. Absent after a first install and after
+    /// a rollback, because exactly one prior version is retained and naming a
+    /// version whose files are gone would be a lie the player acts on.
+    previous: Option<InstalledVersionView>,
+    /// In-flight operations found in the journal, meaning an update was
+    /// interrupted. Resolved by `content_recover`, which is not exposed yet.
+    interrupted: usize,
+}
+
+/// Which version of a component is live.
+#[tauri::command]
+async fn content_installed(component: String) -> Result<ContentInstalledView, String> {
+    known_component(&component)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let service = ContentService::for_platform(&p).map_err(|e| e.to_string())?;
+        let pointer = service.installed(&component).map_err(|e| e.to_string())?;
+        let journal = reborn_core::content::Journal::load(&service.layout().journal_path());
+
+        Ok(ContentInstalledView {
+            component: component.clone(),
+            installed: pointer.as_ref().map(|p| InstalledVersionView {
+                version: p.current.version.clone(),
+                sequence: p.current.sequence,
+            }),
+            previous: pointer.as_ref().and_then(|p| {
+                p.previous.as_ref().map(|v| InstalledVersionView {
+                    version: v.version.clone(),
+                    sequence: v.sequence,
+                })
+            }),
+            interrupted: journal
+                .interrupted()
+                .iter()
+                .filter(|op| op.component == component)
+                .count(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Check for and install an update.
+///
+/// Refuses. `nsr.release.v1` is the only signed object in the system and
+/// `TrustedRelease` cannot be constructed without a signature that verified
+/// over the exact bytes served. No verifier is implemented, on purpose: a
+/// built-in one that returned true would make every call site look correct while
+/// nothing was checked. There is also no release URL and no blob source in this
+/// crate.
+///
+/// Exposed so an Updates screen can say "not built" with the reason, rather than
+/// drawing an empty list that implies the check ran and found nothing.
+#[tauri::command]
+async fn content_update(component: String, confirm: bool) -> Result<ContentInstalledView, String> {
+    confirmed(
+        confirm,
+        "content_update",
+        "download and promote new files over the installed ones",
+    )?;
+    known_component(&component)?;
+    Err(format!(
+        "Cannot update {component}: no signature verifier and no release source \
+         exist on this machine. A release manifest cannot be opened without a \
+         verified signature, and none is implemented while key custody is \
+         unresolved. content_installed still reports what is live."
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Driving the launcher with a pad
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct PadButtonView {
+    /// The stable key, for example `left_bumper`.
+    button: &'static str,
+    /// What to print in the hint strip for the connected pad's family.
+    label: &'static str,
+    /// Context key to action, for example `page` to `activate`. A context that
+    /// binds nothing is absent rather than present and empty: an unbound slot
+    /// shows nothing at all, because a player who presses X because the strip
+    /// said "Options" and gets nothing has been lied to.
+    actions: std::collections::BTreeMap<&'static str, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DestructiveActionView {
+    slug: &'static str,
+    /// The wording from the specification, so the product and the document say
+    /// the same thing.
+    describe: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct GamepadContractView {
+    /// The family the labels were resolved for, so a caller that sent something
+    /// unrecognised can see what it got instead.
+    family: &'static str,
+    buttons: Vec<PadButtonView>,
+    /// The five things, and only these five, that may sit behind a hold. Closed
+    /// on purpose: a hold gate that spreads onto every button trains players to
+    /// hold everything and is then meaningless where it matters.
+    destructive: Vec<DestructiveActionView>,
+    hold_to_confirm_ms: u32,
+    /// Wait after the first step before repeating at all.
+    repeat_initial_delay_ms: u32,
+    repeat_interval_ms: u32,
+    /// The poll gap above which a hold is no longer considered observed. A hold
+    /// that spanned a stall must not be credited.
+    stall_gap_ms: u64,
+}
+
+fn pad_button_slug(button: PadButton) -> &'static str {
+    match button {
+        PadButton::A => "a",
+        PadButton::B => "b",
+        PadButton::X => "x",
+        PadButton::Y => "y",
+        PadButton::LeftBumper => "left_bumper",
+        PadButton::RightBumper => "right_bumper",
+        PadButton::LeftTrigger => "left_trigger",
+        PadButton::RightTrigger => "right_trigger",
+        PadButton::View => "view",
+        PadButton::Menu => "menu",
+        PadButton::Guide => "guide",
+        PadButton::DPadUp => "dpad_up",
+        PadButton::DPadDown => "dpad_down",
+        PadButton::DPadLeft => "dpad_left",
+        PadButton::DPadRight => "dpad_right",
+    }
+}
+
+fn direction_slug(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Up => "up",
+        Direction::Down => "down",
+        Direction::Left => "left",
+        Direction::Right => "right",
+    }
+}
+
+fn nav_action_slug(action: NavAction) -> String {
+    match action {
+        NavAction::Activate => "activate".to_string(),
+        NavAction::Back => "back".to_string(),
+        NavAction::Contextual(ContextualSlot::X) => "contextual_x".to_string(),
+        NavAction::Contextual(ContextualSlot::Y) => "contextual_y".to_string(),
+        NavAction::Section(Step::Previous) => "section_previous".to_string(),
+        NavAction::Section(Step::Next) => "section_next".to_string(),
+        NavAction::Page(Step::Previous) => "page_previous".to_string(),
+        NavAction::Page(Step::Next) => "page_next".to_string(),
+        NavAction::MoveFocus(d) => format!("move_focus_{}", direction_slug(d)),
+        NavAction::OpenSearch => "open_search".to_string(),
+        NavAction::OpenOverflow => "open_overflow".to_string(),
+    }
+}
+
+fn destructive_slug(what: Destructive) -> &'static str {
+    match what {
+        Destructive::DeleteMod => "delete_mod",
+        Destructive::RestoreSoundtrack => "restore_soundtrack",
+        Destructive::ResetSettingsGroup => "reset_settings_group",
+        Destructive::FormatUsbDrive => "format_usb_drive",
+        Destructive::DeleteAccountData => "delete_account_data",
+    }
+}
+
+fn family_from(name: &str) -> DeviceFamily {
+    match name.to_lowercase().as_str() {
+        "playstation" => DeviceFamily::PlayStation,
+        "nintendo" => DeviceFamily::Nintendo,
+        "steamdeck" | "steam_deck" => DeviceFamily::SteamDeck,
+        "gamecube" | "gamecubeadapter" | "gamecube_adapter" => DeviceFamily::GameCubeAdapter,
+        "keyboard" => DeviceFamily::Keyboard,
+        "xbox" => DeviceFamily::Xbox,
+        _ => DeviceFamily::Generic,
+    }
+}
+
+/// The whole pad navigation contract, so the window and the core cannot
+/// disagree about what a button does.
+///
+/// Pure and synchronous: every value here is a constant or a table lookup in the
+/// core, so there is nothing to block on.
+///
+/// The launcher's own navigation is not the emulator's controller binding.
+/// Nothing here is written to disk for the game.
+#[tauri::command]
+fn gamepad_contract(family: Option<String>) -> Result<GamepadContractView, String> {
+    let family = family
+        .as_deref()
+        .map(family_from)
+        .unwrap_or(DeviceFamily::Generic);
+    let contexts = [
+        ("page", InputContext::Page),
+        ("sheet", InputContext::Sheet),
+        ("dialog", InputContext::Dialog),
+        ("confirm", InputContext::Confirm),
+        ("blocking", InputContext::Blocking),
+    ];
+
+    let buttons = PadButton::ALL
+        .iter()
+        .map(|button| {
+            let mut actions = std::collections::BTreeMap::new();
+            for (key, context) in contexts {
+                if let Some(action) = action_for(*button, context) {
+                    actions.insert(key, nav_action_slug(action));
+                }
+            }
+            PadButtonView {
+                button: pad_button_slug(*button),
+                label: button.label(family),
+                actions,
+            }
+        })
+        .collect();
+
+    let timing = RepeatTiming::default().clamped();
+    Ok(GamepadContractView {
+        family: family.label(),
+        buttons,
+        destructive: Destructive::ALL
+            .iter()
+            .map(|d| DestructiveActionView {
+                slug: destructive_slug(*d),
+                describe: d.describe(),
+            })
+            .collect(),
+        hold_to_confirm_ms: reborn_core::gamepad::HOLD_TO_CONFIRM_MS,
+        repeat_initial_delay_ms: timing.initial_delay_ms,
+        repeat_interval_ms: timing.interval_ms,
+        stall_gap_ms: reborn_core::gamepad::STALL_GAP_MS,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Reading a key out of an INI the launcher does not own
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct IniValueView {
+    path: String,
+    /// False when there is no such file. Different from a missing key, and a
+    /// Settings page that conflates them tells the player their setting is
+    /// unset when their whole config is somewhere else.
+    file_exists: bool,
+    section: String,
+    key: String,
+    /// Absent when the file has no such key. Never an empty string, because
+    /// `key=` is a real value and a real setting.
+    value: Option<String>,
+}
+
+/// Read one key out of an INI file, changing nothing.
+///
+/// The launcher writes keys and never files, so a config it has touched still
+/// holds everything it has no opinion about. This is how a screen shows one of
+/// those values without the launcher claiming to own it. A comment is never read
+/// as a pair, so a commented-out setting does not appear here as active.
+#[tauri::command]
+async fn ini_value(path: String, section: String, key: String) -> Result<IniValueView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = PathBuf::from(&path);
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(IniValueView {
+                    path: file.display().to_string(),
+                    file_exists: false,
+                    section,
+                    key,
+                    value: None,
+                })
+            }
+            Err(e) => return Err(format!("{} could not be read: {e}", file.display())),
+        };
+        let document = IniDocument::parse(&text);
+        Ok(IniValueView {
+            value: document.get(&section, &key).map(str::to_string),
+            path: file.display().to_string(),
+            file_exists: true,
+            section,
+            key,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// The player's real JSGME mod library
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct JsgmeSkippedView {
+    mirror_relative: String,
+    bytes: u64,
+    why: String,
+}
+
+#[derive(Debug, Serialize)]
+struct JsgmeModView {
+    /// The folder name, verbatim. "Patriots Throwback" is 19 characters and
+    /// "Aqua Football" is 13, and a row that only works at one length is a row
+    /// that breaks on contact.
+    name: String,
+    /// A slug of the folder name, namespaced so an imported mod can never
+    /// collide with a curated package of the same name.
+    id: String,
+    folder: String,
+    /// The builds this mod actually carries payload for, read off the payload
+    /// rather than off a directory name.
+    targets: Vec<String>,
+    files: usize,
+    bytes: u64,
+    /// Files in the folder that cannot become payload entries, each with the
+    /// reason. Reported because a mod that imports 19 of 20 files without
+    /// saying so is a mod that half works.
+    skipped: Vec<JsgmeSkippedView>,
+    /// Entries that are neither a plain file nor a directory. A symlink in here
+    /// would make a walk follow itself.
+    unsupported: Vec<String>,
+    /// True when JSGME's install log says this mod is currently applied.
+    applied: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct JsgmeOverlapView {
+    relative: String,
+    /// Every mod that writes this path, not a pair. "7 mods write this file" is
+    /// the useful sentence, and JSGME's own answer is to copy in order and let
+    /// the last one win with nothing said to the player.
+    mods: Vec<String>,
+    /// True when the mods disagree about letter case, which is two files on
+    /// Linux and one on Windows.
+    differing_case: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct JsgmeAppliedModView {
+    name: String,
+    recorded_paths: usize,
+    backup_paths: usize,
+    /// Paths the log records with nothing in `!BACKUP`. Not proof of a lost
+    /// original: JSGME only stashes a file it displaced, so a mod that only
+    /// adds files leaves no backup at all.
+    recorded_without_backup: usize,
+    /// False when the log names a mod whose folder is gone.
+    folder_present: bool,
+    unreadable: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsgmeLibraryView {
+    root: String,
+    mods: Vec<JsgmeModView>,
+    /// Contested paths across the whole library. Measured on this machine: 20,
+    /// because the seven football mods all write one texture and the two control
+    /// mods write the same 19 button prompts.
+    overlaps: Vec<JsgmeOverlapView>,
+    nothing_applied: bool,
+    instlogs_exists: bool,
+    backup_exists: bool,
+    backup_entries: usize,
+    applied: Vec<JsgmeAppliedModView>,
+    /// Set when mods are applied and the originals cannot be restored. This is
+    /// the state migration refuses to run through, and it is a narrower check
+    /// than "some log has no backup".
+    blocker: Option<String>,
+    /// The applied order, from `JSGME.ini`.
+    applied_order: Vec<String>,
+    order_unreadable: Option<String>,
+    /// Folder names that produce the same id, which would make one mod turn the
+    /// other off.
+    duplicate_ids: Vec<String>,
+    /// Folders whose name cannot become an id, with the reason.
+    unusable_names: Vec<MigrationSkipView>,
+    /// Entries under `MODS` that are not mods, JSGME's own bookkeeping aside.
+    ignored: Vec<String>,
+}
+
+/// Read the player's JSGME mod library and describe it in composition's terms.
+///
+/// Read only. This module never writes: `MODS` is the only copy of the mod
+/// payloads, and `MODS/!BACKUP` is the only copy of any original they displaced.
+///
+/// `games` is required and is not defaulted. A folder under `Textures/` is not
+/// necessarily a build: `Xbox Controls` carries `User/Load/Textures/v2/`, and
+/// `v2` parses as a game id on shape alone, so a scan that trusted the
+/// directory name would publish a mod claiming to target a build that does not
+/// exist. The three ids that exist today are `GN7E69`, `FR4N31` and `CR4E12`,
+/// and the caller says which of them this install actually has.
+///
+/// Blocking: every file in every mod is hashed, and the real library is 11 mods.
+#[tauri::command]
+async fn jsgme_library(mods_root: String, games: Vec<String>) -> Result<JsgmeLibraryView, String> {
+    if games.is_empty() {
+        return Err(
+            "jsgme_library needs the list of builds this install has, because a \
+             folder under Textures is not necessarily a build: `v2` parses as a \
+             game id and is not one. Pass the ids you have, for example GN7E69 \
+             for the offline build."
+                .to_string(),
+        );
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(mods_root);
+        let mut recognized = Vec::new();
+        for game in &games {
+            recognized.push(GameId::parse(game).map_err(|e| e.to_string())?);
+        }
+
+        let library = reborn_core::jsgme::JsgmeLibrary::scan(&root, &recognized)
+            .map_err(|e| e.to_string())?;
+        let applied_names: Vec<&str> = library
+            .applied
+            .applied
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+
+        Ok(JsgmeLibraryView {
+            root: library.root.display().to_string(),
+            mods: library
+                .mods
+                .iter()
+                .map(|m| JsgmeModView {
+                    name: m.name.clone(),
+                    id: m.id.to_string(),
+                    folder: m.folder.display().to_string(),
+                    targets: m.targets().iter().map(|g| g.to_string()).collect(),
+                    files: m.files.len(),
+                    bytes: m.total_bytes(),
+                    skipped: m
+                        .skipped
+                        .iter()
+                        .map(|s| JsgmeSkippedView {
+                            mirror_relative: s.mirror_relative.clone(),
+                            bytes: s.bytes,
+                            why: s.why.message(),
+                        })
+                        .collect(),
+                    unsupported: m
+                        .unsupported
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect(),
+                    applied: applied_names
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&m.name)),
+                })
+                .collect(),
+            overlaps: library
+                .overlaps
+                .iter()
+                .map(|o| JsgmeOverlapView {
+                    relative: o.relative.clone(),
+                    mods: o.mods.clone(),
+                    differing_case: o.differing_case,
+                    message: o.message(),
+                })
+                .collect(),
+            nothing_applied: library.applied.nothing_applied(),
+            instlogs_exists: library.applied.instlogs_exists,
+            backup_exists: library.applied.backup_exists,
+            backup_entries: library.applied.backup_entries.len(),
+            applied: library
+                .applied
+                .applied
+                .iter()
+                .map(|a| JsgmeAppliedModView {
+                    name: a.name.clone(),
+                    recorded_paths: a.recorded_paths.len(),
+                    backup_paths: a.backup_paths.len(),
+                    recorded_without_backup: a.recorded_without_backup().len(),
+                    folder_present: a.folder_present,
+                    unreadable: a.unreadable.clone(),
+                })
+                .collect(),
+            blocker: library.applied.blocker(),
+            applied_order: library
+                .applied_order
+                .iter()
+                .map(|(name, index)| format!("{index}: {name}"))
+                .collect(),
+            order_unreadable: library.order_unreadable.clone(),
+            duplicate_ids: library
+                .duplicate_ids
+                .iter()
+                .map(|(id, folders)| format!("{id}: {}", folders.join(", ")))
+                .collect(),
+            unusable_names: library
+                .unusable_names
+                .iter()
+                .map(|(name, why)| MigrationSkipView {
+                    what: name.clone(),
+                    why: why.clone(),
+                })
+                .collect(),
+            ignored: library
+                .ignored
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// The component identities
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct ComponentView {
+    /// The name that goes in a manifest and in a release's component map.
+    id: &'static str,
+    /// Whether the player is allowed to change these files locally. True for
+    /// `offline-content` only, which is what keeps a rebuilt soundtrack from
+    /// being treated as corruption.
+    customizable: bool,
+    /// Where the files live, relative to the data root. Absent for the three
+    /// where it does not follow from the name alone: `textures` needs a game id,
+    /// `launcher` installs into the install root, and `controller-db` has no
+    /// artifact yet.
+    install_root: Option<&'static str>,
+}
+
+/// The seven components that exist, so nothing has to guess a name.
+///
+/// Pure: this is the core's own list, not a copy of it. Two design documents
+/// say eight; the eighth was news and configuration, which is not a content
+/// component.
+#[tauri::command]
+fn components() -> Result<Vec<ComponentView>, String> {
+    Ok(ComponentId::ALL
+        .iter()
+        .map(|id| ComponentView {
+            id: id.as_str(),
+            customizable: id.is_customizable(),
+            install_root: id.install_root(),
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Stored credentials
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct CredentialView {
+    account: String,
+    /// Whether a secret is stored for this account.
+    ///
+    /// There is deliberately no field carrying the secret. The whole reason this
+    /// seam exists is that the shipped Dolphin has a bearer token compiled into
+    /// it, readable by anyone with the executable; handing the same token to a
+    /// web view would move the problem rather than fix it. The window needs to
+    /// know whether the player is signed in, and nothing more.
+    stored: bool,
+}
+
+/// Whether a secret is stored for an account, without returning it.
+///
+/// Blocking: this asks the operating system's credential store, which on Windows
+/// is Credential Manager and is a real inter-process call.
+#[tauri::command]
+async fn credential_stored(account: String) -> Result<CredentialView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let stored = p
+            .credentials
+            .retrieve(&account)
+            .map_err(|e| e.to_string())?
+            .is_some();
+        Ok(CredentialView { account, stored })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            // Already here.
             paths,
             devices,
             sessions,
             mods,
             home_state,
             prepare_launch,
-            launch
+            launch,
+            // Where the game will boot from.
+            user_dir,
+            // The launcher's own mod library and composition.
+            mod_packages,
+            mods_plan,
+            mods_apply,
+            mods_unapply,
+            mods_verify,
+            // Bringing a 2.1 install over.
+            migration_plan,
+            migration_apply,
+            // Verify and repair.
+            library_verify,
+            library_repair,
+            // First run.
+            onboarding_progress,
+            // The Xbox wizard's drive picker.
+            removable_drives,
+            // Captured results.
+            stats_queue,
+            stats_ingest,
+            stats_submit,
+            // Custom soundtrack.
+            music_sources,
+            music_build_pack,
+            // Installed versions and updates.
+            content_installed,
+            content_update,
+            // Driving the launcher with a pad.
+            gamepad_contract,
+            // Reading a key out of a config the launcher does not own.
+            ini_value,
+            // The player's real JSGME library.
+            jsgme_library,
+            // The component identities, so nothing guesses a name.
+            components,
+            // Whether an account secret is stored. Never the secret.
+            credential_stored
         ])
         .run(tauri::generate_context!())
         .expect("the launcher window could not start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use reborn_core::manifest::{ManifestFile, Sha256Hex};
+    use reborn_core::migration::LegacyInstall;
+    use reborn_core::mods::ComposeRefusal;
+    use reborn_core::stats::{CaptureKey, EntryState, QuarantineReason, QueueEntry};
+
+    fn legacy(applied: bool, backup: bool) -> LegacyInstall {
+        LegacyInstall {
+            root: PathBuf::from("legacy-root"),
+            has_memory_cards: true,
+            has_screenshots: true,
+            has_textures: true,
+            has_applied_mods: applied,
+            has_jsgme_backup: backup,
+            mod_blocker: None,
+        }
+    }
+
+    fn entry(state: EntryState) -> QueueEntry {
+        QueueEntry {
+            key: CaptureKey::of_bytes(format!("{state:?}").as_bytes()),
+            state,
+            attempts: 0,
+            first_seen_ms: 0,
+            last_attempt_ms: None,
+            finished_ms: None,
+            last_error: None,
+            source_path: None,
+            session_id: None,
+            summary: None,
+        }
+    }
+
+    /// A destructive command called without a confirm must refuse, and the
+    /// refusal has to name the flag.
+    ///
+    /// The failure this pins: a caller that gets a bare "not confirmed" cannot
+    /// tell what to send next, so it sends something else, and the eventual fix
+    /// is somebody removing the check.
+    #[test]
+    fn an_unconfirmed_command_refuses_and_says_what_to_send() {
+        let err = confirmed(false, "mods_apply", "delete the composed tree")
+            .expect_err("an unconfirmed destructive call must not be allowed");
+        assert!(err.contains("mods_apply"), "{err}");
+        assert!(err.contains("confirm"), "{err}");
+        assert!(
+            err.contains("Nothing was changed"),
+            "the caller has to know the state of the machine: {err}"
+        );
+        assert!(confirmed(true, "mods_apply", "x").is_ok());
+    }
+
+    /// Mods applied with no JSGME backup must stop a migration, and the core's
+    /// own reason must reach the caller unchanged.
+    ///
+    /// Copying then would take the modded textures as the pristine tree, and
+    /// nothing afterwards can tell the difference: every later verify would call
+    /// the modded files correct.
+    #[test]
+    fn a_blocked_migration_is_refused_with_the_reason_intact() {
+        let install = legacy(true, false);
+        let plan = MigrationPlan::build(&install);
+        // Cloned rather than moved: the plan is still needed below, and a
+        // partial move of an owned reason would take it.
+        let reason = plan
+            .blocked
+            .clone()
+            .expect("no backup with mods applied is blocked");
+        let refusal = migration_refusal(&plan).expect("a blocked plan must be refused");
+        assert_eq!(refusal, reason, "the reason must not be re-worded here");
+
+        let view = plan_to_view(Path::new("legacy-root"), Some(&plan));
+        assert!(!view.can_apply);
+        assert_eq!(view.cannot_apply_because.as_deref(), Some(reason.as_str()));
+    }
+
+    /// Applied mods stop a migration even when a backup exists, because nothing
+    /// in this build can un-apply them.
+    ///
+    /// The core's plan sets `needs_mod_unapply` and orders textures after an
+    /// un-apply step that no code performs: `jsgme` only reads, and `migration`
+    /// has no such step. The command line tool copies anyway. This is the check
+    /// that keeps the window from repeating that.
+    #[test]
+    fn applied_mods_stop_a_migration_because_nothing_can_un_apply_them() {
+        let plan = MigrationPlan::build(&legacy(true, true));
+        assert!(plan.blocked.is_none(), "a backup exists, so not blocked");
+        assert!(plan.needs_mod_unapply);
+        let refusal =
+            migration_refusal(&plan).expect("applied mods must stop the copy, not be ignored");
+        assert!(refusal.contains("JSGME"), "{refusal}");
+        assert!(
+            plan.steps.iter().any(|s| s.what == "Textures"),
+            "the plan does list textures, which is what makes this dangerous"
+        );
+
+        // A clean install must still be allowed, or the check is just a wall.
+        assert!(migration_refusal(&MigrationPlan::build(&legacy(false, false))).is_none());
+    }
+
+    /// A result the server accepted or held must never be counted as waiting.
+    ///
+    /// Held means stored, with a person to decide, and it is a success. Counting
+    /// it as pending is exactly the mistake that sent this project's uploader
+    /// into a retry loop and produced a real outage.
+    #[test]
+    fn a_sent_result_is_never_counted_as_waiting() {
+        let counts = queue_counts(&[
+            entry(EntryState::Queued),
+            entry(EntryState::Queued),
+            entry(EntryState::Accepted),
+            entry(EntryState::Held {
+                reason: "under review".to_string(),
+            }),
+            entry(EntryState::Rejected {
+                reason: "schema".to_string(),
+            }),
+            entry(EntryState::Stalled {
+                reason: "offline".to_string(),
+            }),
+            entry(EntryState::Quarantined {
+                reason: QuarantineReason::NoSession,
+            }),
+        ]);
+        assert_eq!(counts.depth, 2, "only Queued is what a pass would try");
+        assert_eq!(counts.accepted, 1);
+        assert_eq!(counts.held, 1);
+        assert_eq!(counts.rejected, 1);
+        assert_eq!(counts.stalled, 1);
+        assert_eq!(counts.quarantined, 1);
+        assert_eq!(counts.total, 7);
+    }
+
+    /// A file the player customized must never appear in the repair set.
+    ///
+    /// A rebuilt offline image never matches its shipped hash, because a song
+    /// changed. Reporting it as damaged is how a repair re-fetches 1.5 GB over
+    /// somebody's own soundtrack.
+    #[test]
+    fn a_user_modified_file_is_never_offered_for_repair() {
+        let component = Component {
+            schema: "nsr.component.v1".to_string(),
+            component: "offline-content".to_string(),
+            version: "1.0.0".to_string(),
+            sequence: 1,
+            install_root: DataDir::LibraryOffline.relative().to_string(),
+            customizable: true,
+            files: vec![
+                ManifestFile {
+                    path: "game.iso".to_string(),
+                    bytes: 1_500_000_000,
+                    sha256: Sha256Hex::from_bytes(b"shipped"),
+                },
+                ManifestFile {
+                    path: "readme.txt".to_string(),
+                    bytes: 10,
+                    sha256: Sha256Hex::from_bytes(b"readme"),
+                },
+            ],
+        };
+        let mut verdicts = std::collections::BTreeMap::new();
+        verdicts.insert("game.iso".to_string(), FileVerdict::UserModified);
+        verdicts.insert("readme.txt".to_string(), FileVerdict::Missing);
+        let report = VerifyReport {
+            component: "offline-content".to_string(),
+            verdicts,
+        };
+
+        let view = verify_view(&report, &component, Path::new("library/offline"));
+        assert_eq!(view.user_modified, 1);
+        assert_eq!(view.user_modified_paths, vec!["game.iso".to_string()]);
+        assert_eq!(view.missing_paths, vec!["readme.txt".to_string()]);
+        assert!(
+            !view.missing_paths.contains(&"game.iso".to_string()),
+            "the customized image must not be in the repair set"
+        );
+        assert_eq!(
+            view.repair_bytes, 10,
+            "only the 10 byte file would be re-fetched, not 1.5 GB"
+        );
+        assert!(!view.healthy, "a missing file is damage");
+        assert!(
+            !view.repair_available,
+            "nothing can fetch bytes yet, and the view must not imply otherwise"
+        );
+    }
+
+    /// A refused composition must never look like a plan.
+    ///
+    /// `planned` false with every count at zero is a state a screen can read.
+    /// A refusal reported as a plan of zero files would render as "0 mods, all
+    /// good" over a tree nothing checked.
+    #[test]
+    fn a_refused_composition_is_not_an_empty_plan() {
+        let game = GameId::parse("GN7E69").expect("a real disc id");
+        let refusal = ComposeRefusal::NoPristineTree {
+            path: PathBuf::from("library/textures/GN7E69"),
+        };
+        let expected = refusal.message();
+        let view = plan_view(&game, &Composition::Refused(refusal));
+
+        assert!(!view.planned);
+        assert_eq!(view.refusal.as_deref(), Some(expected.as_str()));
+        assert!(view.composed_root.is_none(), "no plan means no path");
+        assert!(view.method.is_none());
+        assert_eq!(view.total_entries, 0);
+        assert_eq!(view.game, "GN7E69");
+    }
+
+    /// A fresh user directory has to announce what will be missing.
+    ///
+    /// Booting against an empty folder is a legitimate state and looks identical
+    /// to the bug where the launcher created its own and handed that to Dolphin,
+    /// which showed the player no save data at all.
+    #[test]
+    fn a_fresh_user_directory_says_what_will_be_missing() {
+        let view = user_dir_view(&UserDir::Fresh(PathBuf::from("runtime/user")));
+        assert_eq!(view.kind, "fresh");
+        assert!(!view.populated);
+        assert!(view.note.contains("memory cards"), "{}", view.note);
+
+        let existing = user_dir_view(&UserDir::Existing(PathBuf::from("real/User")));
+        assert_eq!(existing.kind, "existing");
+        assert!(existing.populated);
+    }
+
+    /// An unknown component name must be refused, not answered.
+    ///
+    /// The failure this pins: `content_installed("offline_content")`, with an
+    /// underscore instead of the hyphen the manifest uses, answering "nothing
+    /// is installed". That reads as a missing install of a component that is
+    /// actually there, and the next thing the player is offered is a download.
+    #[test]
+    fn an_unknown_component_name_is_refused_rather_than_answered() {
+        let err = known_component("offline_content")
+            .expect_err("a name that is not one of the seven must not be answered");
+        assert!(err.contains("offline-content"), "name the real ones: {err}");
+        assert!(known_component("offline-content").is_ok());
+        assert!(known_component("textures").is_ok());
+    }
+
+    /// An unbound button must be absent from the contract, never present with a
+    /// placeholder.
+    ///
+    /// The hint strip is the only place a binding is stated, so a slot that
+    /// shows a label and does nothing is a lie the player acts on. Guide belongs
+    /// to the operating system and is bound in no context at all.
+    #[test]
+    fn the_contract_never_invents_a_binding() {
+        let contract = gamepad_contract(Some("playstation".to_string())).expect("pure lookup");
+
+        let guide = contract
+            .buttons
+            .iter()
+            .find(|b| b.button == "guide")
+            .expect("guide is in the list, it is just bound to nothing");
+        assert!(
+            guide.actions.is_empty(),
+            "guide belongs to the OS: {:?}",
+            guide.actions
+        );
+        assert_eq!(guide.label, "PS", "labels follow the connected family");
+
+        let x = contract
+            .buttons
+            .iter()
+            .find(|b| b.button == "x")
+            .expect("x is in the list");
+        assert!(x.actions.contains_key("page"));
+        assert!(
+            !x.actions.contains_key("dialog"),
+            "a contextual action belongs to the page behind the scrim"
+        );
+
+        assert_eq!(contract.hold_to_confirm_ms, 800);
+        assert_eq!(
+            contract.destructive.len(),
+            5,
+            "the hold gate covers five things and nothing else"
+        );
+
+        // An unrecognised family must report what it resolved to, so a caller is
+        // never silently given a different glyph set than it asked for.
+        let fallback = gamepad_contract(Some("dualshock".to_string())).expect("pure lookup");
+        assert_ne!(fallback.family, "PlayStation controller");
+    }
 }

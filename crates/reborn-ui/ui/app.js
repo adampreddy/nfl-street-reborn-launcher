@@ -1,37 +1,28 @@
 // A test harness for the launcher core.
 //
 // Not a product interface. The real one is being designed separately, so this
-// exists to do one job: give every feature a control the moment it exists, and
-// show the raw answer.
+// exists to do one job: give every feature a control, and show the raw answer.
 //
-// It is data driven on purpose. Adding a feature is one entry in FEATURES
-// below, which is a line of data rather than a layout decision. That is what
-// keeps design out of the critical path while the core is being finished.
+// Data driven on purpose. A feature is one entry in FEATURES, which is a line
+// of data rather than a layout decision. That keeps design off the critical
+// path while the core is finished, and means a command can be exercised the
+// moment it exists.
+//
+// Two rules are enforced here because they are correctness, not style:
+//   a control that writes, deletes or launches is red
+//   a destructive command is never sent without confirm: true
 
 const bridge = window.__TAURI__ && window.__TAURI__.core;
 
 // ---------------------------------------------------------------------------
-// Settings the harness needs to call anything. Kept in this window only: the
-// real interface will own persistence, and duplicating it here would create a
-// second source of truth to disagree with.
+// Shared settings. Kept in this window only: the real interface will own
+// persistence, and a second store here would be a second source of truth.
 // ---------------------------------------------------------------------------
 
 const SETTINGS = [
-  {
-    key: "runtime",
-    name: "Dolphin",
-    placeholder: "Full path to Dolphin.exe",
-  },
-  {
-    key: "game",
-    name: "Game image",
-    placeholder: "Full path to the .iso or .rvz",
-  },
-  {
-    key: "userDir",
-    name: "User folder",
-    placeholder: "Leave blank to auto detect",
-  },
+  { key: "runtime", name: "Dolphin", placeholder: "Full path to Dolphin.exe" },
+  { key: "game", name: "Game image", placeholder: "Full path to the .iso or .rvz" },
+  { key: "userDir", name: "User folder", placeholder: "Blank to auto detect" },
   {
     key: "legacyRoot",
     name: "2.1 install",
@@ -52,102 +43,252 @@ function put(key, value) {
   else localStorage.removeItem("h:" + key);
 }
 
+let presetValue = "balanced";
+let fullscreenValue = true;
+
 // ---------------------------------------------------------------------------
-// The feature list.
+// The 31 commands.
 //
-// Each entry: a group, a label, the command name, its arguments, and whether
-// it writes anything. `write: true` colours the button red, which is the only
-// visual rule this harness has: a control that changes something on disk must
-// not look like one that reads.
-//
-// `args` is a function returning the argument object, so it reads the current
-// settings at click time rather than at load time.
+// `inputs` renders a text box per argument, remembered per row.
+// `confirm` renders a checkbox and refuses to run unless it is ticked, which is
+// how a destructive command is prevented from firing on a single click.
+// `write` colours the button.
 // ---------------------------------------------------------------------------
 
 const FEATURES = [
   {
-    group: "Read",
+    group: "State",
     items: [
+      { cmd: "paths", desc: "Roots, and whether saves survive uninstall" },
       {
-        name: "paths",
-        cmd: "paths",
-        desc: "Install root, data root, whether saves survive uninstall",
-        args: () => ({}),
-      },
-      {
-        name: "home_state",
         cmd: "home_state",
         desc: "Sessions, minutes, controllers, mods applied",
         args: () => ({ runtime: get("runtime"), legacyRoot: get("legacyRoot") }),
       },
       {
-        name: "devices",
+        cmd: "user_dir",
+        desc: "Which Dolphin user folder a launch would use, and why",
+        args: () => ({ chosen: get("userDir") }),
+      },
+      { cmd: "components", desc: "Component identities, so nothing guesses a name" },
+      { cmd: "sessions", desc: "Recorded sessions and how each ended" },
+    ],
+  },
+  {
+    group: "Controllers",
+    items: [
+      {
         cmd: "devices",
-        desc: "Controllers, as the emulator names them",
+        desc: "Pads, named the way the emulator names them",
         args: () => ({ runtime: get("runtime") }),
       },
       {
-        name: "sessions",
-        cmd: "sessions",
-        desc: "Recorded play sessions and how each ended",
-        args: () => ({}),
-      },
-      {
-        name: "mods",
-        cmd: "mods",
-        desc: "Mods on disk and whether each is applied",
-        args: () => ({ legacyRoot: get("legacyRoot") }),
+        cmd: "gamepad_contract",
+        desc: "Launcher navigation bindings for a pad family",
+        inputs: [{ key: "family", placeholder: "xbox, playstation, blank for default" }],
       },
     ],
   },
   {
     group: "Launch",
+    launchOptions: true,
     items: [
       {
-        name: "prepare_launch",
         cmd: "prepare_launch",
-        desc: "Write config, start nothing. Says which user folder it used",
+        desc: "Write config, start nothing",
         write: true,
         needs: ["runtime", "game"],
         args: () => ({
           runtime: get("runtime"),
           game: get("game"),
-          preset: preset(),
-          fullscreen: fullscreen(),
+          preset: presetValue,
+          fullscreen: fullscreenValue,
           userDir: get("userDir"),
         }),
       },
       {
-        name: "launch",
         cmd: "launch",
         desc: "Start the game and wait for it to exit",
         write: true,
-        needs: ["runtime", "game"],
         slow: true,
+        needs: ["runtime", "game"],
         args: () => ({
           runtime: get("runtime"),
           game: get("game"),
-          preset: preset(),
-          fullscreen: fullscreen(),
+          preset: presetValue,
+          fullscreen: fullscreenValue,
           userDir: get("userDir"),
         }),
       },
     ],
-    controls: true,
+  },
+  {
+    group: "Mods",
+    items: [
+      {
+        cmd: "mods",
+        desc: "Mods on disk and whether each is applied",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+      },
+      { cmd: "mod_packages", desc: "Packages the launcher knows about" },
+      {
+        cmd: "jsgme_library",
+        desc: "Read the real JSGME mods on disk",
+        inputs: [
+          { key: "modsRoot", placeholder: "MODS folder", derive: () => get("legacyRoot") + "\\MODS" },
+          { key: "games", placeholder: "game ids, comma separated", list: true },
+        ],
+      },
+      {
+        cmd: "mods_plan",
+        desc: "What applying would do. Writes nothing",
+        inputs: [
+          { key: "game", placeholder: "game id" },
+          { key: "packages", placeholder: "package refs, comma separated", list: true },
+        ],
+      },
+      {
+        cmd: "mods_apply",
+        desc: "Compose the tree by hardlink",
+        write: true,
+        confirm: true,
+        inputs: [
+          { key: "game", placeholder: "game id" },
+          { key: "packages", placeholder: "package refs, comma separated", list: true },
+        ],
+      },
+      {
+        cmd: "mods_unapply",
+        desc: "Rebuild without overlays. Nothing to lose, by design",
+        write: true,
+        confirm: true,
+        inputs: [{ key: "game", placeholder: "game id" }],
+      },
+      {
+        cmd: "mods_verify",
+        desc: "Does the composed tree match the plan",
+        inputs: [
+          { key: "game", placeholder: "game id" },
+          { key: "packages", placeholder: "package refs, comma separated", list: true },
+        ],
+      },
+    ],
+  },
+  {
+    group: "Migration",
+    items: [
+      {
+        cmd: "migration_plan",
+        desc: "What moving a 2.1 install would do. Copies nothing",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+      },
+      {
+        cmd: "migration_apply",
+        desc: "Copy it. Saves first, textures last",
+        write: true,
+        confirm: true,
+        needs: ["legacyRoot"],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+      },
+    ],
+  },
+  {
+    group: "Library",
+    items: [
+      {
+        cmd: "library_verify",
+        desc: "Hash a tree against a manifest",
+        inputs: [
+          { key: "manifestPath", placeholder: "path to a manifest json" },
+          { key: "root", placeholder: "tree to check, blank for default" },
+        ],
+      },
+      {
+        cmd: "library_repair",
+        desc: "Replace damaged files. Spares user content",
+        write: true,
+        confirm: true,
+        inputs: [{ key: "component", placeholder: "component id" }],
+      },
+    ],
+  },
+  {
+    group: "Content",
+    items: [
+      {
+        cmd: "content_installed",
+        desc: "What version of a component is installed",
+        inputs: [{ key: "component", placeholder: "component id" }],
+      },
+      {
+        cmd: "content_update",
+        desc: "Stage, verify, promote",
+        write: true,
+        confirm: true,
+        inputs: [{ key: "component", placeholder: "component id" }],
+      },
+    ],
+  },
+  {
+    group: "Stats",
+    items: [
+      { cmd: "stats_queue", desc: "Captures waiting to be submitted" },
+      {
+        cmd: "stats_ingest",
+        desc: "Read LeagueGameStats into the queue",
+        write: true,
+        confirm: true,
+        inputs: [
+          { key: "userDir", placeholder: "Dolphin user folder", derive: () => get("userDir") || get("legacyRoot") + "\\User" },
+          { key: "sessionId", placeholder: "session id, optional" },
+        ],
+      },
+      {
+        cmd: "stats_submit",
+        desc: "Send the queue. Refuses unverified sides",
+        write: true,
+        confirm: true,
+      },
+    ],
+  },
+  {
+    group: "Music",
+    items: [
+      { cmd: "music_sources", desc: "Imported tracks the launcher can see" },
+      {
+        cmd: "music_build_pack",
+        desc: "Build a pack. The binary table writer is a known gap",
+        write: true,
+        confirm: true,
+      },
+    ],
+  },
+  {
+    group: "System",
+    items: [
+      { cmd: "removable_drives", desc: "Drives the Xbox wizard may write to" },
+      {
+        cmd: "onboarding_progress",
+        desc: "Which first run stages are satisfied",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+      },
+      {
+        cmd: "credential_stored",
+        desc: "Whether a secret is stored. Never the secret",
+        inputs: [{ key: "account", placeholder: "account name" }],
+      },
+      {
+        cmd: "ini_value",
+        desc: "Read one key out of an ini",
+        inputs: [
+          { key: "path", placeholder: "path to the ini" },
+          { key: "section", placeholder: "section" },
+          { key: "key", placeholder: "key" },
+        ],
+      },
+    ],
   },
 ];
-
-// Launch options, shared by both launch rows.
-let presetValue = "balanced";
-let fullscreenValue = true;
-
-function preset() {
-  return presetValue;
-}
-
-function fullscreen() {
-  return fullscreenValue;
-}
 
 // ---------------------------------------------------------------------------
 // Output
@@ -157,8 +298,7 @@ const out = () => document.getElementById("out");
 
 function log(label, value) {
   const stamp = new Date().toLocaleTimeString();
-  const body =
-    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const body = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   out().textContent = `[${stamp}] ${label}\n${body}\n\n` + out().textContent;
 }
 
@@ -198,10 +338,9 @@ function renderSettings() {
   }
 }
 
-function launchControls() {
+function launchOptionsRow() {
   const row = el("div", "row");
-  row.appendChild(el("span", "name", "Launch options"));
-
+  row.appendChild(el("span", "name", "options"));
   const sel = document.createElement("select");
   for (const p of ["performance", "balanced", "quality", "ultra"]) {
     const o = document.createElement("option");
@@ -210,22 +349,17 @@ function launchControls() {
     if (p === presetValue) o.selected = true;
     sel.appendChild(o);
   }
-  sel.addEventListener("change", () => {
-    presetValue = sel.value;
-  });
+  sel.addEventListener("change", () => (presetValue = sel.value));
   row.appendChild(sel);
 
-  const label = el("label", "inline");
+  const lab = el("label", "inline");
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = fullscreenValue;
-  cb.addEventListener("change", () => {
-    fullscreenValue = cb.checked;
-  });
-  label.appendChild(cb);
-  label.appendChild(el("span", null, "fullscreen"));
-  row.appendChild(label);
-
+  cb.addEventListener("change", () => (fullscreenValue = cb.checked));
+  lab.appendChild(cb);
+  lab.appendChild(el("span", null, "fullscreen"));
+  row.appendChild(lab);
   row.appendChild(el("span", "desc", ""));
   return row;
 }
@@ -236,25 +370,49 @@ function renderFeatures() {
 
   for (const g of FEATURES) {
     host.appendChild(el("h2", null, g.group));
-    if (g.controls) host.appendChild(launchControls());
+    if (g.launchOptions) host.appendChild(launchOptionsRow());
 
     for (const f of g.items) {
       const row = el("div", "row");
-      row.appendChild(el("span", "name", f.name));
+      row.appendChild(el("span", "name", f.cmd));
 
-      // Say what is missing instead of failing on click.
       const missing = (f.needs || []).filter((k) => !get(k));
       if (missing.length) {
-        row.appendChild(
-          el("span", "desc missing", "needs " + missing.join(" and ")),
-        );
-      } else {
+        row.appendChild(el("span", "desc missing", "needs " + missing.join(" and ")));
+      } else if (!f.inputs) {
         row.appendChild(el("span", "desc", f.desc));
+      }
+
+      // Per-row argument boxes, remembered so a path is typed once.
+      const fields = {};
+      for (const inp of f.inputs || []) {
+        const box = document.createElement("input");
+        box.type = "text";
+        box.placeholder = inp.placeholder;
+        const saved = localStorage.getItem("a:" + f.cmd + ":" + inp.key);
+        box.value = saved || (inp.derive ? inp.derive() : "");
+        box.spellcheck = false;
+        box.addEventListener("change", () =>
+          localStorage.setItem("a:" + f.cmd + ":" + inp.key, box.value.trim()),
+        );
+        fields[inp.key] = { box, list: inp.list };
+        row.appendChild(box);
+      }
+
+      // Confirm, for anything destructive. Unticked means it will not fire.
+      let confirmBox = null;
+      if (f.confirm) {
+        const lab = el("label", "inline");
+        confirmBox = document.createElement("input");
+        confirmBox.type = "checkbox";
+        lab.appendChild(confirmBox);
+        lab.appendChild(el("span", null, "confirm"));
+        row.appendChild(lab);
       }
 
       const btn = el("button", f.write ? "write" : "", "Run");
       btn.disabled = missing.length > 0 || !bridge;
-      btn.addEventListener("click", () => run(f, btn));
+      btn.addEventListener("click", () => run(f, btn, fields, confirmBox));
       row.appendChild(btn);
 
       host.appendChild(row);
@@ -262,13 +420,37 @@ function renderFeatures() {
   }
 }
 
-async function run(f, btn) {
+function buildArgs(f, fields, confirmBox) {
+  const args = f.args ? f.args() : {};
+  for (const [key, { box, list }] of Object.entries(fields)) {
+    const raw = box.value.trim();
+    if (list) {
+      args[key] = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    } else {
+      args[key] = raw || null;
+    }
+  }
+  if (f.confirm) args.confirm = !!(confirmBox && confirmBox.checked);
+  return args;
+}
+
+async function run(f, btn, fields, confirmBox) {
+  const args = buildArgs(f, fields, confirmBox);
+
+  // A destructive command is never sent unconfirmed. Said here rather than
+  // relying on the core to refuse, so the reason is visible where the click is.
+  if (f.confirm && !args.confirm) {
+    log(f.cmd, "not sent: tick confirm first. This command changes files.");
+    return;
+  }
+
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = f.slow ? "Running" : "...";
   if (f.slow) log(f.cmd, "started, waiting for the game to exit");
+
   try {
-    const r = await bridge.invoke(f.cmd, f.args());
+    const r = await bridge.invoke(f.cmd, args);
     log(f.cmd, r === null || r === undefined ? "ok, no value" : r);
   } catch (e) {
     logError(f.cmd, e);
@@ -288,11 +470,10 @@ document.getElementById("clear").addEventListener("click", () => {
 
 const pill = document.getElementById("bridge");
 if (bridge) {
-  pill.textContent = "core attached";
+  const n = FEATURES.reduce((a, g) => a + g.items.length, 0);
+  pill.textContent = `core attached, ${n} commands`;
   pill.className = "pill ok";
 } else {
-  // A missing bridge is stated, not left as a set of buttons that silently do
-  // nothing.
   pill.textContent = "core NOT attached";
   pill.className = "pill bad";
   log("startup", "The launcher core is not attached, so nothing can be called.");

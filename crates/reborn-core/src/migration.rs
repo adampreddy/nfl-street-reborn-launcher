@@ -48,8 +48,23 @@ pub struct LegacyInstall {
     pub has_textures: bool,
     /// JSGME is present and at least one mod is applied.
     pub has_applied_mods: bool,
-    /// `!BACKUP` exists, so the originals can be restored.
+    /// `!BACKUP` exists and is not empty.
+    ///
+    /// True is NOT the same as "everything can be restored", and treating it
+    /// that way was a real bug. Measured on a real install: `!BACKUP` was not
+    /// empty, so this said yes, while `Xbox Controls` had 19 recorded paths and
+    /// 0 backups. Un-applying it was impossible and migration planned to
+    /// proceed anyway, which would have copied modded textures into the
+    /// pristine tree and called them pristine.
+    ///
+    /// Use `unrecoverable_mods` for the question that actually matters.
     pub has_jsgme_backup: bool,
+    /// Why the mod state makes migration unsafe, if it does.
+    ///
+    /// Computed by [`crate::jsgme::AppliedState::blocker`] rather than here, so
+    /// there is one answer to "can these originals be restored" instead of two
+    /// that can disagree.
+    pub mod_blocker: Option<String>,
 }
 
 impl LegacyInstall {
@@ -91,6 +106,11 @@ impl LegacyInstall {
             has_textures: user.join("Load").join("Textures").is_dir(),
             has_applied_mods,
             has_jsgme_backup: non_empty(&backup),
+            // Asked, not recomputed. jsgme owns the comparison between what an
+            // install log recorded and what !BACKUP actually holds.
+            mod_blocker: crate::jsgme::AppliedState::read(&mods)
+                .ok()
+                .and_then(|state| state.blocker()),
         })
     }
 
@@ -131,7 +151,9 @@ pub struct MigrationPlan {
     pub needs_mod_unapply: bool,
     /// Mods are applied but `!BACKUP` is missing or empty, so the originals
     /// cannot be restored and the textures cannot be trusted.
-    pub blocked: Option<&'static str>,
+    /// Why migration must not run. Owned rather than static, because the
+    /// useful message names which mods are affected.
+    pub blocked: Option<String>,
 }
 
 impl MigrationPlan {
@@ -198,16 +220,23 @@ impl MigrationPlan {
         });
 
         let needs_mod_unapply = install.has_applied_mods;
-        let blocked = if install.has_applied_mods && !install.has_jsgme_backup {
+        // Two ways this is unsafe. A completely absent !BACKUP is obvious.
+        // Partial coverage is not, and it is the one that really happens: the
+        // folder exists, looks populated, and hides that one mod's originals
+        // were never kept. jsgme::AppliedState::blocker covers both.
+        let blocked: Option<String> = if install.has_applied_mods && !install.has_jsgme_backup {
             Some(
-                "Mods are applied but the JSGME !BACKUP folder is missing, so \
-                 the original textures cannot be restored. Migrating them now \
-                 would copy modded files as if they were pristine. Reinstall \
-                 the textures, or continue without them and let the launcher \
-                 fetch a clean copy",
+                "Mods are applied and the JSGME !BACKUP folder is missing or \
+                 empty, so any original file they displaced no longer exists \
+                 anywhere. The live texture tree holds modded files as if they \
+                 were pristine. Copying it now would import them as a pristine \
+                 tree, and every later check would measure against the wrong \
+                 thing. Un-apply the mods in JSGME first, or let the launcher \
+                 fetch a clean copy of the textures component."
+                    .to_string(),
             )
         } else {
-            None
+            install.mod_blocker.clone()
         };
 
         steps.sort_by_key(|s| s.order);
@@ -494,6 +523,7 @@ mod tests {
                 has_textures: true,
                 has_applied_mods: false,
                 has_jsgme_backup: true,
+                mod_blocker: None,
             },
             LegacyInstall {
                 root: PathBuf::from("legacy"),
@@ -502,6 +532,7 @@ mod tests {
                 has_textures: false,
                 has_applied_mods: true,
                 has_jsgme_backup: true,
+                mod_blocker: None,
             },
         ] {
             let plan = MigrationPlan::build(&install);

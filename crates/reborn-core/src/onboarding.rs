@@ -673,7 +673,7 @@ pub enum Refusal {
     /// found.
     WrongSource { given: PathBuf, found: PathBuf },
     /// The migration plan is blocked and cannot be accepted as a decision.
-    BlockedMigration { why: &'static str },
+    BlockedMigration { why: String },
     /// Preparation was declared done with a task still outstanding.
     TasksOutstanding { first: PrepTask },
     /// Completion was requested with a stage still unanswered.
@@ -2314,7 +2314,9 @@ mod tests {
                 given: PathBuf::from("a"),
                 found: PathBuf::from("b"),
             },
-            Refusal::BlockedMigration { why: "no !BACKUP" },
+            Refusal::BlockedMigration {
+                why: "no !BACKUP".to_string(),
+            },
             Refusal::TasksOutstanding {
                 first: PrepTask::ApplyTextures,
             },
