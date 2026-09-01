@@ -1,0 +1,3163 @@
+//! Composing the texture tree instead of overwriting it.
+//!
+//! # What this replaces
+//!
+//! The shipped 2.1 product manages mods with JSGME. JSGME applies a mod by
+//! **moving** the original file into a `!BACKUP` folder and copying the mod file
+//! into its place, so `!BACKUP` becomes the only copy of the original that
+//! exists anywhere. The 2.1 updater then runs `DelTree` over the whole `MODS`
+//! folder, `!BACKUP` included. Anyone who updates with mods applied is left
+//! with overlaid files and no way back, which is why [`crate::migration`]
+//! treats "mods applied with no restorable backup" as a hard blocker rather
+//! than a warning: at that point nothing on the machine knows what the original
+//! texture was.
+//!
+//! # The model
+//!
+//! ```text
+//!   library/textures/<gameid>/       PRISTINE.  Never written to.
+//!   mods/packages/<id>/<version>/    validated package payloads
+//!   mods/active/<gameid>/            COMPOSED.  What Dolphin loads.
+//!   mods/activation.json             the ordered list the composed tree is built from
+//! ```
+//!
+//! The composed tree is every pristine file, hardlinked, with active package
+//! files placed over the ones they override. **Un-applying a mod is rebuilding
+//! the composed tree from the activation list, not restoring anything.** There
+//! is no reverse map and no backup folder because nothing is ever displaced, so
+//! there is nothing whose loss could strand the user.
+//!
+//! # Four rules, and the failure each one prevents
+//!
+//! 1. **The pristine tree is read only.** [`PristineTree`] has no method that
+//!    writes, and [`Composer::plan`] refuses when the composed root is inside
+//!    the pristine root or the other way round. That refusal is the whole
+//!    safety property: a composed root of `library/textures/GN7E69` would make
+//!    composition into exactly the destructive overwrite this module exists to
+//!    replace.
+//! 2. **Two mods writing one path is reported, never resolved by order.** The
+//!    seven football mods in the 2.1 catalog all write the single path
+//!    `tex1_128x128_m_ffc5151a141db330_14.dds`, and `PS Controls` and
+//!    `Xbox Controls` have identical 19-file name sets. They are mutually
+//!    exclusive by construction. Last-one-wins would silently pick for the user
+//!    and the picked one would change if the activation order changed, so an
+//!    overlapping path refuses the plan and names both packages.
+//! 3. **The launcher only ever deletes a directory it composed itself.** A
+//!    composed tree carries `composed.json` at its root. Rebuilding removes the
+//!    old tree, and that removal is permitted only when the marker is there. A
+//!    non-empty directory with no marker is refused, because the one thing worse
+//!    than JSGME losing the originals would be this module deleting a folder the
+//!    user pointed it at by mistake.
+//! 4. **A composed tree is verified against the plan that built it.** The
+//!    marker records the activation, the entry count and the SHA-256 of every
+//!    overlaid file, so "Dolphin is loading a mod the user turned off" is a
+//!    detectable state. Every discrepancy has the same remedy, a rebuild, which
+//!    is the payoff of owning nothing irreplaceable.
+//!
+//! # The cost, stated honestly
+//!
+//! A hardlink cannot cross a filesystem, so the pristine and composed trees
+//! must share a volume, and exFAT and FAT32 do not support hardlinks at all.
+//! On those the fallback is a full copy of the whole texture tree, which for the
+//! measured `GN7E69` component is 2,077,362,716 bytes. That is the default
+//! format of a Steam Deck SD card, so it is the common case on a handheld and
+//! not an edge case. [`CompositionPlan::method`] says which cost the plan
+//! expects and [`ComposeReport`] says which one was actually paid.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::library::hash_file;
+use crate::manifest::Sha256Hex;
+use crate::platform::{DataDir, Error, Platform, Result};
+use crate::supervisor::Supervisor;
+
+/// The only mod package schema this module understands.
+pub const MOD_SCHEMA: &str = "nsr.mod.v1";
+/// The magic in a package manifest, from the ruled `.nsmod` format.
+pub const MOD_MAGIC: &str = "NSMD";
+/// Schema of `mods/activation.json`.
+pub const ACTIVATION_SCHEMA: &str = "nsr.activation.v1";
+/// Schema of the marker at the root of a composed tree.
+pub const COMPOSED_SCHEMA: &str = "nsr.composed.v1";
+/// The manifest filename inside an extracted package.
+pub const PACKAGE_MANIFEST: &str = "package.json";
+/// The payload subdirectory inside an extracted package.
+pub const PAYLOAD_SUBDIR: &str = "files";
+/// The marker at the root of a composed tree.
+///
+/// It is both the record used for verification and the launcher's proof that it
+/// created this directory, which is what makes removing the directory safe.
+pub const COMPOSED_MARKER: &str = "composed.json";
+/// The ordered activation list, under `mods/`.
+pub const ACTIVATION_FILE: &str = "activation.json";
+
+/// Extensions a payload entry may have, from the ruled two-zone entry policy.
+const PAYLOAD_EXTENSIONS: &[&str] = &["dds", "png"];
+
+fn invalid(message: String) -> Error {
+    Error::PlainIo(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
+}
+
+fn refused(message: String) -> Error {
+    Error::PlainIo(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Names that become path segments
+// ---------------------------------------------------------------------------
+
+/// A disc identifier, which is also a directory name in both trees.
+///
+/// Validated rather than passed through as a string because it is joined onto
+/// two roots. `GameId::parse("..")` would make the composed root the parent of
+/// `mods/active`, and every write would land outside the tree the launcher is
+/// allowed to touch.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct GameId(String);
+
+impl GameId {
+    /// Parse, rejecting anything that is not ASCII letters and digits.
+    ///
+    /// The three ids that exist today are `GN7E69`, `FR4N31` and `CR4E12`, all
+    /// six characters. The bound here is 16 and is a path-safety limit, not a
+    /// claim about the format: a longer id would still be safe, a `..` or a
+    /// separator would not.
+    pub fn parse(s: &str) -> Result<Self> {
+        if s.is_empty() || s.len() > 16 || !s.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(invalid(format!(
+                "{s:?} is not a game id. Use 1 to 16 ASCII letters and digits, \
+                 for example GN7E69. It becomes a directory name under both \
+                 library/textures and mods/active, so anything else could point \
+                 composition outside those trees"
+            )));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for GameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<GameId> for String {
+    fn from(v: GameId) -> String {
+        v.0
+    }
+}
+
+impl TryFrom<String> for GameId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::parse(&s)
+    }
+}
+
+/// A package identifier such as `reborn.ball.purple`.
+///
+/// Also a directory name, under `mods/packages/<id>/<version>/`, so it carries
+/// the same validation for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct ModId(String);
+
+impl ModId {
+    pub fn parse(s: &str) -> Result<Self> {
+        let shape_ok = !s.is_empty()
+            && s.len() <= 100
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+            && !s.starts_with(['.', '-'])
+            && !s.ends_with(['.', '-'])
+            && !s.contains("..");
+        if !shape_ok {
+            return Err(invalid(format!(
+                "{s:?} is not a package id. Use lowercase letters, digits, dots \
+                 and hyphens, for example reborn.ball.purple. It becomes a \
+                 directory name under mods/packages, so a separator or a `..` \
+                 would let a package payload be read from outside the library"
+            )));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ModId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<ModId> for String {
+    fn from(v: ModId) -> String {
+        v.0
+    }
+}
+
+impl TryFrom<String> for ModId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::parse(&s)
+    }
+}
+
+/// A package version, which is the second directory segment of a payload path.
+///
+/// Not parsed as semantic versioning here. This module never compares two
+/// versions, it only joins one onto a path and records it, so validating the
+/// shape is the honest amount of work: claiming to understand precedence would
+/// invite callers to rely on an ordering that is not implemented.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct PackageVersion(String);
+
+impl PackageVersion {
+    pub fn parse(s: &str) -> Result<Self> {
+        let shape_ok = !s.is_empty()
+            && s.len() <= 40
+            && s.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'+' || b == b'_'
+            })
+            && !s.starts_with('.')
+            && !s.contains("..");
+        if !shape_ok {
+            return Err(invalid(format!(
+                "{s:?} is not a package version. Use letters, digits, dots, \
+                 hyphens, plus and underscore, for example 1.0.0. It becomes a \
+                 directory name under mods/packages/<id>/"
+            )));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PackageVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<PackageVersion> for String {
+    fn from(v: PackageVersion) -> String {
+        v.0
+    }
+}
+
+impl TryFrom<String> for PackageVersion {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::parse(&s)
+    }
+}
+
+/// One file inside a package payload, relative to the package's `files/`
+/// directory, so it always begins with a game id: `GN7E69/tex1_....dds`.
+///
+/// This is the type that decides where a mod is allowed to write. Every
+/// composed path comes from here, so the traversal defense lives in
+/// [`PayloadPath::parse`] and nowhere else.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct PayloadPath {
+    full: String,
+    game: GameId,
+    tail: String,
+}
+
+impl PayloadPath {
+    /// Parse a payload path, refusing anything that could escape the composed
+    /// tree or name a different file than it appears to.
+    ///
+    /// The trailing dot and space check is the subtle one. Windows silently
+    /// strips a trailing `.` or space from a filename, so a manifest entry of
+    /// `ball.dds ` would be recorded under one name and created under another.
+    /// Verification would then hash a file the manifest does not describe and
+    /// report a mismatch forever, which reads as corruption and is not.
+    pub fn parse(s: &str) -> Result<Self> {
+        let reject = |why: &str| {
+            Err(invalid(format!(
+                "{s:?} is not a usable payload path: {why}. A payload path is \
+                 <gameid>/<name>.dds or <gameid>/<name>.png, relative to the \
+                 package's files/ directory, with forward slashes"
+            )))
+        };
+
+        if s.is_empty() {
+            return reject("it is empty");
+        }
+        if s.len() > 512 {
+            return reject("it is longer than 512 characters");
+        }
+        // A backslash separates on Windows and is an ordinary filename
+        // character on Linux, so one payload path would name two different
+        // destinations depending on the machine.
+        if s.contains('\\') {
+            return reject("it contains a backslash");
+        }
+        if s.contains(':') {
+            return reject("it contains a colon, which can name a volume or an NTFS data stream");
+        }
+        if s.starts_with('/') {
+            return reject("it is absolute");
+        }
+        if s.ends_with('/') {
+            return reject("it names a directory, not a file");
+        }
+        if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return reject("it contains a control character");
+        }
+
+        let segments: Vec<&str> = s.split('/').collect();
+        if segments.len() < 2 {
+            return reject("it has no game id segment");
+        }
+        for seg in &segments {
+            if seg.is_empty() {
+                return reject("it has an empty path segment");
+            }
+            if *seg == "." || *seg == ".." {
+                return reject("it contains a relative segment");
+            }
+            if seg.ends_with('.') || seg.ends_with(' ') {
+                return reject("a segment ends in a dot or a space, which Windows silently strips");
+            }
+        }
+
+        let game = GameId::parse(segments[0])?;
+        let tail = segments[1..].join("/");
+
+        let extension = tail
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        // Version 1 of the package format carries texture overlays and
+        // nothing else, so this is both the scope limit of the format and
+        // the reason a package cannot place an executable in the tree
+        // Dolphin reads.
+        if !PAYLOAD_EXTENSIONS.contains(&extension.as_str()) {
+            return reject("its extension is not .dds or .png");
+        }
+
+        Ok(Self {
+            full: s.to_string(),
+            game,
+            tail,
+        })
+    }
+
+    /// The path relative to the package's `files/` directory, game id included.
+    pub fn as_str(&self) -> &str {
+        &self.full
+    }
+
+    /// Which build this file is for.
+    pub fn game_id(&self) -> &GameId {
+        &self.game
+    }
+
+    /// The path relative to the composed tree root, game id stripped.
+    ///
+    /// This is the value conflict detection compares, because two packages
+    /// collide when they write the same place in the composed tree, not when
+    /// their payload paths happen to look alike.
+    pub fn tail(&self) -> &str {
+        &self.tail
+    }
+}
+
+impl std::fmt::Display for PayloadPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.full)
+    }
+}
+
+impl From<PayloadPath> for String {
+    fn from(v: PayloadPath) -> String {
+        v.full
+    }
+}
+
+impl TryFrom<String> for PayloadPath {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self> {
+        Self::parse(&s)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Packages
+// ---------------------------------------------------------------------------
+
+/// One file a package contributes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModFile {
+    pub path: PayloadPath,
+    pub sha256: Sha256Hex,
+    /// The byte length, not the size on disk.
+    ///
+    /// A 4 KiB-allocated size taken from a file listing is a different number,
+    /// and recording one here makes every future verification of a correct
+    /// install fail.
+    pub bytes: u64,
+}
+
+/// A mod package, as far as composition is concerned.
+///
+/// This is the composition view of `nsr.mod.v1` and deliberately not the
+/// catalog view. Unknown fields deserialize and are ignored, so `author`,
+/// `category`, `description` and `changelog` can live in the same file without
+/// this module claiming to understand them. None of the eleven migrated 2.1
+/// packages has a known author, and a type that required the field would
+/// invite somebody to fill it in with a guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModPackage {
+    pub schema: String,
+    pub magic: String,
+    pub id: ModId,
+    /// What the user sees, for example "Purple Football".
+    pub name: String,
+    pub version: PackageVersion,
+    /// Which builds this package has payload for.
+    pub targets: Vec<GameId>,
+    /// A conceptual exclusivity group such as `ball` or `prompts`.
+    ///
+    /// Absent means the package declares no conceptual conflict. This drives a
+    /// pick-one interface only. It cannot create a hard conflict and it cannot
+    /// excuse one, because overlapping paths are computed from the file lists
+    /// and no manifest field can override what the data says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_group: Option<String>,
+    pub files: Vec<ModFile>,
+}
+
+impl ModPackage {
+    /// Read and validate `package.json` from an extracted package directory.
+    pub fn load(package_dir: &Path) -> Result<Self> {
+        let path = package_dir.join(PACKAGE_MANIFEST);
+        let raw = std::fs::read(&path).map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let package: ModPackage = serde_json::from_slice(&raw).map_err(|e| {
+            invalid(format!(
+                "{} is not a readable {MOD_SCHEMA} manifest: {e}",
+                path.display()
+            ))
+        })?;
+        package.validate()?;
+        Ok(package)
+    }
+
+    /// Refuse a package this module cannot compose without guessing.
+    ///
+    /// Duplicate paths inside one package are the interesting case: the package
+    /// would be describing two different contents for one destination, and
+    /// picking either is a coin flip presented as a result.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != MOD_SCHEMA {
+            return Err(invalid(format!(
+                "package {} declares schema {:?}, but this launcher composes \
+                 {MOD_SCHEMA} only. Update the launcher, or re-export the package",
+                self.id, self.schema
+            )));
+        }
+        if self.magic != MOD_MAGIC {
+            return Err(invalid(format!(
+                "package {} declares magic {:?} rather than {MOD_MAGIC:?}, so it \
+                 is not an .nsmod package",
+                self.id, self.magic
+            )));
+        }
+        if self.targets.is_empty() {
+            return Err(invalid(format!(
+                "package {} names no target builds, so there is no tree it could \
+                 be composed into",
+                self.id
+            )));
+        }
+        if self.files.is_empty() {
+            return Err(invalid(format!(
+                "package {} lists no files. An empty package would activate, \
+                 change nothing, and look like a broken mod",
+                self.id
+            )));
+        }
+        if let Some(group) = &self.conflict_group {
+            if group.trim().is_empty() {
+                return Err(invalid(format!(
+                    "package {} declares an empty conflict_group. Omit the field \
+                     instead: an empty group would put every such package in one \
+                     exclusivity set",
+                    self.id
+                )));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for file in &self.files {
+            if !self.targets.contains(file.path.game_id()) {
+                return Err(invalid(format!(
+                    "package {} carries {} but does not list {} in targets, so \
+                     the payload and the manifest disagree about which builds it \
+                     is for",
+                    self.id,
+                    file.path,
+                    file.path.game_id()
+                )));
+            }
+            if !seen.insert(file.path.as_str()) {
+                return Err(invalid(format!(
+                    "package {} lists {} twice with no way to tell which content \
+                     is meant",
+                    self.id, file.path
+                )));
+            }
+            if file.path.tail() == COMPOSED_MARKER {
+                return Err(invalid(format!(
+                    "package {} writes {COMPOSED_MARKER} at the root of the \
+                     composed tree, which is the launcher's own record of what it \
+                     composed. Rename the file",
+                    self.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this package has payload for a build.
+    pub fn targets_game(&self, game: &GameId) -> bool {
+        self.targets.contains(game)
+    }
+
+    /// The files this package contributes to one build.
+    pub fn files_for(&self, game: &GameId) -> Vec<&ModFile> {
+        self.files
+            .iter()
+            .filter(|f| f.path.game_id() == game)
+            .collect()
+    }
+
+    /// Where the extracted payload for one file lives.
+    pub fn payload_file(&self, packages_root: &Path, file: &ModFile) -> PathBuf {
+        let mut path = packages_root
+            .join(self.id.as_str())
+            .join(self.version.as_str())
+            .join(PAYLOAD_SUBDIR);
+        for segment in file.path.as_str().split('/') {
+            path = path.join(segment);
+        }
+        path
+    }
+
+    /// What this package writes into one composed tree, relative to its root.
+    pub fn composed_paths(&self, game: &GameId) -> BTreeSet<&str> {
+        self.files_for(game)
+            .into_iter()
+            .map(|f| f.path.tail())
+            .collect()
+    }
+
+    /// This package as an entry in the activation list.
+    pub fn as_active(&self) -> ActivePackage {
+        ActivePackage {
+            id: self.id.clone(),
+            version: self.version.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conflicts
+// ---------------------------------------------------------------------------
+
+/// Why two packages cannot both be active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictKind {
+    /// Both packages write these paths in the composed tree.
+    ///
+    /// Computed from the file lists, and authoritative: no manifest field can
+    /// override it, because the overlap is a fact about the data.
+    SamePath { paths: Vec<String> },
+    /// Both packages declare the same conceptual group and no path overlaps.
+    ///
+    /// Advisory. It drives a pick-one interface and does not stop composition,
+    /// because nothing about the composed tree is ambiguous.
+    DeclaredGroup { group: String },
+}
+
+/// Two packages that cannot both be active for one build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub game: GameId,
+    pub first: ModId,
+    pub second: ModId,
+    pub kind: ConflictKind,
+}
+
+impl Conflict {
+    /// Whether this stops composition.
+    pub fn is_hard(&self) -> bool {
+        matches!(self.kind, ConflictKind::SamePath { .. })
+    }
+
+    /// A sentence naming both packages and what to do.
+    pub fn message(&self) -> String {
+        match &self.kind {
+            ConflictKind::SamePath { paths } => {
+                let sample = paths.first().map(String::as_str).unwrap_or("");
+                format!(
+                    "{} and {} both write {} file(s) in {}, starting with {}. \
+                     Turn one of them off: composing both would pick one by \
+                     activation order and the choice would silently change if \
+                     that order changed.",
+                    self.first,
+                    self.second,
+                    paths.len(),
+                    self.game,
+                    sample
+                )
+            }
+            ConflictKind::DeclaredGroup { group } => format!(
+                "{} and {} are both in the {:?} group. They do not overwrite \
+                 each other, so both can be composed, but they are meant to be \
+                 used one at a time.",
+                self.first, self.second, group
+            ),
+        }
+    }
+}
+
+/// Every conflict among a set of packages for one build.
+///
+/// Pairwise, and every overlapping path is listed rather than summarized,
+/// because the whole point is that the user is told which files are contested
+/// instead of having the launcher choose.
+pub fn detect_conflicts(packages: &[ModPackage], game: &GameId) -> Vec<Conflict> {
+    let mut out = Vec::new();
+    let relevant: Vec<&ModPackage> = packages.iter().filter(|p| p.targets_game(game)).collect();
+
+    for (i, a) in relevant.iter().enumerate() {
+        for b in relevant.iter().skip(i + 1) {
+            let (pa, pb) = (a.composed_paths(game), b.composed_paths(game));
+            let overlap: Vec<String> = pa.intersection(&pb).map(|s| s.to_string()).collect();
+
+            if !overlap.is_empty() {
+                out.push(Conflict {
+                    game: game.clone(),
+                    first: a.id.clone(),
+                    second: b.id.clone(),
+                    kind: ConflictKind::SamePath { paths: overlap },
+                });
+                // The computed conflict is the authoritative one, so a declared
+                // group adds nothing here: both are already refused together.
+                continue;
+            }
+
+            match (&a.conflict_group, &b.conflict_group) {
+                (Some(ga), Some(gb)) if ga == gb => out.push(Conflict {
+                    game: game.clone(),
+                    first: a.id.clone(),
+                    second: b.id.clone(),
+                    kind: ConflictKind::DeclaredGroup { group: ga.clone() },
+                }),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Activation
+// ---------------------------------------------------------------------------
+
+/// One entry in the activation list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivePackage {
+    pub id: ModId,
+    pub version: PackageVersion,
+}
+
+/// `mods/activation.json`: the ordered list a composed tree is built from.
+///
+/// This file, plus the pristine tree, is the entire state of the mod system.
+/// Losing it costs the user their selection and nothing else, which is the
+/// difference between this and `!BACKUP`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activation {
+    pub schema: String,
+    pub active: Vec<ActivePackage>,
+}
+
+impl Default for Activation {
+    fn default() -> Self {
+        Self {
+            schema: ACTIVATION_SCHEMA.to_string(),
+            active: Vec::new(),
+        }
+    }
+}
+
+impl Activation {
+    /// Read the activation list.
+    ///
+    /// A missing file is an empty list, because no mods active is a real and
+    /// common state and is exactly what a fresh install looks like.
+    ///
+    /// An unreadable or unknown-schema file is an error rather than an empty
+    /// list. Treating it as empty would rebuild the composed tree with every
+    /// mod off and report success, which is a silent wrong result the user
+    /// would read as "the launcher turned my mods off".
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = match std::fs::read(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => {
+                return Err(Error::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
+        };
+        let parsed: Activation = serde_json::from_slice(&raw).map_err(|e| {
+            invalid(format!(
+                "{} is not a readable activation list: {e}. Fix or delete the \
+                 file: deleting it means no mods active, which is safe, and the \
+                 launcher will not guess which mods you had on",
+                path.display()
+            ))
+        })?;
+        if parsed.schema != ACTIVATION_SCHEMA {
+            return Err(invalid(format!(
+                "{} declares schema {:?} but this launcher reads \
+                 {ACTIVATION_SCHEMA}. Refusing to rebuild the composed tree \
+                 from a list it may be misreading",
+                path.display(),
+                parsed.schema
+            )));
+        }
+        Ok(parsed)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|e| invalid(format!("could not encode the activation list: {e}")))?;
+        std::fs::write(path, bytes).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Turn a package on, or move it to a different version.
+    ///
+    /// One id appears at most once. Two versions of one package active at the
+    /// same time would conflict with themselves on every path.
+    pub fn activate(&mut self, id: ModId, version: PackageVersion) {
+        match self.active.iter_mut().find(|a| a.id == id) {
+            Some(entry) => entry.version = version,
+            None => self.active.push(ActivePackage { id, version }),
+        }
+    }
+
+    /// Turn a package off. Returns whether it was on.
+    pub fn deactivate(&mut self, id: &ModId) -> bool {
+        let before = self.active.len();
+        self.active.retain(|a| &a.id != id);
+        before != self.active.len()
+    }
+
+    pub fn is_active(&self, id: &ModId) -> bool {
+        self.active.iter().any(|a| &a.id == id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The pristine tree
+// ---------------------------------------------------------------------------
+
+/// One file in the pristine tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PristineEntry {
+    /// Path relative to the pristine root, forward slashes.
+    pub relative: String,
+    pub bytes: u64,
+}
+
+/// What is in the pristine tree.
+#[derive(Debug, Clone, Default)]
+pub struct PristineListing {
+    /// Regular files, sorted by relative path.
+    pub files: Vec<PristineEntry>,
+    /// Entries that are neither a regular file nor a directory, and entries
+    /// whose name is not valid UTF-8.
+    ///
+    /// Reported rather than skipped. A symlinked directory would make the walk
+    /// loop forever if followed, and skipping one silently would drop a texture
+    /// out of the composed tree with nothing said about it.
+    pub unsupported: Vec<PathBuf>,
+}
+
+/// The tree that is never written to.
+///
+/// There is no method on this type that writes, and that is the entire point.
+/// Composition reads through this handle, so the compiler is the thing keeping
+/// the pristine tree pristine rather than a rule somebody has to remember.
+#[derive(Debug, Clone)]
+pub struct PristineTree {
+    root: PathBuf,
+}
+
+impl PristineTree {
+    /// Open a pristine tree.
+    ///
+    /// Fails when the directory is absent, which means the textures component
+    /// is not installed. The caller's move is to install or repair it through
+    /// [`crate::library`], not to compose over nothing.
+    pub fn open(root: &Path) -> Result<Self> {
+        if !root.is_dir() {
+            return Err(Error::Io {
+                path: root.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no pristine texture tree here. Install or verify the \
+                     textures component before composing mods",
+                ),
+            });
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Every regular file, sorted, with byte lengths.
+    pub fn list(&self) -> Result<PristineListing> {
+        walk(&self.root)
+    }
+}
+
+/// Walk a directory tree, classifying by `symlink_metadata` so a symlinked
+/// directory is never followed.
+fn walk(root: &Path) -> Result<PristineListing> {
+    let mut out = PristineListing::default();
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+
+    while let Some((dir, prefix)) = stack.pop() {
+        let reader = std::fs::read_dir(&dir).map_err(|source| Error::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        for entry in reader {
+            let entry = entry.map_err(|source| Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let raw_name = entry.file_name();
+            let Some(name) = raw_name.to_str() else {
+                out.unsupported.push(path);
+                continue;
+            };
+            let relative = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let meta = std::fs::symlink_metadata(&path).map_err(|source| Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+            let kind = meta.file_type();
+            if kind.is_dir() {
+                stack.push((path, relative));
+            } else if kind.is_file() {
+                out.files.push(PristineEntry {
+                    relative,
+                    bytes: meta.len(),
+                });
+            } else {
+                out.unsupported.push(path);
+            }
+        }
+    }
+
+    out.files.sort_by(|a, b| a.relative.cmp(&b.relative));
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// The plan
+// ---------------------------------------------------------------------------
+
+/// How the composed tree will be built out of the pristine one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkMethod {
+    /// A directory entry per file. Costs no data bytes.
+    Hardlink,
+    /// A full copy. The only option when the two trees are on different
+    /// volumes, or on exFAT and FAT32 where hardlinks do not exist.
+    Copy,
+}
+
+/// Where one composed file comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntrySource {
+    Pristine {
+        path: PathBuf,
+    },
+    Overlay {
+        id: ModId,
+        path: PathBuf,
+        sha256: Sha256Hex,
+        /// Whether this hides a pristine file, as against adding a new one.
+        ///
+        /// Both are normal. The 19 prompt textures are additions the pristine
+        /// component does not contain at all.
+        replaces_pristine: bool,
+    },
+}
+
+/// One file the composed tree will contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedEntry {
+    /// Path relative to the composed root, forward slashes.
+    pub relative: String,
+    pub bytes: u64,
+    pub source: EntrySource,
+}
+
+/// Everything composition will do, before any of it is done.
+#[derive(Debug, Clone)]
+pub struct CompositionPlan {
+    pub game: GameId,
+    pub pristine_root: PathBuf,
+    pub composed_root: PathBuf,
+    /// What the plan expects to pay. The report says what was actually paid,
+    /// because a hardlink can still fail per filesystem at composition time.
+    pub method: LinkMethod,
+    /// Every file, sorted by relative path.
+    pub entries: Vec<PlannedEntry>,
+    /// The packages that actually contribute, in activation order.
+    pub activation: Vec<ActivePackage>,
+    /// Packages that were asked for but have no payload for this build.
+    ///
+    /// Reported so the caller can say so. A mod switched on that quietly does
+    /// nothing is indistinguishable from a broken mod.
+    pub not_targeted: Vec<ModId>,
+    /// Declared-group conflicts. These do not stop composition, and they are
+    /// carried on the plan so they cannot be silently dropped either.
+    pub soft_conflicts: Vec<Conflict>,
+}
+
+impl CompositionPlan {
+    pub fn overlay_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e.source, EntrySource::Overlay { .. }))
+            .count()
+    }
+
+    pub fn pristine_count(&self) -> usize {
+        self.entries.len() - self.overlay_count()
+    }
+
+    /// The bytes the composed tree holds. Paid in disk only when
+    /// [`CompositionPlan::method`] is [`LinkMethod::Copy`].
+    pub fn total_bytes(&self) -> u64 {
+        self.entries.iter().map(|e| e.bytes).sum()
+    }
+
+    /// The overlaid files, for verification and for the record.
+    pub fn overlays(&self) -> Vec<OverlayRecord> {
+        self.entries
+            .iter()
+            .filter_map(|e| match &e.source {
+                EntrySource::Overlay { id, sha256, .. } => Some(OverlayRecord {
+                    relative: e.relative.clone(),
+                    id: id.clone(),
+                    sha256: sha256.clone(),
+                }),
+                EntrySource::Pristine { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The record written into the composed tree.
+    pub fn record(&self) -> ComposedRecord {
+        ComposedRecord {
+            game: self.game.clone(),
+            pristine_root: self.pristine_root.clone(),
+            activation: self.activation.clone(),
+            total_entries: self.entries.len() as u64,
+            pristine_entries: self.pristine_count() as u64,
+            overlays: self.overlays(),
+        }
+    }
+}
+
+/// What the caller asked to compose.
+#[derive(Debug, Clone)]
+pub struct ComposeRequest {
+    pub game: GameId,
+    pub pristine_root: PathBuf,
+    pub composed_root: PathBuf,
+    pub packages_root: PathBuf,
+    /// In activation order. The order is recorded and displayed, and it never
+    /// decides which of two packages wins a contested path, because a contested
+    /// path refuses the plan instead.
+    pub packages: Vec<ModPackage>,
+}
+
+impl ComposeRequest {
+    /// The standard layout under the launcher's data root.
+    pub fn in_data_root(
+        platform: &Platform,
+        game: GameId,
+        packages: Vec<ModPackage>,
+    ) -> Result<Self> {
+        Ok(Self {
+            pristine_root: pristine_root(platform, &game)?,
+            composed_root: composed_root(platform, &game)?,
+            packages_root: packages_root(platform)?,
+            game,
+            packages,
+        })
+    }
+}
+
+/// `library/textures/<gameid>/`, the read-only tree.
+pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
+    Ok(platform
+        .data_dir(DataDir::LibraryTextures)?
+        .join(game.as_str()))
+}
+
+/// `mods/active/<gameid>/`, the composed tree Dolphin loads.
+pub fn composed_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
+    Ok(platform.data_dir(DataDir::ModsActive)?.join(game.as_str()))
+}
+
+/// `mods/packages/`, the validated payloads.
+pub fn packages_root(platform: &Platform) -> Result<PathBuf> {
+    platform.data_dir(DataDir::ModsPackages)
+}
+
+/// `mods/activation.json`.
+///
+/// Derived from [`DataDir::ModsActive`] rather than by spelling `mods` again,
+/// so the layout has one authority.
+pub fn activation_path(platform: &Platform) -> Result<PathBuf> {
+    let active = platform.data_dir(DataDir::ModsActive)?;
+    let mods_dir = active.parent().ok_or_else(|| {
+        invalid(format!(
+            "{} has no parent directory, so there is nowhere to keep \
+             {ACTIVATION_FILE}",
+            active.display()
+        ))
+    })?;
+    Ok(mods_dir.join(ACTIVATION_FILE))
+}
+
+/// A state that stops composition, with something the caller can do about it.
+///
+/// None of these is a fault. Each one is a situation a real install can be in,
+/// and the launcher refusing is the correct outcome for all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposeRefusal {
+    NoPristineTree {
+        path: PathBuf,
+    },
+    NoPristineFiles {
+        path: PathBuf,
+    },
+    UnsupportedPristineEntries {
+        paths: Vec<PathBuf>,
+    },
+    /// The composed root is the pristine root or is inside it.
+    ComposedInsidePristine {
+        pristine: PathBuf,
+        composed: PathBuf,
+    },
+    /// The pristine root is inside the composed root, so rebuilding would
+    /// delete it.
+    PristineInsideComposed {
+        pristine: PathBuf,
+        composed: PathBuf,
+    },
+    InvalidPackage {
+        id: ModId,
+        detail: String,
+    },
+    MissingPayload {
+        id: ModId,
+        path: PathBuf,
+    },
+    PayloadSizeDiffers {
+        id: ModId,
+        path: PathBuf,
+        declared: u64,
+        found: u64,
+    },
+    HardConflicts {
+        conflicts: Vec<Conflict>,
+    },
+    /// Something wants to write the launcher's own marker file.
+    ReservedName {
+        relative: String,
+    },
+    /// The composed root holds files but no marker, so the launcher did not
+    /// create it and will not delete it.
+    ForeignComposedTree {
+        path: PathBuf,
+    },
+    /// Two entries differ only by letter case, which is two files on ext4 and
+    /// one file on NTFS and APFS.
+    CaseCollision {
+        first: String,
+        second: String,
+    },
+    /// One entry is a file and also the directory prefix of another entry.
+    PathShadowsDirectory {
+        file: String,
+        inside: String,
+    },
+}
+
+impl ComposeRefusal {
+    /// A sentence the user or the caller can act on.
+    pub fn message(&self) -> String {
+        match self {
+            ComposeRefusal::NoPristineTree { path } => format!(
+                "No pristine texture tree at {}. Install or verify the textures \
+                 component first: mods are composed over it and there is nothing \
+                 to compose over.",
+                path.display()
+            ),
+            ComposeRefusal::NoPristineFiles { path } => format!(
+                "The pristine texture tree at {} is empty. Verify and repair the \
+                 textures component: composing now would produce a tree holding \
+                 only mod files, which looks like most textures are missing.",
+                path.display()
+            ),
+            ComposeRefusal::UnsupportedPristineEntries { paths } => format!(
+                "The pristine texture tree holds {} entries that are not plain \
+                 files or directories, starting with {}. Verify and repair the \
+                 textures component. A symlinked directory in there would make \
+                 composition walk in a circle, and skipping one silently would \
+                 drop a texture with nothing said about it.",
+                paths.len(),
+                paths
+                    .first()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            ),
+            ComposeRefusal::ComposedInsidePristine { pristine, composed } => format!(
+                "Refusing to compose into {} because it is inside the pristine \
+                 tree {}. That would write mod files into the tree that is the \
+                 only copy of the originals, which is exactly the JSGME failure \
+                 this model exists to remove. Point the composed tree at \
+                 mods/active/<gameid>.",
+                composed.display(),
+                pristine.display()
+            ),
+            ComposeRefusal::PristineInsideComposed { pristine, composed } => format!(
+                "Refusing to compose into {} because the pristine tree {} is \
+                 inside it. Rebuilding deletes the composed tree, so this would \
+                 delete the originals. Point the composed tree at \
+                 mods/active/<gameid>.",
+                composed.display(),
+                pristine.display()
+            ),
+            ComposeRefusal::InvalidPackage { id, detail } => {
+                format!("Package {id} cannot be composed: {detail}")
+            }
+            ComposeRefusal::MissingPayload { id, path } => format!(
+                "Package {id} lists a file that is not in its payload: {}. \
+                 Re-import the package: its manifest and its files disagree.",
+                path.display()
+            ),
+            ComposeRefusal::PayloadSizeDiffers {
+                id,
+                path,
+                declared,
+                found,
+            } => format!(
+                "Package {id} declares {declared} bytes for {} but the file is \
+                 {found}. Re-import the package. A size taken from a file \
+                 listing is rounded to the allocation unit and is not the byte \
+                 length, and a truncated payload looks the same from here.",
+                path.display()
+            ),
+            ComposeRefusal::HardConflicts { conflicts } => {
+                let mut lines = vec![format!(
+                    "{} mod conflict(s) must be resolved before composing:",
+                    conflicts.len()
+                )];
+                lines.extend(conflicts.iter().map(|c| format!("  {}", c.message())));
+                lines.join("\n")
+            }
+            ComposeRefusal::ReservedName { relative } => format!(
+                "{relative} is the name of the launcher's own record at the root \
+                 of the composed tree. Rename the file in the package, or repair \
+                 the textures component if it came from there.",
+            ),
+            ComposeRefusal::ForeignComposedTree { path } => format!(
+                "{} holds files but no {COMPOSED_MARKER}, so the launcher did \
+                 not create it and will not delete it. Move the directory aside \
+                 and compose again.",
+                path.display()
+            ),
+            ComposeRefusal::CaseCollision { first, second } => format!(
+                "{first} and {second} differ only by letter case. That is two \
+                 files on Linux and one file on Windows and macOS, so the \
+                 composed tree would have a different number of files depending \
+                 on the machine. Rename one in the package that supplies it.",
+            ),
+            ComposeRefusal::PathShadowsDirectory { file, inside } => format!(
+                "{file} is a file and also the directory holding {inside}. One \
+                 of the two cannot exist. Re-import the package that supplies \
+                 them.",
+            ),
+        }
+    }
+}
+
+/// The result of planning.
+#[derive(Debug, Clone)]
+pub enum Composition {
+    Planned(CompositionPlan),
+    Refused(ComposeRefusal),
+}
+
+impl Composition {
+    pub fn plan(&self) -> Option<&CompositionPlan> {
+        match self {
+            Composition::Planned(p) => Some(p),
+            Composition::Refused(_) => None,
+        }
+    }
+
+    pub fn refusal(&self) -> Option<&ComposeRefusal> {
+        match self {
+            Composition::Refused(r) => Some(r),
+            Composition::Planned(_) => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The record written into a composed tree
+// ---------------------------------------------------------------------------
+
+/// One overlaid file, as recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayRecord {
+    pub relative: String,
+    pub id: ModId,
+    pub sha256: Sha256Hex,
+}
+
+/// What a finished composed tree claims to be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposedRecord {
+    pub game: GameId,
+    pub pristine_root: PathBuf,
+    pub activation: Vec<ActivePackage>,
+    pub total_entries: u64,
+    pub pristine_entries: u64,
+    /// Every overlaid file with its expected hash.
+    ///
+    /// Only the overlays carry hashes, and that is deliberate. A package
+    /// manifest is the only place a trustworthy expected hash for these files
+    /// exists, and hashing the whole 2 GB pristine side on every check would
+    /// cost more than it is worth: that side is covered by the signed textures
+    /// manifest through [`crate::library`]. What is checked here instead is the
+    /// count, which catches a pristine file that went missing.
+    pub overlays: Vec<OverlayRecord>,
+}
+
+/// The file at the root of a composed tree.
+///
+/// Written before the first entry with `record` absent, and rewritten with the
+/// record once composition finishes. The two states are load bearing:
+///
+/// - Its presence, in any state, is the launcher's proof that it created this
+///   directory, which is what makes deleting the directory safe.
+/// - A record is only present when composition finished, so an interrupted
+///   composition leaves a tree that is deletable but never trusted. The other
+///   order would let a partial tree pass verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposedMarker {
+    pub schema: String,
+    pub game: GameId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<ComposedRecord>,
+}
+
+// ---------------------------------------------------------------------------
+// Verification
+// ---------------------------------------------------------------------------
+
+/// One way a composed tree fails to be what the plan said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Discrepancy {
+    NotComposedByTheLauncher {
+        path: PathBuf,
+    },
+    UnreadableRecord {
+        path: PathBuf,
+        detail: String,
+    },
+    /// A marker with no record: composition was interrupted.
+    IncompleteComposition {
+        path: PathBuf,
+    },
+    GameDiffers {
+        recorded: GameId,
+        planned: GameId,
+    },
+    PristineRootDiffers {
+        recorded: PathBuf,
+        planned: PathBuf,
+    },
+    ActivationDiffers {
+        recorded: Vec<ActivePackage>,
+        planned: Vec<ActivePackage>,
+    },
+    /// The tree does not hold the number of files its own record claims.
+    EntryCountDiffers {
+        recorded: u64,
+        found: u64,
+    },
+    /// The record was written by a different plan than the one being checked.
+    PlanCountDiffers {
+        planned: u64,
+        recorded: u64,
+    },
+    MissingOverlay {
+        relative: String,
+    },
+    OverlayContentDiffers {
+        relative: String,
+        expected: Sha256Hex,
+        actual: Sha256Hex,
+    },
+}
+
+impl Discrepancy {
+    pub fn message(&self) -> String {
+        match self {
+            Discrepancy::NotComposedByTheLauncher { path } => format!(
+                "{} carries no {COMPOSED_MARKER}, so it was not composed by this \
+                 launcher.",
+                path.display()
+            ),
+            Discrepancy::UnreadableRecord { path, detail } => {
+                format!("{} could not be read: {detail}", path.display())
+            }
+            Discrepancy::IncompleteComposition { path } => {
+                format!("{} was left part way through composing.", path.display())
+            }
+            Discrepancy::GameDiffers { recorded, planned } => {
+                format!("the tree was composed for {recorded}, not {planned}.")
+            }
+            Discrepancy::PristineRootDiffers { recorded, planned } => format!(
+                "the tree was composed from {}, not {}.",
+                recorded.display(),
+                planned.display()
+            ),
+            Discrepancy::ActivationDiffers { recorded, planned } => format!(
+                "the tree was composed from {} active package(s), the plan has {}.",
+                recorded.len(),
+                planned.len()
+            ),
+            Discrepancy::EntryCountDiffers { recorded, found } => {
+                format!("the tree claims {recorded} files and holds {found}.")
+            }
+            Discrepancy::PlanCountDiffers { planned, recorded } => {
+                format!("the plan has {planned} files, the tree records {recorded}.")
+            }
+            Discrepancy::MissingOverlay { relative } => {
+                format!("the mod file {relative} is not in the tree.")
+            }
+            Discrepancy::OverlayContentDiffers {
+                relative,
+                expected,
+                actual,
+            } => format!("the mod file {relative} hashes to {actual} and should be {expected}."),
+        }
+    }
+}
+
+/// Whether a composed tree matches a plan.
+#[derive(Debug, Clone)]
+pub struct Verification {
+    pub composed_root: PathBuf,
+    pub discrepancies: Vec<Discrepancy>,
+}
+
+impl Verification {
+    pub fn matches_the_plan(&self) -> bool {
+        self.discrepancies.is_empty()
+    }
+
+    /// Whether the tree should be rebuilt.
+    ///
+    /// Every discrepancy has the same answer, and that is not a shortcut: it is
+    /// the property the composition model buys. Rebuilding costs directory
+    /// entries and loses nothing, so there is no reason to diagnose further
+    /// before doing it.
+    pub fn needs_rebuild(&self) -> bool {
+        !self.discrepancies.is_empty()
+    }
+
+    /// One line per discrepancy, for a log or a diagnostic bundle.
+    pub fn report(&self) -> String {
+        self.discrepancies
+            .iter()
+            .map(|d| d.message())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Composing
+// ---------------------------------------------------------------------------
+
+/// What composition actually did.
+#[derive(Debug, Clone)]
+pub struct ComposeReport {
+    pub game: GameId,
+    pub composed_root: PathBuf,
+    pub linked: u64,
+    pub copied: u64,
+    /// Bytes actually written, which is zero when every entry was linked.
+    pub bytes_copied: u64,
+    pub overlaid: u64,
+    /// The first hardlink failure, verbatim.
+    ///
+    /// Present means the volume does not support hardlinks, which is how exFAT
+    /// and FAT32 present, and the rest of the tree was copied. Kept as the
+    /// message rather than a boolean so a per-file cause is still visible.
+    pub link_failure: Option<String>,
+    pub record: ComposedRecord,
+}
+
+impl ComposeReport {
+    pub fn entries(&self) -> u64 {
+        self.linked + self.copied
+    }
+}
+
+/// Building and checking composed trees.
+#[derive(Debug)]
+pub struct Composer;
+
+impl Composer {
+    /// Work out every file the composed tree will hold, and refuse if anything
+    /// about it is ambiguous or unsafe.
+    ///
+    /// Read only. Nothing on disk changes here, so a caller can show the plan,
+    /// the conflicts and the disk cost before committing to it.
+    pub fn plan(platform: &Platform, req: &ComposeRequest) -> Result<Composition> {
+        for package in &req.packages {
+            if let Err(e) = package.validate() {
+                return Ok(Composition::Refused(ComposeRefusal::InvalidPackage {
+                    id: package.id.clone(),
+                    detail: e.to_string(),
+                }));
+            }
+        }
+
+        // The read-only rule, enforced before anything else, because every
+        // other check is irrelevant if the destination is the source.
+        if contains_or_equals(&req.pristine_root, &req.composed_root) {
+            return Ok(Composition::Refused(
+                ComposeRefusal::ComposedInsidePristine {
+                    pristine: req.pristine_root.clone(),
+                    composed: req.composed_root.clone(),
+                },
+            ));
+        }
+        if contains_or_equals(&req.composed_root, &req.pristine_root) {
+            return Ok(Composition::Refused(
+                ComposeRefusal::PristineInsideComposed {
+                    pristine: req.pristine_root.clone(),
+                    composed: req.composed_root.clone(),
+                },
+            ));
+        }
+
+        if !req.pristine_root.is_dir() {
+            return Ok(Composition::Refused(ComposeRefusal::NoPristineTree {
+                path: req.pristine_root.clone(),
+            }));
+        }
+        let pristine = PristineTree::open(&req.pristine_root)?;
+        let listing = pristine.list()?;
+        if !listing.unsupported.is_empty() {
+            return Ok(Composition::Refused(
+                ComposeRefusal::UnsupportedPristineEntries {
+                    paths: listing.unsupported,
+                },
+            ));
+        }
+        if listing.files.is_empty() {
+            return Ok(Composition::Refused(ComposeRefusal::NoPristineFiles {
+                path: req.pristine_root.clone(),
+            }));
+        }
+
+        // A directory the launcher did not compose is refused now rather than
+        // when it is about to be deleted, so nothing is half done.
+        if let Some(refusal) = foreign_tree_refusal(&req.composed_root)? {
+            return Ok(Composition::Refused(refusal));
+        }
+
+        let conflicts = detect_conflicts(&req.packages, &req.game);
+        let (hard, soft): (Vec<Conflict>, Vec<Conflict>) =
+            conflicts.into_iter().partition(|c| c.is_hard());
+        if !hard.is_empty() {
+            return Ok(Composition::Refused(ComposeRefusal::HardConflicts {
+                conflicts: hard,
+            }));
+        }
+
+        let mut entries: BTreeMap<String, PlannedEntry> = BTreeMap::new();
+        for file in &listing.files {
+            if file.relative == COMPOSED_MARKER {
+                return Ok(Composition::Refused(ComposeRefusal::ReservedName {
+                    relative: file.relative.clone(),
+                }));
+            }
+            entries.insert(
+                file.relative.clone(),
+                PlannedEntry {
+                    relative: file.relative.clone(),
+                    bytes: file.bytes,
+                    source: EntrySource::Pristine {
+                        path: join_relative(&req.pristine_root, &file.relative),
+                    },
+                },
+            );
+        }
+
+        let mut activation = Vec::new();
+        let mut not_targeted = Vec::new();
+        for package in &req.packages {
+            if !package.targets_game(&req.game) {
+                not_targeted.push(package.id.clone());
+                continue;
+            }
+            for file in package.files_for(&req.game) {
+                let source = package.payload_file(&req.packages_root, file);
+                let meta = match std::fs::metadata(&source) {
+                    Ok(m) if m.is_file() => m,
+                    _ => {
+                        return Ok(Composition::Refused(ComposeRefusal::MissingPayload {
+                            id: package.id.clone(),
+                            path: source,
+                        }))
+                    }
+                };
+                if meta.len() != file.bytes {
+                    return Ok(Composition::Refused(ComposeRefusal::PayloadSizeDiffers {
+                        id: package.id.clone(),
+                        path: source,
+                        declared: file.bytes,
+                        found: meta.len(),
+                    }));
+                }
+
+                let relative = file.path.tail().to_string();
+                let replaces_pristine = matches!(
+                    entries.get(&relative).map(|e| &e.source),
+                    Some(EntrySource::Pristine { .. })
+                );
+                entries.insert(
+                    relative.clone(),
+                    PlannedEntry {
+                        relative,
+                        bytes: file.bytes,
+                        source: EntrySource::Overlay {
+                            id: package.id.clone(),
+                            path: source,
+                            sha256: file.sha256.clone(),
+                            replaces_pristine,
+                        },
+                    },
+                );
+            }
+            activation.push(package.as_active());
+        }
+
+        if let Some(refusal) = shape_refusal(&entries) {
+            return Ok(Composition::Refused(refusal));
+        }
+
+        // A cross-volume hardlink cannot work, so there is no point attempting
+        // one. Within a volume it can still fail, on exFAT and FAT32, and that
+        // is handled at composition time.
+        let method = match platform
+            .files
+            .same_volume(&req.pristine_root, &req.composed_root)
+        {
+            Ok(true) => LinkMethod::Hardlink,
+            _ => LinkMethod::Copy,
+        };
+
+        Ok(Composition::Planned(CompositionPlan {
+            game: req.game.clone(),
+            pristine_root: req.pristine_root.clone(),
+            composed_root: req.composed_root.clone(),
+            method,
+            entries: entries.into_values().collect(),
+            activation,
+            not_targeted,
+            soft_conflicts: soft,
+        }))
+    }
+
+    /// Build the composed tree, discarding whatever was there.
+    ///
+    /// Un-applying a mod is this function with a shorter package list. There is
+    /// no separate un-apply path, and that is the design: an operation that
+    /// restores files can fail half way and leave a tree that is neither state,
+    /// while a rebuild either finishes or is discarded and run again.
+    ///
+    /// `_lock` is proof that this process holds the single-instance lock. Two
+    /// launchers composing one tree would interleave writes into the directory
+    /// Dolphin is about to load, and the loser's composition would be silently
+    /// half present. Taking the [`Supervisor`] makes that check something the
+    /// compiler tracks instead of something to remember.
+    pub fn apply(
+        platform: &Platform,
+        _lock: &Supervisor,
+        plan: &CompositionPlan,
+    ) -> Result<ComposeReport> {
+        // Re-checked rather than trusted from the plan. A plan is a value with
+        // public fields that can be built or edited anywhere, and this is the
+        // check whose failure destroys the only copy of the originals.
+        if contains_or_equals(&plan.pristine_root, &plan.composed_root)
+            || contains_or_equals(&plan.composed_root, &plan.pristine_root)
+        {
+            return Err(refused(format!(
+                "refusing to compose: the composed tree {} and the pristine tree \
+                 {} overlap, so composing would write into or delete the only \
+                 copy of the original textures",
+                plan.composed_root.display(),
+                plan.pristine_root.display()
+            )));
+        }
+
+        Self::discard(_lock, &plan.composed_root)?;
+
+        std::fs::create_dir_all(&plan.composed_root).map_err(|source| Error::Io {
+            path: plan.composed_root.clone(),
+            source,
+        })?;
+
+        // The in-progress marker goes down first, and is flushed, because it is
+        // the permission to delete this directory. If composition dies after
+        // the first entry is written but before the marker reached the disk,
+        // the tree would look foreign and the next rebuild would refuse to
+        // clear it, leaving no way forward without the user deleting a folder
+        // by hand.
+        write_marker_durably(
+            &plan.composed_root,
+            &ComposedMarker {
+                schema: COMPOSED_SCHEMA.to_string(),
+                game: plan.game.clone(),
+                record: None,
+            },
+        )?;
+
+        let mut linked = 0u64;
+        let mut copied = 0u64;
+        let mut bytes_copied = 0u64;
+        let mut overlaid = 0u64;
+        let mut link_failure: Option<String> = None;
+        let mut links_unavailable = plan.method == LinkMethod::Copy;
+
+        for entry in &plan.entries {
+            let source = match &entry.source {
+                EntrySource::Pristine { path } => path,
+                EntrySource::Overlay { path, .. } => {
+                    overlaid += 1;
+                    path
+                }
+            };
+            let dest = join_relative(&plan.composed_root, &entry.relative);
+
+            if !links_unavailable {
+                match platform.files.hardlink(source, &dest) {
+                    Ok(()) => {
+                        linked += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        // A filesystem either supports hardlinks or it does
+                        // not, so the whole rest of the tree is copied rather
+                        // than failing 2,762 more times.
+                        links_unavailable = true;
+                        link_failure = Some(e.to_string());
+                    }
+                }
+            }
+
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+            let written = std::fs::copy(source, &dest).map_err(|source| Error::Io {
+                path: dest.clone(),
+                source,
+            })?;
+            copied += 1;
+            bytes_copied += written;
+        }
+
+        let record = plan.record();
+        write_marker_durably(
+            &plan.composed_root,
+            &ComposedMarker {
+                schema: COMPOSED_SCHEMA.to_string(),
+                game: plan.game.clone(),
+                record: Some(record.clone()),
+            },
+        )?;
+
+        Ok(ComposeReport {
+            game: plan.game.clone(),
+            composed_root: plan.composed_root.clone(),
+            linked,
+            copied,
+            bytes_copied,
+            overlaid,
+            link_failure,
+            record,
+        })
+    }
+
+    /// Remove a composed tree. Returns whether anything was removed.
+    ///
+    /// Only a directory carrying [`COMPOSED_MARKER`], or an empty one, is
+    /// removed. Anything else is refused with a message, because the shipped
+    /// 2.1 uninstaller ran `DelTree` over a folder holding the user's memory
+    /// cards and this module is not going to add a second recursive delete that
+    /// trusts whatever path it was handed.
+    pub fn discard(_lock: &Supervisor, composed_root: &Path) -> Result<bool> {
+        if !composed_root.exists() {
+            return Ok(false);
+        }
+        if !composed_root.is_dir() {
+            return Err(refused(format!(
+                "{} is not a directory, so it is not a composed tree. Move it \
+                 aside and compose again",
+                composed_root.display()
+            )));
+        }
+        if let Some(refusal) = foreign_tree_refusal(composed_root)? {
+            return Err(refused(refusal.message()));
+        }
+        std::fs::remove_dir_all(composed_root).map_err(|source| Error::Io {
+            path: composed_root.to_path_buf(),
+            source,
+        })?;
+        Ok(true)
+    }
+
+    /// Check a composed tree against the plan that should have built it.
+    ///
+    /// Read only, and safe to run before a launch. The overlays are hashed in
+    /// full because a package manifest gives a trustworthy expected value for
+    /// them. The pristine side is checked by count, for the reason recorded on
+    /// [`ComposedRecord::overlays`].
+    pub fn verify(plan: &CompositionPlan) -> Result<Verification> {
+        let mut found = Vec::new();
+        let marker_path = plan.composed_root.join(COMPOSED_MARKER);
+
+        let raw = match std::fs::read(&marker_path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                found.push(Discrepancy::NotComposedByTheLauncher {
+                    path: plan.composed_root.clone(),
+                });
+                return Ok(Verification {
+                    composed_root: plan.composed_root.clone(),
+                    discrepancies: found,
+                });
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    path: marker_path,
+                    source,
+                })
+            }
+        };
+
+        let marker: ComposedMarker = match serde_json::from_slice(&raw) {
+            Ok(m) => m,
+            Err(e) => {
+                found.push(Discrepancy::UnreadableRecord {
+                    path: marker_path,
+                    detail: e.to_string(),
+                });
+                return Ok(Verification {
+                    composed_root: plan.composed_root.clone(),
+                    discrepancies: found,
+                });
+            }
+        };
+        if marker.schema != COMPOSED_SCHEMA {
+            found.push(Discrepancy::UnreadableRecord {
+                path: marker_path,
+                detail: format!(
+                    "schema is {:?}, this launcher writes {COMPOSED_SCHEMA}",
+                    marker.schema
+                ),
+            });
+            return Ok(Verification {
+                composed_root: plan.composed_root.clone(),
+                discrepancies: found,
+            });
+        }
+        let Some(record) = marker.record else {
+            found.push(Discrepancy::IncompleteComposition {
+                path: plan.composed_root.clone(),
+            });
+            return Ok(Verification {
+                composed_root: plan.composed_root.clone(),
+                discrepancies: found,
+            });
+        };
+
+        if record.game != plan.game {
+            found.push(Discrepancy::GameDiffers {
+                recorded: record.game.clone(),
+                planned: plan.game.clone(),
+            });
+        }
+        if !same_path(&record.pristine_root, &plan.pristine_root) {
+            found.push(Discrepancy::PristineRootDiffers {
+                recorded: record.pristine_root.clone(),
+                planned: plan.pristine_root.clone(),
+            });
+        }
+        if record.activation != plan.activation {
+            found.push(Discrepancy::ActivationDiffers {
+                recorded: record.activation.clone(),
+                planned: plan.activation.clone(),
+            });
+        }
+        if record.total_entries != plan.entries.len() as u64 {
+            found.push(Discrepancy::PlanCountDiffers {
+                planned: plan.entries.len() as u64,
+                recorded: record.total_entries,
+            });
+        }
+
+        let listing = walk(&plan.composed_root)?;
+        let on_disk = listing
+            .files
+            .iter()
+            .filter(|f| f.relative != COMPOSED_MARKER)
+            .count() as u64;
+        if on_disk != record.total_entries {
+            found.push(Discrepancy::EntryCountDiffers {
+                recorded: record.total_entries,
+                found: on_disk,
+            });
+        }
+
+        for overlay in plan.overlays() {
+            let path = join_relative(&plan.composed_root, &overlay.relative);
+            if !path.is_file() {
+                found.push(Discrepancy::MissingOverlay {
+                    relative: overlay.relative,
+                });
+                continue;
+            }
+            let actual = hash_file(&path)?;
+            if actual != overlay.sha256 {
+                found.push(Discrepancy::OverlayContentDiffers {
+                    relative: overlay.relative,
+                    expected: overlay.sha256,
+                    actual,
+                });
+            }
+        }
+
+        Ok(Verification {
+            composed_root: plan.composed_root.clone(),
+            discrepancies: found,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// `None` when the directory is absent, empty, or carries the marker.
+fn foreign_tree_refusal(composed_root: &Path) -> Result<Option<ComposeRefusal>> {
+    if !composed_root.exists() {
+        return Ok(None);
+    }
+    if composed_root.join(COMPOSED_MARKER).exists() {
+        return Ok(None);
+    }
+    let mut reader = std::fs::read_dir(composed_root).map_err(|source| Error::Io {
+        path: composed_root.to_path_buf(),
+        source,
+    })?;
+    match reader.next() {
+        None => Ok(None),
+        Some(_) => Ok(Some(ComposeRefusal::ForeignComposedTree {
+            path: composed_root.to_path_buf(),
+        })),
+    }
+}
+
+/// Refuse an entry set that cannot exist as written on every platform.
+fn shape_refusal(entries: &BTreeMap<String, PlannedEntry>) -> Option<ComposeRefusal> {
+    let mut folded: BTreeMap<String, &String> = BTreeMap::new();
+    for relative in entries.keys() {
+        let key = relative.to_lowercase();
+        if let Some(first) = folded.insert(key, relative) {
+            if first != relative {
+                return Some(ComposeRefusal::CaseCollision {
+                    first: first.clone(),
+                    second: relative.clone(),
+                });
+            }
+        }
+    }
+
+    for relative in entries.keys() {
+        let prefix = format!("{relative}/");
+        if let Some((inside, _)) = entries.range(prefix.clone()..).next() {
+            if inside.starts_with(&prefix) {
+                return Some(ComposeRefusal::PathShadowsDirectory {
+                    file: relative.clone(),
+                    inside: inside.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Join a forward-slash relative path onto a root, one segment at a time.
+///
+/// Not `root.join(relative)`: a relative path containing a separator is
+/// accepted by `join` and its meaning then depends on the platform. Every
+/// relative path here was built segment by segment, so it is put back together
+/// the same way.
+fn join_relative(root: &Path, relative: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for segment in relative.split('/') {
+        path = path.join(segment);
+    }
+    path
+}
+
+/// Path components, absolute where possible, case folded.
+///
+/// Case is folded on every platform, not just the case-insensitive ones,
+/// because this module may not ask which platform it is on and the safe
+/// direction is unambiguous: folding can only make the containment checks
+/// refuse more often, and a refusal costs a message while a miss costs the
+/// original textures.
+fn segments_lower(path: &Path) -> Vec<String> {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    absolute
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect()
+}
+
+/// Whether `inner` is `outer` or is inside it.
+///
+/// Compared component by component rather than by string prefix, so
+/// `textures2` is not treated as being inside `textures`.
+fn contains_or_equals(outer: &Path, inner: &Path) -> bool {
+    let (o, i) = (segments_lower(outer), segments_lower(inner));
+    i.len() >= o.len() && i[..o.len()] == o[..]
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    segments_lower(a) == segments_lower(b)
+}
+
+/// Write the marker and get it to the disk before returning.
+///
+/// Flushed for the same reason the session log is: it is the only evidence of
+/// something the launcher cannot reconstruct, in this case its own permission
+/// to delete the directory it is about to fill.
+fn write_marker_durably(composed_root: &Path, marker: &ComposedMarker) -> Result<()> {
+    use std::io::Write;
+
+    let path = composed_root.join(COMPOSED_MARKER);
+    let bytes = serde_json::to_vec_pretty(marker)
+        .map_err(|e| invalid(format!("could not encode the composed record: {e}")))?;
+    let mut file = std::fs::File::create(&path).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    file.write_all(&bytes).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    file.sync_all().map_err(|source| Error::Io { path, source })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::{Startup, SystemClock};
+
+    const BALL: &str = "tex1_128x128_m_ffc5151a141db330_14.dds";
+
+    fn game() -> GameId {
+        GameId::parse("GN7E69").unwrap()
+    }
+
+    fn write(path: &Path, bytes: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// A pristine tree shaped like the real one: DDS at the root and in a
+    /// subdirectory.
+    fn lay_pristine(root: &Path) {
+        write(&root.join(BALL), b"the original football");
+        write(&root.join("sub").join("tex1_other.dds"), b"another texture");
+    }
+
+    /// Extract a package into `mods/packages/<id>/<version>/files/` and return
+    /// its manifest, with hashes and byte lengths taken from what was written.
+    fn lay_package(
+        packages_root: &Path,
+        id: &str,
+        group: Option<&str>,
+        files: &[(&str, &[u8])],
+    ) -> ModPackage {
+        let id = ModId::parse(id).unwrap();
+        let version = PackageVersion::parse("1.0.0").unwrap();
+        let mut mod_files = Vec::new();
+        let mut targets: Vec<GameId> = Vec::new();
+
+        for (relative, bytes) in files {
+            let path = PayloadPath::parse(relative).unwrap();
+            if !targets.contains(path.game_id()) {
+                targets.push(path.game_id().clone());
+            }
+            let mut dest = packages_root
+                .join(id.as_str())
+                .join(version.as_str())
+                .join(PAYLOAD_SUBDIR);
+            for segment in path.as_str().split('/') {
+                dest = dest.join(segment);
+            }
+            write(&dest, bytes);
+            mod_files.push(ModFile {
+                path,
+                sha256: Sha256Hex::from_bytes(bytes),
+                bytes: bytes.len() as u64,
+            });
+        }
+
+        ModPackage {
+            schema: MOD_SCHEMA.to_string(),
+            magic: MOD_MAGIC.to_string(),
+            id,
+            name: "Test Package".to_string(),
+            version,
+            targets,
+            conflict_group: group.map(str::to_string),
+            files: mod_files,
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        pristine: PathBuf,
+        composed: PathBuf,
+        packages: PathBuf,
+        run: PathBuf,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let pristine = dir.path().join("library").join("textures").join("GN7E69");
+        let composed = dir.path().join("mods").join("active").join("GN7E69");
+        let packages = dir.path().join("mods").join("packages");
+        let run = dir.path().join("cache");
+        lay_pristine(&pristine);
+        std::fs::create_dir_all(&packages).unwrap();
+        Fixture {
+            _dir: dir,
+            pristine,
+            composed,
+            packages,
+            run,
+        }
+    }
+
+    impl Fixture {
+        fn request(&self, packages: Vec<ModPackage>) -> ComposeRequest {
+            ComposeRequest {
+                game: game(),
+                pristine_root: self.pristine.clone(),
+                composed_root: self.composed.clone(),
+                packages_root: self.packages.clone(),
+                packages,
+            }
+        }
+    }
+
+    fn planned(platform: &Platform, req: &ComposeRequest) -> CompositionPlan {
+        match Composer::plan(platform, req).expect("planning is not fallible here") {
+            Composition::Planned(plan) => plan,
+            Composition::Refused(r) => panic!("unexpected refusal: {}", r.message()),
+        }
+    }
+
+    fn refusal(platform: &Platform, req: &ComposeRequest) -> ComposeRefusal {
+        match Composer::plan(platform, req).expect("planning is not fallible here") {
+            Composition::Refused(r) => r,
+            Composition::Planned(_) => panic!("expected a refusal"),
+        }
+    }
+
+    /// A supervisor holding a real lock, which `apply` requires as proof that
+    /// no second launcher is composing the same tree.
+    fn lock(platform: &Platform, fx: &Fixture) -> Supervisor {
+        match Supervisor::acquire_at(platform, &fx.run, SystemClock).unwrap() {
+            Startup::Owner(s) => *s,
+            Startup::AlreadyRunning { .. } => panic!("nothing else should hold this lock"),
+        }
+    }
+
+    /// The rule the whole module exists for. JSGME moved the original aside and
+    /// then the updater deleted the folder holding it. Here the original is
+    /// still exactly where it was, byte for byte, after a mod is applied.
+    #[test]
+    fn applying_a_mod_never_writes_into_the_pristine_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let before: Vec<(String, Vec<u8>)> = PristineTree::open(&fx.pristine)
+            .unwrap()
+            .list()
+            .unwrap()
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.relative.clone(),
+                    std::fs::read(join_relative(&fx.pristine, &f.relative)).unwrap(),
+                )
+            })
+            .collect();
+
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let req = fx.request(vec![package]);
+        let plan = planned(&p, &req);
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &plan).unwrap();
+
+        let after: Vec<(String, Vec<u8>)> = PristineTree::open(&fx.pristine)
+            .unwrap()
+            .list()
+            .unwrap()
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.relative.clone(),
+                    std::fs::read(join_relative(&fx.pristine, &f.relative)).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            before, after,
+            "the pristine tree changed. It is the only copy of the originals"
+        );
+
+        assert_eq!(
+            std::fs::read(fx.composed.join(BALL)).unwrap(),
+            b"the purple football",
+            "the composed tree must carry the mod file"
+        );
+    }
+
+    /// Un-applying is a rebuild, so it works with the mod payload gone. This is
+    /// the exact situation that leaves a JSGME install unrecoverable: the folder
+    /// holding the restore data is deleted by the updater.
+    #[test]
+    fn unapplying_works_after_the_mod_payload_is_deleted() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.pink",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the pink football")],
+        );
+        let guard = lock(&p, &fx);
+
+        let with_mod = fx.request(vec![package]);
+        let plan = planned(&p, &with_mod);
+        Composer::apply(&p, &guard, &plan).unwrap();
+        assert_eq!(
+            std::fs::read(fx.composed.join(BALL)).unwrap(),
+            b"the pink football"
+        );
+
+        // The updater deletes the whole mods folder, payload included.
+        std::fs::remove_dir_all(&fx.packages).unwrap();
+
+        let without = fx.request(Vec::new());
+        let plan = planned(&p, &without);
+        let report = Composer::apply(&p, &guard, &plan).unwrap();
+
+        assert_eq!(report.overlaid, 0);
+        assert_eq!(
+            std::fs::read(fx.composed.join(BALL)).unwrap(),
+            b"the original football",
+            "un-applying must restore the original with no backup folder to lose"
+        );
+        assert!(
+            Composer::verify(&plan).unwrap().matches_the_plan(),
+            "the rebuilt tree must match its own plan"
+        );
+    }
+
+    /// Two mods writing one path is the real shape of the 2.1 catalog: all seven
+    /// football mods write the same single file. Composing both and letting the
+    /// activation order decide would pick for the user, and the pick would
+    /// change silently if the order changed.
+    #[test]
+    fn two_mods_writing_one_path_are_refused_and_both_are_named() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let purple = lay_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"purple")],
+        );
+        let pink = lay_package(
+            &fx.packages,
+            "reborn.ball.pink",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"pink!!")],
+        );
+
+        let req = fx.request(vec![purple, pink]);
+        let ComposeRefusal::HardConflicts { conflicts } = refusal(&p, &req) else {
+            panic!("two mods on one path must refuse the plan");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].is_hard());
+        let text = conflicts[0].message();
+        assert!(text.contains("reborn.ball.purple"), "{text}");
+        assert!(text.contains("reborn.ball.pink"), "{text}");
+        assert!(
+            text.contains(BALL),
+            "the contested path must be named: {text}"
+        );
+        assert!(
+            !fx.composed.exists(),
+            "a refused plan must not have built anything"
+        );
+    }
+
+    /// Overlapping paths are computed from the data and outrank any declared
+    /// group, so a conflicting pair cannot be talked into composing by its
+    /// manifests.
+    #[test]
+    fn a_path_overlap_outranks_a_declared_group() {
+        let fx = fixture();
+        let a = lay_package(
+            &fx.packages,
+            "reborn.prompts.ps",
+            Some("prompts"),
+            &[("GN7E69/btn_a.png", b"ps")],
+        );
+        let b = lay_package(
+            &fx.packages,
+            "reborn.prompts.xbox",
+            Some("prompts"),
+            &[("GN7E69/btn_a.png", b"xb")],
+        );
+        let conflicts = detect_conflicts(&[a, b], &game());
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "one pair must produce one conflict, not two"
+        );
+        assert!(matches!(conflicts[0].kind, ConflictKind::SamePath { .. }));
+    }
+
+    /// A declared group with no overlapping path is advisory. It must be
+    /// reported, and it must not stop a composition that is unambiguous.
+    #[test]
+    fn a_declared_group_conflict_is_reported_but_still_composes() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let a = lay_package(
+            &fx.packages,
+            "reborn.jersey.saints-alternate",
+            Some("jersey"),
+            &[("GN7E69/saints.dds", b"saints")],
+        );
+        let b = lay_package(
+            &fx.packages,
+            "reborn.jersey.patriots-throwback",
+            Some("jersey"),
+            &[("GN7E69/patriots.dds", b"patriots")],
+        );
+        let req = fx.request(vec![a, b]);
+        let plan = planned(&p, &req);
+
+        assert_eq!(plan.soft_conflicts.len(), 1, "the group must be reported");
+        assert!(!plan.soft_conflicts[0].is_hard());
+        assert_eq!(plan.overlay_count(), 2, "both mods must compose");
+    }
+
+    /// Composing into the pristine tree is the destructive model this module
+    /// replaces, so it is refused rather than merely discouraged.
+    #[test]
+    fn composing_into_the_pristine_tree_is_refused() {
+        let p = Platform::detect();
+        let fx = fixture();
+
+        let mut req = fx.request(Vec::new());
+        req.composed_root = fx.pristine.clone();
+        assert!(matches!(
+            refusal(&p, &req),
+            ComposeRefusal::ComposedInsidePristine { .. }
+        ));
+
+        let mut req = fx.request(Vec::new());
+        req.composed_root = fx.pristine.join("composed");
+        let r = refusal(&p, &req);
+        assert!(matches!(r, ComposeRefusal::ComposedInsidePristine { .. }));
+        assert!(
+            r.message().contains("mods/active"),
+            "the refusal must say where to point it: {}",
+            r.message()
+        );
+
+        // And the other direction: rebuilding deletes the composed tree, so the
+        // pristine tree must not be inside it.
+        let mut req = fx.request(Vec::new());
+        req.composed_root = fx.pristine.parent().unwrap().to_path_buf();
+        assert!(matches!(
+            refusal(&p, &req),
+            ComposeRefusal::PristineInsideComposed { .. }
+        ));
+    }
+
+    /// A refused plan must not have deleted the directory it was pointed at,
+    /// and `apply` re-checks rather than trusting a plan it was handed.
+    #[test]
+    fn apply_refuses_a_plan_whose_trees_overlap() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let mut plan = planned(&p, &fx.request(Vec::new()));
+        plan.composed_root = fx.pristine.clone();
+
+        let guard = lock(&p, &fx);
+        let err = Composer::apply(&p, &guard, &plan)
+            .expect_err("apply must not trust a plan that would write into the pristine tree");
+        assert!(err.to_string().contains("only copy"), "{err}");
+        assert!(
+            fx.pristine.join(BALL).is_file(),
+            "the pristine tree must be untouched"
+        );
+    }
+
+    /// The launcher never deletes a directory it cannot prove it created. The
+    /// 2.1 uninstaller ran DelTree over a folder holding memory cards, and this
+    /// is the check that stops the same shape of bug appearing here.
+    #[test]
+    fn a_directory_the_launcher_did_not_compose_is_never_deleted() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let precious = fx.composed.join("memory-card.raw");
+        write(&precious, b"somebody's franchise");
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+        assert!(matches!(r, ComposeRefusal::ForeignComposedTree { .. }));
+        assert!(
+            r.message().contains("Move the directory aside"),
+            "no way forward given: {}",
+            r.message()
+        );
+        assert_eq!(
+            std::fs::read(&precious).unwrap(),
+            b"somebody's franchise",
+            "a directory with no marker must survive"
+        );
+
+        let guard = lock(&p, &fx);
+        assert!(Composer::discard(&guard, &fx.composed).is_err());
+        assert!(precious.is_file());
+    }
+
+    /// An interrupted composition leaves a marker with no record. That tree is
+    /// deletable, because the launcher made it, and is never trusted, because it
+    /// was never finished.
+    #[test]
+    fn an_interrupted_composition_is_deletable_and_never_trusted() {
+        let p = Platform::detect();
+        let fx = fixture();
+        std::fs::create_dir_all(&fx.composed).unwrap();
+        write_marker_durably(
+            &fx.composed,
+            &ComposedMarker {
+                schema: COMPOSED_SCHEMA.to_string(),
+                game: game(),
+                record: None,
+            },
+        )
+        .unwrap();
+        write(&fx.composed.join(BALL), b"half composed");
+
+        let plan = planned(&p, &fx.request(Vec::new()));
+        let verdict = Composer::verify(&plan).unwrap();
+        assert!(
+            matches!(
+                verdict.discrepancies.first(),
+                Some(Discrepancy::IncompleteComposition { .. })
+            ),
+            "a partial tree must not verify: {:?}",
+            verdict.discrepancies
+        );
+        assert!(verdict.needs_rebuild());
+
+        let guard = lock(&p, &fx);
+        let report = Composer::apply(&p, &guard, &plan).unwrap();
+        assert_eq!(report.entries(), plan.entries.len() as u64);
+        assert!(Composer::verify(&plan).unwrap().matches_the_plan());
+    }
+
+    /// Verification exists to catch the case where Dolphin would load something
+    /// the user did not choose.
+    #[test]
+    fn verification_catches_an_overlay_whose_content_changed() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.camo",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"camo football")],
+        );
+        let req = fx.request(vec![package]);
+        let plan = planned(&p, &req);
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &plan).unwrap();
+        assert!(Composer::verify(&plan).unwrap().matches_the_plan());
+
+        // Something replaced the composed file. On a hardlinked tree this has
+        // to be a replacement rather than an in place write, or the pristine
+        // file would change with it.
+        let composed_file = fx.composed.join(BALL);
+        std::fs::remove_file(&composed_file).unwrap();
+        write(&composed_file, b"not the camo football");
+
+        let verdict = Composer::verify(&plan).unwrap();
+        assert!(verdict.needs_rebuild());
+        assert!(
+            verdict
+                .discrepancies
+                .iter()
+                .any(|d| matches!(d, Discrepancy::OverlayContentDiffers { .. })),
+            "{:?}",
+            verdict.discrepancies
+        );
+    }
+
+    /// A tree composed from a different set of mods must not pass, or turning a
+    /// mod off would leave it loaded with the launcher reporting success.
+    #[test]
+    fn verification_catches_a_tree_composed_from_a_different_activation() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.green",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"green football")],
+        );
+        let with_mod = planned(&p, &fx.request(vec![package]));
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &with_mod).unwrap();
+
+        let without = planned(&p, &fx.request(Vec::new()));
+        let verdict = Composer::verify(&without).unwrap();
+        assert!(
+            verdict
+                .discrepancies
+                .iter()
+                .any(|d| matches!(d, Discrepancy::ActivationDiffers { .. })),
+            "{:?}",
+            verdict.discrepancies
+        );
+        assert!(verdict.needs_rebuild());
+    }
+
+    /// A tree nobody composed must not be reported as matching, whatever is in
+    /// it. Otherwise a stray folder at the mod load path would be trusted.
+    #[test]
+    fn verification_refuses_a_tree_with_no_record() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let plan = planned(&p, &fx.request(Vec::new()));
+        std::fs::create_dir_all(&fx.composed).unwrap();
+
+        let verdict = Composer::verify(&plan).unwrap();
+        assert!(matches!(
+            verdict.discrepancies.first(),
+            Some(Discrepancy::NotComposedByTheLauncher { .. })
+        ));
+    }
+
+    /// A missing pristine file is caught by the count. This is the one thing the
+    /// hash check cannot see, because no trustworthy expected hash for the
+    /// pristine side is passed to this module.
+    #[test]
+    fn verification_catches_a_composed_file_that_went_missing() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let plan = planned(&p, &fx.request(Vec::new()));
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &plan).unwrap();
+
+        std::fs::remove_file(fx.composed.join("sub").join("tex1_other.dds")).unwrap();
+
+        let verdict = Composer::verify(&plan).unwrap();
+        assert!(
+            verdict
+                .discrepancies
+                .iter()
+                .any(|d| matches!(d, Discrepancy::EntryCountDiffers { .. })),
+            "{:?}",
+            verdict.discrepancies
+        );
+    }
+
+    /// Activation order is recorded and displayed and must never decide content.
+    /// Two orders of the same non-conflicting mods must produce the same tree.
+    #[test]
+    fn activation_order_does_not_change_the_composed_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let a = lay_package(
+            &fx.packages,
+            "reborn.jersey.saints-alternate",
+            None,
+            &[("GN7E69/saints.dds", b"saints")],
+        );
+        let b = lay_package(
+            &fx.packages,
+            "reborn.prompts.ps",
+            None,
+            &[("GN7E69/btn_a.png", b"ps prompts")],
+        );
+
+        let guard = lock(&p, &fx);
+        let mut trees = Vec::new();
+        for packages in [vec![a.clone(), b.clone()], vec![b, a]] {
+            let mut req = fx.request(packages);
+            req.composed_root = fx.composed.with_extension(format!("{}", trees.len()));
+            let plan = planned(&p, &req);
+            Composer::apply(&p, &guard, &plan).unwrap();
+
+            let mut contents: Vec<(String, Vec<u8>)> = walk(&req.composed_root)
+                .unwrap()
+                .files
+                .into_iter()
+                .filter(|f| f.relative != COMPOSED_MARKER)
+                .map(|f| {
+                    let bytes =
+                        std::fs::read(join_relative(&req.composed_root, &f.relative)).unwrap();
+                    (f.relative, bytes)
+                })
+                .collect();
+            contents.sort();
+            trees.push(contents);
+        }
+        assert_eq!(
+            trees[0], trees[1],
+            "the composed tree must not depend on activation order"
+        );
+    }
+
+    /// Every file is either linked or copied, and every one arrives with the
+    /// right content. Which of the two happened depends on the filesystem, and
+    /// on exFAT and FAT32 it is always a copy.
+    #[test]
+    fn every_planned_entry_is_either_linked_or_copied() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.prompts.xbox",
+            None,
+            &[("GN7E69/btn_a.png", b"xbox prompt")],
+        );
+        let req = fx.request(vec![package]);
+        let plan = planned(&p, &req);
+        let guard = lock(&p, &fx);
+        let report = Composer::apply(&p, &guard, &plan).unwrap();
+
+        assert_eq!(
+            report.entries(),
+            plan.entries.len() as u64,
+            "some entry was neither linked nor copied"
+        );
+        assert_eq!(report.overlaid, 1);
+        assert_eq!(
+            std::fs::read(fx.composed.join("btn_a.png")).unwrap(),
+            b"xbox prompt"
+        );
+        assert_eq!(
+            std::fs::read(fx.composed.join(BALL)).unwrap(),
+            b"the original football"
+        );
+        if report.copied > 0 {
+            assert!(
+                report.bytes_copied > 0,
+                "a copy that wrote no bytes did not happen"
+            );
+        }
+    }
+
+    /// A payload path is the only thing that decides where a mod writes, so it
+    /// is the traversal defense. Every one of these produces a file outside the
+    /// composed tree if accepted.
+    #[test]
+    fn payload_paths_that_could_escape_the_composed_tree_are_rejected() {
+        for bad in [
+            "",
+            "GN7E69",
+            "ball.dds",
+            "/GN7E69/ball.dds",
+            "GN7E69/../../ball.dds",
+            "../GN7E69/ball.dds",
+            "GN7E69/./ball.dds",
+            "GN7E69//ball.dds",
+            "GN7E69\\ball.dds",
+            "C:/GN7E69/ball.dds",
+            "GN7E69/ball.dds:stream",
+            "GN7E69/ball.dds/",
+            "GN7E69/ball.dds ",
+            "GN7E69/ball.dds.",
+            "GN7E69/ball.exe",
+            "GN7E69/ball",
+            "../../etc/passwd",
+        ] {
+            assert!(
+                PayloadPath::parse(bad).is_err(),
+                "{bad:?} must not be accepted as a payload path"
+            );
+        }
+
+        let good = PayloadPath::parse("GN7E69/sub/tex1_a.DDS").unwrap();
+        assert_eq!(good.game_id().as_str(), "GN7E69");
+        assert_eq!(
+            good.tail(),
+            "sub/tex1_a.DDS",
+            "the tail is what the composed tree sees"
+        );
+    }
+
+    /// A game id is joined onto both roots, so `..` there is the same escape by
+    /// another route.
+    #[test]
+    fn game_ids_and_package_ids_cannot_be_path_tricks() {
+        for bad in ["", "..", ".", "GN7E69/x", "GN7E69\\x", "a:b", "GN 7E69"] {
+            assert!(GameId::parse(bad).is_err(), "{bad:?} must not be a game id");
+        }
+        for bad in ["", "..", "a/b", "a\\b", ".hidden", "UPPER", "trailing-"] {
+            assert!(ModId::parse(bad).is_err(), "{bad:?} must not be a mod id");
+        }
+        for bad in ["", "../1.0.0", "1/0", "1\\0", ".1"] {
+            assert!(
+                PackageVersion::parse(bad).is_err(),
+                "{bad:?} must not be a version"
+            );
+        }
+        assert!(ModId::parse("reborn.ball.purple").is_ok());
+        assert!(PackageVersion::parse("1.0.0").is_ok());
+    }
+
+    /// Two entries differing only by case are two files on ext4 and one file on
+    /// NTFS and APFS. Composing them would produce a tree whose file count
+    /// depends on the machine, so verification would fail forever on one of
+    /// them.
+    #[test]
+    fn entries_differing_only_by_case_are_refused() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let shouty = BALL.to_uppercase();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.aqua",
+            None,
+            &[(&format!("GN7E69/{shouty}"), b"aqua football")],
+        );
+        let req = fx.request(vec![package]);
+        assert!(
+            matches!(refusal(&p, &req), ComposeRefusal::CaseCollision { .. }),
+            "a case-only collision must be refused, not composed"
+        );
+    }
+
+    /// A declared byte length that does not match the payload means the package
+    /// was recorded from a directory listing, where the size is rounded to the
+    /// allocation unit, or the payload is truncated. Both make every later
+    /// verification of a correct install fail.
+    #[test]
+    fn a_declared_size_that_does_not_match_the_payload_is_refused() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let mut package = lay_package(
+            &fx.packages,
+            "reborn.ball.blue",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"blue football")],
+        );
+        package.files[0].bytes = 4096;
+
+        let req = fx.request(vec![package]);
+        let r = refusal(&p, &req);
+        assert!(matches!(r, ComposeRefusal::PayloadSizeDiffers { .. }));
+        assert!(r.message().contains("allocation unit"), "{}", r.message());
+    }
+
+    /// A manifest that names a file the payload does not have must refuse before
+    /// anything is written, not fail half way through composing.
+    #[test]
+    fn a_missing_payload_file_is_refused_before_anything_is_written() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.panda",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"panda football")],
+        );
+        std::fs::remove_dir_all(fx.packages.join("reborn.ball.panda")).unwrap();
+
+        let req = fx.request(vec![package]);
+        assert!(matches!(
+            refusal(&p, &req),
+            ComposeRefusal::MissingPayload { .. }
+        ));
+        assert!(!fx.composed.exists());
+    }
+
+    /// A package with no payload for this build is skipped and named, because
+    /// the activation list covers every build at once. A mod switched on that
+    /// silently does nothing is indistinguishable from a broken one.
+    #[test]
+    fn a_package_for_another_build_is_skipped_and_reported() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let other = lay_package(
+            &fx.packages,
+            "reborn.ball.other",
+            None,
+            &[("FR4N31/ball.dds", b"for the online build")],
+        );
+        let req = fx.request(vec![other]);
+        let plan = planned(&p, &req);
+
+        assert_eq!(plan.overlay_count(), 0);
+        assert_eq!(plan.not_targeted.len(), 1);
+        assert!(
+            plan.activation.is_empty(),
+            "a package that contributes nothing must not be recorded as active \
+             for this tree"
+        );
+    }
+
+    /// The activation list is the source of truth for a rebuild. A schema it
+    /// does not understand must not be read as an empty list, or the rebuild
+    /// turns every mod off and reports success.
+    #[test]
+    fn an_unknown_activation_schema_is_refused_rather_than_read_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ACTIVATION_FILE);
+
+        assert!(
+            Activation::load(&path).unwrap().active.is_empty(),
+            "a missing list is genuinely no mods active"
+        );
+
+        std::fs::write(
+            &path,
+            br#"{"schema":"nsr.activation.v99","active":[{"id":"x","version":"1"}]}"#,
+        )
+        .unwrap();
+        let err = Activation::load(&path).expect_err("an unknown schema must not be guessed at");
+        assert!(err.to_string().contains("nsr.activation.v1"), "{err}");
+
+        std::fs::write(&path, b"{ truncated").unwrap();
+        let err = Activation::load(&path).expect_err("a truncated list must not read as empty");
+        assert!(err.to_string().contains("no mods active"), "{err}");
+    }
+
+    /// One package id appears at most once. Two versions of one package active
+    /// together would conflict with themselves on every path they carry.
+    #[test]
+    fn activation_holds_one_version_per_package_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ACTIVATION_FILE);
+        let id = ModId::parse("reborn.ball.purple").unwrap();
+
+        let mut activation = Activation::default();
+        activation.activate(id.clone(), PackageVersion::parse("1.0.0").unwrap());
+        activation.activate(id.clone(), PackageVersion::parse("1.1.0").unwrap());
+        assert_eq!(activation.active.len(), 1);
+        assert_eq!(activation.active[0].version.as_str(), "1.1.0");
+
+        activation.save(&path).unwrap();
+        assert_eq!(Activation::load(&path).unwrap(), activation);
+
+        assert!(activation.deactivate(&id));
+        assert!(!activation.deactivate(&id));
+        assert!(!activation.is_active(&id));
+    }
+
+    /// The on-disk shape of the composed record is ours to keep readable. If a
+    /// field is renamed, this fails and whoever renamed it has to think about
+    /// every composed tree already on a user's disk.
+    #[test]
+    fn the_composed_marker_shape_is_pinned() {
+        let marker = ComposedMarker {
+            schema: COMPOSED_SCHEMA.to_string(),
+            game: game(),
+            record: None,
+        };
+        let json = serde_json::to_value(&marker).unwrap();
+        assert_eq!(json["schema"], "nsr.composed.v1");
+        assert_eq!(json["game"], "GN7E69");
+        assert!(
+            json.get("record").is_none(),
+            "an unfinished composition must not carry a record"
+        );
+
+        let finished = ComposedMarker {
+            record: Some(ComposedRecord {
+                game: game(),
+                pristine_root: PathBuf::from("pristine"),
+                activation: vec![ActivePackage {
+                    id: ModId::parse("reborn.ball.purple").unwrap(),
+                    version: PackageVersion::parse("1.0.0").unwrap(),
+                }],
+                total_entries: 3,
+                pristine_entries: 2,
+                overlays: vec![OverlayRecord {
+                    relative: BALL.to_string(),
+                    id: ModId::parse("reborn.ball.purple").unwrap(),
+                    sha256: Sha256Hex::from_bytes(b"x"),
+                }],
+            }),
+            ..marker
+        };
+        let json = serde_json::to_value(&finished).unwrap();
+        assert_eq!(json["record"]["activation"][0]["id"], "reborn.ball.purple");
+        assert_eq!(json["record"]["total_entries"], 3);
+        assert_eq!(json["record"]["overlays"][0]["relative"], BALL);
+    }
+
+    /// A package manifest round trips through the file the launcher reads, and a
+    /// schema this launcher does not compose is refused by name.
+    #[test]
+    fn a_package_manifest_round_trips_and_a_wrong_schema_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = dir.path().join("packages");
+        let package = lay_package(
+            &packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"purple football")],
+        );
+        let package_dir = packages.join("reborn.ball.purple").join("1.0.0");
+        std::fs::write(
+            package_dir.join(PACKAGE_MANIFEST),
+            serde_json::to_vec_pretty(&package).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ModPackage::load(&package_dir).unwrap(), package);
+
+        let mut wrong = package.clone();
+        wrong.schema = "nsr.mod.v2".to_string();
+        std::fs::write(
+            package_dir.join(PACKAGE_MANIFEST),
+            serde_json::to_vec_pretty(&wrong).unwrap(),
+        )
+        .unwrap();
+        let err = ModPackage::load(&package_dir).expect_err("an unknown schema must be refused");
+        assert!(err.to_string().contains("nsr.mod.v1"), "{err}");
+    }
+
+    /// A package listing one destination twice is describing two contents for
+    /// one file. Composing it would pick one and call it a result.
+    #[test]
+    fn a_package_that_lists_one_path_twice_is_refused() {
+        let fx = fixture();
+        let mut package = lay_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"purple football")],
+        );
+        package.files.push(package.files[0].clone());
+        let err = package
+            .validate()
+            .expect_err("a duplicate path is ambiguous");
+        assert!(err.to_string().contains("twice"), "{err}");
+    }
+
+    /// The marker is the launcher's own record. A texture with that name at the
+    /// root of the composed tree would overwrite it, and then verification would
+    /// demand a rebuild forever.
+    #[test]
+    fn nothing_may_write_the_marker_filename() {
+        let fx = fixture();
+        let mut package = lay_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"purple football")],
+        );
+        package.files[0].path = PayloadPath::parse("GN7E69/composed.json.dds").unwrap();
+        assert!(
+            package.validate().is_ok(),
+            "a name that merely looks similar is fine"
+        );
+
+        // The reserved name itself cannot be spelled as a payload path at all,
+        // because the extension allowlist rejects it, so the pristine side is
+        // where the check has to bite.
+        assert!(PayloadPath::parse("GN7E69/composed.json").is_err());
+
+        let p = Platform::detect();
+        write(&fx.pristine.join(COMPOSED_MARKER), b"not a texture");
+        assert!(matches!(
+            refusal(&p, &fx.request(Vec::new())),
+            ComposeRefusal::ReservedName { .. }
+        ));
+    }
+
+    /// An empty pristine tree composes to a tree of mod files only, which looks
+    /// to the player like most textures vanished.
+    #[test]
+    fn an_empty_pristine_tree_is_refused() {
+        let p = Platform::detect();
+        let fx = fixture();
+        std::fs::remove_file(fx.pristine.join(BALL)).unwrap();
+        std::fs::remove_dir_all(fx.pristine.join("sub")).unwrap();
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+        assert!(matches!(r, ComposeRefusal::NoPristineFiles { .. }));
+        assert!(r.message().contains("Verify and repair"), "{}", r.message());
+    }
+
+    /// An absent pristine tree means the textures component is not installed.
+    #[test]
+    fn a_missing_pristine_tree_is_refused_with_a_usable_message() {
+        let p = Platform::detect();
+        let fx = fixture();
+        std::fs::remove_dir_all(&fx.pristine).unwrap();
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+        assert!(matches!(r, ComposeRefusal::NoPristineTree { .. }));
+        assert!(
+            r.message().contains("textures component"),
+            "{}",
+            r.message()
+        );
+    }
+
+    /// One entry cannot be both a file and a directory. Left to composition
+    /// time this fails part way through, leaving a partial tree.
+    #[test]
+    fn a_file_that_is_also_a_directory_prefix_is_refused_at_plan_time() {
+        let mut entries = BTreeMap::new();
+        for relative in ["sub.dds", "sub.dds/inner.dds", "other.dds"] {
+            entries.insert(
+                relative.to_string(),
+                PlannedEntry {
+                    relative: relative.to_string(),
+                    bytes: 1,
+                    source: EntrySource::Pristine {
+                        path: PathBuf::from(relative),
+                    },
+                },
+            );
+        }
+        match shape_refusal(&entries) {
+            Some(ComposeRefusal::PathShadowsDirectory { file, inside }) => {
+                assert_eq!(file, "sub.dds");
+                assert_eq!(inside, "sub.dds/inner.dds");
+            }
+            other => panic!("expected a shadowing refusal, got {other:?}"),
+        }
+    }
+
+    /// A link to a directory that points at an ancestor makes the walk loop
+    /// forever if it is followed, and skipping it silently would drop textures
+    /// out of the composed tree with nothing said about it. The link here points
+    /// at the pristine root from inside it, which is that cycle exactly.
+    ///
+    /// Creating a symlink needs a privilege on Windows that a normal user does
+    /// not have, so the fallback is a directory junction, which does not and
+    /// which the standard library classifies the same way: a reparse point that
+    /// is neither a file nor a directory.
+    #[test]
+    fn a_link_to_a_directory_in_the_pristine_tree_is_refused_rather_than_followed() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let link = fx.pristine.join("loop");
+
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&fx.pristine, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&fx.pristine, &link).or_else(|_| {
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&fx.pristine)
+                .output()
+                .and_then(|out| {
+                    if link.exists() {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::other(
+                            String::from_utf8_lossy(&out.stderr).to_string(),
+                        ))
+                    }
+                })
+        });
+        #[cfg(not(any(unix, windows)))]
+        let made: std::io::Result<()> = Err(std::io::Error::other("no link API"));
+
+        if made.is_err() {
+            eprintln!(
+                "could not create a symlink here, so the guard cannot be \
+                 exercised on this machine"
+            );
+            return;
+        }
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+        assert!(
+            matches!(r, ComposeRefusal::UnsupportedPristineEntries { .. }),
+            "a symlink must be reported: {}",
+            r.message()
+        );
+        assert!(link.exists());
+    }
+
+    /// The plan is read only. A caller can show conflicts and the disk cost
+    /// before anything is committed to.
+    #[test]
+    fn planning_writes_nothing() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let package = lay_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"purple football")],
+        );
+        let plan = planned(&p, &fx.request(vec![package]));
+
+        assert!(
+            !fx.composed.exists(),
+            "planning must not create the composed tree"
+        );
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.overlay_count(), 1);
+        assert_eq!(plan.pristine_count(), 1);
+
+        // The overridden pristine file must not be counted as well as the mod
+        // file that hides it, or the disk budget shown to the user is wrong by
+        // the size of every overlay.
+        let overlay_bytes = std::fs::metadata(
+            fx.packages
+                .join("reborn.ball.purple")
+                .join("1.0.0")
+                .join(PAYLOAD_SUBDIR)
+                .join("GN7E69")
+                .join(BALL),
+        )
+        .unwrap()
+        .len();
+        let kept_pristine = std::fs::metadata(fx.pristine.join("sub").join("tex1_other.dds"))
+            .unwrap()
+            .len();
+        assert_eq!(plan.total_bytes(), overlay_bytes + kept_pristine);
+        assert!(matches!(
+            plan.entries
+                .iter()
+                .find(|e| e.relative == BALL)
+                .map(|e| &e.source),
+            Some(EntrySource::Overlay {
+                replaces_pristine: true,
+                ..
+            }),
+        ));
+    }
+}

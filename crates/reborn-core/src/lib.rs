@@ -38,15 +38,22 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod content;
 pub mod controller;
 pub mod devices;
+pub mod gamepad;
 pub mod library;
 pub mod manifest;
 pub mod migration;
+pub mod mods;
+pub mod music;
+pub mod onboarding;
 pub mod platform;
 pub mod runtime;
 pub mod session;
+pub mod stats;
 pub mod supervisor;
+pub mod xbox;
 
 pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,
