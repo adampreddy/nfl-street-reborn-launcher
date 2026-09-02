@@ -200,6 +200,27 @@ enum Command {
         what: StatsCommand,
     },
 
+    /// Build an unmodded copy of a texture tree, by un-applying JSGME.
+    ///
+    /// Composition layers mods over a pristine tree, and a live 2.1 install has
+    /// none: JSGME applies by overwriting in place, so its tree is the base with
+    /// whatever is applied baked in. Copying it as-is would make those mods
+    /// permanent.
+    Pristine {
+        /// The install holding User and MODS.
+        #[arg(long)]
+        from: PathBuf,
+        /// The build to copy, for example GN7E69.
+        #[arg(long)]
+        build: String,
+        /// Where the pristine copy goes. Defaults to the launcher's library.
+        #[arg(long)]
+        to: Option<PathBuf>,
+        /// Copy and un-apply. Without this, nothing is written.
+        #[arg(long)]
+        apply: bool,
+    },
+
     /// Hash a tree and produce the component manifest that describes it.
     Inventory {
         /// The tree to describe. Scan a pristine tree: a mod file sitting in it
@@ -449,6 +470,12 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
             StatsCommand::Retry { apply } => stats_retry(&platform, apply),
             StatsCommand::Prune { keep_days, apply } => stats_prune(&platform, keep_days, apply),
         },
+        Command::Pristine {
+            from,
+            build,
+            to,
+            apply,
+        } => pristine(&platform, &from, &build, to, apply),
         Command::Inventory {
             root,
             component,
@@ -1838,6 +1865,151 @@ fn mods_list(
     }
 
     Ok(if problem { PROBLEM } else { OK })
+}
+
+/// Build an unmodded copy of a texture tree.
+///
+/// Dry by default. The plan is printed in full first, including every path being
+/// reversed and why, because this is the tree every future composition is
+/// layered over and a wrong one is invisible until a mod cannot be turned off.
+fn pristine(
+    platform: &Platform,
+    from: &Path,
+    build: &str,
+    to: Option<PathBuf>,
+    apply: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let build = match GameId::parse(build) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("--build: {e}");
+            return Ok(misuse());
+        }
+    };
+
+    let Some(install) = LegacyInstall::detect(from) else {
+        println!("No NFL Street Reborn install at {}.", from.display());
+        println!("This needs the folder holding User and MODS.");
+        return Ok(PROBLEM);
+    };
+
+    let library = JsgmeLibrary::scan(&install.root.join("MODS"), std::slice::from_ref(&build))?;
+    let destination = match to {
+        Some(path) => path,
+        None => platform
+            .paths
+            .data_root()?
+            .join(DataDir::LibraryTextures.relative())
+            .join(build.as_str()),
+    };
+
+    println!("Install    {}", from.display());
+    println!("Build      {build}");
+    println!("From       {}", install.root.display());
+    println!("To         {}", destination.display());
+    println!();
+
+    let plan = library.pristine_plan(from, &build, &destination)?;
+
+    if let Some(why) = &plan.blocked {
+        println!("BLOCKED. Nothing was written.");
+        println!();
+        println!("{why}");
+        return Ok(PROBLEM);
+    }
+
+    println!(
+        "{} file(s), {} bytes to copy.",
+        thousands(plan.files_to_copy as u64),
+        thousands(plan.bytes_to_copy)
+    );
+    println!();
+
+    if plan.reversing() == 0 {
+        println!("Nothing is applied, so the tree is already unmodded and is copied as it is.");
+    } else {
+        println!(
+            "{} path(s) to un-apply, from {} applied mod(s):",
+            plan.reversing(),
+            library.applied.applied.len()
+        );
+        println!();
+        println!(
+            "  {} restored from a backup, which is the original file JSGME displaced",
+            plan.restore.len()
+        );
+        for (_, tail) in plan.restore.iter().take(4) {
+            println!("      {tail}");
+        }
+        if plan.restore.len() > 4 {
+            println!("      and {} more", plan.restore.len() - 4);
+        }
+        println!();
+        println!(
+            "  {} removed, because no backup exists. JSGME backs up only what it",
+            plan.remove.len()
+        );
+        println!("      DISPLACES, so no backup means the mod added the file and it was");
+        println!("      never part of the base tree.");
+        for tail in plan.remove.iter().take(4) {
+            println!("      {tail}");
+        }
+        if plan.remove.len() > 4 {
+            println!("      and {} more", plan.remove.len() - 4);
+        }
+    }
+
+    if !apply {
+        println!();
+        println!("Nothing was written. Re-run with --apply to do it.");
+        return Ok(OK);
+    }
+
+    println!();
+    println!("Copying, then un-applying. The install is only read.");
+    let report = plan.execute()?;
+
+    println!();
+    println!(
+        "{} file(s) copied, {} bytes. {} restored, {} removed.",
+        thousands(report.files_copied as u64),
+        thousands(report.bytes_copied),
+        report.restored,
+        report.removed
+    );
+
+    if !report.restored_absent.is_empty() {
+        println!();
+        println!(
+            "{} original(s) were put back at a path the live tree no longer has,",
+            report.restored_absent.len()
+        );
+        println!("so the pristine tree is not simply a copy of it. That happens when a");
+        println!("mod-written file was later deleted or moved out of the live textures:");
+        println!("the backup still holds the original, and the original belongs in a");
+        println!("pristine tree whether or not the live tree kept it.");
+    }
+
+    if !report.is_exact() {
+        println!();
+        println!(
+            "{} path(s) an install log names were not in the tree, so there was",
+            report.missing.len()
+        );
+        println!("nothing to reverse for them. The log and the tree disagree, which is");
+        println!("worth knowing even though nothing failed:");
+        for tail in report.missing.iter().take(8) {
+            println!("  {tail}");
+        }
+        if report.missing.len() > 8 {
+            println!("  and {} more", report.missing.len() - 8);
+        }
+        return Ok(PROBLEM);
+    }
+
+    println!();
+    println!("The copy is unmodded. Nothing in the install was changed.");
+    Ok(OK)
 }
 
 /// What importing the JSGME library would do.

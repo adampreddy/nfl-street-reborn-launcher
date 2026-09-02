@@ -945,6 +945,310 @@ impl ConversionPlan {
     }
 }
 // ---------------------------------------------------------------------------
+// Reconstructing a pristine tree
+// ---------------------------------------------------------------------------
+
+/// What it would take to produce an unmodded copy of a texture tree.
+///
+/// Composition layers mods over a PRISTINE tree, and a live 2.1 install does not
+/// have one: JSGME applies by overwriting in place, so the tree on disk is the
+/// base with whatever is currently applied baked into it. Copying it as-is
+/// would make those mods permanent and unremovable, and every composition on
+/// top would be layering over a tree that already contains a mod.
+///
+/// So the copy is un-applied. For each path an install log records:
+///
+///   a backup exists  -> the backup IS the original, and is written over the
+///                       copy
+///   no backup exists -> JSGME backs up only what it DISPLACES, so no backup
+///                       means the file did not exist before the mod added it,
+///                       and it is removed from the copy
+///
+/// The second rule is the one worth stating twice, because "no backup" reads
+/// like missing data and is not. On this library nineteen of the prompt
+/// textures have no backup, and all nineteen are files the mod introduced.
+#[derive(Debug, Clone)]
+pub struct PristinePlan {
+    pub build: GameId,
+    /// The live tree, read only.
+    pub from: PathBuf,
+    /// Where the pristine copy goes.
+    pub to: PathBuf,
+    pub files_to_copy: usize,
+    pub bytes_to_copy: u64,
+    /// Backups to write over the copy, as (backup file, path within the tree).
+    pub restore: Vec<(PathBuf, String)>,
+    /// Paths to delete from the copy, because the mod added them.
+    pub remove: Vec<String>,
+    /// Why this cannot be done, when it cannot.
+    ///
+    /// An unreadable install log blocks it: the log is the only record of what a
+    /// mod wrote, so without it there is no way to know which files to reverse,
+    /// and a tree that MIGHT still contain a mod is not a pristine tree.
+    pub blocked: Option<String>,
+}
+
+impl PristinePlan {
+    /// How many paths are being reversed in total.
+    pub fn reversing(&self) -> usize {
+        self.restore.len() + self.remove.len()
+    }
+}
+
+/// What the reconstruction did.
+#[derive(Debug, Clone)]
+pub struct PristineReport {
+    pub files_copied: usize,
+    pub bytes_copied: u64,
+    pub restored: usize,
+    /// Originals restored to a path the copied tree did not have.
+    ///
+    /// Worth its own count, because it means the pristine tree is NOT a subset
+    /// of the live one. It happens when a mod-written file was later deleted or
+    /// moved out of the live textures: the install log still names the path, the
+    /// backup still holds the original, and the original belongs in a pristine
+    /// tree whether or not the live tree kept it. On the real install this was
+    /// 9 of 11, which showed up as an unexplained file count until it was
+    /// counted separately.
+    pub restored_absent: Vec<String>,
+    pub removed: usize,
+    /// Paths that were supposed to be reversed and were not there to reverse.
+    ///
+    /// Reported rather than ignored. It means the install log and the tree
+    /// disagree, and a caller should know the result is not exactly what was
+    /// planned even though nothing failed.
+    pub missing: Vec<String>,
+}
+
+impl PristineReport {
+    pub fn is_exact(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+impl JsgmeLibrary {
+    /// Work out how to produce a pristine copy of one build's texture tree.
+    ///
+    /// Reads only. `install_root` is the folder holding `User` and `MODS`, which
+    /// is the root the install logs are written relative to.
+    pub fn pristine_plan(
+        &self,
+        install_root: &Path,
+        build: &GameId,
+        to: &Path,
+    ) -> Result<PristinePlan> {
+        let prefix = format!("User/Load/Textures/{}/", build.as_str());
+        let from = install_root
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join(build.as_str());
+
+        let mut plan = PristinePlan {
+            build: build.clone(),
+            from: from.clone(),
+            to: to.to_path_buf(),
+            files_to_copy: 0,
+            bytes_to_copy: 0,
+            restore: Vec::new(),
+            remove: Vec::new(),
+            blocked: None,
+        };
+
+        if !from.is_dir() {
+            plan.blocked = Some(format!(
+                "there is no texture tree at {}, so there is nothing to copy",
+                from.display()
+            ));
+            return Ok(plan);
+        }
+        // The destination must not already hold a tree. Overwriting one would
+        // replace a pristine tree that compositions are already layered over,
+        // and there is no way to tell a stale one from a good one.
+        if to.is_dir() && std::fs::read_dir(to)?.next().is_some() {
+            plan.blocked = Some(format!(
+                "{} already holds files. A pristine tree is what every \
+                 composition is layered over, so it is never overwritten. Move \
+                 it aside first if it is wrong.",
+                to.display()
+            ));
+            return Ok(plan);
+        }
+        if contains_or_equals(&from, to) || contains_or_equals(to, &from) {
+            plan.blocked = Some(format!(
+                "{} and {} contain one another, so copying would read what it \
+                 is writing",
+                from.display(),
+                to.display()
+            ));
+            return Ok(plan);
+        }
+
+        // An unreadable log means an unknown set of writes.
+        for applied in &self.applied.applied {
+            if let Some(why) = &applied.unreadable {
+                plan.blocked = Some(format!(
+                    "the install log for {} could not be read ({why}), so there \
+                     is no way to know which files it wrote. A tree that might \
+                     still contain a mod is not a pristine tree.",
+                    applied.name
+                ));
+                return Ok(plan);
+            }
+        }
+
+        // Every backup, keyed by the path it came from.
+        let mut backups: BTreeMap<&str, &BackupEntry> = BTreeMap::new();
+        for entry in &self.applied.backup_entries {
+            if let Some(original) = entry.original_relative.as_deref() {
+                backups.insert(original, entry);
+            }
+        }
+
+        for applied in &self.applied.applied {
+            for path in &applied.recorded_paths {
+                let Some(tail) = path.strip_prefix(&prefix) else {
+                    // A path for a different build, or outside the texture tree
+                    // entirely. Not this plan's business.
+                    continue;
+                };
+                match backups.get(path.as_str()) {
+                    Some(entry) => plan
+                        .restore
+                        .push((self.applied.backup_root.join(&entry.relative), tail.to_string())),
+                    None => plan.remove.push(tail.to_string()),
+                }
+            }
+        }
+
+        plan.restore.sort();
+        plan.remove.sort();
+
+        let (files, bytes) = count_tree(&from)?;
+        plan.files_to_copy = files;
+        plan.bytes_to_copy = bytes;
+        Ok(plan)
+    }
+}
+
+/// Files and bytes under a directory.
+fn count_tree(root: &Path) -> Result<(usize, u64)> {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|source| Error::Io {
+            path: dir.clone(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(meta) = entry.metadata() {
+                files += 1;
+                bytes += meta.len();
+            }
+        }
+    }
+    Ok((files, bytes))
+}
+
+impl PristinePlan {
+    /// Copy the tree, then un-apply every mod from the copy.
+    ///
+    /// The source is never written to. Everything happens in the destination,
+    /// so a failure part way leaves the player's install exactly as it was and
+    /// costs nothing but the copy.
+    ///
+    /// Order matters: copy everything first, then reverse. Reversing during the
+    /// copy would mean deciding file by file whether a path is a mod's, and a
+    /// single missed decision produces a tree that looks pristine and is not.
+    pub fn execute(&self) -> Result<PristineReport> {
+        if let Some(why) = &self.blocked {
+            return Err(invalid(why.clone()));
+        }
+
+        std::fs::create_dir_all(&self.to).map_err(|source| Error::Io {
+            path: self.to.clone(),
+            source,
+        })?;
+        let bytes_copied = crate::migration::copy_tree_no_clobber(&self.from, &self.to)?;
+        let (files_copied, _) = count_tree(&self.to)?;
+
+        let mut restored = 0usize;
+        let mut restored_absent = Vec::new();
+        let mut removed = 0usize;
+        let mut missing = Vec::new();
+
+        for (backup, tail) in &self.restore {
+            let dest = join_relative(&self.to, tail);
+            if !backup.is_file() {
+                missing.push(tail.clone());
+                continue;
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+            // Recorded BEFORE the copy, which is the only moment the answer
+            // is knowable: fs::copy creates the destination either way.
+            if !dest.exists() {
+                restored_absent.push(tail.clone());
+            }
+            std::fs::copy(backup, &dest).map_err(|source| Error::Io {
+                path: dest.clone(),
+                source,
+            })?;
+            restored += 1;
+        }
+
+        for tail in &self.remove {
+            let dest = join_relative(&self.to, tail);
+            if !dest.exists() {
+                // The log says a mod wrote it and the tree does not have it.
+                // Nothing to undo, and worth reporting: the two disagree.
+                missing.push(tail.clone());
+                continue;
+            }
+            std::fs::remove_file(&dest).map_err(|source| Error::Io {
+                path: dest.clone(),
+                source,
+            })?;
+            removed += 1;
+        }
+
+        missing.sort();
+        restored_absent.sort();
+        Ok(PristineReport {
+            files_copied,
+            bytes_copied,
+            restored,
+            restored_absent,
+            removed,
+            missing,
+        })
+    }
+}
+
+/// Join a forward-slash relative path onto a root, one segment at a time.
+///
+/// Segment by segment rather than as one string, so a path written with forward
+/// slashes lands correctly on a platform that uses backslashes.
+fn join_relative(root: &Path, relative: &str) -> PathBuf {
+    let mut out = root.to_path_buf();
+    for segment in relative.split('/').filter(|s| !s.is_empty()) {
+        out = out.join(segment);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Executing a plan
 // ---------------------------------------------------------------------------
 
@@ -3051,6 +3355,289 @@ mod tests {
         }
         out.sort();
         out
+    }
+
+    // ---- reconstructing a pristine tree ------------------------------------
+    //
+    // Composition layers mods over a pristine tree, and a live install has
+    // none: JSGME applies by overwriting in place. Copying that tree as-is
+    // would bake the applied mods in permanently, so the copy is un-applied.
+
+    /// A live install: an unmodded base plus two mods applied over it, one that
+    /// displaced a file and one that only added one.
+    fn lay_live_install(root: &Path) -> PathBuf {
+        let mods_root = lay_mods_root(root);
+        let textures = root
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join("GN7E69");
+        std::fs::create_dir_all(&textures).unwrap();
+
+        // Untouched base content, which must survive exactly.
+        write(&textures.join("crowd.dds"), b"base crowd");
+        // Displaced by a mod, so the tree currently holds the MOD's bytes.
+        write(&textures.join("ball.dds"), b"aqua ball!!");
+        // Added by a mod, so it is not part of the base at all.
+        write(&textures.join("btn_a.png"), b"xbox prompt");
+
+        lay_mod(&mods_root, "Aqua Football", &[("ball.dds", b"aqua ball!!")]);
+        lay_mod(&mods_root, "Xbox Controls", &[("btn_a.png", b"xbox prompt")]);
+        lay_applied(
+            &mods_root,
+            "Aqua Football",
+            &["User/Load/Textures/GN7E69/ball.dds"],
+            &["User/Load/Textures/GN7E69/ball.dds"],
+        );
+        // No backup: an add-only mod displaced nothing.
+        lay_applied(
+            &mods_root,
+            "Xbox Controls",
+            &["User/Load/Textures/GN7E69/btn_a.png"],
+            &[],
+        );
+
+        // The backup holds the ORIGINAL ball, which is what pristine means.
+        let backup = mods_root
+            .join("!BACKUP")
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join("GN7E69");
+        std::fs::create_dir_all(&backup).unwrap();
+        write(&backup.join("ball.dds.Aqua Football"), b"the real ball");
+
+        mods_root
+    }
+
+    #[test]
+    fn a_pristine_copy_restores_what_was_displaced_and_drops_what_was_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_live_install(&install);
+        let to = dir.path().join("pristine");
+
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        let plan = library.pristine_plan(&install, &build, &to).unwrap();
+
+        assert_eq!(plan.blocked, None, "{plan:?}");
+        assert_eq!(plan.restore.len(), 1, "the displaced file: {plan:?}");
+        assert_eq!(plan.remove.len(), 1, "the added file: {plan:?}");
+
+        let report = plan.execute().unwrap();
+        assert!(report.is_exact(), "missing: {:?}", report.missing);
+        assert_eq!(report.restored, 1);
+        assert_eq!(report.removed, 1);
+        assert!(
+            report.restored_absent.is_empty(),
+            "the displaced path was in the tree, so nothing was restored into a gap"
+        );
+
+        // The displaced file is the ORIGINAL, not the mod's version. Getting
+        // this wrong is the whole failure: the mod would be baked into the base
+        // and could never be turned off.
+        assert_eq!(
+            std::fs::read(to.join("ball.dds")).unwrap(),
+            b"the real ball",
+            "the backup is the original and must win"
+        );
+        // The added file is gone, because it was never part of the base.
+        assert!(
+            !to.join("btn_a.png").exists(),
+            "an add-only mod's file must not survive into the pristine tree"
+        );
+        // And everything untouched survives byte for byte.
+        assert_eq!(std::fs::read(to.join("crowd.dds")).unwrap(), b"base crowd");
+    }
+
+    #[test]
+    fn the_live_install_is_never_written_to() {
+        // What makes this safe to run against someone's only copy. A failure
+        // part way costs the copy time and nothing else.
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_live_install(&install);
+        let to = dir.path().join("pristine");
+
+        let before = tree_snapshot(&install);
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        library
+            .pristine_plan(&install, &build, &to)
+            .unwrap()
+            .execute()
+            .unwrap();
+
+        assert_eq!(
+            before,
+            tree_snapshot(&install),
+            "the install changed, which it must never do"
+        );
+    }
+
+    #[test]
+    fn a_destination_that_already_holds_a_tree_is_refused() {
+        // A pristine tree is what every composition is layered over. Replacing
+        // one silently would change what every applied mod sits on top of, and
+        // there is no way to tell a stale tree from a good one.
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_live_install(&install);
+        let to = dir.path().join("pristine");
+        std::fs::create_dir_all(&to).unwrap();
+        write(&to.join("something.dds"), b"already here");
+
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        let plan = library.pristine_plan(&install, &build, &to).unwrap();
+
+        let why = plan
+            .blocked
+            .clone()
+            .expect("a non-empty destination must be refused");
+        assert!(why.contains("already holds files"), "{why}");
+        assert!(
+            plan.execute().is_err(),
+            "and executing a blocked plan must fail rather than proceed"
+        );
+        assert_eq!(
+            std::fs::read(to.join("something.dds")).unwrap(),
+            b"already here",
+            "nothing may be touched"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_install_log_blocks_the_whole_thing() {
+        // The log is the only record of what a mod wrote. Without it there is no
+        // way to know which files to reverse, and a tree that MIGHT still hold
+        // a mod is not a pristine tree. Guessing here would produce a base that
+        // silently contains someone's football.
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_live_install(&install);
+        let to = dir.path().join("pristine");
+
+        // A log whose contents cannot be read. Bytes that are not UTF-8, which
+        // is the realistic failure: the file is there, JSGME wrote it, and the
+        // paths inside are unrecoverable.
+        //
+        // A DIRECTORY named like a log does not do it, which is worth recording
+        // because it is what this test tried first: the scanner walks files, so
+        // a directory never becomes a log at all and nothing is reported as
+        // unreadable.
+        let logs = mods_root.join("!INSTLOGS");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("Broken Mod install.log"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        let plan = library.pristine_plan(&install, &build, &to).unwrap();
+
+        let why = plan
+            .blocked
+            .expect("an unreadable log must block the reconstruction");
+        assert!(
+            why.contains("Broken Mod"),
+            "the refusal must name the mod: {why}"
+        );
+        assert!(!to.exists(), "and nothing may be written");
+    }
+
+    #[test]
+    fn a_library_with_nothing_applied_is_copied_as_it_is() {
+        // The normal case for a fresh install, and it must not be mistaken for
+        // an error: nothing to reverse means the tree already IS the base.
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_mods_root(&install);
+        let textures = install
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join("GN7E69");
+        std::fs::create_dir_all(&textures).unwrap();
+        write(&textures.join("crowd.dds"), b"base crowd");
+        let to = dir.path().join("pristine");
+
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        let plan = library.pristine_plan(&install, &build, &to).unwrap();
+        assert_eq!(plan.blocked, None);
+        assert_eq!(plan.reversing(), 0);
+
+        let report = plan.execute().unwrap();
+        assert_eq!(report.files_copied, 1);
+        assert!(report.is_exact());
+        assert_eq!(std::fs::read(to.join("crowd.dds")).unwrap(), b"base crowd");
+    }
+
+    /// Every path under a root with its bytes, for proving nothing changed.
+    fn tree_snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    out.push((path, bytes));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn an_original_whose_path_the_live_tree_lost_is_still_restored() {
+        // The real install's unexplained file count. Nine of eleven backed-up
+        // originals went to paths the live tree no longer had: the mod wrote
+        // them, something later deleted them, and the backup still holds the
+        // base game's version. The original belongs in a pristine tree whether
+        // or not the live tree kept it, so it is restored AND counted
+        // separately, because it means the pristine tree is not a subset of the
+        // live one.
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let mods_root = lay_live_install(&install);
+        let to = dir.path().join("pristine");
+
+        // Someone cleaned the live tree after the mod was applied.
+        std::fs::remove_file(
+            install
+                .join("User")
+                .join("Load")
+                .join("Textures")
+                .join("GN7E69")
+                .join("ball.dds"),
+        )
+        .unwrap();
+
+        let library = JsgmeLibrary::scan(&mods_root, &recognized()).unwrap();
+        let build = GameId::parse("GN7E69").unwrap();
+        let report = library
+            .pristine_plan(&install, &build, &to)
+            .unwrap()
+            .execute()
+            .unwrap();
+
+        assert_eq!(report.restored, 1);
+        assert_eq!(
+            report.restored_absent,
+            vec!["ball.dds".to_string()],
+            "restoring into a gap has to be said, not folded into the total"
+        );
+        assert_eq!(
+            std::fs::read(to.join("ball.dds")).unwrap(),
+            b"the real ball",
+            "and the base game's file must be there regardless"
+        );
     }
 
 }
