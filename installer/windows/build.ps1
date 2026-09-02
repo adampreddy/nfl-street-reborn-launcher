@@ -100,6 +100,29 @@ if ($Runtime -and (Test-Path $Runtime)) {
         Write-Warning ("Not present in the runtime folder, not staged: " + ($missing -join ", "))
     }
 
+    # Machine paths inside the staged configuration. ReShade records the
+    # folder it caches compiled effects in as an absolute path, which on
+    # the development machine is that machine's own Temp folder. Shipped as
+    # is, a player's ReShade would try to create C:\Users\Adam\... on their
+    # PC. Dropping the key makes ReShade fall back to its default, which is
+    # the player's own temp folder. Any other absolute path is a build
+    # failure, because it would be one this script does not know how to fix.
+    $reshadeIni = Join-Path $dest "ReShade.ini"
+    if (Test-Path $reshadeIni) {
+        $lines = Get-Content $reshadeIni
+        $kept = $lines | Where-Object { $_ -notmatch '^IntermediateCachePath=' }
+        if ($kept.Count -ne $lines.Count) {
+            Set-Content $reshadeIni $kept -Encoding ASCII
+            Write-Host "ReShade.ini: dropped IntermediateCachePath so ReShade uses the player's temp folder"
+        }
+    }
+    $leaks = Get-ChildItem $dest -Recurse -Include *.ini, *.conf -File |
+        Select-String -Pattern '[A-Za-z]:\\Users\\' -SimpleMatch:$false
+    if ($leaks) {
+        $leaks | ForEach-Object { Write-Warning ("Machine path in staged config: {0}:{1}: {2}" -f $_.Filename, $_.LineNumber, $_.Line.Trim()) }
+        throw "The staged runtime carries a path to one machine's profile. Fix the source file or teach this script to rewrite it."
+    }
+
     # What was left behind, so a review can see the allowlist did its job.
     $skipped = Get-ChildItem $Runtime | Where-Object {
         ($_.PSIsContainer -and $runtimeDirs -notcontains $_.Name) -or
@@ -140,11 +163,27 @@ Write-Host ("Payload: {0} file(s), {1:N1} MB" -f `
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 
-New-Item -ItemType Directory -Force $dist | Out-Null
+# Compiled into a scratch folder, then moved. Compiling straight into dist
+# failed twice on this machine with "being used by another process" at the
+# moment the output was created: the previous Setup exe had been deleted,
+# but a scanner still held its handle, and Windows keeps a deleted name
+# reserved until the last handle closes. A fresh folder has no such history.
+$scratch = Join-Path $root "target\installer-out"
+if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch }
+New-Item -ItemType Directory -Force $scratch | Out-Null
 & $iscc (Join-Path $PSScriptRoot "reborn-launcher.iss") `
-    "/DPayload=$payload" "/DOutDir=$dist" "/DAppVersion=$Version"
+    "/DPayload=$payload" "/DOutDir=$scratch" "/DAppVersion=$Version"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
-Get-ChildItem $dist -Filter "*.exe" | ForEach-Object {
-    Write-Host ("Built {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+New-Item -ItemType Directory -Force $dist | Out-Null
+Get-ChildItem $scratch -Filter "*.exe" | ForEach-Object {
+    $target = Join-Path $dist $_.Name
+    try {
+        Move-Item $_.FullName $target -Force -ErrorAction Stop
+        Write-Host ("Built {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+    } catch {
+        Write-Warning ("Built, but could not move into dist ({0}). It is at {1}" -f $_.Exception.Message, $_.FullName)
+    }
 }
+# The CLI beside the installer, so dist always carries the matching build.
+Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
