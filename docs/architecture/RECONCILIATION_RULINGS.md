@@ -1618,3 +1618,13 @@ Pinned by `preparation_only_configures`, which fails if any task label promises 
 **Files to edit:** `crates/reborn-core/src/session.rs`, `crates/reborn-core/src/stats.rs`
 
 ---
+
+### 158. A beta had nowhere to live that was not the player's real install
+
+**id:** `release-channel-beta-roots`
+
+**Ruling.** A release channel decides every root. `Channel` is read from `REBORN_CHANNEL`, then from a `channel` marker beside the executable that only the beta installer lays down; absent means stable, and an unknown name means stable too, reported rather than refused, because a launcher must start and a typo must not grow a third set of roots. Beta appends " Beta" to the install root, the data root and the cache root, keeps the data root a sibling of the stable one so migration still finds the 2.1 install beside it, and installs under its own AppId and name. The stable channel keeps 2.1's AppId, which is what makes an upgrade replace the old entry instead of leaving two. Observed on Adam's PC, 2026-09-02: the beta installed beside the real 2.1 install and left its uninstall entry and memory card byte for byte unchanged. Windows Sandbox is the place the stable upgrade path gets proven; it is not enabled on this PC yet.
+
+**Files to edit:** `crates/reborn-core/src/platform/mod.rs`, `crates/reborn-core/src/platform/imp.rs`, `installer/windows/reborn-launcher.iss`, `installer/windows/build.ps1`, `installer/beta/README.md`
+
+---
