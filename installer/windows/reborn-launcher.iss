@@ -53,10 +53,34 @@
 ; game images: put however many are wanted in Games\ and they all install.
 ; =============================================================================
 
-#define AppName        "NFL Street Reborn"
 #define AppPublisher   "NFL Street Reborn"
 #define AppURL         "https://nflstreetreborn.com"
 #define LauncherExe    "reborn-launcher.exe"
+
+; The channel. "stable" is what players get. "beta" installs SIDE BY SIDE
+; with its own AppId, name and folder, and through the `channel` marker the
+; build script lays in the payload, its own data root inside the launcher.
+; That is what makes a beta a test environment rather than a gamble with the
+; player's real install: nothing it writes lands where the stable launcher
+; reads, and uninstalling it removes only itself.
+#ifndef Channel
+  #define Channel "stable"
+#endif
+#if Channel == "beta"
+  #define AppId   "{{7C3E9A5D-2B41-4F0E-9D6A-B8E1F2C4A9B3}"
+  #define AppName "NFL Street Reborn Beta"
+  #define DirName "NFL Street Reborn Launcher Beta"
+#elif Channel == "stable"
+  ; The 2.1 AppId is kept ON PURPOSE. It is how an upgrade recognizes an
+  ; existing install instead of leaving two entries in Programs and Features.
+  ; It is only safe alongside UsePreviousAppDir=no below, and the two must
+  ; never be separated.
+  #define AppId   "{{DCD6B9B9-11DE-4AC0-A7F5-256E7AC55A7E}"
+  #define AppName "NFL Street Reborn"
+  #define DirName "NFL Street Reborn Launcher"
+#else
+  #error Channel must be "stable" or "beta"
+#endif
 
 ; Overridable at build time so a release does not need a source edit.
 #ifndef AppVersion
@@ -70,10 +94,8 @@
 #endif
 
 [Setup]
-; The 2.1 AppId is kept ON PURPOSE. It is how an upgrade recognizes an existing
-; install instead of leaving two entries in Programs and Features. It is only
-; safe alongside UsePreviousAppDir=no below, and the two must never be separated.
-AppId={{DCD6B9B9-11DE-4AC0-A7F5-256E7AC55A7E}
+; Per channel; see the defines at the top. The stable one is 2.1's AppId.
+AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
@@ -82,7 +104,7 @@ AppSupportURL={#AppURL}
 AppUpdatesURL={#AppURL}
 
 ; Program files, NOT the data root. See note 1 at the top.
-DefaultDirName={localappdata}\Programs\{#AppName} Launcher
+DefaultDirName={localappdata}\Programs\{#DirName}
 DefaultGroupName={#AppName}
 
 ; See note 2. Without these two an upgrade puts {app} back on the old data root.
@@ -155,6 +177,23 @@ Source: "{#Payload}\*"; DestDir: "{app}"; \
 ;
 ; No patcher. Patching a game image is the launcher's job, where it can verify
 ; the result and say what happened.
+
+#ifdef Redist
+; The WebView2 runtime, which draws the launcher's window. Windows 11 and an
+; updated Windows 10 already have it; a fresh image, and Windows Sandbox, do
+; not, and the failure without it is a window that opens blank. The
+; bootstrapper is Microsoft's own, verified by its signature at build time,
+; and it downloads the runtime itself, so this step needs the network. Run
+; only when the runtime is absent; on a machine that has it nothing happens.
+[Files]
+Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; \
+  Flags: deleteafterinstall
+
+[Run]
+Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
+  StatusMsg: "Installing Microsoft Edge WebView2, which draws the launcher's window"; \
+  Check: not WebView2Present; Flags: waituntilterminated
+#endif
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#LauncherExe}"
@@ -242,6 +281,9 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+#ifndef Redist
+  // Only when the bootstrapper is not bundled. With it, the [Run] entry above
+  // installs the runtime and there is nothing to ask.
   if not WebView2Present() then
   begin
     if MsgBox(
@@ -253,4 +295,5 @@ begin
       mbConfirmation, MB_YESNO) = IDNO then
       Result := False;
   end;
+#endif
 end;

@@ -1,6 +1,7 @@
 # Build the Windows installer.
 #
 #   .\build.ps1 -Version 3.0.0 -Runtime "C:\path\to\Reborn Dolphin" -GameImages a.iso, b.iso
+#   .\build.ps1 -Channel beta -Version 3.0.0-beta.1 -Runtime "C:\path\to\Reborn Dolphin"
 #
 # Stages a payload from the workspace build output, then compiles. Nothing is
 # hardcoded to one machine, which the old rebornsetupv10.iss was: it pointed at
@@ -8,11 +9,19 @@
 
 param(
     [string]$Version = "3.0.0",
+    # "stable" is what players get. "beta" installs side by side with its own
+    # AppId, name, folder and data root, so a beta under test never touches the
+    # real install. See the channel notes in reborn-launcher.iss.
+    [ValidateSet("stable", "beta")]
+    [string]$Channel = "stable",
     # Where the Reborn Dolphin build lives. Staged by ALLOWLIST, see below.
     [string]$Runtime = "",
     # Game images. However many are given, all install. There is no fixed list
     # and no cap.
-    [string[]]$GameImages = @()
+    [string[]]$GameImages = @(),
+    # Leave the WebView2 bootstrapper out. The installer then only warns when
+    # the runtime is missing, instead of installing it.
+    [switch]$NoWebView2
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +40,16 @@ New-Item -ItemType Directory -Force $payload | Out-Null
 
 Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
 Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+
+# The channel marker the launcher reads at start. Only a beta carries one:
+# the absence of the file IS the stable channel, so a stable install has
+# nothing to get wrong.
+if ($Channel -eq "beta") {
+    Set-Content (Join-Path $payload "channel") "beta" -Encoding ASCII -NoNewline
+    Write-Host "Channel: beta (marker staged; the launcher uses its own roots)"
+} else {
+    Write-Host "Channel: stable"
+}
 
 # -----------------------------------------------------------------------------
 # The runtime, by allowlist
@@ -160,6 +179,45 @@ $size = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("Payload: {0} file(s), {1:N1} MB" -f `
     (Get-ChildItem $payload -Recurse -File).Count, ($size / 1MB))
 
+# -----------------------------------------------------------------------------
+# The WebView2 bootstrapper
+# -----------------------------------------------------------------------------
+#
+# WebView2 draws the launcher's window. Windows 11 and an updated Windows 10
+# have it; a fresh image, and Windows Sandbox, do not, and without it the
+# window opens blank. Microsoft's Evergreen bootstrapper is 1.7 MB and installs
+# the runtime on demand, so it is bundled and run only when the runtime is
+# absent. It is kept out of the repository and fetched once into target\.
+#
+# The signature is checked before it ships. A bootstrapper that is not signed
+# by Microsoft is deleted and the build stops: this is the one file in the
+# payload the team did not build, and it runs with the installer's rights.
+$redistArg = $null
+if (-not $NoWebView2) {
+    $redist = Join-Path $root "target\redist"
+    $bootstrapper = Join-Path $redist "MicrosoftEdgeWebView2Setup.exe"
+    if (-not (Test-Path $bootstrapper)) {
+        New-Item -ItemType Directory -Force $redist | Out-Null
+        Write-Host "Downloading the WebView2 bootstrapper from Microsoft"
+        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
+            -OutFile $bootstrapper -UseBasicParsing
+    }
+    $sig = Get-AuthenticodeSignature $bootstrapper
+    if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
+        Remove-Item $bootstrapper -Force
+        throw "The WebView2 bootstrapper is not validly signed by Microsoft (status $($sig.Status)). Deleted. Nothing was built."
+    }
+    Write-Host ("WebView2 bootstrapper: {0:N1} MB, signed by {1}" -f `
+        ((Get-Item $bootstrapper).Length / 1MB), $sig.SignerCertificate.Subject.Split(",")[0])
+    $redistArg = "/DRedist=$redist"
+} else {
+    Write-Host "WebView2 bootstrapper left out. The installer will warn if the runtime is missing."
+}
+
+# -----------------------------------------------------------------------------
+# Compile
+# -----------------------------------------------------------------------------
+
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 
@@ -171,8 +229,13 @@ if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 $scratch = Join-Path $root "target\installer-out"
 if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch }
 New-Item -ItemType Directory -Force $scratch | Out-Null
-& $iscc (Join-Path $PSScriptRoot "reborn-launcher.iss") `
-    "/DPayload=$payload" "/DOutDir=$scratch" "/DAppVersion=$Version"
+
+$isccArgs = @(
+    (Join-Path $PSScriptRoot "reborn-launcher.iss"),
+    "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
+)
+if ($redistArg) { $isccArgs += $redistArg }
+& $iscc @isccArgs
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 New-Item -ItemType Directory -Force $dist | Out-Null
