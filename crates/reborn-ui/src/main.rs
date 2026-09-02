@@ -2176,6 +2176,23 @@ struct PrepRunView {
     wrote: Vec<String>,
 }
 
+/// The first game image in an existing install, if there is one.
+///
+/// Sorted, so two images do not resolve differently between runs. Named "first"
+/// rather than "the" on purpose: a real install here holds seventeen, and
+/// picking one is a guess that the caller may want to override.
+fn first_game_image(legacy_root: Option<&Path>) -> Option<PathBuf> {
+    let root = legacy_root?.join("Games");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && reborn_core::session::is_game_image(p))
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
 /// Run one preparation task, then record it.
 ///
 /// The order matters and is the opposite of the usual one: the work happens
@@ -2218,24 +2235,28 @@ async fn onboarding_run_task(
                             .to_string()
                     })?;
 
-                // Both required, because Session::prepare writes a real
-                // configuration for a real pair and there is nothing sensible
-                // to write without them. On Windows the runtime is the bundled
-                // Dolphin and is never a question; the refusals say so.
-                let runtime_exe = runtime
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| {
-                        "no emulator path. On Windows this is the bundled Dolphin and                          the launcher should already know it, so being asked means                          the install is incomplete."
-                            .to_string()
-                    })?;
-                let game_path = game
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| {
-                        "no game image. Confirm the game step first, or bring a 2.1                          install over, which is where the image comes from for anyone                          upgrading."
-                            .to_string()
-                    })?;
+                // FOUND, not asked for. On Windows the emulator ships beside
+                // the launcher and there is one right answer, so a screen that
+                // asked was a screen nobody could get past.
+                let found = reborn_core::session::resolve_runtime(
+                    &p,
+                    runtime.as_deref().map(Path::new),
+                    legacy_root.as_deref().map(Path::new),
+                )
+                .map_err(|looked| reborn_core::session::no_runtime_message(&looked))?;
+                let runtime_exe = found.path().to_path_buf();
+
+                // The image, likewise. An upgrading player already owns one and
+                // already has it patched, so the 2.1 install is searched before
+                // anyone is asked for a path.
+                let game_path = match game.as_deref().map(PathBuf::from) {
+                    Some(path) => path,
+                    None => first_game_image(legacy_root.as_deref().map(Path::new))
+                        .ok_or_else(|| {
+                            "no game image. Confirm the game step first, or point at an                              existing NFL Street Reborn install, which is where the                              image comes from for anyone upgrading."
+                                .to_string()
+                        })?,
+                };
 
                 let req = LaunchRequest {
                     runtime_exe,
@@ -2263,11 +2284,15 @@ async fn onboarding_run_task(
 
                 let did = match target {
                     PrepTask::WriteConfig => format!(
-                        "set {} key(s) across {} file(s), {} already correct. {}",
+                        "set {} key(s) across {} file(s), {} already correct. {} {}",
                         written.keys_set,
                         written.files.len(),
                         written.unchanged.len(),
-                        written.user_dir.explain()
+                        written.user_dir.explain(),
+                        // Named every time. A stock emulator boots the game, so
+                        // nothing visibly breaks and nothing would otherwise say
+                        // that half the launcher's features are inert.
+                        found.explain()
                     ),
                     // Running it a second time IS the check: prepare only
                     // writes what differs, so a second pass that changes

@@ -528,6 +528,177 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
         .collect();
     Some((ini, assignment))
 }
+// ---------------------------------------------------------------------------
+// Finding the emulator
+// ---------------------------------------------------------------------------
+
+/// Where an emulator came from, and whether it is the one that works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Runtime {
+    /// The copy that shipped with the launcher, beside its own executable.
+    ///
+    /// The normal answer on Windows and the only supported one: the launcher is
+    /// built against a fork, and a player is not asked which emulator to use
+    /// because there is only one right answer.
+    Bundled(PathBuf),
+    /// The emulator from an NFL Street Reborn 2.1 install.
+    ///
+    /// Used when the launcher is running without a bundled copy beside it,
+    /// which is the case during development and for anyone upgrading before the
+    /// new runtime has been laid down. It IS a Reborn fork, so it works.
+    FromLegacyInstall(PathBuf),
+    /// A path someone chose.
+    ///
+    /// Permitted on macOS and Linux, where no build is shipped, and it will be
+    /// missing the fork's features: this launcher is built against a Dolphin
+    /// that reports controllers, writes match results and honours the Reborn
+    /// configuration. A stock Dolphin runs the game and does none of that.
+    ///
+    /// Carried as its own variant rather than folded into the others so nothing
+    /// can report a stock emulator as though it were supported.
+    Chosen(PathBuf),
+}
+
+impl Runtime {
+    pub fn path(&self) -> &Path {
+        match self {
+            Runtime::Bundled(p) | Runtime::FromLegacyInstall(p) | Runtime::Chosen(p) => p,
+        }
+    }
+
+    /// Whether this is a build the launcher can rely on.
+    ///
+    /// False for [`Runtime::Chosen`], and that is not a maybe. A stock Dolphin
+    /// will boot the game, so nothing visibly breaks at launch; what breaks is
+    /// every feature that reads back from the emulator, and it breaks silently.
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Runtime::Chosen(_))
+    }
+
+    /// One line for a player, naming the consequence rather than the category.
+    pub fn explain(&self) -> String {
+        match self {
+            Runtime::Bundled(p) => format!("Using the emulator that came with the launcher, {}.", p.display()),
+            Runtime::FromLegacyInstall(p) => format!(
+                "Using the emulator from your existing NFL Street Reborn install, {}. \
+                 It is a Reborn build, so everything works.",
+                p.display()
+            ),
+            Runtime::Chosen(p) => format!(
+                "Using an emulator you chose, {}. It is not a Reborn build, so it \
+                 will run the game but will not report controllers, record match \
+                 results, or read the Reborn configuration. Those features will be \
+                 missing rather than broken, and nothing will say so while you play.",
+                p.display()
+            ),
+        }
+    }
+}
+
+/// Anything that looks like a Dolphin executable in a directory.
+///
+/// Matched by name rather than by a fixed filename, because the Reborn build
+/// ships as `NFL Street Reborn Dolphin.exe` in the 2.1 install and as
+/// `Dolphin.exe` in the launcher's own payload, and hardcoding either one makes
+/// the other invisible.
+fn dolphin_in(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            name.contains("dolphin")
+                && (name.ends_with(".exe") || !name.contains('.'))
+        })
+        .collect();
+    // Sorted so two candidates do not resolve differently between runs.
+    found.sort();
+    found.into_iter().next()
+}
+
+/// Find the emulator, without asking anyone.
+///
+/// On Windows the player is never asked: the launcher is built against a fork
+/// and there is one right answer. `chosen` exists for macOS and Linux, where no
+/// build is shipped, and for development.
+///
+/// The order is deliberate. A bundled copy wins because it is the one this
+/// launcher was built against. A 2.1 install comes next because it is also a
+/// Reborn build, which makes it correct rather than merely available, and it is
+/// what every upgrading player already has. Only then is there nothing to use.
+///
+/// Returns the places it looked when it finds nothing, so the refusal can name
+/// them instead of saying the install is incomplete and leaving it there.
+pub fn resolve_runtime(
+    platform: &Platform,
+    chosen: Option<&Path>,
+    legacy_root: Option<&Path>,
+) -> std::result::Result<Runtime, Vec<PathBuf>> {
+    let mut looked = Vec::new();
+
+    // An explicit choice wins, so a developer or a Linux player is not
+    // overruled. It is still reported as chosen, never as supported.
+    if let Some(path) = chosen {
+        if path.is_file() {
+            return Ok(Runtime::Chosen(path.to_path_buf()));
+        }
+        looked.push(path.to_path_buf());
+    }
+
+    // Beside the launcher's own executable, which is where the installer puts
+    // it. current_exe can fail, and a failure here is just one place not
+    // searched rather than a reason to stop.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [dir.join("runtime"), dir.to_path_buf()] {
+                looked.push(candidate.clone());
+                if let Some(found) = dolphin_in(&candidate) {
+                    return Ok(Runtime::Bundled(found));
+                }
+            }
+        }
+    }
+
+    // The 2.1 install. A Reborn build, so this is a correct answer and not a
+    // fallback that merely happens to run.
+    if let Some(root) = legacy_root {
+        looked.push(root.to_path_buf());
+        if let Some(found) = dolphin_in(root) {
+            return Ok(Runtime::FromLegacyInstall(found));
+        }
+    }
+
+    let _ = platform;
+    Err(looked)
+}
+
+/// The refusal, naming every directory that was searched.
+///
+/// Written here so the CLI and the window say the same thing, and so the
+/// message lists places rather than asserting the install is incomplete: on a
+/// development build nothing is bundled and that is expected, not broken.
+pub fn no_runtime_message(looked: &[PathBuf]) -> String {
+    let mut out = String::from("No Reborn emulator was found. Looked in:");
+    for path in looked {
+        out.push_str(&format!("\n  {}", path.display()));
+    }
+    if looked.is_empty() {
+        out.push_str(" nowhere, because no search path could be worked out.");
+    }
+    out.push_str(
+        "\n\nOn Windows this ships beside the launcher, so a fresh install \
+         should always find it. Point at an existing NFL Street Reborn install \
+         to use the emulator already there.",
+    );
+    out
+}
+
 
 /// Where the game image is expected to be, if the caller has not said.
 pub fn default_game_path(platform: &Platform) -> Result<PathBuf> {
@@ -710,4 +881,111 @@ mod tests {
         assert!(!UserDir::Fresh(PathBuf::from("x")).is_populated());
         assert!(UserDir::Existing(PathBuf::from("x")).is_populated());
     }
+    #[test]
+    fn a_bundled_emulator_wins_and_is_the_supported_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("Dolphin.exe"), b"").unwrap();
+
+        // dolphin_in is what the resolver uses for every candidate directory,
+        // so testing it directly tests the part that can be wrong. The full
+        // resolve_runtime reads current_exe, which a test cannot move.
+        let found = dolphin_in(&runtime).expect("a bundled Dolphin must be found");
+        assert_eq!(found.file_name().unwrap(), "Dolphin.exe");
+        assert!(Runtime::Bundled(found).is_supported());
+    }
+
+    #[test]
+    fn the_reborn_build_is_found_by_name_not_by_a_fixed_filename() {
+        // The 2.1 install ships it as "NFL Street Reborn Dolphin.exe" and the
+        // launcher payload as "Dolphin.exe". Hardcoding either makes the other
+        // invisible, which is exactly the bug that left a player being asked for
+        // a path the launcher was standing next to.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("NFL Street Reborn Dolphin.exe"), b"").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), b"").unwrap();
+
+        let found = dolphin_in(dir.path()).expect("the Reborn build must be found");
+        assert_eq!(
+            found.file_name().unwrap(),
+            "NFL Street Reborn Dolphin.exe"
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_emulator_finds_nothing_rather_than_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+        std::fs::write(dir.path().join("Games.exe"), b"").unwrap();
+        assert_eq!(
+            dolphin_in(dir.path()),
+            None,
+            "an unrelated exe must not be launched as the emulator"
+        );
+    }
+
+    #[test]
+    fn a_chosen_emulator_is_never_reported_as_supported() {
+        // The whole reason Chosen is its own variant. Adam: it will be missing
+        // the features for sure. A stock Dolphin boots the game, so nothing
+        // visibly breaks; what breaks is every feature that reads back from the
+        // emulator, silently.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("dolphin");
+        std::fs::write(&exe, b"").unwrap();
+
+        let platform = Platform::detect();
+        let runtime = resolve_runtime(&platform, Some(&exe), None).unwrap();
+        assert_eq!(runtime, Runtime::Chosen(exe.clone()));
+        assert!(
+            !runtime.is_supported(),
+            "a stock build must never be reported as supported"
+        );
+
+        // And the explanation has to name what is lost, not the category.
+        let said = runtime.explain();
+        for expected in ["controllers", "match results"] {
+            assert!(
+                said.contains(expected),
+                "the warning must say what will be missing: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_search_names_every_place_it_looked() {
+        // The refusal this replaces said the install was incomplete and stopped,
+        // which on a development build is wrong and on a real one is useless.
+        let dir = tempfile::tempdir().unwrap();
+        let platform = Platform::detect();
+        let missing = dir.path().join("nowhere").join("dolphin.exe");
+        let empty_legacy = dir.path().join("legacy");
+        std::fs::create_dir_all(&empty_legacy).unwrap();
+
+        let looked = resolve_runtime(&platform, Some(&missing), Some(&empty_legacy))
+            .expect_err("nothing should have been found");
+        assert!(
+            looked.contains(&missing),
+            "the path that was asked for must be listed: {looked:?}"
+        );
+        assert!(
+            looked.contains(&empty_legacy),
+            "and the install that was searched: {looked:?}"
+        );
+
+        let message = no_runtime_message(&looked);
+        assert!(message.contains("nowhere"), "{message}");
+
+        // The prose only. The path list is indented by two spaces on purpose,
+        // so the usual doubled-space check has to skip those lines or it fires
+        // on the formatting it was never meant to catch.
+        for line in message.lines().filter(|l| !l.starts_with("  ")) {
+            assert!(
+                !line.contains("  "),
+                "a doubled space means a lost line continuation: {line:?}"
+            );
+        }
+    }
+
 }
