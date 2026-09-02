@@ -127,6 +127,17 @@ pub enum Stage {
     /// `WIREFRAMES.md` section 3.
     ControllerSetup,
     /// `WIREFRAMES.md` section 5, first screen. Writes into the data root.
+    /// Choose which mods to turn on.
+    ///
+    /// In the launcher rather than the installer, and BEFORE
+    /// [`Stage::Preparation`], which is what actually applies them.
+    ///
+    /// The 2.1 installer opened JSGME mid-wizard for this, which is the worst
+    /// possible moment. JSGME moves the original files aside as it applies, so a
+    /// wizard abandoned halfway leaves a half-composed game and a !BACKUP folder
+    /// nobody looks at again. Choosing here only records a decision; the
+    /// composition happens in Preparation where it can be verified and rebuilt.
+    ModSelection,
     Preparation,
     /// `WIREFRAMES.md` section 5, second screen. Closed by
     /// [`Onboarding::finish`], not by [`Onboarding::satisfy`].
@@ -142,6 +153,7 @@ impl Stage {
         Stage::MigrationCopy,
         Stage::SystemCheck,
         Stage::ControllerSetup,
+        Stage::ModSelection,
         Stage::Preparation,
         Stage::Completion,
     ];
@@ -154,6 +166,7 @@ impl Stage {
             Stage::MigrationOffer => "migration_offer",
             Stage::MigrationCopy => "migration_copy",
             Stage::SystemCheck => "system_check",
+            Stage::ModSelection => "mod_selection",
             Stage::ControllerSetup => "controller_setup",
             Stage::Preparation => "preparation",
             Stage::Completion => "completion",
@@ -171,7 +184,10 @@ impl Stage {
             Stage::ControllerSetup => Some(3),
             Stage::SystemCheck => Some(4),
             Stage::Preparation | Stage::Completion => Some(5),
-            Stage::MigrationCopy => None,
+            // No wireframe drew either of these. Mod choice used to live in
+            // the installer, so there is nothing to implement against and
+            // whoever builds the screen is designing rather than following.
+            Stage::MigrationCopy | Stage::ModSelection => None,
         }
     }
 
@@ -216,6 +232,11 @@ impl Stage {
                           say there is no pad instead of starting the game into \
                           nothing",
             },
+            Stage::ModSelection => SkipRule::Declinable {
+                because: "no mods is the normal case and a perfectly good \
+                          answer. Requiring a choice would also mean requiring \
+                          one before the player has seen the game run once",
+            },
             Stage::Welcome => SkipRule::Required {
                 because: "it is the entry point, and it carries the time estimate",
             },
@@ -258,6 +279,10 @@ impl Stage {
             Stage::ControllerSetup => matches!(
                 how,
                 Satisfaction::Controller { .. } | Satisfaction::NoController { .. }
+            ),
+            Stage::ModSelection => matches!(
+                how,
+                Satisfaction::ModsChosen { .. } | Satisfaction::NoMods
             ),
             Stage::Preparation => matches!(how, Satisfaction::Prepared),
             // Closed by finish(), never by satisfy(). Two ways to end
@@ -444,6 +469,23 @@ pub enum Satisfaction {
         recommended: Option<RecordedPreset>,
         detected: Option<String>,
     },
+    /// Mods the player turned on, by package reference.
+    ///
+    /// References rather than display names: two mods can share a name across
+    /// versions, and a name that resolves to the wrong package composes the
+    /// wrong files.
+    ///
+    /// `conflicts_shown` records that overlapping writes were put in front of
+    /// the player. On a real install 20 paths are written by more than one mod,
+    /// with 7 writing the same football texture, so keeping whichever landed
+    /// last is a decision made FOR someone. False means the launcher has not
+    /// asked, and must not present the selection as informed.
+    ModsChosen {
+        packages: Vec<String>,
+        conflicts_shown: bool,
+    },
+    /// No mods, deliberately. Distinct from never having been asked.
+    NoMods,
     /// Every preparation task finished.
     Prepared,
 }
@@ -811,6 +853,15 @@ pub struct Summary {
     pub migrated_from: Option<PathBuf>,
     pub migrated_bytes: Option<u64>,
     pub game_bytes: Option<u64>,
+    /// Mods the player turned on. `Some(vec![])` is a deliberate "none",
+    /// `None` means never asked, and a completion screen that renders both as
+    /// "no mods" is claiming a decision that was never made.
+    pub mods_chosen: Option<Vec<String>>,
+    /// Whether overlapping writes were shown before the choice was taken.
+    ///
+    /// `Some(false)` is the case worth surfacing: mods were picked without the
+    /// player being told that several of them write the same files.
+    pub mod_conflicts_shown: Option<bool>,
     pub tasks_done: Vec<PrepTask>,
 }
 
@@ -833,6 +884,9 @@ impl Summary {
         }
         if self.game_bytes.is_none() {
             out.push("installed size");
+        }
+        if self.mods_chosen.is_none() {
+            out.push("mods");
         }
         out
     }
@@ -1106,6 +1160,20 @@ impl Onboarding {
                 stage: Stage::Preparation,
             }));
         }
+        // An unanswered earlier stage means this task would apply something the
+        // player was never asked about, mods being the obvious one. The check
+        // has to be here and not only in satisfy(): satisfy() is where the
+        // stage reports being finished, which is after every file has been
+        // written, and reach() deliberately stays permissive so a resumed run
+        // can re-open a screen.
+        if let Some(expected) = self.outstanding() {
+            if expected != Stage::Preparation {
+                return Ok(Advance::Refused(Refusal::OutOfOrder {
+                    expected,
+                    got: Stage::Preparation,
+                }));
+            }
+        }
         if self.progress.tasks_done().contains(&task) {
             return Ok(Advance::AlreadyRecorded);
         }
@@ -1157,7 +1225,11 @@ impl Onboarding {
             }
         }
 
-        if stage == Stage::Preparation {
+        // Deliberately after the ordering check below in effect, by being
+        // expressed as part of it: an unanswered earlier stage is the more
+        // fundamental problem, and naming outstanding tasks first would point
+        // the caller at work that should not start yet.
+        if stage == Stage::Preparation && self.outstanding() == Some(Stage::Preparation) {
             if let Some(first) = self.preparation_remaining().first().copied() {
                 return Ok(Advance::Refused(Refusal::TasksOutstanding { first }));
             }
@@ -1261,6 +1333,23 @@ impl Onboarding {
             // which one it is.
             s.graphics_was_recommended = recommended.map(|r| r == *chosen);
             s.detected_hardware = detected.clone();
+        }
+        match self.progress.satisfaction(Stage::ModSelection) {
+            Some(Satisfaction::ModsChosen {
+                packages,
+                conflicts_shown,
+            }) => {
+                s.mods_chosen = Some(packages.clone());
+                s.mod_conflicts_shown = Some(*conflicts_shown);
+            }
+            // Declining is a decision, so it reports an empty list rather than
+            // absence. There were no conflicts to show, which is not the same
+            // as having withheld them.
+            Some(Satisfaction::NoMods) => {
+                s.mods_chosen = Some(Vec::new());
+                s.mod_conflicts_shown = Some(true);
+            }
+            _ => {}
         }
         s.tasks_done = self.progress.tasks_done();
         s
@@ -1397,6 +1486,13 @@ mod tests {
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
         recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        // Mods are chosen before Preparation, which is what applies them,
+        // so walking 'to preparation' now passes through here.
+        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(
+            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+                .unwrap(),
+        );
     }
 
     /// Walk a machine with no 2.1 install up to, but not through, the latch.
@@ -2078,6 +2174,12 @@ mod tests {
             )
             .unwrap(),
         );
+        // Mods come before Preparation, which is what applies them.
+        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(
+            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+                .unwrap(),
+        );
         recorded(ob.reach(Stage::Preparation).unwrap());
         for t in PrepTask::ALL {
             recorded(ob.record_task(*t).unwrap());
@@ -2396,6 +2498,12 @@ mod tests {
         );
         recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        // Mods come before Preparation, which is what applies them.
+        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(
+            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+                .unwrap(),
+        );
         recorded(ob.reach(Stage::Preparation).unwrap());
         for t in PrepTask::ALL {
             recorded(ob.record_task(*t).unwrap());
@@ -2422,4 +2530,132 @@ mod tests {
             .count();
         assert_eq!(latches, 1, "exactly one latch, ever");
     }
+    // ---- mod selection -----------------------------------------------------
+    //
+    // The stage exists because the 2.1 installer asked this question by opening
+    // JSGME mid-wizard, which applies as it goes. These tests pin the two
+    // properties that made moving it here worth doing: the choice lands BEFORE
+    // anything is applied, and declining is recorded as a decision rather than
+    // read back as silence.
+
+    #[test]
+    fn mods_are_chosen_before_anything_is_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        recorded(
+            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
+                .unwrap(),
+        );
+        recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
+        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+
+        // Opening the screen is allowed. reach() stays permissive on purpose so
+        // a resumed run can re-show a stage.
+        recorded(ob.reach(Stage::Preparation).unwrap());
+
+        // Applying is not. record_task is the call that copies files and
+        // composes mods, so it is the one that has to refuse, and it has to
+        // refuse BEFORE doing the work rather than when the stage reports being
+        // finished. This assertion is why the guard was moved there: it used to
+        // pass, and the first task ran with the mod question unanswered.
+        assert_eq!(
+            ob.record_task(PrepTask::CopyGameFiles).unwrap(),
+            Advance::Refused(Refusal::OutOfOrder {
+                expected: Stage::ModSelection,
+                got: Stage::Preparation,
+            }),
+            "nothing may be applied before the mod choice is recorded"
+        );
+        assert!(
+            ob.preparation_remaining().contains(&PrepTask::CopyGameFiles),
+            "a refused task must not be marked done"
+        );
+    }
+
+    #[test]
+    fn declining_mods_is_a_decision_and_not_an_absence() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Never asked.
+        let ob = fresh(dir.path());
+        assert_eq!(
+            ob.summary().mods_chosen, None,
+            "an unanswered question must not read as an answer"
+        );
+        assert!(ob.summary().absent().contains(&"mods"));
+
+        // Asked and declined.
+        let mut ob = fresh(dir.path());
+        walk_to_preparation(&mut ob);
+        let s = ob.summary();
+        assert_eq!(
+            s.mods_chosen,
+            Some(Vec::new()),
+            "declining is an empty list, not a missing one"
+        );
+        assert!(
+            !s.absent().contains(&"mods"),
+            "a recorded decline is not an absent field"
+        );
+    }
+
+    #[test]
+    fn a_choice_taken_without_showing_conflicts_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        recorded(
+            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
+                .unwrap(),
+        );
+        recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
+        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        recorded(ob.reach(Stage::ModSelection).unwrap());
+
+        // Seven mods on this machine write the same football texture. Picking
+        // two of them without being told that is a real state, and the summary
+        // has to carry it so the completion screen cannot claim the selection
+        // was informed.
+        recorded(
+            ob.satisfy(
+                Stage::ModSelection,
+                Satisfaction::ModsChosen {
+                    packages: vec!["Aqua Football".into(), "Blue Football".into()],
+                    conflicts_shown: false,
+                },
+            )
+            .unwrap(),
+        );
+
+        let s = ob.summary();
+        assert_eq!(
+            s.mods_chosen.as_deref(),
+            Some(&["Aqua Football".to_string(), "Blue Football".to_string()][..])
+        );
+        assert_eq!(
+            s.mod_conflicts_shown,
+            Some(false),
+            "an uninformed selection must not be reportable as an informed one"
+        );
+    }
+
+    #[test]
+    fn mod_selection_is_reversible_and_declinable() {
+        // Both matter for the same reason: this is the one stage a player is
+        // most likely to want to change their mind about, and it is safe to,
+        // because nothing has been written yet.
+        assert!(
+            !Stage::ModSelection.is_irreversible(),
+            "nothing is applied here, so going back cannot cost anything"
+        );
+        assert!(
+            Stage::ModSelection.skip_rule().is_declinable(),
+            "no mods is the normal case"
+        );
+        assert!(Stage::ModSelection.allows_back());
+    }
+
 }
