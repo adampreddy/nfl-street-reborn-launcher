@@ -1244,13 +1244,21 @@ struct MigrationStepResultView {
     order: u8,
     what: String,
     to: String,
-    files_copied: u64,
+    /// BYTES, not files. copy_tree_no_clobber returns what std::fs::copy
+    /// returns, summed, and the core's tests pin it as bytes. This field was
+    /// called files_copied and was reporting 22 million files.
+    bytes_copied: u64,
 }
 
 #[derive(Debug, Serialize)]
 struct MigrationApplyView {
     steps: Vec<MigrationStepResultView>,
-    total_files: u64,
+    total_bytes: u64,
+    /// Present when the copy finished but first run's journal would not take
+    /// it, which happens when onboarding is already latched complete. The files
+    /// moved either way, and saying nothing would leave the flow looking stuck
+    /// for a reason nobody could see.
+    journal_note: Option<String>,
     /// Stated every time, because a player watching a 2 GB copy needs to know
     /// the source is still intact.
     note: &'static str,
@@ -1292,6 +1300,18 @@ async fn migration_apply(legacy_root: String, confirm: bool) -> Result<Migration
             return Err(already_running());
         };
 
+        // Before the first byte moves. If the machine dies mid-copy, this
+        // marker is the only evidence the flow was inside a stage that writes,
+        // and without it the next run would offer the copy again from scratch.
+        let mut flow = open_flow(Some(root.display().to_string()))?;
+        let reached = flow.reach(Stage::MigrationCopy).map_err(|e| e.to_string())?;
+        if let Advance::Refused(why) = &reached {
+            return Err(format!(
+                "{} Nothing was copied.",
+                why.message()
+            ));
+        }
+
         let data = p.paths.data_root().map_err(|e| e.to_string())?;
         let mut steps = Vec::new();
         let mut total = 0u64;
@@ -1304,12 +1324,27 @@ async fn migration_apply(legacy_root: String, confirm: bool) -> Result<Migration
                 order: step.order,
                 what: step.what.to_string(),
                 to: dest.display().to_string(),
-                files_copied: copied,
+                bytes_copied: copied,
             });
         }
+        // After, with the measured count. Recorded here rather than taken
+        // from the interface for the usual reason: this is the only code that
+        // knows what actually moved.
+        //
+        // A refused journal write is reported, not raised. The copy already
+        // happened, and failing the whole command would say it had not.
+        let recorded = flow
+            .satisfy(Stage::MigrationCopy, Satisfaction::Migrated { bytes: total })
+            .map_err(|e| e.to_string())?;
+        let journal_note = match &recorded {
+            Advance::Recorded | Advance::AlreadyRecorded => None,
+            Advance::Refused(why) => Some(why.message()),
+        };
+
         Ok(MigrationApplyView {
             steps,
-            total_files: total,
+            total_bytes: total,
+            journal_note,
             note: "Nothing in the 2.1 install was changed or removed, and \
                    nothing already present at the destination was overwritten.",
         })
@@ -2121,6 +2156,94 @@ async fn onboarding_back(
                 refused_because: Some(why.message()),
             },
         })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct OnboardingRestartView {
+    /// Where the old journal went. Absent when there was nothing to archive.
+    archived_to: Option<String>,
+    entries_archived: usize,
+    /// True when a finished setup was just undone.
+    was_complete: bool,
+    /// Irreversible stages whose work will be repeated, by slug. These copy
+    /// files and install the runtime, so this is the cost of starting over.
+    will_be_redone: Vec<&'static str>,
+    next: NextStageView,
+}
+
+/// Discard first run and offer it again from the beginning.
+///
+/// The only way past the completion latch. Destructive in the sense that
+/// matters: the irreversible stages will be offered again and their work
+/// repeated, so it takes a confirm. The old journal is archived rather than
+/// deleted, and the report says where.
+#[tauri::command]
+async fn onboarding_start_over(
+    confirm: bool,
+    legacy_root: Option<String>,
+) -> Result<OnboardingRestartView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        confirmed(
+            confirm,
+            "onboarding_start_over",
+            "discard first run, so every stage is offered again and the stages              that copy files repeat their work",
+        )?;
+        let mut flow = open_flow(legacy_root)?;
+        let restart = flow.start_over().map_err(|e| e.to_string())?;
+        Ok(OnboardingRestartView {
+            archived_to: restart.archived_to.map(|p| p.display().to_string()),
+            entries_archived: restart.entries_archived,
+            was_complete: restart.was_complete,
+            will_be_redone: restart.will_be_redone.iter().map(|s| s.slug()).collect(),
+            next: next_view(&flow.next()),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Leave the 2.1 install where it is.
+///
+/// Writes nothing but a journal line, which is why it needs no confirm. It also
+/// makes the copy stage moot rather than removing it, so the step numbers do not
+/// shift under the player and the skipped step can still be shown as skipped.
+#[tauri::command]
+async fn onboarding_decline_migration(
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::MigrationOffer, Satisfaction::MigrationDeclined)
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Choose to bring the 2.1 install over.
+///
+/// Records the decision and the source. Copies nothing: the source is carried
+/// into the journal so the copy stage cannot later be pointed at a folder the
+/// player was never shown, and the core checks it against the install actually
+/// found rather than trusting the argument.
+///
+/// The copy itself is `migration_apply`, which takes its own confirm.
+#[tauri::command]
+async fn onboarding_accept_migration(
+    legacy_root: String,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = PathBuf::from(&legacy_root);
+        let mut flow = open_flow(Some(legacy_root))?;
+        let advance = flow
+            .satisfy(Stage::MigrationOffer, Satisfaction::Migrating { source })
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3176,6 +3299,8 @@ fn main() {
             onboarding_reach,
             onboarding_back,
             onboarding_acknowledge,
+            onboarding_decline_migration,
+            onboarding_accept_migration,
             onboarding_confirm_game,
             onboarding_choose_graphics,
             onboarding_choose_controller,
@@ -3185,6 +3310,7 @@ fn main() {
             onboarding_record_task,
             onboarding_prepared,
             onboarding_finish,
+            onboarding_start_over,
             // The Xbox wizard's drive picker.
             removable_drives,
             // Captured results.

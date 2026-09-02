@@ -1483,6 +1483,82 @@ fn reconcile_advice(stage: Stage) -> &'static str {
     }
 }
 
+/// What starting first run over did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restart {
+    /// Where the old journal was moved to.
+    ///
+    /// `None` when there was nothing to move, which is not a failure: starting
+    /// over on a machine that never started is the state it was already in.
+    pub archived_to: Option<PathBuf>,
+    pub entries_archived: usize,
+    /// Whether the run being discarded had been latched complete.
+    ///
+    /// Worth reporting because this is the only way past that latch, and a
+    /// caller that did not expect to be undoing a finished setup should be told
+    /// that is what it just did.
+    pub was_complete: bool,
+    /// Irreversible stages the discarded run had reached.
+    ///
+    /// These are the stages that copy files, install the runtime and apply
+    /// textures. The journal was the only record that they ran, so after this
+    /// they will be offered again and their work will be repeated. Named rather
+    /// than implied, because repeating them is the cost of starting over and the
+    /// caller should be able to say so out loud.
+    pub will_be_redone: Vec<Stage>,
+}
+
+impl Onboarding {
+    /// Discard the current first run and offer it again from the beginning.
+    ///
+    /// The only way past [`Onboarding::finish`]'s latch, which is otherwise set
+    /// once and never cleared. It exists because first run is the hardest part
+    /// of the launcher to test, and a flow that can only be walked once is a
+    /// flow nobody walks twice before shipping it. It is also the honest answer
+    /// for a player whose setup went wrong and who has no other route back.
+    ///
+    /// The old journal is ARCHIVED, not deleted. It is the only record that any
+    /// of this happened, including which irreversible stages ran, and deleting
+    /// it would make a machine that had already copied its game files look
+    /// untouched with nothing left to say otherwise.
+    ///
+    /// The archive name carries the clock's millisecond, so starting over twice
+    /// does not overwrite the first archive with the second.
+    pub fn start_over(&mut self) -> Result<Restart> {
+        let entries_archived = self.progress.entries().len();
+        let was_complete = self.progress.is_complete();
+        let will_be_redone: Vec<Stage> = Stage::ALL
+            .iter()
+            .copied()
+            .filter(|s| s.is_irreversible() && self.progress.was_reached(*s))
+            .collect();
+
+        let archived_to = if self.path.exists() {
+            let parent = self.path.parent().unwrap_or(Path::new("."));
+            let to = parent.join(format!("{JOURNAL}.{}.old", self.clock.now_ms()));
+            std::fs::rename(&self.path, &to).map_err(|source| Error::Io {
+                path: to.clone(),
+                source,
+            })?;
+            Some(to)
+        } else {
+            None
+        };
+
+        // Only now, and only after the rename succeeded. A view reset ahead of
+        // the move would report a fresh flow while the old journal was still on
+        // disk, and the next open would read it back and contradict this call.
+        self.progress = Progress::read(&self.path)?;
+
+        Ok(Restart {
+            archived_to,
+            entries_archived,
+            was_complete,
+            will_be_redone,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2845,6 +2921,112 @@ mod tests {
                 !m.contains("  "),
                 "a doubled space means a line continuation was lost: {m:?}"
             );
+        }
+    }
+
+    // ---- starting over -----------------------------------------------------
+
+    #[test]
+    fn starting_over_is_the_only_way_past_the_completion_latch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        walk_to_completion_screen(&mut ob);
+        recorded(ob.finish().unwrap());
+        assert!(ob.is_complete());
+
+        // Latched, so every stage is refused.
+        assert_eq!(
+            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged).unwrap(),
+            Advance::Refused(Refusal::AlreadyComplete)
+        );
+
+        let restart = ob.start_over().unwrap();
+        assert!(restart.was_complete, "it must say it undid a finished setup");
+        assert!(restart.entries_archived > 0);
+        assert!(
+            restart.will_be_redone.contains(&Stage::Preparation),
+            "preparation copies files, so repeating it is a cost worth naming"
+        );
+
+        // And the flow is offerable again.
+        assert!(!ob.is_complete());
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        recorded(
+            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn the_discarded_journal_is_archived_and_not_deleted() {
+        // It is the only record that any of this happened. A machine that had
+        // already copied its game files would otherwise look untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        walk_to_preparation(&mut ob);
+        let before = std::fs::read_to_string(dir.path().join(JOURNAL)).unwrap();
+
+        let restart = ob.start_over().unwrap();
+        let archived = restart.archived_to.expect("it must say where it went");
+        assert_eq!(
+            std::fs::read_to_string(&archived).unwrap(),
+            before,
+            "the archive must be the journal, byte for byte"
+        );
+        assert!(
+            !dir.path().join(JOURNAL).exists(),
+            "and the live journal must be gone"
+        );
+    }
+
+    #[test]
+    fn starting_over_twice_keeps_both_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = Onboarding::open_at(
+            dir.path(),
+            Environment::nothing_found(),
+            // A clock that moves, so the two archives cannot collide. With a
+            // frozen clock the second rename would overwrite the first, and the
+            // first run's record would be the thing lost.
+            StepClock::default(),
+        )
+        .unwrap();
+
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        let first = ob.start_over().unwrap().archived_to.unwrap();
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        let second = ob.start_over().unwrap().archived_to.unwrap();
+
+        assert_ne!(first, second, "the second archive must not be the first");
+        assert!(first.exists() && second.exists(), "both must survive");
+    }
+
+    #[test]
+    fn starting_over_on_a_machine_that_never_started_is_not_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        let restart = ob.start_over().unwrap();
+        assert_eq!(
+            restart,
+            Restart {
+                archived_to: None,
+                entries_archived: 0,
+                was_complete: false,
+                will_be_redone: vec![],
+            },
+            "nothing to discard is the state it was already in"
+        );
+    }
+
+    /// A clock that advances a millisecond per read.
+    #[derive(Debug, Default)]
+    struct StepClock {
+        at: std::sync::atomic::AtomicU64,
+    }
+
+    impl Clock for StepClock {
+        fn now_ms(&self) -> u64 {
+            self.at.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
         }
     }
 

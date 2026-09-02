@@ -1,0 +1,212 @@
+/*
+  Layout only, on top of the harness stylesheet.
+
+  There is no visual design here and that is the point: this exists so the flow
+  can be judged before anything is styled. Everything below is either structure
+  (a step needs to sit next to the next one) or a state that has to be legible
+  (a refusal must not look like a heading). If a rule is here for looks, it is a
+  mistake.
+*/
+
+.ob main {
+  max-width: 46rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* ---- the step strip ---------------------------------------------------- */
+
+#steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+}
+
+#steps span {
+  border: 1px solid #444;
+  padding: 0.15rem 0.45rem;
+  color: #999;
+}
+
+/* Done, current, and skipped are three different facts and have to look like
+   three different things. A controller-only interface cannot rely on a pointer
+   to tell them apart. */
+#steps span.done {
+  border-color: #2a7;
+  color: #2a7;
+}
+#steps span.now {
+  border-color: #ddd;
+  color: #ddd;
+  font-weight: 700;
+}
+#steps span.skipped {
+  border-style: dashed;
+  color: #666;
+}
+
+/* ---- the screen -------------------------------------------------------- */
+
+#screen {
+  border: 1px solid #333;
+  padding: 1rem 1.1rem;
+  min-height: 16rem;
+}
+
+#screen h1 {
+  font-size: 1.1rem;
+  margin: 0 0 0.15rem;
+}
+
+#screen .position {
+  font-size: 0.75rem;
+  color: #888;
+  margin: 0 0 0.9rem;
+}
+
+#screen p {
+  margin: 0 0 0.7rem;
+  line-height: 1.45;
+  max-width: 44rem;
+}
+
+/* ---- choices ----------------------------------------------------------- */
+
+.choice {
+  display: block;
+  border: 1px solid #3a3a3a;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.35rem;
+  cursor: pointer;
+}
+
+.choice:hover {
+  border-color: #666;
+}
+
+/* Focus has to be distinct from both hover and selected, because a pad user
+   cannot find focus by moving a pointer. */
+.choice:focus-within {
+  outline: 2px solid #6cf;
+  outline-offset: 1px;
+}
+
+.choice input {
+  margin-right: 0.5rem;
+}
+
+.choice .what {
+  font-weight: 600;
+}
+
+.choice .why {
+  display: block;
+  font-size: 0.8rem;
+  color: #999;
+  margin-top: 0.15rem;
+}
+
+/* ---- states that must not be mistaken for decoration ------------------- */
+
+/* A refusal, in the core's own words. */
+.refusal {
+  border-left: 3px solid #c55;
+  padding: 0.4rem 0.6rem;
+  margin: 0.6rem 0;
+  color: #e99;
+  font-size: 0.85rem;
+}
+
+/* An answer that is partial. "No pad found" and "no pad found, but we only
+   looked in one place" are different facts, and the second recurs constantly. */
+.partial {
+  border-left: 3px solid #ca5;
+  padding: 0.4rem 0.6rem;
+  margin: 0.6rem 0;
+  color: #eca;
+  font-size: 0.85rem;
+}
+
+/* A field nothing measured. Printed as absent rather than filled with a
+   plausible default. */
+.absent {
+  color: #777;
+  font-style: italic;
+}
+
+.facts {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  width: 100%;
+}
+
+.facts th,
+.facts td {
+  text-align: left;
+  padding: 0.2rem 0.5rem 0.2rem 0;
+  border-bottom: 1px solid #2a2a2a;
+  vertical-align: top;
+}
+
+.facts th {
+  color: #999;
+  font-weight: 400;
+  white-space: nowrap;
+  width: 11rem;
+}
+
+/* ---- footer ------------------------------------------------------------ */
+
+#nav {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+#nav #hint {
+  flex: 1;
+}
+
+button.primary {
+  border-color: #2a7;
+  color: #cfe;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tasklist {
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+
+.tasklist li {
+  margin-bottom: 0.2rem;
+}
+
+.tasklist .done {
+  color: #2a7;
+}
+
+.mod {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  border: 1px solid #3a3a3a;
+  padding: 0.35rem 0.5rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.mod .name {
+  flex: 1;
+}
+
+.mod .files {
+  color: #888;
+  font-size: 0.8rem;
+}

@@ -322,6 +322,18 @@ const FEATURES = [
         write: true,
       },
       {
+        cmd: "onboarding_decline_migration",
+        desc: "Leave the 2.1 install alone. Writes only a journal line",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_accept_migration",
+        desc: "Choose to bring 2.1 over. Records the decision, copies nothing",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
         cmd: "onboarding_confirm_game",
         desc: "Confirm the image. Its size is weighed here, not passed in",
         inputs: [{ key: "image", placeholder: "path to the iso" }],
@@ -390,6 +402,13 @@ const FEATURES = [
       {
         cmd: "onboarding_finish",
         desc: "Latch first run complete. Once only",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+        confirm: true,
+      },
+      {
+        cmd: "onboarding_start_over",
+        desc: "Discard first run and offer it again. The only way past the latch",
         args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
         confirm: true,

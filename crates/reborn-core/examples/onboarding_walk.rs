@@ -14,10 +14,12 @@
 
 use reborn_core::devices::DeviceScanner;
 use reborn_core::mods::ModPackage;
+use reborn_core::migration::LegacyInstall;
 use reborn_core::onboarding::{
     Advance, Environment, Next, Onboarding, PrepTask, RecordedPreset, Satisfaction, Stage,
 };
 use reborn_core::platform::Platform;
+use std::path::PathBuf;
 use reborn_core::supervisor::SystemClock;
 
 fn main() {
@@ -25,7 +27,37 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("could not make a scratch directory");
 
     let platform = Platform::detect();
-    let mut flow = Onboarding::open_at(&dir, Environment::nothing_found(), SystemClock)
+
+    // The real 2.1 install, when there is one. With it the flow is 9 stages
+    // rather than 7, and the two extra ones are the ones that were stranding
+    // people: migration_offer could not be answered from any interface, so the
+    // flow dead ended on step 3 of 9.
+    let legacy = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .or_else(|| {
+            let guess = platform
+                .paths
+                .data_root()
+                .ok()?
+                .parent()?
+                .join("NFL Street Reborn");
+            guess.is_dir().then_some(guess)
+        })
+        .and_then(|root| LegacyInstall::detect(&root));
+
+    let env = match &legacy {
+        Some(install) => {
+            println!("2.1 install found at {}", install.root.display());
+            Environment::with_legacy_install(install.clone())
+        }
+        None => {
+            println!("No 2.1 install found, so the migration stages do not apply.");
+            Environment::nothing_found()
+        }
+    };
+
+    let mut flow = Onboarding::open_at(&dir, env, SystemClock)
         .expect("could not open a journal in the scratch directory");
 
     println!("Walking first run in {}\n", dir.display());
@@ -46,6 +78,28 @@ fn main() {
             Satisfaction::GameConfirmed { total_bytes: None },
         )
     });
+
+    // ---- migration --------------------------------------------------------
+    //
+    // Declined rather than accepted: accepting copies memory cards, and an
+    // example that runs on demand must not move someone's saves as a side
+    // effect of being run.
+    if legacy.is_some() {
+        step(&mut flow, "reach migration offer", |f| {
+            f.reach(Stage::MigrationOffer)
+        });
+        step(&mut flow, "decline migration", |f| {
+            f.satisfy(Stage::MigrationOffer, Satisfaction::MigrationDeclined)
+        });
+        // And the copy stage must now be moot rather than waiting. If it were
+        // still outstanding, this is exactly where the flow would strand.
+        let waiting = flow.next();
+        assert!(
+            !matches!(waiting, Next::Show { stage: Stage::MigrationCopy, .. }),
+            "declining must make the copy moot, got {waiting:?}"
+        );
+        println!("  ok        migration copy is moot, not waiting");
+    }
 
     // ---- graphics ---------------------------------------------------------
     step(&mut flow, "choose graphics", |f| {

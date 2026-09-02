@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFL Street Reborn, first run</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="onboarding.css" />
+  </head>
+  <body class="ob">
+    <!--
+      First run as screens rather than harness rows, so the FLOW can be felt:
+      how many steps there are, what each one asks, what it says when it cannot
+      answer, and what the last screen can honestly claim.
+
+      Deliberately undesigned. Plain type, plain boxes, no art. The real
+      interface is being designed separately and a half-styled stand-in would
+      only compete with it. What this has to be is structurally true: every
+      screen shows the real data from the real command, and every awkward state
+      is reachable rather than smoothed over.
+    -->
+    <header>
+      <strong>NFL Street Reborn</strong>
+      <span class="sub">first run. Undesigned on purpose.</span>
+      <a href="index.html" class="pill">back to harness</a>
+    </header>
+
+    <main id="wizard">
+      <!-- Where you are, drawn from the plan the core returns. -->
+      <nav id="steps" aria-label="Steps"></nav>
+
+      <section id="screen">
+        <p class="note">Loading.</p>
+      </section>
+
+      <footer id="nav">
+        <button id="back" type="button">Back</button>
+        <span id="hint" class="note"></span>
+        <button id="next" type="button" class="primary">Next</button>
+      </footer>
+    </main>
+
+    <aside>
+      <div class="out-head">
+        <strong>What the core said</strong>
+        <button id="clear" type="button">Clear</button>
+      </div>
+      <pre id="out">Ready.</pre>
+    </aside>
+
+    <script type="module" src="onboarding.js"></script>
+  </body>
+</html>
