@@ -100,6 +100,131 @@ pub const CURRENT_PLATFORM: &str = if cfg!(windows) {
 // Seam 1: paths
 // ---------------------------------------------------------------------------
 
+/// Which release channel this launcher is, which decides where it keeps things.
+///
+/// Beta and stable install side by side on one machine, each with its own
+/// install root, data root, cache and uninstall entry. That is what makes a
+/// beta a test environment rather than a gamble with the player's real one:
+/// nothing a beta writes lands where the stable launcher reads, and removing
+/// it removes only itself.
+///
+/// Read from `REBORN_CHANNEL` first, so a developer can run any build as beta,
+/// then from a `channel` file beside the executable, which the beta installer
+/// lays down. Absent means stable. An unknown name ALSO means stable, and is
+/// not an error, because a launcher must start; what was found is carried so
+/// the interface can say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Channel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl Channel {
+    /// The marker file beside the executable.
+    pub const MARKER_FILE: &'static str = "channel";
+    /// The environment override.
+    pub const ENV: &'static str = "REBORN_CHANNEL";
+
+    /// Parse a channel name. Case and surrounding whitespace do not matter;
+    /// an empty name is stable, because an empty marker file is the natural
+    /// way to say "nothing special".
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "" | "stable" => Some(Channel::Stable),
+            "beta" => Some(Channel::Beta),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Beta => "beta",
+        }
+    }
+
+    /// What is appended to every product-named directory.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Channel::Stable => "",
+            Channel::Beta => " Beta",
+        }
+    }
+
+    /// Decide from the two sources, in order. Pure, so it can be tested
+    /// without touching the process environment or the disk.
+    pub fn resolve(env: Option<&str>, marker: Option<&str>) -> Resolved {
+        if let Some(value) = env {
+            return match Channel::from_name(value) {
+                Some(channel) => Resolved { channel, source: ChannelSource::Environment },
+                None => Resolved {
+                    channel: Channel::Stable,
+                    source: ChannelSource::Unknown(value.trim().to_string()),
+                },
+            };
+        }
+        if let Some(value) = marker {
+            return match Channel::from_name(value) {
+                Some(channel) => Resolved { channel, source: ChannelSource::MarkerFile },
+                None => Resolved {
+                    channel: Channel::Stable,
+                    source: ChannelSource::Unknown(value.trim().to_string()),
+                },
+            };
+        }
+        Resolved { channel: Channel::Stable, source: ChannelSource::Absent }
+    }
+
+    /// Read the environment and the marker file beside the running executable.
+    pub fn detect() -> Resolved {
+        let env = std::env::var(Self::ENV).ok();
+        let marker = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.join(Self::MARKER_FILE)))
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        Self::resolve(env.as_deref(), marker.as_deref())
+    }
+}
+
+/// Where a channel decision came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelSource {
+    Environment,
+    MarkerFile,
+    /// Neither source had anything: stable by default.
+    Absent,
+    /// A name this launcher does not know, carried verbatim. Stable was used.
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub channel: Channel,
+    pub source: ChannelSource,
+}
+
+impl Resolved {
+    /// One line for the interface.
+    pub fn explain(&self) -> String {
+        match &self.source {
+            ChannelSource::Environment => {
+                format!("{} channel, set by {}.", self.channel.name(), Channel::ENV)
+            }
+            ChannelSource::MarkerFile => format!(
+                "{} channel, from the {} file beside the launcher.",
+                self.channel.name(),
+                Channel::MARKER_FILE
+            ),
+            ChannelSource::Absent => "stable channel.".to_string(),
+            ChannelSource::Unknown(name) => format!(
+                "stable channel. A channel called {name:?} was named and is not one this \
+                 launcher knows, so it was ignored."
+            ),
+        }
+    }
+}
+
 /// Where the launcher is allowed to put things.
 ///
 /// Only two roots exist, and keeping them apart is a safety property rather
@@ -119,6 +244,12 @@ pub trait Paths: Send + Sync {
 
     /// The executable suffix, empty on Unix.
     fn exe_suffix(&self) -> &'static str;
+
+    /// Which channel these roots belong to. Stable unless an implementation
+    /// says otherwise, so test fakes need not care.
+    fn channel(&self) -> Channel {
+        Channel::Stable
+    }
 }
 
 /// Subdirectories of the data root.

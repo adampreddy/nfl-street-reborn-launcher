@@ -61,8 +61,7 @@ pub mod xbox;
 
 pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,
-    RemovableDrive, RemovableDrives, Result, CURRENT_PLATFORM,
-};
+    RemovableDrive, RemovableDrives, Result, CURRENT_PLATFORM, Channel, ChannelSource};
 
 #[cfg(test)]
 mod tests {

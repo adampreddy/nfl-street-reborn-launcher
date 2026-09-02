@@ -61,6 +61,10 @@ struct Paths {
     /// property that stops an uninstall taking the player's memory cards.
     saves_survive_uninstall: bool,
     directories: Vec<DirEntry>,
+    /// "stable" or "beta". A beta has its own roots, so a beta under test
+    /// never writes where the real launcher reads.
+    channel: &'static str,
+    channel_note: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +108,7 @@ struct SessionView {
 #[tauri::command]
 fn paths() -> Result<Paths, String> {
     let p = Platform::detect();
+    let channel = reborn_core::Channel::detect();
     let install = p.paths.install_root().map_err(|e| e.to_string())?;
     let data = p.paths.data_root().map_err(|e| e.to_string())?;
 
@@ -127,6 +132,8 @@ fn paths() -> Result<Paths, String> {
         install_root: install.display().to_string(),
         data_root: data.display().to_string(),
         directories,
+        channel: channel.channel.name(),
+        channel_note: channel.explain(),
     })
 }
 

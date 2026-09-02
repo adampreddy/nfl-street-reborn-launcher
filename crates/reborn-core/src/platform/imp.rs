@@ -57,7 +57,9 @@ use super::*;
 // Paths, implemented for all three platforms
 // ---------------------------------------------------------------------------
 
-struct RealPaths;
+struct RealPaths {
+    channel: Channel,
+}
 
 impl RealPaths {
     fn env_path(key: &str) -> Option<PathBuf> {
@@ -111,11 +113,12 @@ impl Paths for RealPaths {
             let base = RealPaths::env_path("LOCALAPPDATA")
                 .map(|p| p.join("Programs"))
                 .ok_or(Error::NoHomeDirectory)?;
-            Ok(base.join(format!("{PRODUCT} Launcher")))
+            Ok(base.join(format!("{PRODUCT} Launcher{}", self.channel.suffix())))
         }
         #[cfg(target_os = "macos")]
         {
-            Ok(PathBuf::from("/Applications").join(format!("{PRODUCT} Launcher.app")))
+            Ok(PathBuf::from("/Applications")
+                .join(format!("{PRODUCT} Launcher{}.app", self.channel.suffix())))
         }
         #[cfg(target_os = "linux")]
         {
@@ -138,21 +141,21 @@ impl Paths for RealPaths {
             let base = RealPaths::env_path("APPDATA")
                 .ok_or(Error::NoHomeDirectory)
                 .or_else(|_| RealPaths::home().map(|h| h.join("AppData").join("Roaming")))?;
-            Ok(base.join(PRODUCT_DATA))
+            Ok(base.join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "macos")]
         {
             Ok(RealPaths::home()?
                 .join("Library")
                 .join("Application Support")
-                .join(PRODUCT_DATA))
+                .join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "linux")]
         {
             let base = RealPaths::env_path("XDG_DATA_HOME")
                 .map(Ok)
                 .unwrap_or_else(|| RealPaths::home().map(|h| h.join(".local").join("share")))?;
-            Ok(base.join(PRODUCT_DATA))
+            Ok(base.join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
         }
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
@@ -164,21 +167,23 @@ impl Paths for RealPaths {
         #[cfg(windows)]
         {
             let base = RealPaths::env_path("LOCALAPPDATA").ok_or(Error::NoHomeDirectory)?;
-            Ok(base.join(PRODUCT).join("cache"))
+            Ok(base
+                .join(format!("{PRODUCT}{}", self.channel.suffix()))
+                .join("cache"))
         }
         #[cfg(target_os = "macos")]
         {
             Ok(RealPaths::home()?
                 .join("Library")
                 .join("Caches")
-                .join(PRODUCT))
+                .join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "linux")]
         {
             let base = RealPaths::env_path("XDG_CACHE_HOME")
                 .map(Ok)
                 .unwrap_or_else(|| RealPaths::home().map(|h| h.join(".cache")))?;
-            Ok(base.join(PRODUCT))
+            Ok(base.join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
@@ -192,6 +197,10 @@ impl Paths for RealPaths {
         } else {
             ""
         }
+    }
+
+    fn channel(&self) -> Channel {
+        self.channel
     }
 }
 
@@ -729,7 +738,9 @@ fn text_or_absent(value: &std::ffi::OsStr) -> Option<String> {
 /// Assemble the seam set for this platform.
 pub fn platform() -> Platform {
     Platform {
-        paths: Box::new(RealPaths),
+        paths: Box::new(RealPaths {
+            channel: Channel::detect().channel,
+        }),
         credentials: Box::new(OsCredentialVault),
         processes: Box::new(RealProcessHost),
         files: Box::new(RealFileOps),
@@ -1116,5 +1127,68 @@ mod tests {
             "the secret did not survive the process that stored it"
         );
         println!("{CHILD_PROOF}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Channels: a beta never shares a root with stable
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_beta_keeps_every_root_apart_from_stable() {
+        // The property that makes a beta a test environment. If any root were
+        // shared, a beta installer under test would be writing into the real
+        // launcher's data, and uninstalling the beta would remove it.
+        let stable = RealPaths { channel: Channel::Stable };
+        let beta = RealPaths { channel: Channel::Beta };
+        for (name, s, b) in [
+            ("install", stable.install_root(), beta.install_root()),
+            ("data", stable.data_root(), beta.data_root()),
+            ("cache", stable.cache_root(), beta.cache_root()),
+        ] {
+            let (s, b) = (s.unwrap(), b.unwrap());
+            assert_ne!(s, b, "{name} root must differ");
+            assert!(!b.starts_with(&s) && !s.starts_with(&b), "{name}: {} vs {}", s.display(), b.display());
+            assert!(b.to_string_lossy().contains("Beta"), "{name}: {} should say Beta", b.display());
+            assert!(!s.to_string_lossy().contains("Beta"), "{name}: {} must not", s.display());
+        }
+        // And the beta's own two roots stay on separate branches, the way
+        // stable's do: an uninstall of the beta cannot reach beta saves either.
+        let install = beta.install_root().unwrap();
+        let data = beta.data_root().unwrap();
+        assert!(!data.starts_with(&install));
+    }
+
+    #[test]
+    fn the_beta_data_root_sits_beside_the_stable_one_and_the_2_1_install() {
+        // Migration finds the 2.1 install as a sibling of the data root. A beta
+        // whose data root were nested one level deeper would stop finding it.
+        let stable = RealPaths { channel: Channel::Stable }.data_root().unwrap();
+        let beta = RealPaths { channel: Channel::Beta }.data_root().unwrap();
+        assert_eq!(stable.parent(), beta.parent());
+    }
+
+    #[test]
+    fn channel_names_are_forgiving_and_unknown_ones_fall_back_to_stable() {
+        assert_eq!(Channel::from_name("beta"), Some(Channel::Beta));
+        assert_eq!(Channel::from_name("  BETA\r\n"), Some(Channel::Beta));
+        assert_eq!(Channel::from_name(""), Some(Channel::Stable));
+        assert_eq!(Channel::from_name("stable"), Some(Channel::Stable));
+        assert_eq!(Channel::from_name("beat"), None);
+
+        // The environment wins over the file, so a developer can run an
+        // installed beta as stable, or the reverse, without touching it.
+        let r = Channel::resolve(Some("stable"), Some("beta"));
+        assert_eq!((r.channel, r.source), (Channel::Stable, ChannelSource::Environment));
+        let r = Channel::resolve(None, Some("beta\n"));
+        assert_eq!((r.channel, r.source), (Channel::Beta, ChannelSource::MarkerFile));
+        let r = Channel::resolve(None, None);
+        assert_eq!((r.channel, r.source), (Channel::Stable, ChannelSource::Absent));
+
+        // A typo must not silently become a third channel with its own roots,
+        // and must not stop the launcher either. It is stable, and it says so.
+        let r = Channel::resolve(None, Some("beat"));
+        assert_eq!(r.channel, Channel::Stable);
+        assert_eq!(r.source, ChannelSource::Unknown("beat".to_string()));
+        assert!(r.explain().contains("\"beat\""), "{}", r.explain());
     }
 }
