@@ -31,6 +31,22 @@ const SETTINGS = [
   },
 ];
 
+// "id@version, id@version" into the shape the mods commands take.
+//
+// Split on the LAST @ so a version containing one still parses, and drop empty
+// entries so a trailing comma is not sent as a package with no name.
+function parseRefs(text) {
+  return (text || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const at = s.lastIndexOf("@");
+      if (at < 1) return { id: s, version: "" };
+      return { id: s.slice(0, at), version: s.slice(at + 1) };
+    });
+}
+
 function get(key) {
   const v = localStorage.getItem("h:" + key);
   if (v) return v;
@@ -264,14 +280,136 @@ const FEATURES = [
     ],
   },
   {
-    group: "System",
+    group: "First run",
     items: [
-      { cmd: "removable_drives", desc: "Drives the Xbox wizard may write to" },
       {
         cmd: "onboarding_progress",
         desc: "Which first run stages are satisfied",
         args: () => ({ legacyRoot: get("legacyRoot") }),
       },
+      {
+        cmd: "onboarding_reach",
+        desc: "Open a stage's screen. Stage slug, eg mod_selection",
+        inputs: [{ key: "stage", placeholder: "stage slug" }],
+        args: () => ({
+          stage: get("stage"),
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_back",
+        desc: "Where Back goes from a stage. Changes nothing",
+        inputs: [{ key: "backFrom", placeholder: "stage slug" }],
+        args: () => ({
+          stage: get("backFrom"),
+          legacyRoot: get("legacyRoot"),
+        }),
+      },
+      {
+        cmd: "onboarding_acknowledge",
+        desc: "Answer the welcome screen",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_confirm_game",
+        desc: "Confirm the image. Its size is weighed here, not passed in",
+        inputs: [{ key: "gameImage", placeholder: "path to the iso" }],
+        args: () => ({
+          image: get("gameImage") || null,
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_choose_graphics",
+        desc: "Record a preset. Nothing measures this PC, so no recommendation",
+        inputs: [{ key: "obPreset", placeholder: "performance|balanced|quality|ultra" }],
+        args: () => ({
+          preset: get("obPreset"),
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_choose_controller",
+        desc: "Accept the pad on a port. Its device string comes from the emulator",
+        inputs: [
+          { key: "obPort", placeholder: "port, 0 based" },
+          { key: "obRuntime", placeholder: "path to Dolphin exe, for every backend" },
+        ],
+        args: () => ({
+          port: Number(get("obPort") || 0),
+          runtime: get("obRuntime") || null,
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_decline_controller",
+        desc: "No pad, and why. The reason is shown later, so it is required",
+        inputs: [{ key: "obNoPad", placeholder: "why there is no pad" }],
+        args: () => ({
+          because: get("obNoPad"),
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_choose_mods",
+        desc: "Turn mods on. id@version, comma separated. Unknown ones are refused",
+        inputs: [
+          { key: "obGame", placeholder: "game id" },
+          { key: "obMods", placeholder: "id@version, id@version" },
+        ],
+        args: () => ({
+          game: get("obGame"),
+          packages: parseRefs(get("obMods")),
+          // Answering false here is the honest value from this harness: it
+          // shows no conflict list, so it has not shown one. The command
+          // returns the real overlap count either way.
+          conflictsShown: false,
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_decline_mods",
+        desc: "No mods, recorded as a decision rather than as silence",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_record_task",
+        desc: "Mark a preparation task done. Refused if an earlier stage is unanswered",
+        inputs: [{ key: "obTask", placeholder: "task slug" }],
+        args: () => ({
+          task: get("obTask"),
+          legacyRoot: get("legacyRoot"),
+        }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_prepared",
+        desc: "Preparation finished. Refused while a task is outstanding",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
+        cmd: "onboarding_finish",
+        desc: "Latch first run complete. Once only",
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+        confirm: true,
+      },
+    ],
+  },
+  {
+    group: "System",
+    items: [
+      { cmd: "removable_drives", desc: "Drives the Xbox wizard may write to" },
+
       {
         cmd: "credential_stored",
         desc: "Whether a secret is stored. Never the secret",

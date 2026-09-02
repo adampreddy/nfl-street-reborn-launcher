@@ -81,6 +81,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::controller::DeviceFamily;
+use crate::devices::Enumeration;
+use crate::mods::ModPackage;
 use crate::migration::{LegacyInstall, MigrationPlan};
 use crate::platform::{DataDir, Error, Platform, Result};
 use crate::runtime::GraphicsPreset;
@@ -489,6 +491,70 @@ pub enum Satisfaction {
     /// Every preparation task finished.
     Prepared,
 }
+
+impl Satisfaction {
+    /// The controller answer for a port, taking the pad's identity from an
+    /// enumeration.
+    ///
+    /// A caller passes a PORT, never a device name. The string this returns ends
+    /// up in `GCPadNew.ini`, and it has to be the emulator's own
+    /// `source/id/name`: a friendly name parses fine there and binds nothing, so
+    /// the game would start with a pad that does nothing and no error anywhere.
+    ///
+    /// The refusal distinguishes a complete search from a partial one. "No pad"
+    /// and "no pad, but only one backend was searched" send someone to do
+    /// different things, and on Windows the partial case is the common one,
+    /// because the built in scan sees XInput and misses WGInput entirely.
+    pub fn controller_on_port(scan: &Enumeration, port: u8) -> std::result::Result<Self, String> {
+        let pads = scan.playable_pads();
+        let pad = pads.get(usize::from(port)).ok_or_else(|| {
+            if scan.is_complete() {
+                format!(
+                    "no pad on port {}, and {} were found. Plug one in, or \
+                     wake it: a wireless pad that has gone to sleep is not \
+                     listed.",
+                    port + 1,
+                    pads.len()
+                )
+            } else {
+                format!(
+                    "no pad on port {}, but only XInput was searched, so a \
+                     pad on another backend would not appear here even \
+                     though the game would see it. Point this at the \
+                     emulator to search the rest.",
+                    port + 1
+                )
+            }
+        })?;
+        Ok(Satisfaction::Controller {
+            device: pad.device_string(),
+            family: pad.identity().family,
+            port,
+        })
+    }
+
+    /// The mods answer for packages that have already been resolved on disk.
+    ///
+    /// Takes loaded packages rather than references, so a name that resolves to
+    /// nothing cannot reach the journal. The recorded strings are the packages'
+    /// own id and version, not whatever the caller typed.
+    ///
+    /// `conflicts_shown` is the caller's claim about what the player was shown,
+    /// which nothing here can measure, so it is passed through rather than
+    /// inferred. It is worth carrying because on a real library seven of the
+    /// eleven mods write the same football texture, and keeping whichever landed
+    /// last is a decision made for someone.
+    pub fn mods_chosen(packages: &[ModPackage], conflicts_shown: bool) -> Self {
+        Satisfaction::ModsChosen {
+            packages: packages
+                .iter()
+                .map(|m| format!("{}@{}", m.id.as_str(), m.version.as_str()))
+                .collect(),
+            conflicts_shown,
+        }
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // The journal
@@ -2656,6 +2722,130 @@ mod tests {
             "no mods is the normal case"
         );
         assert!(Stage::ModSelection.allows_back());
+    }
+
+    #[test]
+    fn a_controller_answer_carries_the_emulators_own_device_string() {
+        // The whole point of deriving this rather than accepting it: a friendly
+        // name written into GCPadNew.ini parses and binds nothing.
+        let scan = crate::devices::DeviceScanner::scan();
+        let pads = scan.playable_pads();
+        if pads.is_empty() {
+            // A real and recurring state on this machine, since a wireless pad
+            // goes to sleep. The refusal has to say which search it was.
+            let refused = Satisfaction::controller_on_port(&scan, 0).unwrap_err();
+            assert!(
+                refused.contains("port 1"),
+                "the refusal must name the port a player would recognize: {refused}"
+            );
+            if !scan.is_complete() {
+                assert!(
+                    refused.contains("XInput"),
+                    "a partial search must say so rather than claim there is no pad: \
+                     {refused}"
+                );
+            }
+            return;
+        }
+
+        let answer = Satisfaction::controller_on_port(&scan, 0).unwrap();
+        let Satisfaction::Controller { device, port, .. } = answer else {
+            panic!("a pad on a port must produce a controller answer");
+        };
+        assert_eq!(port, 0);
+        assert!(
+            device.matches('/').count() >= 2,
+            "the device string must be the emulator's source/id/name, got {device:?}"
+        );
+        assert!(
+            Stage::ControllerSetup.accepts(&Satisfaction::controller_on_port(&scan, 0).unwrap()),
+            "the derived answer must be one the stage accepts"
+        );
+    }
+
+    #[test]
+    fn a_port_with_no_pad_is_refused_rather_than_guessed() {
+        let scan = crate::devices::DeviceScanner::scan();
+        // Port 200 cannot exist. The alternative to refusing is falling back to
+        // whatever pad is first, which would bind a player's port 4 selection to
+        // someone else's pad.
+        let refused = Satisfaction::controller_on_port(&scan, 200).unwrap_err();
+        assert!(
+            refused.contains("port 201"),
+            "the refusal must name the port: {refused}"
+        );
+    }
+
+    #[test]
+    fn the_mods_answer_records_resolved_ids_not_typed_names() {
+        // An empty selection is still a ModsChosen rather than a NoMods: the
+        // caller asked for a list, and it happened to be empty. NoMods is the
+        // player declining, which is a different sentence on the Ready screen.
+        let answer = Satisfaction::mods_chosen(&[], true);
+        assert_eq!(
+            answer,
+            Satisfaction::ModsChosen {
+                packages: vec![],
+                conflicts_shown: true
+            }
+        );
+        assert!(Stage::ModSelection.accepts(&answer));
+    }
+
+    #[test]
+    fn no_message_shown_to_a_player_has_a_collapsed_line_continuation() {
+        // A wrapped string literal whose backslash gets lost keeps the source
+        // indentation inside the message, so it reads with a 20 space gap in the
+        // middle of a sentence. It compiles, every contains() assertion still
+        // passes, and it is invisible in the source. This caught a real one in
+        // controller_on_port.
+        let mut messages: Vec<String> = Vec::new();
+
+        for stage in Stage::ALL {
+            messages.push(stage.skip_rule().because().to_string());
+            messages.push(Refusal::NotReached { stage: *stage }.message());
+            messages.push(Refusal::Irreversible { stage: *stage }.message());
+            messages.push(Refusal::NoWayBack { stage: *stage }.message());
+            messages.push(
+                Refusal::OutOfOrder {
+                    expected: *stage,
+                    got: Stage::Completion,
+                }
+                .message(),
+            );
+        }
+        for task in PrepTask::ALL {
+            messages.push(Refusal::TasksOutstanding { first: *task }.message());
+            messages.push(task.label().to_string());
+        }
+        // The derived answers, which is where the real one was. Both branches:
+        // the wording differs between a complete search and a partial one, and
+        // only the partial one was broken.
+        let complete = Enumeration {
+            devices: Vec::new(),
+            not_searched: Vec::new(),
+        };
+        let partial = Enumeration {
+            devices: Vec::new(),
+            not_searched: vec![(
+                crate::devices::Backend::Sdl,
+                "no emulator path was given",
+            )],
+        };
+        for scan in [&complete, &partial] {
+            for port in [0u8, 3, 200] {
+                if let Err(why) = Satisfaction::controller_on_port(scan, port) {
+                    messages.push(why);
+                }
+            }
+        }
+
+        for m in messages {
+            assert!(
+                !m.contains("  "),
+                "a doubled space means a line continuation was lost: {m:?}"
+            );
+        }
     }
 
 }

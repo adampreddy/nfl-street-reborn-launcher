@@ -39,10 +39,13 @@ use reborn_core::library::{FileVerdict, RebuildState, Verifier, VerifyReport};
 use reborn_core::manifest::Component;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
 use reborn_core::mods::{
-    Activation, ComposeRequest, Composer, Composition, GameId, LinkMethod, ModId, ModPackage,
-    PackageVersion,
+    detect_conflicts, Activation, ComposeRequest, Composer, Composition, GameId, LinkMethod,
+    ModId, ModPackage, PackageVersion,
 };
-use reborn_core::onboarding::{Environment, Next, Onboarding};
+use reborn_core::onboarding::{
+    Advance, Back, Environment, Next, Onboarding, PrepTask, RecordedPreset, Satisfaction,
+    Stage,
+};
 use reborn_core::runtime::{GameBuild, GraphicsPreset};
 use reborn_core::session::{LaunchRequest, Launched, Session, UserDir};
 use reborn_core::stats::{Enqueued, EntryState, QueueEntry, StatsQueue};
@@ -1589,12 +1592,18 @@ fn next_view(next: &Next) -> NextStageView {
 
 /// Where first run has got to, read from its journal on disk.
 ///
-/// Read only. The write side, recording that a stage was reached or satisfied,
-/// is not exposed yet: each stage is satisfied by different evidence (the
-/// emulator's own device string and port for a controller, the chosen and the
-/// recommended preset for graphics, the measured byte count for a migration),
-/// and an argument shape guessed here would be the invented-data failure in the
-/// one module built to prevent it.
+/// The write side is below. Each stage gets its own command rather than one
+/// generic answer(stage, evidence), for the reason this comment used to give for
+/// there being no write side at all: the stages are satisfied by different
+/// evidence, and one shape wide enough for all of them would be wide enough to
+/// accept invented values.
+///
+/// So no command below takes a measurement from the interface. The controller
+/// command is given a port and reads the device string from the emulator's own
+/// enumeration. The game command is given a path and weighs the file itself.
+/// The mods command is given package references and resolves them against the
+/// library on disk. What the interface may state is what IT did, which is which
+/// mods the player picked and whether the overlap between them was shown.
 #[tauri::command]
 async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingView, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1711,6 +1720,438 @@ struct DrivesView {
     fixed_seen: usize,
     offers: Vec<DriveView>,
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding, the write side
+// ---------------------------------------------------------------------------
+
+/// What one answer did, and where the flow now stands.
+///
+/// Every answering command returns this, so a caller never keeps its own copy
+/// of the stage order and never has to guess what to draw next.
+#[derive(Debug, Serialize)]
+struct OnboardingStepView {
+    /// `recorded`, `already_recorded`, or `refused`. Kept distinct rather than
+    /// collapsed into a boolean: "this was already answered" and "this was
+    /// rejected" want different screens.
+    outcome: &'static str,
+    /// Present only when refused, in the core's own words. The core writes
+    /// these as sentences that say what to do, so they are passed through
+    /// rather than rewritten here.
+    refused_because: Option<String>,
+    next: NextStageView,
+    complete: bool,
+}
+
+/// Open the journal the way the read side does, so both see one flow.
+fn open_flow(legacy_root: Option<String>) -> Result<Onboarding, String> {
+    let p = Platform::detect();
+    let env = match legacy_root.as_deref().map(Path::new) {
+        Some(root) => match LegacyInstall::detect(root) {
+            Some(install) => Environment::with_legacy_install(install),
+            None => Environment::nothing_found(),
+        },
+        None => Environment::nothing_found(),
+    };
+    Onboarding::open(&p, env).map_err(|e| e.to_string())
+}
+
+fn step_view(flow: &Onboarding, advance: Advance) -> OnboardingStepView {
+    let (outcome, refused_because) = match &advance {
+        Advance::Recorded => ("recorded", None),
+        Advance::AlreadyRecorded => ("already_recorded", None),
+        Advance::Refused(r) => ("refused", Some(r.message())),
+    };
+    OnboardingStepView {
+        outcome,
+        refused_because,
+        next: next_view(&flow.next()),
+        complete: flow.is_complete(),
+    }
+}
+
+/// Open a stage's screen.
+///
+/// Permissive on purpose, matching the core: re-opening a screen is how a
+/// resumed run gets back to where it was. What it records is that the screen
+/// was seen, which is what stops an irreversible stage being entered twice.
+#[tauri::command]
+async fn onboarding_reach(
+    stage: String,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = stage_from_slug(&stage)?;
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow.reach(target).map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Acknowledge the welcome screen. Nothing is decided, hence no arguments.
+#[tauri::command]
+async fn onboarding_acknowledge(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::Welcome, Satisfaction::Acknowledged)
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Confirm the shipped game image, weighing it here.
+///
+/// The byte count is read from the file rather than accepted as an argument. An
+/// interface that passed one would be reporting a size nothing measured, and
+/// this number is printed on the Ready screen.
+#[tauri::command]
+async fn onboarding_confirm_game(
+    image: Option<String>,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let total_bytes = match image.as_deref().map(Path::new) {
+            // Absent rather than zero when it cannot be read. Zero is a
+            // measurement, and a wrong one. None renders as "not measured".
+            Some(path) => std::fs::metadata(path).ok().map(|m| m.len()),
+            None => None,
+        };
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(
+                Stage::GameVerification,
+                Satisfaction::GameConfirmed { total_bytes },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Record the chosen graphics preset.
+///
+/// `recommended` and `detected` are both left absent, because nothing in the
+/// launcher measures this machine yet. That is the honest value rather than a
+/// gap: it makes `graphics_was_recommended` absent too, which is the state the
+/// Ready screen already knows to draw as no badge, instead of a badge saying
+/// the recommendation was not taken when there was none to take.
+#[tauri::command]
+async fn onboarding_choose_graphics(
+    preset: String,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = RecordedPreset::from(preset_from(&preset));
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(
+                Stage::SystemCheck,
+                Satisfaction::Graphics {
+                    chosen,
+                    recommended: None,
+                    detected: None,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Accept the pad on a port, taking its identity from the emulator.
+///
+/// The interface picks a PORT. It does not pass a device name. The string that
+/// goes into the journal ends up in `GCPadNew.ini`, and it has to be the
+/// emulator's own `source/id/name`, because a friendly name parses fine there
+/// and binds nothing. So the pad is looked up and its own string is used.
+///
+/// `runtime` is the emulator path. With it, every backend the emulator knows is
+/// searched; without it only XInput is, which on a real machine misses WGInput
+/// entirely and would miss every PlayStation pad. The refusal says which case
+/// it was, because "no pad" and "no pad, but we only looked in one place" send
+/// the player to do different things.
+#[tauri::command]
+async fn onboarding_choose_controller(
+    port: u8,
+    runtime: Option<String>,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let scan = match runtime.as_deref() {
+            Some(exe) => {
+                let scratch = p
+                    .paths
+                    .data_root()
+                    .map_err(|e| e.to_string())?
+                    .join(DataDir::Cache.relative());
+                reborn_core::devices::scan_via_runtime(&p, Path::new(exe), &scratch)
+                    .unwrap_or_else(|_| DeviceScanner::scan())
+            }
+            None => DeviceScanner::scan(),
+        };
+
+        // The lookup, and the wording of every refusal, live in the core. A
+        // window that built this itself could build the wrong evidence, and
+        // nothing could test it there.
+        let answer = Satisfaction::controller_on_port(&scan, port)?;
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::ControllerSetup, answer)
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Continue with no pad, recording why.
+///
+/// A reason is required. The launcher shows it later instead of leaving the
+/// controller line blank, and a blank line is indistinguishable from a stage
+/// that was never answered.
+#[tauri::command]
+async fn onboarding_decline_controller(
+    because: String,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let because = because.trim().to_string();
+        if because.is_empty() {
+            return Err("a reason is needed, because the launcher shows it later rather \
+                        than leaving the controller line blank"
+                .to_string());
+        }
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(
+                Stage::ControllerSetup,
+                Satisfaction::NoController { because },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct OnboardingModChoiceView {
+    step: OnboardingStepView,
+    /// The mods that were turned on, by reference, as recorded.
+    recorded: Vec<String>,
+    /// Pairs of chosen mods that write the same paths, counted here rather than
+    /// taken on trust. Returned even when the caller said it had shown them, so
+    /// a caller that claimed it did while showing nothing is visible.
+    conflicting_pairs: usize,
+    conflicts_were_shown: bool,
+}
+
+/// Turn mods on.
+///
+/// References are resolved against the library on disk and an unknown one is
+/// refused before anything is written. A reference that resolved to nothing at
+/// composition time would compose a game missing what the player picked, after
+/// the launcher had already told them it was on.
+///
+/// `conflicts_shown` is the one argument the interface is the authority on: it
+/// is a claim about what the player was shown, which nothing here can measure.
+/// The overlap itself IS measured here, per game, because on a real library
+/// seven of the eleven mods write the same football texture and keeping
+/// whichever landed last is a decision made for someone.
+#[tauri::command]
+async fn onboarding_choose_mods(
+    game: String,
+    packages: Vec<PackageRef>,
+    conflicts_shown: bool,
+    legacy_root: Option<String>,
+) -> Result<OnboardingModChoiceView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let game = GameId::parse(&game).map_err(|e| e.to_string())?;
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+
+        // Resolve everything before writing anything. load_packages refuses an
+        // id or a version that is not on disk.
+        let loaded = load_packages(&root, &packages)?;
+        let conflicts = detect_conflicts(&loaded, &game);
+
+        // Both the recorded strings and the answer come from the core, so the
+        // window has nothing left to invent. Reading the list back out is only
+        // so the caller can be shown exactly what was written.
+        let answer = Satisfaction::mods_chosen(&loaded, conflicts_shown);
+        let recorded = match &answer {
+            Satisfaction::ModsChosen { packages, .. } => packages.clone(),
+            _ => Vec::new(),
+        };
+
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::ModSelection, answer)
+            .map_err(|e| e.to_string())?;
+
+        Ok(OnboardingModChoiceView {
+            step: step_view(&flow, advance),
+            recorded,
+            conflicting_pairs: conflicts.len(),
+            conflicts_were_shown: conflicts_shown,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Continue with no mods.
+///
+/// A recorded decision, not silence. The completion screen can then say no mods
+/// were chosen, which is a different sentence from the one it uses when the
+/// question was never asked.
+#[tauri::command]
+async fn onboarding_decline_mods(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::ModSelection, Satisfaction::NoMods)
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Mark one preparation task finished.
+///
+/// This is the door that writes, so the core refuses it while an earlier stage
+/// is unanswered. That refusal is passed straight through rather than smoothed
+/// over: it means something was about to be applied that the player was never
+/// asked about.
+#[tauri::command]
+async fn onboarding_record_task(
+    task: String,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = prep_task_from_slug(&task)?;
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow.record_task(target).map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Report preparation finished. Refused while any task is outstanding.
+#[tauri::command]
+async fn onboarding_prepared(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::Preparation, Satisfaction::Prepared)
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Latch first run as complete. Once only, and refused before the player has
+/// been shown what was decided.
+#[tauri::command]
+async fn onboarding_finish(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow.finish().map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct OnboardingBackView {
+    /// Where Back goes from the named stage, or absent when it cannot go there.
+    to: Option<&'static str>,
+    /// Why there is no way back, in the core's words. An irreversible previous
+    /// stage is the usual reason, and the sentence says so rather than leaving
+    /// the interface to grey a button with no explanation.
+    refused_because: Option<String>,
+}
+
+/// Where Back would go from a stage, changing nothing.
+///
+/// A query, not a move, which is why it takes the stage the interface is
+/// showing. Onboarding has no cursor to rewind: the journal is what happened,
+/// and going back means showing an earlier screen again, so the interface does
+/// that itself by calling `onboarding_reach`. Asking first is how a Back button
+/// gets drawn only when it leads somewhere.
+#[tauri::command]
+async fn onboarding_back(
+    stage: String,
+    legacy_root: Option<String>,
+) -> Result<OnboardingBackView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let from = stage_from_slug(&stage)?;
+        let flow = open_flow(legacy_root)?;
+        Ok(match flow.back_from(from) {
+            Back::To(s) => OnboardingBackView {
+                to: Some(s.slug()),
+                refused_because: None,
+            },
+            Back::Refused(why) => OnboardingBackView {
+                to: None,
+                refused_because: Some(why.message()),
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Slug to stage, so the interface names stages the way the journal does.
+///
+/// An unknown name lists the real ones. A typo in a stage name would otherwise
+/// look like a stage that does not apply to this machine.
+fn stage_from_slug(slug: &str) -> Result<Stage, String> {
+    Stage::ALL
+        .iter()
+        .copied()
+        .find(|s| s.slug() == slug)
+        .ok_or_else(|| {
+            format!(
+                "no onboarding stage called {slug}. Known: {}",
+                Stage::ALL
+                    .iter()
+                    .map(|s| s.slug())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
+fn prep_task_from_slug(slug: &str) -> Result<PrepTask, String> {
+    PrepTask::ALL
+        .iter()
+        .copied()
+        .find(|t| t.slug() == slug)
+        .ok_or_else(|| {
+            format!(
+                "no preparation task called {slug}. Known: {}",
+                PrepTask::ALL
+                    .iter()
+                    .map(|t| t.slug())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
 
 /// Removable drives the Xbox wizard may write to, and why any were refused.
 ///
@@ -2718,8 +3159,20 @@ fn main() {
             // Verify and repair.
             library_verify,
             library_repair,
-            // First run.
+            // First run. Reading where it got to, then answering each stage.
             onboarding_progress,
+            onboarding_reach,
+            onboarding_back,
+            onboarding_acknowledge,
+            onboarding_confirm_game,
+            onboarding_choose_graphics,
+            onboarding_choose_controller,
+            onboarding_decline_controller,
+            onboarding_choose_mods,
+            onboarding_decline_mods,
+            onboarding_record_task,
+            onboarding_prepared,
+            onboarding_finish,
             // The Xbox wizard's drive picker.
             removable_drives,
             // Captured results.
