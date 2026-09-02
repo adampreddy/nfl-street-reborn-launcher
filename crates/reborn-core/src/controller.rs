@@ -219,6 +219,100 @@ impl Default for Mapping {
     }
 }
 
+/// Which button art the game shows.
+///
+/// A DISPLAY choice, deliberately separate from [`DeviceFamily`]. Someone
+/// playing on an Xbox pad may still want GameCube icons, because the game is a
+/// GameCube game and that is what its own tutorials show. Deriving this from the
+/// pad would take that choice away, and would be wrong for anyone on an adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlsProfile {
+    /// Xbox face buttons. The default, because it is what most players hold.
+    #[default]
+    Xbox,
+    PlayStation,
+    /// The game's own built-in art.
+    ///
+    /// The one profile that applies NOTHING, which is not a gap. The prompt
+    /// textures are add-only: nothing on disk backs them up, because before a
+    /// pack was applied there was no file there at all. So applying no pack does
+    /// not restore anything, it uncovers what the disc always drew, and on a
+    /// GameCube release that is GameCube buttons.
+    GameCube,
+}
+
+impl ControlsProfile {
+    pub const ALL: &'static [ControlsProfile] = &[
+        ControlsProfile::Xbox,
+        ControlsProfile::PlayStation,
+        ControlsProfile::GameCube,
+    ];
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            ControlsProfile::Xbox => "xbox",
+            ControlsProfile::PlayStation => "playstation",
+            ControlsProfile::GameCube => "gamecube",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ControlsProfile::Xbox => "Xbox",
+            ControlsProfile::PlayStation => "PlayStation",
+            ControlsProfile::GameCube => "GameCube",
+        }
+    }
+
+    /// One line saying what the choice looks like.
+    pub fn describes(self) -> &'static str {
+        match self {
+            ControlsProfile::Xbox => "A, B, X and Y in the Xbox layout",
+            ControlsProfile::PlayStation => "Cross, Circle, Square and Triangle",
+            ControlsProfile::GameCube => "The art the game itself was drawn with",
+        }
+    }
+
+    /// The mod package this profile needs, if any.
+    ///
+    /// These are the ids the JSGME importer produces from the `Xbox Controls`
+    /// and `PS Controls` folders, so they are what is actually on disk. An
+    /// earlier version returned logical names like `xbox-prompts`, which
+    /// resolved to nothing: the profile could be chosen and never applied.
+    ///
+    /// `None` for GameCube means apply no package. A caller that read `None` as
+    /// "unknown" and fell back to one would override the single thing the player
+    /// actually chose.
+    ///
+    /// Both packages write the same nineteen texture paths, so they are a hard
+    /// conflict with each other and turning on two profiles at once is refused
+    /// by [`crate::mods::detect_conflicts`] rather than by a rule here.
+    pub fn package_id(self) -> Option<&'static str> {
+        match self {
+            ControlsProfile::Xbox => Some("jsgme.xbox-controls"),
+            ControlsProfile::PlayStation => Some("jsgme.ps-controls"),
+            ControlsProfile::GameCube => None,
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|p| p.slug() == slug)
+    }
+
+    /// What to preselect for a pad, as a SUGGESTION only.
+    ///
+    /// Offered so the common case needs no thought, never applied without being
+    /// shown. A player who picks something else has picked something else.
+    pub fn suggested_for(family: DeviceFamily) -> Self {
+        match family {
+            DeviceFamily::PlayStation => ControlsProfile::PlayStation,
+            DeviceFamily::Nintendo | DeviceFamily::GameCubeAdapter => ControlsProfile::GameCube,
+            _ => ControlsProfile::Xbox,
+        }
+    }
+}
+
 /// The family of a connected device.
 ///
 /// Decides the button art and the device backend, and nothing else.

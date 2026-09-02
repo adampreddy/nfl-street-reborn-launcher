@@ -80,9 +80,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::controller::DeviceFamily;
+use crate::controller::{ControlsProfile, DeviceFamily};
 use crate::devices::Enumeration;
-use crate::mods::ModPackage;
 use crate::migration::{LegacyInstall, MigrationPlan};
 use crate::platform::{DataDir, Error, Platform, Result};
 use crate::runtime::GraphicsPreset;
@@ -128,18 +127,21 @@ pub enum Stage {
     SystemCheck,
     /// `WIREFRAMES.md` section 3.
     ControllerSetup,
+    /// Which button art the game shows.
+    ///
+    /// In first run because the launcher cannot answer it for someone: a
+    /// player on an Xbox pad may still want GameCube icons, since the game
+    /// is a GameCube game and its own tutorials draw them that way.
+    ///
+    /// Mods used to sit in this slot and no longer do. Picking mods is not a
+    /// first run question: nothing is broken without an answer, the answer
+    /// changes freely afterwards, and asking eleven yes-or-no questions
+    /// before anyone has seen the game run once is a settings page wearing a
+    /// wizard. Mod selection lives in the launcher proper.
+    ///
+    /// Before [`Stage::Preparation`], which is what applies the pack.
+    ControlsProfile,
     /// `WIREFRAMES.md` section 5, first screen. Writes into the data root.
-    /// Choose which mods to turn on.
-    ///
-    /// In the launcher rather than the installer, and BEFORE
-    /// [`Stage::Preparation`], which is what actually applies them.
-    ///
-    /// The 2.1 installer opened JSGME mid-wizard for this, which is the worst
-    /// possible moment. JSGME moves the original files aside as it applies, so a
-    /// wizard abandoned halfway leaves a half-composed game and a !BACKUP folder
-    /// nobody looks at again. Choosing here only records a decision; the
-    /// composition happens in Preparation where it can be verified and rebuilt.
-    ModSelection,
     Preparation,
     /// `WIREFRAMES.md` section 5, second screen. Closed by
     /// [`Onboarding::finish`], not by [`Onboarding::satisfy`].
@@ -155,7 +157,7 @@ impl Stage {
         Stage::MigrationCopy,
         Stage::SystemCheck,
         Stage::ControllerSetup,
-        Stage::ModSelection,
+        Stage::ControlsProfile,
         Stage::Preparation,
         Stage::Completion,
     ];
@@ -168,7 +170,7 @@ impl Stage {
             Stage::MigrationOffer => "migration_offer",
             Stage::MigrationCopy => "migration_copy",
             Stage::SystemCheck => "system_check",
-            Stage::ModSelection => "mod_selection",
+            Stage::ControlsProfile => "controls_profile",
             Stage::ControllerSetup => "controller_setup",
             Stage::Preparation => "preparation",
             Stage::Completion => "completion",
@@ -189,7 +191,7 @@ impl Stage {
             // No wireframe drew either of these. Mod choice used to live in
             // the installer, so there is nothing to implement against and
             // whoever builds the screen is designing rather than following.
-            Stage::MigrationCopy | Stage::ModSelection => None,
+            Stage::MigrationCopy | Stage::ControlsProfile => None,
         }
     }
 
@@ -234,10 +236,11 @@ impl Stage {
                           say there is no pad instead of starting the game into \
                           nothing",
             },
-            Stage::ModSelection => SkipRule::Declinable {
-                because: "no mods is the normal case and a perfectly good \
-                          answer. Requiring a choice would also mean requiring \
-                          one before the player has seen the game run once",
+            Stage::ControlsProfile => SkipRule::Required {
+                because: "the game always draws some button art, so \
+                          declining is not a thing that exists. Skipping \
+                          would mean choosing one silently, which is the \
+                          same decision made worse by being hidden",
             },
             Stage::Welcome => SkipRule::Required {
                 because: "it is the entry point, and it carries the time estimate",
@@ -282,10 +285,7 @@ impl Stage {
                 how,
                 Satisfaction::Controller { .. } | Satisfaction::NoController { .. }
             ),
-            Stage::ModSelection => matches!(
-                how,
-                Satisfaction::ModsChosen { .. } | Satisfaction::NoMods
-            ),
+            Stage::ControlsProfile => matches!(how, Satisfaction::Controls { .. }),
             Stage::Preparation => matches!(how, Satisfaction::Prepared),
             // Closed by finish(), never by satisfy(). Two ways to end
             // onboarding is how one of them stops being maintained.
@@ -471,23 +471,16 @@ pub enum Satisfaction {
         recommended: Option<RecordedPreset>,
         detected: Option<String>,
     },
-    /// Mods the player turned on, by package reference.
+    /// The button art to show.
     ///
-    /// References rather than display names: two mods can share a name across
-    /// versions, and a name that resolves to the wrong package composes the
-    /// wrong files.
+    /// Carries the profile, not a texture pack name: the mapping between them
+    /// belongs in [`ControlsProfile::pack`], and a pack name written into the
+    /// journal would go stale the moment a pack was renamed.
     ///
-    /// `conflicts_shown` records that overlapping writes were put in front of
-    /// the player. On a real install 20 paths are written by more than one mod,
-    /// with 7 writing the same football texture, so keeping whichever landed
-    /// last is a decision made FOR someone. False means the launcher has not
-    /// asked, and must not present the selection as informed.
-    ModsChosen {
-        packages: Vec<String>,
-        conflicts_shown: bool,
-    },
-    /// No mods, deliberately. Distinct from never having been asked.
-    NoMods,
+    /// There is no declined form. GameCube IS an answer, meaning apply no pack
+    /// and let the disc's own art show, which is a different thing from never
+    /// having been asked.
+    Controls { profile: ControlsProfile },
     /// Every preparation task finished.
     Prepared,
 }
@@ -532,29 +525,7 @@ impl Satisfaction {
             port,
         })
     }
-
-    /// The mods answer for packages that have already been resolved on disk.
-    ///
-    /// Takes loaded packages rather than references, so a name that resolves to
-    /// nothing cannot reach the journal. The recorded strings are the packages'
-    /// own id and version, not whatever the caller typed.
-    ///
-    /// `conflicts_shown` is the caller's claim about what the player was shown,
-    /// which nothing here can measure, so it is passed through rather than
-    /// inferred. It is worth carrying because on a real library seven of the
-    /// eleven mods write the same football texture, and keeping whichever landed
-    /// last is a decision made for someone.
-    pub fn mods_chosen(packages: &[ModPackage], conflicts_shown: bool) -> Self {
-        Satisfaction::ModsChosen {
-            packages: packages
-                .iter()
-                .map(|m| format!("{}@{}", m.id.as_str(), m.version.as_str()))
-                .collect(),
-            conflicts_shown,
-        }
-    }
 }
-
 
 // ---------------------------------------------------------------------------
 // The journal
@@ -588,6 +559,12 @@ pub enum Event {
 pub struct Progress {
     entries: Vec<Entry>,
     truncated: bool,
+    /// Stages from an older flow, named, in the order they were found.
+    ///
+    /// An entry that parses as JSON but names a stage this build does not have.
+    /// Not damage: the flow changed. Reported so a caller can say the setup was
+    /// carried forward rather than pretend nothing was dropped.
+    superseded: Vec<String>,
 }
 
 impl Progress {
@@ -617,6 +594,7 @@ impl Progress {
 
         let mut entries = Vec::new();
         let mut truncated = false;
+        let mut superseded = Vec::new();
         for line in raw.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -624,12 +602,40 @@ impl Progress {
             match serde_json::from_str::<Entry>(line) {
                 Ok(e) => entries.push(e),
                 Err(_) => {
+                    // Two failures that look identical here and mean opposite
+                    // things. Collapsing them told a player their setup was
+                    // damaged when the flow had merely changed under them,
+                    // which will happen on every build that adds or drops a
+                    // stage.
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                        // Valid JSON this build cannot interpret: an entry from
+                        // an older flow, naming a stage or an answer that no
+                        // longer exists. Named and skipped, never read as
+                        // corruption, and reading CONTINUES: the lines after it
+                        // are as real as the ones before.
+                        superseded.push(
+                            value
+                                .get("event")
+                                .and_then(|e| e.get("stage"))
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("an unnamed stage")
+                                .to_string(),
+                        );
+                        continue;
+                    }
+                    // Not JSON at all, so a half-written line. Everything after
+                    // it is unreadable by definition, and what the journal does
+                    // not say from here on proves nothing.
                     truncated = true;
                     break;
                 }
             }
         }
-        Ok(Self { entries, truncated })
+        Ok(Self {
+            entries,
+            truncated,
+            superseded,
+        })
     }
 
     /// Every entry, oldest first.
@@ -639,6 +645,14 @@ impl Progress {
 
     /// Whether reading stopped early, which makes this view untrustworthy about
     /// anything it does not contain.
+    /// Stages recorded by an older flow and skipped, named.
+    ///
+    /// Empty is the normal case. Non-empty means first run changed since this
+    /// machine last ran it, and those answers no longer apply to anything.
+    pub fn superseded(&self) -> &[String] {
+        &self.superseded
+    }
+
     pub fn is_truncated(&self) -> bool {
         self.truncated
     }
@@ -919,15 +933,11 @@ pub struct Summary {
     pub migrated_from: Option<PathBuf>,
     pub migrated_bytes: Option<u64>,
     pub game_bytes: Option<u64>,
-    /// Mods the player turned on. `Some(vec![])` is a deliberate "none",
-    /// `None` means never asked, and a completion screen that renders both as
-    /// "no mods" is claiming a decision that was never made.
-    pub mods_chosen: Option<Vec<String>>,
-    /// Whether overlapping writes were shown before the choice was taken.
+    /// The button art chosen.
     ///
-    /// `Some(false)` is the case worth surfacing: mods were picked without the
-    /// player being told that several of them write the same files.
-    pub mod_conflicts_shown: Option<bool>,
+    /// Absent means never asked. There is no declined value, because the game
+    /// always draws something.
+    pub controls_profile: Option<ControlsProfile>,
     pub tasks_done: Vec<PrepTask>,
 }
 
@@ -951,8 +961,8 @@ impl Summary {
         if self.game_bytes.is_none() {
             out.push("installed size");
         }
-        if self.mods_chosen.is_none() {
-            out.push("mods");
+        if self.controls_profile.is_none() {
+            out.push("controls");
         }
         out
     }
@@ -1400,22 +1410,10 @@ impl Onboarding {
             s.graphics_was_recommended = recommended.map(|r| r == *chosen);
             s.detected_hardware = detected.clone();
         }
-        match self.progress.satisfaction(Stage::ModSelection) {
-            Some(Satisfaction::ModsChosen {
-                packages,
-                conflicts_shown,
-            }) => {
-                s.mods_chosen = Some(packages.clone());
-                s.mod_conflicts_shown = Some(*conflicts_shown);
-            }
-            // Declining is a decision, so it reports an empty list rather than
-            // absence. There were no conflicts to show, which is not the same
-            // as having withheld them.
-            Some(Satisfaction::NoMods) => {
-                s.mods_chosen = Some(Vec::new());
-                s.mod_conflicts_shown = Some(true);
-            }
-            _ => {}
+        if let Some(Satisfaction::Controls { profile }) =
+            self.progress.satisfaction(Stage::ControlsProfile)
+        {
+            s.controls_profile = Some(*profile);
         }
         s.tasks_done = self.progress.tasks_done();
         s
@@ -1614,6 +1612,12 @@ mod tests {
         }
     }
 
+    fn controls() -> Satisfaction {
+        Satisfaction::Controls {
+            profile: ControlsProfile::Xbox,
+        }
+    }
+
     fn confirm_game() -> Satisfaction {
         Satisfaction::GameConfirmed { total_bytes: None }
     }
@@ -1630,9 +1634,9 @@ mod tests {
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
         // Mods are chosen before Preparation, which is what applies them,
         // so walking 'to preparation' now passes through here.
-        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(
-            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+            ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
     }
@@ -2317,9 +2321,9 @@ mod tests {
             .unwrap(),
         );
         // Mods come before Preparation, which is what applies them.
-        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(
-            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+            ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
         recorded(ob.reach(Stage::Preparation).unwrap());
@@ -2641,9 +2645,9 @@ mod tests {
         recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
         // Mods come before Preparation, which is what applies them.
-        recorded(ob.reach(Stage::ModSelection).unwrap());
+        recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(
-            ob.satisfy(Stage::ModSelection, Satisfaction::NoMods)
+            ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
         recorded(ob.reach(Stage::Preparation).unwrap());
@@ -2672,16 +2676,15 @@ mod tests {
             .count();
         assert_eq!(latches, 1, "exactly one latch, ever");
     }
-    // ---- mod selection -----------------------------------------------------
+    // ---- the controls profile ----------------------------------------------
     //
-    // The stage exists because the 2.1 installer asked this question by opening
-    // JSGME mid-wizard, which applies as it goes. These tests pin the two
-    // properties that made moving it here worth doing: the choice lands BEFORE
-    // anything is applied, and declining is recorded as a decision rather than
-    // read back as silence.
+    // Replaced mod selection in this slot. Mods are not a first run question:
+    // nothing is broken without an answer and the answer changes freely later.
+    // Button art is, because the game always draws some and the launcher cannot
+    // pick for someone.
 
     #[test]
-    fn mods_are_chosen_before_anything_is_applied() {
+    fn the_profile_is_chosen_before_the_pack_is_applied() {
         let dir = tempfile::tempdir().unwrap();
         let mut ob = fresh(dir.path());
         recorded(ob.reach(Stage::Welcome).unwrap());
@@ -2693,111 +2696,155 @@ mod tests {
         recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
 
-        // Opening the screen is allowed. reach() stays permissive on purpose so
-        // a resumed run can re-show a stage.
+        // Opening the screen is allowed; reach() stays permissive so a resumed
+        // run can re-show a stage.
         recorded(ob.reach(Stage::Preparation).unwrap());
 
-        // Applying is not. record_task is the call that copies files and
-        // composes mods, so it is the one that has to refuse, and it has to
-        // refuse BEFORE doing the work rather than when the stage reports being
-        // finished. This assertion is why the guard was moved there: it used to
-        // pass, and the first task ran with the mod question unanswered.
+        // Applying is not. record_task is what copies the prompt textures, so
+        // it has to refuse before doing the work rather than afterwards.
         assert_eq!(
-            ob.record_task(PrepTask::CopyGameFiles).unwrap(),
+            ob.record_task(PrepTask::ApplyTextures).unwrap(),
             Advance::Refused(Refusal::OutOfOrder {
-                expected: Stage::ModSelection,
+                expected: Stage::ControlsProfile,
                 got: Stage::Preparation,
             }),
-            "nothing may be applied before the mod choice is recorded"
-        );
-        assert!(
-            ob.preparation_remaining().contains(&PrepTask::CopyGameFiles),
-            "a refused task must not be marked done"
+            "no pack may be applied before the profile is recorded"
         );
     }
 
     #[test]
-    fn declining_mods_is_a_decision_and_not_an_absence() {
+    fn there_is_no_declining_the_button_art() {
+        // Unlike mods, which were declinable. The game draws something either
+        // way, so a skip would just be a silent choice, and a silent choice is
+        // the same decision made worse by being hidden.
+        assert!(
+            !Stage::ControlsProfile.skip_rule().is_declinable(),
+            "the art cannot be declined, only picked"
+        );
+        assert!(
+            !Stage::ControlsProfile.is_irreversible(),
+            "but changing your mind must stay free, since nothing is applied yet"
+        );
+        assert!(Stage::ControlsProfile.allows_back());
+
+        // And only a profile satisfies it.
+        assert!(Stage::ControlsProfile.accepts(&Satisfaction::Controls {
+            profile: ControlsProfile::GameCube
+        }));
+        assert!(!Stage::ControlsProfile.accepts(&Satisfaction::Acknowledged));
+    }
+
+    #[test]
+    fn gamecube_is_an_answer_and_not_an_absence() {
+        // The one profile that applies no pack. That is a decision, and the
+        // Ready screen has to say so rather than leaving the line blank as
+        // though nobody had been asked.
         let dir = tempfile::tempdir().unwrap();
 
-        // Never asked.
         let ob = fresh(dir.path());
         assert_eq!(
-            ob.summary().mods_chosen, None,
+            ob.summary().controls_profile, None,
             "an unanswered question must not read as an answer"
         );
-        assert!(ob.summary().absent().contains(&"mods"));
+        assert!(ob.summary().absent().contains(&"controls"));
 
-        // Asked and declined.
         let mut ob = fresh(dir.path());
         walk_to_preparation(&mut ob);
-        let s = ob.summary();
-        assert_eq!(
-            s.mods_chosen,
-            Some(Vec::new()),
-            "declining is an empty list, not a missing one"
-        );
-        assert!(
-            !s.absent().contains(&"mods"),
-            "a recorded decline is not an absent field"
-        );
-    }
-
-    #[test]
-    fn a_choice_taken_without_showing_conflicts_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ob = fresh(dir.path());
-        recorded(ob.reach(Stage::Welcome).unwrap());
-        recorded(
-            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
-                .unwrap(),
-        );
-        recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
-        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
-        recorded(ob.reach(Stage::ModSelection).unwrap());
-
-        // Seven mods on this machine write the same football texture. Picking
-        // two of them without being told that is a real state, and the summary
-        // has to carry it so the completion screen cannot claim the selection
-        // was informed.
+        // walk_to_preparation answers Xbox, so re-answer: the stage is
+        // reversible, and this is the case worth pinning.
         recorded(
             ob.satisfy(
-                Stage::ModSelection,
-                Satisfaction::ModsChosen {
-                    packages: vec!["Aqua Football".into(), "Blue Football".into()],
-                    conflicts_shown: false,
+                Stage::ControlsProfile,
+                Satisfaction::Controls {
+                    profile: ControlsProfile::GameCube,
                 },
             )
             .unwrap(),
         );
 
         let s = ob.summary();
-        assert_eq!(
-            s.mods_chosen.as_deref(),
-            Some(&["Aqua Football".to_string(), "Blue Football".to_string()][..])
+        assert_eq!(s.controls_profile, Some(ControlsProfile::GameCube));
+        assert!(
+            !s.absent().contains(&"controls"),
+            "a recorded choice is not an absent field"
         );
         assert_eq!(
-            s.mod_conflicts_shown,
-            Some(false),
-            "an uninformed selection must not be reportable as an informed one"
+            s.controls_profile.unwrap().package_id(),
+            None,
+            "GameCube must apply nothing, which is what uncovers the disc's own art"
         );
     }
 
     #[test]
-    fn mod_selection_is_reversible_and_declinable() {
-        // Both matter for the same reason: this is the one stage a player is
-        // most likely to want to change their mind about, and it is safe to,
-        // because nothing has been written yet.
-        assert!(
-            !Stage::ModSelection.is_irreversible(),
-            "nothing is applied here, so going back cannot cost anything"
+    fn every_profile_is_distinct_and_says_what_it_looks_like() {
+        // Three options, and a fourth would need art nobody has. Xbox and
+        // PlayStation each have a pack; GameCube deliberately has none.
+        let packs: Vec<Option<&str>> =
+            ControlsProfile::ALL.iter().map(|p| p.package_id()).collect();
+        assert_eq!(
+            packs,
+            vec![Some("jsgme.xbox-controls"), Some("jsgme.ps-controls"), None],
+            "these are the ids the JSGME importer produces, so they resolve"
         );
-        assert!(
-            Stage::ModSelection.skip_rule().is_declinable(),
-            "no mods is the normal case"
+
+        for p in ControlsProfile::ALL {
+            assert_eq!(
+                ControlsProfile::from_slug(p.slug()),
+                Some(*p),
+                "every slug must round trip, since it is what the journal stores"
+            );
+            assert!(!p.label().is_empty());
+            assert!(
+                !p.describes().is_empty(),
+                "a player choosing art needs to be told what it looks like"
+            );
+        }
+
+        assert_eq!(ControlsProfile::default(), ControlsProfile::Xbox);
+    }
+
+    #[test]
+    fn a_pad_suggests_a_profile_without_deciding_it() {
+        use crate::controller::DeviceFamily;
+
+        // A suggestion, so the common case needs no thought.
+        assert_eq!(
+            ControlsProfile::suggested_for(DeviceFamily::PlayStation),
+            ControlsProfile::PlayStation
         );
-        assert!(Stage::ModSelection.allows_back());
+        assert_eq!(
+            ControlsProfile::suggested_for(DeviceFamily::GameCubeAdapter),
+            ControlsProfile::GameCube
+        );
+        assert_eq!(
+            ControlsProfile::suggested_for(DeviceFamily::Xbox),
+            ControlsProfile::Xbox
+        );
+        // Anything unrecognized lands on the default rather than nothing.
+        assert_eq!(
+            ControlsProfile::suggested_for(DeviceFamily::Generic),
+            ControlsProfile::Xbox
+        );
+
+        // But it must remain only a suggestion: an Xbox pad with GameCube art
+        // is a real thing someone wants, since the game is a GameCube game.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        walk_to_preparation(&mut ob);
+        recorded(
+            ob.satisfy(
+                Stage::ControlsProfile,
+                Satisfaction::Controls {
+                    profile: ControlsProfile::GameCube,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            ob.summary().controls_profile,
+            Some(ControlsProfile::GameCube),
+            "the pad must not overrule the player"
+        );
     }
 
     #[test]
@@ -2850,22 +2897,6 @@ mod tests {
             refused.contains("port 201"),
             "the refusal must name the port: {refused}"
         );
-    }
-
-    #[test]
-    fn the_mods_answer_records_resolved_ids_not_typed_names() {
-        // An empty selection is still a ModsChosen rather than a NoMods: the
-        // caller asked for a list, and it happened to be empty. NoMods is the
-        // player declining, which is a different sentence on the Ready screen.
-        let answer = Satisfaction::mods_chosen(&[], true);
-        assert_eq!(
-            answer,
-            Satisfaction::ModsChosen {
-                packages: vec![],
-                conflicts_shown: true
-            }
-        );
-        assert!(Stage::ModSelection.accepts(&answer));
     }
 
     #[test]
@@ -3028,6 +3059,85 @@ mod tests {
         fn now_ms(&self) -> u64 {
             self.at.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
         }
+    }
+
+    #[test]
+    fn an_entry_from_an_older_flow_is_carried_forward_not_called_damage() {
+        // The real case that produced this. A journal written when first run had
+        // a mod_selection stage, read by a build where that stage no longer
+        // exists. The line is perfectly good JSON; it just names something gone.
+        //
+        // Before this, the reader collapsed "not JSON" and "JSON I cannot
+        // interpret" into one flag, so a player mid-setup was told their journal
+        // would not parse and that every stage which writes files had to be
+        // reconciled. Nothing was wrong with it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(JOURNAL);
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"at_ms":1,"event":{"event":"reached","stage":"welcome"}}"#,
+                "\n",
+                r#"{"at_ms":2,"event":{"event":"satisfied","stage":"welcome","how":{"how":"acknowledged"}}}"#,
+                "\n",
+                // The stage that was removed.
+                r#"{"at_ms":3,"event":{"event":"satisfied","stage":"mod_selection","how":{"how":"mods_chosen","packages":["x@1.0.0"],"conflicts_shown":false}}}"#,
+                "\n",
+                // And a line AFTER it, which must still be read. Stopping here
+                // would silently discard real answers.
+                r#"{"at_ms":4,"event":{"event":"reached","stage":"system_check"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let progress = Progress::read(&path).unwrap();
+        assert!(
+            !progress.is_truncated(),
+            "a changed flow is not a damaged journal"
+        );
+        assert_eq!(
+            progress.superseded(),
+            &["mod_selection".to_string()],
+            "the dropped stage must be named, not silently skipped"
+        );
+        assert_eq!(
+            progress.entries().len(),
+            3,
+            "every readable entry survives, including the ones after the gap"
+        );
+        assert!(
+            progress.was_reached(Stage::SystemCheck),
+            "an answer recorded after the superseded line must still count"
+        );
+    }
+
+    #[test]
+    fn a_half_written_line_is_still_treated_as_truncation() {
+        // The other half of the split. This one really does stop the journal
+        // being evidence, and must keep doing so.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(JOURNAL);
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"at_ms":1,"event":{"event":"reached","stage":"welcome"}}"#,
+                "\n",
+                r#"{"at_ms":2,"event":{"event":"satis"#,
+            ),
+        )
+        .unwrap();
+
+        let progress = Progress::read(&path).unwrap();
+        assert!(
+            progress.is_truncated(),
+            "a line that is not JSON at all is a half-written append"
+        );
+        assert!(
+            progress.superseded().is_empty(),
+            "and must not be reported as a flow change"
+        );
+        assert_eq!(progress.entries().len(), 1);
     }
 
 }

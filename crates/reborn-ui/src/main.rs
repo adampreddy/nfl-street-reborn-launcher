@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use reborn_core::content::ContentService;
-use reborn_core::controller::DeviceFamily;
+use reborn_core::controller::{ControlsProfile, DeviceFamily};
 use reborn_core::devices::{DeviceScanner, Enumeration};
 use reborn_core::gamepad::{
     action_for, ContextualSlot, Destructive, Direction, InputContext, NavAction, PadButton,
@@ -39,7 +39,7 @@ use reborn_core::library::{FileVerdict, RebuildState, Verifier, VerifyReport};
 use reborn_core::manifest::Component;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
 use reborn_core::mods::{
-    detect_conflicts, Activation, ComposeRequest, Composer, Composition, GameId, LinkMethod,
+    Activation, ComposeRequest, Composer, Composition, GameId, LinkMethod,
     ModId, ModPackage, PackageVersion,
 };
 use reborn_core::onboarding::{
@@ -629,6 +629,17 @@ struct PackageEntryView {
 }
 
 #[derive(Debug, Serialize)]
+struct ExclusiveGroupView {
+    members: Vec<String>,
+    /// A path more than one of them writes, so the interface can say WHY these
+    /// are exclusive rather than just asserting it.
+    example_path: Option<String>,
+    /// True when they overlap on disk, which the composer refuses. False when
+    /// they only declare the same group, which is advice and composes fine.
+    computed: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct ModLibraryView {
     packages_root: String,
     packages: Vec<PackageEntryView>,
@@ -640,6 +651,17 @@ struct ModLibraryView {
     /// installed. Kept beside `packages` so a stale activation entry is visible
     /// instead of being quietly dropped.
     activation: Vec<ActivePackageView>,
+    /// Sets of packages that cannot be on together, derived from the file
+    /// lists rather than a curated table.
+    ///
+    /// This is what a pick-one control needs. The seven recoloured footballs all
+    /// write one texture path, so showing them as independently switchable
+    /// would be untrue: turning on two is refused, and before it was refused
+    /// JSGME kept whichever landed last without saying so.
+    exclusive: Vec<ExclusiveGroupView>,
+    /// Packages the controls profile owns, so a mods list does not offer them
+    /// twice. Turning one of these on by hand would fight the controls setting.
+    managed_by_controls: Vec<String>,
 }
 
 /// Enumerate `mods/packages/<id>/<version>/package.json`.
@@ -706,6 +728,45 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
         let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
+
+        // Per game, because exclusivity is a fact about a composed tree and two
+        // packages that collide on one build may not both target another. Every
+        // build any installed package targets, so nothing is missed.
+        let mut builds: Vec<GameId> = Vec::new();
+        for pkg in &packages {
+            for game in &pkg.targets {
+                if !builds.contains(game) {
+                    builds.push(game.clone());
+                }
+            }
+        }
+        let mut exclusive: Vec<ExclusiveGroupView> = Vec::new();
+        for game in &builds {
+            for group in reborn_core::mods::exclusive_groups(&packages, game) {
+                let members: Vec<String> = group.members.iter().map(|m| m.to_string()).collect();
+                // One build's group can repeat another's. Reported once.
+                if exclusive.iter().any(|g| g.members == members) {
+                    continue;
+                }
+                exclusive.push(ExclusiveGroupView {
+                    members,
+                    example_path: group.example_path,
+                    computed: group.computed,
+                });
+            }
+        }
+
+        // The prompt packs belong to the controls profile now, so a mods list
+        // must not offer them as ordinary switches. Only the ones actually
+        // installed are named, so this is a fact about the library rather than
+        // a list of ids that may not exist.
+        let managed_by_controls: Vec<String> = ControlsProfile::ALL
+            .iter()
+            .filter_map(|p| p.package_id())
+            .filter(|id| packages.iter().any(|pkg| pkg.id.as_str() == *id))
+            .map(|id| id.to_string())
+            .collect();
+
         Ok(ModLibraryView {
             packages_root: root.display().to_string(),
             packages: packages
@@ -735,6 +796,8 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
                     version: a.version.to_string(),
                 })
                 .collect(),
+            exclusive,
+            managed_by_controls,
         })
     })
     .await
@@ -1568,6 +1631,13 @@ struct OnboardingView {
     /// irreversible stage then routes to `reconcile`, because the journal's
     /// silence about a stage no longer proves the work never ran.
     truncated: bool,
+    /// Stages answered under an older version of first run, named.
+    ///
+    /// NOT a problem and not the same as `truncated`. It means the flow changed
+    /// since this machine last ran it, so those answers no longer apply. Shown
+    /// rather than dropped silently, because a step that quietly reappears
+    /// looks like a step the player never did.
+    superseded: Vec<String>,
     next: NextStageView,
     plan: Vec<PlannedStageView>,
     /// Stages this machine does not have, and why. Reported rather than
@@ -1657,6 +1727,7 @@ async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingVi
             complete: flow.is_complete(),
             completed_flow_version: progress.completed_flow_version(),
             truncated: progress.is_truncated(),
+            superseded: progress.superseded().to_vec(),
             next: next_view(&flow.next()),
             plan: flow
                 .plan()
@@ -1977,85 +2048,114 @@ async fn onboarding_decline_controller(
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Debug, Serialize)]
-struct OnboardingModChoiceView {
-    step: OnboardingStepView,
-    /// The mods that were turned on, by reference, as recorded.
-    recorded: Vec<String>,
-    /// Pairs of chosen mods that write the same paths, counted here rather than
-    /// taken on trust. Returned even when the caller said it had shown them, so
-    /// a caller that claimed it did while showing nothing is visible.
-    conflicting_pairs: usize,
-    conflicts_were_shown: bool,
-}
-
-/// Turn mods on.
+/// Record which button art to show.
 ///
-/// References are resolved against the library on disk and an unknown one is
-/// refused before anything is written. A reference that resolved to nothing at
-/// composition time would compose a game missing what the player picked, after
-/// the launcher had already told them it was on.
+/// Three profiles and no declining, because the game always draws something.
+/// GameCube is the profile that applies NO pack: the prompt textures are
+/// add-only, so applying none does not restore anything, it uncovers what the
+/// disc itself always drew.
 ///
-/// `conflicts_shown` is the one argument the interface is the authority on: it
-/// is a claim about what the player was shown, which nothing here can measure.
-/// The overlap itself IS measured here, per game, because on a real library
-/// seven of the eleven mods write the same football texture and keeping
-/// whichever landed last is a decision made for someone.
+/// The profile is stored, never a pack name. The mapping lives in
+/// ControlsProfile::pack, and a pack name in the journal would go stale the
+/// moment a pack was renamed.
 #[tauri::command]
-async fn onboarding_choose_mods(
-    game: String,
-    packages: Vec<PackageRef>,
-    conflicts_shown: bool,
+async fn onboarding_choose_controls(
+    profile: String,
     legacy_root: Option<String>,
-) -> Result<OnboardingModChoiceView, String> {
+) -> Result<OnboardingControlsView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let p = Platform::detect();
-        let game = GameId::parse(&game).map_err(|e| e.to_string())?;
-        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
-
-        // Resolve everything before writing anything. load_packages refuses an
-        // id or a version that is not on disk.
-        let loaded = load_packages(&root, &packages)?;
-        let conflicts = detect_conflicts(&loaded, &game);
-
-        // Both the recorded strings and the answer come from the core, so the
-        // window has nothing left to invent. Reading the list back out is only
-        // so the caller can be shown exactly what was written.
-        let answer = Satisfaction::mods_chosen(&loaded, conflicts_shown);
-        let recorded = match &answer {
-            Satisfaction::ModsChosen { packages, .. } => packages.clone(),
-            _ => Vec::new(),
-        };
+        let chosen = ControlsProfile::from_slug(&profile).ok_or_else(|| {
+            format!(
+                "no controls profile called {profile}. Known: {}",
+                ControlsProfile::ALL
+                    .iter()
+                    .map(|p| p.slug())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
 
         let mut flow = open_flow(legacy_root)?;
         let advance = flow
-            .satisfy(Stage::ModSelection, answer)
+            .satisfy(
+                Stage::ControlsProfile,
+                Satisfaction::Controls { profile: chosen },
+            )
             .map_err(|e| e.to_string())?;
 
-        Ok(OnboardingModChoiceView {
+        Ok(OnboardingControlsView {
             step: step_view(&flow, advance),
-            recorded,
-            conflicting_pairs: conflicts.len(),
-            conflicts_were_shown: conflicts_shown,
+            profile: chosen.slug(),
+            label: chosen.label(),
+            // Absent for GameCube, which is the answer and not a gap. A caller
+            // that read this as "unknown" and applied a pack anyway would
+            // override the one thing the player chose.
+            pack: chosen.package_id(),
         })
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// Continue with no mods.
+#[derive(Debug, Serialize)]
+struct OnboardingControlsView {
+    step: OnboardingStepView,
+    profile: &'static str,
+    label: &'static str,
+    /// The prompt pack preparation will apply, or absent for GameCube.
+    pack: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct ControlsOptionView {
+    slug: &'static str,
+    label: &'static str,
+    describes: &'static str,
+    pack: Option<&'static str>,
+    /// True for the one the pad suggests, when a pad was found. A suggestion
+    /// only: an Xbox pad with GameCube art is a real thing someone wants, since
+    /// the game is a GameCube game.
+    suggested: bool,
+}
+
+/// The three profiles, with the one this machine's pad suggests marked.
 ///
-/// A recorded decision, not silence. The completion screen can then say no mods
-/// were chosen, which is a different sentence from the one it uses when the
-/// question was never asked.
+/// Read only. Offered so an interface never hardcodes the list, and so the
+/// suggestion comes from the pad that was actually found rather than a guess in
+/// the window.
 #[tauri::command]
-async fn onboarding_decline_mods(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+async fn controls_options(runtime: Option<String>) -> Result<Vec<ControlsOptionView>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut flow = open_flow(legacy_root)?;
-        let advance = flow
-            .satisfy(Stage::ModSelection, Satisfaction::NoMods)
-            .map_err(|e| e.to_string())?;
-        Ok(step_view(&flow, advance))
+        let p = Platform::detect();
+        let scan = match runtime.as_deref() {
+            Some(exe) => {
+                let scratch = p
+                    .paths
+                    .data_root()
+                    .map_err(|e| e.to_string())?
+                    .join(DataDir::Cache.relative());
+                reborn_core::devices::scan_via_runtime(&p, Path::new(exe), &scratch)
+                    .unwrap_or_else(|_| DeviceScanner::scan())
+            }
+            None => DeviceScanner::scan(),
+        };
+
+        // No pad means no suggestion, rather than a suggestion nothing backs.
+        let suggested = scan
+            .playable_pads()
+            .first()
+            .map(|pad| ControlsProfile::suggested_for(pad.identity().family));
+
+        Ok(ControlsProfile::ALL
+            .iter()
+            .map(|profile| ControlsOptionView {
+                slug: profile.slug(),
+                label: profile.label(),
+                describes: profile.describes(),
+                pack: profile.package_id(),
+                suggested: suggested == Some(*profile),
+            })
+            .collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3305,8 +3405,8 @@ fn main() {
             onboarding_choose_graphics,
             onboarding_choose_controller,
             onboarding_decline_controller,
-            onboarding_choose_mods,
-            onboarding_decline_mods,
+            onboarding_choose_controls,
+            controls_options,
             onboarding_record_task,
             onboarding_prepared,
             onboarding_finish,

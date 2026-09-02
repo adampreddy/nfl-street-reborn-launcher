@@ -365,24 +365,14 @@ const FEATURES = [
         write: true,
       },
       {
-        cmd: "onboarding_choose_mods",
-        desc: "Turn mods on. id@version, comma separated. Unknown ones are refused",
-        inputs: [
-          { key: "game", placeholder: "game id" },
-          { key: "packages", placeholder: "id@version, id@version", refs: true },
-        ],
-        args: () => ({
-          // False is the honest value from this harness: it shows no conflict
-          // list, so it has not shown one. The command measures the real
-          // overlap and returns the count either way.
-          conflictsShown: false,
-          legacyRoot: get("legacyRoot"),
-        }),
-        write: true,
+        cmd: "controls_options",
+        desc: "The three button art profiles, with the one your pad suggests",
+        inputs: [{ key: "runtime", placeholder: "path to Dolphin exe, for the suggestion" }],
       },
       {
-        cmd: "onboarding_decline_mods",
-        desc: "No mods, recorded as a decision rather than as silence",
+        cmd: "onboarding_choose_controls",
+        desc: "Record the button art. xbox, playstation, or gamecube",
+        inputs: [{ key: "profile", placeholder: "xbox|playstation|gamecube" }],
         args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },

@@ -61,17 +61,16 @@ async function refresh() {
 /// pad sleeps, so that one is fetched on a button the player can press again
 /// rather than once on the way in.
 async function prefetch(slug) {
-  if (slug === "mod_selection" && !pending.library) {
+  if (slug === "controls_profile" && !pending.controls) {
     try {
-      const lib = await call("mod_packages");
-      pending.library = {
-        list: lib.packages || [],
-        // Named rather than dropped: a mod missing from the list looks exactly
-        // like a mod that was never installed.
-        unreadable: lib.unreadable || [],
-      };
+      // The suggestion comes from the pad that was actually found, so this
+      // needs the runtime path for the search to cover every backend.
+      const list = await call("controls_options", {
+        runtime: pending.runtime || null,
+      });
+      pending.controls = { list };
     } catch (e) {
-      pending.library = { error: typeof e === "string" ? e : e.message };
+      pending.controls = { error: typeof e === "string" ? e : e.message };
     }
   }
 }
@@ -433,90 +432,58 @@ const SCREENS = {
     };
   },
 
-  mod_selection: () => {
-    const lib = pending.library;
+  controls_profile: () => {
+    const opts = pending.controls;
     const nodes = [
       el(
         "p",
         null,
-        "Mods change textures and button prompts. They can be turned on and " +
-          "off later, and nothing here is applied until the next step.",
+        "Which button art the game shows. This only changes the icons, not what " +
+          "the buttons do, and you can change it later.",
       ),
     ];
 
-    if (!lib) {
-      nodes.push(el("p", "note", "Reading the library."));
-    } else if (lib.error) {
-      nodes.push(el("div", "refusal", lib.error));
-    } else if (lib.list.length === 0) {
-      nodes.push(
-        el(
-          "p",
-          null,
-          "No mods are installed, so there is nothing to choose. That is the " +
-            "normal case and not a problem.",
-        ),
-      );
+    if (!opts) {
+      nodes.push(el("p", "note", "Reading the profiles."));
+    } else if (opts.error) {
+      nodes.push(el("div", "refusal", opts.error));
     } else {
-      pending.chosen = pending.chosen || new Set();
-      for (const p of lib.list) {
-        const row = el("label", "mod");
-        const box = document.createElement("input");
-        box.type = "checkbox";
-        const ref = `${p.id}@${p.version}`;
-        box.checked = pending.chosen.has(ref);
-        box.addEventListener("change", () => {
-          if (box.checked) pending.chosen.add(ref);
-          else pending.chosen.delete(ref);
-          updateNav();
-        });
-        row.appendChild(box);
-        row.appendChild(el("span", "name", p.name || p.id));
-        row.appendChild(el("span", "files", `${p.files} file(s)`));
-        nodes.push(row);
+      // Suggested, never applied unsolicited. Someone on an Xbox pad may well
+      // want GameCube art, since the game is a GameCube game and its own
+      // tutorials draw it that way.
+      if (pending.profile === undefined) {
+        const s = opts.list.find((o) => o.suggested);
+        if (s) pending.profile = s.slug;
       }
-      // On a real library seven of the eleven write the same football texture.
-      // A list that shows all seven as independently on is telling the player
-      // something untrue, so this screen has to be able to say so.
       nodes.push(
-        el(
-          "div",
-          "partial",
-          "Several of these write the same files. Picking more than one of " +
-            "them means only the last is visible, and this screen does not yet " +
-            "show which, so the choice is recorded as not fully informed.",
+        ...radios(
+          "profile",
+          opts.list.map((o) => ({
+            value: o.slug,
+            what: o.suggested ? `${o.label} (suggested for your pad)` : o.label,
+            why:
+              o.pack === null
+                ? `${o.describes}. Applies nothing, so the game's own art shows`
+                : o.describes,
+          })),
         ),
       );
-    }
-
-    if (lib && (lib.unreadable || []).length) {
-      nodes.push(
-        el(
-          "div",
-          "refusal",
-          `${lib.unreadable.length} installed mod(s) could not be read, so they ` +
-            `cannot be turned on: ${lib.unreadable.join("; ")}`,
-        ),
-      );
+      if (!opts.list.some((o) => o.suggested)) {
+        nodes.push(
+          el(
+            "div",
+            "partial",
+            "No pad was found, so none of these is suggested. Xbox is preselected " +
+              "as the default rather than as a recommendation.",
+          ),
+        );
+      }
     }
 
     return {
       nodes,
-      ready: () => !!lib && !lib.error,
-      answer: () => {
-        const chosen = [...(pending.chosen || [])];
-        if (chosen.length === 0) return call("onboarding_decline_mods");
-        return call("onboarding_choose_mods", {
-          game: "GN7E69",
-          packages: chosen.map((ref) => {
-            const at = ref.lastIndexOf("@");
-            return { id: ref.slice(0, at), version: ref.slice(at + 1) };
-          }),
-          // False, and true only once this screen actually shows the overlap.
-          // Claiming otherwise would make the record say the player was told.
-          conflictsShown: false,
-        });
-      },
+      ready: () => !!pending.profile,
+      answer: () => call("onboarding_choose_controls", { profile: pending.profile }),
     };
   },
 
@@ -680,7 +647,7 @@ function titleFor(slug) {
     game_verification: "The game",
     system_check: "How it looks",
     controller_setup: "Your controller",
-    mod_selection: "Mods",
+    controls_profile: "Controls",
     preparation: "Setting up",
     completion: "Ready",
   }[slug] || slug.replace(/_/g, " ");

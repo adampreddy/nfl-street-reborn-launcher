@@ -2741,6 +2741,22 @@ fn onboarding(
         println!();
     }
 
+    // Not a problem, and deliberately not silent. These answers were real when
+    // they were given and no longer apply to anything, so saying nothing would
+    // be pretending the flow never changed.
+    let superseded = flow.progress().superseded();
+    if !superseded.is_empty() {
+        println!(
+            "First run has changed since this machine last ran it. {} answer(s) no",
+            superseded.len()
+        );
+        println!("longer apply and were carried past, not counted:");
+        for stage in superseded {
+            println!("  {stage}");
+        }
+        println!();
+    }
+
     match flow.next() {
         Next::AlreadyComplete { flow_version } => {
             println!("First run is finished (flow version {flow_version}) and is not shown");

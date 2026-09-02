@@ -689,6 +689,128 @@ pub fn detect_conflicts(packages: &[ModPackage], game: &GameId) -> Vec<Conflict>
     out
 }
 
+/// A set of packages that cannot be on together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExclusiveGroup {
+    /// Every package in the set, sorted, so the order is stable across runs and
+    /// an interface does not reshuffle its own list.
+    pub members: Vec<ModId>,
+    /// A path more than one of them writes, as evidence.
+    ///
+    /// Carried so an interface can say WHY these are exclusive instead of
+    /// asserting it. Absent when the group comes only from a declared group,
+    /// where there is no overlapping path to point at.
+    pub example_path: Option<String>,
+    /// True when the members overlap on disk, false when they only declare the
+    /// same group.
+    ///
+    /// The difference matters: an overlap is refused by the composer, while a
+    /// declared group is advice and composes fine. An interface that treated
+    /// them the same would either forbid something legal or allow something
+    /// that will be refused later.
+    pub computed: bool,
+}
+
+/// Group the packages that cannot be on at the same time.
+///
+/// Derived from the file lists, not from a curated table. On the real library
+/// this returns two groups: seven recoloured footballs that all write one
+/// texture path, and the two prompt packs that write the same nineteen. No
+/// metadata was added to get either, and there is nothing to maintain.
+///
+/// The jersey mods are correctly NOT grouped. Patriots Throwback and Saints
+/// Alternate touch different files, so they compose together fine, and sweeping
+/// them in would forbid something legal.
+///
+/// This is what a pick-one interface needs. Showing seven footballs as
+/// independently switchable is telling the player something untrue: turning on
+/// two is refused, and before it was refused JSGME simply kept whichever landed
+/// last without saying so.
+///
+/// Transitive on purpose. If A overlaps B and B overlaps C, all three land in
+/// one group even when A and C share no path, because a pick-one control has to
+/// offer a single choice rather than a puzzle.
+pub fn exclusive_groups(packages: &[ModPackage], game: &GameId) -> Vec<ExclusiveGroup> {
+    let conflicts = detect_conflicts(packages, game);
+    if conflicts.is_empty() {
+        return Vec::new();
+    }
+
+    // Union find over the conflict pairs, keyed by id string.
+    let mut parent: BTreeMap<String, String> = BTreeMap::new();
+    fn root(parent: &mut BTreeMap<String, String>, id: &str) -> String {
+        let mut cur = id.to_string();
+        while let Some(next) = parent.get(&cur) {
+            if next == &cur {
+                break;
+            }
+            cur = next.clone();
+        }
+        cur
+    }
+
+    for c in &conflicts {
+        let (a, b) = (c.first.as_str().to_string(), c.second.as_str().to_string());
+        parent.entry(a.clone()).or_insert_with(|| a.clone());
+        parent.entry(b.clone()).or_insert_with(|| b.clone());
+        let (ra, rb) = (root(&mut parent, &a), root(&mut parent, &b));
+        if ra != rb {
+            parent.insert(rb, ra);
+        }
+    }
+
+    // Collect members per root, and the evidence for each.
+    let mut members: BTreeMap<String, Vec<ModId>> = BTreeMap::new();
+    let ids: BTreeMap<String, ModId> = packages
+        .iter()
+        .map(|p| (p.id.as_str().to_string(), p.id.clone()))
+        .collect();
+    let keys: Vec<String> = parent.keys().cloned().collect();
+    for id in keys {
+        let r = root(&mut parent, &id);
+        if let Some(mod_id) = ids.get(&id) {
+            members.entry(r).or_default().push(mod_id.clone());
+        }
+    }
+
+    let mut out: Vec<ExclusiveGroup> = Vec::new();
+    for (r, mut group) in members {
+        group.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        // The first computed conflict inside this group, for the evidence. A
+        // declared-group conflict has no path to show, which is why the field is
+        // optional rather than filled with something invented.
+        let in_group = |id: &ModId| group.iter().any(|m| m == id);
+        let mut example_path = None;
+        let mut computed = false;
+        for c in &conflicts {
+            if !in_group(&c.first) || !in_group(&c.second) {
+                continue;
+            }
+            if let ConflictKind::SamePath { paths } = &c.kind {
+                computed = true;
+                example_path = paths.first().cloned();
+                break;
+            }
+        }
+        let _ = r;
+        out.push(ExclusiveGroup {
+            members: group,
+            example_path,
+            computed,
+        });
+    }
+
+    // Largest first: the group a player is most likely to be choosing from.
+    out.sort_by(|a, b| {
+        b.members
+            .len()
+            .cmp(&a.members.len())
+            .then_with(|| a.members[0].as_str().cmp(b.members[0].as_str()))
+    });
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Activation
 // ---------------------------------------------------------------------------
@@ -3160,4 +3282,113 @@ mod tests {
             }),
         ));
     }
+    /// A package built in memory, with no payload on disk.
+    ///
+    /// exclusive_groups only reads the file lists, so laying real bytes down
+    /// would slow the test without testing anything more.
+    fn package_writing(id: &str, game: &GameId, tails: &[&str]) -> ModPackage {
+        let files: Vec<ModFile> = tails
+            .iter()
+            .map(|tail| ModFile {
+                path: PayloadPath::parse(&format!("{}/{tail}", game.as_str())).unwrap(),
+                sha256: Sha256Hex::from_bytes(tail.as_bytes()),
+                bytes: tail.len() as u64,
+            })
+            .collect();
+        ModPackage {
+            schema: MOD_SCHEMA.to_string(),
+            magic: MOD_MAGIC.to_string(),
+            id: ModId::parse(id).unwrap(),
+            name: id.to_string(),
+            version: PackageVersion::parse("1.0.0").unwrap(),
+            targets: vec![game.clone()],
+            conflict_group: None,
+            files,
+        }
+    }
+
+    #[test]
+    fn the_footballs_come_out_as_one_pick_one_group() {
+        // Derived from the file lists, with no curated table. Seven recoloured
+        // footballs writing one texture path is a real library state, and
+        // showing them as independently switchable would be untrue: turning on
+        // two is refused, and before that JSGME kept whichever landed last
+        // without saying so.
+        let game = GameId::parse("GN7E69").unwrap();
+
+        let mut packages: Vec<ModPackage> = ["aqua", "blue", "camo", "green", "pink"]
+            .iter()
+            .map(|name| package_writing(&format!("jsgme.{name}-football"), &game, &[BALL]))
+            .collect();
+        // One that touches nothing else, which must stay on its own.
+        packages.push(package_writing(
+            "jsgme.saints-alternate",
+            &game,
+            &["saints_jersey.dds"],
+        ));
+
+        let groups = exclusive_groups(&packages, &game);
+        assert_eq!(groups.len(), 1, "one group, not one per pair: {groups:?}");
+        assert_eq!(groups[0].members.len(), 5);
+        assert!(
+            groups[0].computed,
+            "an overlap is refused by the composer, so it is not mere advice"
+        );
+        assert_eq!(
+            groups[0].example_path.as_deref(),
+            Some(BALL),
+            "an interface has to be able to say why, not just assert it"
+        );
+        assert!(
+            !groups[0]
+                .members
+                .iter()
+                .any(|m| m.as_str() == "jsgme.saints-alternate"),
+            "a mod that overlaps nothing must not be swept into a group"
+        );
+    }
+
+    #[test]
+    fn the_two_prompt_packs_are_exclusive_of_each_other() {
+        // They write the same nineteen paths, which is why the controls profile
+        // is one choice of three rather than two independent switches.
+        let game = GameId::parse("GN7E69").unwrap();
+        let prompt = "tex1_32x32_0121eda1cca926b4_86cd9b4a5d76e9f0_9.png";
+        let packages = vec![
+            package_writing("jsgme.xbox-controls", &game, &[prompt]),
+            package_writing("jsgme.ps-controls", &game, &[prompt]),
+        ];
+        let groups = exclusive_groups(&packages, &game);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+    }
+
+    #[test]
+    fn exclusivity_is_transitive_so_a_pick_one_is_a_single_choice() {
+        // A overlaps B, B overlaps C, A and C share nothing. All three still
+        // belong to one group: a pick-one control has to offer a choice, not a
+        // puzzle about which pairs happen to be legal.
+        let game = GameId::parse("GN7E69").unwrap();
+        let packages = vec![
+            package_writing("mod.a", &game, &["shared_ab.dds", "only_a.dds"]),
+            package_writing("mod.b", &game, &["shared_ab.dds", "shared_bc.dds"]),
+            package_writing("mod.c", &game, &["shared_bc.dds", "only_c.dds"]),
+        ];
+        let groups = exclusive_groups(&packages, &game);
+        assert_eq!(groups.len(), 1, "got {groups:?}");
+        assert_eq!(groups[0].members.len(), 3);
+    }
+
+    #[test]
+    fn a_library_with_no_overlap_has_no_groups() {
+        // No group is the normal case, and an empty result must not be dressed
+        // up as one group containing everything.
+        let game = GameId::parse("GN7E69").unwrap();
+        let packages = vec![
+            package_writing("mod.a", &game, &["a.dds"]),
+            package_writing("mod.b", &game, &["b.dds"]),
+        ];
+        assert!(exclusive_groups(&packages, &game).is_empty());
+    }
+
 }

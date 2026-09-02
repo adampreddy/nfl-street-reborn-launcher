@@ -77,5 +77,41 @@ check("controller, port 1 selected", SCREENS.controller_setup().ready(), true);
 __set(state, { port: "none" });
 check("controller, declined", SCREENS.controller_setup().ready(), true);
 
+// The controls profile, which replaced mod selection in that slot.
+const cs = { ...state, next: { ...state.next, stage: "controls_profile" } };
+__set(cs, {});
+check("controls, list not loaded", SCREENS.controls_profile().ready(), false);
+
+// A suggestion preselects, so the common case is ready with no click. Building
+// the screen is what sets it, which is the point: a suggestion is a
+// preselection and never an application.
+const opts = {
+  list: [
+    { slug: "xbox", label: "Xbox", describes: "x", pack: "jsgme.xbox-controls", suggested: true },
+    { slug: "playstation", label: "PS", describes: "y", pack: "jsgme.ps-controls", suggested: false },
+    { slug: "gamecube", label: "GameCube", describes: "z", pack: null, suggested: false },
+  ],
+};
+__set(cs, { controls: opts });
+SCREENS.controls_profile();
+check("controls, suggestion preselects", SCREENS.controls_profile().ready(), true);
+
+// GameCube, the profile that applies nothing, is still a valid answer.
+__set(cs, { controls: opts, profile: "gamecube" });
+check("controls, GameCube chosen", SCREENS.controls_profile().ready(), true);
+
+// A failed read must not leave Next clickable on a screen with no options.
+__set(cs, { controls: { error: "could not read the profiles" } });
+check("controls, read failed", SCREENS.controls_profile().ready(), false);
+
+// With no pad there is no suggestion, so nothing is preselected and the player
+// has to choose. Xbox being the default must not be dressed up as a
+// recommendation nothing measured.
+const noSuggestion = { list: opts.list.map((o) => ({ ...o, suggested: false })) };
+__set(cs, { controls: noSuggestion });
+SCREENS.controls_profile();
+check("controls, no pad so no suggestion", SCREENS.controls_profile().ready(), false);
+
+
 console.log(fails === 0 ? "\nPASS: a selection now enables Next" : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

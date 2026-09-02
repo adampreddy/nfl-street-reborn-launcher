@@ -13,6 +13,7 @@
 //!     cargo run -p reborn-core --example onboarding_walk
 
 use reborn_core::devices::DeviceScanner;
+use reborn_core::controller::ControlsProfile;
 use reborn_core::mods::ModPackage;
 use reborn_core::migration::LegacyInstall;
 use reborn_core::onboarding::{
@@ -150,22 +151,36 @@ fn main() {
         }
     }
 
-    // ---- mods, from the real library --------------------------------------
-    let library = read_library(&platform);
-    println!("  library: {} package(s)", library.len());
-    if library.is_empty() {
-        step(&mut flow, "decline mods", |f| {
-            f.satisfy(Stage::ModSelection, Satisfaction::NoMods)
-        });
-    } else {
-        let answer = Satisfaction::mods_chosen(&library, false);
-        if let Satisfaction::ModsChosen { packages, .. } = &answer {
-            println!("  turning on: {}", packages.join(", "));
-        }
-        step(&mut flow, "choose mods", |f| {
-            f.satisfy(Stage::ModSelection, answer.clone())
-        });
-    }
+    // ---- the controls profile ---------------------------------------------
+    //
+    // Suggested from the pad that was actually found, then recorded. The
+    // suggestion is the point: the common case needs no thought, and anyone who
+    // wants GameCube art on an Xbox pad can still have it.
+    let suggested = match flow.summary().controller_family {
+        Some(family) => ControlsProfile::suggested_for(family),
+        // No pad, so nothing to suggest from. The default is not a measurement.
+        None => ControlsProfile::default(),
+    };
+    println!(
+        "  controls: {} ({}), package {:?}",
+        suggested.label(),
+        suggested.describes(),
+        suggested.package_id()
+    );
+    step(&mut flow, "choose controls", |f| {
+        f.satisfy(
+            Stage::ControlsProfile,
+            Satisfaction::Controls { profile: suggested },
+        )
+    });
+
+    // Mods are deliberately NOT here any more. They are not a first run
+    // question: nothing is broken without an answer, and the answer changes
+    // freely from the launcher afterwards.
+    println!(
+        "  library: {} package(s), chosen outside first run",
+        read_library(&platform).len()
+    );
 
     // ---- preparation ------------------------------------------------------
     step(&mut flow, "reach preparation", |f| {
@@ -189,8 +204,7 @@ fn main() {
     println!("  declined because  {:?}", s.no_controller_because);
     println!("  graphics          {:?}", s.graphics);
     println!("  recommended       {:?}", s.graphics_was_recommended);
-    println!("  mods chosen       {:?}", s.mods_chosen);
-    println!("  conflicts shown   {:?}", s.mod_conflicts_shown);
+    println!("  controls          {:?}", s.controls_profile);
     println!("  tasks done        {}", s.tasks_done.len());
     println!("  not measured      {:?}", s.absent());
 
