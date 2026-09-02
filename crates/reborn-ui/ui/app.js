@@ -370,6 +370,12 @@ const FEATURES = [
         inputs: [{ key: "runtime", placeholder: "path to Dolphin exe, for the suggestion" }],
       },
       {
+        cmd: "controls_set",
+        desc: "Change the button art at any time. A setting, not a first run answer",
+        inputs: [{ key: "profile", placeholder: "xbox|playstation|gamecube" }],
+        write: true,
+      },
+      {
         cmd: "onboarding_choose_controls",
         desc: "Record the button art. xbox, playstation, or gamecube",
         inputs: [{ key: "profile", placeholder: "xbox|playstation|gamecube" }],

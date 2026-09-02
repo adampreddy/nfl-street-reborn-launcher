@@ -64,6 +64,7 @@
 //! not an edge case. [`CompositionPlan::method`] says which cost the plan
 //! expects and [`ComposeReport`] says which one was actually paid.
 
+use crate::controller::ControlsProfile;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -809,6 +810,122 @@ pub fn exclusive_groups(packages: &[ModPackage], game: &GameId) -> Vec<Exclusive
             .then_with(|| a.members[0].as_str().cmp(b.members[0].as_str()))
     });
     out
+}
+
+// ---------------------------------------------------------------------------
+// The controls profile, as an activation
+// ---------------------------------------------------------------------------
+
+/// What reconciling the activation with a controls profile changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlsApplied {
+    pub profile: ControlsProfile,
+    /// The package now on, or none for GameCube.
+    pub turned_on: Option<ModId>,
+    /// Prompt packages turned off, which is how the profiles stay exclusive.
+    pub turned_off: Vec<ModId>,
+    /// True when the activation already said this, so nothing was written.
+    ///
+    /// The common case on every launch after the first. Recomposing eight
+    /// thousand entries to change nothing is work a player waits through.
+    pub already_correct: bool,
+    /// Present when the profile needs a package that is not installed.
+    ///
+    /// Reported rather than raised. The profile is a recorded decision and
+    /// still stands; what is missing is the art, and the game will draw its own
+    /// until the package arrives. Failing the launch over button art would be a
+    /// worse outcome than the wrong buttons.
+    pub missing_package: Option<String>,
+}
+
+/// Every package a controls profile could own, whether or not it is installed.
+///
+/// Used to turn the others OFF. The profiles are mutually exclusive because the
+/// two packs write the same nineteen texture paths, so leaving an old one
+/// activated would make the composition refuse rather than quietly pick one.
+fn prompt_package_ids() -> Vec<&'static str> {
+    ControlsProfile::ALL
+        .iter()
+        .filter_map(|p| p.package_id())
+        .collect()
+}
+
+/// Make the activation say what the controls profile says.
+///
+/// Called on every launch, next to the configuration regeneration, which is
+/// why it exists at all: the profile is chosen once in first run and has to
+/// keep being true afterwards. Changing it later is then a matter of recording
+/// a new profile, with no first run to re-walk and nothing to re-apply by hand.
+///
+/// Writes the activation file only when something actually differs.
+/// Takes the activation PATH rather than a Platform: reconciling a list is
+/// this function's job, and finding the list is the caller's. That also makes
+/// it testable without a whole platform standing behind it.
+pub fn apply_controls_profile(
+    activation_file: &Path,
+    profile: ControlsProfile,
+    installed: &[ModPackage],
+) -> Result<ControlsApplied> {
+    let mut activation = Activation::load(activation_file)?;
+
+    let wanted = profile.package_id();
+    let mut turned_off = Vec::new();
+    let mut turned_on = None;
+    let mut missing_package = None;
+    let mut changed = false;
+
+    // Off first, then on. The other order would briefly have two packs
+    // activated, and if anything read the activation in between it would see a
+    // pair that cannot compose.
+    for id in prompt_package_ids() {
+        if Some(id) == wanted {
+            continue;
+        }
+        let parsed = ModId::parse(id)?;
+        if activation.deactivate(&parsed) {
+            turned_off.push(parsed);
+            changed = true;
+        }
+    }
+
+    if let Some(id) = wanted {
+        let parsed = ModId::parse(id)?;
+        match installed.iter().find(|p| p.id == parsed) {
+            Some(package) => {
+                if !activation.is_active(&parsed)
+                    || activation
+                        .active
+                        .iter()
+                        .any(|a| a.id == parsed && a.version != package.version)
+                {
+                    activation.activate(parsed.clone(), package.version.clone());
+                    changed = true;
+                }
+                turned_on = Some(parsed);
+            }
+            None => {
+                missing_package = Some(format!(
+                    "{} is not installed, so the {} button art cannot be applied. \
+                     The choice is still recorded and the game will draw its own \
+                     art until the package is there.",
+                    id,
+                    profile.label()
+                ));
+            }
+        }
+    }
+
+    if changed {
+        activation.save(activation_file)?;
+    }
+
+    Ok(ControlsApplied {
+        profile,
+        turned_on,
+        turned_off,
+        already_correct: !changed,
+        missing_package,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2247,6 +2364,16 @@ mod tests {
         run: PathBuf,
     }
 
+    impl Fixture {
+        /// Where the activation list lives for this fixture.
+        fn activation(&self) -> PathBuf {
+            self.packages
+                .parent()
+                .expect("packages always has a parent")
+                .join("activation.json")
+        }
+    }
+
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let pristine = dir.path().join("library").join("textures").join("GN7E69");
@@ -3389,6 +3516,122 @@ mod tests {
             package_writing("mod.b", &game, &["b.dds"]),
         ];
         assert!(exclusive_groups(&packages, &game).is_empty());
+    }
+
+    // ---- the controls profile as an activation ------------------------------
+
+    #[test]
+    fn choosing_a_profile_turns_the_other_prompt_pack_off() {
+        // The two packs write the same nineteen paths. Leaving an old one on
+        // would make the composition refuse rather than quietly pick one, so
+        // the profiles have to be exclusive in the activation and not only in
+        // the interface.
+        let fx = fixture();
+        let xbox = lay_package(
+            &fx.packages,
+            "jsgme.xbox-controls",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"xbox prompt")],
+        );
+        let ps = lay_package(
+            &fx.packages,
+            "jsgme.ps-controls",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"ps prompt")],
+        );
+        let installed = vec![xbox.clone(), ps.clone()];
+
+        let first =
+            apply_controls_profile(&fx.activation(), ControlsProfile::Xbox, &installed).unwrap();
+        assert_eq!(first.turned_on, Some(xbox.id.clone()));
+        assert!(!first.already_correct);
+
+        // Switching profiles turns one off and the other on.
+        let second =
+            apply_controls_profile(&fx.activation(), ControlsProfile::PlayStation, &installed).unwrap();
+        assert_eq!(second.turned_on, Some(ps.id.clone()));
+        assert_eq!(
+            second.turned_off,
+            vec![xbox.id.clone()],
+            "the previous pack must come off, or the two cannot compose together"
+        );
+
+        let path = fx.activation();
+        let saved = Activation::load(&path).unwrap();
+        assert!(saved.is_active(&ps.id));
+        assert!(!saved.is_active(&xbox.id));
+    }
+
+    #[test]
+    fn gamecube_turns_every_prompt_pack_off_and_installs_nothing() {
+        // The profile that applies nothing. Not a gap: the prompt textures are
+        // add-only, so having no pack uncovers what the disc itself drew.
+        let fx = fixture();
+        let xbox = lay_package(
+            &fx.packages,
+            "jsgme.xbox-controls",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"xbox prompt")],
+        );
+        let installed = vec![xbox.clone()];
+
+        apply_controls_profile(&fx.activation(), ControlsProfile::Xbox, &installed).unwrap();
+        let out =
+            apply_controls_profile(&fx.activation(), ControlsProfile::GameCube, &installed).unwrap();
+
+        assert_eq!(out.turned_on, None, "GameCube must install nothing");
+        assert_eq!(out.turned_off, vec![xbox.id.clone()]);
+        assert_eq!(out.missing_package, None, "nothing was missing; none is wanted");
+
+        let saved = Activation::load(&fx.activation()).unwrap();
+        assert!(!saved.is_active(&xbox.id));
+    }
+
+    #[test]
+    fn a_second_launch_changes_nothing() {
+        // This runs on every launch. Recomposing eight thousand entries to
+        // change nothing is time a player waits through, so an unchanged
+        // profile has to be detectable without writing.
+        let fx = fixture();
+        let xbox = lay_package(
+            &fx.packages,
+            "jsgme.xbox-controls",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"xbox prompt")],
+        );
+        let installed = vec![xbox];
+
+        apply_controls_profile(&fx.activation(), ControlsProfile::Xbox, &installed).unwrap();
+        let again =
+            apply_controls_profile(&fx.activation(), ControlsProfile::Xbox, &installed).unwrap();
+        assert!(
+            again.already_correct,
+            "an unchanged profile must not rewrite the activation"
+        );
+        assert!(again.turned_off.is_empty());
+    }
+
+    #[test]
+    fn a_profile_whose_package_is_not_installed_is_reported_not_raised() {
+        // The choice is a recorded decision and still stands. What is missing is
+        // the art, and the game draws its own until the package arrives.
+        // Failing a launch over button art would be worse than wrong buttons.
+        let fx = fixture();
+        let installed: Vec<ModPackage> = Vec::new();
+
+        let out =
+            apply_controls_profile(&fx.activation(), ControlsProfile::PlayStation, &installed).unwrap();
+        assert_eq!(out.turned_on, None);
+        let why = out.missing_package.expect("the gap must be reported");
+        assert!(why.contains("jsgme.ps-controls"), "{why}");
+        assert!(
+            why.contains("PlayStation"),
+            "the message must name the profile a player chose: {why}"
+        );
+        assert!(
+            !why.contains("  "),
+            "a doubled space means a lost line continuation: {why}"
+        );
     }
 
 }

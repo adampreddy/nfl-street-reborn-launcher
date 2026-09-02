@@ -2052,6 +2052,91 @@ async fn onboarding_decline_controller(
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, Serialize)]
+struct ControlsSetView {
+    profile: &'static str,
+    label: &'static str,
+    /// What it was, or absent when nothing was set before.
+    was: Option<&'static str>,
+    /// True when it was already this, so nothing was written.
+    already_set: bool,
+    /// The package now on, absent for GameCube which applies none.
+    package: Option<&'static str>,
+    /// Packages turned off, which is how the profiles stay exclusive.
+    turned_off: Vec<String>,
+    /// Present when the profile needs a package that is not installed. The
+    /// choice still stands and the game draws its own art until it arrives.
+    missing_package: Option<String>,
+}
+
+/// Change the button art, at any time.
+///
+/// A SETTING, not a first run answer. The onboarding journal latches and stays
+/// closed, so a preference kept only there could never be changed without
+/// re-walking the wizard; see reborn_core::settings for why they are separate.
+///
+/// Applies immediately as well as recording, so the next launch has nothing
+/// left to do and a player who changes this does not have to guess whether it
+/// took effect.
+#[tauri::command]
+async fn controls_set(profile: String) -> Result<ControlsSetView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = ControlsProfile::from_slug(&profile).ok_or_else(|| {
+            format!(
+                "no controls profile called {profile}. Known: {}",
+                ControlsProfile::ALL
+                    .iter()
+                    .map(|p| p.slug())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+
+        let p = Platform::detect();
+        let settings_file =
+            reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        let outcome = reborn_core::settings::set_controls_profile(&settings_file, chosen)
+            .map_err(|e| e.to_string())?;
+
+        // Only the packages this profile could want, so changing an icon set
+        // does not wait on a full library scan.
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+        let mut installed = Vec::new();
+        if let Some(id) = chosen.package_id() {
+            if let Ok(versions) = std::fs::read_dir(root.join(id)) {
+                for version in versions.flatten() {
+                    if let Ok(package) = ModPackage::load(&version.path()) {
+                        installed.push(package);
+                    }
+                }
+            }
+        }
+
+        let activation_file =
+            reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
+        let applied =
+            reborn_core::mods::apply_controls_profile(&activation_file, chosen, &installed)
+                .map_err(|e| e.to_string())?;
+
+        Ok(ControlsSetView {
+            profile: chosen.slug(),
+            label: chosen.label(),
+            was: match outcome {
+                reborn_core::settings::Set::Changed { from } => from.map(|p| p.slug()),
+                reborn_core::settings::Set::AlreadySet => Some(chosen.slug()),
+            },
+            already_set: matches!(outcome, reborn_core::settings::Set::AlreadySet),
+            package: applied.turned_on.as_ref().map(|_| {
+                chosen.package_id().unwrap_or("")
+            }),
+            turned_off: applied.turned_off.iter().map(|i| i.to_string()).collect(),
+            missing_package: applied.missing_package,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Record which button art to show.
 ///
 /// Three profiles and no declining, because the game always draws something.
@@ -3599,6 +3684,7 @@ fn main() {
             onboarding_choose_controller,
             onboarding_decline_controller,
             onboarding_choose_controls,
+            controls_set,
             controls_options,
             onboarding_run_task,
             onboarding_record_task,

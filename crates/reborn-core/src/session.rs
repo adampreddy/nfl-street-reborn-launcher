@@ -129,6 +129,13 @@ pub struct WrittenConfig {
     pub no_controller: bool,
     /// Which user directory this launch will boot against, and why.
     pub user_dir: UserDir,
+    /// What the recorded controls profile did to the activation.
+    ///
+    /// `None` when first run never recorded one, which is not a default to fill
+    /// in: an unanswered question is different from a player choosing Xbox, and
+    /// silently applying a pack nobody picked is how the wrong buttons appear
+    /// with nothing to explain them.
+    pub controls: Option<crate::mods::ControlsApplied>,
 }
 
 impl Default for WrittenConfig {
@@ -144,6 +151,9 @@ impl Default for WrittenConfig {
             // directory, so a caller that forgets to set it cannot mistake it
             // for a resolved one.
             user_dir: UserDir::Fresh(PathBuf::new()),
+            // Absent, not a profile. Nothing has been read yet, and a default
+            // here would be a choice nobody made.
+            controls: None,
         }
     }
 }
@@ -349,6 +359,17 @@ impl Session {
             ..Default::default()
         };
 
+        // The button art, reconciled on every launch beside the configuration.
+        //
+        // Here rather than in first run because that is what makes changing it
+        // later work: a new profile is recorded and the next launch applies it,
+        // with no first run to walk again and nothing to re-apply by hand.
+        //
+        // A failure here does not stop the launch. The worst case is the wrong
+        // buttons drawn over a game that runs, and refusing to start over
+        // button art would be a worse outcome than the art being wrong.
+        written.controls = reconcile_controls(platform).unwrap_or(None);
+
         // Keys, not files. Writing whole files here deleted ten sections of a
         // real player's Dolphin.ini, including the paths to their own game
         // images. See crate::ini for the measurements.
@@ -531,6 +552,54 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
 // ---------------------------------------------------------------------------
 // Finding the emulator
 // ---------------------------------------------------------------------------
+
+/// Read the recorded controls profile and make the activation match it.
+///
+/// Returns `None` when first run recorded no profile, which is the honest
+/// answer for a machine that has not been set up: there is nothing to apply,
+/// and picking a default here would apply art nobody chose.
+///
+/// Reads the onboarding journal directly rather than taking a profile as an
+/// argument, for the same reason every other launch value is read rather than
+/// passed: the journal is where the answer was recorded, and an argument could
+/// carry a profile the player never selected.
+fn reconcile_controls(
+    platform: &Platform,
+) -> Result<Option<crate::mods::ControlsApplied>> {
+    use crate::onboarding::{Environment, Onboarding};
+
+    // Settings first, first run as the seed. The journal latches and stays
+    // closed, so a preference read only from there could never be changed
+    // without re-walking the wizard; see crate::settings for why they are
+    // separate files.
+    let flow = Onboarding::open(platform, Environment::nothing_found())?;
+    let settings_file = crate::settings::settings_path(platform)?;
+    let Some(profile) = crate::settings::effective_controls_profile(
+        &settings_file,
+        flow.summary().controls_profile,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    // Only the packages the profile could want. Reading the whole library to
+    // apply one pack would make every launch wait on a full library scan.
+    let root = crate::mods::packages_root(platform)?;
+    let mut installed = Vec::new();
+    if let Some(id) = profile.package_id() {
+        let dir = root.join(id);
+        if let Ok(versions) = std::fs::read_dir(&dir) {
+            for version in versions.flatten() {
+                if let Ok(package) = crate::mods::ModPackage::load(&version.path()) {
+                    installed.push(package);
+                }
+            }
+        }
+    }
+
+    let activation_file = crate::mods::activation_path(platform)?;
+    crate::mods::apply_controls_profile(&activation_file, profile, &installed).map(Some)
+}
 
 /// Where an emulator came from, and whether it is the one that works.
 #[derive(Debug, Clone, PartialEq, Eq)]

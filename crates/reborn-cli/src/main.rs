@@ -913,6 +913,41 @@ fn play(
             println!("already correct {}", f.display());
         }
         println!("{} key(s) set", written.keys_set);
+
+        // The button art, which is reconciled on every launch beside the
+        // configuration. Printed even when nothing changed, because "the
+        // profile is Xbox and already applied" is the answer a player wants
+        // when the buttons look wrong.
+        match &written.controls {
+            Some(applied) => {
+                println!();
+                print!("Controls  {}", applied.profile.label());
+                match &applied.turned_on {
+                    Some(id) => print!(", from {}", id.as_str()),
+                    // GameCube. Not a gap: the prompt textures are add-only, so
+                    // having no pack uncovers what the disc itself drew.
+                    None if applied.missing_package.is_none() => {
+                        print!(", which applies no pack so the game draws its own art")
+                    }
+                    None => {}
+                }
+                if applied.already_correct {
+                    print!(" (already applied)");
+                }
+                println!();
+                for id in &applied.turned_off {
+                    println!("  turned off {}", id.as_str());
+                }
+                if let Some(why) = &applied.missing_package {
+                    println!("  {why}");
+                }
+            }
+            None => {
+                println!();
+                println!("Controls  not chosen yet, so no button art is applied. First run");
+                println!("          records it and the next launch applies it.");
+            }
+        }
         for (port, device) in &written.pads {
             println!("  port {port} -> {device}");
         }
