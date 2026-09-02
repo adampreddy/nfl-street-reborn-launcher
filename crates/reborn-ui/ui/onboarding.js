@@ -570,46 +570,75 @@ const SCREENS = {
 
   completion: () => {
     const s = state.summary;
-    return {
-      nodes: [
-        el("p", null, "Setup is done. This is what was decided."),
-        factsTable([
-          ["Controller", s.controller || (s.no_controller_because ? `none: ${s.no_controller_because}` : null)],
-          ["Port", s.controller_port === null ? null : s.controller_port + 1],
-          ["Graphics", s.graphics],
-          [
-            "Recommended",
-            s.graphics_was_recommended === null
-              ? null
-              : s.graphics_was_recommended
-                ? "yes, the recommendation was taken"
-                : "no, a different preset was chosen",
-          ],
-          ["Detected hardware", s.detected_hardware],
-          ["Game size", s.game_bytes === null ? null : `${s.game_bytes.toLocaleString()} bytes`],
-          [
-            "Mods",
-            s.mods_chosen === null
-              ? null
-              : s.mods_chosen.length === 0
-                ? "none, by choice"
-                : s.mods_chosen.join(", "),
-          ],
-          ["Tasks completed", (s.tasks_done || []).length],
-        ]),
-        ...((s.absent || []).length
-          ? [
-              el(
-                "div",
-                "partial",
-                `Nothing measured: ${s.absent.join(", ")}. These are printed as ` +
-                  "absent rather than filled in with something plausible.",
-              ),
-            ]
-          : []),
+
+    // Every value goes through factsTable, which draws absence as absence. No
+    // screen-level `=== null` checks: a field the launcher no longer sends is
+    // undefined rather than null, so a check against null passes it straight
+    // through to whatever comes next. That is what threw here, reading .length
+    // on a mods field that had been removed from the view.
+    //
+    // The rule this leaves behind: never test a summary field for absence in a
+    // screen. Hand it to factsTable and let one place decide.
+    const facts = [
+      [
+        "Controller",
+        s.controller ||
+          (s.no_controller_because ? `None: ${s.no_controller_because}` : undefined),
       ],
+      ["Port", typeof s.controller_port === "number" ? s.controller_port + 1 : undefined],
+      ["Button art", s.controls_profile],
+      ["Graphics", s.graphics],
+      [
+        "Recommended",
+        typeof s.graphics_was_recommended === "boolean"
+          ? s.graphics_was_recommended
+            ? "Yes, the recommendation was taken"
+            : "No, a different preset was chosen"
+          : undefined,
+      ],
+      ["Detected hardware", s.detected_hardware],
+      [
+        "Game size",
+        typeof s.game_bytes === "number"
+          ? `${s.game_bytes.toLocaleString()} bytes`
+          : undefined,
+      ],
+      ["Brought over from", s.migrated_from],
+      [
+        "Copied",
+        typeof s.migrated_bytes === "number"
+          ? `${s.migrated_bytes.toLocaleString()} bytes`
+          : undefined,
+      ],
+      ["Steps completed", (s.tasks_done || []).length],
+    ];
+
+    const nodes = [
+      el("p", null, "Setup is done. This is what was decided."),
+      factsTable(facts),
+    ];
+
+    if ((s.absent || []).length) {
+      nodes.push(
+        el(
+          "div",
+          "partial",
+          `Nothing measured: ${s.absent.join(", ")}. Printed as absent rather ` +
+            "than filled in with something plausible.",
+        ),
+      );
+    }
+
+    // Mods are deliberately not here. They are chosen in the launcher, not in
+    // first run, so a Ready screen listing them would be reporting a decision
+    // nobody was asked to make.
+
+    return {
+      nodes,
       ready: () => true,
       nextLabel: "Finish",
+      // Latches once and never offers these screens again, which is why the
+      // core wants an explicit confirm. Pressing Finish IS the confirm.
       answer: () => call("onboarding_finish", { confirm: true }),
     };
   },

@@ -165,5 +165,51 @@ draw();
 check("reconcile, work outstanding", __current().ready(), false);
 
 
+// Every screen must survive a summary built from the REAL field list.
+//
+// The Ready screen read a mods field that had been removed from the view. A
+// missing field is undefined, not null, so its `=== null` guard passed it
+// through and .length threw: "Cannot read properties of undefined". The screen
+// crashed the moment it was finally reachable.
+//
+// The field names come out of main.rs, so this cannot drift from what the
+// launcher actually sends.
+const viewSrc = readFileSync("crates/reborn-ui/src/main.rs", "utf8");
+const block = viewSrc.slice(viewSrc.indexOf("struct OnboardingSummaryView"));
+const summaryFields = [
+  ...block.slice(0, block.indexOf("}")).matchAll(/^\s{4}(\w+):/gm),
+].map((m) => m[1]);
+
+if (summaryFields.length < 5) {
+  fails++;
+  console.log(`FAIL  could not read OnboardingSummaryView (${summaryFields.length} fields)`);
+}
+
+// Everything absent, which is a real state on a fresh machine.
+const allAbsent = Object.fromEntries(summaryFields.map((f) => [f, null]));
+allAbsent.absent = summaryFields;
+allAbsent.tasks_done = [];
+
+for (const stage of Object.keys(SCREENS)) {
+  const st = {
+    ...state,
+    next: { ...state.next, stage },
+    summary: allAbsent,
+    tasks_done: [],
+    preparation_remaining: [],
+  };
+  __set(st, { controls: { list: [] }, library: { list: [] } });
+  try {
+    draw();
+    if (!__current()) throw new Error("no screen was built");
+    __current().ready();
+  } catch (e) {
+    fails++;
+    console.log(`FAIL  ${stage} threw on an all-absent summary: ${e.message}`);
+  }
+}
+console.log(`ok    all ${Object.keys(SCREENS).length} screens survive an all-absent summary`);
+
+
 console.log(fails === 0 ? "\nPASS: a selection now enables Next" : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

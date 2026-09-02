@@ -1615,6 +1615,9 @@ struct OnboardingSummaryView {
     /// must not be drawn.
     graphics_was_recommended: Option<bool>,
     detected_hardware: Option<String>,
+    /// The button art chosen, by slug. Absent means never asked, and there is
+    /// no declined value because the game always draws something.
+    controls_profile: Option<&'static str>,
     migrated_from: Option<String>,
     migrated_bytes: Option<u64>,
     game_bytes: Option<u64>,
@@ -1777,6 +1780,7 @@ async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingVi
                     .map(|g| format!("{:?}", g.preset()).to_lowercase()),
                 graphics_was_recommended: summary.graphics_was_recommended,
                 detected_hardware: summary.detected_hardware.clone(),
+                controls_profile: summary.controls_profile.map(|p| p.slug()),
                 migrated_from: summary
                     .migrated_from
                     .as_ref()
