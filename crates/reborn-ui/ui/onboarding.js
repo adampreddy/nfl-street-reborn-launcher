@@ -56,7 +56,7 @@ async function refresh() {
     // Safe to do on every draw. reach is idempotent and deliberately
     // permissive, so re-showing a screen records nothing new, and the marker
     // changes nothing about what is drawn.
-    if (state.next.kind === "show") {
+    if (state.next.kind === "show" || state.next.kind === "reconcile") {
       await call("onboarding_reach", { stage: state.next.stage });
     }
 
@@ -653,17 +653,15 @@ function draw() {
     return;
   }
 
-  if (state.next.kind === "reconcile") {
-    // This stage writes files and the last run stopped inside it, so its work
-    // may have partly happened. Saying so is the whole point of the state.
-    host.replaceChildren(
-      ...heading("Picking up where this stopped", state.next),
-      el("div", "partial", state.next.what_to_do),
-    );
-    current = null;
-    updateNav();
-    return;
-  }
+  // Reconcile is NOT a different screen. It is this stage's own screen with a
+  // warning on top: the stage writes files and a previous run stopped inside
+  // it, so some of its work may already have happened.
+  //
+  // Built as a separate read-only notice at first, which made it a dead end.
+  // Preparation enters that state the moment its tasks are recorded and the
+  // stage is not yet answered, which is exactly where a player ends up, and
+  // there was no button to carry them out of it.
+  const reconciling = state.next.kind === "reconcile";
 
   const slug = state.next.stage;
   const build = SCREENS[slug];
@@ -683,7 +681,12 @@ function draw() {
   }
 
   current = build();
-  host.replaceChildren(...heading(titleFor(slug), state.next), ...current.nodes);
+  host.replaceChildren(
+    ...heading(reconciling ? `${titleFor(slug)}, picking up` : titleFor(slug), state.next),
+    // The core's own advice, above the screen rather than instead of it.
+    ...(reconciling ? [el("div", "partial", state.next.what_to_do)] : []),
+    ...current.nodes,
+  );
   updateNav();
 }
 

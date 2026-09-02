@@ -22,8 +22,14 @@ global.localStorage = { getItem:()=>null, setItem(){}, removeItem(){} };
 global.document = { getElementById:()=>fake(), createElement:()=>fake() };
 global.window = {};   // no __TAURI__, so bridge is null and refresh() never runs
 
-const mod = src + "\nexport { SCREENS, __set };\nfunction __set(s,p){ state=s; pending=p; }";
-const { SCREENS, __set } = await import(
+const mod =
+  src +
+  "\nexport { SCREENS, draw, __set, __current };" +
+  "\nfunction __set(s, p) { state = s; pending = p; }" +
+  // The frame's current screen. Exported because the reconcile dead end
+  // lived in draw(), which a harness testing only SCREENS cannot see.
+  "\nfunction __current() { return current; }";
+const { SCREENS, draw, __set, __current } = await import(
   "data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
 
 // Adam's exact state, from the journal and the screenshot.
@@ -111,6 +117,52 @@ const noSuggestion = { list: opts.list.map((o) => ({ ...o, suggested: false })) 
 __set(cs, { controls: noSuggestion });
 SCREENS.controls_profile();
 check("controls, no pad so no suggestion", SCREENS.controls_profile().ready(), false);
+
+
+// Reconcile must be actionable, not a notice.
+//
+// Preparation enters this state the moment its tasks are recorded and the stage
+// is not yet answered, which is exactly where a player lands after clicking
+// Run. It was drawn as a read-only warning with no Next, and the flow stopped
+// there with all the work already done.
+const reconcile = {
+  ...state,
+  next: {
+    kind: "reconcile",
+    stage: "preparation",
+    position: 8,
+    total: 9,
+    what_to_do: "Verify each preparation task before running it again.",
+  },
+  tasks_done: [
+    { slug: "write_config", label: "Save your controller and graphics settings" },
+    { slug: "check_everything", label: "Check the settings are in place" },
+  ],
+  preparation_remaining: [],
+};
+__set(reconcile, {});
+draw();
+if (!__current()) {
+  fails++;
+  console.log("FAIL  reconcile: no screen was built, so there is no way forward");
+} else {
+  check("reconcile, every task done", __current().ready(), true);
+}
+
+// With work still outstanding it must NOT be passable, or a player walks past
+// a stage that writes files.
+__set(
+  {
+    ...reconcile,
+    tasks_done: [],
+    preparation_remaining: [
+      { slug: "write_config", label: "Save your controller and graphics settings" },
+    ],
+  },
+  {},
+);
+draw();
+check("reconcile, work outstanding", __current().ready(), false);
 
 
 console.log(fails === 0 ? "\nPASS: a selection now enables Next" : `\nFAIL: ${fails}`);
