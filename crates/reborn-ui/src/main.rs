@@ -2063,9 +2063,21 @@ async fn onboarding_prepared(legacy_root: Option<String>) -> Result<OnboardingSt
 
 /// Latch first run as complete. Once only, and refused before the player has
 /// been shown what was decided.
+///
+/// Takes a confirm for the same reason the destructive commands do: the latch is
+/// one way. Once it is set, onboarding will not offer any of these screens
+/// again, so a stray call costs the player the chance to finish setting up.
 #[tauri::command]
-async fn onboarding_finish(legacy_root: Option<String>) -> Result<OnboardingStepView, String> {
+async fn onboarding_finish(
+    confirm: bool,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        confirmed(
+            confirm,
+            "onboarding_finish",
+            "latch first run as complete, which cannot be undone",
+        )?;
         let mut flow = open_flow(legacy_root)?;
         let advance = flow.finish().map_err(|e| e.to_string())?;
         Ok(step_view(&flow, advance))

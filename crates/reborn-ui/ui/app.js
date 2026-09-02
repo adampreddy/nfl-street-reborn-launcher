@@ -160,7 +160,11 @@ const FEATURES = [
         desc: "What applying would do. Writes nothing",
         inputs: [
           { key: "game", placeholder: "game id" },
-          { key: "packages", placeholder: "package refs, comma separated", list: true },
+          {
+            key: "packages",
+            placeholder: "id@version, id@version",
+            refs: true,
+          },
         ],
       },
       {
@@ -170,7 +174,11 @@ const FEATURES = [
         confirm: true,
         inputs: [
           { key: "game", placeholder: "game id" },
-          { key: "packages", placeholder: "package refs, comma separated", list: true },
+          {
+            key: "packages",
+            placeholder: "id@version, id@version",
+            refs: true,
+          },
         ],
       },
       {
@@ -185,7 +193,11 @@ const FEATURES = [
         desc: "Does the composed tree match the plan",
         inputs: [
           { key: "game", placeholder: "game id" },
-          { key: "packages", placeholder: "package refs, comma separated", list: true },
+          {
+            key: "packages",
+            placeholder: "id@version, id@version",
+            refs: true,
+          },
         ],
       },
     ],
@@ -291,16 +303,13 @@ const FEATURES = [
         cmd: "onboarding_reach",
         desc: "Open a stage's screen. Stage slug, eg mod_selection",
         inputs: [{ key: "stage", placeholder: "stage slug" }],
-        args: () => ({
-          stage: get("stage"),
-          legacyRoot: get("legacyRoot"),
-        }),
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
         cmd: "onboarding_back",
         desc: "Where Back goes from a stage. Changes nothing",
-        inputs: [{ key: "backFrom", placeholder: "stage slug" }],
+        inputs: [{ key: "stage", placeholder: "stage slug" }],
         args: () => ({
           stage: get("backFrom"),
           legacyRoot: get("legacyRoot"),
@@ -315,60 +324,45 @@ const FEATURES = [
       {
         cmd: "onboarding_confirm_game",
         desc: "Confirm the image. Its size is weighed here, not passed in",
-        inputs: [{ key: "gameImage", placeholder: "path to the iso" }],
-        args: () => ({
-          image: get("gameImage") || null,
-          legacyRoot: get("legacyRoot"),
-        }),
+        inputs: [{ key: "image", placeholder: "path to the iso" }],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
         cmd: "onboarding_choose_graphics",
         desc: "Record a preset. Nothing measures this PC, so no recommendation",
-        inputs: [{ key: "obPreset", placeholder: "performance|balanced|quality|ultra" }],
-        args: () => ({
-          preset: get("obPreset"),
-          legacyRoot: get("legacyRoot"),
-        }),
+        inputs: [{ key: "preset", placeholder: "performance|balanced|quality|ultra" }],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
         cmd: "onboarding_choose_controller",
         desc: "Accept the pad on a port. Its device string comes from the emulator",
         inputs: [
-          { key: "obPort", placeholder: "port, 0 based" },
-          { key: "obRuntime", placeholder: "path to Dolphin exe, for every backend" },
+          { key: "port", placeholder: "port, 0 based", number: true },
+          { key: "runtime", placeholder: "path to Dolphin exe, for every backend" },
         ],
-        args: () => ({
-          port: Number(get("obPort") || 0),
-          runtime: get("obRuntime") || null,
-          legacyRoot: get("legacyRoot"),
-        }),
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
         cmd: "onboarding_decline_controller",
         desc: "No pad, and why. The reason is shown later, so it is required",
-        inputs: [{ key: "obNoPad", placeholder: "why there is no pad" }],
-        args: () => ({
-          because: get("obNoPad"),
-          legacyRoot: get("legacyRoot"),
-        }),
+        inputs: [{ key: "because", placeholder: "why there is no pad" }],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
         cmd: "onboarding_choose_mods",
         desc: "Turn mods on. id@version, comma separated. Unknown ones are refused",
         inputs: [
-          { key: "obGame", placeholder: "game id" },
-          { key: "obMods", placeholder: "id@version, id@version" },
+          { key: "game", placeholder: "game id" },
+          { key: "packages", placeholder: "id@version, id@version", refs: true },
         ],
         args: () => ({
-          game: get("obGame"),
-          packages: parseRefs(get("obMods")),
-          // Answering false here is the honest value from this harness: it
-          // shows no conflict list, so it has not shown one. The command
-          // returns the real overlap count either way.
+          // False is the honest value from this harness: it shows no conflict
+          // list, so it has not shown one. The command measures the real
+          // overlap and returns the count either way.
           conflictsShown: false,
           legacyRoot: get("legacyRoot"),
         }),
@@ -383,11 +377,8 @@ const FEATURES = [
       {
         cmd: "onboarding_record_task",
         desc: "Mark a preparation task done. Refused if an earlier stage is unanswered",
-        inputs: [{ key: "obTask", placeholder: "task slug" }],
-        args: () => ({
-          task: get("obTask"),
-          legacyRoot: get("legacyRoot"),
-        }),
+        inputs: [{ key: "task", placeholder: "task slug" }],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
       {
@@ -533,7 +524,12 @@ function renderFeatures() {
         box.addEventListener("change", () =>
           localStorage.setItem("a:" + f.cmd + ":" + inp.key, box.value.trim()),
         );
-        fields[inp.key] = { box, list: inp.list };
+        fields[inp.key] = {
+          box,
+          list: inp.list,
+          refs: inp.refs,
+          number: inp.number,
+        };
         row.appendChild(box);
       }
 
@@ -560,10 +556,16 @@ function renderFeatures() {
 
 function buildArgs(f, fields, confirmBox) {
   const args = f.args ? f.args() : {};
-  for (const [key, { box, list }] of Object.entries(fields)) {
+  for (const [key, { box, list, refs, number }] of Object.entries(fields)) {
     const raw = box.value.trim();
-    if (list) {
+    if (refs) {
+      args[key] = parseRefs(raw);
+    } else if (list) {
       args[key] = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    } else if (number) {
+      // An empty box is 0 rather than null: the commands that take a number
+      // take a port, and port 1 is the sensible default to try.
+      args[key] = raw ? Number(raw) : 0;
     } else {
       args[key] = raw || null;
     }
