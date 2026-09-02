@@ -813,6 +813,176 @@ pub fn exclusive_groups(packages: &[ModPackage], game: &GameId) -> Vec<Exclusive
 }
 
 // ---------------------------------------------------------------------------
+// Making the composed tree the one the game loads
+// ---------------------------------------------------------------------------
+
+/// What linking the emulator's texture folder to the composed tree did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextureLink {
+    /// The link was made.
+    Linked {
+        at: PathBuf,
+        to: PathBuf,
+        /// Where the folder that was there went.
+        ///
+        /// Always `Some` when something was there. Nothing is ever deleted: the
+        /// old folder is renamed, so a player who wants it back renames it
+        /// back, and a mistake here costs a rename rather than a texture pack.
+        moved_aside: Option<PathBuf>,
+    },
+    /// It already pointed at the composed tree, so nothing was done.
+    AlreadyLinked { at: PathBuf, to: PathBuf },
+}
+
+/// Point the emulator's texture folder at the composed tree.
+///
+/// Composition builds a tree at `mods/active/<build>` and the emulator loads
+/// textures from `<user dir>/Load/Textures/<build>`. Without something joining
+/// them, every mod is applied correctly and none of it reaches the game: the
+/// activation is right and invisible.
+///
+/// A junction rather than a copy, because the composed tree is already a
+/// hardlink farm over the pristine one and copying it would spend two and a
+/// half gigabytes to duplicate files that are the same bytes. A junction rather
+/// than a symlink because a junction needs no privilege on Windows, and asking
+/// a player to enable Developer Mode to change a football is not a launcher.
+///
+/// The existing folder is MOVED, never deleted. That is what makes this safe to
+/// run against a live install: the worst case is a renamed directory a player
+/// can rename back, and the launcher has no way to lose a texture pack it never
+/// removes.
+///
+/// Refuses unless the composed tree actually exists and holds files. Linking to
+/// an empty or absent directory would leave the game with no textures at all,
+/// which looks exactly like a broken install.
+pub fn link_textures(
+    user_dir: &Path,
+    game: &GameId,
+    composed: &Path,
+    now_ms: u64,
+) -> Result<TextureLink> {
+    if !composed.is_dir() {
+        return Err(invalid(format!(
+            "there is no composed tree at {}. Compose the mods first, or the \
+             game would be pointed at nothing and look like a broken install.",
+            composed.display()
+        )));
+    }
+    if std::fs::read_dir(composed)?.next().is_none() {
+        return Err(invalid(format!(
+            "{} is empty, so linking to it would leave the game with no \
+             textures at all.",
+            composed.display()
+        )));
+    }
+
+    let at = user_dir
+        .join("Load")
+        .join("Textures")
+        .join(game.as_str());
+
+    // Already ours? read_link resolves a junction, so this is the same question
+    // as "does it already point there".
+    if let Ok(meta) = std::fs::symlink_metadata(&at) {
+        if meta.file_type().is_symlink() {
+            match std::fs::read_link(&at) {
+                Ok(target) if same_place(&target, composed) => {
+                    return Ok(TextureLink::AlreadyLinked {
+                        at,
+                        to: composed.to_path_buf(),
+                    })
+                }
+                // A link somewhere else. Removing a LINK deletes no content, so
+                // this is the one thing that is removed rather than renamed.
+                _ => std::fs::remove_dir(&at).map_err(|source| Error::Io {
+                    path: at.clone(),
+                    source,
+                })?,
+            }
+        }
+    }
+
+    if let Some(parent) = at.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    // Move whatever is there aside. The millisecond is in the name so running
+    // this twice does not overwrite the first folder that was moved.
+    let moved_aside = if at.exists() {
+        let aside = at.with_file_name(format!("{}.before-linking.{now_ms}", game.as_str()));
+        std::fs::rename(&at, &aside).map_err(|source| Error::Io {
+            path: aside.clone(),
+            source,
+        })?;
+        Some(aside)
+    } else {
+        None
+    };
+
+    make_junction(&at, composed)?;
+
+    Ok(TextureLink::Linked {
+        at,
+        to: composed.to_path_buf(),
+        moved_aside,
+    })
+}
+
+/// Whether two paths name the same directory.
+///
+/// Compared after canonicalizing, so a junction target written one way and a
+/// composed root computed another are still recognized as the same place. Falls
+/// back to a plain comparison when either cannot be canonicalized, which is the
+/// conservative answer: it reports "not the same" and the caller relinks.
+fn same_place(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Create a directory junction.
+///
+/// Windows only, via `mklink /J`, which needs no privilege. A symlink would
+/// need Developer Mode or an elevated launcher, and neither is something to ask
+/// for in order to change button art.
+///
+/// On other platforms a symlink is used, which is the native equivalent and
+/// needs no privilege there.
+#[cfg(windows)]
+fn make_junction(at: &Path, to: &Path) -> Result<()> {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(at)
+        .arg(to)
+        .output()
+        .map_err(|source| Error::Io {
+            path: at.to_path_buf(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(invalid(format!(
+            "could not link {} to {}: {}",
+            at.display(),
+            to.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn make_junction(at: &Path, to: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(to, at).map_err(|source| Error::Io {
+        path: at.to_path_buf(),
+        source,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The controls profile, as an activation
 // ---------------------------------------------------------------------------
 
@@ -3631,6 +3801,87 @@ mod tests {
         assert!(
             !why.contains("  "),
             "a doubled space means a lost line continuation: {why}"
+        );
+    }
+
+    // ---- linking the composed tree ------------------------------------------
+
+    #[test]
+    fn the_existing_texture_folder_is_moved_and_never_deleted() {
+        // What makes this safe to run against a live install. The worst case is
+        // a renamed directory a player renames back, and a launcher that never
+        // removes a texture pack has no way to lose one.
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("User");
+        let game = GameId::parse("GN7E69").unwrap();
+        let live = user.join("Load").join("Textures").join(game.as_str());
+        std::fs::create_dir_all(&live).unwrap();
+        write(&live.join("mine.dds"), b"the player's own texture");
+
+        let composed = dir.path().join("active").join(game.as_str());
+        std::fs::create_dir_all(&composed).unwrap();
+        write(&composed.join("composed.dds"), b"composed");
+
+        let out = link_textures(&user, &game, &composed, 1234).unwrap();
+        let TextureLink::Linked { moved_aside, .. } = out else {
+            panic!("expected a link, got {out:?}");
+        };
+        let aside = moved_aside.expect("the old folder must be kept");
+        assert_eq!(
+            std::fs::read(aside.join("mine.dds")).unwrap(),
+            b"the player's own texture",
+            "the player's textures must survive, byte for byte"
+        );
+        // And the game now sees the composed tree.
+        assert!(live.join("composed.dds").exists(), "the link must resolve");
+    }
+
+    #[test]
+    fn linking_twice_is_recognized_rather_than_repeated() {
+        // This runs whenever a composition changes. Moving the folder aside
+        // again would pile up copies and, worse, the second move would move the
+        // LINK and leave the game pointed at nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("User");
+        let game = GameId::parse("GN7E69").unwrap();
+        let composed = dir.path().join("active").join(game.as_str());
+        std::fs::create_dir_all(&composed).unwrap();
+        write(&composed.join("composed.dds"), b"composed");
+
+        link_textures(&user, &game, &composed, 1).unwrap();
+        let again = link_textures(&user, &game, &composed, 2).unwrap();
+        assert!(
+            matches!(again, TextureLink::AlreadyLinked { .. }),
+            "got {again:?}"
+        );
+    }
+
+    #[test]
+    fn linking_to_a_missing_or_empty_tree_is_refused() {
+        // Pointing the game at nothing looks exactly like a broken install, and
+        // it would have replaced a working folder to do it.
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("User");
+        let game = GameId::parse("GN7E69").unwrap();
+        let live = user.join("Load").join("Textures").join(game.as_str());
+        std::fs::create_dir_all(&live).unwrap();
+        write(&live.join("mine.dds"), b"the player's own texture");
+
+        let absent = dir.path().join("nothing-here");
+        let err = link_textures(&user, &game, &absent, 1)
+            .expect_err("a missing tree must be refused");
+        assert!(err.to_string().contains("Compose the mods first"), "{err}");
+
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let err = link_textures(&user, &game, &empty, 1)
+            .expect_err("an empty tree must be refused");
+        assert!(err.to_string().contains("no"), "{err}");
+
+        // And in both cases the live folder is untouched.
+        assert_eq!(
+            std::fs::read(live.join("mine.dds")).unwrap(),
+            b"the player's own texture"
         );
     }
 
