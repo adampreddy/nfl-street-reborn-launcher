@@ -32,7 +32,7 @@ async function choose(slug) {
   notice = null;
   draw();
   try {
-    const r = await call("controls_set", { profile: slug });
+    const r = await call("controls_set", { profile: slug, runtime: get("runtime") });
     if (r && r.synced) lastSync = r.synced;
     else if (r) notice = r.sync_note;
     if (r && r.missing_package) notice = `${notice ? notice + " " : ""}The ${r.label} pack (${r.missing_package}) is not installed, so the game draws its own art until it is.`;

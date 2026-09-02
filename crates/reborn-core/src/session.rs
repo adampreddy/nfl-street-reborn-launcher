@@ -278,6 +278,11 @@ impl Default for WrittenConfig {
 pub enum UserDir {
     /// The caller named it.
     Chosen(PathBuf),
+    /// The `User` folder beside the emulator itself: a portable Dolphin's
+    /// own. It outranks every other candidate because it is the folder that
+    /// emulator's owner plays from, and booting that emulator against any
+    /// other folder is the launch Adam reported as "the wrong user folder".
+    Portable(PathBuf),
     /// Found beside an existing install.
     Existing(PathBuf),
     /// Nothing was found, so the launcher will use its own empty directory.
@@ -287,7 +292,7 @@ pub enum UserDir {
 impl UserDir {
     pub fn path(&self) -> &Path {
         match self {
-            UserDir::Chosen(p) | UserDir::Existing(p) | UserDir::Fresh(p) => p,
+            UserDir::Chosen(p) | UserDir::Portable(p) | UserDir::Existing(p) | UserDir::Fresh(p) => p,
         }
     }
 
@@ -301,6 +306,10 @@ impl UserDir {
     pub fn explain(&self) -> String {
         match self {
             UserDir::Chosen(p) => format!("Using the chosen user folder at {}.", p.display()),
+            UserDir::Portable(p) => format!(
+                "Using the user folder beside the emulator, {}, which is that emulator's own.",
+                p.display()
+            ),
             UserDir::Existing(p) => {
                 format!("Using the existing user folder at {}.", p.display())
             }
@@ -329,8 +338,36 @@ impl UserDir {
 /// nothing but the handful of INIs the launcher itself writes scores zero and
 /// loses to a genuine one.
 pub fn resolve_user_dir(platform: &Platform, chosen: Option<&Path>) -> Result<UserDir> {
+    resolve_user_dir_for(platform, chosen, None)
+}
+
+/// Find the user directory to boot THIS emulator against.
+///
+/// A chosen folder wins. Then the emulator's own: a `User` folder beside the
+/// executable, which a portable Dolphin (one with `portable.txt` beside it)
+/// always has and which holds that emulator's saves, settings and textures.
+/// Only then the global candidates, ranked by evidence. The bundled runtime
+/// ships no `User` folder, so for it this falls through to the 2.1 install's,
+/// which is where an upgrading player's saves are.
+///
+/// Observed before this existed: a chosen portable Dolphin was booted against
+/// the 2.1 install's folder, so its own settings, saves and texture pack were
+/// all absent from the game that came up.
+pub fn resolve_user_dir_for(
+    platform: &Platform,
+    chosen: Option<&Path>,
+    runtime_exe: Option<&Path>,
+) -> Result<UserDir> {
     if let Some(c) = chosen {
         return Ok(UserDir::Chosen(c.to_path_buf()));
+    }
+
+    if let Some(dir) = runtime_exe.and_then(Path::parent) {
+        let beside = dir.join("User");
+        let portable = dir.join("portable.txt").is_file();
+        if beside.is_dir() && (portable || user_dir_score(&beside) > 0) {
+            return Ok(UserDir::Portable(beside));
+        }
     }
 
     let mut best: Option<(u32, PathBuf)> = None;
@@ -438,7 +475,7 @@ impl Session {
     /// written. Split out from [`Session::run`] so a caller can offer a dry run
     /// without duplicating the order.
     pub fn prepare(platform: &Platform, req: &LaunchRequest) -> Result<WrittenConfig> {
-        let user = resolve_user_dir(platform, req.user_dir.as_deref())?;
+        let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
@@ -696,6 +733,158 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
         .collect();
     Some((ini, assignment))
 }
+// ---------------------------------------------------------------------------
+// Finding the game image
+// ---------------------------------------------------------------------------
+
+/// Why a particular image was picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameImageSource {
+    /// The emulator's own settings name it as the default. The strongest
+    /// evidence there is: it is what that emulator boots when nothing else is
+    /// said, recorded by the person who set it up.
+    RecordedDefault { ini: PathBuf },
+    /// `NSR.iso` by name, the name the product ships under.
+    NamedNsr { folder: PathBuf },
+    /// The only image anywhere the launcher looked.
+    OnlyOne { folder: PathBuf },
+}
+
+/// The outcome of looking for the image to boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameSearch {
+    Found { path: PathBuf, source: GameImageSource },
+    /// More than one, none of them decisive. NOT picked: the launch that took
+    /// the alphabetically first of eleven files booted ATL.iso on a machine
+    /// whose emulator had NSR.iso recorded as its default.
+    Several { candidates: Vec<PathBuf>, looked: Vec<PathBuf> },
+    None { looked: Vec<PathBuf> },
+}
+
+impl GameSearch {
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            GameSearch::Found { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// A sentence for the player: what will boot and why, or why nothing will.
+    pub fn explain(&self) -> String {
+        fn list(paths: &[PathBuf]) -> String {
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        }
+        match self {
+            GameSearch::Found { path, source } => match source {
+                GameImageSource::RecordedDefault { .. } => format!(
+                    "Using {}, the image the emulator's own settings name as its default.",
+                    path.display()
+                ),
+                GameImageSource::NamedNsr { folder } => {
+                    format!("Using {}, found by name in {}.", path.display(), folder.display())
+                }
+                GameImageSource::OnlyOne { folder } => {
+                    format!("Using {}, the only game image in {}.", path.display(), folder.display())
+                }
+            },
+            GameSearch::Several { candidates, .. } => format!(
+                "{} game images were found and none is NSR.iso, so none was picked: {}. \
+                 Set the one to play on the Settings page.",
+                candidates.len(),
+                candidates
+                    .iter()
+                    .filter_map(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            GameSearch::None { looked } => format!(
+                "No game image was found. Looked in: {}. Set its path on the Settings \
+                 page, or point the launcher at your existing NFL Street Reborn install.",
+                if looked.is_empty() { "nowhere that exists".to_string() } else { list(looked) }
+            ),
+        }
+    }
+}
+
+/// Find the image to boot, without guessing.
+///
+/// In order: the default the emulator's own `Dolphin.ini` records, if that
+/// file still exists; `NSR.iso` by name in the launcher's own `Games`, the
+/// emulator's `Games`, and the existing install's `Games`; the only image in
+/// those folders if there is exactly one. Anything else is a refusal that
+/// names the candidates, because a wrong image that boots looks exactly like
+/// the right one until the menu comes up.
+pub fn find_game_image(
+    runtime_exe: &Path,
+    user_dir: &Path,
+    legacy_root: Option<&Path>,
+    launcher_dir: Option<&Path>,
+) -> GameSearch {
+    let ini = user_dir.join("Config").join("Dolphin.ini");
+    if let Ok(text) = std::fs::read_to_string(&ini) {
+        if let Some(value) = IniDocument::parse(&text).get("Core", "DefaultISO") {
+            let recorded = PathBuf::from(value.trim());
+            if !value.trim().is_empty() && recorded.is_file() {
+                return GameSearch::Found {
+                    path: recorded,
+                    source: GameImageSource::RecordedDefault { ini },
+                };
+            }
+        }
+    }
+
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for base in [launcher_dir, runtime_exe.parent(), legacy_root].into_iter().flatten() {
+        let games = base.join("Games");
+        if games.is_dir() && !folders.contains(&games) {
+            folders.push(games);
+        }
+    }
+
+    let mut all: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for folder in &folders {
+        let Ok(entries) = std::fs::read_dir(folder) else { continue };
+        let mut here: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && is_game_image(p))
+            .collect();
+        here.sort();
+        for image in &here {
+            let named = image
+                .file_name()
+                .map(|n| n.to_string_lossy().eq_ignore_ascii_case("nsr.iso"))
+                .unwrap_or(false);
+            if named {
+                return GameSearch::Found {
+                    path: image.clone(),
+                    source: GameImageSource::NamedNsr { folder: folder.clone() },
+                };
+            }
+        }
+        for image in here {
+            all.push((folder.clone(), image));
+        }
+    }
+
+    match all.len() {
+        0 => GameSearch::None { looked: folders },
+        1 => {
+            let (folder, path) = all.remove(0);
+            GameSearch::Found { path, source: GameImageSource::OnlyOne { folder } }
+        }
+        _ => GameSearch::Several {
+            candidates: all.into_iter().map(|(_, p)| p).collect(),
+            looked: folders,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Finding the emulator
 // ---------------------------------------------------------------------------
@@ -1293,5 +1482,145 @@ mod tests {
             user_path("\"\"C:\\Games\\Dolphin.exe\"\""),
             PathBuf::from("\"C:\\Games\\Dolphin.exe\"")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The user folder follows the emulator; the image is never guessed
+    // -----------------------------------------------------------------------
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    #[test]
+    fn a_portable_emulator_boots_against_the_user_folder_beside_it() {
+        // Adam: "the right user folder was NOT used". The chosen Dolphin had
+        // portable.txt and its own User folder beside it, and the launch went
+        // to the 2.1 install's folder instead.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("Dolphin.exe");
+        touch(&exe);
+        touch(&dir.path().join("portable.txt"));
+        std::fs::create_dir_all(dir.path().join("User")).unwrap();
+
+        let p = Platform::detect();
+        let got = resolve_user_dir_for(&p, None, Some(&exe)).unwrap();
+        assert_eq!(got, UserDir::Portable(dir.path().join("User")));
+        assert!(got.is_populated());
+        assert!(got.explain().contains("beside the emulator"), "{}", got.explain());
+
+        // A chosen folder still wins over the portable one.
+        let chosen = dir.path().join("elsewhere");
+        let got = resolve_user_dir_for(&p, Some(&chosen), Some(&exe)).unwrap();
+        assert_eq!(got, UserDir::Chosen(chosen));
+    }
+
+    #[test]
+    fn a_user_folder_beside_the_emulator_counts_when_it_holds_a_memory_card_even_without_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("Dolphin.exe");
+        touch(&exe);
+        touch(&dir.path().join("User").join("GC").join("MemoryCardA.USA.raw"));
+        let p = Platform::detect();
+        assert_eq!(
+            resolve_user_dir_for(&p, None, Some(&exe)).unwrap(),
+            UserDir::Portable(dir.path().join("User"))
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_beside_a_non_portable_emulator_is_not_taken_for_its_own() {
+        // The bundled runtime ships no User folder at all, and a stray empty
+        // one must not capture the launch away from the player's real saves.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("Dolphin.exe");
+        touch(&exe);
+        std::fs::create_dir_all(dir.path().join("User")).unwrap();
+        let p = Platform::detect();
+        let got = resolve_user_dir_for(&p, None, Some(&exe)).unwrap();
+        assert!(!matches!(got, UserDir::Portable(_)), "{got:?}");
+    }
+
+    #[test]
+    fn the_image_the_emulator_records_as_its_default_wins() {
+        // Both Dolphin.ini files on Adam's machine say DefaultISO = ...\NSR.iso.
+        // The launcher booted ATL.iso, the alphabetically first of eleven.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("rt").join("Dolphin.exe");
+        touch(&exe);
+        let user = dir.path().join("rt").join("User");
+        let default = dir.path().join("somewhere").join("Reborn.iso");
+        touch(&default);
+        let ini = user.join("Config").join("Dolphin.ini");
+        std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
+        std::fs::write(&ini, format!("[Core]\nDefaultISO = {}\n", default.display())).unwrap();
+        let legacy = dir.path().join("legacy");
+        touch(&legacy.join("Games").join("ATL.iso"));
+        touch(&legacy.join("Games").join("NSR.iso"));
+
+        let got = find_game_image(&exe, &user, Some(&legacy), None);
+        assert_eq!(got.path(), Some(default.as_path()), "{got:?}");
+        assert!(got.explain().contains("own settings"), "{}", got.explain());
+    }
+
+    #[test]
+    fn nsr_by_name_beats_alphabetical_order_and_a_stale_recorded_default_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("rt").join("Dolphin.exe");
+        touch(&exe);
+        let user = dir.path().join("rt").join("User");
+        let ini = user.join("Config").join("Dolphin.ini");
+        std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
+        std::fs::write(&ini, "[Core]\nDefaultISO = C:\\gone\\missing.iso\n").unwrap();
+        let legacy = dir.path().join("legacy");
+        touch(&legacy.join("Games").join("ATL.iso"));
+        touch(&legacy.join("Games").join("nsr.ISO"));
+        touch(&legacy.join("Games").join("ZZZ.iso"));
+
+        let got = find_game_image(&exe, &user, Some(&legacy), None);
+        assert_eq!(got.path(), Some(legacy.join("Games").join("nsr.ISO").as_path()), "{got:?}");
+        assert!(matches!(got, GameSearch::Found { source: GameImageSource::NamedNsr { .. }, .. }));
+    }
+
+    #[test]
+    fn several_images_and_no_nsr_is_a_refusal_that_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("rt").join("Dolphin.exe");
+        touch(&exe);
+        let user = dir.path().join("rt").join("User");
+        let legacy = dir.path().join("legacy");
+        touch(&legacy.join("Games").join("ATL.iso"));
+        touch(&legacy.join("Games").join("FUMBLES.iso"));
+        // Not images: a backup and a sidecar must not count.
+        touch(&legacy.join("Games").join("ATL.iso.bak_pre_flare8"));
+        touch(&legacy.join("Games").join("ATL.png"));
+
+        let got = find_game_image(&exe, &user, Some(&legacy), None);
+        let GameSearch::Several { candidates, .. } = &got else {
+            panic!("two images and no NSR must not be picked: {got:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+        let said = got.explain();
+        assert!(said.contains("ATL.iso") && said.contains("FUMBLES.iso"), "{said}");
+        assert!(said.contains("Settings"), "{said}");
+    }
+
+    #[test]
+    fn the_only_image_anywhere_is_used_and_the_launcher_folder_is_looked_in_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("rt").join("Dolphin.exe");
+        touch(&exe);
+        let user = dir.path().join("rt").join("User");
+        let launcher = dir.path().join("launcher");
+        touch(&launcher.join("Games").join("Street.rvz"));
+
+        let got = find_game_image(&exe, &user, None, Some(&launcher));
+        assert_eq!(got.path(), Some(launcher.join("Games").join("Street.rvz").as_path()));
+        assert!(matches!(got, GameSearch::Found { source: GameImageSource::OnlyOne { .. }, .. }));
+
+        let none = find_game_image(&exe, &user, None, None);
+        assert!(matches!(none, GameSearch::None { .. }));
+        assert!(none.explain().contains("No game image was found"), "{}", none.explain());
     }
 }

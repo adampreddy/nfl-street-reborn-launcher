@@ -18,6 +18,17 @@
 
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
+// The emulator the Settings page names, if any. Passed with every action
+// that links the texture folder, so the mods land in the user folder a
+// launch of that emulator will actually read.
+function runtimeHint() {
+  try {
+    return localStorage.getItem("h:runtime") || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // What the last reads returned. Null until read, and null again if a read
 // failed, so a stale list is never drawn as current.
 let library = null; // mod_packages
@@ -192,7 +203,7 @@ function controlsSection() {
     const isCurrent = !!(current && current.profile === o.slug);
     const what = o.label + (o.suggested ? "  (your pad suggests this)" : "");
     const why = (o.describes || "") + (o.pack ? ` Applies ${o.pack}.` : " Applies no pack: the disc's own art.");
-    sec.append(choice("controls", what, why, isCurrent, () => act("controls_set", { profile: o.slug })));
+    sec.append(choice("controls", what, why, isCurrent, () => act("controls_set", { profile: o.slug, runtime: runtimeHint() })));
   }
   return sec;
 }
@@ -228,7 +239,7 @@ function groupSections() {
     );
     sec.append(
       choice("group-" + sections.length, "None", "The game's own texture.", !active, () => {
-        if (active) act("mods_toggle", { id: active.id, version: active.version, on: false });
+        if (active) act("mods_toggle", { id: active.id, version: active.version, on: false, runtime: runtimeHint() });
       }),
     );
     for (const p of entries) {
@@ -236,7 +247,7 @@ function groupSections() {
       const why = [p.version, `${p.files} file(s)`, size].filter(Boolean).join(", ");
       sec.append(
         choice("group-" + sections.length, p.name || p.id, why, !!p.active, () => {
-          if (!p.active) act("mods_toggle", { id: p.id, version: p.version, on: true });
+          if (!p.active) act("mods_toggle", { id: p.id, version: p.version, on: true, runtime: runtimeHint() });
         }),
       );
     }
@@ -258,7 +269,7 @@ function otherSection(covered) {
       type: "checkbox",
       checked: !!p.active,
       disabled: busy,
-      onchange: () => act("mods_toggle", { id: p.id, version: p.version, on: !p.active }),
+      onchange: () => act("mods_toggle", { id: p.id, version: p.version, on: !p.active, runtime: runtimeHint() }),
     });
     const why = [p.version, `${p.files} file(s)`, mb(p.bytes)].filter(Boolean).join(", ");
     sec.append(
@@ -300,7 +311,7 @@ function staleSection() {
           type: "button",
           text: "Turn off",
           disabled: busy,
-          onclick: () => act("mods_toggle", { id: a.id, version: a.version, on: false }),
+          onclick: () => act("mods_toggle", { id: a.id, version: a.version, on: false, runtime: runtimeHint() }),
         }),
       ),
     );
@@ -350,7 +361,7 @@ function appliedSection() {
       }),
     );
   }
-  sec.append(el("button", { type: "button", class: "primary", text: busy ? "Working" : "Sync now", disabled: busy, onclick: () => act("mods_sync") }));
+  sec.append(el("button", { type: "button", class: "primary", text: busy ? "Working" : "Sync now", disabled: busy, onclick: () => act("mods_sync", { runtime: runtimeHint() }) }));
   return sec;
 }
 

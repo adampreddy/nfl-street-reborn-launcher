@@ -481,14 +481,39 @@ fn find_runtime_and_game(
         .filter(|path| path.is_file())
     {
         Some(path) => path,
-        None => first_game_image(legacy_root).ok_or_else(|| {
-            "No game image was found. Point at an existing NFL Street Reborn install, \
-             which is where the image comes from for anyone upgrading."
-                .to_string()
-        })?,
+        None => {
+            // The folder this emulator will boot against decides which
+            // Dolphin.ini's recorded default counts, so it is resolved here
+            // the way a launch resolves it.
+            let user = reborn_core::session::resolve_user_dir_for(platform, None, Some(found.path()))
+                .map_err(|e| e.to_string())?;
+            let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+            let search = reborn_core::session::find_game_image(
+                found.path(),
+                user.path(),
+                legacy_root,
+                launcher_dir.as_deref(),
+            );
+            match search.path() {
+                Some(path) => path.to_path_buf(),
+                None => return Err(search.explain()),
+            }
+        }
     };
 
     Ok((found, game))
+}
+
+/// The emulator a hint resolves to, or none. Tolerant: a page that only
+/// wants to know which user folder the mods should link must not fail
+/// because no emulator was found; it falls back to the global search.
+fn runtime_for(platform: &Platform, hint: Option<&str>) -> Option<PathBuf> {
+    let cleaned = hint.map(reborn_core::session::user_path);
+    let live = cleaned.as_deref().filter(|p| p.is_file());
+    let legacy = default_legacy_root(platform);
+    reborn_core::session::resolve_runtime(platform, live, legacy.as_deref())
+        .ok()
+        .map(|r| r.path().to_path_buf())
 }
 
 #[derive(Debug, Serialize)]
@@ -501,6 +526,11 @@ struct LaunchCheck {
     /// "bundled", "legacy_install", or "chosen". Absent when none was found.
     runtime_kind: Option<&'static str>,
     game: Option<String>,
+    /// Why THIS image, in a sentence, so a wrong one is caught before the
+    /// menu comes up. Absent when the image was given rather than found.
+    game_note: Option<String>,
+    /// Which user folder the launch would boot against, and why.
+    user_dir_note: Option<String>,
     /// Why a launch would refuse, in a sentence. Absent when ready.
     problem: Option<String>,
 }
@@ -518,6 +548,22 @@ async fn launch_check(runtime: Option<String>, game: Option<String>) -> Result<L
         let legacy = default_legacy_root(&p);
         match find_runtime_and_game(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref()) {
             Ok((found, image)) => Ok(LaunchCheck {
+                user_dir_note: reborn_core::session::resolve_user_dir_for(&p, None, Some(found.path()))
+                    .ok()
+                    .map(|d| d.explain()),
+                game_note: {
+                    let given = game.as_deref().map(reborn_core::session::user_path).filter(|g| g.is_file());
+                    if given.is_some() {
+                        None
+                    } else {
+                        let user = reborn_core::session::resolve_user_dir_for(&p, None, Some(found.path())).ok();
+                        let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+                        user.map(|u| {
+                            reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
+                                .explain()
+                        })
+                    }
+                },
                 ready: true,
                 runtime: Some(found.path().display().to_string()),
                 runtime_note: Some(found.explain()),
@@ -530,6 +576,8 @@ async fn launch_check(runtime: Option<String>, game: Option<String>) -> Result<L
                 problem: None,
             }),
             Err(problem) => Ok(LaunchCheck {
+                game_note: None,
+                user_dir_note: None,
                 ready: false,
                 runtime: None,
                 runtime_note: None,
@@ -711,6 +759,7 @@ fn user_dir_view(dir: &UserDir) -> UserDirView {
         path: dir.path().display().to_string(),
         kind: match dir {
             UserDir::Chosen(_) => "chosen",
+            UserDir::Portable(_) => "portable",
             UserDir::Existing(_) => "existing",
             UserDir::Fresh(_) => "fresh",
         },
@@ -728,11 +777,12 @@ fn user_dir_view(dir: &UserDir) -> UserDirView {
 /// Blocking because resolution reads several directories off disk, and on this
 /// machine the real one holds 35,015 files.
 #[tauri::command]
-async fn user_dir(chosen: Option<String>) -> Result<UserDirView, String> {
+async fn user_dir(chosen: Option<String>, runtime: Option<String>) -> Result<UserDirView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let picked = chosen.map(PathBuf::from);
-        reborn_core::session::resolve_user_dir(&p, picked.as_deref())
+        let picked = chosen.as_deref().map(reborn_core::session::user_path);
+        let exe = runtime_for(&p, runtime.as_deref());
+        reborn_core::session::resolve_user_dir_for(&p, picked.as_deref(), exe.as_deref())
             .map(|d| user_dir_view(&d))
             .map_err(|e| e.to_string())
     })
@@ -1162,11 +1212,12 @@ fn now_ms() -> u64 {
 /// The same call a launch makes, against the same user directory a launch
 /// would resolve, so what the Mods page shows as applied is what the next
 /// launch loads and not a parallel notion of it.
-fn sync_active_now(p: &Platform) -> Result<ModSyncView, String> {
+fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
-    let user = reborn_core::session::resolve_user_dir(p, None).map_err(|e| e.to_string())?;
+    let exe = runtime_for(p, runtime_hint);
+    let user = reborn_core::session::resolve_user_dir_for(p, None, exe.as_deref()).map_err(|e| e.to_string())?;
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
     let req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
@@ -1181,8 +1232,8 @@ fn sync_active_now(p: &Platform) -> Result<ModSyncView, String> {
 /// what makes it real. Idle when the tree already matches, which is what lets
 /// a launch call it every time.
 #[tauri::command]
-async fn mods_sync() -> Result<ModSyncView, String> {
-    tauri::async_runtime::spawn_blocking(move || sync_active_now(&Platform::detect()))
+async fn mods_sync(runtime: Option<String>) -> Result<ModSyncView, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_active_now(&Platform::detect(), runtime.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1196,7 +1247,12 @@ async fn mods_sync() -> Result<ModSyncView, String> {
 /// The group is computed from the file lists, never from a curated table, so
 /// a new football that writes the same path joins it by itself.
 #[tauri::command]
-async fn mods_toggle(id: String, version: String, on: bool) -> Result<ModSyncView, String> {
+async fn mods_toggle(
+    id: String,
+    version: String,
+    on: bool,
+    runtime: Option<String>,
+) -> Result<ModSyncView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let id = ModId::parse(&id).map_err(|e| e.to_string())?;
@@ -1236,7 +1292,7 @@ async fn mods_toggle(id: String, version: String, on: bool) -> Result<ModSyncVie
         }
         activation.save(&activation_path).map_err(|e| e.to_string())?;
 
-        sync_active_now(&p)
+        sync_active_now(&p, runtime.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2412,7 +2468,7 @@ struct ControlsSetView {
 /// left to do and a player who changes this does not have to guess whether it
 /// took effect.
 #[tauri::command]
-async fn controls_set(profile: String) -> Result<ControlsSetView, String> {
+async fn controls_set(profile: String, runtime: Option<String>) -> Result<ControlsSetView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let chosen = ControlsProfile::from_slug(&profile).ok_or_else(|| {
             format!(
@@ -2451,7 +2507,7 @@ async fn controls_set(profile: String) -> Result<ControlsSetView, String> {
             reborn_core::mods::apply_controls_profile(&activation_file, chosen, &installed)
                 .map_err(|e| e.to_string())?;
 
-        let (synced, sync_note) = match sync_active_now(&p) {
+        let (synced, sync_note) = match sync_active_now(&p, runtime.as_deref()) {
             Ok(view) => {
                 let note = view.note.clone();
                 (Some(view), note)
@@ -2659,18 +2715,6 @@ struct PrepRunView {
 /// Sorted, so two images do not resolve differently between runs. Named "first"
 /// rather than "the" on purpose: a real install here holds seventeen, and
 /// picking one is a guess that the caller may want to override.
-fn first_game_image(legacy_root: Option<&Path>) -> Option<PathBuf> {
-    let root = legacy_root?.join("Games");
-    let mut found: Vec<PathBuf> = std::fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && reborn_core::session::is_game_image(p))
-        .collect();
-    found.sort();
-    found.into_iter().next()
-}
-
 /// Run one preparation task, then record it.
 ///
 /// The order matters and is the opposite of the usual one: the work happens

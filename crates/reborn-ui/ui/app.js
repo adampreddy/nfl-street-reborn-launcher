@@ -105,7 +105,7 @@ const FEATURES = [
       {
         cmd: "user_dir",
         desc: "Which Dolphin user folder a launch would use, and why",
-        args: () => ({ chosen: get("userDir") }),
+        args: () => ({ chosen: get("userDir"), runtime: get("runtime") }),
       },
       { cmd: "components", desc: "Component identities, so nothing guesses a name" },
       { cmd: "sessions", desc: "Recorded sessions and how each ended" },
@@ -218,11 +218,13 @@ const FEATURES = [
         cmd: "mods_sync",
         desc: "Make the game load what activation.json says. Idle when it already does",
         write: true,
+        args: () => ({ runtime: get("runtime") }),
       },
       {
         cmd: "mods_toggle",
         desc: "One package on or off, others in its group off, then sync",
         write: true,
+        args: () => ({ runtime: get("runtime") }),
         inputs: [
           { key: "id", placeholder: "package id" },
           { key: "version", placeholder: "version" },
@@ -414,6 +416,7 @@ const FEATURES = [
       {
         cmd: "controls_set",
         desc: "Change the button art at any time. A setting, not a first run answer",
+        args: () => ({ runtime: get("runtime") }),
         inputs: [{ key: "profile", placeholder: "xbox|playstation|gamecube" }],
         write: true,
       },

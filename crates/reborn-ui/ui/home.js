@@ -178,6 +178,8 @@ function factsBlock() {
   rows.push(fact("Emulator", ok(check) ? check.runtime : null));
   if (ok(check) && check.runtime_note) rows.push(fact("", check.runtime_note));
   rows.push(fact("Game image", ok(check) ? check.game : null));
+  if (ok(check) && check.game_note) rows.push(fact("", check.game_note));
+  rows.push(fact("User folder", ok(check) ? check.user_dir_note : null));
   rows.push(fact("Controller", pads.text));
   if (pads.note) rows.push(fact("", pads.note));
   rows.push(fact("Mods", mods.text));
