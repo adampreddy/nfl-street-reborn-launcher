@@ -1588,3 +1588,33 @@ Pinned by `preparation_only_configures`, which fails if any task label promises 
 **Files to edit:** `docs/architecture/DOLPHIN_INTEGRATION.md`
 
 ---
+
+### 155. Activation was written correctly and the game never saw it
+
+**id:** `mods-sync-at-launch`
+
+**Ruling.** `activation.json` is a selection; `mods::sync_active` is what makes it real, and it runs at every launch (inside `Session::run`, after `prepare`) and on every change to the set (`controls_set`, `mods_toggle`, `mods_sync`, `rebornctl mods sync`). It verifies the composed tree against the plan first and rebuilds only on a difference, then links the emulator's texture folder. Measured on the real 8,059-entry tree: rebuild under five seconds, idle check under one. A refusal or a failure is carried in the launch result as `ModsAtLaunch` and never stops the game. A package listed as on but not installed is left out of the tree, left in the list, and reported. Recorded by Claude, 2026-09-02, after observing that every profile switch wrote the list and nothing composed it.
+
+**Files to edit:** `crates/reborn-core/src/mods.rs`, `crates/reborn-core/src/session.rs`
+
+---
+
+### 156. A chosen emulator was asserted to be a stock build
+
+**id:** `chosen-runtime-unknown`
+
+**Ruling.** `Runtime::is_supported` answers `Option<bool>`: `Some(true)` for the bundled copy and the 2.1 install's, `None` for a chosen path. Nothing can tell a Reborn fork from a stock Dolphin by looking at a path, and Adam's own builds live at chosen paths during development, so the old assertion cried wolf. The warning says what is lost IF the build is stock. Adam's rule stands: on Windows the bundled runtime is the only answer, and a custom path is permitted only on macOS and Linux.
+
+**Files to edit:** `crates/reborn-core/src/session.rs`
+
+---
+
+### 157. Match captures were collected only by whoever remembered to
+
+**id:** `stats-ingest-after-session`
+
+**Ruling.** `Session::run` moves every capture Dolphin wrote into the launcher's stats queue, filed under the session id, before the single-instance lock is released. Nothing is uploaded there: submitting cannot be taken back and stays an explicit act. A failure is carried as `StatsAfterSession` and never turns a game that already ran into a failed launch. The Dolphin fork's own uploader still runs inside Dolphin (see the runtime folder's test README); the queue is the launcher-side record until upload moves out of Dolphin, per CLAUDE_START_HERE item 7.
+
+**Files to edit:** `crates/reborn-core/src/session.rs`, `crates/reborn-core/src/stats.rs`
+
+---
