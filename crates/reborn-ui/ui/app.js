@@ -210,6 +210,21 @@ const FEATURES = [
         inputs: [{ key: "game", placeholder: "game id" }],
       },
       {
+        cmd: "mods_sync",
+        desc: "Make the game load what activation.json says. Idle when it already does",
+        write: true,
+      },
+      {
+        cmd: "mods_toggle",
+        desc: "One package on or off, others in its group off, then sync",
+        write: true,
+        inputs: [
+          { key: "id", placeholder: "package id" },
+          { key: "version", placeholder: "version" },
+          { key: "on", placeholder: "on: true or false", bool: true },
+        ],
+      },
+      {
         cmd: "mods_verify",
         desc: "Does the composed tree match the plan",
         inputs: [
@@ -606,9 +621,13 @@ function renderFeatures() {
 
 function buildArgs(f, fields, confirmBox) {
   const args = f.args ? f.args() : {};
-  for (const [key, { box, list, refs, number }] of Object.entries(fields)) {
+  for (const [key, { box, list, refs, number, bool }] of Object.entries(fields)) {
     const raw = box.value.trim();
-    if (refs) {
+    if (bool) {
+      // Anything but an explicit yes is false. A bool that defaulted to
+      // true on an empty box would turn a mod on by leaving a field blank.
+      args[key] = ["true", "1", "on", "yes"].includes(raw.toLowerCase());
+    } else if (refs) {
       args[key] = parseRefs(raw);
     } else if (list) {
       args[key] = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];

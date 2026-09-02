@@ -113,12 +113,19 @@ for (const f of rows) {
   // Fill every box, the way a player would before clicking.
   const fields = {};
   for (const inp of f.inputs || []) {
-    const value = inp.number ? "1" : inp.refs ? "some-mod@1.0.0" : "value";
+    const value = inp.number
+      ? "1"
+      : inp.refs
+        ? "some-mod@1.0.0"
+        : inp.bool
+          ? "true"
+          : "value";
     fields[inp.key] = {
       box: { value },
       list: inp.list,
       refs: inp.refs,
       number: inp.number,
+      bool: inp.bool,
     };
   }
 

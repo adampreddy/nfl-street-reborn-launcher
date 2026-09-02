@@ -62,6 +62,19 @@ impl GameBuild {
     pub fn is_customizable(self) -> bool {
         matches!(self, GameBuild::Offline)
     }
+
+    /// The disc id the emulator files this build's textures under.
+    ///
+    /// `Load/Textures/<this>` is where Dolphin looks, and `library/textures/
+    /// <this>` is where the pristine tree lives, so the two are joined by
+    /// this one string. The offline and online images carry different ids
+    /// even though most of their textures are byte-identical.
+    pub fn game_id(self) -> &'static str {
+        match self {
+            GameBuild::Offline => "GN7E69",
+            GameBuild::Online => "FR4N31",
+        }
+    }
 }
 
 /// Graphics presets offered in onboarding.

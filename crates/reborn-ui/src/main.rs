@@ -371,6 +371,10 @@ struct LaunchResult {
     /// False when the pad list came from the built in scan rather than the
     /// runtime, so the interface can say the binding may be incomplete.
     pads_authoritative: bool,
+    /// What the game was pointed at, mods-wise. Absent when nothing started.
+    /// Present and naming the problem when the mods could not be applied,
+    /// because that never stops a launch and must not be silent either.
+    mods_note: Option<String>,
 }
 
 fn preset_from(name: &str) -> GraphicsPreset {
@@ -531,6 +535,7 @@ async fn launch(
                 needs_recovery: false,
                 pads: Vec::new(),
                 pads_authoritative: false,
+                mods_note: None,
             }),
             Launched::Finished {
                 end,
@@ -538,6 +543,7 @@ async fn launch(
                 pads,
                 pads_authoritative,
                 user_dir,
+                mods,
                 ..
             } => {
                 let needs_recovery = end.needs_recovery();
@@ -570,6 +576,7 @@ async fn launch(
                         .map(|(port, dev)| format!("Port {port}: {dev}"))
                         .collect(),
                     pads_authoritative,
+                    mods_note: Some(mods.explain()),
                 })
             }
         }
@@ -984,6 +991,185 @@ fn compose_request(
     let req =
         ComposeRequest::in_data_root(platform, game.clone(), loaded).map_err(|e| e.to_string())?;
     Ok((game, req))
+}
+
+#[derive(Debug, Serialize)]
+struct ModSyncView {
+    game: String,
+    /// False when the plan refused, in which case nothing on disk changed and
+    /// the game keeps loading what it loaded before.
+    synced: bool,
+    refusal: Option<String>,
+    /// One line for a player.
+    note: String,
+    /// What activation.json listed, in order.
+    active: Vec<ActivePackageView>,
+    /// Listed but not installed, so left out of the tree and left listed.
+    missing: Vec<ActivePackageView>,
+    /// "already_current" or "rebuilt". Absent when refused.
+    tree: Option<&'static str>,
+    entries: u64,
+    overlaid: u64,
+    /// "linked" or "already_linked". Absent when refused.
+    link: Option<&'static str>,
+    link_at: Option<String>,
+    /// Where the folder that was at link_at went, when one was there. Nothing
+    /// is deleted; a player renames it back to undo the link.
+    moved_aside: Option<String>,
+    composed_root: Option<String>,
+}
+
+fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackageView> {
+    entries
+        .iter()
+        .map(|a| ActivePackageView {
+            id: a.id.to_string(),
+            version: a.version.to_string(),
+        })
+        .collect()
+}
+
+fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncView {
+    use reborn_core::mods::{SyncOutcome, TextureLink, TreeStep};
+    let note = outcome.explain();
+    match outcome {
+        SyncOutcome::Refused(why) => ModSyncView {
+            game: game.to_string(),
+            synced: false,
+            refusal: Some(why),
+            note,
+            active: Vec::new(),
+            missing: Vec::new(),
+            tree: None,
+            entries: 0,
+            overlaid: 0,
+            link: None,
+            link_at: None,
+            moved_aside: None,
+            composed_root: None,
+        },
+        SyncOutcome::Done(r) => {
+            let (tree, entries, overlaid) = match &r.tree {
+                TreeStep::AlreadyCurrent => ("already_current", 0, 0),
+                TreeStep::Rebuilt {
+                    entries, overlaid, ..
+                } => ("rebuilt", *entries, *overlaid),
+            };
+            let (link, link_at, moved_aside) = match &r.link {
+                TextureLink::AlreadyLinked { at, .. } => ("already_linked", at.clone(), None),
+                TextureLink::Linked {
+                    at, moved_aside, ..
+                } => ("linked", at.clone(), moved_aside.clone()),
+            };
+            ModSyncView {
+                game: r.game.to_string(),
+                synced: true,
+                refusal: None,
+                note,
+                active: active_view(&r.active),
+                missing: active_view(&r.missing),
+                tree: Some(tree),
+                entries,
+                overlaid,
+                link: Some(link),
+                link_at: Some(link_at.display().to_string()),
+                moved_aside: moved_aside.map(|p| p.display().to_string()),
+                composed_root: Some(r.composed_root.display().to_string()),
+            }
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Make the game load what activation.json says, right now.
+///
+/// The same call a launch makes, against the same user directory a launch
+/// would resolve, so what the Mods page shows as applied is what the next
+/// launch loads and not a parallel notion of it.
+fn sync_active_now(p: &Platform) -> Result<ModSyncView, String> {
+    let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
+        return Err(already_running());
+    };
+    let user = reborn_core::session::resolve_user_dir(p, None).map_err(|e| e.to_string())?;
+    let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
+    let req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
+        .map_err(|e| e.to_string())?;
+    let outcome =
+        reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
+    Ok(sync_view(&game, outcome))
+}
+
+/// Make the game load what activation.json says.
+///
+/// Read this as "apply": the activation list is the selection and this is
+/// what makes it real. Idle when the tree already matches, which is what lets
+/// a launch call it every time.
+#[tauri::command]
+async fn mods_sync() -> Result<ModSyncView, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_active_now(&Platform::detect()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Turn one package on or off, and make the game load the result.
+///
+/// Turning one on turns off every other member of its exclusive group first.
+/// That is the pick-one rule: seven of the eleven JSGME mods write the same
+/// football, and a list that let two of them be on at once would refuse to
+/// compose and blame the player for a state the interface let them reach.
+/// The group is computed from the file lists, never from a curated table, so
+/// a new football that writes the same path joins it by itself.
+#[tauri::command]
+async fn mods_toggle(id: String, version: String, on: bool) -> Result<ModSyncView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let id = ModId::parse(&id).map_err(|e| e.to_string())?;
+        let version = PackageVersion::parse(&version).map_err(|e| e.to_string())?;
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+        let activation_path =
+            reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
+        let mut activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+
+        if on {
+            // It has to be installed to be turned on. A list entry with no
+            // package behind it is a stale entry, and the interface has a way
+            // to show those without making new ones.
+            let dir = root.join(id.as_str()).join(version.as_str());
+            ModPackage::load(&dir).map_err(|e| {
+                format!(
+                    "{} is not an installed package, so it cannot be turned on: {e}",
+                    dir.display()
+                )
+            })?;
+
+            let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
+            let (library, _) = read_package_library(&root);
+            for group in reborn_core::mods::exclusive_groups(&library, &game) {
+                if !group.members.contains(&id) {
+                    continue;
+                }
+                for other in &group.members {
+                    if other != &id {
+                        activation.deactivate(other);
+                    }
+                }
+            }
+            activation.activate(id, version);
+        } else {
+            activation.deactivate(&id);
+        }
+        activation.save(&activation_path).map_err(|e| e.to_string())?;
+
+        sync_active_now(&p)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// What composing these packages would do, changing nothing.
@@ -2140,6 +2326,10 @@ struct ControlsSetView {
     /// Present when the profile needs a package that is not installed. The
     /// choice still stands and the game draws its own art until it arrives.
     missing_package: Option<String>,
+    /// The tree and link, made to match. Absent when the game is running,
+    /// in which case the next launch does it; sync_note says so.
+    synced: Option<ModSyncView>,
+    sync_note: String,
 }
 
 /// Change the button art, at any time.
@@ -2191,6 +2381,14 @@ async fn controls_set(profile: String) -> Result<ControlsSetView, String> {
             reborn_core::mods::apply_controls_profile(&activation_file, chosen, &installed)
                 .map_err(|e| e.to_string())?;
 
+        let (synced, sync_note) = match sync_active_now(&p) {
+            Ok(view) => {
+                let note = view.note.clone();
+                (Some(view), note)
+            }
+            Err(why) => (None, format!("Recorded. Applied at the next launch: {why}")),
+        };
+
         Ok(ControlsSetView {
             profile: chosen.slug(),
             label: chosen.label(),
@@ -2204,6 +2402,11 @@ async fn controls_set(profile: String) -> Result<ControlsSetView, String> {
             }),
             turned_off: applied.turned_off.iter().map(|i| i.to_string()).collect(),
             missing_package: applied.missing_package,
+            // Made real now, not at the next launch, so a player who changes
+            // this does not have to guess whether it took. While the game is
+            // running the lock is held and the launch that follows does it.
+            synced,
+            sync_note,
         })
     })
     .await
@@ -3730,6 +3933,8 @@ fn main() {
             mods_apply,
             mods_unapply,
             mods_verify,
+            mods_sync,
+            mods_toggle,
             // Bringing a 2.1 install over.
             migration_plan,
             migration_apply,

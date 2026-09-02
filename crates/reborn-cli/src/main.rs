@@ -318,6 +318,20 @@ enum ModsCommand {
         apply: bool,
     },
 
+    /// Make the game load what activation.json says is on.
+    ///
+    /// The same call a launch makes: verify the composed tree against the
+    /// active list, rebuild it only if it differs, and point the emulator's
+    /// texture folder at it. Idle when nothing changed.
+    Sync {
+        /// The build to sync, for example GN7E69.
+        #[arg(long, default_value = "GN7E69")]
+        game: String,
+        /// The Dolphin user folder. Defaults to the one a launch would use.
+        #[arg(long)]
+        user_dir: Option<PathBuf>,
+    },
+
     /// Turn a package on and rebuild the composed tree.
     Apply {
         /// The package id, for example jsgme.purple-football.
@@ -444,6 +458,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 user_dir,
                 apply,
             } => mods_link(&platform, &game, user_dir, apply),
+            ModsCommand::Sync { game, user_dir } => mods_sync(&platform, &game, user_dir),
             ModsCommand::Apply {
                 id,
                 version,
@@ -1014,9 +1029,11 @@ fn play(
             pads,
             pads_authoritative,
             user_dir,
+            mods,
             ..
         } => {
             println!("{}", user_dir.explain());
+            println!("{}", mods.explain());
             for (port, device) in &pads {
                 println!("  port {port} -> {device}");
             }
@@ -2158,6 +2175,65 @@ fn mods_link(
     }
 
     Ok(OK)
+}
+
+/// Make the game load the active set. See `reborn_core::mods::sync_active`.
+fn mods_sync(
+    platform: &Platform,
+    game: &str,
+    user_dir: Option<PathBuf>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let game = match GameId::parse(game) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("--game: {e}");
+            return Ok(misuse());
+        }
+    };
+    let Startup::Owner(lock) = Supervisor::acquire(platform)? else {
+        eprintln!("Another launcher is running and owns this install.");
+        return Ok(PROBLEM);
+    };
+    let user = reborn_core::session::resolve_user_dir(platform, user_dir.as_deref())?;
+    let req = reborn_core::mods::SyncRequest::in_data_root(platform, game, user.path())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    println!("Build      {}", req.game);
+    println!("User dir   {}", user.path().display());
+    println!("Composed   {}", req.composed_root.display());
+    println!();
+
+    match reborn_core::mods::sync_active(platform, &lock, &req, now_ms)? {
+        reborn_core::mods::SyncOutcome::Refused(why) => {
+            println!("REFUSED. Nothing was changed.");
+            println!("{why}");
+            Ok(PROBLEM)
+        }
+        reborn_core::mods::SyncOutcome::Done(report) => {
+            println!("{}", report.explain());
+            for entry in &report.active {
+                let state = if report.missing.contains(entry) {
+                    "listed, NOT installed"
+                } else {
+                    "on"
+                };
+                println!("  {}@{}  {state}", entry.id, entry.version);
+            }
+            if let reborn_core::mods::TextureLink::Linked {
+                moved_aside: Some(aside),
+                ..
+            } = &report.link
+            {
+                println!();
+                println!("The folder that was there is now at {}.", aside.display());
+                println!("Nothing was deleted. Rename it back to undo the link.");
+            }
+            Ok(OK)
+        }
+    }
 }
 
 /// What importing the JSGME library would do.

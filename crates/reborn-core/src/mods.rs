@@ -2456,6 +2456,200 @@ fn write_marker_durably(composed_root: &Path, marker: &ComposedMarker) -> Result
     file.sync_all().map_err(|source| Error::Io { path, source })
 }
 
+// ---------------------------------------------------------------------------
+// Making the active set the one the game loads
+// ---------------------------------------------------------------------------
+
+/// Everything a sync needs, named explicitly so a test can point every root
+/// at a temporary directory. [`SyncRequest::in_data_root`] is the layout a
+/// real launch uses.
+#[derive(Debug, Clone)]
+pub struct SyncRequest {
+    pub game: GameId,
+    pub pristine_root: PathBuf,
+    pub composed_root: PathBuf,
+    pub packages_root: PathBuf,
+    pub activation_file: PathBuf,
+    /// The emulator's user directory. `Load/Textures/<game>` under it is what
+    /// gets pointed at the composed tree.
+    pub user_dir: PathBuf,
+}
+
+impl SyncRequest {
+    /// The standard layout under the launcher's data root, for the user
+    /// directory a launch resolved.
+    pub fn in_data_root(platform: &Platform, game: GameId, user_dir: &Path) -> Result<Self> {
+        Ok(Self {
+            pristine_root: pristine_root(platform, &game)?,
+            composed_root: composed_root(platform, &game)?,
+            packages_root: packages_root(platform)?,
+            activation_file: activation_path(platform)?,
+            user_dir: user_dir.to_path_buf(),
+            game,
+        })
+    }
+}
+
+/// What the composed tree needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeStep {
+    /// It already matched the active set, so it was left alone.
+    ///
+    /// This is the common case, and it is what makes syncing on every launch
+    /// affordable: a verification is a directory walk plus a hash of the few
+    /// overlaid files, where a rebuild is eight thousand deletes and eight
+    /// thousand links.
+    AlreadyCurrent,
+    /// It did not match, so it was rebuilt from the pristine tree.
+    Rebuilt {
+        entries: u64,
+        overlaid: u64,
+        copied: u64,
+        /// Why hardlinking was abandoned part way, when it was.
+        link_failure: Option<String>,
+    },
+}
+
+/// The game will load the active set, and this is what it took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncReport {
+    pub game: GameId,
+    pub composed_root: PathBuf,
+    /// What `activation.json` listed, in order.
+    pub active: Vec<ActivePackage>,
+    /// Listed as active but not installed, so left out of the tree.
+    ///
+    /// Reported, and left in the list. Removing the entry would be the launcher
+    /// deciding a mod is off because its files went missing, and a player who
+    /// reinstalls the package expects it to come back on by itself.
+    pub missing: Vec<ActivePackage>,
+    pub tree: TreeStep,
+    pub link: TextureLink,
+}
+
+/// The outcome of a sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// Boxed: the report carries paths and lists, and an unboxed one made
+    /// every enum that carries this one, up to the launch result, that big.
+    Done(Box<SyncReport>),
+    /// Nothing on disk changed, and this is why. The game loads whatever it
+    /// loaded before, which is the right thing to do with a refusal: a launch
+    /// blocked over button art is worse than the art being stale.
+    Refused(String),
+}
+
+impl SyncReport {
+    /// One line for a player or a log.
+    pub fn explain(&self) -> String {
+        let count = self.active.len() - self.missing.len();
+        let tree = match &self.tree {
+            TreeStep::AlreadyCurrent => "already in place".to_string(),
+            TreeStep::Rebuilt { entries, .. } => format!("rebuilt, {entries} entries"),
+        };
+        let link = match &self.link {
+            TextureLink::AlreadyLinked { .. } => "linked",
+            TextureLink::Linked { .. } => "newly linked",
+        };
+        let missing = if self.missing.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " {} listed but not installed: {}.",
+                self.missing.len(),
+                self.missing
+                    .iter()
+                    .map(|m| m.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        format!("{count} mod(s) on, tree {tree}, texture folder {link}.{missing}")
+    }
+}
+
+impl SyncOutcome {
+    /// One line for a player or a log.
+    pub fn explain(&self) -> String {
+        match self {
+            SyncOutcome::Refused(why) => format!("Mods were not applied: {why}"),
+            SyncOutcome::Done(report) => report.explain(),
+        }
+    }
+}
+
+/// Make the game load exactly what `activation.json` says is on.
+///
+/// This is the one operation everything that changes the active set ends in:
+/// a launch, a controls profile switch, a mod toggled on the Mods page. Before
+/// it existed, activation was written correctly by every one of those and
+/// nothing rebuilt the tree or pointed the emulator at it, so the activation
+/// was right and invisible.
+///
+/// Order: read the list, load what it names, plan, verify the tree that is
+/// there against the plan, rebuild only if it differs, then link. Verification
+/// before rebuild is what keeps this cheap enough to run on every launch.
+///
+/// Refuses rather than errors when the plan refuses, because a plan refusal
+/// is a state a library can be in (two mods on one football) and the caller
+/// decides whether that blocks anything. Real I/O failures are errors.
+pub fn sync_active(
+    platform: &Platform,
+    lock: &Supervisor,
+    req: &SyncRequest,
+    now_ms: u64,
+) -> Result<SyncOutcome> {
+    let activation = Activation::load(&req.activation_file)?;
+
+    let mut packages = Vec::new();
+    let mut missing = Vec::new();
+    for entry in &activation.active {
+        let dir = req
+            .packages_root
+            .join(entry.id.as_str())
+            .join(entry.version.as_str());
+        match ModPackage::load(&dir) {
+            Ok(package) => packages.push(package),
+            Err(_) => missing.push(entry.clone()),
+        }
+    }
+
+    let compose = ComposeRequest {
+        game: req.game.clone(),
+        pristine_root: req.pristine_root.clone(),
+        composed_root: req.composed_root.clone(),
+        packages_root: req.packages_root.clone(),
+        packages,
+    };
+    let plan = match Composer::plan(platform, &compose)? {
+        Composition::Planned(plan) => plan,
+        Composition::Refused(refusal) => return Ok(SyncOutcome::Refused(refusal.message())),
+    };
+
+    let tree = if Composer::verify(&plan)?.matches_the_plan() {
+        TreeStep::AlreadyCurrent
+    } else {
+        let report = Composer::apply(platform, lock, &plan)?;
+        TreeStep::Rebuilt {
+            entries: report.entries(),
+            overlaid: report.overlaid,
+            copied: report.copied,
+            link_failure: report.link_failure,
+        }
+    };
+
+    let link = link_textures(&req.user_dir, &req.game, &req.composed_root, now_ms)?;
+
+    Ok(SyncOutcome::Done(Box::new(SyncReport {
+        game: req.game.clone(),
+        composed_root: req.composed_root.clone(),
+        active: activation.active,
+        missing,
+        tree,
+        link,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3885,4 +4079,178 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    /// `lay_package` plus the manifest on disk, which is what makes a
+    /// package INSTALLED rather than merely laid out: sync reads the list
+    /// and loads each package from its directory, so a package that exists
+    /// only as a struct in a test is, to sync, missing.
+    fn lay_installed_package(
+        packages_root: &Path,
+        id: &str,
+        group: Option<&str>,
+        files: &[(&str, &[u8])],
+    ) -> ModPackage {
+        let package = lay_package(packages_root, id, group, files);
+        let manifest = packages_root
+            .join(package.id.as_str())
+            .join(package.version.as_str())
+            .join(PACKAGE_MANIFEST);
+        write(&manifest, &serde_json::to_vec_pretty(&package).unwrap());
+        package
+    }
+
+    // sync_active: the one operation every change to the active set ends in
+    // -----------------------------------------------------------------------
+
+    fn sync_request(fx: &Fixture, user_dir: &Path) -> SyncRequest {
+        SyncRequest {
+            game: game(),
+            pristine_root: fx.pristine.clone(),
+            composed_root: fx.composed.clone(),
+            packages_root: fx.packages.clone(),
+            activation_file: fx.activation(),
+            user_dir: user_dir.to_path_buf(),
+        }
+    }
+
+    /// What the emulator would load: read THROUGH the user directory, not
+    /// from the composed tree, because the link is the part that was missing.
+    fn loaded_by_the_game(user_dir: &Path, relative: &str) -> Vec<u8> {
+        std::fs::read(
+            user_dir
+                .join("Load")
+                .join("Textures")
+                .join("GN7E69")
+                .join(relative),
+        )
+        .unwrap()
+    }
+
+    fn done(outcome: SyncOutcome) -> SyncReport {
+        match outcome {
+            SyncOutcome::Done(r) => *r,
+            SyncOutcome::Refused(why) => panic!("unexpected refusal: {why}"),
+        }
+    }
+
+    #[test]
+    fn sync_makes_the_game_load_what_activation_says_and_is_idle_when_nothing_changed() {
+        // Before this existed: the controls profile wrote activation.json
+        // correctly at every launch, and the game never saw it, because
+        // nothing composed the tree or pointed Load/Textures at it.
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let package = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(package.id.clone(), package.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+        let req = sync_request(&fx, &user_dir);
+
+        let first = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert!(
+            matches!(first.tree, TreeStep::Rebuilt { overlaid: 1, .. }),
+            "a fresh sync builds the tree: {:?}",
+            first.tree
+        );
+        assert!(matches!(first.link, TextureLink::Linked { .. }));
+        assert!(first.missing.is_empty());
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the purple football");
+
+        // Nothing changed, so nothing is rebuilt. This is what makes a sync on
+        // every launch affordable on an eight thousand file tree.
+        let again = done(sync_active(&p, &guard, &req, 2).unwrap());
+        assert_eq!(again.tree, TreeStep::AlreadyCurrent);
+        assert!(matches!(again.link, TextureLink::AlreadyLinked { .. }));
+
+        // Turned off: the game goes back to the original, and the original was
+        // never touched to get there.
+        Activation::default().save(&fx.activation()).unwrap();
+        let off = done(sync_active(&p, &guard, &req, 3).unwrap());
+        assert!(matches!(off.tree, TreeStep::Rebuilt { overlaid: 0, .. }));
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the original football");
+        assert_eq!(
+            std::fs::read(fx.pristine.join(BALL)).unwrap(),
+            b"the original football"
+        );
+        assert!(off.explain().starts_with("0 mod(s) on, tree rebuilt"), "{}", off.explain());
+    }
+
+    #[test]
+    fn sync_reports_a_listed_package_that_is_not_installed_and_leaves_it_listed() {
+        // Its files are gone but the player turned it on. The tree is built
+        // without it and the entry stays, so reinstalling the package brings
+        // it back without the player having to remember to turn it on again.
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let ghost = ActivePackage {
+            id: ModId::parse("reborn.ball.ghost").unwrap(),
+            version: PackageVersion::parse("1.0.0").unwrap(),
+        };
+        let activation = Activation {
+            active: vec![ghost.clone()],
+            ..Default::default()
+        };
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+
+        let report = done(sync_active(&p, &guard, &sync_request(&fx, &user_dir), 1).unwrap());
+        assert_eq!(report.missing, vec![ghost.clone()]);
+        assert_eq!(report.active, vec![ghost.clone()]);
+        assert!(matches!(report.tree, TreeStep::Rebuilt { overlaid: 0, .. }));
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the original football");
+        assert_eq!(
+            Activation::load(&fx.activation()).unwrap().active,
+            vec![ghost],
+            "the entry must survive: the launcher does not decide a mod is off"
+        );
+        assert!(
+            report.explain().contains("listed but not installed: reborn.ball.ghost"),
+            "{}",
+            report.explain()
+        );
+    }
+
+    #[test]
+    fn sync_refuses_a_hard_conflict_and_changes_nothing() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let purple = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"purple")],
+        );
+        let green = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.green",
+            None,
+            &[(&format!("GN7E69/{BALL}"), b"green")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(purple.id.clone(), purple.version.clone());
+        activation.activate(green.id.clone(), green.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+
+        let outcome = sync_active(&p, &guard, &sync_request(&fx, &user_dir), 1).unwrap();
+        let SyncOutcome::Refused(why) = outcome else {
+            panic!("two packages on one football must refuse, got {outcome:?}");
+        };
+        assert!(why.contains("both write"), "{why}");
+        assert!(!fx.composed.exists(), "a refused sync must not build a tree");
+        assert!(
+            !user_dir.join("Load").exists(),
+            "a refused sync must not point the game anywhere"
+        );
+        assert!(SyncOutcome::Refused(why).explain().starts_with("Mods were not applied: "));
+    }
 }

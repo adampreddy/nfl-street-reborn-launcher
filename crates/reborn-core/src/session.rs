@@ -108,9 +108,36 @@ pub enum Launched {
         pads_authoritative: bool,
         /// Which user directory the session booted against.
         user_dir: UserDir,
+        /// Whether the game was pointed at the active mods, and what that
+        /// took. Never stops a launch; see [`ModsAtLaunch`].
+        mods: ModsAtLaunch,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
+}
+
+/// What happened to the mods on the way to a launch.
+///
+/// Its own type rather than a `Result`, because a failure here is REPORTED
+/// and the launch goes ahead. The worst case is stale button art or a stale
+/// football over a game that runs, and refusing to start the game over that
+/// would be the worse outcome. What must not happen is the failure being
+/// swallowed, which is why this is carried in the launch result rather than
+/// logged and dropped.
+#[derive(Debug, Clone)]
+pub enum ModsAtLaunch {
+    Synced(crate::mods::SyncOutcome),
+    Failed(String),
+}
+
+impl ModsAtLaunch {
+    /// One line for a player, naming what the game is loading.
+    pub fn explain(&self) -> String {
+        match self {
+            ModsAtLaunch::Synced(outcome) => outcome.explain(),
+            ModsAtLaunch::Failed(why) => format!("Mods were not applied: {why}"),
+        }
+    }
 }
 
 /// Everything written for a launch, reported so a caller can show it.
@@ -480,6 +507,12 @@ impl Session {
 
         let written = Self::prepare(platform, req)?;
 
+        // The mods, made real. prepare reconciled the activation list; this
+        // builds the tree that list describes and points the emulator at it.
+        // Before this call existed every profile switch wrote the list
+        // correctly and the game never saw it.
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path());
+
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
@@ -506,7 +539,32 @@ impl Session {
             pads: written.pads,
             pads_authoritative: written.pads_authoritative,
             user_dir: written.user_dir,
+            mods,
         })
+    }
+}
+
+/// Point this build at what `activation.json` says is on.
+///
+/// Every error is caught and carried, never propagated: see [`ModsAtLaunch`].
+fn sync_mods_for_launch(
+    platform: &Platform,
+    lock: &Supervisor,
+    build: GameBuild,
+    user_dir: &Path,
+) -> ModsAtLaunch {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let attempt = (|| -> Result<crate::mods::SyncOutcome> {
+        let game = crate::mods::GameId::parse(build.game_id())?;
+        let req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
+        crate::mods::sync_active(platform, lock, &req, now_ms)
+    })();
+    match attempt {
+        Ok(outcome) => ModsAtLaunch::Synced(outcome),
+        Err(e) => ModsAtLaunch::Failed(e.to_string()),
     }
 }
 
