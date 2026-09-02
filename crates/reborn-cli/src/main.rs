@@ -406,6 +406,26 @@ enum StatsCommand {
 }
 
 fn main() -> std::process::ExitCode {
+    // A reader that goes away is not a fault. `rebornctl status | head`
+    // closes the pipe after the first lines, and every println! after that
+    // fails with a broken pipe, which the standard library turns into a
+    // panic with a stack trace on stderr. The player sees a crash message
+    // from a command that did exactly what was asked. So a failed print to
+    // stdout exits quietly, and every other panic keeps the default report.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if message.starts_with("failed printing to stdout") {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
