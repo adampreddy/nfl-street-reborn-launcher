@@ -338,30 +338,20 @@ impl SkipRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrepTask {
-    CopyGameFiles,
-    InstallRuntime,
-    ApplyTextures,
-    ApplySettings,
+    /// Write the emulator configuration from the answers given.
+    WriteConfig,
+    /// Read it back and confirm it is there.
     CheckEverything,
 }
 
 impl PrepTask {
     /// The five tasks, in order.
-    pub const ALL: &'static [PrepTask] = &[
-        PrepTask::CopyGameFiles,
-        PrepTask::InstallRuntime,
-        PrepTask::ApplyTextures,
-        PrepTask::ApplySettings,
-        PrepTask::CheckEverything,
-    ];
+    pub const ALL: &'static [PrepTask] = &[PrepTask::WriteConfig, PrepTask::CheckEverything];
 
     /// The stable on-disk key.
     pub fn slug(self) -> &'static str {
         match self {
-            PrepTask::CopyGameFiles => "copy_game_files",
-            PrepTask::InstallRuntime => "install_runtime",
-            PrepTask::ApplyTextures => "apply_textures",
-            PrepTask::ApplySettings => "apply_settings",
+            PrepTask::WriteConfig => "write_config",
             PrepTask::CheckEverything => "check_everything",
         }
     }
@@ -376,11 +366,8 @@ impl PrepTask {
     /// decision rather than a design choice made here.
     pub fn label(self) -> &'static str {
         match self {
-            PrepTask::CopyGameFiles => "Copy game files",
-            PrepTask::InstallRuntime => "Install Reborn Dolphin",
-            PrepTask::ApplyTextures => "Apply textures",
-            PrepTask::ApplySettings => "Apply your controller and graphics",
-            PrepTask::CheckEverything => "Check everything",
+            PrepTask::WriteConfig => "Save your controller and graphics settings",
+            PrepTask::CheckEverything => "Check the settings are in place",
         }
     }
 }
@@ -1790,9 +1777,8 @@ mod tests {
             let mut ob = fresh(dir.path());
             walk_to_preparation(&mut ob);
             recorded(ob.reach(Stage::Preparation).unwrap());
-            recorded(ob.record_task(PrepTask::CopyGameFiles).unwrap());
-            recorded(ob.record_task(PrepTask::InstallRuntime).unwrap());
-            // Power cut during the texture copy.
+            recorded(ob.record_task(PrepTask::WriteConfig).unwrap());
+            // Power cut after the config was written, before it was checked.
         }
         let ob = fresh(dir.path());
         match ob.next() {
@@ -1809,12 +1795,8 @@ mod tests {
         }
         assert_eq!(
             ob.preparation_remaining(),
-            vec![
-                PrepTask::ApplyTextures,
-                PrepTask::ApplySettings,
-                PrepTask::CheckEverything
-            ],
-            "the two finished copies must not be paid for twice"
+            vec![PrepTask::CheckEverything],
+            "the finished write must not be paid for twice"
         );
     }
 
@@ -2120,7 +2102,7 @@ mod tests {
         walk_to_preparation(&mut ob);
 
         assert_eq!(
-            ob.record_task(PrepTask::CopyGameFiles).unwrap(),
+            ob.record_task(PrepTask::WriteConfig).unwrap(),
             Advance::Refused(Refusal::NotReached {
                 stage: Stage::Preparation
             })
@@ -2129,7 +2111,7 @@ mod tests {
             ob.satisfy(Stage::Preparation, Satisfaction::Prepared)
                 .unwrap(),
             Advance::Refused(Refusal::TasksOutstanding {
-                first: PrepTask::CopyGameFiles
+                first: PrepTask::WriteConfig
             })
         );
     }
@@ -2507,21 +2489,46 @@ mod tests {
         }
     }
 
-    /// The five tasks and their names are a locked ruling, not a choice made
-    /// here. RECONCILIATION_RULINGS.md 105.
+    /// Preparation CONFIGURES. It does not install.
+    ///
+    /// This reverses RECONCILIATION_RULINGS ruling 1088, which fixed the list
+    /// at five: copy game files, install Reborn Dolphin, apply textures, apply
+    /// your controller and graphics, check everything. Adam reversed it
+    /// directly: "preparation doesnt have to do any installing, just
+    /// configuring".
+    ///
+    /// The first two were installer work. The installer exists to put files on
+    /// the disk, and Dolphin is bundled and forced on Windows, so a first run
+    /// step claiming to copy game files was either doing it twice or not doing
+    /// it at all. Applying the prompt pack moved to launch, beside the config
+    /// regeneration that already runs on every boot, so changing your button
+    /// art later does not mean re-running first run.
     #[test]
-    fn the_preparation_task_list_is_the_ruled_five_in_order() {
+    fn preparation_only_configures() {
         let labels: Vec<&str> = PrepTask::ALL.iter().map(|t| t.label()).collect();
         assert_eq!(
             labels,
             vec![
-                "Copy game files",
-                "Install Reborn Dolphin",
-                "Apply textures",
-                "Apply your controller and graphics",
-                "Check everything",
-            ]
+                "Save your controller and graphics settings",
+                "Check the settings are in place",
+            ],
+            "every task here must be configuration, not installation"
         );
+
+        // No label may promise installing, copying or downloading. The wording
+        // is the promise a player reads, and this is the whole point of the
+        // change.
+        for task in PrepTask::ALL {
+            let label = task.label().to_lowercase();
+            for forbidden in ["copy", "install", "download", "extract"] {
+                assert!(
+                    !label.contains(forbidden),
+                    "{:?} promises to {forbidden}, which the installer already did",
+                    task.label()
+                );
+            }
+            assert!(!task.slug().is_empty());
+        }
     }
 
     #[test]
@@ -2566,7 +2573,7 @@ mod tests {
                 why: "no !BACKUP".to_string(),
             },
             Refusal::TasksOutstanding {
-                first: PrepTask::ApplyTextures,
+                first: PrepTask::WriteConfig,
             },
             Refusal::Outstanding {
                 stage: Stage::SystemCheck,
@@ -2590,18 +2597,18 @@ mod tests {
         let mut ob = fresh(dir.path());
         walk_to_preparation(&mut ob);
         recorded(ob.reach(Stage::Preparation).unwrap());
-        recorded(ob.record_task(PrepTask::ApplyTextures).unwrap());
+        recorded(ob.record_task(PrepTask::WriteConfig).unwrap());
 
         let before = std::fs::read_to_string(dir.path().join(JOURNAL)).unwrap();
         assert_eq!(
-            ob.record_task(PrepTask::ApplyTextures).unwrap(),
+            ob.record_task(PrepTask::WriteConfig).unwrap(),
             Advance::AlreadyRecorded
         );
         assert_eq!(
             std::fs::read_to_string(dir.path().join(JOURNAL)).unwrap(),
             before
         );
-        assert_eq!(ob.preparation_remaining().len(), 4);
+        assert_eq!(ob.preparation_remaining().len(), 1);
     }
 
     /// A full run, end to end, on a machine that has a 2.1 install.
@@ -2703,7 +2710,7 @@ mod tests {
         // Applying is not. record_task is what copies the prompt textures, so
         // it has to refuse before doing the work rather than afterwards.
         assert_eq!(
-            ob.record_task(PrepTask::ApplyTextures).unwrap(),
+            ob.record_task(PrepTask::WriteConfig).unwrap(),
             Advance::Refused(Refusal::OutOfOrder {
                 expected: Stage::ControlsProfile,
                 got: Stage::Preparation,

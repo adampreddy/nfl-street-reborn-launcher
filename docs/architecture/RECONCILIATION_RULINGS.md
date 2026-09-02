@@ -1085,7 +1085,15 @@ other. Do not build from them. Build from this file plus the documents.**
 
 **id:** `retained-base-and-import-reversal`
 
-**Ruling.** No retained base and no import pipeline. The locked decision to ship the finished game image removes both. Questionnaire rows 8.1, 8.2 and 8.3 are retired, and row 2.2's onboarding "import" step is replaced by the corrected preparation task list in WIREFRAMES section 5 (copy game files, install Reborn Dolphin, apply textures, apply your controller and graphics, check everything). `library/base/` does not exist.
+**Ruling.** No retained base and no import pipeline. The locked decision to ship the finished game image removes both. Questionnaire rows 8.1, 8.2 and 8.3 are retired, and row 2.2's onboarding "import" step is replaced by the corrected preparation task list in WIREFRAMES section 5 (copy game files, install Reborn Dolphin, apply textures, apply your controller and graphics, check everything).
+
+**REVERSED, 2026-09-02, by Adam directly.** "preparation doesnt have to do any installing, just configuring". The five-task list becomes two: **save your controller and graphics settings**, then **check the settings are in place**.
+
+Copy game files and Install Reborn Dolphin were installer work. The installer exists to put files on the disk, and Dolphin is bundled and forced on Windows, so a first run step claiming to copy game files was either doing it twice or not doing it at all. Apply textures moved to launch, beside the configuration regeneration that already runs on every boot, so a player who changes their button art later does not have to re-run first run to see it.
+
+Both remaining tasks call `Session::prepare`, the same code a launch calls, so first run cannot configure a machine differently from the way every later boot will. The check is a second `prepare` pass: it only writes what differs, so a pass that changes nothing proves the first one landed, and a pass that changes something means another program is rewriting the configuration.
+
+Pinned by `preparation_only_configures`, which fails if any task label promises to copy, install, download or extract. `library/base/` does not exist.
 
 **Files to edit:** `docs/architecture/SYSTEM_ARCHITECTURE.md`, `docs/architecture/CONTENT_AND_UPDATE_MODEL.md`, `docs/discovery/PROJECT_QUESTIONNAIRE.md`
 

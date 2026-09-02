@@ -489,33 +489,68 @@ const SCREENS = {
 
   preparation: () => {
     const done = new Set((state.tasks_done || []).map((t) => t.slug));
+    const remaining = state.preparation_remaining || [];
+    const ran = pending.ran || {};
+
     const list = el("ul", "tasklist");
-    for (const t of [...(state.tasks_done || []), ...(state.preparation_remaining || [])]) {
+    for (const t of [...(state.tasks_done || []), ...remaining]) {
       const li = el("li", done.has(t.slug) ? "done" : null, t.label);
+      // What it actually did, not a tick. "set 5 keys" and "nothing to change"
+      // are both success and mean different things.
+      if (ran[t.slug]) li.appendChild(el("span", "why", ran[t.slug]));
       list.appendChild(li);
     }
+
+    const nodes = [
+      el(
+        "p",
+        null,
+        "This saves the answers you just gave into the emulator's own settings. " +
+          "Nothing is installed or downloaded: the installer already put the " +
+          "files on your machine.",
+      ),
+      list,
+    ];
+
+    if (pending.prepError) nodes.push(el("div", "refusal", pending.prepError));
+
+    if (remaining.length) {
+      const run = el("button", "write", `Run ${remaining.length} step(s)`);
+      run.addEventListener("click", async () => {
+        run.disabled = true;
+        pending.prepError = null;
+        pending.ran = pending.ran || {};
+        for (const t of remaining) {
+          try {
+            const out = await call("onboarding_run_task", {
+              task: t.slug,
+              runtime: pending.runtime || null,
+              game: pending.image || null,
+            });
+            pending.ran[out.task] = out.did;
+            if (out.step.outcome === "refused") {
+              pending.prepError = out.step.refused_because;
+              break;
+            }
+          } catch (e) {
+            // Stop at the first failure rather than carrying on. The steps
+            // are ordered, and running the check after a failed write would
+            // report on a configuration that was never made.
+            pending.prepError = typeof e === "string" ? e : e.message;
+            break;
+          }
+        }
+        await refresh();
+      });
+      nodes.push(run);
+    }
+
     return {
-      nodes: [
-        el(
-          "p",
-          null,
-          "This is the step that changes your machine: it copies the game " +
-            "files, sets up the emulator and applies what you chose.",
-        ),
-        el(
-          "p",
-          null,
-          "Each item is recorded as it finishes, so if this is interrupted it " +
-            "picks up rather than starting again.",
-        ),
-        list,
-      ],
+      nodes,
       ready: () => (state.preparation_remaining || []).length === 0,
-      hint:
-        (state.preparation_remaining || []).length > 0
-          ? "Nothing here runs yet. The tasks are recorded from the harness, " +
-            "so this screen can only watch."
-          : "",
+      hint: remaining.length
+        ? "Run the steps to continue."
+        : "Everything is saved.",
       answer: () => call("onboarding_prepared"),
     };
   },

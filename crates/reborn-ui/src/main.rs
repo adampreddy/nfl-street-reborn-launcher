@@ -2161,6 +2161,153 @@ async fn controls_options(runtime: Option<String>) -> Result<Vec<ControlsOptionV
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, Serialize)]
+struct PrepRunView {
+    step: OnboardingStepView,
+    task: &'static str,
+    label: &'static str,
+    /// What the task actually did, in the words of whatever did it.
+    ///
+    /// Not a status word. "wrote 5 keys across 2 files" and "nothing to change"
+    /// are both success and mean different things, and a screen that showed
+    /// both as a tick would be hiding the difference.
+    did: String,
+    /// Files the task wrote, so a player can see it touched what it said.
+    wrote: Vec<String>,
+}
+
+/// Run one preparation task, then record it.
+///
+/// The order matters and is the opposite of the usual one: the work happens
+/// FIRST and is only recorded once it succeeded. Recording first would leave a
+/// journal claiming a step finished when it had not, and preparation is the one
+/// stage whose journal is read back as proof.
+///
+/// Preparation configures. Nothing here installs, copies or downloads: the
+/// installer put the files on disk and Dolphin is bundled, so there is nothing
+/// left to fetch. This reverses RECONCILIATION_RULINGS 1088, on Adam's
+/// instruction.
+#[tauri::command]
+async fn onboarding_run_task(
+    task: String,
+    runtime: Option<String>,
+    game: Option<String>,
+    legacy_root: Option<String>,
+) -> Result<PrepRunView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = prep_task_from_slug(&task)?;
+        let p = Platform::detect();
+
+        // Read the answers back out of the journal rather than taking them as
+        // arguments. They were recorded for exactly this, and an argument here
+        // could configure the machine for a preset nobody chose.
+        let flow = open_flow(legacy_root.clone())?;
+        let summary = flow.summary();
+
+        let (did, wrote) = match target {
+            PrepTask::WriteConfig | PrepTask::CheckEverything => {
+                let preset = summary
+                    .graphics
+                    .map(|g| g.preset())
+                    // Nothing chosen means the stage was skipped, which the
+                    // ordering guard should have prevented. Refusing beats
+                    // writing a preset the player never saw.
+                    .ok_or_else(|| {
+                        "no graphics preset is recorded, so there is nothing to write. \
+                         Answer the graphics step first."
+                            .to_string()
+                    })?;
+
+                // Both required, because Session::prepare writes a real
+                // configuration for a real pair and there is nothing sensible
+                // to write without them. On Windows the runtime is the bundled
+                // Dolphin and is never a question; the refusals say so.
+                let runtime_exe = runtime
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        "no emulator path. On Windows this is the bundled Dolphin and                          the launcher should already know it, so being asked means                          the install is incomplete."
+                            .to_string()
+                    })?;
+                let game_path = game
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        "no game image. Confirm the game step first, or bring a 2.1                          install over, which is where the image comes from for anyone                          upgrading."
+                            .to_string()
+                    })?;
+
+                let req = LaunchRequest {
+                    runtime_exe,
+                    game_path,
+                    graphics: preset,
+                    fullscreen: true,
+                    build: GameBuild::Offline,
+                    // Find the folder that already exists. Creating a fresh one
+                    // here is the bug that booted the game to factory defaults
+                    // with none of the player's saves.
+                    user_dir: None,
+                };
+
+                // The same call a launch makes, so first run cannot configure
+                // the machine differently from the way it will be configured
+                // every time afterwards.
+                let written = Session::prepare(&p, &req).map_err(|e| e.to_string())?;
+
+                let files: Vec<String> = written
+                    .files
+                    .iter()
+                    .chain(written.unchanged.iter())
+                    .map(|f| f.display().to_string())
+                    .collect();
+
+                let did = match target {
+                    PrepTask::WriteConfig => format!(
+                        "set {} key(s) across {} file(s), {} already correct. {}",
+                        written.keys_set,
+                        written.files.len(),
+                        written.unchanged.len(),
+                        written.user_dir.explain()
+                    ),
+                    // Running it a second time IS the check: prepare only
+                    // writes what differs, so a second pass that changes
+                    // nothing proves the first one landed. Anything else means
+                    // something is rewriting the config behind us.
+                    PrepTask::CheckEverything => {
+                        if written.keys_set == 0 {
+                            format!(
+                                "checked {} file(s), every value already correct",
+                                written.unchanged.len()
+                            )
+                        } else {
+                            format!(
+                                "PROBLEM: {} key(s) had to be set again, so something \
+                                 else is changing the configuration",
+                                written.keys_set
+                            )
+                        }
+                    }
+                };
+                (did, files)
+            }
+        };
+
+        // Only now.
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow.record_task(target).map_err(|e| e.to_string())?;
+
+        Ok(PrepRunView {
+            step: step_view(&flow, advance),
+            task: target.slug(),
+            label: target.label(),
+            did,
+            wrote,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Mark one preparation task finished.
 ///
 /// This is the door that writes, so the core refuses it while an earlier stage
@@ -3407,6 +3554,7 @@ fn main() {
             onboarding_decline_controller,
             onboarding_choose_controls,
             controls_options,
+            onboarding_run_task,
             onboarding_record_task,
             onboarding_prepared,
             onboarding_finish,

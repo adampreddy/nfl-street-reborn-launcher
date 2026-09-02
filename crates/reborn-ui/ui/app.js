@@ -377,6 +377,17 @@ const FEATURES = [
         write: true,
       },
       {
+        cmd: "onboarding_run_task",
+        desc: "Do a preparation step for real, then record it. write_config|check_everything",
+        inputs: [
+          { key: "task", placeholder: "write_config|check_everything" },
+          { key: "runtime", placeholder: "path to Dolphin exe" },
+          { key: "game", placeholder: "path to the game image" },
+        ],
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        write: true,
+      },
+      {
         cmd: "onboarding_record_task",
         desc: "Mark a preparation task done. Refused if an earlier stage is unanswered",
         inputs: [{ key: "task", placeholder: "task slug" }],
