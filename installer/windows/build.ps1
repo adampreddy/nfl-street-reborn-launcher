@@ -226,8 +226,16 @@ if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 # moment the output was created: the previous Setup exe had been deleted,
 # but a scanner still held its handle, and Windows keeps a deleted name
 # reserved until the last handle closes. A fresh folder has no such history.
-$scratch = Join-Path $root "target\installer-out"
-if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch }
+# A NEW folder every run, not the same one emptied. Emptying it hit the same
+# trap one level up: the previous run had just moved a 60 MB exe out of it,
+# a scanner still held that handle, and the folder's delete stayed pending.
+# Old run folders are removed on a best-effort basis; one that is still
+# held is left for the next run to remove.
+$outRoot = Join-Path $root "target\installer-out"
+New-Item -ItemType Directory -Force $outRoot | Out-Null
+Get-ChildItem $outRoot -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+$scratch = Join-Path $outRoot (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Force $scratch | Out-Null
 
 $isccArgs = @(
