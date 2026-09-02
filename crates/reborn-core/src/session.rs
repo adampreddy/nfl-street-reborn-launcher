@@ -601,6 +601,40 @@ fn reconcile_controls(
     crate::mods::apply_controls_profile(&activation_file, profile, &installed).map(Some)
 }
 
+/// A path typed or pasted by a person, cleaned up.
+///
+/// Windows Explorer's "Copy as path" wraps the path in double quotes, and
+/// the quotes come along when it is pasted into a box. The result is a path
+/// that looks completely correct in every message and matches nothing on
+/// disk, so the launcher refuses while printing the right path back:
+///
+///   No Reborn Dolphin at "C:\\...\\Dolphin.exe". Set the runtime in Settings.
+///
+/// That is a real refusal from a real session, and the emulator was there.
+/// The only clue was the quotes in the message, which read as punctuation.
+///
+/// Strips ONE matching pair, because a second pair would be part of the name,
+/// and trims whitespace, because a pasted path often carries a trailing space
+/// or newline. An unbalanced quote is left alone: which half to drop would be
+/// a guess, and guessing turns a typo into a different path.
+pub fn user_path(text: &str) -> PathBuf {
+    let trimmed = text.trim();
+    let stripped = strip_pair(trimmed, '"');
+    // Single quotes too: pasting out of a shell transcript brings those.
+    PathBuf::from(strip_pair(stripped, '\'').trim())
+}
+
+/// One matching pair of `quote` from both ends, or the text unchanged.
+fn strip_pair(text: &str, quote: char) -> &str {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next_back()) {
+        (Some(first), Some(last)) if first == quote && last == quote => {
+            &text[first.len_utf8()..text.len() - last.len_utf8()]
+        }
+        _ => text,
+    }
+}
+
 /// Where an emulator came from, and whether it is the one that works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Runtime {
@@ -637,11 +671,19 @@ impl Runtime {
 
     /// Whether this is a build the launcher can rely on.
     ///
-    /// False for [`Runtime::Chosen`], and that is not a maybe. A stock Dolphin
-    /// will boot the game, so nothing visibly breaks at launch; what breaks is
-    /// every feature that reads back from the emulator, and it breaks silently.
-    pub fn is_supported(&self) -> bool {
-        !matches!(self, Runtime::Chosen(_))
+    /// `Some(true)` for the bundled copy and the one from a 2.1 install, both
+    /// of which are known Reborn forks. `None` for [`Runtime::Chosen`]: a path
+    /// cannot say whether the build behind it is a Reborn fork or a stock
+    /// Dolphin, and a stock Dolphin boots the game so nothing visibly breaks
+    /// at launch; what breaks is every feature that reads back from the
+    /// emulator, silently. Calling a player's own fork unsupported would cry
+    /// wolf, so the honest answer is that it is unknown, and the warning says
+    /// what is lost IF it is stock rather than asserting that it is.
+    pub fn is_supported(&self) -> Option<bool> {
+        match self {
+            Runtime::Bundled(_) | Runtime::FromLegacyInstall(_) => Some(true),
+            Runtime::Chosen(_) => None,
+        }
     }
 
     /// One line for a player, naming the consequence rather than the category.
@@ -654,10 +696,11 @@ impl Runtime {
                 p.display()
             ),
             Runtime::Chosen(p) => format!(
-                "Using an emulator you chose, {}. It is not a Reborn build, so it \
-                 will run the game but will not report controllers, record match \
-                 results, or read the Reborn configuration. Those features will be \
-                 missing rather than broken, and nothing will say so while you play.",
+                "Using an emulator you chose, {}. Whether it is a Reborn build \
+                 cannot be told from here. If it is a stock Dolphin it will run \
+                 the game but without controller reporting, match results, or \
+                 the Reborn configuration. Those features will be missing rather \
+                 than broken, and nothing will say so while you play.",
                 p.display()
             ),
         }
@@ -962,7 +1005,7 @@ mod tests {
         // resolve_runtime reads current_exe, which a test cannot move.
         let found = dolphin_in(&runtime).expect("a bundled Dolphin must be found");
         assert_eq!(found.file_name().unwrap(), "Dolphin.exe");
-        assert!(Runtime::Bundled(found).is_supported());
+        assert_eq!(Runtime::Bundled(found).is_supported(), Some(true));
     }
 
     #[test]
@@ -995,11 +1038,11 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_emulator_is_never_reported_as_supported() {
-        // The whole reason Chosen is its own variant. Adam: it will be missing
-        // the features for sure. A stock Dolphin boots the game, so nothing
-        // visibly breaks; what breaks is every feature that reads back from the
-        // emulator, silently.
+    fn a_chosen_emulator_is_unknown_not_unsupported() {
+        // The whole reason Chosen is its own variant. Adam: a stock build will
+        // be missing the features for sure. But a path cannot say whether the
+        // build is stock, and Adam's own Reborn builds live at chosen paths
+        // during development, so asserting NOT a Reborn build cries wolf.
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("dolphin");
         std::fs::write(&exe, b"").unwrap();
@@ -1007,14 +1050,19 @@ mod tests {
         let platform = Platform::detect();
         let runtime = resolve_runtime(&platform, Some(&exe), None).unwrap();
         assert_eq!(runtime, Runtime::Chosen(exe.clone()));
-        assert!(
-            !runtime.is_supported(),
-            "a stock build must never be reported as supported"
+        assert_eq!(
+            runtime.is_supported(),
+            None,
+            "a chosen build is UNKNOWN, not unsupported: nothing here can tell a Reborn fork from a stock Dolphin by looking at a path, and calling a player's own build unsupported would cry wolf"
         );
 
         // And the explanation has to name what is lost, not the category.
         let said = runtime.explain();
-        for expected in ["controllers", "match results"] {
+        assert!(
+            said.contains("cannot be told"),
+            "the warning must not claim to know: {said}"
+        );
+        for expected in ["controller reporting", "match results"] {
             assert!(
                 said.contains(expected),
                 "the warning must say what will be missing: {said}"
@@ -1057,4 +1105,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_path_pasted_with_windows_copy_as_path_still_resolves() {
+        // The real failure. Explorer's Copy as path wraps the path in quotes,
+        // the quotes are pasted with it, and the result matches nothing while
+        // looking perfect in every message the launcher prints.
+        let clean = PathBuf::from("C:\\Games\\Dolphin.exe");
+        assert_eq!(user_path("C:\\Games\\Dolphin.exe"), clean, "an unquoted path is untouched");
+        assert_eq!(
+            user_path("\"C:\\Games\\Dolphin.exe\""),
+            clean,
+            "the quotes Copy as path adds must come off"
+        );
+        assert_eq!(
+            user_path("   \"C:\\Games\\Dolphin.exe\"  \n"),
+            clean,
+            "with the whitespace a paste carries"
+        );
+        assert_eq!(
+            user_path("'C:\\Games\\Dolphin.exe'"),
+            clean,
+            "and out of a shell transcript"
+        );
+    }
+
+    #[test]
+    fn an_unbalanced_quote_is_left_alone() {
+        // Half stripping would turn a typo into a different path, and which
+        // half to drop is a guess. Left as it is, so the refusal names what
+        // was actually given.
+        let given = "\"C:\\Games\\Dolphin.exe";
+        assert_eq!(user_path(given), PathBuf::from(given));
+    }
+
+    #[test]
+    fn only_one_pair_comes_off() {
+        // A second pair is part of the name. A launcher that kept stripping
+        // would refuse a legal path.
+        assert_eq!(
+            user_path("\"\"C:\\Games\\Dolphin.exe\"\""),
+            PathBuf::from("\"C:\\Games\\Dolphin.exe\"")
+        );
+    }
 }

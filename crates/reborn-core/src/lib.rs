@@ -355,7 +355,7 @@ mod tests {
             for d in &drives {
                 assert!(
                     !exe.starts_with(&d.mount_point),
-                    "{:?} holds the running executable and must never be offered                      as removable",
+                    "{:?} holds the running executable and must never be offered as removable",
                     d.mount_point
                 );
             }

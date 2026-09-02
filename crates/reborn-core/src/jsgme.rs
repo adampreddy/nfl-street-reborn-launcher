@@ -1323,7 +1323,7 @@ impl ConversionPlan {
             let taken = self.occupied();
             if !taken.is_empty() {
                 return Err(invalid(format!(
-                    "{} destination(s) already hold a file, the first being {}.                      Nothing was written. Overwriting would replace an already                      imported package, so pass Occupied::Replace to mean that,                      or import into an empty packages root.",
+                    "{} destination(s) already hold a file, the first being {}. Nothing was written. Overwriting would replace an already imported package, so pass Occupied::Replace to mean that, or import into an empty packages root.",
                     taken.len(),
                     taken[0].to.display()
                 )));
@@ -1398,7 +1398,7 @@ fn write_package(planned: &PlannedPackage, package_dir: &Path) -> Result<(usize,
         let actual = Sha256Hex::from_bytes(&payload);
         if actual != copy.sha256 {
             return Err(invalid(format!(
-                "{} changed between being read and being copied. Expected {},                  found {}. Nothing about this package was kept. Re-run the                  import to read it again.",
+                "{} changed between being read and being copied. Expected {}, found {}. Nothing about this package was kept. Re-run the import to read it again.",
                 copy.from.display(),
                 copy.sha256,
                 actual

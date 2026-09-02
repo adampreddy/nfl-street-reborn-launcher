@@ -54,7 +54,28 @@ function get(key) {
   return (s && s.fallback) || null;
 }
 
+// A path as a person pasted it, cleaned.
+//
+// Windows Explorer's Copy as path wraps the path in quotes. Pasted into a box
+// they are stored with it, and the result matches nothing while looking
+// perfect: the refusal prints the path back with the quotes, and they read as
+// ordinary punctuation. This cost a session's worth of wrong guesses.
+//
+// The core strips them too, on the way in. Doing it here as well means the
+// STORED value is clean, so it is clean the next time it is shown.
+function cleanPath(value) {
+  let out = (value || "").trim();
+  for (const q of ['"', "'"]) {
+    if (out.length >= 2 && out.startsWith(q) && out.endsWith(q)) {
+      out = out.slice(1, -1).trim();
+      break;
+    }
+  }
+  return out;
+}
+
 function put(key, value) {
+  value = cleanPath(value);
   if (value) localStorage.setItem("h:" + key, value);
   else localStorage.removeItem("h:" + key);
 }
@@ -547,9 +568,12 @@ function renderFeatures() {
         const saved = localStorage.getItem("a:" + f.cmd + ":" + inp.key);
         box.value = saved || (inp.derive ? inp.derive() : "");
         box.spellcheck = false;
-        box.addEventListener("change", () =>
-          localStorage.setItem("a:" + f.cmd + ":" + inp.key, box.value.trim()),
-        );
+        box.addEventListener("change", () => {
+          // Cleaned in the box as well as in storage, so what is shown is what
+          // is sent.
+          box.value = cleanPath(box.value);
+          localStorage.setItem("a:" + f.cmd + ":" + inp.key, box.value);
+        });
         fields[inp.key] = {
           box,
           list: inp.list,

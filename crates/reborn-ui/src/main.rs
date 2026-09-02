@@ -388,21 +388,28 @@ fn preset_from(name: &str) -> GraphicsPreset {
 /// is the same courtesy the command line already offered with --dry-run.
 #[tauri::command]
 async fn prepare_launch(
-    runtime: String,
-    game: String,
+    runtime: Option<String>,
+    game: Option<String>,
     preset: String,
     fullscreen: bool,
     user_dir: Option<String>,
 ) -> Result<PrepareResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
+        let legacy = default_legacy_root(&p);
+        let (found, game_path) = find_runtime_and_game(
+            &p,
+            runtime.as_deref(),
+            game.as_deref(),
+            legacy.as_deref(),
+        )?;
         let req = LaunchRequest {
-            runtime_exe: std::path::PathBuf::from(runtime),
-            game_path: std::path::PathBuf::from(game),
+            runtime_exe: found.path().to_path_buf(),
+            game_path,
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
-            user_dir: user_dir.map(std::path::PathBuf::from),
+            user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -424,6 +431,65 @@ async fn prepare_launch(
     .map_err(|e| e.to_string())?
 }
 
+/// The runtime and game a launch should use, found rather than trusted.
+///
+/// Both arguments are HINTS. A path that does not exist is not an error and not
+/// obeyed: the launcher searches for the real thing and says where it came
+/// from. That matters because the interface remembers what it was last told,
+/// and a remembered path outlives the folder it named. A stale box refused
+/// every launch with "Set the runtime in Settings" while the emulator sat
+/// beside the launcher and inside the player's own install.
+///
+/// On Windows there is one right answer anyway, so being asked at all is the
+/// oddity; see reborn_core::session::resolve_runtime.
+fn find_runtime_and_game(
+    platform: &Platform,
+    runtime_hint: Option<&str>,
+    game_hint: Option<&str>,
+    legacy_root: Option<&Path>,
+) -> Result<(reborn_core::session::Runtime, PathBuf), String> {
+    // Cleaned first. Windows Explorer's Copy as path wraps the path in quotes
+    // and the quotes are pasted with it, which produces a path that looks
+    // perfect in every message and matches nothing. See session::user_path.
+    let cleaned_runtime = runtime_hint.map(reborn_core::session::user_path);
+
+    // An existing hint is honoured as a deliberate choice. A hint that names
+    // nothing is dropped, so the search is not poisoned by a dead path.
+    let live_hint = cleaned_runtime.as_deref().filter(|path| path.is_file());
+
+    let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root)
+        .map_err(|looked| reborn_core::session::no_runtime_message(&looked))?;
+
+    let game = match game_hint
+        .map(reborn_core::session::user_path)
+        .filter(|path| path.is_file())
+    {
+        Some(path) => path,
+        None => first_game_image(legacy_root).ok_or_else(|| {
+            "No game image was found. Point at an existing NFL Street Reborn install, \
+             which is where the image comes from for anyone upgrading."
+                .to_string()
+        })?,
+    };
+
+    Ok((found, game))
+}
+
+/// The default 2.1 install to search, when the caller named none.
+///
+/// The launcher's own data root sits beside the 2.1 one, so its parent is where
+/// an existing install would be. Guessed rather than required, because a launch
+/// should not need a player to tell the launcher where their own game is.
+fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
+    let guess = platform
+        .paths
+        .data_root()
+        .ok()?
+        .parent()?
+        .join("NFL Street Reborn");
+    guess.is_dir().then_some(guess)
+}
+
 /// Start the game and answer when it stops.
 ///
 /// Runs on a blocking thread rather than the interface thread. The sequence has
@@ -432,21 +498,28 @@ async fn prepare_launch(
 /// thread drawing the window.
 #[tauri::command]
 async fn launch(
-    runtime: String,
-    game: String,
+    runtime: Option<String>,
+    game: Option<String>,
     preset: String,
     fullscreen: bool,
     user_dir: Option<String>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
+        let legacy = default_legacy_root(&p);
+        let (found, game_path) = find_runtime_and_game(
+            &p,
+            runtime.as_deref(),
+            game.as_deref(),
+            legacy.as_deref(),
+        )?;
         let req = LaunchRequest {
-            runtime_exe: std::path::PathBuf::from(runtime),
-            game_path: std::path::PathBuf::from(game),
+            runtime_exe: found.path().to_path_buf(),
+            game_path,
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
-            user_dir: user_dir.map(std::path::PathBuf::from),
+            user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
         };
 
         match Session::run(&p, &req).map_err(|e| e.to_string())? {
@@ -1925,7 +1998,7 @@ async fn onboarding_confirm_game(
     legacy_root: Option<String>,
 ) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let total_bytes = match image.as_deref().map(Path::new) {
+        let total_bytes = match image.as_deref().map(reborn_core::session::user_path) {
             // Absent rather than zero when it cannot be read. Zero is a
             // measurement, and a wrong one. None renders as "not measured".
             Some(path) => std::fs::metadata(path).ok().map(|m| m.len()),
@@ -2344,25 +2417,16 @@ async fn onboarding_run_task(
                 // FOUND, not asked for. On Windows the emulator ships beside
                 // the launcher and there is one right answer, so a screen that
                 // asked was a screen nobody could get past.
-                let found = reborn_core::session::resolve_runtime(
+                // The same search a launch makes, hint cleaning included, so
+                // first run cannot find a different emulator or image from
+                // the one every later launch will use.
+                let (found, game_path) = find_runtime_and_game(
                     &p,
-                    runtime.as_deref().map(Path::new),
+                    runtime.as_deref(),
+                    game.as_deref(),
                     legacy_root.as_deref().map(Path::new),
-                )
-                .map_err(|looked| reborn_core::session::no_runtime_message(&looked))?;
+                )?;
                 let runtime_exe = found.path().to_path_buf();
-
-                // The image, likewise. An upgrading player already owns one and
-                // already has it patched, so the 2.1 install is searched before
-                // anyone is asked for a path.
-                let game_path = match game.as_deref().map(PathBuf::from) {
-                    Some(path) => path,
-                    None => first_game_image(legacy_root.as_deref().map(Path::new))
-                        .ok_or_else(|| {
-                            "no game image. Confirm the game step first, or point at an                              existing NFL Street Reborn install, which is where the                              image comes from for anyone upgrading."
-                                .to_string()
-                        })?,
-                };
 
                 let req = LaunchRequest {
                     runtime_exe,
@@ -2567,7 +2631,7 @@ async fn onboarding_start_over(
         confirmed(
             confirm,
             "onboarding_start_over",
-            "discard first run, so every stage is offered again and the stages              that copy files repeat their work",
+            "discard first run, so every stage is offered again and the stages that copy files repeat their work",
         )?;
         let mut flow = open_flow(legacy_root)?;
         let restart = flow.start_over().map_err(|e| e.to_string())?;
