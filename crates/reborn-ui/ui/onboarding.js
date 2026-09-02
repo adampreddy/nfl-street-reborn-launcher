@@ -194,7 +194,7 @@ const SCREENS = {
           : "It takes a couple of minutes and you can go back at any point.",
       ),
     ],
-    ready: true,
+    ready: () => true,
     answer: () => call("onboarding_acknowledge"),
   }),
 
@@ -224,7 +224,7 @@ const SCREENS = {
     // Declining is always available, even when the copy is blocked: leaving
     // the old install alone is exactly what a blocked migration should let you
     // do, and refusing to let anyone past would strand them here.
-    ready: pending.migration === "no" || (pending.migration === "yes" && !state.migration_blocked),
+    ready: () => pending.migration === "no" || (pending.migration === "yes" && !state.migration_blocked),
     answer: () => {
       if (pending.migration === "no") return call("onboarding_decline_migration");
       // Records the decision only. The copy is a separate, confirmed step,
@@ -251,7 +251,7 @@ const SCREENS = {
           "rather than starting the copy again.",
       ),
     ],
-    ready: true,
+    ready: () => true,
     nextLabel: "Copy it over",
     answer: async () => {
       const done = await call("migration_apply", {
@@ -292,7 +292,7 @@ const SCREENS = {
         : []),
       pathBox("image", "Full path to the .iso or .rvz, or leave blank"),
     ],
-    ready: true,
+    ready: () => true,
     answer: () => call("onboarding_confirm_game", { image: pending.image || null }),
   }),
 
@@ -319,7 +319,7 @@ const SCREENS = {
         { value: "ultra", what: "Ultra", why: "Highest load" },
       ]),
     ],
-    ready: !!pending.preset,
+    ready: () => !!pending.preset,
     answer: () => call("onboarding_choose_graphics", { preset: pending.preset }),
   }),
 
@@ -420,7 +420,7 @@ const SCREENS = {
 
     return {
       nodes,
-      ready: pending.port !== undefined,
+      ready: () => pending.port !== undefined,
       answer: () =>
         pending.port === "none"
           ? call("onboarding_decline_controller", {
@@ -502,7 +502,7 @@ const SCREENS = {
 
     return {
       nodes,
-      ready: !!lib && !lib.error,
+      ready: () => !!lib && !lib.error,
       answer: () => {
         const chosen = [...(pending.chosen || [])];
         if (chosen.length === 0) return call("onboarding_decline_mods");
@@ -543,7 +543,7 @@ const SCREENS = {
         ),
         list,
       ],
-      ready: (state.preparation_remaining || []).length === 0,
+      ready: () => (state.preparation_remaining || []).length === 0,
       hint:
         (state.preparation_remaining || []).length > 0
           ? "Nothing here runs yet. The tasks are recorded from the harness, " +
@@ -593,7 +593,7 @@ const SCREENS = {
             ]
           : []),
       ],
-      ready: true,
+      ready: () => true,
       nextLabel: "Finish",
       answer: () => call("onboarding_finish", { confirm: true }),
     };
@@ -691,7 +691,9 @@ function updateNav() {
   const back = document.getElementById("back");
   const hint = document.getElementById("hint");
 
-  next.disabled = !current || !current.ready;
+  // Called, not read. ready() has to see the answer the player just gave, and
+  // reading a boolean captured when the screen was built cannot.
+  next.disabled = !current || !current.ready();
   next.textContent = (current && current.nextLabel) || "Next";
   hint.textContent = (current && current.hint) || "";
 
@@ -709,7 +711,7 @@ function updateNav() {
 }
 
 document.getElementById("next").addEventListener("click", async () => {
-  if (!current || !current.ready) return;
+  if (!current || !current.ready()) return;
   const btn = document.getElementById("next");
   btn.disabled = true;
   try {
