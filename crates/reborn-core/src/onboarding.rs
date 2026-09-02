@@ -3147,4 +3147,49 @@ mod tests {
         assert_eq!(progress.entries().len(), 1);
     }
 
+    #[test]
+    fn both_writing_stages_refuse_without_their_before_marker() {
+        // The contract the interface depends on, pinned here because the
+        // interface is where it was broken. A wizard that drew preparation
+        // without recording that it had been reached refused every task with
+        // "call reach() first", which is a sentence written for a programmer
+        // and shown to a player. Completion had the same gap one screen later.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+        walk_to_preparation(&mut ob);
+
+        // Preparation, without the marker.
+        assert_eq!(
+            ob.record_task(PrepTask::WriteConfig).unwrap(),
+            Advance::Refused(Refusal::NotReached {
+                stage: Stage::Preparation
+            }),
+            "a task must not run before the stage is marked as entered"
+        );
+
+        // With it, in the order the interface now uses: show, then work.
+        recorded(ob.reach(Stage::Preparation).unwrap());
+        for task in PrepTask::ALL {
+            recorded(ob.record_task(*task).unwrap());
+        }
+        recorded(
+            ob.satisfy(Stage::Preparation, Satisfaction::Prepared)
+                .unwrap(),
+        );
+
+        // Completion, without the marker.
+        assert_eq!(
+            ob.finish().unwrap(),
+            Advance::Refused(Refusal::NotReached {
+                stage: Stage::Completion
+            }),
+            "finishing must not be possible before the summary was shown"
+        );
+
+        // And with it, which is the whole flow reaching its end.
+        recorded(ob.reach(Stage::Completion).unwrap());
+        recorded(ob.finish().unwrap());
+        assert!(ob.is_complete(), "the flow must be completable in this order");
+    }
+
 }

@@ -2215,6 +2215,23 @@ async fn onboarding_run_task(
         let target = prep_task_from_slug(&task)?;
         let p = Platform::detect();
 
+        // The before-marker, set by the code that is about to write. That is
+        // the whole point of it: an interrupted run has to be able to tell that
+        // preparation started, and only the thing that starts it knows when.
+        //
+        // Here rather than left to the caller. A screen that forgot to reach
+        // first would refuse every task with advice about calling reach, which
+        // is a sentence written for a programmer and shown to a player.
+        {
+            let mut flow = open_flow(legacy_root.clone())?;
+            if let Advance::Refused(why) = flow
+                .reach(Stage::Preparation)
+                .map_err(|e| e.to_string())?
+            {
+                return Err(format!("{} Nothing was changed.", why.message()));
+            }
+        }
+
         // Read the answers back out of the journal rather than taking them as
         // arguments. They were recorded for exactly this, and an argument here
         // could configure the machine for a preset nobody chose.

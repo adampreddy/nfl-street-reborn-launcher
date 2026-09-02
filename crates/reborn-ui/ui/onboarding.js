@@ -47,6 +47,19 @@ async function call(cmd, args = {}) {
 async function refresh() {
   try {
     state = await call("onboarding_progress");
+
+    // Showing a stage IS reaching it, and the journal has to say so. Two
+    // stages refuse their own work without the marker, preparation and
+    // completion, and without this the flow stopped dead on both with a
+    // refusal written for a programmer: "call reach() first".
+    //
+    // Safe to do on every draw. reach is idempotent and deliberately
+    // permissive, so re-showing a screen records nothing new, and the marker
+    // changes nothing about what is drawn.
+    if (state.next.kind === "show") {
+      await call("onboarding_reach", { stage: state.next.stage });
+    }
+
     await prefetch(state.next.stage);
     draw();
   } catch (e) {
