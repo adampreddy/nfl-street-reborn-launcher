@@ -1030,10 +1030,14 @@ fn play(
             pads_authoritative,
             user_dir,
             mods,
+            stats,
             ..
         } => {
             println!("{}", user_dir.explain());
             println!("{}", mods.explain());
+            if let Some(line) = stats.explain() {
+                println!("{line}");
+            }
             for (port, device) in &pads {
                 println!("  port {port} -> {device}");
             }

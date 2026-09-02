@@ -111,6 +111,11 @@ pub enum Launched {
         /// Whether the game was pointed at the active mods, and what that
         /// took. Never stops a launch; see [`ModsAtLaunch`].
         mods: ModsAtLaunch,
+        /// The session record's id, which is what a capture is filed under.
+        session_id: String,
+        /// What happened to the match results Dolphin wrote during the
+        /// session. Never fails a launch that already happened.
+        stats: StatsAfterSession,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
@@ -136,6 +141,75 @@ impl ModsAtLaunch {
         match self {
             ModsAtLaunch::Synced(outcome) => outcome.explain(),
             ModsAtLaunch::Failed(why) => format!("Mods were not applied: {why}"),
+        }
+    }
+}
+
+/// What happened to the match results after the game closed.
+///
+/// Dolphin writes one JSON capture per finished match into the user
+/// directory. Moving those into the launcher's queue is done here, in the
+/// one launch sequence, because a capture left in Dolphin's folder is a
+/// result nobody will ever submit: the folder is only read by whoever
+/// remembers to. Nothing is uploaded here. Submitting cannot be taken back
+/// and stays an explicit act.
+///
+/// Its own type for the same reason as [`ModsAtLaunch`]: a failure here is
+/// reported, never turned into a failed launch of a game that already ran.
+#[derive(Debug, Clone)]
+pub enum StatsAfterSession {
+    /// One entry per capture file found, including the ones refused.
+    Ingested(Vec<crate::stats::Enqueued>),
+    Failed(String),
+}
+
+impl StatsAfterSession {
+    /// One line for a player. Silent when there was nothing to do, because
+    /// most sessions end without a finished match.
+    pub fn explain(&self) -> Option<String> {
+        use crate::stats::Enqueued;
+        match self {
+            StatsAfterSession::Failed(why) => {
+                Some(format!("Match results were not collected: {why}"))
+            }
+            StatsAfterSession::Ingested(results) if results.is_empty() => None,
+            StatsAfterSession::Ingested(results) => {
+                let queued = results
+                    .iter()
+                    .filter(|r| matches!(r, Enqueued::Queued(_)))
+                    .count();
+                let held = results
+                    .iter()
+                    .filter(|r| matches!(r, Enqueued::Quarantined(_)))
+                    .count();
+                let known = results
+                    .iter()
+                    .filter(|r| {
+                        matches!(
+                            r,
+                            Enqueued::AlreadyQueued(_) | Enqueued::AlreadySubmitted { .. }
+                        )
+                    })
+                    .count();
+                let unread = results
+                    .iter()
+                    .filter(|r| matches!(r, Enqueued::CouldNotRead { .. }))
+                    .count();
+                let mut parts = Vec::new();
+                if queued > 0 {
+                    parts.push(format!("{queued} match result(s) queued for submission"));
+                }
+                if held > 0 {
+                    parts.push(format!("{held} held for review"));
+                }
+                if known > 0 {
+                    parts.push(format!("{known} already known"));
+                }
+                if unread > 0 {
+                    parts.push(format!("{unread} could not be read and were left in place"));
+                }
+                Some(format!("{}.", parts.join(", ")))
+            }
         }
     }
 }
@@ -528,6 +602,19 @@ impl Session {
         let exit = platform.processes.wait(handle)?;
         let finished = supervisor.finish(record, &exit)?;
 
+        // The match results, collected while the lock is still held and the
+        // session id is still in hand. Filed under this session so a capture
+        // can always be traced to the launch that produced it.
+        let stats = {
+            let capture_dir = crate::stats::dolphin_capture_dir(written.user_dir.path());
+            match crate::stats::StatsQueue::open(platform)
+                .and_then(|queue| queue.ingest_from(&capture_dir, Some(&finished.id)))
+            {
+                Ok(results) => StatsAfterSession::Ingested(results),
+                Err(e) => StatsAfterSession::Failed(e.to_string()),
+            }
+        };
+
         let end = finished
             .end
             .clone()
@@ -540,6 +627,8 @@ impl Session {
             pads_authoritative: written.pads_authoritative,
             user_dir: written.user_dir,
             mods,
+            session_id: finished.id.clone(),
+            stats,
         })
     }
 }

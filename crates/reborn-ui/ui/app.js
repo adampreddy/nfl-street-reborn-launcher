@@ -405,6 +405,7 @@ const FEATURES = [
         desc: "The three button art profiles, with the one your pad suggests",
         inputs: [{ key: "runtime", placeholder: "path to Dolphin exe, for the suggestion" }],
       },
+      { cmd: "controls_current", desc: "The button art in force, and where it came from" },
       {
         cmd: "controls_set",
         desc: "Change the button art at any time. A setting, not a first run answer",

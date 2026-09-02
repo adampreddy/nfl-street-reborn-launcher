@@ -375,6 +375,11 @@ struct LaunchResult {
     /// Present and naming the problem when the mods could not be applied,
     /// because that never stops a launch and must not be silent either.
     mods_note: Option<String>,
+    /// The session the record was filed under. Absent when nothing started.
+    session_id: Option<String>,
+    /// What happened to the match results Dolphin wrote. Absent when nothing
+    /// started or when there were none, which is most sessions.
+    stats_note: Option<String>,
 }
 
 fn preset_from(name: &str) -> GraphicsPreset {
@@ -536,6 +541,8 @@ async fn launch(
                 pads: Vec::new(),
                 pads_authoritative: false,
                 mods_note: None,
+                session_id: None,
+                stats_note: None,
             }),
             Launched::Finished {
                 end,
@@ -544,6 +551,8 @@ async fn launch(
                 pads_authoritative,
                 user_dir,
                 mods,
+                session_id,
+                stats,
                 ..
             } => {
                 let needs_recovery = end.needs_recovery();
@@ -577,6 +586,8 @@ async fn launch(
                         .collect(),
                     pads_authoritative,
                     mods_note: Some(mods.explain()),
+                    session_id: Some(session_id),
+                    stats_note: stats.explain(),
                 })
             }
         }
@@ -2472,6 +2483,49 @@ struct OnboardingControlsView {
 }
 
 #[derive(Debug, Serialize)]
+struct ControlsCurrentView {
+    /// The profile in force, or absent when neither settings nor first run
+    /// has one. Absent is a real state: nothing has been chosen, and the
+    /// interface must be able to tell that from a player choosing Xbox.
+    profile: Option<&'static str>,
+    label: Option<&'static str>,
+    /// "settings" when changed after first run, "first_run" when only the
+    /// journal has it, "none" otherwise.
+    source: &'static str,
+}
+
+/// The controls profile in force, and where it came from.
+///
+/// Read only. Settings first, first run as the seed, the same order a
+/// launch resolves it in, so what the interface shows as current is what
+/// the next launch draws.
+#[tauri::command]
+async fn controls_current() -> Result<ControlsCurrentView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let flow = Onboarding::open(&p, Environment::nothing_found()).map_err(|e| e.to_string())?;
+        let from_first_run = flow.summary().controls_profile;
+        let settings_file =
+            reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        let from_settings = reborn_core::settings::Settings::load(&settings_file)
+            .map_err(|e| e.to_string())?
+            .controls_profile;
+        let (profile, source) = match (from_settings, from_first_run) {
+            (Some(p), _) => (Some(p), "settings"),
+            (None, Some(p)) => (Some(p), "first_run"),
+            (None, None) => (None, "none"),
+        };
+        Ok(ControlsCurrentView {
+            profile: profile.map(|p| p.slug()),
+            label: profile.map(|p| p.label()),
+            source,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
 struct ControlsOptionView {
     slug: &'static str,
     label: &'static str,
@@ -3954,6 +4008,7 @@ fn main() {
             onboarding_decline_controller,
             onboarding_choose_controls,
             controls_set,
+            controls_current,
             controls_options,
             onboarding_run_task,
             onboarding_record_task,

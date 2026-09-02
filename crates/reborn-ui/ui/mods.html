@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFL Street Reborn, mods</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="onboarding.css" />
+  </head>
+  <body class="ob">
+    <!--
+      Mods as a screen rather than harness rows, so the RULES can be felt:
+      that seven footballs are one choice and not seven switches, that the
+      button art is a setting and not a mod, and that turning something on is
+      what the game loads at the next launch rather than a list entry.
+
+      Deliberately undesigned, like first run. Every value on screen comes from
+      a command, and every awkward state is drawn rather than smoothed over: a
+      mod listed as on whose files are gone, a package the launcher could not
+      read, a sync the game is holding the lock against.
+    -->
+    <header>
+      <strong>NFL Street Reborn</strong>
+      <span class="sub">mods. Undesigned on purpose.</span>
+      <a href="onboarding.html" class="pill">first run</a>
+      <a href="index.html" class="pill">back to harness</a>
+    </header>
+
+    <main id="page">
+      <section id="screen">
+        <p class="note">Loading.</p>
+      </section>
+    </main>
+
+    <aside>
+      <div class="out-head">
+        <strong>What the core said</strong>
+        <button id="clear" type="button">Clear</button>
+      </div>
+      <pre id="out">Ready.</pre>
+    </aside>
+
+    <script type="module" src="mods.js"></script>
+  </body>
+</html>
