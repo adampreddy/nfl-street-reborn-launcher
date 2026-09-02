@@ -144,6 +144,11 @@ const FEATURES = [
         }),
       },
       {
+        cmd: "launch_check",
+        desc: "What a launch would use. Finds, never starts",
+        args: () => ({ runtime: get("runtime"), game: get("game") }),
+      },
+      {
         cmd: "launch",
         desc: "Start the game and wait for it to exit",
         write: true,

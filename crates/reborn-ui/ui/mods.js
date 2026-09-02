@@ -404,6 +404,11 @@ if (clearButton) {
   });
 }
 
+// A harness fakes document without querySelectorAll; the nav is not its concern.
+for (const a of typeof document.querySelectorAll === "function" ? document.querySelectorAll(".shell-nav a") : []) {
+  if ((a.getAttribute("href") || "").toLowerCase() === "mods.html") a.classList.add("current");
+}
+
 if (bridge) {
   refresh();
 } else {

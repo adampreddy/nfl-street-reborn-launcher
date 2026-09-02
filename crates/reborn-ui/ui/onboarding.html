@@ -6,8 +6,9 @@
     <title>NFL Street Reborn, first run</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="onboarding.css" />
+    <link rel="stylesheet" href="shell.css" />
   </head>
-  <body class="ob">
+  <body class="shell ob">
     <!--
       First run as screens rather than harness rows, so the FLOW can be felt:
       how many steps there are, what each one asks, what it says when it cannot
@@ -21,11 +22,27 @@
     -->
     <header>
       <strong>NFL Street Reborn</strong>
-      <span class="sub">first run. Undesigned on purpose.</span>
-      <a href="index.html" class="pill">back to harness</a>
+      <span class="sub">launcher, plain build</span>
     </header>
 
+    <nav class="shell-nav" aria-label="Pages">
+      <a href="index.html">Play<small>Start the game. Shows what it will use.</small></a>
+      <a href="mods.html">Mods<small>Footballs and other texture packs. Pick one football.</small></a>
+      <a href="controls.html">Controls<small>Button art, and the pads plugged in.</small></a>
+      <a href="settings.html">Settings<small>Where things live, and the few paths you can set.</small></a>
+      <div class="divider"></div>
+      <a href="onboarding.html">First run<small>The setup questions, as screens.</small></a>
+      <a href="harness.html">Advanced<small>Every command, raw. For debugging.</small></a>
+    </nav>
+
     <main id="wizard">
+      <h1>First run</h1>
+      <p class="purpose">
+        The setup questions, one per screen: bring over an existing install or
+        start fresh, confirm the game, pick graphics, set up a pad, choose button
+        art, then let the launcher write its settings. Answers are kept, so this
+        can be left and come back to.
+      </p>
       <!-- Where you are, drawn from the plan the core returns. -->
       <nav id="steps" aria-label="Steps"></nav>
 
@@ -38,15 +55,12 @@
         <span id="hint" class="note"></span>
         <button id="next" type="button" class="primary">Next</button>
       </footer>
+      <details class="core">
+        <summary>What the core said, raw</summary>
+        <div class="out-head"><button id="clear" type="button">Clear</button></div>
+        <pre id="out"></pre>
+      </details>
     </main>
-
-    <aside>
-      <div class="out-head">
-        <strong>What the core said</strong>
-        <button id="clear" type="button">Clear</button>
-      </div>
-      <pre id="out">Ready.</pre>
-    </aside>
 
     <script type="module" src="onboarding.js"></script>
   </body>

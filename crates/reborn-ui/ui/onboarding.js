@@ -19,6 +19,11 @@
 
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
+// A harness fakes document without querySelectorAll; the nav is not its concern.
+for (const a of typeof document.querySelectorAll === "function" ? document.querySelectorAll(".shell-nav a") : []) {
+  if ((a.getAttribute("href") || "").toLowerCase() === "onboarding.html") a.classList.add("current");
+}
+
 const LEGACY_ROOT = "C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn";
 
 // Filled by refresh(), which is the only thing that talks to onboarding_progress.

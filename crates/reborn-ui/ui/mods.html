@@ -6,8 +6,9 @@
     <title>NFL Street Reborn, mods</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="onboarding.css" />
+    <link rel="stylesheet" href="shell.css" />
   </head>
-  <body class="ob">
+  <body class="shell ob">
     <!--
       Mods as a screen rather than harness rows, so the RULES can be felt:
       that seven footballs are one choice and not seven switches, that the
@@ -21,24 +22,35 @@
     -->
     <header>
       <strong>NFL Street Reborn</strong>
-      <span class="sub">mods. Undesigned on purpose.</span>
-      <a href="onboarding.html" class="pill">first run</a>
-      <a href="index.html" class="pill">back to harness</a>
+      <span class="sub">launcher, plain build</span>
     </header>
 
+    <nav class="shell-nav" aria-label="Pages">
+      <a href="index.html">Play<small>Start the game. Shows what it will use.</small></a>
+      <a href="mods.html">Mods<small>Footballs and other texture packs. Pick one football.</small></a>
+      <a href="controls.html">Controls<small>Button art, and the pads plugged in.</small></a>
+      <a href="settings.html">Settings<small>Where things live, and the few paths you can set.</small></a>
+      <div class="divider"></div>
+      <a href="onboarding.html">First run<small>The setup questions, as screens.</small></a>
+      <a href="harness.html">Advanced<small>Every command, raw. For debugging.</small></a>
+    </nav>
+
     <main id="page">
+      <h1>Mods</h1>
+      <p class="purpose">
+        Texture packs from your existing install. The footballs all replace the
+        same file, so they are one choice, not seven switches. Turning something
+        on here is what the game loads at the next Play; Sync now does it at once.
+      </p>
       <section id="screen">
         <p class="note">Loading.</p>
       </section>
+      <details class="core">
+        <summary>What the core said, raw</summary>
+        <div class="out-head"><button id="clear" type="button">Clear</button></div>
+        <pre id="out"></pre>
+      </details>
     </main>
-
-    <aside>
-      <div class="out-head">
-        <strong>What the core said</strong>
-        <button id="clear" type="button">Clear</button>
-      </div>
-      <pre id="out">Ready.</pre>
-    </aside>
 
     <script type="module" src="mods.js"></script>
   </body>

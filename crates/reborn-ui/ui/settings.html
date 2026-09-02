@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFL Street Reborn, settings</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="onboarding.css" />
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body class="shell ob">
+    <header>
+      <strong>NFL Street Reborn</strong>
+      <span class="sub">launcher, plain build</span>
+      <span id="bridge" class="pill">checking</span>
+    </header>
+
+    <nav class="shell-nav" aria-label="Pages">
+      <a href="index.html">Play<small>Start the game. Shows what it will use.</small></a>
+      <a href="mods.html">Mods<small>Footballs and other texture packs. Pick one football.</small></a>
+      <a href="controls.html">Controls<small>Button art, and the pads plugged in.</small></a>
+      <a href="settings.html">Settings<small>Where things live, and the few paths you can set.</small></a>
+      <div class="divider"></div>
+      <a href="onboarding.html">First run<small>The setup questions, as screens.</small></a>
+      <a href="harness.html">Advanced<small>Every command, raw. For debugging.</small></a>
+    </nav>
+
+    <main>
+      <h1>Settings</h1>
+      <p class="purpose">
+        Where the launcher keeps things, and the few paths you can point it at.
+        Almost everything is found by itself, so the boxes below are for the case
+        where it found the wrong thing. Leave a box empty to let it look.
+      </p>
+
+      <section id="screen">
+        <p class="note">Reading.</p>
+      </section>
+
+      <details class="core">
+        <summary>What the core said, raw</summary>
+        <div class="out-head"><button id="clear" type="button">Clear</button></div>
+        <pre id="out"></pre>
+      </details>
+    </main>
+
+    <script type="module" src="settings.js"></script>
+  </body>
+</html>

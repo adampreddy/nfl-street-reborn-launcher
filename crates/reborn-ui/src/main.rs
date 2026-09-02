@@ -491,6 +491,58 @@ fn find_runtime_and_game(
     Ok((found, game))
 }
 
+#[derive(Debug, Serialize)]
+struct LaunchCheck {
+    /// True when both the emulator and the image were found.
+    ready: bool,
+    /// The emulator a launch would start, and where it came from.
+    runtime: Option<String>,
+    runtime_note: Option<String>,
+    /// "bundled", "legacy_install", or "chosen". Absent when none was found.
+    runtime_kind: Option<&'static str>,
+    game: Option<String>,
+    /// Why a launch would refuse, in a sentence. Absent when ready.
+    problem: Option<String>,
+}
+
+/// What a launch would use, without starting anything.
+///
+/// The same search a launch makes, so what this page says will be used is
+/// what the Play button uses. Read only: nothing is written and nothing is
+/// started. Exists because the only other way to learn which emulator the
+/// launcher found was to launch.
+#[tauri::command]
+async fn launch_check(runtime: Option<String>, game: Option<String>) -> Result<LaunchCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let legacy = default_legacy_root(&p);
+        match find_runtime_and_game(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref()) {
+            Ok((found, image)) => Ok(LaunchCheck {
+                ready: true,
+                runtime: Some(found.path().display().to_string()),
+                runtime_note: Some(found.explain()),
+                runtime_kind: Some(match found {
+                    reborn_core::session::Runtime::Bundled(_) => "bundled",
+                    reborn_core::session::Runtime::FromLegacyInstall(_) => "legacy_install",
+                    reborn_core::session::Runtime::Chosen(_) => "chosen",
+                }),
+                game: Some(image.display().to_string()),
+                problem: None,
+            }),
+            Err(problem) => Ok(LaunchCheck {
+                ready: false,
+                runtime: None,
+                runtime_note: None,
+                runtime_kind: None,
+                game: None,
+                problem: Some(problem),
+            }),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The default 2.1 install to search, when the caller named none.
 ///
 /// The launcher's own data root sits beside the 2.1 one, so its parent is where
@@ -3986,6 +4038,7 @@ fn main() {
             home_state,
             prepare_launch,
             launch,
+            launch_check,
             // Where the game will boot from.
             user_dir,
             // The launcher's own mod library and composition.
