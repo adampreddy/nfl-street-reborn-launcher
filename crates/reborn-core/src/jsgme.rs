@@ -944,6 +944,195 @@ impl ConversionPlan {
             .collect()
     }
 }
+// ---------------------------------------------------------------------------
+// Executing a plan
+// ---------------------------------------------------------------------------
+
+/// What to do about a destination that already holds a file.
+///
+/// The plan reports these and does not resolve them, so this is where the
+/// caller says what it meant. There is no default: the two answers do opposite
+/// things to an already imported package, and picking one here would be this
+/// module deciding on the player's behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Occupied {
+    /// Refuse the whole import, writing nothing.
+    ///
+    /// The safe answer, and the one to offer first. A destination that is
+    /// already occupied usually means the import has already been run, and a
+    /// second run would replace packages the player may have composed from.
+    Refuse,
+    /// Replace what is there.
+    ///
+    /// For re-importing after the source mods changed. The manifest is rewritten
+    /// with the payload, so the pair stays consistent.
+    Replace,
+}
+
+/// What executing a plan did.
+#[derive(Debug, Clone)]
+pub struct ImportReport {
+    /// Packages whose payload and manifest are both on disk.
+    pub imported: Vec<ModId>,
+    pub files_copied: usize,
+    pub bytes_copied: u64,
+    /// Packages that were not attempted, carried through from the plan.
+    pub skipped: Vec<(String, String)>,
+    /// Packages that were attempted and abandoned, with the reason.
+    ///
+    /// Each of these left nothing behind: the package directory is removed
+    /// before this is reported, so a failure cannot leave a payload that no
+    /// manifest describes.
+    pub failed: Vec<(ModId, String)>,
+}
+
+impl ImportReport {
+    /// Whether every package that could be imported was.
+    pub fn is_complete(&self) -> bool {
+        self.failed.is_empty()
+    }
+}
+
+impl ConversionPlan {
+    /// Copy every payload and write every manifest.
+    ///
+    /// The only function in this module that writes anything. `MODS/` is not
+    /// written to at all: every source path is read, and the JSGME library is
+    /// left exactly as it was, which is what makes a failed import cost nothing.
+    ///
+    /// Order matters, per package: create the directory, copy the files, verify
+    /// each one against the hash the scan already took, and write the manifest
+    /// LAST. A manifest sitting next to a half-copied payload is a package that
+    /// passes [`ModPackage::load`] and fails a compose, which is a fault that
+    /// surfaces at the moment the player tries to play.
+    ///
+    /// A package that fails part way is removed rather than left. Only
+    /// directories this call created are removed, so a pre-existing package
+    /// cannot be deleted by another package's failure.
+    ///
+    /// One package failing does not abandon the rest. The report names both, and
+    /// ten of eleven packages is a better outcome than none, provided nobody is
+    /// told it was eleven.
+    pub fn execute(&self, occupied: Occupied) -> Result<ImportReport> {
+        // Checked before anything is written, so a refusal costs nothing.
+        if occupied == Occupied::Refuse {
+            let taken = self.occupied();
+            if !taken.is_empty() {
+                return Err(invalid(format!(
+                    "{} destination(s) already hold a file, the first being {}.                      Nothing was written. Overwriting would replace an already                      imported package, so pass Occupied::Replace to mean that,                      or import into an empty packages root.",
+                    taken.len(),
+                    taken[0].to.display()
+                )));
+            }
+        }
+
+        let mut report = ImportReport {
+            imported: Vec::new(),
+            files_copied: 0,
+            bytes_copied: 0,
+            skipped: self.skipped.clone(),
+            failed: Vec::new(),
+        };
+
+        for planned in &self.packages {
+            // The version directory, which is what gets removed if this package
+            // does not finish. Taken from the manifest path rather than rebuilt,
+            // so it cannot disagree with where the manifest is going.
+            let Some(package_dir) = planned.manifest_path.parent() else {
+                report.failed.push((
+                    planned.package.id.clone(),
+                    "its manifest path has no parent directory".to_string(),
+                ));
+                continue;
+            };
+
+            let existed = package_dir.exists();
+            match write_package(planned, package_dir) {
+                Ok((files, bytes)) => {
+                    report.imported.push(planned.package.id.clone());
+                    report.files_copied += files;
+                    report.bytes_copied += bytes;
+                }
+                Err(e) => {
+                    // Remove only what this call created. A package directory
+                    // that was already there belongs to a previous import, and
+                    // deleting it would turn one failure into two.
+                    if !existed {
+                        let _ = std::fs::remove_dir_all(package_dir);
+                    }
+                    report.failed.push((planned.package.id.clone(), e.to_string()));
+                }
+            }
+        }
+
+        Ok(report)
+    }
+}
+
+/// Copy one package's payload and write its manifest. Returns files and bytes.
+fn write_package(planned: &PlannedPackage, package_dir: &Path) -> Result<(usize, u64)> {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+
+    for copy in &planned.files {
+        if let Some(parent) = copy.to.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let payload = std::fs::read(&copy.from).map_err(|source| Error::Io {
+            path: copy.from.clone(),
+            source,
+        })?;
+
+        // Against the hash the scan already took. A source that changed between
+        // planning and copying would otherwise be imported under a hash that no
+        // longer describes it, and the manifest would then be wrong about its
+        // own payload for the life of the package.
+        let actual = Sha256Hex::from_bytes(&payload);
+        if actual != copy.sha256 {
+            return Err(invalid(format!(
+                "{} changed between being read and being copied. Expected {},                  found {}. Nothing about this package was kept. Re-run the                  import to read it again.",
+                copy.from.display(),
+                copy.sha256,
+                actual
+            )));
+        }
+
+        std::fs::write(&copy.to, &payload).map_err(|source| Error::Io {
+            path: copy.to.clone(),
+            source,
+        })?;
+        files += 1;
+        bytes += payload.len() as u64;
+    }
+
+    // Last, and only now.
+    //
+    // Written through serde rather than assembled as text: the manifest has to
+    // be readable by ModPackage::load, and a hand built one that drifts from the
+    // struct would be a package that imports and will not compose.
+    let manifest = serde_json::to_vec_pretty(&planned.package).map_err(|e| {
+        invalid(format!(
+            "could not encode the manifest for {}: {e}",
+            planned.package.id.as_str()
+        ))
+    })?;
+    std::fs::write(&planned.manifest_path, manifest).map_err(|source| Error::Io {
+        path: planned.manifest_path.clone(),
+        source,
+    })?;
+
+    // Read it back through the same path a composition will. A manifest that
+    // serializes and does not load is a package that only fails later, when
+    // someone is trying to start a game.
+    ModPackage::load(package_dir)?;
+
+    Ok((files, bytes))
+}
+
 
 /// A state that stops conversion, with something the caller can do about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2677,4 +2866,191 @@ mod tests {
             Some("User/Load/Textures/GN7E69/b.png")
         );
     }
+    // ---- executing a plan --------------------------------------------------
+
+    /// A JSGME library on disk: one mod, one texture, under the build given.
+    fn a_library(root: &Path, mod_name: &str, build: &str) {
+        let dir = root
+            .join("MODS")
+            .join(mod_name)
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join(build);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tex_1234.png"), b"a texture").unwrap();
+    }
+
+    fn planned(root: &Path, dest: &Path) -> ConversionPlan {
+        let build = GameId::parse("GN7E69").unwrap();
+        let library = JsgmeLibrary::scan(&root.join("MODS"), &[build]).unwrap();
+        let version = PackageVersion::parse("1.0.0").unwrap();
+        match library.conversion_plan(dest, &version).unwrap() {
+            Conversion::Planned(plan) => plan,
+            Conversion::Refused(r) => panic!("planning refused: {}", r.message()),
+        }
+    }
+
+    #[test]
+    fn executing_a_plan_leaves_a_package_that_loads() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        a_library(src.path(), "Aqua Football", "GN7E69");
+
+        let plan = planned(src.path(), dest.path());
+        let report = plan.execute(Occupied::Refuse).unwrap();
+
+        assert!(report.is_complete(), "failed: {:?}", report.failed);
+        assert_eq!(report.imported.len(), 1);
+        assert_eq!(report.files_copied, 1);
+
+        // Through the same door a composition uses. Anything less proves only
+        // that bytes were written somewhere.
+        let dir = dest.path().join("jsgme.aqua-football").join("1.0.0");
+        let package = ModPackage::load(&dir).unwrap();
+        assert_eq!(package.name, "Aqua Football");
+        assert_eq!(package.files.len(), 1);
+    }
+
+    #[test]
+    fn the_source_library_is_never_written_to() {
+        // The whole reason a failed import costs nothing. If MODS were touched,
+        // a half finished import would damage the only copy of the player's
+        // mods, which is the state being escaped.
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        a_library(src.path(), "Aqua Football", "GN7E69");
+
+        let before = tree(&src.path().join("MODS"));
+        planned(src.path(), dest.path())
+            .execute(Occupied::Refuse)
+            .unwrap();
+        assert_eq!(before, tree(&src.path().join("MODS")), "MODS changed");
+    }
+
+    #[test]
+    fn an_occupied_destination_is_refused_before_anything_is_written() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        a_library(src.path(), "Aqua Football", "GN7E69");
+
+        // First import succeeds.
+        planned(src.path(), dest.path())
+            .execute(Occupied::Refuse)
+            .unwrap();
+
+        // Second refuses rather than silently replacing a package the player
+        // may already have composed from.
+        let err = planned(src.path(), dest.path())
+            .execute(Occupied::Refuse)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("already hold a file"),
+            "the refusal must say why: {err}"
+        );
+        assert!(
+            err.contains("Replace"),
+            "and must name the way to mean it: {err}"
+        );
+
+        // Saying so explicitly works.
+        let report = planned(src.path(), dest.path())
+            .execute(Occupied::Replace)
+            .unwrap();
+        assert!(report.is_complete(), "failed: {:?}", report.failed);
+    }
+
+    #[test]
+    fn a_source_that_changed_after_planning_is_refused_and_leaves_nothing() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        a_library(src.path(), "Aqua Football", "GN7E69");
+
+        let plan = planned(src.path(), dest.path());
+
+        // Someone edits the mod between the scan and the copy. Importing it
+        // anyway would write a manifest whose hash does not describe its own
+        // payload, and nothing would notice until a verify.
+        let file = src
+            .path()
+            .join("MODS")
+            .join("Aqua Football")
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join("GN7E69")
+            .join("tex_1234.png");
+        std::fs::write(&file, b"a DIFFERENT texture").unwrap();
+
+        let report = plan.execute(Occupied::Refuse).unwrap();
+        assert!(report.imported.is_empty(), "nothing may be imported");
+        assert_eq!(report.failed.len(), 1);
+        assert!(
+            report.failed[0].1.contains("changed between"),
+            "the reason must name the cause: {}",
+            report.failed[0].1
+        );
+
+        // And no payload left behind for a later run to trust.
+        let dir = dest.path().join("jsgme.aqua-football").join("1.0.0");
+        assert!(
+            !dir.exists(),
+            "a failed package must not leave a directory: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn one_package_failing_does_not_abandon_the_others() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        a_library(src.path(), "Aqua Football", "GN7E69");
+        a_library(src.path(), "Blue Football", "GN7E69");
+
+        let plan = planned(src.path(), dest.path());
+        assert_eq!(plan.packages.len(), 2, "both must be planned");
+
+        // Break exactly one source.
+        let broken = src
+            .path()
+            .join("MODS")
+            .join("Aqua Football")
+            .join("User")
+            .join("Load")
+            .join("Textures")
+            .join("GN7E69")
+            .join("tex_1234.png");
+        std::fs::write(&broken, b"changed").unwrap();
+
+        let report = plan.execute(Occupied::Refuse).unwrap();
+        assert_eq!(report.imported.len(), 1, "the good one must still import");
+        assert_eq!(report.failed.len(), 1, "and the broken one must be named");
+        assert!(!report.is_complete(), "and the report must not claim success");
+
+        // The survivor is whole.
+        ModPackage::load(&dest.path().join("jsgme.blue-football").join("1.0.0")).unwrap();
+    }
+
+    /// Every path under a root with its bytes, for proving nothing changed.
+    fn tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    out.push((path, bytes));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
 }

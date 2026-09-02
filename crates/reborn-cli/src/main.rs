@@ -53,7 +53,7 @@ use reborn_core::inventory::{
     scan_component, ComponentId, ComponentSpec, ScanControl, ScanObserver, ScanOutcome, ScanPhase,
     ScanProgress, SerializedComponent, UnsignedReleaseBuilder,
 };
-use reborn_core::jsgme::{Conversion, JsgmeLibrary};
+use reborn_core::jsgme::{Conversion, JsgmeLibrary, Occupied};
 use reborn_core::library::{FileVerdict, RebuildState, Verifier, VerifyReport};
 use reborn_core::manifest::Component;
 use reborn_core::migration::{LegacyInstall, MigrationPlan};
@@ -1932,26 +1932,37 @@ fn mods_import(
         return Ok(OK);
     }
 
-    // A refusal rather than a half done import. reborn_core::jsgme returns a
-    // plan for the caller to execute, and this binary cannot be that caller: the
-    // last step writes an nsr.mod.v1 manifest, which means serializing one, and
-    // only reborn-core can do that. Copying the payload without the manifest
-    // would leave exactly the state the plan is documented to avoid, a payload
-    // no package.json describes.
+    // Occupied::Refuse rather than Replace. A destination that already holds
+    // a file usually means the import has already been run, and replacing a
+    // package the player may have composed from is not a decision this
+    // command should take on a bare --apply. The plan printed the occupied
+    // paths above, so anyone who means it can clear them.
     println!();
-    println!("CANNOT IMPORT. Nothing was written.");
+    println!("Importing.");
+    let report = plan.execute(Occupied::Refuse)?;
+
     println!();
-    println!("The plan above is complete and the copies are safe, but the last step");
-    println!("is writing each package.json, and that means serializing an nsr.mod.v1");
-    println!("manifest. Only reborn-core can do that, and it has no function that");
-    println!("executes a ConversionPlan. Copying the payload without the manifests");
-    println!("would leave a half finished import behind, which is the one outcome");
-    println!("the plan is shaped to avoid.");
+    println!(
+        "{} package(s) imported, {} file(s), {} bytes.",
+        report.imported.len(),
+        thousands(report.files_copied as u64),
+        thousands(report.bytes_copied)
+    );
+
+    if !report.failed.is_empty() {
+        println!();
+        println!("{} package(s) did NOT import:", report.failed.len());
+        for (id, why) in &report.failed {
+            println!("  {}: {why}", id.as_str());
+        }
+        println!();
+        println!("Each of those left nothing behind. The rest are complete.");
+        return Ok(PROBLEM);
+    }
+
     println!();
-    println!("What has to happen next, in reborn-core: an executor that takes a");
-    println!("ConversionPlan, copies each file, checks it against the hash the plan");
-    println!("already carries, and writes each manifest last.");
-    Ok(PROBLEM)
+    println!("Every package is on disk with its manifest, and MODS was not touched.");
+    Ok(OK)
 }
 
 /// Print a composition plan.
