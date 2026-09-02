@@ -554,6 +554,9 @@ fn misuse() -> std::process::ExitCode {
 
 fn status(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
     println!("Platform      {}", reborn_core::CURRENT_PLATFORM);
+    // Named before the roots, because it is what decides them. A tester
+    // pasting this output is telling us which launcher they mean.
+    println!("Channel       {}", reborn_core::Channel::detect().explain());
 
     let install = platform.paths.install_root()?;
     let data = platform.paths.data_root()?;

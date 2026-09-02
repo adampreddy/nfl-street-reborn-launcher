@@ -71,7 +71,7 @@ logon the sandbox runs `sandbox-smoke.ps1`, which:
    folder survived. This is the bug the 2.1 uninstaller has.
 4. Runs the **beta installer** and checks it landed in its own folder, carries
    its channel marker, has its own uninstall entry, left the 2.1 entry alone,
-   and that its `rebornctl paths` reports the beta data root.
+   and that its `rebornctl status` names the beta channel and data root.
 
 Results land on this machine in `target\beta-out\result.txt`, one PASS or
 FAIL per check, with `smoke.log` and the installer logs beside it. The sandbox

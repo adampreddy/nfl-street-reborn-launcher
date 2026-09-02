@@ -110,15 +110,10 @@ try {
 
         $cli = Join-Path $stableDir "rebornctl.exe"
         if (Test-Path $cli) {
-            & $cli --help *> (Join-Path $out "rebornctl-help.txt")
-            $help = Get-Content (Join-Path $out "rebornctl-help.txt") -Raw
-            if ($help -match "\bpaths\b") {
-                & $cli paths *> (Join-Path $out "paths-stable.txt")
-                $paths = Get-Content (Join-Path $out "paths-stable.txt") -Raw
-                Check "stable rebornctl reports the stable data root" ($paths -match "NFL Street Reborn Launcher" -and $paths -notmatch "Launcher Beta")
-            } else {
-                Say("rebornctl has no paths subcommand; skipped that check")
-            }
+            & $cli status *> (Join-Path $out "status-stable.txt")
+            $status = Get-Content (Join-Path $out "status-stable.txt") -Raw
+            Check "stable rebornctl status names the stable channel and data root" ($status -match "Channel\s+stable" -and $status -match "Data root\s+.*NFL Street Reborn Launcher\s" -and $status -notmatch "Launcher Beta")
+            Check "stable rebornctl status confirms the data root is outside the install root" ($status -match "uninstall cannot eat saves")
         }
         Say("WebView2 after stable install: $(WebView2Version)")
         Check "WebView2 runtime present after install (needs network in the sandbox)" ($null -ne (WebView2Version))
@@ -147,10 +142,11 @@ try {
         Check "beta has its own uninstall entry" (Test-Path $betaKey)
         Check "the 2.1 uninstall entry was not touched by the beta" ((Get-ItemProperty $regKey -ErrorAction SilentlyContinue).DisplayVersion -ne $null)
         $cli = Join-Path $betaDir "rebornctl.exe"
-        if ((Test-Path $cli) -and ((Get-Content (Join-Path $out "rebornctl-help.txt") -Raw -ErrorAction SilentlyContinue) -match "\bpaths\b")) {
-            & $cli paths *> (Join-Path $out "paths-beta.txt")
-            $paths = Get-Content (Join-Path $out "paths-beta.txt") -Raw
-            Check "beta rebornctl reports the beta data root" ($paths -match "NFL Street Reborn Launcher Beta")
+        if (Test-Path $cli) {
+            & $cli status *> (Join-Path $out "status-beta.txt")
+            $status = Get-Content (Join-Path $out "status-beta.txt") -Raw
+            Check "beta rebornctl status names the beta channel, from the marker file" ($status -match "Channel\s+beta channel, from the channel file")
+            Check "beta rebornctl status reports the beta data root" ($status -match "Data root\s+.*NFL Street Reborn Launcher Beta")
         }
         Check "the memory card survived the beta too" ((Test-Path $card) -and ((Get-FileHash $card -Algorithm SHA256).Hash -eq $cardHash))
     }
