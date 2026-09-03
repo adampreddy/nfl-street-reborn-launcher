@@ -36,6 +36,7 @@ keyring = "4.2"
 # default-features = false drops the process, CPU, memory, network, user and
 # component probing; only the disk module is used.
 sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
+ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
 rusty-xinput = "1.3"

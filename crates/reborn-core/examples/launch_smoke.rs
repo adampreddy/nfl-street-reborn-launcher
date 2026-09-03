@@ -67,6 +67,7 @@ fn main() {
         graphics: GraphicsPreset::Balanced,
         fullscreen: false,
         build: GameBuild::Offline,
+        mods_disabled: false,
         // Let resolution run, so this also proves which folder the real
         // machine would boot against.
         user_dir: None,

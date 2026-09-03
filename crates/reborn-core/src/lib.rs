@@ -45,11 +45,13 @@ pub mod gamepad;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
+pub mod league;
 pub mod library;
 pub mod manifest;
 pub mod migration;
 pub mod mods;
 pub mod music;
+pub mod net;
 pub mod onboarding;
 pub mod platform;
 pub mod runtime;
@@ -57,6 +59,7 @@ pub mod session;
 pub mod settings;
 pub mod stats;
 pub mod supervisor;
+pub mod update;
 pub mod xbox;
 
 pub use platform::{

@@ -955,6 +955,7 @@ fn play(
         graphics,
         fullscreen,
         build: GameBuild::Offline,
+        mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
     };
 

@@ -2473,6 +2473,11 @@ pub struct SyncRequest {
     /// The emulator's user directory. `Load/Textures/<game>` under it is what
     /// gets pointed at the composed tree.
     pub user_dir: PathBuf,
+    /// Compose THIS list instead of reading `activation.json`, leaving the
+    /// file as it is. `Some(vec![])` is "start with mods disabled": the
+    /// game loads the pristine tree once, and the player's selection is
+    /// still there for the next launch.
+    pub active_override: Option<Vec<ActivePackage>>,
 }
 
 impl SyncRequest {
@@ -2486,6 +2491,7 @@ impl SyncRequest {
             activation_file: activation_path(platform)?,
             user_dir: user_dir.to_path_buf(),
             game,
+            active_override: None,
         })
     }
 }
@@ -2599,11 +2605,14 @@ pub fn sync_active(
     req: &SyncRequest,
     now_ms: u64,
 ) -> Result<SyncOutcome> {
-    let activation = Activation::load(&req.activation_file)?;
+    let active = match &req.active_override {
+        Some(list) => list.clone(),
+        None => Activation::load(&req.activation_file)?.active,
+    };
 
     let mut packages = Vec::new();
     let mut missing = Vec::new();
-    for entry in &activation.active {
+    for entry in &active {
         let dir = req
             .packages_root
             .join(entry.id.as_str())
@@ -2643,7 +2652,7 @@ pub fn sync_active(
     Ok(SyncOutcome::Done(Box::new(SyncReport {
         game: req.game.clone(),
         composed_root: req.composed_root.clone(),
-        active: activation.active,
+        active,
         missing,
         tree,
         link,
@@ -4110,6 +4119,7 @@ mod tests {
             packages_root: fx.packages.clone(),
             activation_file: fx.activation(),
             user_dir: user_dir.to_path_buf(),
+            active_override: None,
         }
     }
 
@@ -4252,5 +4262,43 @@ mod tests {
             "a refused sync must not point the game anywhere"
         );
         assert!(SyncOutcome::Refused(why).explain().starts_with("Mods were not applied: "));
+    }
+
+    #[test]
+    fn starting_with_mods_disabled_loads_the_pristine_tree_and_keeps_the_selection() {
+        // The recovery page's "Start with mods disabled". One launch without
+        // the packages, and activation.json untouched, so the next launch has
+        // the player's selection back without a click.
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let package = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(package.id.clone(), package.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+
+        let mut req = sync_request(&fx, &user_dir);
+        req.active_override = Some(Vec::new());
+        let report = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert!(matches!(report.tree, TreeStep::Rebuilt { overlaid: 0, .. }), "{:?}", report.tree);
+        assert!(report.active.is_empty());
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the original football");
+        assert_eq!(
+            Activation::load(&fx.activation()).unwrap().active.len(),
+            1,
+            "the selection must survive a disabled launch"
+        );
+
+        // And the plain sync afterwards brings the mod back.
+        req.active_override = None;
+        let again = done(sync_active(&p, &guard, &req, 2).unwrap());
+        assert!(matches!(again.tree, TreeStep::Rebuilt { overlaid: 1, .. }));
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the purple football");
     }
 }

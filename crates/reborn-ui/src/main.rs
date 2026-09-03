@@ -249,6 +249,8 @@ struct HomeState {
     minutes_played: u64,
     /// None when no session has ever finished.
     last_played: Option<String>,
+    /// When the last session ended, milliseconds since the epoch.
+    last_played_ms: Option<u64>,
     controllers: usize,
     mods_installed: usize,
     mods_applied: usize,
@@ -319,7 +321,7 @@ fn mods(legacy_root: Option<String>) -> Result<Vec<ModEntry>, String> {
 fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<HomeState, String> {
     let p = Platform::detect();
 
-    let (sessions_played, minutes_played, last_played) = match Supervisor::acquire(&p)
+    let (sessions_played, minutes_played, last_played, last_played_ms) = match Supervisor::acquire(&p)
         .map_err(|e| e.to_string())?
     {
         Startup::Owner(s) => {
@@ -327,9 +329,10 @@ fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<Ho
             let history = s.history().unwrap_or_default();
             let minutes: u64 = history.iter().filter_map(|r| r.duration_ms()).sum::<u64>() / 60_000;
             let last = history.last().map(|r| r.id.clone());
-            (history.len(), minutes, last)
+            let last_ms = history.last().and_then(|r| r.ended_ms);
+            (history.len(), minutes, last, last_ms)
         }
-        Startup::AlreadyRunning { .. } => (0, 0, None),
+        Startup::AlreadyRunning { .. } => (0, 0, None, None),
     };
 
     let devices_report = devices(runtime.clone())?;
@@ -339,6 +342,7 @@ fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<Ho
         sessions_played,
         minutes_played,
         last_played,
+        last_played_ms,
         controllers: devices_report.pads.len(),
         mods_installed: mod_list.len(),
         mods_applied: mod_list.iter().filter(|m| m.applied).count(),
@@ -425,6 +429,7 @@ async fn prepare_launch(
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
+            mods_disabled: false,
             user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
         };
         Session::prepare(&p, &req)
@@ -619,6 +624,7 @@ async fn launch(
     preset: String,
     fullscreen: bool,
     user_dir: Option<String>,
+    mods_disabled: bool,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
@@ -635,6 +641,7 @@ async fn launch(
             graphics: preset_from(&preset),
             fullscreen,
             build: GameBuild::Offline,
+            mods_disabled,
             user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
         };
 
@@ -2794,6 +2801,7 @@ async fn onboarding_run_task(
                     graphics: preset,
                     fullscreen: true,
                     build: GameBuild::Offline,
+                    mods_disabled: false,
                     // Find the folder that already exists. Creating a fresh one
                     // here is the bug that booted the game to factory defaults
                     // with none of the player's saves.
@@ -3347,19 +3355,376 @@ async fn stats_ingest(
 /// because the queue page would show a submission pass that ran and moved
 /// nothing.
 #[tauri::command]
-async fn stats_submit(confirm: bool) -> Result<StatsQueueView, String> {
+async fn stats_submit(confirm: bool) -> Result<StatsSubmitView, String> {
     confirmed(
         confirm,
         "stats_submit",
         "upload every queued result, which cannot be taken back",
     )?;
-    Err(
-        "Cannot submit results yet: nothing implements the Submitter seam, so \
-         there is no endpoint and no credential to send them to. The captures \
-         are safe on disk and stats_queue shows how many are waiting. See \
-         docs/architecture/ONLINE_AND_RESULTS_PROTOCOL.md."
-            .to_string(),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+        let token = p
+            .credentials
+            .retrieve(reborn_core::league::TOKEN_ACCOUNT)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                "No league token is stored, so nothing was sent. Enter the token on the \
+                 Settings page; the results stay queued until then."
+                    .to_string()
+            })?;
+        let url = league_url(&p)?;
+        let http = http_client();
+        let sender = reborn_core::league::LeagueSubmitter::new(&http, url.clone(), token);
+        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let report = queue.submit_pending(&sender, 5).map_err(|e| e.to_string())?;
+        Ok(StatsSubmitView {
+            url,
+            accepted: report.accepted.len(),
+            held: report.held.len(),
+            rejected: report.rejected.len(),
+            deferred: report.deferred.len(),
+            stalled: report.stalled.len(),
+            note: submit_note(&report),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct StatsSubmitView {
+    url: String,
+    accepted: usize,
+    /// Stored, and a person will decide. A success.
+    held: usize,
+    rejected: usize,
+    /// Could not be delivered this time. Still queued.
+    deferred: usize,
+    stalled: usize,
+    note: String,
+}
+
+fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
+    let mut parts = Vec::new();
+    if !r.accepted.is_empty() {
+        parts.push(format!("{} accepted", r.accepted.len()));
+    }
+    if !r.held.is_empty() {
+        parts.push(format!("{} held for commissioner review", r.held.len()));
+    }
+    if !r.rejected.is_empty() {
+        parts.push(format!("{} refused by the server and kept on disk", r.rejected.len()));
+    }
+    if !r.deferred.is_empty() {
+        parts.push(format!("{} could not be delivered and stay queued", r.deferred.len()));
+    }
+    if !r.stalled.is_empty() {
+        parts.push(format!("{} out of attempts, still on disk", r.stalled.len()));
+    }
+    if parts.is_empty() {
+        "Nothing was waiting to be sent.".to_string()
+    } else {
+        format!("{}.", parts.join(", "))
+    }
+}
+
+/// The league endpoint: the setting, or the site's ingest endpoint.
+fn league_url(p: &Platform) -> Result<String, String> {
+    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
+    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
+    Ok(settings
+        .league_ingest_url
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| reborn_core::league::DEFAULT_INGEST_URL.to_string()))
+}
+
+fn http_client() -> reborn_core::net::UreqHttp {
+    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")))
+}
+
+#[derive(Debug, Serialize)]
+struct CredentialSetView {
+    account: &'static str,
+    stored: bool,
+    /// The token's length, never the token.
+    length: usize,
+}
+
+/// Store the league token in the operating system's credential store.
+///
+/// Never written to disk by the launcher, never logged, never echoed back:
+/// the view carries its length so a page can say something was stored.
+#[tauri::command]
+async fn stats_credential_set(token: String) -> Result<CredentialSetView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err("the token is empty; nothing was stored".to_string());
+        }
+        let p = Platform::detect();
+        p.credentials
+            .store(reborn_core::league::TOKEN_ACCOUNT, &token)
+            .map_err(|e| e.to_string())?;
+        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: true, length: token.len() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Remove the league token from the credential store.
+#[tauri::command]
+async fn stats_credential_forget() -> Result<CredentialSetView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let _ = p.credentials.delete(reborn_core::league::TOKEN_ACCOUNT);
+        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: false, length: 0 })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct UpdateView {
+    current: String,
+    source: String,
+    /// "up_to_date", "available", "no_asset", "unreachable", "unreadable".
+    state: &'static str,
+    latest: Option<String>,
+    bytes: Option<u64>,
+    notes: Option<String>,
+    note: String,
+}
+
+fn update_source_for(p: &Platform, given: Option<&str>) -> Result<String, String> {
+    if let Some(s) = given.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(s.to_string());
+    }
+    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
+    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
+    Ok(settings.update_source.filter(|u| !u.trim().is_empty()).unwrap_or_else(|| {
+        match p.paths.channel() {
+            reborn_core::Channel::Beta => reborn_core::update::DEFAULT_BETA_SOURCE,
+            reborn_core::Channel::Stable => reborn_core::update::DEFAULT_SOURCE,
+        }
+        .to_string()
+    }))
+}
+
+fn update_view(source: &str, check: &reborn_core::update::UpdateCheck) -> UpdateView {
+    use reborn_core::update::UpdateCheck as C;
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let (state, latest, bytes, notes) = match check {
+        C::UpToDate { latest, .. } => ("up_to_date", Some(latest.clone()), None, None),
+        C::Available { latest, asset, notes, .. } => ("available", Some(latest.clone()), Some(asset.bytes), notes.clone()),
+        C::NoAssetForThisPlatform { latest, .. } => ("no_asset", Some(latest.clone()), None, None),
+        C::Unreachable { .. } => ("unreachable", None, None, None),
+        C::Unreadable { .. } => ("unreadable", None, None, None),
+    };
+    UpdateView { current, source: source.to_string(), state, latest, bytes, notes, note: check.explain() }
+}
+
+/// Ask the release page whether a newer launcher exists. Reads only.
+#[tauri::command]
+async fn update_check(source: Option<String>) -> Result<UpdateView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let source = update_source_for(&p, source.as_deref())?;
+        let check = reborn_core::update::check(&http_client(), &source, env!("CARGO_PKG_VERSION"));
+        Ok(update_view(&source, &check))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateDownloadView {
+    check: UpdateView,
+    /// The verified installer, ready for update_apply. Absent when there was
+    /// nothing to download.
+    path: Option<String>,
+    bytes: u64,
+    sha256: Option<String>,
+}
+
+/// Download the newer installer into the downloads folder and verify it.
+/// Nothing is installed. A hash mismatch deletes the file and is an error.
+#[tauri::command]
+async fn update_download(source: Option<String>) -> Result<UpdateDownloadView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let source = update_source_for(&p, source.as_deref())?;
+        let http = http_client();
+        let check = reborn_core::update::check(&http, &source, env!("CARGO_PKG_VERSION"));
+        let view = update_view(&source, &check);
+        let reborn_core::update::UpdateCheck::Available { asset, .. } = &check else {
+            return Ok(UpdateDownloadView { check: view, path: None, bytes: 0, sha256: None });
+        };
+        let dir = p.data_dir(DataDir::Downloads).map_err(|e| e.to_string())?;
+        let got = reborn_core::update::download(&http, asset, &dir).map_err(|e| e.to_string())?;
+        Ok(UpdateDownloadView {
+            check: view,
+            path: Some(got.path.display().to_string()),
+            bytes: got.bytes,
+            sha256: Some(got.sha256.as_str().to_string()),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateApplyView {
+    started: bool,
+    installer: String,
+    note: String,
+}
+
+/// Start the downloaded installer and close the launcher so it can replace
+/// the program files. The data root is not touched by the installer.
+#[tauri::command]
+async fn update_apply(path: String, confirm: bool) -> Result<UpdateApplyView, String> {
+    confirmed(confirm, "update_apply", "start the installer and close the launcher")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let installer = reborn_core::session::user_path(&path);
+        // Only something the launcher downloaded and verified.
+        let downloads = p.data_dir(DataDir::Downloads).map_err(|e| e.to_string())?;
+        if !installer.starts_with(&downloads) {
+            return Err(format!(
+                "{} is not in the downloads folder, so it was not verified by the launcher. \
+                 Run update_download first.",
+                installer.display()
+            ));
+        }
+        reborn_core::update::apply(&p, &installer).map_err(|e| e.to_string())?;
+        // Out of the installer's way. A moment for the reply to reach the page.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            std::process::exit(0);
+        });
+        Ok(UpdateApplyView {
+            started: true,
+            installer: installer.display().to_string(),
+            note: "The installer is running. The launcher closes now and the installer opens it again when it is done.".to_string(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Recovery
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct OpenRuntimeView {
+    started: bool,
+    runtime: String,
+    user_dir_note: String,
+}
+
+/// Open the emulator itself, with no game, against the user folder a launch
+/// would use. For the player who wants Dolphin's own settings. Not a
+/// session: nothing is recorded and nothing waits for it.
+#[tauri::command]
+async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Result<OpenRuntimeView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let exe = runtime_for(&p, runtime.as_deref()).ok_or_else(|| {
+            "No emulator was found. Set its path on the Settings page.".to_string()
+        })?;
+        let chosen = user_dir.as_deref().map(reborn_core::session::user_path);
+        let user = reborn_core::session::resolve_user_dir_for(&p, chosen.as_deref(), Some(&exe))
+            .map_err(|e| e.to_string())?;
+        let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
+        let env = std::collections::BTreeMap::new();
+        p.processes
+            .spawn(&exe, &args, exe.parent(), &env)
+            .map_err(|e| e.to_string())?;
+        Ok(OpenRuntimeView { started: true, runtime: exe.display().to_string(), user_dir_note: user.explain() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticBundleView {
+    folder: String,
+    files: Vec<String>,
+    skipped: Vec<String>,
+}
+
+/// Gather what a person would need to look at a bad session into one folder
+/// under recovery/, and name what it holds. Copies only: nothing is moved.
+/// No token, no credential, and no memory card ever goes in.
+#[tauri::command]
+async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let stamp = now_ms();
+        let folder = p
+            .data_dir(DataDir::Recovery)
+            .map_err(|e| e.to_string())?
+            .join(format!("diagnostics-{stamp}"));
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+
+        let mut files = Vec::new();
+        let mut skipped = Vec::new();
+        let mut take = |from: PathBuf, name: &str| match std::fs::copy(&from, folder.join(name)) {
+            Ok(_) => files.push(name.to_string()),
+            Err(_) => skipped.push(format!("{name} (not at {})", from.display())),
+        };
+
+        let data = p.paths.data_root().map_err(|e| e.to_string())?;
+        take(data.join("settings.json"), "settings.json");
+        take(data.join("onboarding.jsonl"), "onboarding.jsonl");
+        take(data.join("mods").join("activation.json"), "activation.json");
+        take(
+            data.join("mods").join("active").join(GameBuild::Offline.game_id()).join("composed.json"),
+            "composed.json",
+        );
+
+        let exe = runtime_for(&p, runtime.as_deref());
+        if let Ok(user) = reborn_core::session::resolve_user_dir_for(&p, None, exe.as_deref()) {
+            let config = user.path().join("Config");
+            for name in ["Dolphin.ini", "GFX.ini", "GCPadNew.ini"] {
+                take(config.join(name), name);
+            }
+            take(user.path().join("Logs").join("dolphin.log"), "dolphin.log");
+        }
+
+        // What the launcher itself knows, as text.
+        let mut status = String::new();
+        status.push_str(&format!("launcher {}\n", env!("CARGO_PKG_VERSION")));
+        status.push_str(&format!("channel {}\n", reborn_core::Channel::detect().explain()));
+        status.push_str(&format!("data root {}\n", data.display()));
+        if let Some(exe) = &exe {
+            status.push_str(&format!("emulator {}\n", exe.display()));
+        }
+        if let Startup::Owner(s) = Supervisor::acquire(&p).map_err(|e| e.to_string())? {
+            if let Ok(history) = s.history() {
+                status.push_str(&format!("sessions {}\n", history.len()));
+                for r in history.iter().rev().take(10) {
+                    status.push_str(&format!("  {} {:?} {:?}\n", r.id, r.build, r.end));
+                }
+            }
+        }
+        match std::fs::write(folder.join("status.txt"), status) {
+            Ok(()) => files.push("status.txt".to_string()),
+            Err(e) => skipped.push(format!("status.txt ({e})")),
+        }
+
+        Ok(DiagnosticBundleView { folder: folder.display().to_string(), files, skipped })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---------------------------------------------------------------------------
@@ -4125,6 +4490,13 @@ fn main() {
             stats_queue,
             stats_ingest,
             stats_submit,
+            stats_credential_set,
+            stats_credential_forget,
+            update_check,
+            update_download,
+            update_apply,
+            open_runtime,
+            diagnostic_bundle,
             // Custom soundtrack.
             music_sources,
             music_build_pack,

@@ -47,6 +47,10 @@ pub struct LaunchRequest {
     pub graphics: GraphicsPreset,
     pub fullscreen: bool,
     pub build: GameBuild,
+    /// Boot without any mod applied, this once. The selection in
+    /// activation.json is left as it is. The recovery page's answer to a
+    /// crash that a mod might have caused.
+    pub mods_disabled: bool,
     /// The Dolphin user directory to boot against.
     ///
     /// `None` means "find the one that already exists", which is almost always
@@ -622,7 +626,7 @@ impl Session {
         // builds the tree that list describes and points the emulator at it.
         // Before this call existed every profile switch wrote the list
         // correctly and the game never saw it.
-        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path());
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled);
 
         let config = LaunchConfig {
             build: req.build,
@@ -678,6 +682,7 @@ fn sync_mods_for_launch(
     lock: &Supervisor,
     build: GameBuild,
     user_dir: &Path,
+    disabled: bool,
 ) -> ModsAtLaunch {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -685,7 +690,10 @@ fn sync_mods_for_launch(
         .unwrap_or(0);
     let attempt = (|| -> Result<crate::mods::SyncOutcome> {
         let game = crate::mods::GameId::parse(build.game_id())?;
-        let req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
+        let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
+        if disabled {
+            req.active_override = Some(Vec::new());
+        }
         crate::mods::sync_active(platform, lock, &req, now_ms)
     })();
     match attempt {
@@ -1179,6 +1187,7 @@ mod tests {
             graphics: GraphicsPreset::Balanced,
             fullscreen: true,
             build: GameBuild::Offline,
+            mods_disabled: false,
             // Tests must never pick up whatever real install happens
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),

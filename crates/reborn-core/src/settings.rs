@@ -62,6 +62,14 @@ pub struct Settings {
     /// Which button art to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls_profile: Option<ControlsProfile>,
+    /// Where the launcher looks for its release manifest. Absent means the
+    /// release page for this channel; see crate::update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_source: Option<String>,
+    /// Where match results are sent. Absent means the league site's ingest
+    /// endpoint; see crate::league.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub league_ingest_url: Option<String>,
 }
 
 impl Default for Settings {
@@ -69,6 +77,8 @@ impl Default for Settings {
         Self {
             schema: SETTINGS_SCHEMA.to_string(),
             controls_profile: None,
+            update_source: None,
+            league_ingest_url: None,
         }
     }
 }

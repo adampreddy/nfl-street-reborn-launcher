@@ -160,7 +160,43 @@ const FEATURES = [
           preset: presetValue,
           fullscreen: fullscreenValue,
           userDir: get("userDir"),
+          modsDisabled: false,
         }),
+      },
+    ],
+  },
+  {
+    group: "Recovery and updates",
+    items: [
+      {
+        cmd: "open_runtime",
+        desc: "Open the emulator itself, no game, against the folder a launch uses",
+        write: true,
+        args: () => ({ runtime: get("runtime"), userDir: get("userDir") }),
+      },
+      {
+        cmd: "diagnostic_bundle",
+        desc: "Copy settings, config and the session list into one folder under recovery",
+        write: true,
+        args: () => ({ runtime: get("runtime") }),
+      },
+      {
+        cmd: "update_check",
+        desc: "Ask the release page whether a newer launcher exists",
+        inputs: [{ key: "source", placeholder: "manifest URL, blank for the release page" }],
+      },
+      {
+        cmd: "update_download",
+        desc: "Download and verify the newer installer. Installs nothing",
+        write: true,
+        inputs: [{ key: "source", placeholder: "manifest URL, blank for the release page" }],
+      },
+      {
+        cmd: "update_apply",
+        desc: "Start the downloaded installer and close the launcher",
+        write: true,
+        confirm: true,
+        inputs: [{ key: "path", placeholder: "installer path from update_download" }],
       },
     ],
   },
@@ -314,6 +350,13 @@ const FEATURES = [
           { key: "sessionId", placeholder: "session id, optional" },
         ],
       },
+      {
+        cmd: "stats_credential_set",
+        desc: "Store the league token in the OS credential store. Never shown again",
+        write: true,
+        inputs: [{ key: "token", placeholder: "bearer token" }],
+      },
+      { cmd: "stats_credential_forget", desc: "Remove the stored league token", write: true },
       {
         cmd: "stats_submit",
         desc: "Send the queue. Refuses unverified sides",
