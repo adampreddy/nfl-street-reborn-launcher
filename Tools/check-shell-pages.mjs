@@ -52,7 +52,9 @@ const FULL = {
   stats_queue: { dir: "q", queued: 2, orphaned_payloads: 0, entries: [] },
   sessions: [{ id: "s1", build: "offline", minutes: 3.2, ended: "Crashed", needs_recovery: true }, { id: "s2", build: "offline", minutes: 1, ended: "Exited", needs_recovery: true }, { id: "s3", build: "offline", minutes: 1, ended: "Terminated", needs_recovery: true }],
 };
-const NULLS = Object.fromEntries(Object.entries(FULL).map(([k, v]) => [k, Array.isArray(v) ? [] : Object.fromEntries(Object.keys(v).map((f) => [f, null]))]));
+// Every field null, and every list answer null too: a list that is absent is
+// not an empty list, and a page that assumes it is throws on .length.
+const NULLS = Object.fromEntries(Object.entries(FULL).map(([k, v]) => [k, Array.isArray(v) ? null : Object.fromEntries(Object.keys(v).map((f) => [f, null]))]));
 
 let fails = 0;
 function check(what, ok, detail = "") {
