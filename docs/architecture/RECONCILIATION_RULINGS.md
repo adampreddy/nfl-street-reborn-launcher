@@ -1628,3 +1628,23 @@ Pinned by `preparation_only_configures`, which fails if any task label promises 
 **Files to edit:** `crates/reborn-core/src/platform/mod.rs`, `crates/reborn-core/src/platform/imp.rs`, `installer/windows/reborn-launcher.iss`, `installer/windows/build.ps1`, `installer/beta/README.md`
 
 ---
+
+### 159. Self-update shipped without the supervisor or the signing key
+
+**id:** `self-update-installer-handoff`
+
+**Ruling.** Section 10's supervisor swap and section 6's Ed25519 manifests stay the design; neither the supervisor nor the key exists, and the same document names the platform installer as the recovery path when the swap machinery is absent. The shipped self-update drives that path on purpose: fetch `latest.json` from the launcher repository's GitHub release page (a separate `latest-beta.json` for beta), compare versions, download the installer, verify the SHA-256 the manifest pins, run the installer and exit. The manifest is written by `build.ps1` beside the installer it hashes. Integrity is the hash over HTTPS, the same as a manual download from the release page; a signature-failing or unreachable manifest is a state the page shows, never a block on playing. Recorded by Claude, 2026-09-03.
+
+**Files to edit:** `crates/reborn-core/src/update.rs`, `crates/reborn-core/src/net.rs`, `installer/windows/build.ps1`, `installer/beta/README.md`
+
+---
+
+### 160. Match results are sent by the launcher, with Dolphin's rules
+
+**id:** `league-submit-launcher-port`
+
+**Ruling.** `crate::league` ports `NflsStatUpload` to the launcher against the live `ingest.php`, read from its source: POST the raw `nsr.game.v1` capture with a bearer token; applied and duplicate are accepted and never sent again; review is a success a person finishes; a server refusal is final; a server error or no route is deferred. The token lives in the OS credential store under `nsr.league.ingest` and never appears in a message. The `nsr.submission.v1` envelope of section 6.2 waits for the ladder backend it addresses. Recorded by Claude, 2026-09-03.
+
+**Files to edit:** `crates/reborn-core/src/league.rs`, `crates/reborn-ui/src/main.rs`
+
+---
