@@ -85,6 +85,12 @@ enum Command {
     /// Where everything lives on this machine, and whether a launcher is running.
     Status,
 
+    /// Whether a newer launcher is published, and fetch it. Installs nothing.
+    Update {
+        #[command(subcommand)]
+        what: UpdateCommand,
+    },
+
     /// Show what migrating a 2.1 install would do. Copies nothing without --apply.
     Migrate {
         /// The 2.1 install root. Defaults to the standard location.
@@ -274,6 +280,22 @@ enum Command {
 /// used JSGME, which moves the original into `!BACKUP` and makes that the only
 /// copy in existence.
 #[derive(Subcommand, Debug)]
+enum UpdateCommand {
+    /// Read the release manifest and compare it with this build.
+    Check {
+        /// The manifest URL. Defaults to the release page for this channel.
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Download the newer installer into the downloads folder and verify its
+    /// hash. Nothing is installed; the path is printed.
+    Download {
+        #[arg(long)]
+        source: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum ModsCommand {
     /// Packages, which are active, the pristine trees, and the JSGME library.
     List {
@@ -440,6 +462,10 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
     let platform = Platform::detect();
     match cli.command {
         Command::Status => status(&platform),
+        Command::Update { what } => match what {
+            UpdateCommand::Check { source } => update_check(&platform, source.as_deref(), false),
+            UpdateCommand::Download { source } => update_check(&platform, source.as_deref(), true),
+        },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
         Command::Controller {
@@ -570,6 +596,45 @@ const PROBLEM: std::process::ExitCode = std::process::ExitCode::FAILURE;
 /// A function rather than a constant because `ExitCode::from` is not const.
 fn misuse() -> std::process::ExitCode {
     std::process::ExitCode::from(2)
+}
+
+/// Check for a newer launcher, and fetch it when asked.
+fn update_check(
+    platform: &Platform,
+    source: Option<&str>,
+    download: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let source = match source.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => match platform.paths.channel() {
+            reborn_core::Channel::Beta => reborn_core::update::DEFAULT_BETA_SOURCE.to_string(),
+            reborn_core::Channel::Stable => reborn_core::update::DEFAULT_SOURCE.to_string(),
+        },
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    let http = reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{current}"));
+    println!("This build  {current}");
+    println!("Source      {source}");
+    let check = reborn_core::update::check(&http, &source, current);
+    println!("{}", check.explain());
+    let reborn_core::update::UpdateCheck::Available { asset, .. } = &check else {
+        return Ok(match check {
+            reborn_core::update::UpdateCheck::UpToDate { .. } => OK,
+            _ => PROBLEM,
+        });
+    };
+    if !download {
+        println!("Run `rebornctl update download` to fetch it. Nothing is installed by this command.");
+        return Ok(OK);
+    }
+    let dir = platform.data_dir(reborn_core::DataDir::Downloads)?;
+    println!();
+    println!("Downloading {} ({:.1} MB) into {}", asset.file_name, asset.bytes as f64 / 1_048_576.0, dir.display());
+    let got = reborn_core::update::download(&http, asset, &dir)?;
+    println!("Verified    sha256 {}", got.sha256.as_str());
+    println!("Saved       {}", got.path.display());
+    println!("Run that installer to update. It replaces the program files and leaves your data alone.");
+    Ok(OK)
 }
 
 fn status(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
