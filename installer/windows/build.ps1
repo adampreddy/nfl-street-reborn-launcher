@@ -258,3 +258,35 @@ Get-ChildItem $scratch -Filter "*.exe" | ForEach-Object {
 }
 # The CLI beside the installer, so dist always carries the matching build.
 Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
+
+# -----------------------------------------------------------------------------
+# The release manifest the launcher's update check reads
+# -----------------------------------------------------------------------------
+#
+# latest.json (stable) or latest-beta.json (beta), written by the build that
+# made the installer, so the hash it pins is the hash of the file beside it.
+# Publishing an update is uploading BOTH files to a GitHub release tagged
+# v<version> on the launcher repository; the launcher reads the manifest from
+# the release page's latest-download URL and the installer from the URL the
+# manifest names. See crates/reborn-core/src/update.rs.
+$setup = Get-ChildItem $dist -Filter "*Setup $Version.exe" | Select-Object -First 1
+if ($setup) {
+    $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+    $repo = "https://github.com/adampreddy/nfl-street-reborn-launcher"
+    $assetUrl = "$repo/releases/download/v$Version/" + [uri]::EscapeDataString($setup.Name)
+    $manifest = [ordered]@{
+        schema   = "nsr.launcher-release.v1"
+        version  = $Version
+        channel  = $Channel
+        notes    = $null
+        windows  = [ordered]@{ url = $assetUrl; sha256 = $hash; bytes = $setup.Length; file_name = $setup.Name }
+        macos    = $null
+        linux    = $null
+    }
+    $manifestName = if ($Channel -eq "beta") { "latest-beta.json" } else { "latest.json" }
+    $manifestPath = Join-Path $dist $manifestName
+    ($manifest | ConvertTo-Json -Depth 4) | Set-Content $manifestPath -Encoding ASCII
+    Write-Host ("Wrote {0}: version {1}, sha256 {2}..." -f $manifestName, $Version, $hash.Substring(0, 12))
+} else {
+    Write-Warning "No Setup $Version.exe in dist, so no release manifest was written."
+}

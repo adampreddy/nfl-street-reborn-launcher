@@ -49,6 +49,25 @@ To run any build as beta without installing it, set `REBORN_CHANNEL=beta` in
 the environment. The environment wins over the marker file, so an installed
 beta can also be run as stable for a comparison.
 
+## 1a. Publishing an update
+
+The launcher checks for updates on the Settings page. It reads a small
+manifest from the launcher repository's GitHub release page, `latest.json`
+for stable and `latest-beta.json` for beta, and the manifest names the
+installer and its SHA-256. `build.ps1` writes the manifest beside the
+installer it just built. To publish:
+
+1. Build: `.\installer\windows\build.ps1 -Version 3.0.1 -Runtime ...`
+2. Create a GitHub release on `adampreddy/nfl-street-reborn-launcher` tagged
+   `v3.0.1` and upload both files from `dist\`: the Setup exe and
+   `latest.json` (or `latest-beta.json` for a beta build).
+
+The launcher then offers the update. Installing it means downloading the
+installer, checking its hash, running it, and closing the launcher; the
+installer replaces the program files and leaves the data root alone. There
+is no signing key yet, so the hash pinned by the manifest over HTTPS is the
+integrity check, the same as a manual download from the release page.
+
 ## 2. The sandbox smoke test
 
 ```powershell

@@ -4,6 +4,11 @@ import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, re
 
 const state = {};
 let problem = null;
+let busy = false;
+// The update flow's last answers, shown in place.
+let update = null; // update_check view
+let downloaded = null; // update_download view
+let leagueSaid = null;
 
 function ok(x) {
   return x && !x.error;
@@ -13,6 +18,8 @@ async function load() {
   const reads = {
     paths: call("paths"),
     check: call("launch_check", { runtime: get("runtime"), game: get("game") }),
+    token: call("credential_stored", { account: "nsr.league.ingest" }),
+    queue: call("stats_queue"),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -102,11 +109,71 @@ function whereBlock() {
   return sec;
 }
 
+async function act(label, cmd, args, after) {
+  if (busy) return;
+  busy = true;
+  problem = null;
+  draw();
+  try {
+    const r = await call(cmd, args);
+    after(r);
+  } catch (e) {
+    problem = `${label}: ${reason(e)}`;
+  }
+  await load();
+  busy = false;
+  draw();
+}
+
+function updatesBlock() {
+  const sec = el("section", { class: "block" }, el("h2", { text: "Updates" }));
+  sec.append(el("p", { class: "note", text: "Three steps, each its own button, so nothing installs behind your back: check the release page, download and verify the installer, then run it. The installer replaces the program files and leaves your data and saves alone." }));
+  const row = el("div", { class: "mod" });
+  row.append(el("button", { type: "button", text: "Check for updates", disabled: busy, onclick: () => act("Check", "update_check", { source: null }, (r) => { update = r; downloaded = null; }) }));
+  if (update && update.state === "available") {
+    row.append(el("button", { type: "button", text: `Download ${update.latest}`, disabled: busy, onclick: () => act("Download", "update_download", { source: null }, (r) => { downloaded = r; }) }));
+  }
+  if (downloaded && downloaded.path) {
+    row.append(el("button", { type: "button", class: "write", text: "Install and restart", disabled: busy, onclick: () => act("Install", "update_apply", { path: downloaded.path, confirm: true }, (r) => { problem = null; leagueSaid = null; update = { ...update, note: r.note }; }) }));
+  }
+  sec.append(row);
+  if (update) {
+    sec.append(el("p", { class: update.state === "unreachable" || update.state === "unreadable" ? "partial" : "", text: update.note }));
+    if (update.notes) sec.append(el("p", { class: "note", text: update.notes }));
+  } else {
+    sec.append(el("p", { class: "absent", text: "Not checked yet." }));
+  }
+  if (downloaded && downloaded.path) {
+    sec.append(el("div", { class: "said" }, el("p", { text: `Downloaded and verified: ${downloaded.path} (${(downloaded.bytes / 1048576).toFixed(1)} MB).` })));
+  }
+  return sec;
+}
+
+function leagueBlock() {
+  const sec = el("section", { class: "block" }, el("h2", { text: "League results" }));
+  sec.append(el("p", { class: "note", text: "Match results the game recorded wait here until they are sent to the league site. Sending needs the league token, kept in Windows' own credential store and never shown again." }));
+  const t = state.token;
+  const q = state.queue;
+  const rows = [];
+  rows.push(fact("Token", ok(t) ? (t.stored ? "stored" : "not stored") : null));
+  rows.push(fact("Waiting to send", ok(q) ? String(q.queued ?? q.pending ?? 0) : null));
+  sec.append(facts(rows));
+  const input = el("input", { type: "password", class: "wide", placeholder: "league token", autocomplete: "off" });
+  const row = el("div", { class: "settings-row stack" }, el("span", { class: "name", text: "League token" }), input);
+  const buttons = el("div", { class: "mod" });
+  buttons.append(el("button", { type: "button", text: "Store token", disabled: busy, onclick: () => { const v = input.value; input.value = ""; act("Store token", "stats_credential_set", { token: v }, (r) => { leagueSaid = `Stored a token of ${r.length} characters.`; }); } }));
+  buttons.append(el("button", { type: "button", text: "Forget token", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Forget token", "stats_credential_forget", {}, () => { leagueSaid = "Token removed."; }) }));
+  buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Send", "stats_submit", { confirm: true }, (r) => { leagueSaid = r.note; }) }));
+  sec.append(row, buttons);
+  if (leagueSaid) sec.append(el("div", { class: "said" }, el("p", { text: leagueSaid })));
+  return sec;
+}
+
 function draw() {
   const screen = document.getElementById("screen");
   const parts = [];
   if (problem) parts.push(refusal(problem));
-  parts.push(boxesBlock(), foundBlock(), whereBlock());
+  parts.push(boxesBlock(), foundBlock(), updatesBlock(), leagueBlock(), whereBlock());
   screen.replaceChildren(...parts);
 }
 

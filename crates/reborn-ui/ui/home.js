@@ -72,6 +72,30 @@ function ok(x) {
   return x && !x.error;
 }
 
+async function openDolphin() {
+  if (busy) return;
+  busy = true;
+  problem = null;
+  draw();
+  try {
+    const r = await call("open_runtime", { runtime: get("runtime"), userDir: get("userDir") });
+    result = { message: `Opened ${r.runtime}.`, user_dir_note: r.user_dir_note };
+  } catch (e) {
+    problem = reason(e);
+  }
+  busy = false;
+  draw();
+}
+
+function when(ms) {
+  if (typeof ms !== "number") return "unknown";
+  try {
+    return new Date(ms).toLocaleString();
+  } catch (_) {
+    return "unknown";
+  }
+}
+
 function padsLine() {
   const d = state.devices;
   if (!ok(d)) return { text: null, note: d && d.error };
@@ -111,6 +135,15 @@ function playBlock() {
     onclick: play,
   });
   sec.append(button);
+  sec.append(
+    el("button", {
+      type: "button",
+      text: "Open Dolphin",
+      title: "The emulator alone, no game, against the same user folder",
+      disabled: busy,
+      onclick: openDolphin,
+    }),
+  );
 
   if (playing) {
     sec.append(el("p", { class: "note", text: "The game is running. This page waits for it to close, then says how it went." }));
@@ -131,7 +164,10 @@ function playBlock() {
     if (Array.isArray(result.pads) && result.pads.length) said.append(el("p", { text: result.pads.join(". ") + "." }));
     sec.append(said);
     if (result.needs_recovery) {
-      sec.append(partial("That session ended badly. The Advanced page's sessions command has the detail; a recovery screen is not built yet."));
+      const p = el("p", { class: "partial" });
+      p.append("That session ended badly. ");
+      p.append(el("a", { href: "recovery.html", text: "Go to Recovery for the ways forward." }));
+      sec.append(p);
     }
   }
 
@@ -192,7 +228,7 @@ function factsBlock() {
       fact(
         "Played",
         home.sessions_played
-          ? `${home.sessions_played} session(s), ${minutes(home.minutes_played)}, last ${home.last_played || "unknown"}`
+          ? `${home.sessions_played} session(s), ${minutes(home.minutes_played)}, last ${when(home.last_played_ms)}`
           : "never",
       ),
     );
