@@ -119,6 +119,44 @@ if ($Runtime -and (Test-Path $Runtime)) {
         Write-Warning ("Not present in the runtime folder, not staged: " + ($missing -join ", "))
     }
 
+    # -------------------------------------------------------------------
+    # The Visual C++ runtime, beside Dolphin
+    # -------------------------------------------------------------------
+    #
+    # Dolphin.exe imports MSVCP140.dll and VCRUNTIME140.dll, and ReShade's
+    # dxgi.dll wants the same family. None of them is part of Windows: they
+    # come from the Visual C++ Redistributable, which a development machine
+    # has and a clean Windows does not.
+    #
+    # MEASURED, 2026-09-04: in Windows Sandbox on a clean Windows 11 image,
+    # the installed rebornctl.exe produced zero bytes for `status`, because
+    # the loader could not find VCRUNTIME140.dll. Our own binaries now link
+    # the CRT statically (see .cargo/config.toml) and need nothing. Dolphin
+    # cannot be relinked here, so its copies ship BESIDE the executable.
+    #
+    # App-local deployment rather than running vc_redist.exe, because that
+    # installer requires administrator rights and this installer runs as the
+    # user (PrivilegesRequired=lowest). Microsoft supports both.
+    #
+    # Preferred source is a Visual Studio redistributable folder, which is
+    # the copy meant for shipping. System32 is the fallback: the same files,
+    # already on the build machine.
+    $crtNames = @("MSVCP140.dll", "MSVCP140_CODECVT_IDS.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")
+    $crtSource = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" `
+        -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
+    if (-not $crtSource) { $crtSource = Get-Item "$env:WINDIR\System32" }
+    $crtMissing = @()
+    foreach ($n in $crtNames) {
+        $from = Join-Path $crtSource.FullName $n
+        if (Test-Path $from) { Copy-Item $from $dest -Force } else { $crtMissing += $n }
+    }
+    if ($crtMissing.Count -gt 0) {
+        throw ("The Visual C++ runtime is not on this build machine: " + ($crtMissing -join ", ") +
+               " was not found in " + $crtSource.FullName +
+               ". Dolphin cannot start without it on a clean Windows. Nothing was built.")
+    }
+    Write-Host ("VC runtime: {0} file(s) staged beside Dolphin, from {1}" -f $crtNames.Count, $crtSource.FullName)
+
     # Machine paths inside the staged configuration. ReShade records the
     # folder it caches compiled effects in as an absolute path, which on
     # the development machine is that machine's own Temp folder. Shipped as

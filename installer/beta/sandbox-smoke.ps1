@@ -56,6 +56,36 @@ function Uninstall-Silently($dir) {
     Start-Sleep -Seconds 4
     return $p.ExitCode
 }
+# Run one of our own executables and capture everything it said.
+#
+# `& exe *> file` was not enough: when the loader cannot start a binary at
+# all, which is what a missing VC runtime looks like, the file was created
+# EMPTY and the check failed with nothing to explain it. That cost a whole
+# sandbox run to diagnose from the host. This records the exit code and
+# whatever came out of both streams, so the log says what happened.
+function Run-Ours($exe, $exeArgs, $logName) {
+    $path = Join-Path $out $logName
+    if (-not (Test-Path $exe)) {
+        Say("$exe is not there at all")
+        Set-Content $path "the executable is not there"
+        return ""
+    }
+    $err = Join-Path $out "$logName.err"
+    $p = Start-Process -FilePath $exe -ArgumentList $exeArgs -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput $path -RedirectStandardError $err
+    $stdout = if (Test-Path $path) { Get-Content $path -Raw } else { "" }
+    $stderr = if (Test-Path $err) { Get-Content $err -Raw } else { "" }
+    Say("$(Split-Path $exe -Leaf) $exeArgs -> exit $($p.ExitCode), $($stdout.Length) byte(s) out, $($stderr.Length) byte(s) err")
+    if ($p.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($stdout)) {
+        # Exit code 0xC0000135 is STATUS_DLL_NOT_FOUND: a dependency the
+        # machine does not have. Named here because it is invisible otherwise.
+        $code = "0x" + ("{0:X8}" -f $p.ExitCode)
+        Say("  nothing usable came back. Exit $code. Stderr: $stderr")
+        if ($p.ExitCode -eq -1073741515) { Say("  that code is STATUS_DLL_NOT_FOUND: a DLL this machine does not have.") }
+    }
+    return $stdout
+}
+
 function WebView2Version() {
     $keys = @(
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
@@ -110,11 +140,22 @@ try {
 
         $cli = Join-Path $stableDir "rebornctl.exe"
         if (Test-Path $cli) {
-            & $cli status *> (Join-Path $out "status-stable.txt")
-            $status = Get-Content (Join-Path $out "status-stable.txt") -Raw
+            $status = Run-Ours $cli "status" "status-stable.txt"
+            Check "stable rebornctl runs at all on a clean Windows" (-not [string]::IsNullOrWhiteSpace($status)) "it produced nothing"
             Check "stable rebornctl status names the stable channel and data root" ($status -match "Channel\s+stable" -and $status -match "Data root\s+.*NFL Street Reborn Launcher\s" -and $status -notmatch "Launcher Beta")
             Check "stable rebornctl status confirms the data root is outside the install root" ($status -match "uninstall cannot eat saves")
         }
+        # The launcher itself. Every check above is about files on disk, and
+        # a launcher that cannot start passes all of them.
+        $launcher = Join-Path $stableDir "reborn-launcher.exe"
+        if (Test-Path $launcher) {
+            $proc = Start-Process -FilePath $launcher -PassThru -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 8
+            $alive = $proc -and -not $proc.HasExited
+            Check "the launcher window starts and stays up" $alive "it exited with $(if ($proc) { $proc.ExitCode } else { 'no process at all' })"
+            if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        }
+
         Say("WebView2 after stable install: $(WebView2Version)")
         Check "WebView2 runtime present after install (needs network in the sandbox)" ($null -ne (WebView2Version))
 
@@ -140,11 +181,17 @@ try {
         Check "beta carries the channel marker saying beta" ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq "beta"))
         $betaKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C3E9A5D-2B41-4F0E-9D6A-B8E1F2C4A9B3}_is1"
         Check "beta has its own uninstall entry" (Test-Path $betaKey)
-        Check "the 2.1 uninstall entry was not touched by the beta" ((Get-ItemProperty $regKey -ErrorAction SilentlyContinue).DisplayVersion -ne $null)
+        # NOT a check that the 2.1 entry survived: it must not. The stable
+        # installer keeps 2.1's AppId on purpose, so an upgrade REPLACES that
+        # entry rather than leaving two, and the uninstall above then removed
+        # it. What matters is that the beta has an entry of its OWN, checked
+        # directly above, and that installing the beta did not create or
+        # revive a second one under 2.1's id.
+        Check "the beta did not touch the 2.1 uninstall id" (-not (Test-Path $regKey)) "the beta wrote to 2.1's uninstall id"
         $cli = Join-Path $betaDir "rebornctl.exe"
         if (Test-Path $cli) {
-            & $cli status *> (Join-Path $out "status-beta.txt")
-            $status = Get-Content (Join-Path $out "status-beta.txt") -Raw
+            $status = Run-Ours $cli "status" "status-beta.txt"
+            Check "beta rebornctl runs at all on a clean Windows" (-not [string]::IsNullOrWhiteSpace($status)) "it produced nothing"
             Check "beta rebornctl status names the beta channel, from the marker file" ($status -match "Channel\s+beta channel, from the channel file")
             Check "beta rebornctl status reports the beta data root" ($status -match "Data root\s+.*NFL Street Reborn Launcher Beta")
         }

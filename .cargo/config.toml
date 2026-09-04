@@ -1,0 +1,17 @@
+# Static C runtime on Windows.
+#
+# Without this every binary we ship imports VCRUNTIME140.dll, which is NOT part
+# of Windows: it comes from the Visual C++ Redistributable. A development
+# machine has it, so nothing here ever failed. A clean Windows does not, and
+# the binary refuses to start with no message a player could act on.
+#
+# Measured, 2026-09-04: in Windows Sandbox, on a clean Windows 11 image, the
+# installed rebornctl.exe produced zero bytes of output for `status`. Its
+# import table names VCRUNTIME140.dll; the sandbox has no redistributable.
+#
+# Static linking removes the dependency from OUR binaries outright. The
+# `api-ms-win-crt-*` imports that remain are the Universal CRT, which IS an
+# operating system component on Windows 10 and 11. Dolphin cannot be relinked
+# here, so its copies of the runtime ship beside it; see installer/windows/build.ps1.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
