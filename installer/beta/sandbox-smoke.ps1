@@ -225,7 +225,9 @@ try {
 
         # The textures. Without these a fresh player installs and has nothing to
         # look at, and every other check here would still have passed.
-        $tex = Join-Path $stableDir "content	extures\GN7E69"
+        # Joined a segment at a time. Writing the whole path as one string is how
+        # this line ended up containing a literal tab.
+        $tex = Join-Path (Join-Path $stableDir "content") (Join-Path "textures" "GN7E69")
         $texCount = @(Get-ChildItem $tex -Recurse -File -ErrorAction SilentlyContinue).Count
         Say("textures installed: $texCount file(s) at $tex")
         Check "the texture tree shipped, and is not empty" ($texCount -gt 1000) "found $texCount file(s)"
