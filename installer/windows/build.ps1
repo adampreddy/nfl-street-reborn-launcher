@@ -41,6 +41,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\..\.."
+$AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "NFL Street Reborn" }
 $payload = Join-Path $root "target\installer-payload"
 $dist = Join-Path $root "dist"
 
@@ -450,6 +451,52 @@ Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
 # update.rs downloads one artifact and runs it. Writing a manifest naming
 # only the stub would publish an update that installs nothing.
 $slices = @(Get-ChildItem $dist -Filter "*.bin" -ErrorAction SilentlyContinue)
+
+# One file to hand out.
+#
+# Inno cannot make a single installer above 2,100,000,000 bytes, so a build
+# carrying the textures and a disc image is always setup.exe plus slices.
+# Three links is a worse download than one, so the set is packed into a zip
+# the player extracts before running setup.
+#
+# STORED, not deflated. Inno already LZMA compressed everything inside; a
+# second pass would spend minutes to save nothing. And .NET rather than
+# Compress-Archive, which cannot write an archive this size in Windows
+# PowerShell.
+if ($slices.Count -gt 0) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    # Anchored on this channel's own name. Matching anything containing
+    # "Setup <version>" swept the beta installer into the stable zip, because
+    # "NFL Street Reborn Beta Launcher Setup 3.0.0-beta.1.exe" contains it.
+    $prefix = "{0} Launcher Setup {1}" -f $AppNameForZip, $Version
+    $setFiles = @(Get-ChildItem $dist -File | Where-Object { $_.Name.StartsWith($prefix) })
+    $zipPath = Join-Path $dist ("{0} Launcher {1}.zip" -f $AppNameForZip, $Version)
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Write-Host ("Packing {0} file(s) into one zip" -f $setFiles.Count)
+    $zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
+    try {
+        foreach ($f in $setFiles) {
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $zip, $f.FullName, $f.Name, [System.IO.Compression.CompressionLevel]::NoCompression) | Out-Null
+        }
+    } finally {
+        $zip.Dispose()
+    }
+    $zipItem = Get-Item $zipPath
+    # A zip that does not hold every piece is worse than no zip: setup.exe
+    # would run and then ask for a slice nobody has.
+    $zipCount = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $inside = $zipCount.Entries.Count
+    } finally {
+        $zipCount.Dispose()
+    }
+    if ($inside -ne $setFiles.Count) {
+        throw "The zip holds $inside of $($setFiles.Count) files. Deleting it rather than shipping half a set."
+    }
+    Write-Host ("Built {0}  {1:N2} GB, holding all {2} file(s)" -f $zipItem.Name, ($zipItem.Length / 1GB), $inside)
+    Write-Host "That zip is the whole download. Players extract it and run setup.exe."
+}
 $setup = Get-ChildItem $dist -Filter "*Setup $Version*.exe" | Select-Object -First 1
 if ($span -or $slices.Count -gt 0) {
     # The format expression needs its own parentheses: Write-Warning ("..") -f x
