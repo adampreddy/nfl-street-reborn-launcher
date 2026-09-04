@@ -33,6 +33,7 @@ async function load() {
 const BOXES = [
   {
     key: "game",
+    setting: "game",
     name: "Game image",
     hint: "Full path to the .iso. Blank: the image in your existing NFL Street Reborn install is used.",
   },
@@ -43,11 +44,13 @@ const BOXES = [
   },
   {
     key: "runtime",
+    setting: "runtime",
     name: "Emulator",
     hint: "Leave blank on Windows: the emulator that came with the launcher is the only one that works, and it is found by itself. On macOS or Linux, a path to a Dolphin here is allowed and is used as is.",
   },
   {
     key: "userDir",
+    setting: "user_dir",
     name: "User folder",
     hint: "Blank: the folder that already holds your saves is found and used. Set this only to play against a different one.",
   },
@@ -65,7 +68,14 @@ function boxesBlock() {
         const v = cleanPath(ev.target.value);
         ev.target.value = v;
         set(b.key, v);
-        refresh();
+        // Also on disk, where the Play and files shortcuts can read it.
+        // Kept only in this window, a path set here would be ignored by
+        // every shortcut and nothing would say so.
+        if (b.setting) {
+          act(`Save ${b.name}`, "settings_set_path", { which: b.setting, value: v }, () => {});
+        } else {
+          refresh();
+        }
       },
     });
     sec.append(el("div", { class: "settings-row stack" }, el("span", { class: "name", text: b.name }), input, el("span", { class: "hint", text: b.hint })));

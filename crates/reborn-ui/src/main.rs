@@ -3446,6 +3446,38 @@ fn http_client() -> reborn_core::net::UreqHttp {
 }
 
 #[derive(Debug, Serialize)]
+struct PathSetView {
+    which: String,
+    /// What was stored, cleaned. Absent when the box was emptied, which
+    /// means the launcher finds it again.
+    value: Option<String>,
+}
+
+/// Record one of the three paths a person can override.
+///
+/// Kept on disk rather than in the window alone, so the Play and files
+/// shortcuts resolve the same emulator, image and folder the Play button
+/// does. An empty value clears it.
+#[tauri::command]
+async fn settings_set_path(which: String, value: String) -> Result<PathSetView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use reborn_core::settings::PathSetting;
+        let setting = match which.as_str() {
+            "runtime" => PathSetting::Runtime,
+            "game" => PathSetting::Game,
+            "user_dir" => PathSetting::UserDir,
+            other => return Err(format!("no path setting called {other}. Known: runtime, game, user_dir")),
+        };
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        let stored = reborn_core::settings::set_path(&file, setting, &value).map_err(|e| e.to_string())?;
+        Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()) })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
 struct CredentialSetView {
     account: &'static str,
     stored: bool,
@@ -3683,8 +3715,11 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
         };
 
         let data = p.paths.data_root().map_err(|e| e.to_string())?;
-        take(data.join("settings.json"), "settings.json");
-        take(data.join("onboarding.jsonl"), "onboarding.jsonl");
+        // Both live under config/, not at the root. Guessing the root meant the
+        // bundle quietly reported the two most useful files as missing.
+        let config = data.join(DataDir::Config.relative());
+        take(config.join("settings.json"), "settings.json");
+        take(config.join("onboarding.jsonl"), "onboarding.jsonl");
         take(data.join("mods").join("activation.json"), "activation.json");
         take(
             data.join("mods").join("active").join(GameBuild::Offline.game_id()).join("composed.json"),
@@ -4436,7 +4471,186 @@ async fn credential_stored(account: String) -> Result<CredentialView, String> {
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Starting without the window
+// ---------------------------------------------------------------------------
+
+/// The paths a person set, or nothing, which means find them.
+fn saved_paths(platform: &Platform) -> Result<reborn_core::settings::Settings, String> {
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
+    reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
+}
+
+/// What the shortcuts ask for.
+///
+/// Both go through the launcher rather than around it. A shortcut straight to
+/// Dolphin would boot a game with no mods composed, no configuration written
+/// and no match results collected, and it would look like it worked.
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    /// The window, as normal.
+    Window,
+    /// Start the game and wait for it, showing no window of our own.
+    Play,
+    /// Open the folder holding the player's saves and textures.
+    Folder,
+}
+
+fn mode_from(args: impl Iterator<Item = String>) -> Mode {
+    for a in args {
+        match a.as_str() {
+            "--play" => return Mode::Play,
+            "--folder" => return Mode::Folder,
+            _ => {}
+        }
+    }
+    Mode::Window
+}
+
+/// The launch a Play shortcut makes.
+///
+/// Returns `Err` with a sentence when nothing started. The caller then opens
+/// the window instead of dying quietly: a shortcut that does nothing at all,
+/// with no window and no message, is indistinguishable from a broken install.
+fn play_now(platform: &Platform) -> Result<String, String> {
+    let saved = saved_paths(platform)?;
+    let legacy = default_legacy_root(platform);
+    let (found, game_path) = find_runtime_and_game(
+        platform,
+        saved.runtime_exe.as_deref().and_then(Path::to_str),
+        saved.game_path.as_deref().and_then(Path::to_str),
+        legacy.as_deref(),
+    )?;
+
+    // The preset the player chose, or first run's answer. Never a guess: a
+    // shortcut that quietly boots at a different resolution than the Play
+    // button did is a difference nobody would think to look for.
+    let flow = Onboarding::open(platform, Environment::nothing_found()).map_err(|e| e.to_string())?;
+    let preset = flow
+        .summary()
+        .graphics
+        .map(|g| g.preset())
+        .unwrap_or(GraphicsPreset::Balanced);
+
+    let req = LaunchRequest {
+        runtime_exe: found.path().to_path_buf(),
+        game_path,
+        graphics: preset,
+        fullscreen: true,
+        build: GameBuild::Offline,
+        mods_disabled: false,
+        user_dir: saved.user_dir.clone(),
+    };
+    match Session::run(platform, &req).map_err(|e| e.to_string())? {
+        Launched::Refused(r) => Err(r.message()),
+        Launched::Finished { minutes, .. } => Ok(format!("Session ended after {minutes:.0} minutes.")),
+    }
+}
+
+/// Open the folder the game actually boots against.
+///
+/// Resolved now rather than written into the shortcut at install time,
+/// because which folder that is depends on the emulator in use and on
+/// whether a 2.1 install is present. A shortcut carrying a path decided
+/// months earlier would open the wrong folder and look correct.
+fn open_game_folder(platform: &Platform) -> Result<PathBuf, String> {
+    let saved = saved_paths(platform)?;
+    let legacy = default_legacy_root(platform);
+    let hint = saved.runtime_exe.as_deref().filter(|p| p.is_file());
+    let exe = reborn_core::session::resolve_runtime(platform, hint, legacy.as_deref())
+        .ok()
+        .map(|r| r.path().to_path_buf());
+    let user = reborn_core::session::resolve_user_dir_for(
+        platform,
+        saved.user_dir.as_deref(),
+        exe.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    let path = user.path().to_path_buf();
+    if !path.is_dir() {
+        return Err(format!(
+            "The game folder is not there yet: {}. Start the game once and it will be.",
+            path.display()
+        ));
+    }
+    open_in_file_manager(platform, &path)?;
+    Ok(path)
+}
+
+/// Show a folder in the system's file manager.
+fn open_in_file_manager(platform: &Platform, path: &Path) -> Result<(), String> {
+    let program: &str = if cfg!(windows) {
+        "explorer.exe"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let args = vec![path.as_os_str().to_os_string()];
+    let env = std::collections::BTreeMap::new();
+    // Explorer answers a non-zero exit code even when it opened the window, so
+    // the handle is dropped rather than waited on.
+    platform
+        .processes
+        .spawn(Path::new(program), &args, None, &env)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn the_shortcut_switches_are_recognized_and_nothing_else_is() {
+        let m = |args: &[&str]| mode_from(args.iter().map(|s| s.to_string()));
+        // argv[0] is the executable, so a switch is never the first item.
+        assert_eq!(m(&["reborn-launcher.exe"]), Mode::Window);
+        assert_eq!(m(&["reborn-launcher.exe", "--play"]), Mode::Play);
+        assert_eq!(m(&["reborn-launcher.exe", "--folder"]), Mode::Folder);
+        // Windows starts a shortcut with its own working directory and
+        // sometimes extra arguments; an unknown one must not swallow ours.
+        assert_eq!(m(&["exe", "--verbose", "--play"]), Mode::Play);
+        // Anything we do not know is the window, never a guess.
+        assert_eq!(m(&["exe", "--pla"]), Mode::Window);
+        assert_eq!(m(&["exe", "play"]), Mode::Window);
+        assert_eq!(m(&["exe", "-play"]), Mode::Window);
+    }
+}
+
 fn main() {
+    // The shortcuts, before any window exists. Both fall through to the
+    // window when they cannot do their job, so a shortcut never does
+    // nothing at all with nothing to show for it.
+    match mode_from(std::env::args()) {
+        Mode::Play => {
+            let p = Platform::detect();
+            match play_now(&p) {
+                Ok(_) => return,
+                Err(why) => {
+                    // The window opens and the Play page shows the same
+                    // refusal, because it re-runs the same search.
+                    eprintln!("Could not start the game: {why}");
+                }
+            }
+        }
+        Mode::Folder => {
+            let p = Platform::detect();
+            match open_game_folder(&p) {
+                // Printed as well as opened. A shortcut sends this nowhere, but
+                // run from a shell it is how anyone checks WHICH folder was
+                // resolved, and Explorer's own window list cannot answer that:
+                // Windows 11 opens a folder as a tab in an existing window.
+                Ok(path) => {
+                    println!("{}", path.display());
+                    return;
+                }
+                Err(why) => eprintln!("Could not open the game folder: {why}"),
+            }
+        }
+        Mode::Window => {}
+    }
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             // Already here.
@@ -4490,6 +4704,7 @@ fn main() {
             stats_queue,
             stats_ingest,
             stats_submit,
+            settings_set_path,
             stats_credential_set,
             stats_credential_forget,
             update_check,

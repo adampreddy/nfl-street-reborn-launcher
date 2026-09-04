@@ -183,7 +183,19 @@ UninstallDisplayIcon={app}\{#LauncherExe}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
+; The launcher on the desktop, ticked by default: it is the way in, and a
+; player who wanted it and did not notice the box has to go looking in the
+; Start menu for something they just installed.
+Name: "desktopicon"; Description: "Desktop shortcut to the launcher"; \
+  GroupDescription: "{cm:AdditionalIcons}"
+
+; Two extras, off unless asked for. Both run the LAUNCHER with a switch,
+; never Dolphin and never a bare folder path: a shortcut that went straight
+; to the emulator would boot with no mods composed, no configuration
+; written and no match results collected, and it would look like it worked.
+Name: "gameicon"; Description: "Desktop shortcut that starts the game straight away"; \
+  GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "foldericon"; Description: "Desktop shortcut to your game files, saves and textures"; \
   GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -232,14 +244,29 @@ Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"
 #endif
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#LauncherExe}"
-Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#LauncherExe}"; \
-  Tasks: desktopicon
+; The Start menu gets all three; the desktop gets what was ticked.
+Name: "{group}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"
+Name: "{group}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
+  Parameters: "--play"; Comment: "Start the game without opening the launcher"
+Name: "{group}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
+  Parameters: "--folder"; Comment: "Open the folder holding your saves and textures"
 Name: "{group}\{cm:UninstallProgram,{#AppName} Launcher}"; Filename: "{uninstallexe}"
 
-; No shortcut to the install folder, and none to Dolphin or a mod manager. The
-; launcher is the way in. A desktop full of shortcuts to internals is how people
-; end up running the emulator directly and wondering why nothing is configured.
+Name: "{userdesktop}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"; \
+  Tasks: desktopicon
+Name: "{userdesktop}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
+  Parameters: "--play"; Comment: "Start the game without opening the launcher"; \
+  Tasks: gameicon
+Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
+  Parameters: "--folder"; Comment: "Open the folder holding your saves and textures"; \
+  Tasks: foldericon
+
+; Still no shortcut to Dolphin and none to a mod manager. Every one of these
+; runs the launcher, which is what composes the mods, writes the emulator's
+; configuration and collects match results afterwards. The files shortcut
+; asks the launcher where the folder is rather than carrying a path decided
+; at install time, because which folder that is depends on the emulator in
+; use and on whether a 2.1 install is present.
 
 [Run]
 ; Named in full on the Finish page: what is about to open is the launcher,

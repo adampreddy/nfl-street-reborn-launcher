@@ -70,6 +70,48 @@ pub struct Settings {
     /// endpoint; see crate::league.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub league_ingest_url: Option<String>,
+
+    // The three paths a person can override, kept HERE rather than in the
+    // window alone. They used to live only in the interface's own storage,
+    // which the core cannot read, so a Play shortcut resolved a different
+    // emulator from the one the Play button used and nothing said so. Absent
+    // means "find it", which is the normal state and the shipped one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_exe: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_dir: Option<PathBuf>,
+}
+
+/// One of the three overridable paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathSetting {
+    Runtime,
+    Game,
+    UserDir,
+}
+
+/// Record, or clear, one path a person set.
+///
+/// An empty string clears it, because "find it yourself" has to be
+/// expressible: a box emptied in the interface must not leave the old value
+/// behind on disk.
+pub fn set_path(path: &Path, which: PathSetting, value: &str) -> Result<Option<PathBuf>> {
+    let mut settings = Settings::load(path)?;
+    let cleaned = value.trim();
+    let next = if cleaned.is_empty() {
+        None
+    } else {
+        Some(crate::session::user_path(cleaned))
+    };
+    match which {
+        PathSetting::Runtime => settings.runtime_exe = next.clone(),
+        PathSetting::Game => settings.game_path = next.clone(),
+        PathSetting::UserDir => settings.user_dir = next.clone(),
+    }
+    settings.save(path)?;
+    Ok(next)
 }
 
 impl Default for Settings {
@@ -79,6 +121,9 @@ impl Default for Settings {
             controls_profile: None,
             update_source: None,
             league_ingest_url: None,
+            runtime_exe: None,
+            game_path: None,
+            user_dir: None,
         }
     }
 }
@@ -281,5 +326,29 @@ mod tests {
         std::fs::write(&path, br#"{"schema":"nsr.settings.v2"}"#).unwrap();
         let err = Settings::load(&path).unwrap_err().to_string();
         assert!(err.contains("nsr.settings.v1"), "{err}");
+    }
+
+    #[test]
+    fn a_path_can_be_set_cleaned_and_cleared_again() {
+        // The box in the interface is a person typing, so Explorer's quotes
+        // come with it, and emptying the box has to mean "find it yourself"
+        // rather than leaving the old value on disk.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+
+        let got = set_path(&path, PathSetting::Runtime, "  \"C:\\rt\\Dolphin.exe\"  ").unwrap();
+        assert_eq!(got, Some(PathBuf::from("C:\\rt\\Dolphin.exe")));
+        assert_eq!(Settings::load(&path).unwrap().runtime_exe, got);
+
+        set_path(&path, PathSetting::Game, "C:\\g\\NSR.iso").unwrap();
+        set_path(&path, PathSetting::UserDir, "C:\\u").unwrap();
+        let all = Settings::load(&path).unwrap();
+        assert_eq!(all.game_path, Some(PathBuf::from("C:\\g\\NSR.iso")));
+        assert_eq!(all.user_dir, Some(PathBuf::from("C:\\u")));
+
+        assert_eq!(set_path(&path, PathSetting::Runtime, "   ").unwrap(), None);
+        let after = Settings::load(&path).unwrap();
+        assert_eq!(after.runtime_exe, None, "an emptied box must clear it");
+        assert_eq!(after.game_path, Some(PathBuf::from("C:\\g\\NSR.iso")), "and leave the others alone");
     }
 }

@@ -351,6 +351,15 @@ const FEATURES = [
         ],
       },
       {
+        cmd: "settings_set_path",
+        desc: "Record a path on disk, where the shortcuts read it. Empty clears it",
+        write: true,
+        inputs: [
+          { key: "which", placeholder: "runtime|game|user_dir" },
+          { key: "value", placeholder: "path, or empty to clear" },
+        ],
+      },
+      {
         cmd: "stats_credential_set",
         desc: "Store the league token in the OS credential store. Never shown again",
         write: true,
