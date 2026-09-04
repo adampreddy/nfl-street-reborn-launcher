@@ -225,22 +225,19 @@ Source: "{#Payload}\*"; DestDir: "{app}"; \
 ; updated Windows 10 already have it; a fresh image, and Windows Sandbox, do
 ; not, and the failure without it is a window that opens blank. The
 ; bootstrapper is Microsoft's own, verified by its signature at build time,
-; and it downloads the runtime itself, so this step needs the network. Run
-; only when the runtime is absent; on a machine that has it nothing happens.
+; and it downloads the runtime itself, so this step needs the network.
 ;
-; It downloads about 130 MB, so on a clean machine this step sits for roughly
-; 90 seconds with no progress of its own (measured in Windows Sandbox,
-; 2026-09-04: 88 seconds the first time, 16 seconds the second, when the
-; runtime was already there). The status message stays short anyway: a
-; paragraph on the progress bar reads worse than a pause does.
+; It is started at the START of installation and waited for at the end; see
+; CurStepChanged below. As a [Run] entry it ran AFTER every file was copied,
+; so a clean machine waited for the copy and then waited again for a download
+; that could have been happening the whole time. Measured in Windows Sandbox,
+; 2026-09-04: 88 seconds for the first install and 16 for the second, when the
+; runtime was already there.
+;
+; dontcopy, so it is only unpacked when it is actually needed. A machine that
+; already has WebView2 never writes it to disk at all.
 [Files]
-Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; \
-  Flags: deleteafterinstall
-
-[Run]
-Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
-  StatusMsg: "Installing Microsoft Edge WebView2"; \
-  Check: not WebView2Present; Flags: waituntilterminated
+Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; Flags: dontcopy
 #endif
 
 [Icons]
@@ -342,6 +339,60 @@ begin
       'SOFTWARE\Microsoft\EdgeUpdate\Clients\'
       + '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version);
 end;
+
+#ifdef Redist
+// Started when installation begins, waited for when it ends.
+//
+// Exec with ewNoWait gives no handle to wait on, so the wait is a poll of the
+// same registry check the Check function uses. That is the honest signal
+// anyway: what matters is whether the runtime is THERE, not whether a
+// particular process has exited.
+var
+  WebView2Started: Boolean;
+
+procedure StartWebView2;
+var
+  Code: Integer;
+begin
+  WebView2Started := False;
+  if WebView2Present() then
+    Exit;
+  ExtractTemporaryFile('MicrosoftEdgeWebView2Setup.exe');
+  WebView2Started := Exec(
+    ExpandConstant('{tmp}\MicrosoftEdgeWebView2Setup.exe'),
+    '/silent /install', '', SW_HIDE, ewNoWait, Code);
+end;
+
+procedure WaitForWebView2;
+var
+  Waited: Integer;
+begin
+  if not WebView2Started then
+    Exit;
+  // Five minutes, then give up and carry on. A slow connection must not trap
+  // someone in an installer forever, and the launcher without WebView2 is a
+  // fixable state: installing the runtime later makes it work.
+  Waited := 0;
+  while (Waited < 300000) and not WebView2Present() do
+  begin
+    WizardForm.StatusLabel.Caption := 'Installing Microsoft Edge WebView2';
+    Sleep(500);
+    Waited := Waited + 500;
+    if Waited mod 2000 = 0 then
+      WizardForm.Refresh();
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  // ssInstall fires before a single file is copied, so the download runs
+  // alongside the copy instead of after it.
+  if CurStep = ssInstall then
+    StartWebView2;
+  if CurStep = ssPostInstall then
+    WaitForWebView2;
+end;
+#endif
 
 function InitializeSetup(): Boolean;
 begin
