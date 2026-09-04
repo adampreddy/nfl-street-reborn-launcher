@@ -331,22 +331,25 @@ Get-ChildItem $outRoot -Directory -ErrorAction SilentlyContinue |
 $scratch = Join-Path $outRoot (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Force $scratch | Out-Null
 
-# Disk spanning, decided from the payload rather than remembered.
+# Disk spanning: off unless Inno refuses without it.
 #
-# Inno REQUIRES it above 4,200,000,000 compressed bytes. Below that a single
-# setup.exe is legal and is a better download: one link, one file, resumable
-# over HTTP. So it goes on only when the payload is close enough that the
-# compressed result might cross the line. 3.5 GB raw is the trigger, which
-# leaves room for content that does not compress, and the ISO barely does.
+# Inno requires it above 4,200,000,000 COMPRESSED bytes, and compressed is
+# the word that matters. Guessing from the raw payload got this wrong once:
+# 3.9 GB of payload compressed to 2.5 GB, well under the limit, and the
+# needless spanning produced a 7.5 MB stub whose 2.5 GB of slices the next
+# build would have deleted.
+#
+# So try one file, which is the better download anyway, and turn spanning on
+# only if the compiler says the output is too big. That answer is always
+# right, at the cost of one wasted compress on a genuinely huge payload.
+$span = $false
 $payloadBytes = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
-$span = $payloadBytes -gt 3.5GB
-Write-Host ("Payload {0:N1} GB, disk spanning {1}" -f ($payloadBytes / 1GB), $(if ($span) { "ON" } else { "off, a single file" }))
+Write-Host ("Payload {0:N1} GB. Trying a single file." -f ($payloadBytes / 1GB))
 
 $isccArgs = @(
     (Join-Path $PSScriptRoot "reborn-launcher.iss"),
     "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
 )
-if ($span) { $isccArgs += "/DSpan" }
 # A different file name, so the online and offline builds can sit in dist
 # together rather than one silently replacing the other.
 if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
@@ -360,15 +363,28 @@ if ($webView2Arg) { $isccArgs += $webView2Arg }
 $attempt = 0
 while ($true) {
     $attempt++
-    & $iscc @isccArgs
+    $log = & $iscc @isccArgs 2>&1
+    $log | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -eq 0) { break }
     if ($attempt -ge 3) { throw "ISCC failed $attempt times" }
+
+    # Too big for one file. Inno says so plainly; turn spanning on and go
+    # again rather than making anyone guess the threshold.
+    if (-not $span -and ($log -match "DiskSpanning" -or $log -match "too large" -or $log -match "4,200,000,000")) {
+        Write-Host "The output is too large for a single file. Turning disk spanning on."
+        $span = $true
+        $isccArgs += "/DSpan"
+        continue
+    }
     Write-Warning "ISCC failed (attempt $attempt). Something is holding a file it needs. Waiting 15 seconds."
     Start-Sleep -Seconds 15
 }
 
 New-Item -ItemType Directory -Force $dist | Out-Null
-Get-ChildItem $scratch -Filter "*.exe" | ForEach-Object {
+# Every produced file, not just the exe. A spanned build is setup.exe plus
+# setup-1.bin and friends, and moving only the exe leaves an installer that
+# cannot find its own data while dist looks like it has one.
+Get-ChildItem $scratch -File | ForEach-Object {
     $target = Join-Path $dist $_.Name
     try {
         Move-Item $_.FullName $target -Force -ErrorAction Stop
@@ -403,8 +419,15 @@ Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
 # v<version> on the launcher repository; the launcher reads the manifest from
 # the release page's latest-download URL and the installer from the URL the
 # manifest names. See crates/reborn-core/src/update.rs.
-$setup = Get-ChildItem $dist -Filter "*Setup $Version.exe" | Select-Object -First 1
-if ($setup) {
+# A spanned build has no single file to pin, so self-update cannot fetch it:
+# update.rs downloads one artifact and runs it. Writing a manifest naming
+# only the stub would publish an update that installs nothing.
+$slices = @(Get-ChildItem $dist -Filter "*.bin" -ErrorAction SilentlyContinue)
+$setup = Get-ChildItem $dist -Filter "*Setup $Version*.exe" | Select-Object -First 1
+if ($span -or $slices.Count -gt 0) {
+    Write-Warning ("This build is spanned across {0} file(s), so no release manifest was written: " +
+                   "self-update fetches a single installer. Distribute the whole set by hand.") -f ($slices.Count + 1)
+} elseif ($setup) {
     $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
     $repo = "https://github.com/adampreddy/nfl-street-reborn-launcher"
     $assetUrl = "$repo/releases/download/v$Version/" + [uri]::EscapeDataString($setup.Name)
