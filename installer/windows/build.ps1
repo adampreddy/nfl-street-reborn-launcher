@@ -259,6 +259,13 @@ if (-not $NoWebView2) {
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 
+# The wizard's art. ISCC fails on a missing file anyway, but its message
+# names a line number rather than what is actually absent.
+foreach ($a in "NSR.ico", "welcome.bmp", "corner.bmp") {
+    $p = Join-Path $PSScriptRoot "art\$a"
+    if (-not (Test-Path $p)) { throw "The installer's artwork is missing: $p" }
+}
+
 # Compiled into a scratch folder, then moved. Compiling straight into dist
 # failed twice on this machine with "being used by another process" at the
 # moment the output was created: the previous Setup exe had been deleted,

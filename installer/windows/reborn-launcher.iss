@@ -133,6 +133,28 @@ OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+
+; The 2.1 branding, which is the product's own and which players recognize.
+; It lives in the repository rather than on one machine's Desktop, where the
+; old script pointed and where no other checkout could find it.
+SetupIconFile=art\NSR.ico
+WizardImageFile=art\welcome.bmp
+WizardSmallImageFile=art\corner.bmp
+
+; The welcome page exists to show that art. Inno 6 hides it by default; 2.1
+; showed it, and it is the first thing a player sees.
+DisableWelcomePage=no
+
+; Never ask for a restart.
+;
+; Inno defaults RestartIfNeededByRun to yes, so a [Run] program returning
+; 3010 (ERROR_SUCCESS_REBOOT_REQUIRED) makes Setup demand a reboot. The
+; WebView2 bootstrapper can return exactly that, and it does not need one:
+; the runtime works the moment it is installed. Nothing this installer puts
+; on disk is in use during setup either, since the launcher is not running.
+; Observed asking for a restart in Windows Sandbox, 2026-09-04.
+RestartIfNeededByRun=no
+AlwaysRestart=no
 ; x64, not x64compatible: the latter needs Inno 6.3 and the compiler here
 ; is 6.2.0, which rejects it. Worth pinning in a comment because the newer
 ; spelling is what current documentation shows.
@@ -143,11 +165,14 @@ UninstallDisplayName={#AppName} Launcher
 UninstallDisplayIcon={app}\{#LauncherExe}
 
 ; Deliberately absent, and each for a reason:
-;   InfoBeforeFile, InfoAfterFile  the launcher's onboarding says what to do
-;                                  next, where it can also check it happened
+;   InfoBeforeFile, InfoAfterFile  2.1 showed a README page before and after.
+;                                  The launcher's own first run says what to do
+;                                  next, where it can also check it happened,
+;                                  and two extra pages of text are two extra
+;                                  clicks between a player and the game. Say the
+;                                  word and they come back; the files still
+;                                  exist beside the 2.1 script.
 ;   DiskSpanning                   nothing here is delivered on floppies
-;   SetupIconFile, WizardImageFile add them back once real art exists rather
-;                                  than pointing at one machine's Desktop
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -185,13 +210,19 @@ Source: "{#Payload}\*"; DestDir: "{app}"; \
 ; bootstrapper is Microsoft's own, verified by its signature at build time,
 ; and it downloads the runtime itself, so this step needs the network. Run
 ; only when the runtime is absent; on a machine that has it nothing happens.
+;
+; It downloads about 130 MB, so on a clean machine this step sits for roughly
+; 90 seconds with no progress of its own (measured in Windows Sandbox,
+; 2026-09-04: 88 seconds the first time, 16 seconds the second, when the
+; runtime was already there). The status message stays short anyway: a
+; paragraph on the progress bar reads worse than a pause does.
 [Files]
 Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; \
   Flags: deleteafterinstall
 
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
-  StatusMsg: "Getting Microsoft Edge WebView2, which draws the launcher window. It is about 130 MB, it only happens once, and the bar will not move while it downloads."; \
+  StatusMsg: "Installing Microsoft Edge WebView2"; \
   Check: not WebView2Present; Flags: waituntilterminated
 #endif
 
