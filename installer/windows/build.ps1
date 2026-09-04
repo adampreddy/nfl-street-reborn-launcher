@@ -288,8 +288,20 @@ $isccArgs = @(
     "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
 )
 if ($redistArg) { $isccArgs += $redistArg }
-& $iscc @isccArgs
-if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+# Compiled with retries. ISCC reads two and a half thousand files it was
+# handed seconds earlier, and a scanner holding any one of them for a moment
+# fails the whole compile with "being used by another process". Seen on this
+# machine, 2026-09-04, on the second of two back-to-back builds. Waiting and
+# asking again costs 30 seconds; failing costs the whole build.
+$attempt = 0
+while ($true) {
+    $attempt++
+    & $iscc @isccArgs
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($attempt -ge 3) { throw "ISCC failed $attempt times" }
+    Write-Warning "ISCC failed (attempt $attempt). Something is holding a file it needs. Waiting 15 seconds."
+    Start-Sleep -Seconds 15
+}
 
 New-Item -ItemType Directory -Force $dist | Out-Null
 Get-ChildItem $scratch -Filter "*.exe" | ForEach-Object {
