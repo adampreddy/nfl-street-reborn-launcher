@@ -360,13 +360,26 @@ if ($webView2Arg) { $isccArgs += $webView2Arg }
 # fails the whole compile with "being used by another process". Seen on this
 # machine, 2026-09-04, on the second of two back-to-back builds. Waiting and
 # asking again costs 30 seconds; failing costs the whole build.
+# Run through Start-Process with the streams sent to files.
+#
+# NOT `& $iscc ... 2>&1`: in Windows PowerShell, redirecting a native
+# command's stderr wraps every line in an ErrorRecord, which under
+# ErrorActionPreference Stop fails the call whatever the exit code was. That
+# turned a compile which only needed retrying into a dead build.
+$outLog = Join-Path $scratch "iscc.out.log"
+$errLog = Join-Path $scratch "iscc.err.log"
 $attempt = 0
 while ($true) {
     $attempt++
-    $log = & $iscc @isccArgs 2>&1
-    $log | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -eq 0) { break }
-    if ($attempt -ge 3) { throw "ISCC failed $attempt times" }
+    $run = Start-Process -FilePath $iscc -ArgumentList $isccArgs -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    $log = @()
+    foreach ($f in $outLog, $errLog) {
+        if (Test-Path $f) { $log += Get-Content $f }
+    }
+    $log | Where-Object { $_ -match "Error|Successful|Resulting" } | ForEach-Object { Write-Host $_ }
+    if ($run.ExitCode -eq 0) { break }
+    if ($attempt -ge 3) { throw "ISCC failed $attempt times. Last output:`n" + ($log -join "`n") }
 
     # Too big for one file. Inno says so plainly; turn spanning on and go
     # again rather than making anyone guess the threshold.
@@ -384,7 +397,7 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 # Every produced file, not just the exe. A spanned build is setup.exe plus
 # setup-1.bin and friends, and moving only the exe leaves an installer that
 # cannot find its own data while dist looks like it has one.
-Get-ChildItem $scratch -File | ForEach-Object {
+Get-ChildItem $scratch -File -Exclude "iscc.*.log" | ForEach-Object {
     $target = Join-Path $dist $_.Name
     try {
         Move-Item $_.FullName $target -Force -ErrorAction Stop
