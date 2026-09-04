@@ -141,6 +141,15 @@ pub enum Stage {
     ///
     /// Before [`Stage::Preparation`], which is what applies the pack.
     ControlsProfile,
+    /// Whether the launcher may update itself and the game on its own.
+    ///
+    /// In first run because it is a question about consent rather than
+    /// configuration, and because the honest moment to ask is before the
+    /// launcher has ever done it. A measured release-to-release patch is
+    /// about a megabyte, so automatic is a reasonable default, but a player
+    /// who wants to be asked should be asked rather than discovering the
+    /// behaviour afterwards.
+    Updates,
     /// `WIREFRAMES.md` section 5, first screen. Writes into the data root.
     Preparation,
     /// `WIREFRAMES.md` section 5, second screen. Closed by
@@ -158,6 +167,7 @@ impl Stage {
         Stage::SystemCheck,
         Stage::ControllerSetup,
         Stage::ControlsProfile,
+        Stage::Updates,
         Stage::Preparation,
         Stage::Completion,
     ];
@@ -171,6 +181,7 @@ impl Stage {
             Stage::MigrationCopy => "migration_copy",
             Stage::SystemCheck => "system_check",
             Stage::ControlsProfile => "controls_profile",
+            Stage::Updates => "updates",
             Stage::ControllerSetup => "controller_setup",
             Stage::Preparation => "preparation",
             Stage::Completion => "completion",
@@ -191,7 +202,7 @@ impl Stage {
             // No wireframe drew either of these. Mod choice used to live in
             // the installer, so there is nothing to implement against and
             // whoever builds the screen is designing rather than following.
-            Stage::MigrationCopy | Stage::ControlsProfile => None,
+            Stage::MigrationCopy | Stage::ControlsProfile | Stage::Updates => None,
         }
     }
 
@@ -242,6 +253,12 @@ impl Stage {
                           would mean choosing one silently, which is the \
                           same decision made worse by being hidden",
             },
+            Stage::Updates => SkipRule::Required {
+                because: "an update is something done TO a player's machine, so \
+                          the answer has to be theirs. Skipping would mean \
+                          picking one for them and never saying so, and the \
+                          whole point of asking is that they know",
+            },
             Stage::Welcome => SkipRule::Required {
                 because: "it is the entry point, and it carries the time estimate",
             },
@@ -286,6 +303,7 @@ impl Stage {
                 Satisfaction::Controller { .. } | Satisfaction::NoController { .. }
             ),
             Stage::ControlsProfile => matches!(how, Satisfaction::Controls { .. }),
+            Stage::Updates => matches!(how, Satisfaction::Updates { .. }),
             Stage::Preparation => matches!(how, Satisfaction::Prepared),
             // Closed by finish(), never by satisfy(). Two ways to end
             // onboarding is how one of them stops being maintained.
@@ -468,6 +486,14 @@ pub enum Satisfaction {
     /// and let the disc's own art show, which is a different thing from never
     /// having been asked.
     Controls { profile: ControlsProfile },
+    /// Whether the launcher may fetch and apply updates by itself.
+    ///
+    /// `false` does not mean never: a release marked required is still
+    /// applied, because an out of date client cannot play online and a
+    /// launcher that lets someone sit on a broken version out of politeness
+    /// is not being kind. What it means is that ordinary updates wait to be
+    /// asked for.
+    Updates { automatic: bool },
     /// Every preparation task finished.
     Prepared,
 }
@@ -925,6 +951,9 @@ pub struct Summary {
     /// Absent means never asked. There is no declined value, because the game
     /// always draws something.
     pub controls_profile: Option<ControlsProfile>,
+    /// Whether ordinary updates are applied without asking. `None` when
+    /// first run has not reached the question.
+    pub automatic_updates: Option<bool>,
     pub tasks_done: Vec<PrepTask>,
 }
 
@@ -947,6 +976,9 @@ impl Summary {
         }
         if self.game_bytes.is_none() {
             out.push("installed size");
+        }
+        if self.automatic_updates.is_none() {
+            out.push("automatic_updates");
         }
         if self.controls_profile.is_none() {
             out.push("controls");
@@ -1402,6 +1434,11 @@ impl Onboarding {
         {
             s.controls_profile = Some(*profile);
         }
+        if let Some(Satisfaction::Updates { automatic }) =
+            self.progress.satisfaction(Stage::Updates)
+        {
+            s.automatic_updates = Some(*automatic);
+        }
         s.tasks_done = self.progress.tasks_done();
         s
     }
@@ -1624,6 +1661,11 @@ mod tests {
         recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(
             ob.satisfy(Stage::ControlsProfile, controls())
+                .unwrap(),
+        );
+        recorded(ob.reach(Stage::Updates).unwrap());
+        recorded(
+            ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
                 .unwrap(),
         );
     }
@@ -2308,6 +2350,11 @@ mod tests {
             ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
+        recorded(ob.reach(Stage::Updates).unwrap());
+        recorded(
+            ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
+                .unwrap(),
+        );
         recorded(ob.reach(Stage::Preparation).unwrap());
         for t in PrepTask::ALL {
             recorded(ob.record_task(*t).unwrap());
@@ -2655,6 +2702,11 @@ mod tests {
         recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(
             ob.satisfy(Stage::ControlsProfile, controls())
+                .unwrap(),
+        );
+        recorded(ob.reach(Stage::Updates).unwrap());
+        recorded(
+            ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
                 .unwrap(),
         );
         recorded(ob.reach(Stage::Preparation).unwrap());
@@ -3192,4 +3244,36 @@ mod tests {
         assert!(ob.is_complete(), "the flow must be completable in this order");
     }
 
+    #[test]
+    fn the_updates_answer_is_recorded_and_survives_into_the_summary() {
+        // Asked once, in the flow, and readable afterwards. A player who said
+        // "ask me first" must never be updated silently because the answer was
+        // written somewhere that does not survive.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = fresh(dir.path());
+
+        assert_eq!(ob.summary().automatic_updates, None, "unasked is not false");
+        assert!(ob.summary().absent().contains(&"automatic_updates"));
+
+        recorded(ob.reach(Stage::Welcome).unwrap());
+        recorded(
+            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
+                .unwrap(),
+        );
+        recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
+        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        recorded(ob.reach(Stage::ControlsProfile).unwrap());
+        recorded(ob.satisfy(Stage::ControlsProfile, controls()).unwrap());
+        recorded(ob.reach(Stage::Updates).unwrap());
+        recorded(
+            ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: false })
+                .unwrap(),
+        );
+        assert_eq!(ob.summary().automatic_updates, Some(false));
+        assert!(!ob.summary().absent().contains(&"automatic_updates"));
+
+        // And it cannot be skipped: an update is done TO the machine.
+        assert!(matches!(Stage::Updates.skip_rule(), SkipRule::Required { .. }));
+    }
 }

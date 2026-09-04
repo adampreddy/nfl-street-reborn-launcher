@@ -5,7 +5,7 @@
 // built. Clicking a radio updated the pending answer and called updateNav, and
 // updateNav re-read a value that could never change, so Next stayed disabled
 // forever on every screen that asks a question. Adam hit it on migration and
-// could not get past step 3 of 9.
+// could not get past step 3 of 9 (there are 10 now).
 //
 // So `ready` is a function now, and this proves it is called rather than read.
 // Clicking is the only other way to find this out, and by then it has shipped.
@@ -131,7 +131,7 @@ const reconcile = {
     kind: "reconcile",
     stage: "preparation",
     position: 8,
-    total: 9,
+    total: 10,
     what_to_do: "Verify each preparation task before running it again.",
   },
   tasks_done: [

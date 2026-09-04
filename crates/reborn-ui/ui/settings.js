@@ -19,6 +19,7 @@ async function load() {
     paths: call("paths"),
     check: call("launch_check", { runtime: get("runtime"), game: get("game") }),
     token: call("credential_stored", { account: "nsr.league.ingest" }),
+    policy: call("update_policy"),
     queue: call("stats_queue"),
   };
   const keys = Object.keys(reads);
@@ -138,6 +139,21 @@ async function act(label, cmd, args, after) {
 function updatesBlock() {
   const sec = el("section", { class: "block" }, el("h2", { text: "Updates" }));
   sec.append(el("p", { class: "note", text: "Three steps, each its own button, so nothing installs behind your back: check the release page, download and verify the installer, then run it. The installer replaces the program files and leaves your data and saves alone." }));
+  // Whether it does this on its own. Asked in first run, changed here.
+  const pol = state.policy;
+  if (ok(pol)) {
+    for (const [auto, what, why] of [
+      [true, "Update on its own", "Downloaded in the background and applied before you next play."],
+      [false, "Ask me first", "Nothing is downloaded until you say so."],
+    ]) {
+      const input = el("input", { type: "radio", name: "policy", checked: pol.automatic === auto, disabled: busy, onchange: () => act("Update setting", "update_policy_set", { automatic: auto }, () => {}) });
+      sec.append(el("label", { class: "choice" + (pol.automatic === auto ? " selected" : "") }, input, el("span", { class: "what", text: what }), el("span", { class: "why", text: why })));
+    }
+    sec.append(el("p", { class: "note", text: pol.note }));
+  } else {
+    sec.append(partial(`The update setting could not be read: ${pol ? pol.error : "not loaded"}`));
+  }
+
   const row = el("div", { class: "mod" });
   row.append(el("button", { type: "button", text: "Check for updates", disabled: busy, onclick: () => act("Check", "update_check", { source: null }, (r) => { update = r; downloaded = null; }) }));
   if (update && update.state === "available") {

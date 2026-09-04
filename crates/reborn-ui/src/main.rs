@@ -2010,6 +2010,9 @@ struct OnboardingSummaryView {
     /// The button art chosen, by slug. Absent means never asked, and there is
     /// no declined value because the game always draws something.
     controls_profile: Option<&'static str>,
+    /// Whether ordinary updates are applied without asking. Absent until
+    /// first run has asked.
+    automatic_updates: Option<bool>,
     migrated_from: Option<String>,
     migrated_bytes: Option<u64>,
     game_bytes: Option<u64>,
@@ -2173,6 +2176,7 @@ async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingVi
                 graphics_was_recommended: summary.graphics_was_recommended,
                 detected_hardware: summary.detected_hardware.clone(),
                 controls_profile: summary.controls_profile.map(|p| p.slug()),
+                automatic_updates: summary.automatic_updates,
                 migrated_from: summary
                     .migrated_from
                     .as_ref()
@@ -3445,6 +3449,81 @@ fn http_client() -> reborn_core::net::UreqHttp {
     reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")))
 }
 
+/// Record whether the launcher may update on its own.
+///
+/// Written to the journal as the first run answer AND to settings.json,
+/// which is what a launch reads. Without the second write the answer would
+/// be unchangeable without re-walking the wizard, which is the trap the
+/// controls profile already had to be dug out of.
+#[tauri::command]
+async fn onboarding_choose_updates(
+    automatic: bool,
+    legacy_root: Option<String>,
+) -> Result<OnboardingStepView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        reborn_core::settings::set_automatic_updates(&file, automatic).map_err(|e| e.to_string())?;
+        let mut flow = open_flow(legacy_root)?;
+        let advance = flow
+            .satisfy(Stage::Updates, Satisfaction::Updates { automatic })
+            .map_err(|e| e.to_string())?;
+        Ok(step_view(&flow, advance))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+struct UpdatePolicyView {
+    automatic: bool,
+    /// "settings" when set after first run, "first_run" when only the
+    /// journal has it, "default" when nobody has answered.
+    source: &'static str,
+    note: String,
+}
+
+/// Whether the launcher updates on its own, and where that was decided.
+#[tauri::command]
+async fn update_policy() -> Result<UpdatePolicyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        let stored = reborn_core::settings::Settings::load(&file)
+            .map_err(|e| e.to_string())?
+            .automatic_updates;
+        let flow = Onboarding::open(&p, Environment::nothing_found()).map_err(|e| e.to_string())?;
+        let from_first_run = flow.summary().automatic_updates;
+        let (automatic, source) = match (stored, from_first_run) {
+            (Some(v), _) => (v, "settings"),
+            (None, Some(v)) => (v, "first_run"),
+            (None, None) => (true, "default"),
+        };
+        let note = if automatic {
+            "Updates are downloaded and applied on their own. A release-to-release patch is about a megabyte.".to_string()
+        } else {
+            "You are asked before an update is applied. Updates marked required are still applied, because an out of date launcher cannot play online.".to_string()
+        };
+        Ok(UpdatePolicyView { automatic, source, note })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Change it later, without re-walking first run.
+#[tauri::command]
+async fn update_policy_set(automatic: bool) -> Result<UpdatePolicyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        reborn_core::settings::set_automatic_updates(&file, automatic).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    update_policy().await
+}
+
 #[derive(Debug, Serialize)]
 struct PathSetView {
     which: String,
@@ -4711,6 +4790,9 @@ fn main() {
             onboarding_choose_controller,
             onboarding_decline_controller,
             onboarding_choose_controls,
+            onboarding_choose_updates,
+            update_policy,
+            update_policy_set,
             controls_set,
             controls_current,
             controls_options,

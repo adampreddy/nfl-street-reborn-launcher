@@ -62,6 +62,11 @@ pub struct Settings {
     /// Which button art to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls_profile: Option<ControlsProfile>,
+    /// Whether ordinary updates are applied without asking. First run seeds
+    /// it; this is what a launch reads, so it can be changed afterwards
+    /// without re-walking the wizard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_updates: Option<bool>,
     /// Where the launcher looks for its release manifest. Absent means the
     /// release page for this channel; see crate::update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +124,7 @@ impl Default for Settings {
         Self {
             schema: SETTINGS_SCHEMA.to_string(),
             controls_profile: None,
+            automatic_updates: None,
             update_source: None,
             league_ingest_url: None,
             runtime_exe: None,
@@ -213,6 +219,29 @@ pub fn set_controls_profile(path: &Path, profile: ControlsProfile) -> Result<Set
 ///
 /// `None` means neither has an answer, which is a real state and not a reason
 /// to invent one.
+/// Whether to update without asking: the setting, else first run's answer,
+/// else automatic.
+///
+/// The default when nobody has answered is `true`, and that is a decision
+/// rather than an oversight: a release-to-release patch measures about a
+/// megabyte, and an out of date client cannot play online. First run always
+/// asks, so this only applies to an install that predates the question.
+pub fn automatic_updates(settings_file: &Path, from_first_run: Option<bool>) -> Result<bool> {
+    Ok(Settings::load(settings_file)?
+        .automatic_updates
+        .or(from_first_run)
+        .unwrap_or(true))
+}
+
+/// Record whether updates are automatic. Returns what it was.
+pub fn set_automatic_updates(path: &Path, automatic: bool) -> Result<Option<bool>> {
+    let mut settings = Settings::load(path)?;
+    let was = settings.automatic_updates;
+    settings.automatic_updates = Some(automatic);
+    settings.save(path)?;
+    Ok(was)
+}
+
 pub fn effective_controls_profile(
     settings_file: &Path,
     from_first_run: Option<ControlsProfile>,
@@ -350,5 +379,21 @@ mod tests {
         let after = Settings::load(&path).unwrap();
         assert_eq!(after.runtime_exe, None, "an emptied box must clear it");
         assert_eq!(after.game_path, Some(PathBuf::from("C:\\g\\NSR.iso")), "and leave the others alone");
+    }
+
+    #[test]
+    fn automatic_updates_prefers_the_setting_then_first_run_then_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+
+        // Nobody has answered anywhere: automatic, deliberately.
+        assert!(automatic_updates(&path, None).unwrap());
+        // First run said no and nothing has overridden it.
+        assert!(!automatic_updates(&path, Some(false)).unwrap());
+        // The setting wins over first run, which is what makes it changeable.
+        assert_eq!(set_automatic_updates(&path, true).unwrap(), None);
+        assert!(automatic_updates(&path, Some(false)).unwrap());
+        assert_eq!(set_automatic_updates(&path, false).unwrap(), Some(true));
+        assert!(!automatic_updates(&path, Some(true)).unwrap());
     }
 }

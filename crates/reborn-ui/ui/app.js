@@ -460,6 +460,20 @@ const FEATURES = [
         write: true,
       },
       {
+        cmd: "onboarding_choose_updates",
+        desc: "First run: may the launcher update on its own",
+        write: true,
+        args: () => ({ legacyRoot: get("legacyRoot") }),
+        inputs: [{ key: "automatic", placeholder: "true or false", bool: true }],
+      },
+      { cmd: "update_policy", desc: "Whether updates are automatic, and where that was decided" },
+      {
+        cmd: "update_policy_set",
+        desc: "Change it later, without re-walking first run",
+        write: true,
+        inputs: [{ key: "automatic", placeholder: "true or false", bool: true }],
+      },
+      {
         cmd: "controls_options",
         desc: "The three button art profiles, with the one your pad suggests",
         inputs: [{ key: "runtime", placeholder: "path to Dolphin exe, for the suggestion" }],

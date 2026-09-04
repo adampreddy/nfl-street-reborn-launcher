@@ -505,6 +505,44 @@ const SCREENS = {
     };
   },
 
+  updates: () => {
+    // Default shown as chosen, not as a recommendation dressed up. The
+    // measured size is stated because it is the whole argument for
+    // automatic, and a player deciding this deserves the number.
+    if (pending.automatic === undefined) pending.automatic = true;
+    return {
+      nodes: [
+        el(
+          "p",
+          null,
+          "New fields, rosters and fixes arrive as updates. An update between " +
+            "releases is about a megabyte, because only what changed is sent.",
+        ),
+        ...radios("automatic", [
+          {
+            value: "yes",
+            what: "Update on its own",
+            why: "Downloaded in the background and applied before you next play. You are told what changed, not asked",
+          },
+          {
+            value: "no",
+            what: "Ask me first",
+            why: "Nothing is downloaded until you say so",
+          },
+        ]),
+        el(
+          "p",
+          "note",
+          "Either way, an update marked required is always applied: an out of " +
+            "date launcher cannot play online. You can change this later in Settings.",
+        ),
+      ],
+      ready: () => pending.automatic !== undefined,
+      answer: () =>
+        call("onboarding_choose_updates", { automatic: pending.automatic === "yes" || pending.automatic === true }),
+    };
+  },
+
   preparation: () => {
     const done = new Set((state.tasks_done || []).map((t) => t.slug));
     const remaining = state.preparation_remaining || [];
@@ -733,6 +771,7 @@ function titleFor(slug) {
     system_check: "How it looks",
     controller_setup: "Your controller",
     controls_profile: "Controls",
+    updates: "Updates",
     preparation: "Setting up",
     completion: "Ready",
   }[slug] || slug.replace(/_/g, " ");
