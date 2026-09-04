@@ -71,8 +71,16 @@ integrity check, the same as a manual download from the release page.
 ## 2. The sandbox smoke test
 
 ```powershell
-.\Tools\beta-sandbox.ps1
+.\Tools\beta-sandbox.ps1          # silent, about 90 seconds
+.\Tools\beta-sandbox.ps1 -Watch   # the same run, visible
 ```
+
+**Watch mode exists because the silent run looks like nothing.** The
+installer is `/VERYSILENT`, so the sandbox desktop sits there while the
+whole test happens behind it. With `-Watch` the installer draws its real
+progress window, each phase is announced in a console, the launcher is
+opened and left on screen, and every check is printed green or red at the
+end in a window that stays open.
 
 This boots Windows Sandbox, a disposable Windows that starts from a pristine
 image every time, with three folders mapped in: `dist\` (the installers, read

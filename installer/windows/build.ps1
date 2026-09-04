@@ -291,7 +291,20 @@ Get-ChildItem $scratch -Filter "*.exe" | ForEach-Object {
         Move-Item $_.FullName $target -Force -ErrorAction Stop
         Write-Host ("Built {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
     } catch {
-        Write-Warning ("Built, but could not move into dist ({0}). It is at {1}" -f $_.Exception.Message, $_.FullName)
+        # A failure here used to be a warning, and the build then reported
+        # success while dist still held the PREVIOUS installer. Anyone reading
+        # the exit code was told a stale file was the new one.
+        #
+        # The cause, every time it has happened: something else holds the file
+        # in dist. A running Windows Sandbox maps dist in and keeps a handle on
+        # everything in it, so a rebuild during a sandbox run cannot replace it.
+        $held = if (Get-Process WindowsSandboxServer -ErrorAction SilentlyContinue) {
+            "Windows Sandbox is running and has dist mapped into it. Close the sandbox window and build again."
+        } else {
+            "Something else holds it open: a scanner, an Explorer preview, or a copy still running."
+        }
+        throw ("Built {0}, but it could not replace the copy in dist. {1}`n  New build: {2}`n  Blocked by: {3}" -f `
+            $_.Name, $held, $_.FullName, $_.Exception.Message)
     }
 }
 # The CLI beside the installer, so dist always carries the matching build.

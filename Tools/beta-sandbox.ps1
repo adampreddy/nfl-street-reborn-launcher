@@ -21,6 +21,14 @@
 # says so and prints the one command that enables it. That command needs an
 # administrator PowerShell and a restart, which is why it is not run here.
 
+param(
+    # Show the whole thing happening: the installer draws its own progress
+    # window, each phase is announced in a console you can read, and the
+    # window stays open at the end with the results on screen. Without this
+    # the run is silent and looks, from the sandbox desktop, like nothing.
+    [switch]$Watch
+)
+
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\.."
 $dist = Join-Path $root "dist"
@@ -51,6 +59,15 @@ $setups | ForEach-Object { Write-Host ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length
 if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 New-Item -ItemType Directory -Force $outDir | Out-Null
 
+# What the sandbox runs when it logs on. -NoExit in watch mode keeps the
+# window open after the script ends, which is the difference between seeing
+# the result and seeing a window vanish.
+$logon = if ($Watch) {
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File C:\beta\scripts\sandbox-smoke.ps1 -Watch"
+} else {
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\beta\scripts\sandbox-smoke.ps1"
+}
+
 # The configuration. Paths must be absolute and must exist before the sandbox
 # starts; a missing mapped folder is a refusal to start, not a warning.
 $xml = @"
@@ -75,7 +92,7 @@ $xml = @"
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\beta\scripts\sandbox-smoke.ps1</Command>
+    <Command>$logon</Command>
   </LogonCommand>
 </Configuration>
 "@
@@ -84,6 +101,19 @@ Write-Host "Wrote $wsb"
 
 Start-Process -FilePath $sandbox -ArgumentList "`"$wsb`""
 Write-Host ""
-Write-Host "Sandbox starting. Results will appear in:"
+if ($Watch) {
+    Write-Host "Watch mode. Inside the sandbox you will see, in order:" -ForegroundColor Cyan
+    Write-Host "  1. a console window saying what it is about to do"
+    Write-Host "  2. a pretend NFL Street Reborn 2.1 laid down, with a memory card in it"
+    Write-Host "  3. the launcher installer, with its real progress window"
+    Write-Host "  4. that install removed again, and the memory card checked afterwards"
+    Write-Host "  5. the beta installed beside it"
+    Write-Host "  6. the launcher opened, left on screen"
+    Write-Host "  7. every check, green or red, in the console"
+    Write-Host ""
+    Write-Host "It takes about two minutes. The sandbox desktop can take ~30 seconds to appear first." -ForegroundColor Gray
+    Write-Host ""
+}
+Write-Host "Results will also appear in:"
 Write-Host "  $outDir\result.txt"
 Write-Host "along with smoke.log and the installer logs. Close the sandbox window when done; nothing persists inside it."

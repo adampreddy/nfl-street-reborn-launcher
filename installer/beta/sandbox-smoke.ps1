@@ -23,12 +23,29 @@
 # result.txt with one PASS or FAIL per check. The sandbox is thrown away when
 # its window closes, so nothing here needs cleaning up.
 
+# Watch mode. The same run, visible: the installer draws its own progress
+# window instead of being silent, each phase is announced, and the whole
+# thing pauses so a person can look at what just happened. Set by the .wsb
+# that Tools\beta-sandbox.ps1 -Watch writes.
+param([switch]$Watch)
+
 $ErrorActionPreference = "Continue"
 $out = "C:\beta\out"
 $dist = "C:\beta\dist"
 New-Item -ItemType Directory -Force $out | Out-Null
 $log = Join-Path $out "smoke.log"
 $results = New-Object System.Collections.ArrayList
+
+# A heading a person can see from across the room, and a pause to read it.
+function Phase($title, $detail) {
+    if (-not $Watch) { Say("--- $title"); return }
+    Write-Host ""
+    Write-Host ("=" * 74) -ForegroundColor DarkGray
+    Write-Host "  $title" -ForegroundColor Cyan
+    Write-Host "  $detail" -ForegroundColor Gray
+    Write-Host ("=" * 74) -ForegroundColor DarkGray
+    Start-Sleep -Seconds 4
+}
 
 function Say($message) {
     $line = "{0}  {1}" -f (Get-Date -Format "HH:mm:ss"), $message
@@ -40,7 +57,11 @@ function Check($what, $ok) {
     Say(("[{0}] {1}" -f $(if ($ok) { "PASS" } else { "FAIL" }), $what))
 }
 function Run-Setup($exe, $logName, $extra = @()) {
-    $args = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$out\$logName`"") + $extra
+    # /SILENT draws the progress window; /VERYSILENT draws nothing at all.
+    # In watch mode a person is looking at the screen, so they get the one
+    # that shows the files going in.
+    $quiet = if ($Watch) { "/SILENT" } else { "/VERYSILENT" }
+    $args = @($quiet, "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$out\$logName`"") + $extra
     Say("running $(Split-Path $exe -Leaf) $($args -join ' ')")
     $p = Start-Process -FilePath $exe -ArgumentList $args -Wait -PassThru
     Say("exit code $($p.ExitCode)")
@@ -121,11 +142,19 @@ try {
     Set-ItemProperty $regKey "InstallLocation" "$old\"
     Set-ItemProperty $regKey "Inno Setup: App Path" $old
     Say("laid a fake 2.1 install at $old with its uninstall entry")
+    if ($Watch) {
+        Write-Host ""
+        Write-Host "  A pretend NFL Street Reborn 2.1 now exists on this clean Windows:" -ForegroundColor Yellow
+        Write-Host "    $old" -ForegroundColor Gray
+        Write-Host "    with a memory card inside it, and 2.1's entry in Programs and Features." -ForegroundColor Gray
+        Write-Host "  Everything after this is about not destroying that." -ForegroundColor Yellow
+    }
 
     # ------------------------------------------------------------------
     # 2. The stable installer, as an upgrade over it
     # ------------------------------------------------------------------
     if ($stableSetup) {
+        Phase "Installing the launcher over that 2.1 install" "You should see the installer's progress window."
         $code = Run-Setup $stableSetup.FullName "install-stable.log"
         Check "stable installer exits 0 over a 2.1 install" ($code -eq 0)
 
@@ -149,11 +178,13 @@ try {
         # a launcher that cannot start passes all of them.
         $launcher = Join-Path $stableDir "reborn-launcher.exe"
         if (Test-Path $launcher) {
+            Phase "Opening the launcher" "This is the check that a clean Windows can actually run it."
             $proc = Start-Process -FilePath $launcher -PassThru -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 8
+            Start-Sleep -Seconds $(if ($Watch) { 25 } else { 8 })
             $alive = $proc -and -not $proc.HasExited
             Check "the launcher window starts and stays up" $alive "it exited with $(if ($proc) { $proc.ExitCode } else { 'no process at all' })"
-            if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            if ($alive -and -not $Watch) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            if ($alive -and $Watch) { Say("leaving the launcher open so it can be looked at") }
         }
 
         Say("WebView2 after stable install: $(WebView2Version)")
@@ -162,6 +193,7 @@ try {
         # ------------------------------------------------------------------
         # 3. Uninstall stable. The 2.1 folder and the memory card must survive.
         # ------------------------------------------------------------------
+        Phase "Uninstalling it again" "The memory card and the 2.1 folder have to survive this. 2.1's own uninstaller did not manage it."
         $code = Uninstall-Silently $stableDir
         Check "stable uninstaller ran" ($code -eq 0)
         Check "uninstall removed the launcher exe" (-not (Test-Path (Join-Path $stableDir "reborn-launcher.exe")))
@@ -173,6 +205,7 @@ try {
     # 4. The beta installer, side by side
     # ------------------------------------------------------------------
     if ($betaSetup) {
+        Phase "Installing the BETA, side by side" "Its own folder, its own entry in Programs and Features, its own data."
         $code = Run-Setup $betaSetup.FullName "install-beta.log"
         Check "beta installer exits 0" ($code -eq 0)
         $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher Beta"
@@ -214,6 +247,25 @@ $lines += $(if ($failed -eq 0) { "RESULT: PASS ($($results.Count) checks)" } els
 Set-Content (Join-Path $out "result.txt") $lines
 Say("done. $(if ($failed -eq 0) { 'PASS' } else { "FAIL: $failed" })")
 
-# Leave the sandbox open with the result on screen, so a person can look
-# around, open the launcher, and close the window when done.
+# The result on screen. In watch mode it is printed into the window a person
+# is already looking at, coloured, and the window stays open; Notepad alone
+# was easy to miss behind the installer.
+if ($Watch) {
+    Write-Host ""
+    Write-Host ("=" * 74) -ForegroundColor DarkGray
+    foreach ($r in $results) {
+        if ($r.ok) { Write-Host "  PASS  $($r.check)" -ForegroundColor Green }
+        else { Write-Host "  FAIL  $($r.check)" -ForegroundColor Red }
+    }
+    Write-Host ("=" * 74) -ForegroundColor DarkGray
+    if ($failed -eq 0) {
+        Write-Host "  ALL $($results.Count) CHECKS PASSED" -ForegroundColor Green
+    } else {
+        Write-Host "  $failed OF $($results.Count) CHECKS FAILED" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "  The same list is on your real PC at target\beta-out\result.txt" -ForegroundColor Gray
+    Write-Host "  Look around as long as you like. Closing the sandbox window throws all of this away." -ForegroundColor Gray
+    Write-Host ""
+}
 Start-Process notepad.exe (Join-Path $out "result.txt")
