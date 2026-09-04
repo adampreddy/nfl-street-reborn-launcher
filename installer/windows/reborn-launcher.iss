@@ -195,7 +195,7 @@ Name: "desktopicon"; Description: "Desktop shortcut to the launcher"; \
 ; written and no match results collected, and it would look like it worked.
 Name: "gameicon"; Description: "Desktop shortcut that starts the game straight away"; \
   GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "foldericon"; Description: "Desktop shortcut to your game files, saves and textures"; \
+Name: "foldericon"; Description: "Desktop shortcut to the folder the game is installed in"; \
   GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -249,7 +249,7 @@ Name: "{group}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"
 Name: "{group}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--play"; Comment: "Start the game without opening the launcher"
 Name: "{group}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
-  Parameters: "--folder"; Comment: "Open the folder holding your saves and textures"
+  Parameters: "--folder"; Comment: "Open the folder the game is installed in"
 Name: "{group}\{cm:UninstallProgram,{#AppName} Launcher}"; Filename: "{uninstallexe}"
 
 Name: "{userdesktop}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"; \
@@ -258,7 +258,7 @@ Name: "{userdesktop}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--play"; Comment: "Start the game without opening the launcher"; \
   Tasks: gameicon
 Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
-  Parameters: "--folder"; Comment: "Open the folder holding your saves and textures"; \
+  Parameters: "--folder"; Comment: "Open the folder the game is installed in"; \
   Tasks: foldericon
 
 ; Still no shortcut to Dolphin and none to a mod manager. Every one of these

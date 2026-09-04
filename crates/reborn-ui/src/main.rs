@@ -4547,7 +4547,12 @@ fn play_now(platform: &Platform) -> Result<String, String> {
     }
 }
 
-/// Open the folder the game actually boots against.
+/// Open the folder the game is installed in.
+///
+/// The folder HOLDING `User`, not `User` itself: that is the one with the
+/// emulator, `Games` and, on a 2.1 install, `MODS` beside the saves, and it
+/// is what a player means by where the game lives. Adam: "I think I want it
+/// to be the install directory, not just the user folder."
 ///
 /// Resolved now rather than written into the shortcut at install time,
 /// because which folder that is depends on the emulator in use and on
@@ -4566,7 +4571,23 @@ fn open_game_folder(platform: &Platform) -> Result<PathBuf, String> {
         exe.as_deref(),
     )
     .map_err(|e| e.to_string())?;
-    let path = user.path().to_path_buf();
+    // Up one only when the folder is literally called "User", which is the
+    // <install>\User shape both a 2.1 install and a portable Dolphin have.
+    //
+    // Going up unconditionally was wrong, seen while checking this: a stock
+    // Dolphin keeps everything in %APPDATA%\Dolphin Emulator, whose parent is
+    // plain Roaming, and a folder named outright in Settings is the folder
+    // rather than a child of one. A folder at the root of a drive has no
+    // parent either, and opening the drive would be worse than opening it.
+    let resolved = user.path();
+    let named_user = resolved
+        .file_name()
+        .map(|n| n.eq_ignore_ascii_case("user"))
+        .unwrap_or(false);
+    let path = match resolved.parent() {
+        Some(parent) if named_user => parent.to_path_buf(),
+        _ => resolved.to_path_buf(),
+    };
     if !path.is_dir() {
         return Err(format!(
             "The game folder is not there yet: {}. Start the game once and it will be.",
