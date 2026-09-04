@@ -67,6 +67,16 @@ pub struct Settings {
     /// without re-walking the wizard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_updates: Option<bool>,
+    /// Whether the launcher may point the emulator's texture folder at the
+    /// tree it composes. `None` means yes.
+    ///
+    /// Yes is right for a player: it is how mods reach the game. No is right
+    /// for anyone who AUTHORS textures, because their folder is the source of
+    /// truth and the composed tree is deleted and rebuilt on every sync.
+    /// Adam, whose texture folder this launcher took over once: "this is the
+    /// directory I will use for testing always."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manage_texture_folder: Option<bool>,
     /// Where the launcher looks for its release manifest. Absent means the
     /// release page for this channel; see crate::update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +135,7 @@ impl Default for Settings {
             schema: SETTINGS_SCHEMA.to_string(),
             controls_profile: None,
             automatic_updates: None,
+            manage_texture_folder: None,
             update_source: None,
             league_ingest_url: None,
             runtime_exe: None,
@@ -231,6 +242,20 @@ pub fn automatic_updates(settings_file: &Path, from_first_run: Option<bool>) -> 
         .automatic_updates
         .or(from_first_run)
         .unwrap_or(true))
+}
+
+/// Whether the launcher may take over the emulator's texture folder.
+pub fn manage_texture_folder(path: &Path) -> Result<bool> {
+    Ok(Settings::load(path)?.manage_texture_folder.unwrap_or(true))
+}
+
+/// Record it. Returns what it was.
+pub fn set_manage_texture_folder(path: &Path, manage: bool) -> Result<Option<bool>> {
+    let mut settings = Settings::load(path)?;
+    let was = settings.manage_texture_folder;
+    settings.manage_texture_folder = Some(manage);
+    settings.save(path)?;
+    Ok(was)
 }
 
 /// Record whether updates are automatic. Returns what it was.
@@ -395,5 +420,18 @@ mod tests {
         assert!(automatic_updates(&path, Some(false)).unwrap());
         assert_eq!(set_automatic_updates(&path, false).unwrap(), Some(true));
         assert!(!automatic_updates(&path, Some(true)).unwrap());
+    }
+
+    #[test]
+    fn the_texture_folder_is_managed_unless_someone_says_otherwise() {
+        // On by default: that is how mods reach a player's game. Off is for
+        // whoever authors the textures, whose own folder must be left alone.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        assert!(manage_texture_folder(&path).unwrap());
+        assert_eq!(set_manage_texture_folder(&path, false).unwrap(), None);
+        assert!(!manage_texture_folder(&path).unwrap());
+        assert_eq!(set_manage_texture_folder(&path, true).unwrap(), Some(false));
+        assert!(manage_texture_folder(&path).unwrap());
     }
 }

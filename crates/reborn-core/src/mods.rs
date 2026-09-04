@@ -819,6 +819,9 @@ pub fn exclusive_groups(packages: &[ModPackage], game: &GameId) -> Vec<Exclusive
 /// What linking the emulator's texture folder to the composed tree did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureLink {
+    /// Not linked, on purpose. The composed tree is built and left where it
+    /// is; the emulator reads whatever folder it already had.
+    LeftAlone { at: PathBuf },
     /// The link was made.
     Linked {
         at: PathBuf,
@@ -2478,6 +2481,13 @@ pub struct SyncRequest {
     /// game loads the pristine tree once, and the player's selection is
     /// still there for the next launch.
     pub active_override: Option<Vec<ActivePackage>>,
+    /// Whether to point the emulator's texture folder at the composed tree.
+    ///
+    /// False leaves that folder completely alone, which is what someone who
+    /// authors textures needs: theirs is the source of truth and the composed
+    /// tree is rebuilt from scratch on every sync. The tree is still composed
+    /// and still verified; it simply is not linked in.
+    pub link_into_user_dir: bool,
 }
 
 impl SyncRequest {
@@ -2492,6 +2502,7 @@ impl SyncRequest {
             user_dir: user_dir.to_path_buf(),
             game,
             active_override: None,
+            link_into_user_dir: true,
         })
     }
 }
@@ -2556,6 +2567,9 @@ impl SyncReport {
         let link = match &self.link {
             TextureLink::AlreadyLinked { .. } => "linked",
             TextureLink::Linked { .. } => "newly linked",
+            TextureLink::LeftAlone { .. } => {
+                "left alone, because the launcher was asked not to manage it"
+            }
         };
         let missing = if self.missing.is_empty() {
             String::new()
@@ -2647,7 +2661,17 @@ pub fn sync_active(
         }
     };
 
-    let link = link_textures(&req.user_dir, &req.game, &req.composed_root, now_ms)?;
+    let link = if req.link_into_user_dir {
+        link_textures(&req.user_dir, &req.game, &req.composed_root, now_ms)?
+    } else {
+        TextureLink::LeftAlone {
+            at: req
+                .user_dir
+                .join("Load")
+                .join("Textures")
+                .join(req.game.as_str()),
+        }
+    };
 
     Ok(SyncOutcome::Done(Box::new(SyncReport {
         game: req.game.clone(),
@@ -4120,6 +4144,7 @@ mod tests {
             activation_file: fx.activation(),
             user_dir: user_dir.to_path_buf(),
             active_override: None,
+            link_into_user_dir: true,
         }
     }
 
@@ -4300,5 +4325,49 @@ mod tests {
         let again = done(sync_active(&p, &guard, &req, 2).unwrap());
         assert!(matches!(again.tree, TreeStep::Rebuilt { overlaid: 1, .. }));
         assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the purple football");
+    }
+
+    #[test]
+    fn the_texture_folder_can_be_left_completely_alone() {
+        // Someone who authors textures owns that folder. The tree is still
+        // composed and still correct; it simply is not linked in, and what the
+        // author already had is untouched. Adam lost a folder to this once.
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let theirs = user_dir.join("Load").join("Textures").join("GN7E69");
+
+        let package = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(package.id.clone(), package.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+        // After the lock: a Load/Textures tree makes a directory look like a
+        // 2.1 install, and the supervisor rightly refuses to use one of those
+        // as a launcher data root.
+        write(&theirs.join("mine.dds"), b"a texture I am working on");
+
+        let mut req = sync_request(&fx, &user_dir);
+        req.link_into_user_dir = false;
+        let report = done(sync_active(&p, &guard, &req, 1).unwrap());
+
+        assert!(
+            matches!(report.tree, TreeStep::Rebuilt { overlaid: 1, .. }),
+            "the tree is still composed: {:?}",
+            report.tree
+        );
+        assert!(matches!(report.link, TextureLink::LeftAlone { .. }), "{:?}", report.link);
+        assert_eq!(
+            std::fs::read(theirs.join("mine.dds")).unwrap(),
+            b"a texture I am working on",
+            "their folder must be exactly as they left it"
+        );
+        assert!(!theirs.join(BALL).exists(), "and nothing of ours may appear in it");
+        assert!(report.explain().contains("left alone"), "{}", report.explain());
     }
 }

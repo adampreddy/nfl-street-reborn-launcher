@@ -1183,6 +1183,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
                 } => ("rebuilt", *entries, *overlaid),
             };
             let (link, link_at, moved_aside) = match &r.link {
+                TextureLink::LeftAlone { at } => ("left_alone", at.clone(), None),
                 TextureLink::AlreadyLinked { at, .. } => ("already_linked", at.clone(), None),
                 TextureLink::Linked {
                     at, moved_aside, ..
@@ -3510,6 +3511,52 @@ async fn update_policy() -> Result<UpdatePolicyView, String> {
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, Serialize)]
+struct TexturePolicyView {
+    managed: bool,
+    note: String,
+}
+
+/// Whether the launcher may point the emulator's texture folder at the tree
+/// it composes.
+///
+/// On for a player: it is how mods reach the game. Off for anyone who
+/// AUTHORS textures, because their folder is the source of truth and the
+/// composed tree is deleted and rebuilt on every sync.
+#[tauri::command]
+async fn texture_policy() -> Result<TexturePolicyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        let managed =
+            reborn_core::settings::manage_texture_folder(&file).map_err(|e| e.to_string())?;
+        Ok(TexturePolicyView {
+            managed,
+            note: if managed {
+                "The launcher points the emulator's texture folder at the mods you turned on. Whatever was there is renamed aside, never deleted.".to_string()
+            } else {
+                "The emulator's texture folder is left completely alone. Mods are still composed, they are just not linked in. For anyone who authors textures.".to_string()
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Change it.
+#[tauri::command]
+async fn texture_policy_set(managed: bool) -> Result<TexturePolicyView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        reborn_core::settings::set_manage_texture_folder(&file, managed).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    texture_policy().await
+}
+
 /// Change it later, without re-walking first run.
 #[tauri::command]
 async fn update_policy_set(automatic: bool) -> Result<UpdatePolicyView, String> {
@@ -4793,6 +4840,8 @@ fn main() {
             onboarding_choose_updates,
             update_policy,
             update_policy_set,
+            texture_policy,
+            texture_policy_set,
             controls_set,
             controls_current,
             controls_options,

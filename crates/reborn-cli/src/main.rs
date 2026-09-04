@@ -2252,6 +2252,12 @@ fn mods_link(
         .unwrap_or(0);
 
     match reborn_core::mods::link_textures(user.path(), &game, &composed, now_ms)? {
+        reborn_core::mods::TextureLink::LeftAlone { at } => {
+            println!("Left alone: {}", at.display());
+            println!();
+            println!("Nothing was linked. This command only reports it; a launch reads the");
+            println!("setting and would leave the folder alone too.");
+        }
         reborn_core::mods::TextureLink::AlreadyLinked { .. } => {
             println!("Already pointing at the composed tree. Nothing was changed.");
         }

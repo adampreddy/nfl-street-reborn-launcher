@@ -467,6 +467,13 @@ const FEATURES = [
         inputs: [{ key: "automatic", placeholder: "true or false", bool: true }],
       },
       { cmd: "update_policy", desc: "Whether updates are automatic, and where that was decided" },
+      { cmd: "texture_policy", desc: "Whether the launcher manages the emulator's texture folder" },
+      {
+        cmd: "texture_policy_set",
+        desc: "Off leaves your own texture folder completely alone. For texture authors",
+        write: true,
+        inputs: [{ key: "managed", placeholder: "true or false", bool: true }],
+      },
       {
         cmd: "update_policy_set",
         desc: "Change it later, without re-walking first run",
