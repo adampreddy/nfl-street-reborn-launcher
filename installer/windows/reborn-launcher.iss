@@ -134,7 +134,10 @@ DisableProgramGroupPage=yes
 DisableReadyPage=no
 
 OutputDir={#OutDir}
-OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}
+#ifndef OfflineSuffix
+  #define OfflineSuffix ""
+#endif
+OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}{#OfflineSuffix}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -236,8 +239,16 @@ Source: "{#Payload}\*"; DestDir: "{app}"; \
 ;
 ; dontcopy, so it is only unpacked when it is actually needed. A machine that
 ; already has WebView2 never writes it to disk at all.
+;
+; WebView2File is the bootstrapper by default, 1.7 MB, which downloads the
+; runtime. Built with -OfflineWebView2 it is the standalone runtime instead,
+; 247 MB, which installs without a network at all. Same code path either
+; way: start it, then wait for the registry to say the runtime is there.
+#ifndef WebView2File
+  #define WebView2File "MicrosoftEdgeWebView2Setup.exe"
+#endif
 [Files]
-Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; Flags: dontcopy
+Source: "{#Redist}\{#WebView2File}"; Flags: dontcopy
 #endif
 
 [Icons]
@@ -357,9 +368,9 @@ begin
   WebView2Started := False;
   if WebView2Present() then
     Exit;
-  ExtractTemporaryFile('MicrosoftEdgeWebView2Setup.exe');
+  ExtractTemporaryFile('{#WebView2File}');
   WebView2Started := Exec(
-    ExpandConstant('{tmp}\MicrosoftEdgeWebView2Setup.exe'),
+    ExpandConstant('{tmp}\{#WebView2File}'),
     '/silent /install', '', SW_HIDE, ewNoWait, Code);
 end;
 

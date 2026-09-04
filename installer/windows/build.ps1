@@ -21,7 +21,14 @@ param(
     [string[]]$GameImages = @(),
     # Leave the WebView2 bootstrapper out. The installer then only warns when
     # the runtime is missing, instead of installing it.
-    [switch]$NoWebView2
+    [switch]$NoWebView2,
+    # Carry the whole WebView2 runtime rather than the downloader. Adds about
+    # 247 MB and removes the wait on a machine that has no WebView2, which is
+    # a fresh Windows or one with no usable connection. Windows 11 has the
+    # runtime built in and an updated Windows 10 has it too, so the default
+    # stays the 1.7 MB downloader and this is the build to hand to someone
+    # who needs it.
+    [switch]$OfflineWebView2
 )
 
 $ErrorActionPreference = "Stop"
@@ -231,25 +238,32 @@ Write-Host ("Payload: {0} file(s), {1:N1} MB" -f `
 # by Microsoft is deleted and the build stops: this is the one file in the
 # payload the team did not build, and it runs with the installer's rights.
 $redistArg = $null
+$webView2Arg = $null
 if (-not $NoWebView2) {
     $redist = Join-Path $root "target\redist"
-    $bootstrapper = Join-Path $redist "MicrosoftEdgeWebView2Setup.exe"
-    if (-not (Test-Path $bootstrapper)) {
+    # The downloader by default; the whole runtime with -OfflineWebView2.
+    $wv = if ($OfflineWebView2) {
+        @{ Name = "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; Url = "https://go.microsoft.com/fwlink/?linkid=2124701"; What = "runtime" }
+    } else {
+        @{ Name = "MicrosoftEdgeWebView2Setup.exe"; Url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"; What = "bootstrapper" }
+    }
+    $wvPath = Join-Path $redist $wv.Name
+    if (-not (Test-Path $wvPath)) {
         New-Item -ItemType Directory -Force $redist | Out-Null
-        Write-Host "Downloading the WebView2 bootstrapper from Microsoft"
-        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
-            -OutFile $bootstrapper -UseBasicParsing
+        Write-Host "Downloading the WebView2 $($wv.What) from Microsoft"
+        Invoke-WebRequest -Uri $wv.Url -OutFile $wvPath -UseBasicParsing
     }
-    $sig = Get-AuthenticodeSignature $bootstrapper
+    $sig = Get-AuthenticodeSignature $wvPath
     if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
-        Remove-Item $bootstrapper -Force
-        throw "The WebView2 bootstrapper is not validly signed by Microsoft (status $($sig.Status)). Deleted. Nothing was built."
+        Remove-Item $wvPath -Force
+        throw "The WebView2 $($wv.What) is not validly signed by Microsoft (status $($sig.Status)). Deleted. Nothing was built."
     }
-    Write-Host ("WebView2 bootstrapper: {0:N1} MB, signed by {1}" -f `
-        ((Get-Item $bootstrapper).Length / 1MB), $sig.SignerCertificate.Subject.Split(",")[0])
+    Write-Host ("WebView2 {0}: {1:N1} MB, signed by {2}" -f `
+        $wv.What, ((Get-Item $wvPath).Length / 1MB), $sig.SignerCertificate.Subject.Split(",")[0])
     $redistArg = "/DRedist=$redist"
+    $webView2Arg = "/DWebView2File=$($wv.Name)"
 } else {
-    Write-Host "WebView2 bootstrapper left out. The installer will warn if the runtime is missing."
+    Write-Host "WebView2 left out. The installer will warn if the runtime is missing."
 }
 
 # -----------------------------------------------------------------------------
@@ -287,7 +301,11 @@ $isccArgs = @(
     (Join-Path $PSScriptRoot "reborn-launcher.iss"),
     "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
 )
+# A different file name, so the online and offline builds can sit in dist
+# together rather than one silently replacing the other.
+if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
 if ($redistArg) { $isccArgs += $redistArg }
+if ($webView2Arg) { $isccArgs += $webView2Arg }
 # Compiled with retries. ISCC reads two and a half thousand files it was
 # handed seconds earlier, and a scanner holding any one of them for a moment
 # fails the whole compile with "being used by another process". Seen on this
