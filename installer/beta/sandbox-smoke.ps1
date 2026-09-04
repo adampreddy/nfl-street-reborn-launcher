@@ -27,7 +27,15 @@
 # window instead of being silent, each phase is announced, and the whole
 # thing pauses so a person can look at what just happened. Set by the .wsb
 # that Tools\beta-sandbox.ps1 -Watch writes.
-param([switch]$Watch)
+param(
+    [switch]$Watch,
+    # Hands the sandbox over to a person. The fake 2.1 install is laid down,
+    # Explorer is opened on the installers, and NOTHING is run: you click
+    # through the wizard yourself, see the Finish page, and watch the
+    # launcher open. Press Enter in the console afterwards and every check
+    # runs against what you just did.
+    [switch]$Manual
+)
 
 $ErrorActionPreference = "Continue"
 $out = "C:\beta\out"
@@ -151,9 +159,61 @@ try {
     }
 
     # ------------------------------------------------------------------
-    # 2. The stable installer, as an upgrade over it
+    # 2. Manual: hand the machine over, then check what was done
     # ------------------------------------------------------------------
-    if ($stableSetup) {
+    if ($Manual) {
+        Start-Process explorer.exe $dist
+        Write-Host ""
+        Write-Host ("=" * 74) -ForegroundColor DarkGray
+        Write-Host "  This clean Windows is yours to drive." -ForegroundColor Cyan
+        Write-Host ("=" * 74) -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  A pretend NFL Street Reborn 2.1 is already here, with a memory card in it:" -ForegroundColor Gray
+        Write-Host "    $old"
+        Write-Host "  So installing over it is the upgrade a real player would do." -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  An Explorer window is open on the installers. Do it yourself:" -ForegroundColor Yellow
+        Write-Host "    1. Double-click 'NFL Street Reborn Launcher Setup 3.0.0.exe'"
+        Write-Host "    2. Click through the wizard. Read the folder page; it must NOT be the 2.1 folder."
+        Write-Host "    3. On a clean Windows it pauses on WebView2 for a minute or two. It is"
+        Write-Host "       downloading about 130 MB. The bar does not move. It is not stuck."
+        Write-Host "    4. Leave 'Launch NFL Street Reborn' ticked and press Finish."
+        Write-Host "    5. Watch how long the launcher takes to appear. That is the real number."
+        Write-Host ""
+        Write-Host "  Install the Beta one too if you want to see them side by side." -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  When you are done, come back here and press Enter. Every check then runs" -ForegroundColor Yellow
+        Write-Host "  against what you actually did, and the memory card is compared byte for byte." -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "  Press Enter when you have finished installing"
+
+        $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher"
+        $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher Beta"
+        Check "you installed the stable launcher" (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) "nothing at $stableDir"
+        if (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) {
+            Check "it went to Programs, not onto the 2.1 data folder" ($stableDir -like "*\Programs\*")
+            Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
+            Check "the Visual C++ runtime shipped beside Dolphin" (Test-Path (Join-Path $stableDir "runtime\VCRUNTIME140.dll"))
+            Check "nothing was installed into the 2.1 folder" (-not (Test-Path (Join-Path $old "reborn-launcher.exe")))
+            $s = Run-Ours (Join-Path $stableDir "rebornctl.exe") "status" "status-manual.txt"
+            Check "its rebornctl runs on this clean Windows" (-not [string]::IsNullOrWhiteSpace($s))
+        }
+        if (Test-Path (Join-Path $betaDir "reborn-launcher.exe")) {
+            Check "the beta installed into its own folder" $true
+            Check "the beta carries its channel marker" ((Get-Content (Join-Path $betaDir "channel") -Raw).Trim() -eq "beta")
+        } else {
+            Say("the beta was not installed; skipping its checks")
+        }
+        Check "the memory card is byte for byte what it was" ((Test-Path $card) -and ((Get-FileHash $card -Algorithm SHA256).Hash -eq $cardHash))
+        Check "the 2.1 texture folder is untouched" (Test-Path (Join-Path $old "User\Load\Textures\GN7E69\tex1_marker.dds"))
+        Say("WebView2 now: $(WebView2Version)")
+        Check "WebView2 is present" ($null -ne (WebView2Version))
+    }
+
+    # ------------------------------------------------------------------
+    # 3. The stable installer, as an upgrade over it
+    # ------------------------------------------------------------------
+    if ($stableSetup -and -not $Manual) {
         Phase "Installing the launcher over that 2.1 install" "You should see the installer's progress window."
         $code = Run-Setup $stableSetup.FullName "install-stable.log"
         Check "stable installer exits 0 over a 2.1 install" ($code -eq 0)
@@ -183,8 +243,15 @@ try {
             Start-Sleep -Seconds $(if ($Watch) { 25 } else { 8 })
             $alive = $proc -and -not $proc.HasExited
             Check "the launcher window starts and stays up" $alive "it exited with $(if ($proc) { $proc.ExitCode } else { 'no process at all' })"
-            if ($alive -and -not $Watch) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-            if ($alive -and $Watch) { Say("leaving the launcher open so it can be looked at") }
+            # Closed either way, always. Leaving it open in watch mode meant
+            # the uninstaller could not delete a running executable, and the
+            # run reported that as a product failure when it was the test
+            # holding the file. Seen once, 2026-09-04.
+            if ($alive) {
+                if ($Watch) { Say("closing the launcher again so the uninstall can remove it") }
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
         }
 
         Say("WebView2 after stable install: $(WebView2Version)")
@@ -204,7 +271,7 @@ try {
     # ------------------------------------------------------------------
     # 4. The beta installer, side by side
     # ------------------------------------------------------------------
-    if ($betaSetup) {
+    if ($betaSetup -and -not $Manual) {
         Phase "Installing the BETA, side by side" "Its own folder, its own entry in Programs and Features, its own data."
         $code = Run-Setup $betaSetup.FullName "install-beta.log"
         Check "beta installer exits 0" ($code -eq 0)

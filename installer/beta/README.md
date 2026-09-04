@@ -71,9 +71,22 @@ integrity check, the same as a manual download from the release page.
 ## 2. The sandbox smoke test
 
 ```powershell
-.\Tools\beta-sandbox.ps1          # silent, about 90 seconds
-.\Tools\beta-sandbox.ps1 -Watch   # the same run, visible
+.\Tools\beta-sandbox.ps1           # silent, about three minutes
+.\Tools\beta-sandbox.ps1 -Watch    # the same run, visible
+.\Tools\beta-sandbox.ps1 -Manual   # you drive the wizard yourself
 ```
+
+**Manual mode** lays down the fake 2.1 install, opens Explorer on the
+installers, and stops. You double-click Setup, read the folder page, click
+through, press Finish and watch the launcher open. Press Enter in the
+console when you are done and every check runs against what you actually
+did, memory card compared byte for byte.
+
+**On a clean Windows the first install pauses for about 90 seconds on
+WebView2.** It is downloading roughly 130 MB from Microsoft and the bar
+does not move while it does. Measured, 2026-09-04: 88 seconds for the first
+install, then 16 seconds for the second, when WebView2 was already there.
+Almost every real player is on a Windows that already has it.
 
 **Watch mode exists because the silent run looks like nothing.** The
 installer is `/VERYSILENT`, so the sandbox desktop sits there while the

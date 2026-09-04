@@ -191,7 +191,7 @@ Source: "{#Redist}\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{tmp}"; \
 
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebView2Setup.exe"; Parameters: "/silent /install"; \
-  StatusMsg: "Installing Microsoft Edge WebView2, which draws the launcher's window"; \
+  StatusMsg: "Getting Microsoft Edge WebView2, which draws the launcher window. It is about 130 MB, it only happens once, and the bar will not move while it downloads."; \
   Check: not WebView2Present; Flags: waituntilterminated
 #endif
 

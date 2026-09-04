@@ -26,7 +26,10 @@ param(
     # window, each phase is announced in a console you can read, and the
     # window stays open at the end with the results on screen. Without this
     # the run is silent and looks, from the sandbox desktop, like nothing.
-    [switch]$Watch
+    [switch]$Watch,
+    # Hand the sandbox over: the scene is set, you click through the wizard
+    # yourself, and the checks run against what you did when you say so.
+    [switch]$Manual
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,11 +65,11 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 # What the sandbox runs when it logs on. -NoExit in watch mode keeps the
 # window open after the script ends, which is the difference between seeing
 # the result and seeing a window vanish.
-$logon = if ($Watch) {
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File C:\beta\scripts\sandbox-smoke.ps1 -Watch"
-} else {
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\beta\scripts\sandbox-smoke.ps1"
-}
+$flags = @()
+if ($Watch) { $flags += "-Watch" }
+if ($Manual) { $flags += "-Manual" }
+$stayOpen = if ($Watch -or $Manual) { "-NoExit " } else { "" }
+$logon = "powershell.exe -NoProfile -ExecutionPolicy Bypass ${stayOpen}-File C:\beta\scripts\sandbox-smoke.ps1 $($flags -join ' ')".Trim()
 
 # The configuration. Paths must be absolute and must exist before the sandbox
 # starts; a missing mapped folder is a refusal to start, not a warning.
@@ -101,7 +104,18 @@ Write-Host "Wrote $wsb"
 
 Start-Process -FilePath $sandbox -ArgumentList "`"$wsb`""
 Write-Host ""
-if ($Watch) {
+if ($Manual) {
+    Write-Host "Manual mode. The sandbox sets the scene and then hands it to you:" -ForegroundColor Cyan
+    Write-Host "  - a pretend 2.1 install is laid down, with a memory card in it"
+    Write-Host "  - Explorer opens on the installers"
+    Write-Host "  - you double-click Setup and click through the whole wizard"
+    Write-Host "  - on a clean Windows it pauses ~90 seconds on WebView2, downloading 130 MB"
+    Write-Host "  - you press Finish and watch the launcher open"
+    Write-Host "  - then press Enter in the console and every check runs against what you did"
+    Write-Host ""
+    Write-Host "The sandbox desktop takes ~30 seconds to appear first." -ForegroundColor Gray
+    Write-Host ""
+} elseif ($Watch) {
     Write-Host "Watch mode. Inside the sandbox you will see, in order:" -ForegroundColor Cyan
     Write-Host "  1. a console window saying what it is about to do"
     Write-Host "  2. a pretend NFL Street Reborn 2.1 laid down, with a memory card in it"
