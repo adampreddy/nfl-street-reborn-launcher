@@ -221,6 +221,20 @@ try {
         $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
         Check "stable launcher landed in Programs, not on the 2.1 data folder" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
         Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
+        Check "the Visual C++ runtime shipped beside Dolphin" (Test-Path (Join-Path $stableDir "runtime\VCRUNTIME140.dll"))
+
+        # The textures. Without these a fresh player installs and has nothing to
+        # look at, and every other check here would still have passed.
+        $tex = Join-Path $stableDir "content	extures\GN7E69"
+        $texCount = @(Get-ChildItem $tex -Recurse -File -ErrorAction SilentlyContinue).Count
+        Say("textures installed: $texCount file(s) at $tex")
+        Check "the texture tree shipped, and is not empty" ($texCount -gt 1000) "found $texCount file(s)"
+
+        # And the game image, which is the other half of a playable install.
+        $games = @(Get-ChildItem (Join-Path $stableDir "Games") -File -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Extension -in ".iso", ".rvz", ".gcm", ".ciso" })
+        Check "a game image shipped" ($games.Count -ge 1) "none in $stableDir\Games"
+
         Check "no channel marker in a stable install" (-not (Test-Path (Join-Path $stableDir "channel")))
         Check "nothing was installed into the 2.1 folder" (-not (Test-Path (Join-Path $old "reborn-launcher.exe")))
         $loc = (Get-ItemProperty $regKey -ErrorAction SilentlyContinue).InstallLocation

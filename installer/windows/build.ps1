@@ -407,7 +407,11 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 # Every produced file, not just the exe. A spanned build is setup.exe plus
 # setup-1.bin and friends, and moving only the exe leaves an installer that
 # cannot find its own data while dist looks like it has one.
-Get-ChildItem $scratch -File -Exclude "iscc.*.log" | ForEach-Object {
+# The wildcard in the path is load bearing: Get-ChildItem -Exclude against a
+# bare directory matches nothing at all, so this loop would have moved zero
+# files while reporting success. Proven on this machine: 0 seen without it, 3
+# with it.
+Get-ChildItem (Join-Path $scratch "*") -File -Exclude "iscc.*.log" | ForEach-Object {
     $target = Join-Path $dist $_.Name
     try {
         Move-Item $_.FullName $target -Force -ErrorAction Stop
@@ -448,8 +452,11 @@ Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
 $slices = @(Get-ChildItem $dist -Filter "*.bin" -ErrorAction SilentlyContinue)
 $setup = Get-ChildItem $dist -Filter "*Setup $Version*.exe" | Select-Object -First 1
 if ($span -or $slices.Count -gt 0) {
-    Write-Warning ("This build is spanned across {0} file(s), so no release manifest was written: " +
-                   "self-update fetches a single installer. Distribute the whole set by hand.") -f ($slices.Count + 1)
+    # The format expression needs its own parentheses: Write-Warning ("..") -f x
+    # binds -f as a parameter of Write-Warning, which is a runtime failure
+    # AFTER a seven minute compile has already succeeded.
+    Write-Warning (("This build is spanned across {0} file(s), so no release manifest was written: " +
+                    "self-update fetches a single installer. Distribute the whole set together.") -f ($slices.Count + 1))
 } elseif ($setup) {
     $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
     $repo = "https://github.com/adampreddy/nfl-street-reborn-launcher"
