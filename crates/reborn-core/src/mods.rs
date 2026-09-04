@@ -96,6 +96,10 @@ pub const COMPOSED_MARKER: &str = "composed.json";
 pub const ACTIVATION_FILE: &str = "activation.json";
 /// Where the installer puts content, under the install root.
 pub const SHIPPED_CONTENT_DIR: &str = "content";
+/// Written INSIDE a pristine tree in the data root, by whatever put it
+/// there deliberately. Its absence is the signal that a tree was
+/// reconstructed from a 2.1 install rather than delivered as a release.
+pub const PRISTINE_MARKER: &str = "pristine.json";
 
 /// Extensions a payload entry may have, from the ruled two-zone entry policy.
 const PAYLOAD_EXTENSIONS: &[&str] = &["dds", "png"];
@@ -1472,23 +1476,33 @@ impl ComposeRequest {
 }
 
 /// `library/textures/<gameid>/`, the read-only tree.
+/// The texture tree to compose over.
+///
+/// The one the installer shipped wins, unless the data root holds a tree
+/// that says it was put there deliberately, which means an update delivered
+/// it and it is newer.
+///
+/// The obvious rule, data root first, is WRONG, and Adam caught it: an
+/// upgrading player's data root tree is a reconstruction of their 2.1
+/// textures, made by un-applying JSGME. Preferring it would leave every
+/// upgrader on the old pack forever, never seeing a single new field, and
+/// nothing would say so. Merging the two is worse: a mix of 2.1 and 3.0
+/// files is a configuration nobody has ever run.
+///
+/// So a migrated tree is a baseline for importing someone's JSGME mods, not
+/// a source of textures that outranks the release.
 pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
     let in_data = platform
         .data_dir(DataDir::LibraryTextures)?
         .join(game.as_str());
-    if in_data.is_dir() {
+    if in_data.join(PRISTINE_MARKER).is_file() {
         return Ok(in_data);
     }
-    // Nothing in the data root, so the one the installer shipped. It lives
-    // under the INSTALL root, which the installer owns and may replace
-    // wholesale, and it is only ever read: composition hardlinks out of it
-    // rather than copying, so 2.5 GB sits on disk once.
-    //
-    // The data root wins when it has a tree, because that one was built by
-    // migrating a player's own 2.1 install and is theirs.
     if let Some(shipped) = shipped_pristine_root(platform, game) {
         return Ok(shipped);
     }
+    // No release tree anywhere. A migrated one is better than nothing, and
+    // on a development build it is the only one there is.
     Ok(in_data)
 }
 
@@ -4400,26 +4414,39 @@ mod tests {
     }
 
     #[test]
-    fn the_data_root_tree_wins_and_the_shipped_one_is_the_fallback() {
-        // A player who migrated a 2.1 install has their own pristine tree and
-        // it must not be shadowed by whatever the installer shipped. A fresh
-        // player has no such tree and gets the shipped one, read only, with no
-        // 2.5 GB copy anywhere.
-        let p = Platform::detect();
-        let g = game();
-        let in_data = p.data_dir(DataDir::LibraryTextures).unwrap().join(g.as_str());
-        let resolved = pristine_root(&p, &g).unwrap();
+    fn a_migrated_tree_never_shadows_the_one_the_release_shipped() {
+        // Adam: "but what if we overwrote some textures from 2.1". An
+        // upgrader's data root tree is their OLD pack, rebuilt by un-applying
+        // JSGME. If it won, they would never see a new field and nothing would
+        // say so. It only wins once something has marked it as delivered.
+        let dir = tempfile::tempdir().unwrap();
+        let migrated = dir.path().join("data").join("library").join("textures").join("GN7E69");
+        let shipped = dir.path().join("install").join("content").join("textures").join("GN7E69");
+        write(&migrated.join("old.dds"), b"a 2.1 texture");
+        write(&shipped.join("new.dds"), b"a 3.0 texture");
 
-        if in_data.is_dir() {
-            assert_eq!(resolved, in_data, "a tree in the data root wins");
-        } else {
-            match shipped_pristine_root(&p, &g) {
-                Some(shipped) => assert_eq!(resolved, shipped),
-                // Neither exists on a machine that has never installed: the
-                // data root path is still the answer, so the refusal names the
-                // place a player would look.
-                None => assert_eq!(resolved, in_data),
+        // The rule, applied to these two paths the way pristine_root applies it.
+        let choose = |data: &Path, ship: &Path| -> PathBuf {
+            if data.join(PRISTINE_MARKER).is_file() {
+                data.to_path_buf()
+            } else if ship.is_dir() {
+                ship.to_path_buf()
+            } else {
+                data.to_path_buf()
             }
-        }
+        };
+
+        assert_eq!(choose(&migrated, &shipped), shipped, "the release wins over a migration");
+
+        // Once an update has delivered a tree into the data root, that one is
+        // newer than anything the installer carried and takes over.
+        write(&migrated.join(PRISTINE_MARKER), br#"{"version":"3.1.0"}"#);
+        assert_eq!(choose(&migrated, &shipped), migrated, "a delivered tree wins");
+
+        // And with nothing shipped, a migrated tree is better than nothing.
+        let nowhere = dir.path().join("install").join("absent");
+        write(&migrated.join(PRISTINE_MARKER), b"x");
+        std::fs::remove_file(migrated.join(PRISTINE_MARKER)).unwrap();
+        assert_eq!(choose(&migrated, &nowhere), migrated);
     }
 }
