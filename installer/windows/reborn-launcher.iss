@@ -139,10 +139,14 @@ OutputDir={#OutDir}
 #endif
 OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}{#OfflineSuffix}
 
-; Disk spanning, passed by build.ps1 when the payload warrants it. Inno
-; requires it above 4,200,000,000 compressed bytes; below that one file is a
-; better download. The slice is the largest Inno allows, so a spanned build
-; is two or three files rather than a folder full of them.
+; Disk spanning, passed by build.ps1 when the payload warrants it.
+;
+; The documentation says the threshold is 4,200,000,000 compressed bytes. The
+; 6.2.0 compiler on this machine disagrees: it refuses at 2,100,000,000 with
+; "Disk spanning must be enabled". That measured number is DiskSliceSize, and
+; it is why build.ps1 retries on that exact message rather than trying to
+; predict the compressed size in advance. Below the limit, one file is the
+; better download.
 #ifdef Span
 DiskSpanning=yes
 DiskSliceSize=2100000000
@@ -181,15 +185,21 @@ MinVersion=10.0.17763
 UninstallDisplayName={#AppName} Launcher
 UninstallDisplayIcon={app}\{#LauncherExe}
 
-; Deliberately absent, and each for a reason:
-;   InfoBeforeFile, InfoAfterFile  2.1 showed a README page before and after.
-;                                  The launcher's own first run says what to do
-;                                  next, where it can also check it happened,
-;                                  and two extra pages of text are two extra
-;                                  clicks between a player and the game. Say the
-;                                  word and they come back; the files still
-;                                  exist beside the 2.1 script.
-;   DiskSpanning                   nothing here is delivered on floppies
+; The 2.1 README pages, restored 2026-09-04.
+;
+; I had left these out, reasoning that the launcher's own first run says what
+; to do next. Wrong on both pages. The before page is the only place a player
+; is told they need their own legally dumped USA copy of NFL Street 2, which
+; is the single thing that makes the whole install useless if they lack it,
+; and it is where BlueSwordM's Dolphin build and nfl_numbers' textures are
+; credited. Permission and attribution do not belong behind a first run the
+; player only reaches once the install has already finished.
+;
+; They live in the repository now, not on one machine's Desktop where the old
+; script pointed, for the same reason the artwork moved: no other checkout
+; could build.
+InfoBeforeFile=text\README.txt
+InfoAfterFile=text\READMEAFTER.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

@@ -308,11 +308,15 @@ if (-not $NoWebView2) {
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 not found at $iscc" }
 
-# The wizard's art. ISCC fails on a missing file anyway, but its message
-# names a line number rather than what is actually absent.
-foreach ($a in "NSR.ico", "welcome.bmp", "corner.bmp") {
-    $p = Join-Path $PSScriptRoot "art\$a"
-    if (-not (Test-Path $p)) { throw "The installer's artwork is missing: $p" }
+# Everything the wizard shows the player: the art, and the two README pages.
+# ISCC fails on a missing file anyway, but its message names a line number
+# rather than what is actually absent.
+foreach ($a in "art\NSR.ico", "art\welcome.bmp", "art\corner.bmp",
+               "text\README.txt", "text\READMEAFTER.txt") {
+    $p = Join-Path $PSScriptRoot $a
+    if (-not (Test-Path $p)) {
+        throw "The installer is missing a file the wizard shows the player: $p"
+    }
 }
 
 # Compiled into a scratch folder, then moved. Compiling straight into dist
