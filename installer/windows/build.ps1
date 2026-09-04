@@ -417,10 +417,19 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 # files while reporting success. Proven on this machine: 0 seen without it, 3
 # with it.
 Get-ChildItem (Join-Path $scratch "*") -File -Exclude "iscc.*.log" | ForEach-Object {
-    $target = Join-Path $dist $_.Name
+    # Name, path and size captured BEFORE the try, because $_ cannot be
+    # trusted inside it. After Move-Item the FileInfo re-stats a path that no
+    # longer exists and Length comes back 0, which is why every build printed
+    # "Built ... 0.0 MB" for files of any size. And inside the catch, $_ is
+    # the ErrorRecord, not the file, so $_.Name and $_.FullName were empty in
+    # the one message that exists to name the file that could not be replaced.
+    $name = $_.Name
+    $from = $_.FullName
+    $mb = $_.Length / 1MB
+    $target = Join-Path $dist $name
     try {
-        Move-Item $_.FullName $target -Force -ErrorAction Stop
-        Write-Host ("Built {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+        Move-Item $from $target -Force -ErrorAction Stop
+        Write-Host ("Built {0}  {1:N1} MB" -f $name, $mb)
     } catch {
         # A failure here used to be a warning, and the build then reported
         # success while dist still held the PREVIOUS installer. Anyone reading
@@ -435,7 +444,7 @@ Get-ChildItem (Join-Path $scratch "*") -File -Exclude "iscc.*.log" | ForEach-Obj
             "Something else holds it open: a scanner, an Explorer preview, or a copy still running."
         }
         throw ("Built {0}, but it could not replace the copy in dist. {1}`n  New build: {2}`n  Blocked by: {3}" -f `
-            $_.Name, $held, $_.FullName, $_.Exception.Message)
+            $name, $held, $from, $_.Exception.Message)
     }
 }
 # The CLI beside the installer, so dist always carries the matching build.
