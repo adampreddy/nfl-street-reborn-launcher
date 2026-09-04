@@ -138,6 +138,15 @@ OutputDir={#OutDir}
   #define OfflineSuffix ""
 #endif
 OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}{#OfflineSuffix}
+
+; Disk spanning, passed by build.ps1 when the payload warrants it. Inno
+; requires it above 4,200,000,000 compressed bytes; below that one file is a
+; better download. The slice is the largest Inno allows, so a spanned build
+; is two or three files rather than a folder full of them.
+#ifdef Span
+DiskSpanning=yes
+DiskSliceSize=2100000000
+#endif
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

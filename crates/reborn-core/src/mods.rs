@@ -94,6 +94,8 @@ pub const PAYLOAD_SUBDIR: &str = "files";
 pub const COMPOSED_MARKER: &str = "composed.json";
 /// The ordered activation list, under `mods/`.
 pub const ACTIVATION_FILE: &str = "activation.json";
+/// Where the installer puts content, under the install root.
+pub const SHIPPED_CONTENT_DIR: &str = "content";
 
 /// Extensions a payload entry may have, from the ruled two-zone entry policy.
 const PAYLOAD_EXTENSIONS: &[&str] = &["dds", "png"];
@@ -1471,9 +1473,35 @@ impl ComposeRequest {
 
 /// `library/textures/<gameid>/`, the read-only tree.
 pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
-    Ok(platform
+    let in_data = platform
         .data_dir(DataDir::LibraryTextures)?
-        .join(game.as_str()))
+        .join(game.as_str());
+    if in_data.is_dir() {
+        return Ok(in_data);
+    }
+    // Nothing in the data root, so the one the installer shipped. It lives
+    // under the INSTALL root, which the installer owns and may replace
+    // wholesale, and it is only ever read: composition hardlinks out of it
+    // rather than copying, so 2.5 GB sits on disk once.
+    //
+    // The data root wins when it has a tree, because that one was built by
+    // migrating a player's own 2.1 install and is theirs.
+    if let Some(shipped) = shipped_pristine_root(platform, game) {
+        return Ok(shipped);
+    }
+    Ok(in_data)
+}
+
+/// The texture tree the installer put beside the launcher, if it is there.
+pub fn shipped_pristine_root(platform: &Platform, game: &GameId) -> Option<PathBuf> {
+    let candidate = platform
+        .paths
+        .install_root()
+        .ok()?
+        .join(SHIPPED_CONTENT_DIR)
+        .join("textures")
+        .join(game.as_str());
+    candidate.is_dir().then_some(candidate)
 }
 
 /// `mods/active/<gameid>/`, the composed tree Dolphin loads.
@@ -4369,5 +4397,29 @@ mod tests {
         );
         assert!(!theirs.join(BALL).exists(), "and nothing of ours may appear in it");
         assert!(report.explain().contains("left alone"), "{}", report.explain());
+    }
+
+    #[test]
+    fn the_data_root_tree_wins_and_the_shipped_one_is_the_fallback() {
+        // A player who migrated a 2.1 install has their own pristine tree and
+        // it must not be shadowed by whatever the installer shipped. A fresh
+        // player has no such tree and gets the shipped one, read only, with no
+        // 2.5 GB copy anywhere.
+        let p = Platform::detect();
+        let g = game();
+        let in_data = p.data_dir(DataDir::LibraryTextures).unwrap().join(g.as_str());
+        let resolved = pristine_root(&p, &g).unwrap();
+
+        if in_data.is_dir() {
+            assert_eq!(resolved, in_data, "a tree in the data root wins");
+        } else {
+            match shipped_pristine_root(&p, &g) {
+                Some(shipped) => assert_eq!(resolved, shipped),
+                // Neither exists on a machine that has never installed: the
+                // data root path is still the answer, so the refusal names the
+                // place a player would look.
+                None => assert_eq!(resolved, in_data),
+            }
+        }
     }
 }

@@ -19,6 +19,14 @@ param(
     # Game images. However many are given, all install. There is no fixed list
     # and no cap.
     [string[]]$GameImages = @(),
+    # The pristine texture tree, and the build it is for. This is what a
+    # fresh player gets: without it they install and have no textures at all,
+    # because the only other way one exists is by migrating a 2.1 install.
+    #
+    # Point it at the AUTHORITATIVE folder on the day, since the pack changes
+    # constantly. It is copied as it is; nothing is filtered.
+    [string]$Textures = "",
+    [string]$TexturesGameId = "GN7E69",
     # Leave the WebView2 bootstrapper out. The installer then only warns when
     # the runtime is missing, instead of installing it.
     [switch]$NoWebView2,
@@ -204,6 +212,32 @@ if ($Runtime -and (Test-Path $Runtime)) {
 }
 
 # -----------------------------------------------------------------------------
+# The texture tree
+# -----------------------------------------------------------------------------
+#
+# Into the INSTALL root, under content\textures\<game id>. The launcher reads
+# its data root first, so a player who migrated their own 2.1 install keeps
+# theirs, and falls back to this. Composition hardlinks out of whichever one
+# it finds, so this is never copied again.
+if ($Textures) {
+    if (-not (Test-Path $Textures -PathType Container)) {
+        throw "No texture folder at $Textures. Nothing was built."
+    }
+    $texDest = Join-Path $payload "content\textures\$TexturesGameId"
+    New-Item -ItemType Directory -Force $texDest | Out-Null
+    Write-Host "Staging textures from $Textures"
+    Copy-Item (Join-Path $Textures "*") $texDest -Recurse -Force
+    $texFiles = @(Get-ChildItem $texDest -Recurse -File)
+    if ($texFiles.Count -eq 0) {
+        throw "$Textures is empty. A player would install and have no textures. Nothing was built."
+    }
+    Write-Host ("Textures: {0:N0} file(s), {1:N1} GB" -f `
+        $texFiles.Count, (($texFiles | Measure-Object Length -Sum).Sum / 1GB))
+} else {
+    Write-Warning "No -Textures given. A player with no 2.1 install to migrate will have no textures."
+}
+
+# -----------------------------------------------------------------------------
 # Game images
 # -----------------------------------------------------------------------------
 
@@ -297,10 +331,22 @@ Get-ChildItem $outRoot -Directory -ErrorAction SilentlyContinue |
 $scratch = Join-Path $outRoot (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Force $scratch | Out-Null
 
+# Disk spanning, decided from the payload rather than remembered.
+#
+# Inno REQUIRES it above 4,200,000,000 compressed bytes. Below that a single
+# setup.exe is legal and is a better download: one link, one file, resumable
+# over HTTP. So it goes on only when the payload is close enough that the
+# compressed result might cross the line. 3.5 GB raw is the trigger, which
+# leaves room for content that does not compress, and the ISO barely does.
+$payloadBytes = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
+$span = $payloadBytes -gt 3.5GB
+Write-Host ("Payload {0:N1} GB, disk spanning {1}" -f ($payloadBytes / 1GB), $(if ($span) { "ON" } else { "off, a single file" }))
+
 $isccArgs = @(
     (Join-Path $PSScriptRoot "reborn-launcher.iss"),
     "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
 )
+if ($span) { $isccArgs += "/DSpan" }
 # A different file name, so the online and offline builds can sit in dist
 # together rather than one silently replacing the other.
 if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
