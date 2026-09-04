@@ -371,7 +371,12 @@ $errLog = Join-Path $scratch "iscc.err.log"
 $attempt = 0
 while ($true) {
     $attempt++
-    $run = Start-Process -FilePath $iscc -ArgumentList $isccArgs -Wait -PassThru -NoNewWindow `
+    # Quoted here, because Start-Process joins the list with spaces and
+    # quotes nothing. Every path in it has a space.
+    $quoted = $isccArgs | ForEach-Object {
+        if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+    }
+    $run = Start-Process -FilePath $iscc -ArgumentList $quoted -Wait -PassThru -NoNewWindow `
         -RedirectStandardOutput $outLog -RedirectStandardError $errLog
     $log = @()
     foreach ($f in $outLog, $errLog) {
@@ -383,7 +388,12 @@ while ($true) {
 
     # Too big for one file. Inno says so plainly; turn spanning on and go
     # again rather than making anyone guess the threshold.
-    if (-not $span -and ($log -match "DiskSpanning" -or $log -match "too large" -or $log -match "4,200,000,000")) {
+    # The compiler's own words, quoted from a real failure:
+    #   "Disk spanning must be enabled in order to create an installation
+    #    larger than 2100000000 bytes in size."
+    # Note 2.1 GB, not the 4.2 GB the documentation states. Matching the real
+    # message rather than a remembered number is the only way this stays true.
+    if (-not $span -and ($log -match "Disk spanning must be enabled")) {
         Write-Host "The output is too large for a single file. Turning disk spanning on."
         $span = $true
         $isccArgs += "/DSpan"
