@@ -113,12 +113,17 @@ impl Paths for RealPaths {
             let base = RealPaths::env_path("LOCALAPPDATA")
                 .map(|p| p.join("Programs"))
                 .ok_or(Error::NoHomeDirectory)?;
-            Ok(base.join(format!("{PRODUCT} Launcher{}", self.channel.suffix())))
+            // The product's name, not the product plus "Launcher". Adam,
+            // reading it on the wizard's folder page: only the app itself
+            // should say Launcher. Under LOCALAPPDATA\Programs, which is a
+            // different root from the APPDATA folder 2.1 owns, so dropping
+            // the word cannot collide with it.
+            Ok(base.join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "macos")]
         {
             Ok(PathBuf::from("/Applications")
-                .join(format!("{PRODUCT} Launcher{}.app", self.channel.suffix())))
+                .join(format!("{PRODUCT}{}.app", self.channel.suffix())))
         }
         #[cfg(target_os = "linux")]
         {

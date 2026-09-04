@@ -187,8 +187,8 @@ try {
         Write-Host ""
         Read-Host "  Press Enter when you have finished installing"
 
-        $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher"
-        $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher Beta"
+        $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
+        $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Beta"
         Check "you installed the stable launcher" (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) "nothing at $stableDir"
         if (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) {
             Check "it went to Programs, not onto the 2.1 data folder" ($stableDir -like "*\Programs\*")
@@ -218,13 +218,13 @@ try {
         $code = Run-Setup $stableSetup.FullName "install-stable.log"
         Check "stable installer exits 0 over a 2.1 install" ($code -eq 0)
 
-        $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher"
+        $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
         Check "stable launcher landed in Programs, not on the 2.1 data folder" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
         Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
         Check "no channel marker in a stable install" (-not (Test-Path (Join-Path $stableDir "channel")))
         Check "nothing was installed into the 2.1 folder" (-not (Test-Path (Join-Path $old "reborn-launcher.exe")))
         $loc = (Get-ItemProperty $regKey -ErrorAction SilentlyContinue).InstallLocation
-        Check "the uninstall entry now points at Programs (was the 2.1 data folder)" ($loc -like "*\Programs\NFL Street Reborn Launcher*")
+        Check "the uninstall entry now points at Programs (was the 2.1 data folder)" ($loc -like "*\Programs\NFL Street Reborn*")
         Check "the memory card is byte for byte what it was" ((Test-Path $card) -and ((Get-FileHash $card -Algorithm SHA256).Hash -eq $cardHash))
 
         $cli = Join-Path $stableDir "rebornctl.exe"
@@ -275,7 +275,7 @@ try {
         Phase "Installing the BETA, side by side" "Its own folder, its own entry in Programs and Features, its own data."
         $code = Run-Setup $betaSetup.FullName "install-beta.log"
         Check "beta installer exits 0" ($code -eq 0)
-        $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Launcher Beta"
+        $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Beta"
         Check "beta launcher landed in its own folder" (Test-Path (Join-Path $betaDir "reborn-launcher.exe"))
         $marker = Join-Path $betaDir "channel"
         Check "beta carries the channel marker saying beta" ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq "beta"))

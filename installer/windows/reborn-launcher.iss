@@ -69,7 +69,7 @@
 #if Channel == "beta"
   #define AppId   "{{7C3E9A5D-2B41-4F0E-9D6A-B8E1F2C4A9B3}"
   #define AppName "NFL Street Reborn Beta"
-  #define DirName "NFL Street Reborn Launcher Beta"
+  #define DirName "NFL Street Reborn Beta"
 #elif Channel == "stable"
   ; The 2.1 AppId is kept ON PURPOSE. It is how an upgrade recognizes an
   ; existing install instead of leaving two entries in Programs and Features.
@@ -77,7 +77,7 @@
   ; never be separated.
   #define AppId   "{{DCD6B9B9-11DE-4AC0-A7F5-256E7AC55A7E}"
   #define AppName "NFL Street Reborn"
-  #define DirName "NFL Street Reborn Launcher"
+  #define DirName "NFL Street Reborn"
 #else
   #error Channel must be "stable" or "beta"
 #endif
@@ -104,6 +104,11 @@ AppSupportURL={#AppURL}
 AppUpdatesURL={#AppURL}
 
 ; Program files, NOT the data root. See note 1 at the top.
+;
+; The folder is the product's name with no "Launcher" on the end: this is
+; under LOCALAPPDATA\Programs, a different root from the APPDATA folder 2.1
+; owns, so the plain name cannot collide with it. The application is the
+; thing that carries the word, not its folder.
 DefaultDirName={localappdata}\Programs\{#DirName}
 DefaultGroupName={#AppName}
 
@@ -237,7 +242,9 @@ Name: "{group}\{cm:UninstallProgram,{#AppName} Launcher}"; Filename: "{uninstall
 ; end up running the emulator directly and wondering why nothing is configured.
 
 [Run]
-Filename: "{app}\{#LauncherExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; \
+; Named in full on the Finish page: what is about to open is the launcher,
+; not the game, and a player who ticks this should know which one they get.
+Filename: "{app}\{#LauncherExe}"; Description: "{cm:LaunchProgram,{#AppName} Launcher}"; \
   Flags: nowait postinstall skipifsilent
 
 ; NO [UninstallDelete] SECTION. See note 3 at the top. Inno removes what it

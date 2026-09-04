@@ -15,7 +15,7 @@ the executable containing `beta`. The launcher reads it at start and appends
 
 | | Stable | Beta |
 |---|---|---|
-| Program files | `%LOCALAPPDATA%\Programs\NFL Street Reborn Launcher` | `...\NFL Street Reborn Launcher Beta` |
+| Program files | `%LOCALAPPDATA%\Programs\NFL Street Reborn` | `...\NFL Street Reborn Beta` |
 | Data root | `%APPDATA%\NFL Street Reborn Launcher` | `%APPDATA%\NFL Street Reborn Launcher Beta` |
 | Cache | `%LOCALAPPDATA%\NFL Street Reborn\cache` | `%LOCALAPPDATA%\NFL Street Reborn Beta\cache` |
 | Uninstall entry | 2.1's AppId, `{DCD6B9B9-...}` | its own, `{7C3E9A5D-...}` |
