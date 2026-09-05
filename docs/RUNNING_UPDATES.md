@@ -12,11 +12,31 @@ launcher will do once wired.
 
 ## 0. Build the tool
 
+From inside the repository, not from your home folder: `cargo` finds the
+workspace by the directory it is run in.
+
 ```
+cd "C:\Users\Adam\Desktop\Reborn Installer\NFL Street Reborn Launcher"
 cargo build --release -p reborn-cli
 ```
 
-That produces `target\release\rebornctl.exe`. Everything below is that exe.
+That produces `target\release\rebornctl.exe`. Every `rebornctl` below means
+that file, so either run the commands from the repository folder as
+`target\release\rebornctl.exe ...`, or use its full path:
+
+```
+"C:\Users\Adam\Desktop\Reborn Installer\NFL Street Reborn Launcher\target\release\rebornctl.exe"
+```
+
+Check it is the right build before anything else:
+
+```
+target\release\rebornctl.exe publish --help
+```
+
+If that prints the three verbs (keygen, component, release) the tool is
+current. `installer\windows\build.ps1` also builds this exe, but a copy from
+before the publisher landed will not have them.
 
 ## 1. Generate the keys. Once, ever.
 
