@@ -60,9 +60,17 @@ function Say($message) {
     Add-Content $log $line
     Write-Host $line
 }
-function Check($what, $ok) {
+function Check($what, $ok, $detail) {
+    # $detail was missing from this signature while six call sites passed one.
+    # PowerShell puts an extra positional argument into $args rather than
+    # failing, and nothing here read $args, so every one of those diagnostics
+    # was discarded. A failing run logged the name of the check and no reason,
+    # which is the moment the reason is worth the most.
     [void]$results.Add([pscustomobject]@{ ok = [bool]$ok; check = $what })
     Say(("[{0}] {1}" -f $(if ($ok) { "PASS" } else { "FAIL" }), $what))
+    if (-not $ok -and -not [string]::IsNullOrWhiteSpace($detail)) {
+        Say("       why: $detail")
+    }
 }
 function Run-Setup($exe, $logName, $extra = @()) {
     # /SILENT draws the progress window; /VERYSILENT draws nothing at all.
@@ -215,7 +223,10 @@ try {
     # ------------------------------------------------------------------
     if ($stableSetup -and -not $Manual) {
         Phase "Installing the launcher over that 2.1 install" "You should see the installer's progress window."
-        $code = Run-Setup $stableSetup.FullName "install-stable.log"
+        # /TASKS asks for all three shortcuts. Two of them are unchecked by
+        # default in the wizard, so a plain silent install would create
+        # neither and the checks below would be testing nothing.
+        $code = Run-Setup $stableSetup.FullName "install-stable.log" @("/TASKS=`"desktopicon,gameicon,foldericon`"")
         Check "stable installer exits 0 over a 2.1 install" ($code -eq 0)
 
         $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
@@ -238,6 +249,48 @@ try {
         Check "a game image shipped" ($games.Count -ge 1) "none in $stableDir\Games"
 
         Check "no channel marker in a stable install" (-not (Test-Path (Join-Path $stableDir "channel")))
+        # ------------------------------------------------------------------
+        # The three shortcuts.
+        #
+        # Untested until now, which is why they are here: they are what a
+        # player actually clicks, and every one of them must run the LAUNCHER
+        # with a switch. A shortcut pointing straight at Dolphin would boot
+        # with no mods composed, no configuration written and no result
+        # collected, and it would look like it worked.
+        #
+        # Read through WScript.Shell because a .lnk is a binary structure; its
+        # target and arguments cannot be checked by looking at the file name.
+        # ------------------------------------------------------------------
+        $shell = New-Object -ComObject WScript.Shell
+        $desktop = [Environment]::GetFolderPath("Desktop")
+        $launcherExe = Join-Path $stableDir "reborn-launcher.exe"
+
+        $wanted = @(
+            @{ File = "NFL Street Reborn Launcher.lnk"; Args = "";         What = "the launcher" }
+            @{ File = "Play NFL Street Reborn.lnk";     Args = "--play";   What = "the game directly" }
+            @{ File = "NFL Street Reborn files.lnk";    Args = "--folder"; What = "the install folder" }
+        )
+        foreach ($w in $wanted) {
+            $lnk = Join-Path $desktop $w.File
+            if (-not (Test-Path $lnk)) {
+                Check ("desktop shortcut for {0} exists" -f $w.What) $false "no $lnk"
+                continue
+            }
+            Check ("desktop shortcut for {0} exists" -f $w.What) $true
+            $sc = $shell.CreateShortcut($lnk)
+            Check ("that shortcut runs the launcher, not Dolphin, for {0}" -f $w.What) `
+                ($sc.TargetPath -eq $launcherExe) ("points at " + $sc.TargetPath)
+            Check ("that shortcut passes '{0}'" -f $(if ($w.Args) { $w.Args } else { "no switch" })) `
+                ($sc.Arguments.Trim() -eq $w.Args) ("arguments were '" + $sc.Arguments + "'")
+        }
+
+        # The Start menu gets all three plus the uninstaller, whatever was
+        # ticked on the desktop.
+        $group = Join-Path ([Environment]::GetFolderPath("Programs")) "NFL Street Reborn"
+        $groupLinks = @(Get-ChildItem $group -Filter *.lnk -ErrorAction SilentlyContinue)
+        Check "the Start menu group holds all four entries" ($groupLinks.Count -ge 4) `
+            ("found {0} in {1}" -f $groupLinks.Count, $group)
+
         Check "nothing was installed into the 2.1 folder" (-not (Test-Path (Join-Path $old "reborn-launcher.exe")))
         $loc = (Get-ItemProperty $regKey -ErrorAction SilentlyContinue).InstallLocation
         Check "the uninstall entry now points at Programs (was the 2.1 data folder)" ($loc -like "*\Programs\NFL Street Reborn*")
@@ -280,6 +333,12 @@ try {
         $code = Uninstall-Silently $stableDir
         Check "stable uninstaller ran" ($code -eq 0)
         Check "uninstall removed the launcher exe" (-not (Test-Path (Join-Path $stableDir "reborn-launcher.exe")))
+        # A shortcut left behind after uninstall points at nothing and is the
+        # kind of litter that makes people think the uninstaller failed.
+        $leftover = @($wanted | Where-Object { Test-Path (Join-Path $desktop $_.File) })
+        Check "uninstall removed the desktop shortcuts" ($leftover.Count -eq 0) `
+            ("still on the desktop: " + (($leftover | ForEach-Object { $_.File }) -join ", "))
+
         Check "uninstall left the memory card alone" ((Test-Path $card) -and ((Get-FileHash $card -Algorithm SHA256).Hash -eq $cardHash))
         Check "uninstall left the 2.1 texture folder alone" (Test-Path (Join-Path $old "User\Load\Textures\GN7E69\tex1_marker.dds"))
     }
