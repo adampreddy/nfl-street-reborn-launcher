@@ -48,3 +48,6 @@ Thumbs.db
 # Rust
 /target/
 **/*.rs.bk
+
+# Signing keys from rebornctl publish keygen. Never in the repository.
+*.key
