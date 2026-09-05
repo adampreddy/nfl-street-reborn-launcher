@@ -69,6 +69,11 @@ use reborn_core::stats::{dolphin_capture_dir, EntryState, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
+/// The publisher's verbs. Its own file because it is the one part of this
+/// binary that holds a signing key in memory, and that is worth being able to
+/// read in isolation.
+mod publish;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "rebornctl",
@@ -89,6 +94,12 @@ enum Command {
     Update {
         #[command(subcommand)]
         what: UpdateCommand,
+    },
+
+    /// Publish content: keys, component manifests and blobs, and a signed release.
+    Publish {
+        #[command(subcommand)]
+        what: publish::PublishCommand,
     },
 
     /// Show what migrating a 2.1 install would do. Copies nothing without --apply.
@@ -293,6 +304,28 @@ enum UpdateCommand {
         #[arg(long)]
         source: Option<String>,
     },
+    /// Update one content component from a signed origin: plan, fetch, verify,
+    /// and swap it live. Without --apply, only the plan is printed.
+    Content {
+        /// The origin base URL, the directory holding release.json.
+        #[arg(long)]
+        origin: String,
+        /// runtime, offline-content, online-content, textures, or mods.
+        #[arg(long)]
+        component: String,
+        /// A public key to trust for THIS run, as 64 hex characters. For
+        /// proving a release before its key is compiled into a launcher. A
+        /// shipped launcher trusts only the keys built into it.
+        #[arg(long)]
+        trust: Option<String>,
+        /// Use this data root instead of the real one. For tests: a promotion
+        /// into the real root is a real update.
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// Fetch and swap. Without this, nothing is downloaded.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -465,6 +498,20 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::Update { what } => match what {
             UpdateCommand::Check { source } => update_check(&platform, source.as_deref(), false),
             UpdateCommand::Download { source } => update_check(&platform, source.as_deref(), true),
+            UpdateCommand::Content {
+                origin,
+                component,
+                trust,
+                data_root,
+                apply,
+            } => update_content(
+                &platform,
+                &origin,
+                &component,
+                trust.as_deref(),
+                data_root.as_deref(),
+                apply,
+            ),
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
@@ -581,6 +628,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         ),
         Command::Music => music(&platform),
         Command::Content { apply } => content(&platform, apply),
+        Command::Publish { what } => publish::run(what),
     }
 }
 
@@ -4045,6 +4093,194 @@ fn music(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
 // ---------------------------------------------------------------------------
 
 /// What is installed, and anything the last run left half done.
+/// Update one content component from a signed origin.
+///
+/// The same six steps the launcher takes, printed one at a time: open the
+/// signed release, fetch the pinned manifest, plan against what is on disk,
+/// fetch what differs, hash the staged set again, swap. Every step that can
+/// refuse says why and what remains safe, and nothing before `--apply` writes.
+fn update_content(
+    platform: &Platform,
+    origin_url: &str,
+    component: &str,
+    trust: Option<&str>,
+    data_root: Option<&Path>,
+    apply: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::content::{FetchState, PlanOutcome, Promoted, StagedVerdict};
+    use reborn_core::origin::Origin;
+    use reborn_core::signing::{decode_public_key, Ed25519Verifier};
+
+    let Some(id) = ComponentId::parse(component) else {
+        eprintln!("--component {component:?} is not one of the seven.");
+        return Ok(misuse());
+    };
+    // Which data directory the manifest must install into. The check is what
+    // stops a `runtime` manifest writing into `saves`, so it is derived here
+    // from the component identity and never taken from the manifest.
+    let expected_root = match id {
+        ComponentId::Runtime => DataDir::Runtime,
+        ComponentId::OfflineContent => DataDir::LibraryOffline,
+        ComponentId::OnlineContent => DataDir::LibraryOnline,
+        ComponentId::Textures => DataDir::LibraryTextures,
+        ComponentId::Mods => DataDir::ModsPackages,
+        ComponentId::Launcher | ComponentId::ControllerDb => {
+            println!("{component} is not updated this way. The launcher updates through its");
+            println!("installer (rebornctl update check), and controller-db has no artifact yet.");
+            return Ok(PROBLEM);
+        }
+    };
+
+    let verifier = match trust {
+        Some(hex) => match decode_public_key(hex) {
+            Some(key) => Ed25519Verifier::with_keys(&[key])?,
+            None => {
+                println!("--trust is not a public key: expected 64 hex characters.");
+                return Ok(PROBLEM);
+            }
+        },
+        None => Ed25519Verifier::embedded(),
+    };
+    if !verifier.has_trust_anchor() {
+        println!("No publisher key is compiled into this build, so no release can be opened");
+        println!("and nothing was fetched. Pass --trust <hex> to prove a release with a key");
+        println!("that is not shipped yet.");
+        return Ok(PROBLEM);
+    }
+
+    let origin = Origin::new(origin_url);
+    println!("Origin        {}", origin.base());
+    let fetched = origin.fetch_release(&verifier)?;
+    let release = fetched.trusted.release();
+    println!(
+        "Release       {} sequence {}, signature verified over {} bytes",
+        release.version,
+        release.sequence,
+        thousands(fetched.bytes.len() as u64)
+    );
+    let Some(pinned) = release.components.get(component) else {
+        let names: Vec<&str> = release.components.keys().map(String::as_str).collect();
+        println!("The release does not carry {component}. It carries: {}.", names.join(", "));
+        return Ok(PROBLEM);
+    };
+    let manifest_bytes = origin.fetch_component(&pinned.url)?;
+
+    let root_owned = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    let service = ContentService::new(platform, &root_owned);
+    println!("Data root     {}", root_owned.display());
+    // Without this record a rebuilt soundtrack and a corrupted download look
+    // the same: both are "not the shipped hash".
+    let state_path = reborn_core::music::music_root(&root_owned).join("state.json");
+    let rebuilds = reborn_core::library::RebuildState::load(&state_path)?;
+
+    let plan = match service.plan(&fetched.trusted, component, &manifest_bytes, expected_root, &rebuilds)? {
+        PlanOutcome::UpToDate { version } => {
+            println!();
+            println!("Up to date: {component} {version}, and every file checks out.");
+            return Ok(OK);
+        }
+        PlanOutcome::Refused(r) => {
+            println!();
+            println!("Refused: {}", r.message());
+            return Ok(PROBLEM);
+        }
+        PlanOutcome::Update(plan) => plan,
+    };
+
+    println!();
+    match &plan.from {
+        Some(v) => println!("Installed     {} sequence {}", v.version, v.sequence),
+        None => println!("Installed     nothing"),
+    }
+    println!("Offered       {} sequence {}", plan.manifest.version, plan.manifest.sequence);
+    println!(
+        "Fetch         {} file(s), {} bytes",
+        thousands(plan.fetches.len() as u64),
+        thousands(plan.download_bytes())
+    );
+    println!("Already right {} file(s), not touched", thousands(plan.already_present.len() as u64));
+    if !plan.preserved.is_empty() {
+        println!(
+            "Kept as yours {} file(s) you rebuilt, never fetched over",
+            thousands(plan.preserved.len() as u64)
+        );
+    }
+    println!("Retained      {} bytes of replaced files, so this can be rolled back", thousands(plan.retained_bytes));
+    for f in plan.fetches.iter().take(12) {
+        println!("  {:<8} {}  ({} bytes)", format!("{:?}", f.reason).to_lowercase(), f.path, thousands(f.bytes));
+    }
+    if plan.fetches.len() > 12 {
+        println!("  ... and {} more", thousands((plan.fetches.len() - 12) as u64));
+    }
+
+    if !apply {
+        println!();
+        println!("Nothing was downloaded. Re-run with --apply to fetch and swap.");
+        return Ok(OK);
+    }
+
+    println!();
+    let report = service.download(&plan, &origin)?;
+    let staged = report.results.values().filter(|s| matches!(s, FetchState::Staged)).count();
+    println!("Downloaded    {} file(s) staged and hashed", thousands(staged as u64));
+    if !report.is_complete() {
+        let incomplete = report.incomplete();
+        let corrupt = report.corrupt();
+        println!(
+            "Not complete: {} incomplete (kept, the next run resumes them), {} corrupt (deleted,",
+            incomplete.len(),
+            corrupt.len()
+        );
+        println!("the next run fetches them again). Nothing was swapped; the live install is as it was.");
+        for p in incomplete.iter().chain(corrupt.iter()).take(8) {
+            println!("  {p}");
+        }
+        return Ok(PROBLEM);
+    }
+    match service.verify_staged(&plan)? {
+        StagedVerdict::Complete => println!("Verified      the staged set hashes to the manifest, on disk, now"),
+        StagedVerdict::NotReady { missing, wrong } => {
+            println!(
+                "Staged set is not ready: {} missing, {} wrong. Nothing was swapped.",
+                missing.len(),
+                wrong.len()
+            );
+            return Ok(PROBLEM);
+        }
+    }
+    match service.promote(&plan)? {
+        Promoted::Applied(r) => {
+            println!(
+                "Live          {} {}: {} file(s) swapped in, {} kept as yours",
+                r.component,
+                r.version,
+                thousands(r.promoted.len() as u64),
+                thousands(r.preserved.len() as u64)
+            );
+            if let Some(p) = r.previous {
+                println!("Rollback to   {} sequence {} is available", p.version, p.sequence);
+            }
+            Ok(OK)
+        }
+        Promoted::Refused(r) => {
+            println!("Not swapped: {}", r.message());
+            Ok(PROBLEM)
+        }
+        Promoted::RolledBack { reason, restored, .. } => {
+            println!("The swap failed part way and was reversed: {reason}");
+            println!(
+                "{} file(s) put back; the previous version is live and the staged bytes are kept,",
+                restored.len()
+            );
+            println!("so a retry costs nothing over the network.");
+            Ok(PROBLEM)
+        }
+    }
+}
+
 fn content(platform: &Platform, apply: bool) -> reborn_core::Result<std::process::ExitCode> {
     let service = ContentService::for_platform(platform)?;
     let journal_path = service.layout().journal_path();

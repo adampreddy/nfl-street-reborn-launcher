@@ -99,6 +99,40 @@ fn from_manifest(e: ManifestError) -> Error {
 /// exists so that a plan built by hand, or a manifest that changed underneath a
 /// long-running operation, still cannot make the launcher write outside the
 /// component's install root. Every write in this module goes through here.
+/// Whether a manifest's install root is the one the caller expected.
+///
+/// Exact equality for every data directory but one. `textures` installs to
+/// `library/textures/<game id>`, one directory below [`DataDir::LibraryTextures`],
+/// because two game ids sharing a root would overwrite each other mostly
+/// invisibly (2,252 of FR4N31's files are byte-identical to GN7E69's). The
+/// publisher enforces exactly that shape in `inventory::check_install_root`;
+/// this is the same rule from the client's side, so the two halves agree.
+/// Before this, the client demanded equality and no textures update could
+/// ever be planned.
+fn install_root_matches(expected: DataDir, install_root: &str) -> bool {
+    let base = expected.relative();
+    if install_root == base {
+        return expected != DataDir::LibraryTextures;
+    }
+    if expected != DataDir::LibraryTextures {
+        return false;
+    }
+    match install_root.strip_prefix(base).and_then(|rest| rest.strip_prefix('/')) {
+        Some(game_id) => !game_id.is_empty() && !game_id.contains(['/', '\\']),
+        None => false,
+    }
+}
+
+/// The shape a refusal names as expected, so the message says
+/// `library/textures/<game id>` rather than a bare `library/textures` that the
+/// client would also refuse.
+fn expected_shape(expected: DataDir) -> String {
+    match expected {
+        DataDir::LibraryTextures => format!("{}/<game id>", expected.relative()),
+        other => other.relative().to_string(),
+    }
+}
+
 fn resolve_under(root: &Path, relative: &str) -> Result<PathBuf> {
     if relative.starts_with('/') || relative.starts_with('\\') || relative.contains(':') {
         return Err(refuse(format!(
@@ -1088,17 +1122,12 @@ impl<'a> ContentService<'a> {
         // anything else looks at the contents.
         let component = release.accept_component(component_name, manifest_bytes)?;
 
-        if let Err(e) = component.check_install_root(expected_root.relative()) {
-            return match e {
-                ManifestError::WrongInstallRoot { found, expected } => {
-                    Ok(PlanOutcome::Refused(PlanRefusal::WrongInstallRoot {
-                        component: component_name.to_string(),
-                        found,
-                        expected,
-                    }))
-                }
-                other => Err(from_manifest(other)),
-            };
+        if !install_root_matches(expected_root, &component.install_root) {
+            return Ok(PlanOutcome::Refused(PlanRefusal::WrongInstallRoot {
+                component: component_name.to_string(),
+                found: component.install_root.clone(),
+                expected: expected_shape(expected_root),
+            }));
         }
 
         let offenders = component.traversal_offenders();
@@ -2878,6 +2907,85 @@ mod tests {
                 assert_eq!(expected, "saves");
             }
             other => panic!("expected an install root refusal, got {other:?}"),
+        }
+    }
+
+    /// A textures manifest rooted one directory below `library/textures`,
+    /// which is the only shape the publisher will emit for it.
+    fn textures_release(install_root: &str) -> (Vec<u8>, TrustedRelease) {
+        let component = Component {
+            schema: COMPONENT_SCHEMA.to_string(),
+            component: "textures".to_string(),
+            version: "1.0.1".to_string(),
+            sequence: 3,
+            install_root: install_root.to_string(),
+            customizable: false,
+            files: vec![file_of("tex1_128x128_m_ffc5151a141db330_14.dds", b"dds")],
+        };
+        let bytes = serde_json::to_vec(&component).expect("encodes");
+        let pin = Sha256Hex::from_bytes(&bytes);
+        let json = format!(
+            r#"{{"schema":"nsr.release.v1","version":"2.4.0","sequence":12,
+                 "components":{{"textures":
+                   {{"url":"components/textures-1.0.1.json","sha256":"{pin}"}}}}}}"#
+        );
+        let release = TrustedRelease::open(&FixedSignature(b"good"), json.as_bytes(), b"good")
+            .expect("opens");
+        (bytes, release)
+    }
+
+    #[test]
+    fn a_textures_manifest_rooted_at_its_game_id_is_planned_and_any_other_shape_is_refused() {
+        // The publisher refuses to root textures anywhere but
+        // library/textures/<game id>. Until this test the client demanded
+        // exact equality with library/textures, so the two halves could never
+        // agree and no textures update was plannable at all.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+
+        let (bytes, release) = textures_release("library/textures/GN7E69");
+        match service
+            .plan(&release, "textures", &bytes, DataDir::LibraryTextures, &RebuildState::default())
+            .expect("plan")
+        {
+            PlanOutcome::Update(plan) => {
+                assert_eq!(plan.fetches.len(), 1, "one absent file to fetch");
+                assert_eq!(plan.manifest.install_root, "library/textures/GN7E69");
+            }
+            other => panic!("expected an update plan, got {other:?}"),
+        }
+
+        // The bare data directory is not a textures root: two game ids would
+        // share it and overwrite each other.
+        for wrong in ["library/textures", "library/textures/GN7E69/sub", "library/textures/"] {
+            let (bytes, release) = textures_release(wrong);
+            match service
+                .plan(&release, "textures", &bytes, DataDir::LibraryTextures, &RebuildState::default())
+                .expect("plan")
+            {
+                PlanOutcome::Refused(PlanRefusal::WrongInstallRoot { found, expected, .. }) => {
+                    assert_eq!(found, wrong);
+                    assert_eq!(expected, "library/textures/<game id>", "the refusal names the shape");
+                }
+                other => panic!("{wrong:?}: expected a root refusal, got {other:?}"),
+            }
+        }
+
+        // And the game-id shape is not accepted for a component that does
+        // not take one: offline-content still needs exact equality.
+        let bytes = manifest("2.4.0", 8, true, vec![file_of("a.dat", b"x")]);
+        let mut wrong: Component = serde_json::from_slice(&bytes).expect("parses");
+        wrong.install_root = "library/offline/extra".to_string();
+        let wrong_bytes = serde_json::to_vec(&wrong).expect("encodes");
+        match service
+            .plan(&signed(&wrong_bytes, 12), "offline-content", &wrong_bytes, DataDir::LibraryOffline, &RebuildState::default())
+            .expect("plan")
+        {
+            PlanOutcome::Refused(PlanRefusal::WrongInstallRoot { expected, .. }) => {
+                assert_eq!(expected, "library/offline");
+            }
+            other => panic!("expected a root refusal for offline-content, got {other:?}"),
         }
     }
 
