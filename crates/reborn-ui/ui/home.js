@@ -58,6 +58,12 @@ async function play() {
       preset: preset(),
       fullscreen: true,
       userDir: get("userDir"),
+      // Required by the command, and its absence made Play fail outright with
+      // "command launch missing required key modsDisabled". A per-launch
+      // override only: false means launch with whatever mods are active, which
+      // is what Play has always meant. Turning mods off lives on the mods page
+      // and in recovery, not here.
+      modsDisabled: false,
     });
   } catch (e) {
     problem = reason(e);

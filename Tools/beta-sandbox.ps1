@@ -59,8 +59,26 @@ if ($setups.Count -eq 0) {
 Write-Host "Installers that will be mapped in:"
 $setups | ForEach-Object { Write-Host ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
 
-if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
+# Empty it, do not delete it.
+#
+# Removing the directory itself fails while anything holds a handle to it,
+# and the sandbox's VM worker processes keep one for a short while after the
+# sandbox has closed. That killed a run outright, seconds before the handle
+# would have been released. Clearing the contents needs no such handle, and a
+# leftover folder is harmless.
 New-Item -ItemType Directory -Force $outDir | Out-Null
+Get-ChildItem $outDir -Recurse -Force -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending |
+    ForEach-Object {
+        try { Remove-Item $_.FullName -Force -Recurse -ErrorAction Stop } catch { }
+    }
+$left = @(Get-ChildItem $outDir -Recurse -File -ErrorAction SilentlyContinue)
+if ($left.Count -gt 0) {
+    # Results from a previous run would be read as this run's. Better to stop
+    # than to report a stale score as a fresh one.
+    throw ("Could not clear $outDir; {0} file(s) remain, including {1}. " -f $left.Count, $left[0].Name) +
+          "Close anything holding them open and run again."
+}
 
 # What the sandbox runs when it logs on. -NoExit in watch mode keeps the
 # window open after the script ends, which is the difference between seeing

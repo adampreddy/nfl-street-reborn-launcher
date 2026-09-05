@@ -179,9 +179,49 @@ if ($Sandbox -or $Manual) {
             "close the open sandbox first, it holds dist read-only"
     } else {
         $sb = Join-Path $PSScriptRoot "beta-sandbox.ps1"
-        if ($Manual) { & $sb -Manual } else { & $sb -Watch }
         $resultFile = Join-Path $root "target\beta-out\result.txt"
-        if (Test-Path $resultFile) {
+
+        # Before launching, so a result.txt left by an earlier run cannot be
+        # mistaken for this one's.
+        $startedAt = Get-Date
+        if ($Manual) { & $sb -Manual } else { & $sb -Watch }
+
+        # beta-sandbox.ps1 starts the sandbox and RETURNS. The run itself
+        # happens inside the VM over the next few minutes, so reading the
+        # result here without waiting reported "no result.txt was written"
+        # for an install that had not been attempted yet.
+        $waitMinutes = if ($Manual) { 60 } else { 25 }
+        $deadline = $startedAt.AddMinutes($waitMinutes)
+        Write-Host ("       waiting up to {0} minutes for the sandbox to finish" -f $waitMinutes)
+        $sawResult = $false
+        while ((Get-Date) -lt $deadline) {
+            if ((Test-Path $resultFile) -and ((Get-Item $resultFile).LastWriteTime -gt $startedAt)) {
+                $sawResult = $true
+                break
+            }
+            # If every sandbox process is gone and nothing was written, the
+            # window was closed before the run finished. Waiting out the full
+            # deadline for a result that can never arrive helps nobody.
+            if (-not $Manual -and @(Get-Process WindowsSandbox* -ErrorAction SilentlyContinue).Count -eq 0 `
+                -and ((Get-Date) -gt $startedAt.AddMinutes(2))) {
+                Write-Host "       the sandbox closed before writing a result" -ForegroundColor Yellow
+                break
+            }
+            Start-Sleep -Seconds 10
+        }
+        if (-not $sawResult) {
+            Write-Host ("       gave up after {0:N1} minutes" -f ((Get-Date) - $startedAt).TotalMinutes) -ForegroundColor Yellow
+        }
+
+        # Close it. The result and every log are on the host in beta-out, so
+        # nothing is lost, and a sandbox left open blocks the next run by
+        # holding dist read-only. Not in manual mode, where a person may still
+        # be looking at the wizard.
+        if ($sawResult -and -not $Manual) {
+            @(Get-Process WindowsSandbox* -ErrorAction SilentlyContinue) | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+
+        if ((Test-Path $resultFile) -and ((Get-Item $resultFile).LastWriteTime -gt $startedAt)) {
             $txt = Get-Content $resultFile -Raw
             # The two shapes the smoke test actually writes. An earlier version
             # of this looked for "N / M", which it never writes, so a finished
@@ -197,8 +237,11 @@ if ($Sandbox -or $Manual) {
                 Record "sandbox" "install, uninstall and beta checks" $false `
                     "result.txt has no RESULT line: the run did not reach the end"
             }
+        } elseif (Test-Path $resultFile) {
+            Record "sandbox" "install, uninstall and beta checks" $false `
+                ("only a stale result.txt from {0:HH:mm:ss}, before this run started" -f (Get-Item $resultFile).LastWriteTime)
         } else {
-            Record "sandbox" "install, uninstall and beta checks" $false "no result.txt was written"
+            Record "sandbox" "install, uninstall and beta checks" $false "the sandbox never wrote a result"
         }
     }
     Write-Host ""

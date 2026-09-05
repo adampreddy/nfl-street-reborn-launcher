@@ -232,7 +232,14 @@ try {
         $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
         Check "stable launcher landed in Programs, not on the 2.1 data folder" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
         Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
-        Check "the Visual C++ runtime shipped beside Dolphin" (Test-Path (Join-Path $stableDir "runtime\VCRUNTIME140.dll"))
+        # All four, not just one. Dolphin imports MSVCP140.dll as well as
+        # VCRUNTIME140.dll, and checking a single file meant three of the four
+        # could go missing without any test noticing.
+        foreach ($dll in "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "MSVCP140_CODECVT_IDS.dll") {
+            Check ("the Visual C++ runtime shipped beside Dolphin: $dll") `
+                (Test-Path (Join-Path $stableDir "runtime\$dll")) `
+                "not at $stableDir\runtime\$dll"
+        }
 
         # The textures. Without these a fresh player installs and has nothing to
         # look at, and every other check here would still have passed.
