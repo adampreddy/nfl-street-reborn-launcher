@@ -12,5 +12,7 @@ name = "rebornctl"
 path = "src/main.rs"
 
 [dependencies]
-reborn-core = { path = "../reborn-core" }
+# `publish` brings in key generation and signing. This is the tool that
+# publishes releases, so it is the one binary that may carry a signer.
+reborn-core = { path = "../reborn-core", features = ["publish"] }
 clap = { version = "4", features = ["derive"] }
