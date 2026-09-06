@@ -77,14 +77,18 @@ installer's xdelta produces** (the `--target` given to
 `Tools/create-game-patch.py`, today `NFL Street 2 FIELDS 12-19.iso`), or
 no imported player will be in the chain.
 
-### 2. Three launcher items, once 1 lands
+### 2. Three launcher items
 
-1. **The window checks for content updates on its own** when
-   `automatic_updates` is on. Copy: "Update ready. N MB. Installs the next
-   time you close the game." The launcher self-update notice
-   (`update-notice.js`) is theirs and already does this shape for the
-   installer; the content flow mirrors it. **The core side is done**; the
-   window side is three calls in `crates/reborn-ui/src/main.rs`:
+1. **DONE 2026-09-06 evening: the window checks for content updates on its
+   own.** `crates/reborn-ui/src/content_updates.rs` holds the flow's state
+   (five commands: `content_status`, `content_check`, `content_fetch`,
+   `content_promote`, `content_dismiss`); `ui/content-notice.js` is the Play
+   page notice, mirroring `update-notice.js`; Settings has a Game content
+   block. `Tools/check-content-notice.mjs` drives the notice in a real
+   browser. `settings.content_origin` overrides `origin::DEFAULT_ORIGIN`.
+   Not yet observed: the real WebView2 window against the live origin on a
+   real data root. The pieces below it are all observed (CLI e2e, browser).
+   The snippet that was here is kept for reference:
 
    ```rust
    use reborn_core::content::pipeline::{CheckRequest, Depth, RosterHook, Updater};

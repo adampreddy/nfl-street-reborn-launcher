@@ -22,6 +22,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod content_updates;
 mod setup_tools;
 
 use std::path::{Path, PathBuf};
@@ -4991,6 +4992,12 @@ fn main() {
             onboarding_choose_updates,
             update_policy,
             update_policy_set,
+            // Content: textures, runtime, mods, game patches, the roster.
+            content_updates::content_status,
+            content_updates::content_check,
+            content_updates::content_fetch,
+            content_updates::content_promote,
+            content_updates::content_dismiss,
             texture_policy,
             texture_policy_set,
             controls_set,

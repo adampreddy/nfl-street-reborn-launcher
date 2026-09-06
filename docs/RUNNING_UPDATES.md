@@ -365,21 +365,42 @@ Not carried: rollback of a game update. The old pristine folder is
 removed once the new one is in place, so going back is an import from the
 disc. A reverse delta is the cheap way to add it later.
 
-## 8. What the launcher does once wired
+## 8. What the launcher does (wired 2026-09-06)
 
-This is the part not built yet, and it is the next piece of work.
+The window drives the same pipeline as `rebornctl update content`
+(`reborn_core::content::pipeline`); the state between the calls lives in
+the launcher process (`crates/reborn-ui/src/content_updates.rs`), so a
+page change never loses a download. Any page asks `content_status`.
 
-- On start, if the player opted into automatic updates during first run, it
-  fetches `release.json` and `.sig` and verifies the signature. A failed
-  signature or an unreachable host is an outage, not an update: nothing is
-  shown, the player plays, and diagnostics record it.
-- It plans each component against what is on disk and fetches only what
-  differs, in the background, into `downloads\` then `staging\`.
-- It swaps when the game is closed, never while Dolphin is running. The hint
-  strip says: "Update ready. 210 MB. Installs the next time you close the
-  game."
-- The one blocking screen appears only when the player tries to play online
-  below the required version, and "Play offline instead" is always on it.
+- On the Play page, once first run is complete, it checks once per launcher
+  session: `release.json` and `.sig`, signature verified with the compiled
+  keys, then a quick comparison of the cached manifests with the release's
+  pins. No file is hashed unless a newer version is offered. A failed
+  signature or an unreachable host shows nothing on the Play page; Settings
+  shows the reason under Game content.
+- With something to fetch and automatic updates on, it downloads in the
+  background into `downloads\` then `staging\` and shows "Game content
+  update: 210 MB." With ask-first, the notice offers "View update", which is
+  Settings.
+- It swaps only when no game session is active, and takes the launch guard
+  while swapping so Play waits. Until then the notice says "Update ready.
+  210 MB. Installs the next time you close the game." and checks every five
+  seconds. The game patch is applied and the roster re-applied as part of
+  the swap.
+- Afterwards the notice reads "Updated: textures 1.0.1, roster 2026.09.07.
+  Roster applied: 569 players, 51 teams." with a Got it button, and the same
+  summary waits in Settings until dismissed.
+- Settings, Game content: Check now (quick), Verify and repair (hashes the
+  live tree; 45 s for textures), Download, Install now, and the per-component
+  lines with anything refused.
+
+The origin is `https://files.nflstreetreborn.com/` (`origin::DEFAULT_ORIGIN`)
+unless `content_origin` in `settings.json` says otherwise; that setting is
+for tests and for anyone running their own origin. `Tools/check-content-notice.mjs`
+drives the Play page notice through a fake Tauri in a real browser.
+
+Not wired: the online-version gate ("Play offline instead"), which needs the
+online build that does not exist yet.
 
 ## 9. Publishing an update later
 

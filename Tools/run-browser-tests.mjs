@@ -16,6 +16,8 @@ Object.assign(fixture, {
  session_active: false,
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
+ content_status: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
+ content_check: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};

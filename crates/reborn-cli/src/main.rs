@@ -319,9 +319,10 @@ enum UpdateCommand {
     /// Update one content component from a signed origin: plan, fetch, verify,
     /// and swap it live. Without --apply, only the plan is printed.
     Content {
-        /// The origin base URL, the directory holding release.json.
+        /// The origin base URL, the directory holding release.json. Defaults
+        /// to the product's content server.
         #[arg(long)]
-        origin: String,
+        origin: Option<String>,
         /// runtime, offline-content, online-content, textures, or mods.
         #[arg(long)]
         component: String,
@@ -574,7 +575,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 builder,
             } => update_content(
                 &platform,
-                &origin,
+                origin.as_deref().unwrap_or(reborn_core::origin::DEFAULT_ORIGIN),
                 &component,
                 trust.as_deref(),
                 data_root.as_deref(),

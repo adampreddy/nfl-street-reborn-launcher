@@ -23,6 +23,7 @@ async function load() {
     token: call("credential_stored", { account: "nsr.league.ingest" }),
     policy: call("update_policy"),
     queue: call("stats_queue"),
+    content: call("content_status"),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -140,6 +141,43 @@ async function act(label, cmd, args, after) {
   draw();
 }
 
+const mb = (b) => Math.max(1, Math.round((b || 0) / 1048576));
+
+// Textures, the emulator, mods, game patches and the roster: the content
+// system. The Play page checks on start and installs when the game is
+// closed; this is where a person looks, checks, repairs, or installs now.
+function contentBlock() {
+  const sec = el("section", { class: "block" }, el("h2", { text: "Game content" }));
+  sec.append(el("p", { class: "note", text: "Textures, the emulator, mods, game patches and the roster arrive as small differences from the content server. Checked when the launcher starts; installed while the game is closed." }));
+  const c = state.content;
+  if (!ok(c)) {
+    sec.append(partial(`The content status could not be read: ${c ? c.error : "not loaded"}`));
+    return sec;
+  }
+  const working = ["checking", "fetching", "installing"].includes(c.phase);
+  const row = el("div", { class: "mod" });
+  row.append(el("button", { type: "button", text: "Check now", disabled: busy || working, onclick: () => act("Check content", "content_check", { depth: null }, () => {}) }));
+  row.append(el("button", { type: "button", text: "Verify and repair", disabled: busy || working, onclick: () => act("Verify content", "content_check", { depth: "verify" }, () => {}) }));
+  if (c.phase === "available") {
+    row.append(el("button", { type: "button", text: `Download ${mb(c.download_bytes)} MB`, disabled: busy, onclick: () => act("Download content", "content_fetch", {}, () => {}) }));
+  }
+  if (c.phase === "staged") {
+    row.append(el("button", { type: "button", class: "write", text: "Install now", disabled: busy, onclick: () => act("Install content", "content_promote", { confirm: true }, () => {}) }));
+  }
+  if (c.phase === "installed") {
+    row.append(el("button", { type: "button", text: "Got it", disabled: busy, onclick: () => act("Dismiss", "content_dismiss", {}, () => {}) }));
+  }
+  sec.append(row);
+  sec.append(el("p", { class: c.phase === "problem" ? "partial" : "", text: c.note || "Not checked yet." }));
+  if (c.release) sec.append(el("p", { class: "note", text: `Release ${c.release} at ${c.origin || "the content server"}.` }));
+  for (const comp of c.components || []) {
+    if (!comp) continue;
+    if (comp.state === "available") sec.append(el("p", { class: "note", text: `${comp.component}: ${comp.repair ? "repair" : `${comp.installed ? `${comp.installed} to ` : ""}${comp.offered}`}, ${comp.files} file(s), ${mb(comp.bytes)} MB.` }));
+    else if (comp.state === "refused" || comp.state === "problem") sec.append(partial(`${comp.component}: ${comp.message || comp.state}`));
+  }
+  return sec;
+}
+
 function updatesBlock() {
   const sec = el("section", { class: "block" }, el("h2", { text: "Updates" }));
   sec.append(el("p", { class: "note", text: "Check for a release, download it, then install when you are ready. Your saves stay separate from the launcher." }));
@@ -204,7 +242,7 @@ function draw() {
   const parts = [];
   if (problem) parts.push(refusal(problem));
   const advanced = el("details", { class: "block" }, el("summary", { text: "League & storage" }), leagueBlock(), whereBlock());
-  parts.push(boxesBlock(), foundBlock(), updatesBlock(), advanced);
+  parts.push(boxesBlock(), foundBlock(), updatesBlock(), contentBlock(), advanced);
   screen.replaceChildren(...parts);
 }
 

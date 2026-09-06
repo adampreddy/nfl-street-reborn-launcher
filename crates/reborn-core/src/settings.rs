@@ -85,6 +85,11 @@ pub struct Settings {
     /// endpoint; see crate::league.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub league_ingest_url: Option<String>,
+    /// Where content (textures, runtime, mods, game patches, the roster)
+    /// comes from. Absent means the product origin; see crate::origin.
+    /// Set by tests and by anyone running their own origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_origin: Option<String>,
 
     // The three paths a person can override, kept HERE rather than in the
     // window alone. They used to live only in the interface's own storage,
@@ -163,6 +168,7 @@ impl Default for Settings {
             manage_texture_folder: None,
             update_source: None,
             league_ingest_url: None,
+            content_origin: None,
             runtime_exe: None,
             game_path: None,
             user_dir: None,

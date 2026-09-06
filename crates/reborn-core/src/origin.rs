@@ -48,6 +48,11 @@ use crate::signing::decode_signature;
 use crate::{Error, Result};
 
 /// The signed release manifest, relative to the origin base.
+/// Where the product's content comes from. Cloudflare R2 behind the
+/// custom domain, with `blobs/*` cached at the edge for a year and
+/// `release.json` never cached. See docs/RUNNING_UPDATES.md section 7.
+pub const DEFAULT_ORIGIN: &str = "https://files.nflstreetreborn.com/";
+
 pub const RELEASE_FILE: &str = "release.json";
 /// Its detached signature, hex text, beside it.
 pub const SIGNATURE_FILE: &str = "release.json.sig";
