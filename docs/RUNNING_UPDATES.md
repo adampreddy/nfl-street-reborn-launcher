@@ -101,14 +101,14 @@ pub const TRUSTED_KEYS: &[[u8; PUBLIC_KEY_LEN]] = &[
 ];
 ```
 
-Then run `cargo test -p reborn-core signing`. One test,
-`the_build_as_shipped_has_no_trust_anchor_yet_and_says_so`, will fail on
-purpose: it asserts the keys are still empty, so the day they land is a
-deliberate edit. Flip its two assertions to `has_trust_anchor()` and
-`key_count() == 2`.
+**Done 2026-09-06.** Adam's everyday key `eac9ec…` and rotation key
+`71a34c…` are compiled in, and the test
+`the_build_as_shipped_trusts_exactly_the_everyday_and_rotation_keys` pins
+both arrays to their hex. Proven the same day: a release signed with
+`publisher.key` opened in a launcher with no `--trust` override.
 
-Or send the two PUBLIC lines to whoever is editing the code. Public keys are
-not secret.
+If the keys are ever regenerated, paste the new lines over the old ones and
+update that test's two hex strings; it fails loudly until both match.
 
 Rebuild the installer (`installer\windows\build.ps1`) and ship it. That
 launcher will accept releases signed by either key.
