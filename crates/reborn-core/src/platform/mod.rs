@@ -266,6 +266,9 @@ pub enum DataDir {
     LibraryTextures,
     LibraryXbox,
     LibraryWork,
+    /// The roster the site published, as delivered. One small file that the
+    /// launcher applies to the live image with the Reborn Builder.
+    LibraryRoster,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -296,6 +299,7 @@ impl DataDir {
             DataDir::LibraryTextures => "library/textures",
             DataDir::LibraryXbox => "library/xbox",
             DataDir::LibraryWork => "library/work",
+            DataDir::LibraryRoster => "library/roster",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -323,6 +327,7 @@ impl DataDir {
         DataDir::LibraryTextures,
         DataDir::LibraryXbox,
         DataDir::LibraryWork,
+        DataDir::LibraryRoster,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,

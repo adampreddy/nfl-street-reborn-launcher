@@ -102,6 +102,12 @@ enum Command {
         what: publish::PublishCommand,
     },
 
+    /// Apply the published roster to the installed game image, or re-apply it.
+    Roster {
+        #[command(subcommand)]
+        what: RosterCommand,
+    },
+
     /// Show what migrating a 2.1 install would do. Copies nothing without --apply.
     Migrate {
         /// The 2.1 install root. Defaults to the standard location.
@@ -325,6 +331,30 @@ enum UpdateCommand {
         /// Fetch and swap. Without this, nothing is downloaded.
         #[arg(long)]
         apply: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RosterCommand {
+    /// Run the Reborn Builder over the live image with a roster, then swap
+    /// the result in. About three seconds. The game must be closed.
+    Apply {
+        /// The .rebornroster. Defaults to the one the roster component installed.
+        #[arg(long)]
+        roster: Option<PathBuf>,
+        /// The Builder's console build. Found automatically when absent.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+        /// Use this data root instead of the real one. For tests.
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// Where portraits are written. Defaults to the pristine texture tree
+        /// on the real data root, and to a scratch folder with --data-root.
+        #[arg(long)]
+        textures: Option<PathBuf>,
+        /// Build even if the site flagged problems. They are printed either way.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -629,6 +659,22 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::Music => music(&platform),
         Command::Content { apply } => content(&platform, apply),
         Command::Publish { what } => publish::run(what),
+        Command::Roster { what } => match what {
+            RosterCommand::Apply {
+                roster,
+                builder,
+                data_root,
+                textures,
+                yes,
+            } => roster_apply(
+                &platform,
+                roster.as_deref(),
+                builder.as_deref(),
+                data_root.as_deref(),
+                textures.as_deref(),
+                yes,
+            ),
+        },
     }
 }
 
@@ -4124,6 +4170,7 @@ fn update_content(
         ComponentId::OnlineContent => DataDir::LibraryOnline,
         ComponentId::Textures => DataDir::LibraryTextures,
         ComponentId::Mods => DataDir::ModsPackages,
+        ComponentId::Roster => DataDir::LibraryRoster,
         ComponentId::Launcher | ComponentId::ControllerDb => {
             println!("{component} is not updated this way. The launcher updates through its");
             println!("installer (rebornctl update check), and controller-db has no artifact yet.");
@@ -4272,6 +4319,16 @@ fn update_content(
             if let Some(p) = r.previous {
                 println!("Rollback to   {} sequence {} is available", p.version, p.sequence);
             }
+            // A roster is not done when its file lands: it is done when the
+            // image carries it. Same data root, same test-root rules.
+            if component == "roster" {
+                println!();
+                println!("Applying the roster to the game image.");
+                let roster_file = root_owned
+                    .join(DataDir::LibraryRoster.relative())
+                    .join(reborn_core::roster::ROSTER_FILE);
+                return roster_apply(platform, Some(&roster_file), None, data_root, None, true);
+            }
             Ok(OK)
         }
         Promoted::Refused(r) => {
@@ -4285,6 +4342,127 @@ fn update_content(
                 restored.len()
             );
             println!("so a retry costs nothing over the network.");
+            Ok(PROBLEM)
+        }
+    }
+}
+
+/// Apply a roster to the live image with the Reborn Builder.
+///
+/// Defaults are the published roster, a Builder found beside the launcher or
+/// in the 2.1 tools folder, and the real data root. With `--data-root` the
+/// portraits go to a scratch folder unless `--textures` says otherwise, so a
+/// test run never writes into a real texture tree.
+fn roster_apply(
+    platform: &Platform,
+    roster: Option<&Path>,
+    builder: Option<&Path>,
+    data_root: Option<&Path>,
+    textures: Option<&Path>,
+    yes: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::roster::{self, ApplyOutcome, ApplyRequest, ROSTER_FILE};
+
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    let roster_path = match roster {
+        Some(p) => p.to_path_buf(),
+        None => root.join(DataDir::LibraryRoster.relative()).join(ROSTER_FILE),
+    };
+    let builder_path = match builder {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            if let Ok(install) = platform.paths.install_root() {
+                dirs.push(install.join("tools"));
+                dirs.push(install);
+            }
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));
+            }
+            match roster::find_builder(platform, &dirs) {
+                Some(p) => p,
+                None => {
+                    println!("No Reborn Builder console build was found. Looked in:");
+                    for d in &dirs {
+                        println!("  {}", d.display());
+                    }
+                    println!("Pass --builder <path to reborn-builder-cli.exe>. Nothing was changed.");
+                    return Ok(PROBLEM);
+                }
+            }
+        }
+    };
+    let textures_owned;
+    let textures_root: Option<&Path> = match (textures, data_root) {
+        (Some(t), _) => Some(t),
+        // A test root: never write portraits into a real tree by default.
+        (None, Some(_)) => None,
+        (None, None) => {
+            textures_owned = reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?;
+            Some(textures_owned.as_path())
+        }
+    };
+
+    println!("Data root     {}", root.display());
+    println!("Roster        {}", roster_path.display());
+    println!("Builder       {}", builder_path.display());
+    println!(
+        "Portraits to  {}",
+        textures_root
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "a scratch folder under staging, not kept".to_string())
+    );
+
+    let req = ApplyRequest {
+        data_root: &root,
+        roster: &roster_path,
+        builder: &builder_path,
+        textures_root,
+        accept_warnings: yes,
+    };
+    match roster::apply(platform, &req)? {
+        ApplyOutcome::Applied(r) => {
+            println!();
+            println!(
+                "Applied       {} players, {} teams, {} portrait(s) written",
+                thousands(r.report.players),
+                thousands(r.report.teams),
+                thousands(r.report.portraits)
+            );
+            println!("Image         {}", r.image.display());
+            println!("Was           {}", r.before);
+            println!("Now           {}", r.after);
+            if let Some(base) = &r.report.base {
+                println!("Base          {base}");
+            }
+            if !r.report.warnings.is_empty() {
+                println!("Warnings      {} from the site:", thousands(r.report.warnings.len() as u64));
+                for w in r.report.warnings.iter().take(8) {
+                    println!("  {w}");
+                }
+                if r.report.warnings.len() > 8 {
+                    println!("  ... and {} more", thousands((r.report.warnings.len() - 8) as u64));
+                }
+            }
+            println!("Recorded as a rebuilt image, so verification keeps it rather than re-downloading it.");
+            Ok(OK)
+        }
+        ApplyOutcome::Unchanged { image, report, .. } => {
+            println!();
+            println!(
+                "Unchanged: {} already carries this roster ({} players, {} teams). Nothing was swapped.",
+                image.display(),
+                thousands(report.players),
+                thousands(report.teams)
+            );
+            Ok(OK)
+        }
+        ApplyOutcome::Refused(r) => {
+            println!();
+            println!("Refused: {}", r.message());
             Ok(PROBLEM)
         }
     }

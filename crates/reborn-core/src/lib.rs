@@ -55,6 +55,7 @@ pub mod net;
 pub mod onboarding;
 pub mod origin;
 pub mod platform;
+pub mod roster;
 pub mod runtime;
 pub mod session;
 pub mod settings;

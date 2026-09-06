@@ -18,6 +18,7 @@ launcher will do once wired.
 | the game image (`NSR.iso`) | the content system, `offline-content` | the whole image, since one file is one blob |
 | Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
 | a curated mod package | the content system, `mods` component | only the changed files |
+| **a roster**, published from the website editor | the content system, `roster` component: the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
 | the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the installer plus `latest.json` on a GitHub release tagged `v<version>` | the installer, one file |
 | which keys are trusted | a launcher release, as above | same |
 | memory cards, saves, a player's own soundtrack | never touched, by design | none |
@@ -229,6 +230,52 @@ real data root is the target and a promotion into it is a real update.
 
 R2 charges nothing for egress, which is the reason it was chosen: 20,000
 players pulling gigabytes costs storage only.
+
+## 7a. Roster pushes
+
+A roster is the one thing that changes often, so it does not travel as a
+new image. The `.rebornroster` the site exports travels, and every launcher
+applies it to its own image with the Reborn Builder's console build.
+
+What exists today:
+
+1. Export from `nflstreetreborn.com/rdatabase` as you do now. Name the file
+   `roster.rebornroster` in a folder by itself.
+2. Publish it as a component, exactly like the others:
+   ```
+   rebornctl publish component --root <that folder> --component roster --version 2026.09.06 --sequence 1 --origin "C:\Reborn Origin" --apply
+   ```
+   Then a release pinning `roster=2026.09.06` alongside the unchanged
+   components, and upload. Half a megabyte without portraits, about thirty
+   with them.
+3. A client picks it up like any component, and then applies it:
+   ```
+   rebornctl update content --origin <url> --component roster --apply
+   ```
+   `update content` runs the Builder itself after the roster file lands.
+   To re-run it by hand, or after a rollback:
+   ```
+   rebornctl roster apply
+   ```
+
+What it does on the player's machine, in order: refuses if the game is
+running; runs the Builder into staging with the player's own image as the
+base; checks the length and hashes the result; records the new image hash
+as a rebuild so verification keeps it instead of re-downloading 1.4 GB;
+one rename swaps it in. Measured on the release build: 6.6 seconds for a
+roster carrying 455 portraits, 4.4 of them inside the Builder. The Builder's
+site warnings are printed, not fatal.
+
+Applying the same roster twice reports `Unchanged` and swaps nothing. A
+roster that names a player the image does not have is refused by the
+Builder with the player's id, and the launcher relays it with "the game is
+as it was".
+
+Not yet: the Publish button on the site and the `publish roster --from
+<url>` shortcut that fetches what it published. Both are small. And
+`reborn-builder-cli.exe` has to ship beside Dolphin; today the launcher
+finds it in `<install>\tools`, beside the launcher, or in the 2.1 tools
+folder.
 
 ## 8. What the launcher does once wired
 

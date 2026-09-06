@@ -146,6 +146,11 @@ pub enum ComponentId {
     Textures,
     Mods,
     ControllerDb,
+    /// The roster the site published: one `.rebornroster` file, applied to
+    /// the live image on the player's machine by the Reborn Builder. Small,
+    /// frequent, and the reason a roster change does not cost a 1.4 GB
+    /// image download.
+    Roster,
 }
 
 impl ComponentId {
@@ -158,6 +163,7 @@ impl ComponentId {
         ComponentId::Textures,
         ComponentId::Mods,
         ComponentId::ControllerDb,
+        ComponentId::Roster,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -170,6 +176,7 @@ impl ComponentId {
             ComponentId::Textures => "textures",
             ComponentId::Mods => "mods",
             ComponentId::ControllerDb => "controller-db",
+            ComponentId::Roster => "roster",
         }
     }
 
@@ -219,6 +226,7 @@ impl ComponentId {
             ComponentId::OfflineContent => Some(DataDir::LibraryOffline.relative()),
             ComponentId::OnlineContent => Some(DataDir::LibraryOnline.relative()),
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
+            ComponentId::Roster => Some(DataDir::LibraryRoster.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
