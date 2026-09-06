@@ -301,6 +301,14 @@ Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
 Filename: "{app}\{#LauncherExe}"; Description: "{cm:LaunchProgram,{#AppName} Launcher}"; \
   Flags: nowait postinstall skipifsilent
 
+; The self-update relaunch. The launcher downloads a verified installer, runs
+; it with /SILENT /RELAUNCH=1 and exits so its files can be replaced. The
+; entry above is skipped when silent, so without this one the launcher would
+; never come back and the player would be left looking at nothing. Gated on
+; the parameter so a plain silent install, which the sandbox smoke test runs
+; and then starts the launcher itself, does not start it twice.
+Filename: "{app}\{#LauncherExe}"; Flags: nowait; Check: RelaunchRequested
+
 ; NO [UninstallDelete] SECTION. See note 3 at the top. Inno removes what it
 ; installed. Anything the launcher created under {userappdata} survives, which
 ; includes memory cards, and that is the entire point.
@@ -423,6 +431,14 @@ begin
     WaitForWebView2;
 end;
 #endif
+
+// True only when the launcher started this install to update itself. Read
+// from the command line, defaulting to 0, so a person double-clicking Setup
+// and the sandbox's silent first install both answer no.
+function RelaunchRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
 
 function InitializeSetup(): Boolean;
 begin

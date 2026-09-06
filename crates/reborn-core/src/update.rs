@@ -274,7 +274,13 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
             format!("no installer at {}", installer.display()),
         )));
     }
-    let args: Vec<std::ffi::OsString> = vec!["/SILENT".into(), "/NORESTART".into()];
+    // /RELAUNCH=1 is ours, read by the installer's [Run] check. A silent Inno
+    // upgrade skips the "Launch" entry (skipifsilent), so without this the
+    // launcher exits for the update and never comes back, and the player is
+    // left looking at nothing. A plain first install does not pass it and does
+    // not relaunch, which keeps the sandbox smoke test's single launch single.
+    let args: Vec<std::ffi::OsString> =
+        vec!["/SILENT".into(), "/NORESTART".into(), "/RELAUNCH=1".into()];
     let env = std::collections::BTreeMap::new();
     platform.processes.spawn(installer, &args, installer.parent(), &env)?;
     Ok(())
