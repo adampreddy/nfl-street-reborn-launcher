@@ -223,6 +223,52 @@ def main():
         assert (DATA / "runtime" / rel).read_bytes() == data, f"{rel}: v3 bytes differ"
     step("a version that drops a file retires it into prior, fetches nothing, and names it")
 
+    # 6c. a roster push, the way the site will do it: the export sits at a
+    # URL, one command fetches it, publishes it as the roster component, and
+    # re-signs a release that carries the runtime pin forward.
+    import io
+    import zipfile
+    site = ORIGIN / "site"
+    site.mkdir(exist_ok=True)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("manifest.json", '{"contract_version": 1}')
+        z.writestr("players.json", "[]")
+        z.writestr("teams.json", "[]")
+        z.writestr("README.txt", "a roster, for the test")
+    roster_bytes = buf.getvalue()
+    (site / "roster.rebornroster").write_bytes(roster_bytes)
+    out = run("publish", "roster", "--from", base + "site/roster.rebornroster", "--origin", str(ORIGIN),
+              "--version", "2026.09.06", "--key", str(WORK / "keys" / "publisher.key"), "--apply")
+    must(out, "Fetched", "the roster was fetched from the URL")
+    must(out, "Sequence      1", "the first roster gets sequence 1 on its own")
+    must(out, "pinning roster=2026.09.06, runtime=1.0.2", "the runtime pin is carried forward")
+    must(out, "Read back and verified", "the new release verifies")
+    assert (ORIGIN / "components" / "roster-2026.09.06.json").is_file()
+    release_text = (ORIGIN / "release.json").read_text(encoding="utf-8")
+    assert '"sequence": 4' in release_text and '"roster"' in release_text and '"runtime"' in release_text, release_text
+    # Not a roster: a saved error page must never be published as one.
+    (site / "notaroster.rebornroster").write_text("<html>404</html>")
+    out = run("publish", "roster", "--from", base + "site/notaroster.rebornroster", "--origin", str(ORIGIN),
+              "--version", "2026.09.07", "--apply", expect=1)
+    must(out, "not a .rebornroster", "junk is refused before anything is published")
+    assert not (ORIGIN / "components" / "roster-2026.09.07.json").exists()
+    step("publish roster fetches from a URL, publishes, re-signs with pins carried forward, and refuses junk")
+
+    # 6d. the client takes the roster like any component, then tries to apply
+    # it. This scratch root has no game image, so the apply is refused and
+    # says so; the roster file itself has landed.
+    r = subprocess.run([str(EXE), "update", "content", "--origin", base, "--component", "roster",
+                        "--trust", pub_hex, "--data-root", str(DATA), "--apply"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = r.stdout + r.stderr
+    must(out, "Live          roster 2026.09.06", "the roster component went live")
+    must(out, "Applying the roster to the game image", "and the apply was attempted")
+    must(out, "no game image", "which is refused here, since this root has none")
+    assert r.returncode == 1, "a roster that did not reach an image is not a success"
+    assert (DATA / "library" / "roster" / "roster.rebornroster").read_bytes() == roster_bytes
+    step("the roster component installs like any other and the apply is attempted and honestly refused")
+
     # 7. replay at the publisher
     out = run("publish", "release", "--origin", str(ORIGIN), "--version", "1.0.0", "--sequence", "1",
               "--key", str(WORK / "keys" / "publisher.key"), "--component", "runtime=1.0.0", "--apply", expect=1)

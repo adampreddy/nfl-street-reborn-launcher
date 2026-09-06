@@ -237,18 +237,22 @@ A roster is the one thing that changes often, so it does not travel as a
 new image. The `.rebornroster` the site exports travels, and every launcher
 applies it to its own image with the Reborn Builder's console build.
 
-What exists today:
+One command, from the export to "upload the origin":
 
-1. Export from `nflstreetreborn.com/rdatabase` as you do now. Name the file
-   `roster.rebornroster` in a folder by itself.
-2. Publish it as a component, exactly like the others:
-   ```
-   rebornctl publish component --root <that folder> --component roster --version 2026.09.06 --sequence 1 --origin "C:\Reborn Origin" --apply
-   ```
-   Then a release pinning `roster=2026.09.06` alongside the unchanged
-   components, and upload. Half a megabyte without portraits, about thirty
-   with them.
-3. A client picks it up like any component, and then applies it:
+```
+rebornctl publish roster --from <URL or file of the export> --origin "C:\Reborn Origin" --version 2026.09.06 --key "C:\Users\Adam\Reborn Keys\publisher.key" --apply
+```
+
+It fetches the export, refuses anything that is not a roster (a saved
+error page, say), publishes it as the `roster` component with the next
+sequence, and re-signs a release that carries every other pinned component
+forward at its served version. Run it without `--apply` to see what it
+would do. Then upload the origin folder. Half a megabyte without
+portraits, about thirty with them.
+
+`--from` can be a local path while the site has no Publish button yet.
+
+A client picks it up like any component, and then applies it:
    ```
    rebornctl update content --origin <url> --component roster --apply
    ```
@@ -271,11 +275,10 @@ roster that names a player the image does not have is refused by the
 Builder with the player's id, and the launcher relays it with "the game is
 as it was".
 
-Not yet: the Publish button on the site and the `publish roster --from
-<url>` shortcut that fetches what it published. Both are small. And
-`reborn-builder-cli.exe` has to ship beside Dolphin; today the launcher
-finds it in `<install>\tools`, beside the launcher, or in the 2.1 tools
-folder.
+Not yet: the Publish button on the site, which drops the export at a fixed
+URL so `--from` can point at it. And `reborn-builder-cli.exe` has to ship
+beside Dolphin; today the launcher finds it in `<install>\tools`, beside
+the launcher, or in the 2.1 tools folder.
 
 ## 8. What the launcher does once wired
 

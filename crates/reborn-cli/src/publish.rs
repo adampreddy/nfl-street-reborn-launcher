@@ -113,6 +113,36 @@ pub enum PublishCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Fetch the roster the site published and push it: the component, then
+    /// a release that carries every other pinned component forward. One
+    /// command from "the site exported it" to "upload the origin".
+    Roster {
+        /// Where the site put it: a URL, or a local .rebornroster path.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        origin: PathBuf,
+        /// The roster's label, for example 2026.09.06.
+        #[arg(long)]
+        version: String,
+        /// Defaults to one above the highest roster sequence in the origin.
+        #[arg(long)]
+        sequence: Option<u64>,
+        /// The publisher.key file. Without it the component is published and
+        /// the release step is only described.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// The release label players see. Defaults to the one already served.
+        #[arg(long)]
+        release_version: Option<String>,
+        /// Defaults to one above the release already served.
+        #[arg(long)]
+        release_sequence: Option<u64>,
+        /// Write and sign. Without this everything is fetched and checked and
+        /// nothing in the origin changes.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
@@ -135,6 +165,25 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             components,
             apply,
         } => release(&origin, &version, sequence, &key, &components, apply),
+        PublishCommand::Roster {
+            from,
+            origin,
+            version,
+            sequence,
+            key,
+            release_version,
+            release_sequence,
+            apply,
+        } => publish_roster(
+            &from,
+            &origin,
+            &version,
+            sequence,
+            key.as_deref(),
+            release_version.as_deref(),
+            release_sequence,
+            apply,
+        ),
     }
 }
 
@@ -573,6 +622,165 @@ fn release(
     );
     println!("That is the file a launcher fetches. Upload the origin directory as it is.");
     Ok(OK)
+}
+
+// ---------------------------------------------------------------------------
+// roster
+// ---------------------------------------------------------------------------
+
+/// Fetch a roster and push it as the `roster` component, then re-sign a
+/// release that pins it beside everything already served.
+#[allow(clippy::too_many_arguments)]
+fn publish_roster(
+    from: &str,
+    origin: &Path,
+    version: &str,
+    sequence: Option<u64>,
+    key: Option<&Path>,
+    release_version: Option<&str>,
+    release_sequence: Option<u64>,
+    apply: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::net::Http as _;
+    use reborn_core::roster::ROSTER_FILE;
+
+    // A folder holding exactly the one file, because the component scan
+    // hashes everything under its root.
+    let stage = std::env::temp_dir().join("reborn-publish").join("roster").join(version);
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
+    }
+    std::fs::create_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
+    let staged = stage.join(ROSTER_FILE);
+
+    if from.starts_with("http://") || from.starts_with("https://") {
+        println!("Fetching      {from}");
+        let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
+        let bytes = http.get_to_file(from, &staged)?;
+        println!("Fetched       {} bytes", thousands(bytes));
+    } else {
+        let src = Path::new(from);
+        if !src.is_file() {
+            println!("{from} is neither a URL nor a file. Nothing was published.");
+            return Ok(PROBLEM);
+        }
+        std::fs::copy(src, &staged).map_err(|e| io_err(src, e))?;
+        println!("Roster        {}", src.display());
+    }
+
+    // The Builder is the authority on the format; this only refuses what
+    // is plainly not a roster, so a 404 page saved as a file cannot be
+    // published as one. A .rebornroster is a zip and its entry names sit in
+    // the clear inside it.
+    let head = std::fs::read(&staged).map_err(|e| io_err(&staged, e))?;
+    let looks_like_zip = head.starts_with(b"PK\x03\x04");
+    let names_present = [&b"manifest.json"[..], &b"players.json"[..], &b"teams.json"[..]]
+        .iter()
+        .all(|n| head.windows(n.len()).any(|w| w == *n));
+    if !looks_like_zip || !names_present {
+        println!();
+        println!("That is not a .rebornroster: expected a zip holding manifest.json, players.json");
+        println!("and teams.json. Got {} bytes starting {:?}. Nothing was published.", head.len(),
+                 String::from_utf8_lossy(&head[..head.len().min(16)]));
+        return Ok(PROBLEM);
+    }
+
+    let sequence = match sequence {
+        Some(s) => s,
+        None => {
+            let next = next_roster_sequence(origin)?;
+            println!("Sequence      {next} (one above the highest roster already in the origin)");
+            next
+        }
+    };
+
+    let published = publish_component(&stage, "roster", version, sequence, None, origin, apply)?;
+    if published != OK {
+        return Ok(published);
+    }
+
+    // The release. Every component already pinned is carried forward at
+    // the version it is served at; the roster pin is replaced or added.
+    let release_path = origin.join(RELEASE_FILE);
+    let existing = if release_path.is_file() {
+        let bytes = std::fs::read(&release_path).map_err(|e| io_err(&release_path, e))?;
+        Some(Release::parse(&bytes).map_err(|e| {
+            reborn_core::Error::PlainIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} does not parse: {e}", release_path.display()),
+            ))
+        })?)
+    } else {
+        None
+    };
+    let mut pins: Vec<String> = Vec::new();
+    if let Some(current) = &existing {
+        for (name, pinned) in &current.components {
+            if name == "roster" {
+                continue;
+            }
+            let manifest = origin.join(pinned.url.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
+            let bytes = std::fs::read(&manifest).map_err(|e| io_err(&manifest, e))?;
+            let component = Component::parse(&bytes).map_err(|e| {
+                reborn_core::Error::PlainIo(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} does not parse: {e}", manifest.display()),
+                ))
+            })?;
+            pins.push(format!("{name}={}", component.version));
+        }
+    }
+    pins.push(format!("roster={version}"));
+    pins.sort();
+
+    let (rv, rs) = match (&existing, release_version, release_sequence) {
+        (Some(c), v, s) => (
+            v.map(str::to_string).unwrap_or_else(|| c.version.clone()),
+            s.unwrap_or(c.sequence + 1),
+        ),
+        (None, Some(v), Some(s)) => (v.to_string(), s),
+        (None, _, _) => {
+            println!();
+            println!("The origin serves no release yet, so there is nothing to carry forward.");
+            println!("Pass --release-version and --release-sequence, or run publish release");
+            println!("with every component. The roster component itself was published.");
+            return Ok(OK);
+        }
+    };
+
+    let Some(key) = key else {
+        println!();
+        println!("No --key, so the release was not signed. To pin it, run:");
+        println!(
+            "  rebornctl publish release --origin {} --version {rv} --sequence {rs} --key <publisher.key> {} --apply",
+            origin.display(),
+            pins.iter().map(|p| format!("--component {p}")).collect::<Vec<_>>().join(" ")
+        );
+        return Ok(OK);
+    };
+
+    println!();
+    println!("Release       {rv}, sequence {rs}, pinning {}", pins.join(", "));
+    release(origin, &rv, rs, key, &pins, apply)
+}
+
+/// One above the highest sequence of any roster manifest in the origin.
+fn next_roster_sequence(origin: &Path) -> reborn_core::Result<u64> {
+    let dir = origin.join(COMPONENTS_DIR);
+    let mut highest = 0u64;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("roster-") || !name.ends_with(".json") {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).map_err(|e| io_err(&entry.path(), e))?;
+            if let Ok(c) = Component::parse(&bytes) {
+                highest = highest.max(c.sequence);
+            }
+        }
+    }
+    Ok(highest + 1)
 }
 
 fn io_err(path: &Path, source: std::io::Error) -> reborn_core::Error {
