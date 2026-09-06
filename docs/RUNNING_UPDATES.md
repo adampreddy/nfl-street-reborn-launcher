@@ -18,10 +18,19 @@ launcher will do once wired.
 | the game image (`NSR.iso`) | the content system, `offline-content` | the whole image, since one file is one blob |
 | Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
 | a curated mod package | the content system, `mods` component | only the changed files |
-| the launcher itself: a page, a button, a rule, this tool | a launcher release: build a SLIM installer (no `-Textures`, no `-GameImages`) so `build.ps1` writes `latest.json`, and publish both to a GitHub release tagged `v<version>` | about 110 MB, one file |
+| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the installer plus `latest.json` on a GitHub release tagged `v<version>` | the installer, one file |
 | which keys are trusted | a launcher release, as above | same |
 | memory cards, saves, a player's own soundtrack | never touched, by design | none |
 | the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
+
+One thing the launcher path needs that does not exist yet: an installer
+build that comes out as ONE file, because `latest.json` pins a single
+download and `build.ps1` writes it only for a single-file build. The full
+first-run installer carries the texture pack and is spanned across three
+files, so it gets no `latest.json`. A launcher-update build that leaves the
+big content out (players get that through the content system anyway) is
+the missing build mode. Until it exists, launcher self-update has nothing
+to fetch.
 
 Deleting a file works: the next version's manifest simply does not list
 it, and the client moves it aside into `prior/`, never deletes it, so
