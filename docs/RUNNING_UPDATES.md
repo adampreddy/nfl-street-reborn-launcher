@@ -242,6 +242,18 @@ real data root is the target and a promotion into it is a real update.
    and `https://files.nflstreetreborn.com/release.json.sig` both load.
 5. Prove it the same way as step 6, against the real host:
    `rebornctl update content --origin https://files.nflstreetreborn.com/ --component textures --data-root "C:\reborn-test-root"`
+   Done 2026-09-06: runtime and roster installed from the live URL into a
+   scratch root with only the compiled-in keys.
+6. Cache the blobs at the edge. Without this every blob fetch is an R2 read
+   (`cf-cache-status: DYNAMIC`); with it, repeat fetches are served by
+   Cloudflare and never touch the bucket. Dashboard, the
+   `nflstreetreborn.com` zone, **Caching, Cache Rules, Create rule**:
+   - Name `files blobs`. When: Hostname equals `files.nflstreetreborn.com`
+     AND URI Path starts with `/blobs/`. Then: Cache eligibility Eligible,
+     Edge TTL Override, 1 year; Browser TTL Override, 1 year. Blobs are
+     named by their own hash, so they can never change; a year is honest.
+   - Leave `release.json` and `components/` uncached (they change on every
+     publish); no rule needed, DYNAMIC is the correct answer for them.
 
 R2 charges nothing for egress, which is the reason it was chosen: 20,000
 players pulling gigabytes costs storage only.
