@@ -28,6 +28,14 @@ session starts from facts, not memory.
 - Add, change, delete, repair, resume, replay refusal, tamper refusal,
   zero-byte files: all covered by `Tools/e2e-update.py` (12 steps) and
   `Tools/e2e-roster.py` (3 steps, real image + real Builder).
+- **The update pipeline is one core module** (commit `d4e0a98`, 2026-09-06
+  late afternoon): `reborn_core::content::pipeline::Updater` with `check`,
+  `fetch`, `promote`, `run` and `apply_current_roster`. `rebornctl update
+  content` is now a thin caller of it, and the window calls the same three
+  functions. Nine tests over an in-memory origin; both e2e scripts pass on
+  the rewired CLI; dry runs against the live origin work. A quick check
+  compares the cached manifest with the release pin and touches nothing
+  else; the cache now holds the served bytes so that comparison can be true.
 
 **Pulled today, on purpose:** the full modded image (`offline-content`).
 The product moved to the patch route: the installer ships a 687 MB
@@ -66,14 +74,34 @@ Three things to raise with that session, found while reading their work:
 ### 2. Three launcher items, once 1 lands
 
 1. **The window checks for content updates on its own** when
-   `automatic_updates` is on: fetch release, plan each component, download
-   in the background, promote only when the game is closed. Copy:
-   "Update ready. N MB. Installs the next time you close the game." The
-   launcher self-update notice (`update-notice.js`) is theirs and already
-   does this shape for the installer; the content flow mirrors it.
-   Core side: move the six steps from `rebornctl update content`
-   (`crates/reborn-cli/src/main.rs::update_content`) into a core
-   `content::run_update` so the window calls one function.
+   `automatic_updates` is on. Copy: "Update ready. N MB. Installs the next
+   time you close the game." The launcher self-update notice
+   (`update-notice.js`) is theirs and already does this shape for the
+   installer; the content flow mirrors it. **The core side is done**; the
+   window side is three calls in `crates/reborn-ui/src/main.rs`:
+
+   ```rust
+   use reborn_core::content::pipeline::{CheckRequest, Depth, RosterHook, Updater};
+   let origin = Origin::new("https://files.nflstreetreborn.com/");
+   let verifier = Ed25519Verifier::embedded();
+   let updater = Updater::new(&platform, &data_root, &origin, &verifier);
+   // at startup and on a timer, cheap: no file is hashed unless a newer version is offered
+   let check = updater.check(&CheckRequest::default())?;          // Depth::Quick, all six components
+   if check.has_updates() { /* show check.download_bytes(), then in the background: */ }
+   let fetched = updater.fetch(&check)?;                           // writes only under downloads/ and staging/
+   // only when no game session is running:
+   let promoted = updater.promote(&check, &RosterHook {
+       builder: None,
+       extra_dirs: vec![legacy_root.join("Tools")],                // settings.legacy_root, when set
+       textures_root: Some(mods::pristine_root(&platform, &game)?),
+   })?;
+   ```
+
+   Keep the `ContentCheck` in managed state between the calls; the plans
+   live in it. `Depth::Verify` is the Repair button only: on textures it
+   hashes 3.18 GB and takes 45 s. After a game import, call
+   `updater.apply_current_roster(&hook)` so the roster that is already live
+   reaches the new image; it is idempotent.
 2. **A one-file installer build** for launcher self-update. `latest.json`
    pins one file; `build.ps1` writes it only for a single-file build, and
    the first-run installer is spanned. Needs a build mode that leaves the
@@ -139,6 +167,12 @@ target\release\rebornctl.exe publish roster --from https://nflstreetreborn.com/r
   heredocs.
 - `https://nflstreetreborn.com/` answers **503 by design** (launch gate
   countdown until Sept 12). `/rdatabase/login.php` 200 is the liveness check.
+- `textures 1.0.0` ships `1ALL NUMBERS/texconv.log` (2.3 MB of bake log).
+  Delete it from `C:\Reborn Origin-stage`'s source tree before the next
+  textures publish; the update will retire it on every install for free.
+- Adam's own data root already holds 7,562 of the 8,192 texture files
+  byte-for-byte, so a first textures install there fetches 630 files
+  (437 MB), not 3.18 GB. A fresh player fetches everything once.
 - A planned mono-repo (`C:\Games\Reborn Website Files`, its own CLAUDE.md,
   SFTP 18765, sync `public_html` only) does not exist on this machine yet.
   When it does, its `rdatabase/` copy must be taken from the server AFTER
