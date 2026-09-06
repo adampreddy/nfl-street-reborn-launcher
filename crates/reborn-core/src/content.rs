@@ -1322,6 +1322,18 @@ impl<'a> ContentService<'a> {
         }
         let resumed_from = have;
 
+        // A zero-byte file has nothing to fetch, so the loop below never runs
+        // and never creates the part file, and the hash step then fails on a
+        // path that does not exist. Found by the first real runtime tree:
+        // ReShadePreset.ini and 29 other empty files. An empty part is the
+        // whole download, and it hashes to the manifest's hash of nothing.
+        if file.bytes == 0 && !part.exists() {
+            std::fs::File::create(&part).map_err(|source| Error::Io {
+                path: part.clone(),
+                source,
+            })?;
+        }
+
         if have < file.bytes {
             let mut reader = source.open(&BlobRequest {
                 component: plan.component(),
@@ -3231,6 +3243,45 @@ mod tests {
             service.layout().manifest_path("offline-content").is_file(),
             "and from now on the cache exists, so the following update can retire"
         );
+    }
+
+    #[test]
+    fn a_zero_byte_file_is_fetched_staged_and_promoted() {
+        // The first real runtime tree had 30 empty files (ReShadePreset.ini
+        // among them) and the download died on the first: nothing to fetch
+        // meant no part file, and the hash step then failed on a path that
+        // did not exist. Every earlier test used files with bytes in them.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+
+        let bytes = manifest(
+            "1.0.0",
+            7,
+            false,
+            vec![file_of("a.dat", b"a1"), file_of("empty.ini", b"")],
+        );
+        let plan = expect_plan(
+            service
+                .plan(&signed(&bytes, 11), "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        assert_eq!(plan.fetches.len(), 2, "the empty file is planned like any other");
+
+        let source = Blobs::new(Serving::Whole).with("a.dat", b"a1").with("empty.ini", b"");
+        let report = service.download(&plan, &source).expect("download must not error on an empty file");
+        assert!(report.is_complete(), "{:?}", report.results);
+        assert!(
+            !source.requests().iter().any(|(p, _)| p == "empty.ini"),
+            "nothing to fetch, so nothing was requested: {:?}",
+            source.requests()
+        );
+
+        assert!(matches!(service.promote(&plan).expect("promote"), Promoted::Applied(_)));
+        let live = live_root(dir.path()).join("empty.ini");
+        assert!(live.is_file(), "the empty file exists in the live tree");
+        assert_eq!(std::fs::metadata(&live).expect("meta").len(), 0);
+        assert_eq!(read_live(dir.path(), "a.dat"), b"a1");
     }
 
     // -----------------------------------------------------------------------
