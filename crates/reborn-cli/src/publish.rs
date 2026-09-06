@@ -823,7 +823,10 @@ fn publish_roster(
             println!();
             println!("The origin serves no release yet, so there is nothing to carry forward.");
             println!("Pass --release-version and --release-sequence, or run publish release");
-            println!("with every component. The roster component itself was published.");
+            println!(
+                "with every component. The roster component itself {}.",
+                if apply { "was published" } else { "would be published with --apply" }
+            );
             return Ok(OK);
         }
     };
