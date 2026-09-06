@@ -97,6 +97,29 @@ pub struct Settings {
     pub game_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_controller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_slots: Option<[Option<String>; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_override: Option<GraphicsOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrated_texture_root: Option<PathBuf>,
+}
+
+/// Optional user-selected graphics values. Required game compatibility keys remain managed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphicsOverride {
+    pub label: String,
+    pub resolution: u32,
+    pub msaa: u32,
+    pub ssaa: bool,
+    #[serde(default)]
+    pub legacy_gfx: Option<String>,
+    #[serde(default)]
+    pub legacy_reshade: Option<String>,
 }
 
 /// One of the three overridable paths.
@@ -105,6 +128,7 @@ pub enum PathSetting {
     Runtime,
     Game,
     UserDir,
+    LegacyRoot,
 }
 
 /// Record, or clear, one path a person set.
@@ -124,6 +148,7 @@ pub fn set_path(path: &Path, which: PathSetting, value: &str) -> Result<Option<P
         PathSetting::Runtime => settings.runtime_exe = next.clone(),
         PathSetting::Game => settings.game_path = next.clone(),
         PathSetting::UserDir => settings.user_dir = next.clone(),
+        PathSetting::LegacyRoot => settings.legacy_root = next.clone(),
     }
     settings.save(path)?;
     Ok(next)
@@ -141,6 +166,11 @@ impl Default for Settings {
             runtime_exe: None,
             game_path: None,
             user_dir: None,
+            legacy_root: None,
+            primary_controller: None,
+            controller_slots: None,
+            graphics_override: None,
+            migrated_texture_root: None,
         }
     }
 }
@@ -396,14 +426,20 @@ mod tests {
 
         set_path(&path, PathSetting::Game, "C:\\g\\NSR.iso").unwrap();
         set_path(&path, PathSetting::UserDir, "C:\\u").unwrap();
+        set_path(&path, PathSetting::LegacyRoot, "C:\\older-install").unwrap();
         let all = Settings::load(&path).unwrap();
         assert_eq!(all.game_path, Some(PathBuf::from("C:\\g\\NSR.iso")));
         assert_eq!(all.user_dir, Some(PathBuf::from("C:\\u")));
+        assert_eq!(all.legacy_root, Some(PathBuf::from("C:\\older-install")));
 
         assert_eq!(set_path(&path, PathSetting::Runtime, "   ").unwrap(), None);
         let after = Settings::load(&path).unwrap();
         assert_eq!(after.runtime_exe, None, "an emptied box must clear it");
         assert_eq!(after.game_path, Some(PathBuf::from("C:\\g\\NSR.iso")), "and leave the others alone");
+        set_path(&path, PathSetting::LegacyRoot, "").unwrap();
+        let cleared = Settings::load(&path).unwrap();
+        assert_eq!(cleared.legacy_root, None);
+        assert_eq!(cleared.user_dir, Some(PathBuf::from("C:\\u")));
     }
 
     #[test]

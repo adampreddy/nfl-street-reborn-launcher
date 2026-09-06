@@ -24,8 +24,11 @@ function fakeEl(tag) {
 }
 const byId = {};
 global.document = {
+  body: {dataset:{}},
+  dispatchEvent() {},
   getElementById: (id) => (byId[id] ||= fakeEl("div#" + id)),
   createElement: (tag) => fakeEl(tag),
+  addEventListener() {},
   querySelectorAll: () => [],
 };
 global.location = { pathname: "/index.html" };
@@ -43,6 +46,7 @@ const FULL = {
   launch_check: { ready: true, runtime: "C:\\rt\\Dolphin.exe", runtime_note: "Using the emulator that came with the launcher.", runtime_kind: "bundled", game: "C:\\g\\NSR.iso", game_note: "Using NSR.iso, found by name.", user_dir_note: "Using the user folder beside the emulator.", problem: null },
   devices: { pads: [{ device_string: "XInput/0/Gamepad", family: "xbox", port: 1, set_aside: null }], other: [], complete: false, unsearched: ["SDL"], source: "builtin" },
   mod_packages: { packages_root: "x", packages: [{ id: "a", version: "1", name: "A", active: true }], unreadable: [], activation: [{ id: "a", version: "1" }], exclusive: [], managed_by_controls: [] },
+  controller_slots: {slots: null, primary: null},
   controls_current: { profile: "xbox", label: "Xbox", source: "settings" },
   controls_options: [{ slug: "xbox", label: "Xbox", describes: "d", pack: "p", suggested: true }],
   home_state: { sessions_played: 3, minutes_played: 12, last_played: "id", last_played_ms: 1756800000000, controllers: 1, mods_installed: 9, mods_applied: 2, runtime_set: true },
@@ -65,11 +69,12 @@ function check(what, ok, detail = "") {
 // The pages import ./shell.js, which a data: URL cannot resolve, so the shared
 // module is inlined: its exports become plain declarations.
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from "\.\/shell\.js";\r?\n/m;
+const IMPORT_LINE = /^import .*from ['"]\.\/shell\.js['"];\r?\n/m;
 
 async function loadPage(file, answers, mode) {
   const calls = [];
   global.window = {
+    addEventListener() {},
     __TAURI__: {
       core: {
         invoke: async (cmd) => {
@@ -126,8 +131,8 @@ for (const [file, name] of PAGES) {
 {
   const { screen } = await loadPage("crates/reborn-ui/ui/recovery.js", FULL, "full");
   const t = text(screen);
-  check("Recovery shows the last session", t.includes("Terminated") || t.includes("Needs recovery"));
-  check("Recovery advises mods-disabled after three bad endings", t.includes("Start with mods disabled first"));
+  check("Recovery shows the last session", t.includes("Terminated") || t.includes("Session status"));
+  check("Recovery advises mods-disabled after three bad endings", t.includes("Try starting with mods disabled"));
 }
 // Settings: the token is never shown, only whether one is stored.
 {

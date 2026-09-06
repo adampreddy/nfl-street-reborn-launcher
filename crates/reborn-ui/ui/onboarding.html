@@ -1,68 +1,25 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NFL Street Reborn, first run</title>
-    <link rel="stylesheet" href="styles.css" />
-    <link rel="stylesheet" href="onboarding.css" />
-    <link rel="stylesheet" href="shell.css" />
-  </head>
-  <body class="shell ob">
-    <!--
-      First run as screens rather than harness rows, so the FLOW can be felt:
-      how many steps there are, what each one asks, what it says when it cannot
-      answer, and what the last screen can honestly claim.
-
-      Deliberately undesigned. Plain type, plain boxes, no art. The real
-      interface is being designed separately and a half-styled stand-in would
-      only compete with it. What this has to be is structurally true: every
-      screen shows the real data from the real command, and every awkward state
-      is reachable rather than smoothed over.
-    -->
-    <header>
-      <strong>NFL Street Reborn</strong>
-      <span class="sub">launcher, plain build</span>
-    </header>
-
-    <nav class="shell-nav" aria-label="Pages">
-      <a href="index.html">Play<small>Start the game. Shows what it will use.</small></a>
-      <a href="mods.html">Mods<small>Footballs and other texture packs. Pick one football.</small></a>
-      <a href="controls.html">Controls<small>Button art, and the pads plugged in.</small></a>
-      <a href="settings.html">Settings<small>Where things live, and the few paths you can set.</small></a>
-      <a href="recovery.html">Recovery<small>When a session ended badly. Six ways forward.</small></a>
-      <div class="divider"></div>
-      <a href="onboarding.html">First run<small>The setup questions, as screens.</small></a>
-      <a href="harness.html">Advanced<small>Every command, raw. For debugging.</small></a>
-    </nav>
-
-    <main id="wizard">
-      <h1>First run</h1>
-      <p class="purpose">
-        The setup questions, one per screen: bring over an existing install or
-        start fresh, confirm the game, pick graphics, set up a pad, choose button
-        art, then let the launcher write its settings. Answers are kept, so this
-        can be left and come back to.
-      </p>
-      <!-- Where you are, drawn from the plan the core returns. -->
-      <nav id="steps" aria-label="Steps"></nav>
-
-      <section id="screen">
-        <p class="note">Loading.</p>
-      </section>
-
-      <footer id="nav">
-        <button id="back" type="button">Back</button>
-        <span id="hint" class="note"></span>
-        <button id="next" type="button" class="primary">Next</button>
-      </footer>
-      <details class="core">
-        <summary>What the core said, raw</summary>
-        <div class="out-head"><button id="clear" type="button">Clear</button></div>
-        <pre id="out"></pre>
-      </details>
-    </main>
-
-    <script type="module" src="onboarding.js"></script>
-  </body>
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to Reborn | NFL Street Reborn</title>
+  <link rel="icon" href="art/cover.png">
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="onboarding.css"><link rel="stylesheet" href="launcher.css"><link rel="stylesheet" href="product-ui.css"><link rel="stylesheet" href="onboarding-polish.css">
+</head>
+<body class="shell ob page-setup">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="backdrop" aria-hidden="true"></div>
+  <header class="app-header"><span class="breadcrumb">NFL STREET REBORN</span><span id="bridge" class="pill">Connecting</span></header>
+  <nav class="shell-nav" aria-label="Setup navigation">
+    <a class="brand" href="index.html" aria-label="Reborn home"><img src="art/cover.png" alt="Reborn"></a>
+    <a href="index.html?setup=later" class="setup-exit">Finish later</a>
+  </nav>
+  <main id="main" tabindex="-1">
+    <div class="page-heading"><span class="eyebrow">NFL STREET REBORN</span><h1>Welcome to Reborn</h1><p class="purpose">A few steps, then you are ready to hit the street. Your progress is saved.</p></div>
+    <nav id="steps" aria-label="Setup progress"></nav><section id="screen"><p class="loading">Loading…</p></section><footer id="nav"><button id="back" type="button">Back</button><span id="hint" class="note"></span><button id="next" type="button" class="primary">Continue</button></footer>
+  </main>
+  <footer class="input-footer"><span id="input-hints"><kbd>Tab</kbd> Navigate <kbd>Enter</kbd> Select <kbd>Esc</kbd> Back</span><span>NFL STREET REBORN</span></footer>
+  <script type="module" src="app-shell.js"></script><script type="module" src="onboarding.js"></script>
+  <script src="setup-controller.js"></script><script src="controller-mapping.js"></script><script src="controller-preview.js"></script><script type="module" src="controller-test.js"></script>
+</body>
 </html>

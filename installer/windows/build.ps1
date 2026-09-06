@@ -19,6 +19,10 @@ param(
     # Game images. However many are given, all install. There is no fixed list
     # and no cap.
     [string[]]$GameImages = @(),
+    # Verified patch bundle; the player's original disc is supplied in onboarding.
+    [string]$GamePatch = "",
+    [string]$PromptPackages = "",
+    [switch]$SpanInstaller,
     # The pristine texture tree, and the build it is for. This is what a
     # fresh player gets: without it they install and have no textures at all,
     # because the only other way one exists is by migrating a 2.1 install.
@@ -40,6 +44,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($GameImages.Count -gt 0) { throw "This installer imports the player's game in onboarding. Use -GamePatch instead of -GameImages." }
+foreach ($required in @("manifest.json", "reborn.xdelta", "DolphinTool.exe", "xdelta3.exe")) {
+    if (-not $GamePatch -or -not (Test-Path -LiteralPath (Join-Path $GamePatch $required) -PathType Leaf)) { throw "A complete -GamePatch bundle is required ($required)." }
+}
+if (-not $Runtime -or -not $Textures -or -not $PromptPackages) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
+
 $root = Resolve-Path "$PSScriptRoot\..\.."
 $AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "NFL Street Reborn" }
 $payload = Join-Path $root "target\installer-payload"
@@ -51,7 +61,10 @@ cargo build --release -p reborn-ui -p reborn-cli
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 Pop-Location
 
-if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
+$resolvedPayload = [System.IO.Path]::GetFullPath($payload)
+$expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root "target\installer-payload"))
+if ($resolvedPayload -ne $expectedPayload) { throw "Unexpected staging path." }
+if (Test-Path -LiteralPath $resolvedPayload) { Remove-Item -LiteralPath $resolvedPayload -Recurse -Force }
 New-Item -ItemType Directory -Force $payload | Out-Null
 
 Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
@@ -255,6 +268,10 @@ if ($GameImages.Count -gt 0) {
     }
 }
 
+Copy-Item -LiteralPath $GamePatch -Destination (Join-Path $payload "game-import") -Recurse
+foreach ($n in $crtNames) { Copy-Item -LiteralPath (Join-Path $payload "runtime\$n") -Destination (Join-Path $payload "game-import\$n") -Force }
+Copy-Item -LiteralPath $PromptPackages -Destination (Join-Path $payload "content\prompt-packages") -Recurse
+Copy-Item -LiteralPath (Join-Path $root "crates\reborn-ui\ui\art\controllers") -Destination (Join-Path $payload "content\controller-artwork-source") -Recurse
 $size = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("Payload: {0} file(s), {1:N1} MB" -f `
     (Get-ChildItem $payload -Recurse -File).Count, ($size / 1MB))
@@ -332,7 +349,12 @@ foreach ($a in "art\NSR.ico", "art\welcome.bmp", "art\corner.bmp",
 $outRoot = Join-Path $root "target\installer-out"
 New-Item -ItemType Directory -Force $outRoot | Out-Null
 Get-ChildItem $outRoot -Directory -ErrorAction SilentlyContinue |
-    ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    ForEach-Object {
+        $oldOutput = [System.IO.Path]::GetFullPath($_.FullName)
+        $outputBoundary = [System.IO.Path]::GetFullPath((Join-Path $root "target\installer-out")) + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $oldOutput.StartsWith($outputBoundary, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unexpected installer output directory." }
+        Remove-Item -LiteralPath $oldOutput -Recurse -Force -ErrorAction SilentlyContinue
+    }
 $scratch = Join-Path $outRoot (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Force $scratch | Out-Null
 
@@ -347,7 +369,7 @@ New-Item -ItemType Directory -Force $scratch | Out-Null
 # So try one file, which is the better download anyway, and turn spanning on
 # only if the compiler says the output is too big. That answer is always
 # right, at the cost of one wasted compress on a genuinely huge payload.
-$span = $false
+$span = $SpanInstaller.IsPresent
 $payloadBytes = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("Payload {0:N1} GB. Trying a single file." -f ($payloadBytes / 1GB))
 
@@ -355,6 +377,7 @@ $isccArgs = @(
     (Join-Path $PSScriptRoot "reborn-launcher.iss"),
     "/DPayload=$payload", "/DOutDir=$scratch", "/DAppVersion=$Version", "/DChannel=$Channel"
 )
+if ($span) { $isccArgs += "/DSpan" }
 # A different file name, so the online and offline builds can sit in dist
 # together rather than one silently replacing the other.
 if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
@@ -463,7 +486,7 @@ Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
 # A spanned build has no single file to pin, so self-update cannot fetch it:
 # update.rs downloads one artifact and runs it. Writing a manifest naming
 # only the stub would publish an update that installs nothing.
-$slices = @(Get-ChildItem $dist -Filter "*.bin" -ErrorAction SilentlyContinue)
+$slices = @(Get-ChildItem $dist -Filter "$AppNameForZip Launcher Setup $Version*.bin" -ErrorAction SilentlyContinue)
 
 # One file to hand out.
 #

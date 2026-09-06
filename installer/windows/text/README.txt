@@ -14,3 +14,5 @@ ACKNOWLEDGEMENTS:
 Thank you to BlueSwordM for allowing us to use his custom build of Dolphin Emulator, originally purposed for the SonicRiders Series
 Thank you to nfl_numbers for allowing us to use his jersey number textures!
 Thank you to everyone who made this game possible! Checkout the credits!
+FIRST LAUNCH
+The installer includes Dolphin, textures, ReShade and a verified Reborn patch. It does not include the original game. On first launch, choose Start fresh and browse to your legally obtained NFL Street 2 (USA) GameCube image, or choose an existing Reborn installation to keep your game and saves.

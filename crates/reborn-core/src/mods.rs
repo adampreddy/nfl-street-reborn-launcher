@@ -1506,6 +1506,10 @@ pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
     {
         return Ok(in_data);
     }
+    if game.as_str() == "GN7E69" {
+        let saved = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        if let Some(root) = saved.migrated_texture_root { if root.is_dir() { return Ok(root); } }
+    }
     if let Some(shipped) = shipped_pristine_root(platform, game) {
         return Ok(shipped);
     }

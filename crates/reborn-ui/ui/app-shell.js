@@ -1,0 +1,279 @@
+// Controller navigation belongs to the window, independently of page data.
+import { bridge } from './shell.js';
+
+const selector = 'a[href],button,input,select,textarea,summary';
+const main = document.getElementById('main');
+const screen = document.getElementById('screen');
+const hints = document.getElementById('input-hints');
+let active = false, checking = false, lastFocus = null, contentFocus = null, selectEdit = null;
+let controllerMode = false, family = 'xbox', restorePending = false;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const scrollTargets = new Map();
+let scrollFrame = 0, scrollTime = 0;
+function stopScrolling() {
+  cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0; scrollTargets.clear();
+}
+function animateScroll(now) {
+  if (document.hidden || !document.hasFocus() || active || document.body.dataset.controllerTesting) { stopScrolling(); return; }
+  const dt = Math.min(40, now - (scrollTime || now - 16)); scrollTime = now;
+  // One continuously retargeted curve, rather than restarting a browser smooth
+  // scroll every time the D-pad repeats. Time-based damping works at any refresh rate.
+  const blend = 1 - Math.exp(-dt / 65);
+  for (const [area, requested] of scrollTargets) {
+    const target = Math.max(0, Math.min(area.scrollHeight-area.clientHeight, requested));
+    const distance = target-area.scrollTop;
+    if (reducedMotion.matches || Math.abs(distance)<.7) { area.scrollTop=target; scrollTargets.delete(area); }
+    else area.scrollTop += distance*blend;
+  }
+  if (scrollTargets.size) scrollFrame=requestAnimationFrame(animateScroll);
+  else { scrollFrame=0; scrollTime=0; }
+}
+function scrollToTarget(area, target) {
+  target=Math.max(0,Math.min(area.scrollHeight-area.clientHeight,target));
+  if (reducedMotion.matches) { scrollTargets.delete(area); area.scrollTop=target; return; }
+  scrollTargets.set(area,target);
+  if (!scrollFrame) scrollFrame=requestAnimationFrame(animateScroll);
+}
+document.addEventListener('wheel',stopScrolling,{passive:true});
+document.addEventListener('pointerdown',stopScrolling,{passive:true});
+document.addEventListener('keydown',stopScrolling);
+document.addEventListener('visibilitychange',stopScrolling);
+window.addEventListener('blur',stopScrolling);
+window.addEventListener('pagehide',stopScrolling);
+reducedMotion.addEventListener('change',stopScrolling);
+try { controllerMode = sessionStorage.getItem('reborn:input') === 'controller'; } catch (_) {}
+document.body.classList.toggle('gamepad-input', controllerMode);
+
+function visible(n) {
+  return n?.isConnected && !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
+    !n.closest('[hidden],[inert]') && getComputedStyle(n).visibility !== 'hidden' &&
+    !n.classList.contains('skip-link') && !n.closest('details.core:not([open])');
+}
+function reachable(root = document) { return [...root.querySelectorAll(selector)].filter(visible); }
+function identity(n) { return n.id ? `id:${n.id}` : [n.tagName,n.getAttribute('name'),n.value,n.getAttribute('href'),n.textContent?.trim()].join('|'); }
+function box(n) { return (n.closest('label.choice') || n).getBoundingClientRect(); }
+function renderHints() {
+  if (!hints) return;
+  if(document.body.classList.contains('page-setup')){
+    const pads=[...(navigator.getGamepads?.()||[])].filter(p=>p?.connected);
+    const pad=pads[0];if(!pad){hints.replaceChildren();delete hints.dataset.layout;return;}
+    const ps=/playstation|dualsense|dualshock|054c/i.test(pad.id);
+    const testing=!!document.body.dataset.controllerTesting;
+    const items=testing?[[ps?'▱':'▣',ps?'Share + Options':'View + Menu'],['↩','Finish test']]:[['✥','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back']];
+    const key=JSON.stringify(items);if(hints.dataset.layout===key)return;hints.dataset.layout=key;hints.replaceChildren(...items.map(([icon,label])=>{const row=document.createElement('span');row.className='hint-action';const glyph=document.createElement('span');glyph.className='hint-icon';glyph.textContent=icon;glyph.setAttribute('aria-hidden','true');row.append(glyph,document.createTextNode(" "+label));return row;}));return;
+  }
+  const ps = family === 'playstation';
+  const items = document.body.dataset.controllerTesting ? [[document.body.classList.contains('page-controls')?'Esc':ps?'Share + Options':'View + Menu','Finish test']] : controllerMode ? selectEdit
+    ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
+    : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']]
+    : [['Tab','Navigate'],['Enter','Select'],['Esc','Back']];
+  const key=JSON.stringify(items);if(hints.dataset.layout===key)return;hints.dataset.layout=key;
+  hints.replaceChildren(...items.map(([key,label])=>{const item=document.createElement('span');item.className='input-hint';const button=document.createElement('kbd');button.textContent=key;item.append(button,document.createTextNode(" "+label));return item;}));
+
+}
+function mode(value) {
+  if (controllerMode === value) { renderHints(); return; }
+  controllerMode = value;
+  document.body.classList.toggle('gamepad-input',value);
+  try { sessionStorage.setItem('reborn:input',value ? 'controller' : 'keyboard'); } catch (_) {}
+  renderHints();
+}
+function focus(n, reveal = true) {
+  if (!visible(n)) return;
+  document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
+  n.focus({preventScroll:true});
+  n.classList.add('pad-focus');
+  if (reveal) {
+    const target = n.closest('label.choice') || n;
+    const area = n.closest('.shell-nav') || main;
+    const rect = target.getBoundingClientRect(), viewport = area.getBoundingClientRect();
+    const top = viewport.top + 16, bottom = viewport.bottom - 16;
+    const delta = rect.top < top ? rect.top-top : rect.bottom > bottom ? rect.bottom-bottom : 0;
+    if (delta) scrollToTarget(area,area.scrollTop+delta);
+  }
+}
+function primary() {
+  return reachable(main).find(n => n.matches('[data-primary],#next')) ||
+    reachable(main).find(n => n.matches('input:checked')) || reachable(main)[0];
+}
+document.addEventListener('focusin',e => {
+  const n = e.target;
+  if (!n.matches(selector)) return;
+  document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
+  n.classList.add('pad-focus');
+  lastFocus = {node:n,key:identity(n),index:reachable().indexOf(n)};
+  if (main.contains(n)) contentFocus = lastFocus;
+});
+new MutationObserver(() => {
+  if (restorePending) return;
+  restorePending = true;
+  queueMicrotask(() => {
+    restorePending = false;
+    if (document.body.dataset.controllerTesting || screen.getAttribute('aria-busy') === 'true') return;
+    if (lastFocus && !lastFocus.node.isConnected) {
+      const items = reachable();
+      if ([...document.querySelectorAll('button:disabled,input:disabled,select:disabled')].some(n => identity(n) === lastFocus.key)) return;
+      focus(items.find(n => identity(n) === lastFocus.key) || primary() || items[Math.min(lastFocus.index,items.length-1)], false);
+    } else if (controllerMode && !visible(document.activeElement)) focus(primary());
+  });
+}).observe(screen,{childList:true,subtree:true});
+
+// Keep the mounted controls and layout while a request is in flight. Rebuilding
+// just to disable controls caused a visible intermediate frame on every click.
+window.setLauncherBusy = value => {
+  if (value) {
+    screen.setAttribute('aria-busy','true');
+    screen.querySelectorAll('button,input,select,textarea').forEach(n => { n.disabled = true; });
+  } else screen.removeAttribute('aria-busy');
+};
+
+function move(direction) {
+  const current = document.activeElement;
+  if (selectEdit) {
+    if (direction === 'up' || direction === 'down') {
+      const options = [...selectEdit.node.options].filter(o => !o.disabled && !o.hidden);
+      const index = options.indexOf(selectEdit.node.selectedOptions[0]);
+      const next = options[Math.max(0,Math.min(options.length-1,index+(direction === 'up' ? -1 : 1)))];
+      if (next) selectEdit.node.value = next.value;
+    }
+    return;
+  }
+  if (!visible(current)) { focus(primary()); return; }
+  const inNav = !!current.closest('.shell-nav');
+  if (inNav && direction === 'right') {
+    focus(contentFocus && reachable(main).find(n => identity(n) === contentFocus.key) || primary()); return;
+  }
+  // Keep vertical movement within content or navigation. A distant sidebar
+  // control should never steal focus from the next settings row.
+  const items = reachable(inNav ? document.querySelector('.shell-nav') : main);
+  const a = box(current), ax = a.x+a.width/2, ay = a.y+a.height/2;
+  const viewport = main.getBoundingClientRect();
+  if (!inNav && (a.bottom < viewport.top || a.top > viewport.bottom)) {
+    const onScreen = items.filter(n => { const b = box(n); return b.top >= viewport.top && b.bottom <= viewport.bottom; });
+    if (onScreen.length) { focus(direction === 'up' ? onScreen.at(-1) : onScreen[0]); return; }
+  }
+  const horizontal = direction === 'left' || direction === 'right';
+  const sign = direction === 'left' || direction === 'up' ? -1 : 1;
+  const ranked = items.filter(n => n !== current).map(n => {
+    const b = box(n), dx = b.x+b.width/2-ax, dy = b.y+b.height/2-ay;
+    const distance = (horizontal ? dx : dy)*sign;
+    const overlap = horizontal ? Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top) : Math.min(a.right,b.right)-Math.max(a.left,b.left);
+    const cross = Math.abs(horizontal ? dy : dx);
+    return {n,distance,overlap,score:distance+cross*2};
+  }).filter(x => x.distance > 4 && (!horizontal || x.overlap > 0));
+  ranked.sort((a,b) => Number(b.overlap > 0)-Number(a.overlap > 0) || a.score-b.score);
+  if (ranked[0]) focus(ranked[0].n);
+  else if (!inNav && direction === 'left') focus(document.querySelector('.shell-nav a.current') || reachable(document.querySelector('.shell-nav'))[0]);
+}
+function endSelect(commit) {
+  if (!selectEdit) return;
+  const {node,original} = selectEdit; selectEdit = null;
+  node.classList.remove('pad-editing');
+  if (!commit) node.value = original;
+  else if (node.value !== original) { node.dispatchEvent(new Event('input',{bubbles:true})); node.dispatchEvent(new Event('change',{bubbles:true})); }
+  renderHints();
+}
+function activate() {
+  const n = document.activeElement;
+  if (!visible(n)) { focus(primary()); return; }
+  if (selectEdit) { endSelect(true); return; }
+  if (n.matches('select')) {
+    selectEdit = {node:n,original:n.value}; n.classList.add('pad-editing'); renderHints(); return;
+  }
+  if (n.matches('input[type="text"],input[type="password"],textarea')) {
+    // File paths use the native picker; do not pretend an untrusted click can
+    // summon an OS keyboard. Manual typing remains available via keyboard.
+    const browse = n.closest('.path-entry')?.querySelector('button');
+    if (visible(browse)) { focus(browse); browse.click(); }
+    return;
+  }
+  n.click();
+}
+function back() {
+  if (selectEdit) { endSelect(false); return; }
+  const current = document.activeElement;
+  const fold = current?.closest('details[open]') || document.querySelector('#game-options[open]');
+  if (fold) {
+    fold.open = false;
+    focus(visible(fold.querySelector('summary')) ? fold.querySelector('summary') : document.querySelector('a[href="#game-options"]'));
+    return;
+  }
+  const wizardBack = document.getElementById('back');
+  if (visible(wizardBack)) { wizardBack.click(); return; }
+  if (main.contains(current)) { focus(document.querySelector('.shell-nav a.current') || document.querySelector('.shell-nav a[href="index.html"]')); return; }
+  if (!location.pathname.endsWith('/index.html') && location.pathname !== '/') location.href = 'index.html';
+}
+function pageStep(delta) {
+  if (selectEdit) endSelect(false);
+  // First run has saved, ordered steps; bumpers must not bypass its Next action.
+  if (document.body.classList.contains('page-setup')) return;
+  const links = [...document.querySelectorAll('.shell-nav a:not(.brand)')].filter(visible);
+  const index = links.findIndex(n => n.classList.contains('current'));
+  const next = links[index+delta];
+  if (next) next.click();
+}
+document.addEventListener('keydown',e => {
+  if (e.key === 'Escape') { e.preventDefault(); back(); }
+  else if (e.key === 'Tab') { endSelect(false); mode(false); }
+});
+document.addEventListener('pointerdown',() => { endSelect(false); mode(false); });
+document.addEventListener('controller-test-state',() => { stopScrolling(); renderHints(); });
+
+async function sessionState() {
+  if (!bridge || checking) return;
+  checking = true;
+  try {
+    const next = await bridge.invoke('session_active');
+    if (next !== active) { active = next; document.dispatchEvent(new CustomEvent('session-state',{detail:active})); }
+  } catch (_) {} finally { checking = false; }
+}
+if (bridge) { sessionState(); setInterval(sessionState,1500); }
+let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
+function poll(now) {
+  requestAnimationFrame(poll);
+  if (document.hidden || !document.hasFocus() || active || document.body.dataset.controllerTesting) {
+    previous = []; direction = null; lastFrame = 0; armed = false; return;
+  }
+  let pads;
+  try { pads = [...(navigator.getGamepads?.() || [])]; } catch (_) { return; }
+  const pad = pads.find(p => p?.connected && p.mapping === 'standard');
+  if (!pad) { padId = null; previous = []; direction = null; lastFrame = 0; armed = false; return; }
+  const id = `${pad.index}:${pad.id}`;
+  const buttons = pad.buttons.map(b => b.pressed || b.value > .55);
+  const axes = pad.axes || [];
+  if (padId !== id || !lastFrame || now-lastFrame > 250) { padId = id; armed = false; direction = null; }
+  const elapsed = Math.min(40,now-(lastFrame || now)); lastFrame = now;
+  // New pages, reconnects, and return from testing require neutral controls.
+  // In particular, a held A must never activate the next page's primary action.
+  if (!armed) {
+    previous = buttons;
+    armed = !buttons.some(Boolean) && axes.every(v => Math.abs(v) < .3);
+    return;
+  }
+  const pressed = i => buttons[i] && !previous[i];
+  const x = axes[0] || 0, y = axes[1] || 0;
+  const threshold = direction ? .38 : .58;
+  const stick = Math.max(Math.abs(x),Math.abs(y)) > threshold ? Math.abs(x) > Math.abs(y) ? x < 0 ? 'left' : 'right' : y < 0 ? 'up' : 'down' : null;
+  const d = buttons[12] ? 'up' : buttons[13] ? 'down' : buttons[14] ? 'left' : buttons[15] ? 'right' : stick;
+  const rawScroll = axes[3] || 0;
+  const magnitude = Math.max(0,(Math.abs(rawScroll)-.22)/.78);
+  const scroll = Math.sign(rawScroll)*magnitude*magnitude;
+  if (d || scroll || buttons.some((_,i) => pressed(i))) {
+    family = /dualsense|dualshock|playstation|054c/i.test(pad.id) ? 'playstation' : 'xbox';
+    mode(true);
+    if (!visible(document.activeElement)) focus(primary());
+  }
+  if (d && (d !== direction || now >= nextRepeat)) { move(d); nextRepeat = now+(d !== direction ? 330 : 115); }
+  direction = d;
+  if (scroll && !selectEdit) scrollToTarget(main,(scrollTargets.get(main) ?? main.scrollTop)+scroll*elapsed*1.35);
+  if (pressed(4)) pageStep(-1);
+  else if (pressed(5)) pageStep(1);
+  else if (pressed(1)) back();
+  else if (pressed(0)) activate();
+  previous = buttons;
+}
+renderHints();
+if (controllerMode) focus(primary());
+requestAnimationFrame(poll);
+window.addEventListener('gamepadconnected',() => {renderHints();document.dispatchEvent(new Event('refresh-devices'));});
+window.addEventListener('gamepaddisconnected',() => { armed = false; renderHints(); document.dispatchEvent(new Event('refresh-devices')); });

@@ -22,6 +22,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod setup_tools;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -175,7 +177,12 @@ fn to_report(scan: &Enumeration, source: &'static str) -> DeviceReport {
 }
 
 #[tauri::command]
-fn devices(runtime: Option<String>) -> Result<DeviceReport, String> {
+async fn devices(runtime: Option<String>) -> Result<DeviceReport, String> {
+    tauri::async_runtime::spawn_blocking(move || read_devices(runtime))
+        .await.map_err(|e| e.to_string())?
+}
+
+fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
     let p = Platform::detect();
 
     // Asking the runtime is the only authoritative answer. The built in scan
@@ -318,7 +325,12 @@ fn mods(legacy_root: Option<String>) -> Result<Vec<ModEntry>, String> {
 }
 
 #[tauri::command]
-fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<HomeState, String> {
+async fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<HomeState, String> {
+    tauri::async_runtime::spawn_blocking(move || read_home_state(runtime, legacy_root))
+        .await.map_err(|e| e.to_string())?
+}
+
+fn read_home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<HomeState, String> {
     let p = Platform::detect();
 
     let (sessions_played, minutes_played, last_played, last_played_ms) = match Supervisor::acquire(&p)
@@ -335,7 +347,7 @@ fn home_state(runtime: Option<String>, legacy_root: Option<String>) -> Result<Ho
         Startup::AlreadyRunning { .. } => (0, 0, None, None),
     };
 
-    let devices_report = devices(runtime.clone())?;
+    let devices_report = to_report(&DeviceScanner::scan(), "fallback");
     let mod_list = mods(legacy_root)?;
 
     Ok(HomeState {
@@ -430,7 +442,7 @@ async fn prepare_launch(
             fullscreen,
             build: GameBuild::Offline,
             mods_disabled: false,
-            user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
+            user_dir: selected_user_dir(&p, user_dir.as_deref())?,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -469,6 +481,20 @@ fn find_runtime_and_game(
     game_hint: Option<&str>,
     legacy_root: Option<&Path>,
 ) -> Result<(reborn_core::session::Runtime, PathBuf), String> {
+    let saved = saved_paths(platform)?;
+    find_runtime_and_game_for(platform, runtime_hint, game_hint, legacy_root, saved.user_dir.as_deref())
+}
+
+fn find_runtime_and_game_for(
+    platform: &Platform,
+    runtime_hint: Option<&str>,
+    game_hint: Option<&str>,
+    legacy_root: Option<&Path>,
+    user_dir: Option<&Path>,
+) -> Result<(reborn_core::session::Runtime, PathBuf), String> {
+    let saved = saved_paths(platform)?;
+    let runtime_hint = runtime_hint.or_else(|| saved.runtime_exe.as_deref().and_then(Path::to_str));
+    let game_hint = game_hint.or_else(|| saved.game_path.as_deref().and_then(Path::to_str));
     // Cleaned first. Windows Explorer's Copy as path wraps the path in quotes
     // and the quotes are pasted with it, which produces a path that looks
     // perfect in every message and matches nothing. See session::user_path.
@@ -490,7 +516,7 @@ fn find_runtime_and_game(
             // The folder this emulator will boot against decides which
             // Dolphin.ini's recorded default counts, so it is resolved here
             // the way a launch resolves it.
-            let user = reborn_core::session::resolve_user_dir_for(platform, None, Some(found.path()))
+            let user = reborn_core::session::resolve_user_dir_for(platform, user_dir, Some(found.path()))
                 .map_err(|e| e.to_string())?;
             let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
             let search = reborn_core::session::find_game_image(
@@ -547,21 +573,23 @@ struct LaunchCheck {
 /// started. Exists because the only other way to learn which emulator the
 /// launcher found was to launch.
 #[tauri::command]
-async fn launch_check(runtime: Option<String>, game: Option<String>) -> Result<LaunchCheck, String> {
+async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: Option<String>) -> Result<LaunchCheck, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
-        match find_runtime_and_game(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref()) {
+        let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
+        match find_runtime_and_game_for(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref(), chosen_user.as_deref()) {
             Ok((found, image)) => Ok(LaunchCheck {
-                user_dir_note: reborn_core::session::resolve_user_dir_for(&p, None, Some(found.path()))
+                user_dir_note: reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path()))
                     .ok()
                     .map(|d| d.explain()),
                 game_note: {
-                    let given = game.as_deref().map(reborn_core::session::user_path).filter(|g| g.is_file());
+                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?.game_path;
+                    let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
                     if given.is_some() {
                         None
                     } else {
-                        let user = reborn_core::session::resolve_user_dir_for(&p, None, Some(found.path())).ok();
+                        let user = reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
                         let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
                         user.map(|u| {
                             reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
@@ -602,6 +630,11 @@ async fn launch_check(runtime: Option<String>, game: Option<String>) -> Result<L
 /// an existing install would be. Guessed rather than required, because a launch
 /// should not need a player to tell the launcher where their own game is.
 fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
+    if let Ok(file) = reborn_core::settings::settings_path(platform) {
+        if let Ok(settings) = reborn_core::settings::Settings::load(&file) {
+            if let Some(root) = settings.legacy_root { return Some(root); }
+        }
+    }
     let guess = platform
         .paths
         .data_root()
@@ -610,6 +643,21 @@ fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
         .join("NFL Street Reborn");
     guess.is_dir().then_some(guess)
 }
+
+static LAUNCH_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct LaunchGuard;
+impl LaunchGuard {
+    fn acquire() -> Result<Self, String> {
+        LAUNCH_ACTIVE.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst).map_err(|_| "A game session is already active.".to_string())?;
+        Ok(Self)
+    }
+}
+impl Drop for LaunchGuard {
+    fn drop(&mut self) { LAUNCH_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst); }
+}
+#[tauri::command]
+fn session_active() -> bool { LAUNCH_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
 /// Start the game and answer when it stops.
 ///
@@ -627,13 +675,16 @@ async fn launch(
     mods_disabled: bool,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LaunchGuard::acquire()?;
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
-        let (found, game_path) = find_runtime_and_game(
+        let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
+        let (found, game_path) = find_runtime_and_game_for(
             &p,
             runtime.as_deref(),
             game.as_deref(),
             legacy.as_deref(),
+            chosen_user.as_deref(),
         )?;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
@@ -642,7 +693,7 @@ async fn launch(
             fullscreen,
             build: GameBuild::Offline,
             mods_disabled,
-            user_dir: user_dir.as_deref().map(reborn_core::session::user_path),
+            user_dir: chosen_user,
         };
 
         match Session::run(&p, &req).map_err(|e| e.to_string())? {
@@ -1225,10 +1276,12 @@ fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncVi
         return Err(already_running());
     };
     let exe = runtime_for(p, runtime_hint);
-    let user = reborn_core::session::resolve_user_dir_for(p, None, exe.as_deref()).map_err(|e| e.to_string())?;
+    let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let user = reborn_core::session::resolve_user_dir_for(p, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
-    let req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
+    let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
+    req.link_into_user_dir = preferences.manage_texture_folder.unwrap_or(true);
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
     Ok(sync_view(&game, outcome))
@@ -1732,7 +1785,7 @@ struct MigrationApplyView {
 /// nothing permanent. Blocking, and it holds the single-instance lock: copying
 /// memory cards while a game is running would race Dolphin writing them.
 #[tauri::command]
-async fn migration_apply(legacy_root: String, confirm: bool) -> Result<MigrationApplyView, String> {
+async fn migration_apply(legacy_root: Option<String>, confirm: bool, saves_only: Option<bool>) -> Result<MigrationApplyView, String> {
     confirmed(
         confirm,
         "migration_apply",
@@ -1740,14 +1793,15 @@ async fn migration_apply(legacy_root: String, confirm: bool) -> Result<Migration
     )?;
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let root = PathBuf::from(legacy_root);
+        let root = legacy_root.map(PathBuf::from).or_else(|| default_legacy_root(&p))
+            .ok_or("Choose your previous installation folder before copying saves.")?;
         let Some(install) = LegacyInstall::detect(&root) else {
             return Err(format!(
                 "No NFL Street Reborn 2.1 install at {}. Nothing was copied.",
                 root.display()
             ));
         };
-        let plan = MigrationPlan::build(&install);
+        let plan = if saves_only.unwrap_or(false) { MigrationPlan::saves_only(&install) } else { MigrationPlan::build(&install) };
         if let Some(reason) = migration_refusal(&plan) {
             return Err(format!("{reason} Nothing was copied."));
         }
@@ -1782,6 +1836,16 @@ async fn migration_apply(legacy_root: String, confirm: bool) -> Result<Migration
                 to: dest.display().to_string(),
                 bytes_copied: copied,
             });
+        }
+        if install.has_memory_cards {
+            let saved = saved_paths(&p)?;
+            let user = reborn_core::session::resolve_user_dir_for(&p, saved.user_dir.as_deref(), saved.runtime_exe.as_deref())
+                .map_err(|e| e.to_string())?;
+            let target = user.path().join("GC");
+            let source = install.memory_card_dir();
+            if std::fs::canonicalize(&source).ok() != std::fs::canonicalize(&target).ok() {
+                total += reborn_core::migration::copy_tree_no_clobber(&source, &target).map_err(|e| e.to_string())?;
+            }
         }
         // After, with the measured count. Recorded here rather than taken
         // from the interface for the usual reason: this is the only code that
@@ -2112,7 +2176,7 @@ fn next_view(next: &Next) -> NextStageView {
 async fn onboarding_progress(legacy_root: Option<String>) -> Result<OnboardingView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let checked = legacy_root.map(PathBuf::from);
+        let checked = if setup_tools::fresh(&p) { None } else { legacy_root.map(PathBuf::from).or_else(|| default_legacy_root(&p)) };
         let env = match checked.as_deref().and_then(LegacyInstall::detect) {
             Some(install) => Environment::with_legacy_install(install),
             None => Environment::nothing_found(),
@@ -2253,7 +2317,8 @@ struct OnboardingStepView {
 /// Open the journal the way the read side does, so both see one flow.
 fn open_flow(legacy_root: Option<String>) -> Result<Onboarding, String> {
     let p = Platform::detect();
-    let env = match legacy_root.as_deref().map(Path::new) {
+    let legacy = if setup_tools::fresh(&p) { None } else { legacy_root.map(PathBuf::from).or_else(|| default_legacy_root(&p)) };
+    let env = match legacy.as_deref() {
         Some(root) => match LegacyInstall::detect(root) {
             Some(install) => Environment::with_legacy_install(install),
             None => Environment::nothing_found(),
@@ -2311,6 +2376,16 @@ async fn onboarding_acknowledge(legacy_root: Option<String>) -> Result<Onboardin
     .map_err(|e| e.to_string())?
 }
 
+fn checked_setup_image(path: &Path) -> Result<u64, String> {
+    setup_tools::check_reborn_id(path)?;
+    let file = std::fs::File::open(path).map_err(|e| format!("Cannot read the game image: {e}"))?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("The selected game image is empty or is not a file.".into());
+    }
+    Ok(metadata.len())
+}
+
 /// Confirm the shipped game image, weighing it here.
 ///
 /// The byte count is read from the file rather than accepted as an argument. An
@@ -2322,12 +2397,20 @@ async fn onboarding_confirm_game(
     legacy_root: Option<String>,
 ) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let total_bytes = match image.as_deref().map(reborn_core::session::user_path) {
-            // Absent rather than zero when it cannot be read. Zero is a
-            // measurement, and a wrong one. None renders as "not measured".
-            Some(path) => std::fs::metadata(path).ok().map(|m| m.len()),
-            None => None,
-        };
+        let p = Platform::detect();
+        let legacy = legacy_root.as_deref().map(reborn_core::session::user_path)
+            .or_else(|| default_legacy_root(&p));
+        // A typo in an explicit selection must not silently confirm a different detected image.
+        if let Some(chosen) = image.as_deref() {
+            checked_setup_image(&reborn_core::session::user_path(chosen))?;
+        }
+        let user = selected_user_dir(&p, None)?;
+        let (_, game) = find_runtime_and_game_for(&p, None, image.as_deref(), legacy.as_deref(), user.as_deref())?;
+        let total_bytes = Some(checked_setup_image(&game)?);
+        let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        // Persist before advancing so a failed save leaves this step available to retry.
+        reborn_core::settings::set_path(&file, reborn_core::settings::PathSetting::Game, &game.to_string_lossy())
+            .map_err(|e| e.to_string())?;
         let mut flow = open_flow(legacy_root)?;
         let advance = flow
             .satisfy(
@@ -2341,19 +2424,14 @@ async fn onboarding_confirm_game(
     .map_err(|e| e.to_string())?
 }
 
-/// Record the chosen graphics preset.
-///
-/// `recommended` and `detected` are both left absent, because nothing in the
-/// launcher measures this machine yet. That is the honest value rather than a
-/// gap: it makes `graphics_was_recommended` absent too, which is the state the
-/// Ready screen already knows to draw as no badge, instead of a badge saying
-/// the recommendation was not taken when there was none to take.
+/// Record the choice alongside the local hardware recommendation, if available.
 #[tauri::command]
 async fn onboarding_choose_graphics(
     preset: String,
     legacy_root: Option<String>,
 ) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let hardware=setup_tools::hardware_info();
         let chosen = RecordedPreset::from(preset_from(&preset));
         let mut flow = open_flow(legacy_root)?;
         let advance = flow
@@ -2361,8 +2439,8 @@ async fn onboarding_choose_graphics(
                 Stage::SystemCheck,
                 Satisfaction::Graphics {
                     chosen,
-                    recommended: None,
-                    detected: None,
+                    recommended: hardware["recommended"].as_str().map(|p|RecordedPreset::from(preset_from(p))),
+                    detected: hardware["description"].as_str().map(str::to_owned),
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -2389,6 +2467,7 @@ async fn onboarding_choose_controller(
     port: u8,
     runtime: Option<String>,
     legacy_root: Option<String>,
+    expected_device: Option<String>,
 ) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
@@ -2408,7 +2487,19 @@ async fn onboarding_choose_controller(
         // The lookup, and the wording of every refusal, live in the core. A
         // window that built this itself could build the wrong evidence, and
         // nothing could test it there.
+        if let Some(expected) = expected_device.as_deref() {
+            let pads = scan.playable_pads();
+            let actual = pads.get(usize::from(port)).map(|pad| pad.device_string());
+            if actual.as_deref() != Some(expected) {
+                return Err("The controller list changed. Scan again and select your controller.".to_string());
+            }
+        }
         let answer = Satisfaction::controller_on_port(&scan, port)?;
+        let settings_file = reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
+        let mut preferences = reborn_core::settings::Settings::load(&settings_file).map_err(|e|e.to_string())?;
+        preferences.primary_controller = scan.playable_pads().get(usize::from(port)).map(|pad|pad.device_string());
+        if let Some(slots)=preferences.controller_slots.as_mut(){let selected=preferences.primary_controller.clone();for slot in slots.iter_mut(){if *slot==selected{*slot=None;}}slots[0]=selected;}
+        preferences.save(&settings_file).map_err(|e|e.to_string())?;
         let mut flow = open_flow(legacy_root)?;
         let advance = flow
             .satisfy(Stage::ControllerSetup, answer)
@@ -2687,10 +2778,10 @@ async fn controls_options(runtime: Option<String>) -> Result<Vec<ControlsOptionV
         };
 
         // No pad means no suggestion, rather than a suggestion nothing backs.
-        let suggested = scan
-            .playable_pads()
-            .first()
-            .map(|pad| ControlsProfile::suggested_for(pad.identity().family));
+        let saved=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let pads=scan.playable_pads();
+        let selected=pads.iter().find(|pad|Some(pad.device_string()).as_ref()==saved.primary_controller.as_ref()).or_else(||pads.first());
+        let suggested=selected.map(|pad|ControlsProfile::suggested_for(pad.identity().family));
 
         Ok(ControlsProfile::ALL
             .iter()
@@ -2810,7 +2901,7 @@ async fn onboarding_run_task(
                     // Find the folder that already exists. Creating a fresh one
                     // here is the bug that booted the game to factory defaults
                     // with none of the player's saves.
-                    user_dir: None,
+                    user_dir: selected_user_dir(&p, None)?,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -3050,11 +3141,12 @@ async fn onboarding_decline_migration(
 /// The copy itself is `migration_apply`, which takes its own confirm.
 #[tauri::command]
 async fn onboarding_accept_migration(
-    legacy_root: String,
+    legacy_root: Option<String>,
 ) -> Result<OnboardingStepView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let source = PathBuf::from(&legacy_root);
-        let mut flow = open_flow(Some(legacy_root))?;
+        let source = legacy_root.map(PathBuf::from).or_else(|| default_legacy_root(&Platform::detect()))
+            .ok_or("Choose your previous installation folder before copying saves.")?;
+        let mut flow = open_flow(Some(source.display().to_string()))?;
         let advance = flow
             .satisfy(Stage::MigrationOffer, Satisfaction::Migrating { source })
             .map_err(|e| e.to_string())?;
@@ -3571,6 +3663,36 @@ async fn update_policy_set(automatic: bool) -> Result<UpdatePolicyView, String> 
     update_policy().await
 }
 
+fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<PathBuf>, String> {
+    if let Some(value) = hint.filter(|v| !v.trim().is_empty()) {
+        return Ok(Some(reborn_core::session::user_path(value)));
+    }
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
+    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?.user_dir)
+}
+
+#[tauri::command]
+async fn settings_paths() -> Result<serde_json::Value, String> {
+    let p = Platform::detect();
+    let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+    let s = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"runtime": s.runtime_exe, "game": s.game_path,
+        "userDir": s.user_dir, "legacyRoot": s.legacy_root}))
+}
+
+#[tauri::command]
+async fn pick_path(kind: String) -> Result<Option<String>, String> {
+    let dialog = rfd::AsyncFileDialog::new().set_title("Choose a location for NFL Street Reborn");
+    let picked = match kind.as_str() {
+        "folder" => dialog.pick_folder().await,
+        "game" => dialog.add_filter("Game image", &["iso", "gcm", "rvz", "ciso", "wbfs"]).pick_file().await,
+        "runtime" => dialog.pick_file().await,
+        "manifest" => dialog.add_filter("Component manifest", &["json"]).pick_file().await,
+        _ => return Err("Unknown file type".into()),
+    };
+    Ok(picked.map(|f| f.path().display().to_string()))
+}
+
 #[derive(Debug, Serialize)]
 struct PathSetView {
     which: String,
@@ -3592,7 +3714,8 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
             "runtime" => PathSetting::Runtime,
             "game" => PathSetting::Game,
             "user_dir" => PathSetting::UserDir,
-            other => return Err(format!("no path setting called {other}. Known: runtime, game, user_dir")),
+            "legacy_root" => PathSetting::LegacyRoot,
+            other => return Err(format!("no path setting called {other}. Known: runtime, game, user_dir, legacy_root")),
         };
         let p = Platform::detect();
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
@@ -3750,6 +3873,7 @@ struct UpdateApplyView {
 async fn update_apply(path: String, confirm: bool) -> Result<UpdateApplyView, String> {
     confirmed(confirm, "update_apply", "start the installer and close the launcher")?;
     tauri::async_runtime::spawn_blocking(move || {
+        let guard=LaunchGuard::acquire()?;
         let p = Platform::detect();
         let installer = reborn_core::session::user_path(&path);
         // Only something the launcher downloaded and verified.
@@ -3763,7 +3887,8 @@ async fn update_apply(path: String, confirm: bool) -> Result<UpdateApplyView, St
         }
         reborn_core::update::apply(&p, &installer).map_err(|e| e.to_string())?;
         // Out of the installer's way. A moment for the reply to reach the page.
-        std::thread::spawn(|| {
+        std::thread::spawn(move || {
+            let _guard=guard;
             std::thread::sleep(std::time::Duration::from_millis(1200));
             std::process::exit(0);
         });
@@ -4749,6 +4874,18 @@ mod shortcut_tests {
     use super::*;
 
     #[test]
+    fn another_launch_is_refused_until_the_session_guard_is_released() {
+        assert!(!session_active());
+        {
+            let _guard = LaunchGuard::acquire().unwrap();
+            assert!(session_active());
+            assert!(LaunchGuard::acquire().is_err());
+        }
+        assert!(!session_active());
+        assert!(LaunchGuard::acquire().is_ok());
+    }
+
+    #[test]
     fn the_shortcut_switches_are_recognized_and_nothing_else_is() {
         let m = |args: &[&str]| mode_from(args.iter().map(|s| s.to_string()));
         // argv[0] is the executable, so a switch is never the first item.
@@ -4801,6 +4938,19 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             // Already here.
+            setup_tools::setup_install_choice,
+            setup_tools::setup_install_info,
+            setup_tools::setup_import_existing_game,
+            setup_tools::setup_migrate_install,
+            setup_tools::setup_graphics_options,
+            setup_tools::setup_save_graphics_options,
+            setup_tools::setup_hardware_info,
+            setup_tools::setup_import_game,
+            setup_tools::setup_use_existing,
+            setup_tools::controller_slots,
+            setup_tools::controller_assign_player,
+            setup_tools::setup_controller_mapping,
+            setup_tools::setup_save_mapping,
             paths,
             devices,
             sessions,
@@ -4809,6 +4959,7 @@ fn main() {
             prepare_launch,
             launch,
             launch_check,
+            session_active,
             // Where the game will boot from.
             user_dir,
             // The launcher's own mod library and composition.
@@ -4857,6 +5008,8 @@ fn main() {
             stats_ingest,
             stats_submit,
             settings_set_path,
+            settings_paths,
+            pick_path,
             stats_credential_set,
             stats_credential_forget,
             update_check,
@@ -4888,6 +5041,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_image_rejects_missing_empty_directory_and_unreadable_content() {
+        let root = std::env::temp_dir().join(format!("reborn-setup-image-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir(&root).unwrap();
+        let game = root.join("game.iso");
+        assert!(checked_setup_image(&game).is_err());
+        std::fs::write(&game, []).unwrap();
+        assert!(checked_setup_image(&game).is_err());
+        std::fs::write(&game, b"test image bytes").unwrap();
+        assert!(checked_setup_image(&game).is_err());
+        let wrong = root.join("game.txt");
+        std::fs::write(&wrong, b"test image bytes").unwrap();
+        assert!(checked_setup_image(&wrong).is_err());
+        let dir = root.join("folder.iso");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(checked_setup_image(&dir).is_err());
+        std::fs::remove_file(game).unwrap();
+        std::fs::remove_file(wrong).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     use reborn_core::manifest::{ManifestFile, Sha256Hex};
     use reborn_core::migration::LegacyInstall;

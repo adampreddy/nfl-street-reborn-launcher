@@ -91,7 +91,7 @@ async function act(cmd, args) {
   busy = true;
   problem = null;
   notice = null;
-  draw();
+  if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
   try {
     const r = await call(cmd, args);
     if (cmd === "controls_set") {
@@ -105,6 +105,7 @@ async function act(cmd, args) {
     problem = reason(e);
   }
   busy = false;
+  window.setLauncherBusy?.(false);
   draw();
 }
 
@@ -156,7 +157,7 @@ function managed(id) {
 
 // One radio row. `checked` is the fact from the core; `pick` is what to do.
 function choice(name, what, why, checked, pick) {
-  const input = el("input", { type: "radio", name, checked, disabled: busy, onchange: pick });
+  const input = el("input", { type: "radio", name, value: what, checked, disabled: busy, onchange: pick });
   return el(
     "label",
     { class: "choice" + (checked ? " selected" : "") },
@@ -167,7 +168,7 @@ function choice(name, what, why, checked, pick) {
 }
 
 function controlsSection() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Button art" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Button textures" }));
 
   if (current && current.profile) {
     const from = current.source === "settings" ? "settings" : "first run";
@@ -176,7 +177,7 @@ function controlsSection() {
     sec.append(
       el("p", {
         class: "absent",
-        text: "Nothing chosen yet. The game draws its own art until one is picked.",
+        text: "Using the original GameCube button textures.",
       }),
     );
   }
@@ -184,8 +185,7 @@ function controlsSection() {
     el("p", {
       class: "note",
       text:
-        "A setting, not a mod. Picking one turns its pack on and the other off, " +
-        "and the game loads it at the next launch or right now if it is not running.",
+        "Choose the artwork that matches your controller. Changes take effect when you next start the game.",
     }),
   );
 
@@ -201,9 +201,11 @@ function controlsSection() {
   const list = Array.isArray(options) ? options : [];
   for (const o of list) {
     const isCurrent = !!(current && current.profile === o.slug);
-    const what = o.label + (o.suggested ? "  (your pad suggests this)" : "");
-    const why = (o.describes || "") + (o.pack ? ` Applies ${o.pack}.` : " Applies no pack: the disc's own art.");
-    sec.append(choice("controls", what, why, isCurrent, () => act("controls_set", { profile: o.slug, runtime: runtimeHint() })));
+    const what = o.label;
+    const why = `${o.label} button artwork for the game.`;
+    const option=choice("controls", what, why, isCurrent, () => act("controls_set", { profile: o.slug, runtime: runtimeHint() }));
+    if(o.suggested)option.append(el("span",{class:"recommendation-badge",text:"Recommended"}));
+    sec.append(option);
   }
   return sec;
 }
@@ -228,13 +230,11 @@ function groupSections() {
     const missing = shown.filter((id) => !packages().some((p) => p.id === id));
     const active = entries.find((p) => p.active) || null;
 
-    const sec = el("section", { class: "block" }, el("h2", { text: "Pick one" }));
+    const sec = el("section", { class: "block" }, el("h2", { text: "Choose a variant" }));
     sec.append(
       el("p", {
         class: "note",
-        text: g.computed
-          ? `These all write ${g.example_path || "the same file"}, so only one can be on. Turning one on turns the others off.`
-          : "Declared as one group by their authors. They do not overwrite each other, but they are meant to be used one at a time.",
+        text: "These mods change the same part of the game. Select one to use.",
       }),
     );
     sec.append(
@@ -244,7 +244,7 @@ function groupSections() {
     );
     for (const p of entries) {
       const size = mb(p.bytes);
-      const why = [p.version, `${p.files} file(s)`, size].filter(Boolean).join(", ");
+      const why = [p.version, `${p.files} ${p.files === 1 ? "file" : "files"}`, size].filter(Boolean).join(", ");
       sec.append(
         choice("group-" + sections.length, p.name || p.id, why, !!p.active, () => {
           if (!p.active) act("mods_toggle", { id: p.id, version: p.version, on: true, runtime: runtimeHint() });
@@ -253,6 +253,12 @@ function groupSections() {
     }
     for (const id of missing) {
       sec.append(el("p", { class: "partial", text: `${id} is in this group but could not be read.` }));
+    }
+    const grid = el("div", { class: "mod-options" });
+    // Move only choices; warnings and the explanation remain full width.
+    if (typeof sec.querySelectorAll === "function") {
+      for (const choice of sec.querySelectorAll(":scope > .choice")) grid.append(choice);
+      sec.append(grid);
     }
     sections.push(sec);
   }
@@ -263,7 +269,7 @@ function otherSection(covered) {
   const rest = packages().filter((p) => !covered.has(p.id) && !managed(p.id));
   if (rest.length === 0) return null;
   const sec = el("section", { class: "block" }, el("h2", { text: "Other mods" }));
-  sec.append(el("p", { class: "note", text: "These do not overlap anything, so each is its own switch." }));
+  sec.append(el("p", { class: "note", text: "Enable the texture packs you want to use." }));
   for (const p of rest) {
     const input = el("input", {
       type: "checkbox",
@@ -271,7 +277,7 @@ function otherSection(covered) {
       disabled: busy,
       onchange: () => act("mods_toggle", { id: p.id, version: p.version, on: !p.active, runtime: runtimeHint() }),
     });
-    const why = [p.version, `${p.files} file(s)`, mb(p.bytes)].filter(Boolean).join(", ");
+    const why = [p.version, `${p.files} ${p.files === 1 ? "file" : "files"}`, mb(p.bytes)].filter(Boolean).join(", ");
     sec.append(
       el(
         "label",
@@ -292,7 +298,7 @@ function staleSection() {
   const listed = library && Array.isArray(library.activation) ? library.activation : [];
   const stale = listed.filter((a) => !packages().some((p) => p.id === a.id && p.version === a.version));
   if (stale.length === 0) return null;
-  const sec = el("section", { class: "block" }, el("h2", { text: "Listed as on, not installed" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Missing mod files" }));
   sec.append(
     el("p", {
       class: "note",
@@ -322,7 +328,7 @@ function staleSection() {
 function unreadableSection() {
   const list = library && Array.isArray(library.unreadable) ? library.unreadable : [];
   if (list.length === 0) return null;
-  const sec = el("section", { class: "block" }, el("h2", { text: "Could not be read" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Unavailable mods" }));
   for (const why of list) sec.append(el("p", { class: "partial", text: String(why) }));
   return sec;
 }
@@ -335,7 +341,7 @@ function fact(name, value) {
 }
 
 function appliedSection() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "What the game loads" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Applied mods" }));
   if (lastSync) {
     sec.append(el("p", { class: lastSync.synced ? "" : "refusal", text: lastSync.note || "" }));
     if (lastSync.synced) {
@@ -374,7 +380,7 @@ function draw() {
   if (problem) parts.push(el("p", { class: "refusal", text: problem }));
   if (notice) parts.push(el("p", { class: "partial", text: notice }));
 
-  parts.push(controlsSection());
+
 
   if (!library) {
     parts.push(
@@ -393,13 +399,15 @@ function draw() {
       parts.push(
         el("p", {
           class: "absent",
-          text: `No packages are installed under ${library.packages_root || "the packages folder"}. Import the JSGME library from the harness to add some.`,
+          text: `No packages are installed under ${library.packages_root || "the packages folder"}. Resume game setup to import your existing mods.`,
         }),
       );
     }
   }
 
-  parts.push(appliedSection());
+  parts.push(el("a", { href: "onboarding.html", class: "button", text: "Import from an existing installation" }));
+  parts.push(el("details", { class: "block" }, el("summary", { text: "Button prompts" }), controlsSection()));
+  parts.push(el("details", { class: "block" }, el("summary", { text: "Mod synchronization details" }), appliedSection()));
   screen.replaceChildren(...parts.filter(Boolean));
   return parts.filter(Boolean);
 }

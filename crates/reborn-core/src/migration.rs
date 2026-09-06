@@ -157,6 +157,16 @@ pub struct MigrationPlan {
 }
 
 impl MigrationPlan {
+    /// Onboarding imports personal progress only. Mod state cannot make these
+    /// files unsafe: no texture is imported as a pristine original.
+    pub fn saves_only(install: &LegacyInstall) -> Self {
+        let mut plan = Self::build(install);
+        plan.steps.retain(|step| step.irreplaceable);
+        plan.needs_mod_unapply = false;
+        plan.blocked = None;
+        plan
+    }
+
     pub fn build(install: &LegacyInstall) -> Self {
         let mut steps = Vec::new();
         let mut skipped = Vec::new();
@@ -278,6 +288,12 @@ impl MigrationPlan {
 /// a destination that may already hold a previous attempt's output, and silent
 /// overwriting is how a partially migrated save gets replaced by an older one.
 pub fn copy_tree_no_clobber(from: &Path, to: &Path) -> Result<u64> {
+    copy_tree_with_progress(from,to,&mut |_|{})
+}
+pub fn copy_tree_with_progress(from:&Path,to:&Path,progress:&mut dyn FnMut(u64))->Result<u64>{
+    copy_tree_checked(from,to,&mut Vec::new(),progress)
+}
+fn copy_tree_checked(from: &Path, to: &Path, ancestors: &mut Vec<PathBuf>, progress:&mut dyn FnMut(u64)) -> Result<u64> {
     let mut copied = 0u64;
     if !from.is_dir() {
         return Ok(0);
@@ -287,6 +303,12 @@ pub fn copy_tree_no_clobber(from: &Path, to: &Path) -> Result<u64> {
         source,
     })?;
 
+    let canonical = std::fs::canonicalize(from)?;
+    let target = std::fs::canonicalize(to)?;
+    if target.starts_with(&canonical) || ancestors.contains(&canonical) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "The import contains a directory loop or its destination is inside its source.").into());
+    }
+    ancestors.push(canonical);
     let entries = std::fs::read_dir(from).map_err(|source| Error::Io {
         path: from.to_path_buf(),
         source,
@@ -301,7 +323,7 @@ pub fn copy_tree_no_clobber(from: &Path, to: &Path) -> Result<u64> {
         let dest = to.join(entry.file_name());
 
         if src.is_dir() {
-            copied += copy_tree_no_clobber(&src, &dest)?;
+            copied += copy_tree_checked(&src, &dest, ancestors, progress)?;
         } else if dest.exists() {
             // Already there. Leave it alone and say nothing, because the
             // destination is authoritative once it exists.
@@ -312,14 +334,24 @@ pub fn copy_tree_no_clobber(from: &Path, to: &Path) -> Result<u64> {
                 source,
             })?;
             copied += bytes;
+            progress(bytes);
         }
     }
+    ancestors.pop();
     Ok(copied)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copying_into_own_tree_is_rejected() {
+        let dir=tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("save.raw"),b"keep").unwrap();
+        assert!(copy_tree_no_clobber(dir.path(),&dir.path().join("nested")).is_err());
+        assert_eq!(std::fs::read(dir.path().join("save.raw")).unwrap(),b"keep");
+    }
 
     /// Build a plausible 2.1 install on disk.
     fn legacy(dir: &Path, with_mods: bool, with_backup: bool) -> LegacyInstall {

@@ -89,12 +89,7 @@ pub enum GraphicsPreset {
 impl GraphicsPreset {
     /// Internal resolution multiplier.
     pub fn internal_resolution(self) -> u8 {
-        match self {
-            GraphicsPreset::Performance => 1,
-            GraphicsPreset::Balanced => 3,
-            GraphicsPreset::Quality => 4,
-            GraphicsPreset::Ultra => 6,
-        }
+        3
     }
 
     /// ReShade is Windows only, and the Performance preset turns it off.
@@ -104,10 +99,10 @@ impl GraphicsPreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            GraphicsPreset::Performance => "Performance",
-            GraphicsPreset::Balanced => "Balanced",
-            GraphicsPreset::Quality => "Quality",
-            GraphicsPreset::Ultra => "Ultra",
+            GraphicsPreset::Performance => "ReShade Off",
+            GraphicsPreset::Balanced => "ReShade Standard",
+            GraphicsPreset::Quality => "ReShade Enhanced",
+            GraphicsPreset::Ultra => "ReShade Enhanced",
         }
     }
 }
@@ -175,6 +170,9 @@ impl ConfigGenerator {
         // handler is a popup.
         set(&mut dolphin, "Interface", "UsePanicHandlers", "False");
         set(&mut dolphin, "Interface", "ConfirmStop", "False");
+        // Reborn requires 64 MiB of emulated MEM1, regardless of imported preferences.
+        set(&mut dolphin, "Core", "RAMOverrideEnable", "True");
+        set(&mut dolphin, "Core", "MEM1Size", "67108864");
         out.insert("Dolphin.ini".to_string(), dolphin);
 
         let mut gfx = Overlay::new();
@@ -188,11 +186,7 @@ impl ConfigGenerator {
             &mut gfx,
             "Settings",
             "MaxAnisotropy",
-            match config.graphics {
-                GraphicsPreset::Performance => "0",
-                GraphicsPreset::Balanced => "2",
-                GraphicsPreset::Quality | GraphicsPreset::Ultra => "4",
-            },
+            "4",
         );
         set(&mut gfx, "Settings", "ShaderCompilationMode", "2");
         set(&mut gfx, "Settings", "WaitForShadersBeforeStarting", "True");
@@ -200,8 +194,25 @@ impl ConfigGenerator {
         // render black and that gets baked into the player's saves, which is
         // not recoverable from the launcher side.
         set(&mut gfx, "Hacks", "EFBAccessEnable", "True");
+        for (section,values) in Self::required_game_settings() {
+            if let Some(section)=section.strip_prefix("Video_"){gfx.entry(section.into()).or_default().extend(values);}
+            else{out.get_mut("Dolphin.ini").unwrap().entry(section).or_default().extend(values);}
+        }
         out.insert("GFX.ini".to_string(), gfx);
 
+        out
+    }
+
+    /// Durable Reborn compatibility requirements, independent of graphics taste.
+    pub fn required_game_settings() -> Overlay {
+        let mut out=Overlay::new();
+        for (section,key,value) in [
+            ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
+            ("Video_Settings","InternalResolution","3"),("Video_Settings","MSAA","1"),("Video_Settings","SSAA","False"),
+            ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","True"),
+            ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
+            ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True")
+        ] { set(&mut out,section,key,value); }
         out
     }
 
@@ -211,6 +222,10 @@ impl ConfigGenerator {
         out.insert("Dolphin.ini".into(), Self::dolphin_ini(config));
         out.insert("GFX.ini".into(), Self::gfx_ini(config));
         out.insert("Logger.ini".into(), Self::logger_ini());
+        for (name,overlay) in Self::overlays(config){
+            let mut doc=crate::ini::IniDocument::parse(out.get(&name).map(String::as_str).unwrap_or_default());
+            doc.merge(&overlay);out.insert(name,doc.render());
+        }
         out
     }
 
@@ -253,11 +268,7 @@ impl ConfigGenerator {
              EFBAccessEnable = True\n\
              EFBToTextureEnable = False\n",
             res = config.graphics.internal_resolution(),
-            aniso = match config.graphics {
-                GraphicsPreset::Performance => 0,
-                GraphicsPreset::Balanced => 2,
-                GraphicsPreset::Quality | GraphicsPreset::Ultra => 4,
-            },
+            aniso = 4,
         )
     }
 
@@ -452,6 +463,20 @@ impl SessionOutcome {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mandatory_settings_override_live_drift_for_both_builds() {
+        use super::*;
+        use crate::ini::IniDocument;
+        {
+            let mut doc=IniDocument::parse("[Core]\nSyncGPU=False\nCPUThread=False\n[Video_Settings]\nInternalResolution=4\nMSAA=0x00000004\n[Video_Hacks]\nEFBAccessEnable=False\n");
+            doc.merge(&ConfigGenerator::required_game_settings());
+
+            for (section,keys) in ConfigGenerator::required_game_settings(){for(key,value)in keys{assert_eq!(doc.get(&section,&key),Some(value.as_str()));}}
+            assert_eq!(doc.get("Core","CPUThread"),Some("False"));
+            assert!(doc.merge(&ConfigGenerator::required_game_settings()).is_noop());
+        }
+    }
+
     use super::*;
 
     fn config() -> LaunchConfig {
@@ -496,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn presets_increase_resolution_monotonically() {
+    fn every_preset_renders_at_three_times_native() {
         let order = [
             GraphicsPreset::Performance,
             GraphicsPreset::Balanced,
@@ -505,7 +530,7 @@ mod tests {
         ];
         for pair in order.windows(2) {
             assert!(
-                pair[0].internal_resolution() < pair[1].internal_resolution(),
+                pair[0].internal_resolution() == 3 && pair[1].internal_resolution() == 3,
                 "{} should render below {}",
                 pair[0].label(),
                 pair[1].label()
@@ -724,4 +749,19 @@ mod tests {
             "the child did not see NSR_MATCH_CONTEXT"
         );
     }
+}
+
+/// Avoid Dolphin's in-memory settings overwriting configuration written during a session.
+pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        if exe.is_file() {
+            let target=exe.to_string_lossy().replace('/',"\\");
+            let canonical=std::fs::canonicalize(exe)?.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
+            let script="$ErrorActionPreference='Stop'; $running=@(Get-Process -Name $env:REBORN_PROCESS_NAME -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $env:REBORN_PROCESS_PATH -or $_.Path -eq $env:REBORN_PROCESS_CANONICAL}); if($running.Count -gt 0){'running'}";
+            let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
+            if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(std::io::Error::other("Close Reborn Dolphin before applying settings, then try again.").into());}
+        }
+    }
+    Ok(())
 }

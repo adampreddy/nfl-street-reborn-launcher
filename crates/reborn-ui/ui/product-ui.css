@@ -1,0 +1,78 @@
+/* Shared product UI. Brand artwork stays on Play; controls use one type scale. */
+:root{--bg:#14161b;--panel:#1b1e25;--fg:#eef0f5;--muted:#a2aab9;--line:#ffffff12;--rail:184px}
+body.shell{font:400 14px/1.6 Inter,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
+body.shell .app-header{background:var(--bg);padding:0 36px}.breadcrumb{letter-spacing:.1em;color:#929bab}
+body.shell:not(.page-setup) .shell-nav{background:#111319;border-right:1px solid var(--line);padding:0 14px 20px;gap:5px}
+body.shell:not(.page-setup) .shell-nav .brand{height:130px;padding:12px;justify-items:start}
+body.shell:not(.page-setup) .shell-nav a:not(.brand){font:550 13px/1.4 Inter,Segoe UI,sans-serif;letter-spacing:0;text-transform:none;min-height:44px;padding:11px 12px;gap:11px;border-radius:7px;border:1px solid transparent;color:#a9b1c0}
+body.shell:not(.page-setup) .shell-nav a:not(.brand)>svg{display:block;width:18px;height:18px;flex:none}
+body.shell:not(.page-setup) .shell-nav a.current:not(.brand){background:#ffffff08;border-color:#ffffff0c;color:#fff}
+body.shell:not(.page-setup) .shell-nav a.current:before{display:none}
+body.shell:not(.page-setup) .shell-nav a:hover:not(.brand){background:#ffffff0b;color:#fff}
+body.shell:not(.page-setup) main{background:var(--bg);padding:32px 36px 40px}
+body.shell.page-home main{padding:0 0 24px}
+body.shell:not(.page-setup) .page-heading{margin-bottom:28px}
+body.shell:not(.page-setup) .page-heading h1{font:650 30px/1.25 Inter,Segoe UI,sans-serif;text-transform:none;letter-spacing:-.025em;margin:0 0 10px}
+body.shell:not(.page-setup) .purpose{font-size:13px;line-height:1.65;color:var(--muted);max-width:640px}
+body.shell:not(.page-setup) #screen{gap:24px}
+body.shell:not(.page-setup) .block{padding:22px 0;margin:0;border-top:1px solid var(--line)}
+body.shell:not(.page-setup) .block h2{font:600 16px/1.4 Inter,Segoe UI,sans-serif;letter-spacing:-.01em;margin:0 0 12px;text-transform:none}
+body.shell:not(.page-setup) .block>p{margin:0 0 16px;line-height:1.65}
+body.shell button,body.shell .button{font-family:Inter,Segoe UI,sans-serif;font-size:12px;font-weight:550;line-height:1.45;letter-spacing:0;border-radius:6px;min-height:38px;padding:9px 14px;gap:8px;text-transform:none}
+body.shell button:not(.primary):not(.play):not(.write),body.shell .button:not(.primary){background:#ffffff05;border-color:#ffffff26}
+body.shell button:disabled{cursor:default}
+body.shell .hero .play{font-size:15px;font-weight:650;min-height:48px}
+body.shell .note,body.shell .why,body.shell .hint{font-size:12px;line-height:1.6;color:var(--muted);letter-spacing:0;word-spacing:normal}
+body.shell .choice{line-height:1.5}.page-mods .mod-options .choice .why{font-size:11px;margin:0;display:block}
+body.shell:not(.page-setup) .choice{padding:14px 16px;border:1px solid #ffffff14;border-radius:7px;margin:8px 0;background:#1a1d24;min-width:0}
+body.shell:not(.page-setup) .choice.selected,body.shell:not(.page-setup) .choice:has(input:checked){background:#242831;border-color:#737d91}
+body.shell:not(.page-setup) .choice .what{font-size:13px;font-weight:600;letter-spacing:0}
+body.shell .choice input{flex:none;margin-right:10px;accent-color:#db555b}
+body.shell input[type=text],body.shell input[type=password],body.shell input[type=number],body.shell select{font:400 12px/1.5 Inter,Segoe UI,sans-serif;min-height:38px;border-radius:6px;padding:9px 12px;background:#101319;border-color:#3b414d}
+body.shell .path-entry{gap:8px;align-items:stretch;min-width:0}.path-entry button{flex-shrink:0}
+body.shell .settings-row.stack{padding:14px 0;gap:7px 18px}
+body.shell .settings-row.stack>.hint{font-size:11px;line-height:1.65}
+body.shell .settings-row.stack>label{font-size:12px}
+body.shell .facts{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}
+body.shell .facts th{width:140px;color:#a2aab9;font-weight:450;vertical-align:top}
+body.shell .facts td,body.shell .facts th{padding:11px 10px;overflow-wrap:anywhere;line-height:1.65}
+body.shell .mod{padding:16px 0;gap:12px 18px;line-height:1.6}
+body.shell.page-recovery .mod{align-items:start;display:grid;grid-template-columns:210px minmax(0,1fr)}
+body.shell.page-recovery .mod button{min-width:0;justify-content:flex-start;text-align:left}
+body.shell.page-recovery .mod .why{min-width:0;align-self:center}
+body.shell .refusal,body.shell .partial,body.shell .said{border:1px solid #ffffff1a;border-radius:8px;padding:14px 16px;font-size:12px;line-height:1.65;overflow-wrap:anywhere;max-width:100%;box-sizing:border-box}
+body.shell .refusal{border-color:#81474d;background:#2c1d24;color:#efd0d4}
+body.shell .partial{border-color:#6b5940;background:#27231d;color:#e3d5bd}
+body.shell .said{border-color:#3a6252;background:#1b2925;color:#c5e0d2}
+body.shell details>summary{line-height:1.6;padding:8px 0;cursor:pointer;font-size:12px}
+body.shell details[open]>summary{margin-bottom:12px}
+body.shell .input-footer{background:#111319;border-top:1px solid var(--line);padding:0 24px;color:#969ead;font-size:10px;gap:16px;line-height:1.5}
+body.shell .input-footer kbd{margin:0 5px 0 12px}body.shell .input-footer kbd:first-child{margin-left:0}
+body.shell .prompt-glyphs{gap:7px;margin-left:16px}.page-controls .choice .why{display:block;margin-top:6px}
+body.shell .recommendation-badge{font:500 10px/1.4 Inter,sans-serif;color:#d2e7d9;background:#294235;border:1px solid #42654f;padding:3px 7px;border-radius:4px;white-space:nowrap}
+body.shell .choice .recommendation-badge{display:inline-block;vertical-align:middle;margin-left:8px}
+body.shell .status-line{line-height:1.6;flex-wrap:wrap}
+body.shell .quick-link strong{font:600 14px/1.45 Inter,sans-serif;letter-spacing:0;text-transform:none}
+body.shell .quick-link small{line-height:1.5}
+@media(max-width:1000px){:root{--rail:160px}body.shell:not(.page-setup) main{padding:24px}body.shell.page-home main{padding:0 0 20px}body.shell:not(.page-setup) .shell-nav a:not(.brand){font-size:12px;padding:10px;gap:9px}body.shell .facts th{width:112px}}
+@media(max-width:650px){:root{--rail:68px}body.shell:not(.page-setup) .shell-nav{padding:0 8px 16px}body.shell:not(.page-setup) .shell-nav a:not(.brand){justify-content:center}body.shell:not(.page-setup) .shell-nav .brand{height:88px;padding:0}body.shell.page-recovery .mod{grid-template-columns:1fr}.path-entry{flex-wrap:wrap}.path-entry input{flex-basis:100%}}
+
+#input-hints{display:flex;align-items:center;gap:18px;min-width:0}.input-hint{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.input-hint kbd{margin:0!important;font:500 10px/1.5 Inter,sans-serif;color:#c1c9d7}
+@media(max-width:1000px){#input-hints{gap:10px}.input-hint{gap:4px}.input-hint:nth-child(5){display:none}}
+
+body.shell:not(.page-setup) .choice{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:6px 10px;align-items:center}
+body.shell:not(.page-setup) .choice>input{grid-column:1;grid-row:1;margin:0}
+body.shell:not(.page-setup) .choice>.what{grid-column:2;grid-row:1}
+body.shell:not(.page-setup) .choice>.why{grid-column:2;grid-row:2;margin:0;display:block}
+body.shell:not(.page-setup) .choice>.prompt-glyphs{grid-column:3;grid-row:1 / span 2;margin:0;float:none;align-self:center}
+@media(max-width:900px){body.shell:not(.page-setup) .choice>.prompt-glyphs{gap:4px}.prompt-glyphs>span{width:20px;height:20px}}
+
+body.shell .facts th,body.shell .facts td{white-space:normal!important;word-break:normal;overflow-wrap:anywhere}
+body.shell .facts td{padding-left:18px}
+body.shell .facts th{padding-right:16px}
+
+body.shell .hero .play{font-family:Inter,Segoe UI,sans-serif;letter-spacing:0;text-transform:none}
+body.shell .quick-link .eyebrow{font:550 10px/1.5 Inter,Segoe UI,sans-serif;letter-spacing:.04em;color:#a2aab9}
+body.shell:not(.page-recovery) details.core{display:none}
+
+body.shell:not(.page-setup) .choice>.recommendation-badge{grid-column:3;grid-row:1;align-self:center;margin:0}

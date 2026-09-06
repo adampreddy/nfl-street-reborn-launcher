@@ -192,37 +192,37 @@ check("boot reads the library, the options and the current profile",
 
 // ---- the shape of the real machine -------------------------------------------
 {
-  const picks = sections("Pick one");
+  const picks = sections("Choose a variant");
   check("seven footballs draw as ONE pick-one group, and the controls pair does not", picks.length === 1, `${picks.length} groups`);
   const radios = picks.length ? inputs(picks[0]).filter((i) => i.attrs.type === "radio") : [];
   check("the group has None plus seven", radios.length === 8, `${radios.length} radios`);
   check("exactly one is checked, the active one", radios.filter((r) => r.checked).length === 1);
   check("None is not checked while purple is on", radios.length && !radios[0].checked);
-  check("the group says WHY it is exclusive", text(picks[0]).includes(BALL));
+  check("the group says WHY it is exclusive", text(picks[0]).includes("same part of the game"));
 
-  const art = sections("Button art");
+  const art = sections("Button textures");
   check("button art is its own section", art.length === 1);
   const artRadios = art.length ? inputs(art[0]) : [];
   check("three profiles, Xbox checked", artRadios.length === 3 && artRadios[0].checked && !artRadios[1].checked);
   check("it says where the current one came from", text(art[0]).includes("from settings"));
-  check("the suggestion is marked, and marked as a suggestion", text(art[0]).includes("your pad suggests"));
+  check("the suggestion is marked, and marked as a suggestion", text(art[0]).includes("Recommended"));
 
   const other = sections("Other mods");
   check("a standalone package is its own switch", other.length === 1 && inputs(other[0]).some((i) => i.attrs.type === "checkbox"));
 
-  const stale = sections("Listed as on, not installed");
+  const stale = sections("Missing mod files");
   check("an activation entry with no package is drawn, not dropped", stale.length === 1 && text(stale[0]).includes("jsgme.ghost-football"));
 
-  const bad = sections("Could not be read");
+  const bad = sections("Unavailable mods");
   check("an unreadable package is named", bad.length === 1 && text(bad[0]).includes("not a readable manifest"));
 
-  check("nothing is synced until something is done", text(sections("What the game loads")[0]).includes("Not checked yet"));
+  check("nothing is synced until something is done", text(sections("Applied mods")[0]).includes("Not checked yet"));
 }
 
 // ---- clicks do what the rule says -------------------------------------------
 {
   calls.length = 0;
-  const pick = sections("Pick one")[0];
+  const pick = sections("Choose a variant")[0];
   const radios = inputs(pick);
   radios[0].listeners.change[0]();   // None
   await tick(); await tick(); await tick();
@@ -230,12 +230,12 @@ check("boot reads the library, the options and the current profile",
   check("choosing None turns the active football OFF",
     toggled && toggled[1].id === "jsgme.purple-football" && toggled[1].on === false,
     JSON.stringify(toggled));
-  check("the sync that came back is what the page shows", text(sections("What the game loads")[0]).includes("8059"));
-  check("a moved-aside folder is named, with nothing deleted", text(sections("What the game loads")[0]).includes("nothing was deleted"));
-  check("a listed-but-missing package is shown in the sync facts", text(sections("What the game loads")[0]).includes("jsgme.ghost-football"));
+  check("the sync that came back is what the page shows", text(sections("Applied mods")[0]).includes("8059"));
+  check("a moved-aside folder is named, with nothing deleted", text(sections("Applied mods")[0]).includes("nothing was deleted"));
+  check("a listed-but-missing package is shown in the sync facts", text(sections("Applied mods")[0]).includes("jsgme.ghost-football"));
 
   calls.length = 0;
-  const again = inputs(sections("Pick one")[0]);
+  const again = inputs(sections("Choose a variant")[0]);
   const purple = again.find((r, i) => i > 0 && r.checked);
   purple.listeners.change[0]();     // the one already on
   await tick(); await tick();
@@ -249,7 +249,7 @@ check("boot reads the library, the options and the current profile",
     on && on[1].id === "jsgme.aqua-football" && on[1].on === true, JSON.stringify(on));
 
   calls.length = 0;
-  const art = inputs(sections("Button art")[0]);
+  const art = inputs(sections("Button textures")[0]);
   art[1].listeners.change[0]();     // PlayStation
   await tick(); await tick(); await tick();
   check("picking button art calls controls_set", calls.some(([k, a]) => k === "controls_set" && a.profile === "playstation"));
@@ -286,14 +286,14 @@ survives("every field null", {
   library: { packages_root: null, packages: null, unreadable: null, activation: null, exclusive: null, managed_by_controls: null },
   options: { error: "scan failed" }, current: null, lastSync: null,
 });
-check("a failed profile read is said where the profiles would be", text(sections("Button art")[0]).includes("scan failed"));
+check("a failed profile read is said where the profiles would be", text(sections("Button textures")[0]).includes("scan failed"));
 survives("a refused sync", { library, options, current, lastSync: { synced: false, refusal: "two write one file", note: "Mods were not applied: two write one file" } });
 check("a refusal is drawn as a refusal", walk(screen()).some((n) => n.className === "refusal" && n.textContent.includes("not applied")));
 survives("a group whose member could not be read", {
   library: { ...library, packages: library.packages.filter((p) => p.id !== "jsgme.camo-football") },
   lastSync: null,
 });
-check("the unreadable member is named inside its group", text(sections("Pick one")[0]).includes("jsgme.camo-football is in this group but could not be read"));
+check("the unreadable member is named inside its group", text(sections("Choose a variant")[0]).includes("jsgme.camo-football is in this group but could not be read"));
 
 console.log(fails === 0 ? "\nPASS: the mods page draws the rules" : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

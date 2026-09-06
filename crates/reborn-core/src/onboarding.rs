@@ -95,7 +95,7 @@ use crate::supervisor::{Clock, SystemClock};
 /// this constant moves. Re-running first run to collect one new answer would
 /// re-offer migration and re-run preparation, so a future stage has to be asked
 /// as its own targeted prompt, not by rewinding the whole flow.
-pub const FLOW_VERSION: u32 = 1;
+pub const FLOW_VERSION: u32 = 2;
 
 /// The journal filename, under [`DataDir::Config`]. Named here so nothing else
 /// guesses it.
@@ -164,9 +164,9 @@ impl Stage {
         Stage::GameVerification,
         Stage::MigrationOffer,
         Stage::MigrationCopy,
-        Stage::SystemCheck,
         Stage::ControllerSetup,
         Stage::ControlsProfile,
+        Stage::SystemCheck,
         Stage::Updates,
         Stage::Preparation,
         Stage::Completion,
@@ -294,7 +294,7 @@ impl Stage {
             Stage::GameVerification => matches!(how, Satisfaction::GameConfirmed { .. }),
             Stage::MigrationOffer => matches!(
                 how,
-                Satisfaction::Migrating { .. } | Satisfaction::MigrationDeclined
+                Satisfaction::Migrating { .. } | Satisfaction::ImportingCurrent { .. } | Satisfaction::MigrationDeclined
             ),
             Stage::MigrationCopy => matches!(how, Satisfaction::Migrated { .. }),
             Stage::SystemCheck => matches!(how, Satisfaction::Graphics { .. }),
@@ -312,13 +312,7 @@ impl Stage {
     }
 
     fn index(self) -> usize {
-        Stage::ALL
-            .iter()
-            .position(|s| *s == self)
-            // Unreachable while ALL is complete, which a test enforces. Zero is
-            // the safe fallback: it orders this stage first, which can only make
-            // an ordering check stricter, never looser.
-            .unwrap_or(0)
+        Self::ALL.iter().position(|stage| *stage == self).expect("stage belongs to flow")
     }
 }
 
@@ -451,6 +445,8 @@ pub enum Satisfaction {
     /// [`Stage::MigrationCopy`] cannot be pointed at a folder the player was
     /// never shown.
     Migrating { source: PathBuf },
+    /// Copy the current installation without restoring or changing its mods.
+    ImportingCurrent { source: PathBuf },
     /// Leave the 2.1 install where it is. Nothing is deleted either way.
     MigrationDeclined,
     /// The copy finished. `bytes` is what was copied, not an estimate.
@@ -1120,7 +1116,7 @@ impl Onboarding {
     /// [`crate::migration`] so its saves-first ordering cannot be restated
     /// differently here.
     pub fn migration_plan(&self) -> Option<MigrationPlan> {
-        self.env.legacy.as_ref().map(MigrationPlan::build)
+        self.env.legacy.as_ref().map(MigrationPlan::saves_only)
     }
 
     /// The first stage that still needs an answer.
@@ -1299,7 +1295,7 @@ impl Onboarding {
 
         // The migration decision is checked against the install that was
         // actually found, and against migration.rs's own blocking rule.
-        if let Satisfaction::Migrating { source } = &how {
+        if let Satisfaction::Migrating { source } | Satisfaction::ImportingCurrent { source } = &how {
             let Some(found) = self.env.legacy.as_ref() else {
                 return Ok(Advance::Refused(Refusal::NotOnThisMachine {
                     stage,
@@ -1314,7 +1310,7 @@ impl Onboarding {
                 }));
             }
             if let Some(plan) = self.migration_plan() {
-                if let Some(why) = plan.blocked {
+                if let Some(why) = plan.blocked.filter(|_| matches!(&how, Satisfaction::Migrating { .. })) {
                     return Ok(Advance::Refused(Refusal::BlockedMigration { why }));
                 }
             }
@@ -1391,7 +1387,7 @@ impl Onboarding {
         {
             s.game_bytes = *total_bytes;
         }
-        if let Some(Satisfaction::Migrating { source }) =
+        if let Some(Satisfaction::Migrating { source } | Satisfaction::ImportingCurrent { source }) =
             self.progress.satisfaction(Stage::MigrationOffer)
         {
             s.migrated_from = Some(source.clone());
@@ -1654,7 +1650,6 @@ mod tests {
                 .unwrap(),
         );
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
         // Mods are chosen before Preparation, which is what applies them,
         // so walking 'to preparation' now passes through here.
@@ -1663,6 +1658,7 @@ mod tests {
             ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.reach(Stage::Updates).unwrap());
         recorded(
             ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
@@ -1797,13 +1793,13 @@ mod tests {
                     .unwrap(),
             );
             recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-            recorded(ob.reach(Stage::SystemCheck).unwrap());
+            recorded(ob.reach(Stage::ControllerSetup).unwrap());
             // The process dies here.
         }
         let ob = fresh(dir.path());
         match ob.next() {
             Next::Show { stage, resumed, .. } => {
-                assert_eq!(stage, Stage::SystemCheck, "must not restart at welcome");
+                assert_eq!(stage, Stage::ControllerSetup, "must not restart at welcome");
                 assert!(resumed, "the player has been on this screen before");
             }
             other => panic!("expected the graphics screen again, got {other:?}"),
@@ -1882,6 +1878,8 @@ mod tests {
                     .unwrap(),
             );
             recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
+        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        recorded(ob.satisfy(Stage::ControlsProfile, controls()).unwrap());
             recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         }
         let mut raw = std::fs::read_to_string(dir.path().join(JOURNAL)).unwrap();
@@ -1952,45 +1950,24 @@ mod tests {
         assert_eq!(plan.steps[0].to, DataDir::Saves);
     }
 
-    /// migration.rs blocks when mods are applied with no !BACKUP, because
-    /// copying then captures modded files as if they were pristine. Onboarding
-    /// must not let the player accept that.
     #[test]
-    fn a_blocked_migration_cannot_be_accepted_as_a_decision() {
+    fn save_import_is_allowed_with_applied_mods_but_never_copies_textures() {
         let dir = tempfile::tempdir().unwrap();
         let legacy_dir = dir.path().join("legacy");
         std::fs::create_dir_all(&legacy_dir).unwrap();
         let install = legacy(&legacy_dir, true, false);
         let env = Environment::with_legacy_install(install.clone());
         let mut ob = Onboarding::open_at(dir.path(), env, FixedClock::new(1)).unwrap();
-
         recorded(ob.reach(Stage::Welcome).unwrap());
-        recorded(
-            ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged)
-                .unwrap(),
-        );
+        recorded(ob.satisfy(Stage::Welcome, Satisfaction::Acknowledged).unwrap());
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-
-        match ob
-            .satisfy(
-                Stage::MigrationOffer,
-                Satisfaction::Migrating {
-                    source: install.root.clone(),
-                },
-            )
-            .unwrap()
-        {
-            Advance::Refused(Refusal::BlockedMigration { why }) => {
-                assert!(why.contains("!BACKUP"), "{why}");
-            }
-            other => panic!("a blocked plan must not be accepted, got {other:?}"),
-        }
-
-        // Declining is still available, so the player is not stuck.
-        recorded(
-            ob.satisfy(Stage::MigrationOffer, Satisfaction::MigrationDeclined)
-                .unwrap(),
-        );
+        recorded(ob.satisfy(Stage::MigrationOffer, Satisfaction::Migrating { source: install.root }).unwrap());
+        let plan = ob.migration_plan().unwrap();
+        assert!(plan.blocked.is_none());
+        assert!(!plan.needs_mod_unapply);
+        assert!(!plan.steps.is_empty());
+        assert!(plan.steps.iter().all(|step| step.irreplaceable));
+        assert!(!plan.steps.iter().any(|step| step.to == DataDir::LibraryTextures));
     }
 
     #[test]
@@ -2048,7 +2025,7 @@ mod tests {
         match ob.next() {
             Next::Show { stage, .. } => assert_eq!(
                 stage,
-                Stage::SystemCheck,
+                Stage::ControllerSetup,
                 "a declined migration must not stop on the copy screen"
             ),
             other => panic!("expected the graphics screen, got {other:?}"),
@@ -2169,7 +2146,7 @@ mod tests {
         let ob = Onboarding::open_at(dir.path(), env, FixedClock::new(1)).unwrap();
 
         assert_eq!(
-            ob.back_from(Stage::SystemCheck),
+            ob.back_from(Stage::ControllerSetup),
             Back::Refused(Refusal::Irreversible {
                 stage: Stage::MigrationCopy
             }),
@@ -2200,13 +2177,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ob = fresh(dir.path());
         assert_eq!(
-            ob.back_from(Stage::SystemCheck),
+            ob.back_from(Stage::ControllerSetup),
             Back::To(Stage::GameVerification),
             "Back must not land on a migration screen that was never shown"
         );
         assert_eq!(
-            ob.back_from(Stage::ControllerSetup),
-            Back::To(Stage::SystemCheck)
+            ob.back_from(Stage::SystemCheck),
+            Back::To(Stage::ControlsProfile)
         );
     }
 
@@ -2334,7 +2311,6 @@ mod tests {
                 .unwrap(),
         );
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(
             ob.satisfy(
                 Stage::ControllerSetup,
@@ -2350,6 +2326,7 @@ mod tests {
             ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.reach(Stage::Updates).unwrap());
         recorded(
             ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
@@ -2423,6 +2400,8 @@ mod tests {
                 .unwrap(),
         );
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
+        recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
+        recorded(ob.satisfy(Stage::ControlsProfile, controls()).unwrap());
         recorded(
             ob.satisfy(
                 Stage::SystemCheck,
@@ -2696,7 +2675,6 @@ mod tests {
             ob.satisfy(Stage::MigrationCopy, Satisfaction::Migrated { bytes: 5 })
                 .unwrap(),
         );
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
         // Mods come before Preparation, which is what applies them.
         recorded(ob.reach(Stage::ControlsProfile).unwrap());
@@ -2704,6 +2682,7 @@ mod tests {
             ob.satisfy(Stage::ControlsProfile, controls())
                 .unwrap(),
         );
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.reach(Stage::Updates).unwrap());
         recorded(
             ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: true })
@@ -2752,7 +2731,6 @@ mod tests {
                 .unwrap(),
         );
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
 
         // Opening the screen is allowed; reach() stays permissive so a resumed
@@ -3261,10 +3239,10 @@ mod tests {
                 .unwrap(),
         );
         recorded(ob.satisfy(Stage::GameVerification, confirm_game()).unwrap());
-        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.satisfy(Stage::ControllerSetup, pad()).unwrap());
         recorded(ob.reach(Stage::ControlsProfile).unwrap());
         recorded(ob.satisfy(Stage::ControlsProfile, controls()).unwrap());
+        recorded(ob.satisfy(Stage::SystemCheck, graphics()).unwrap());
         recorded(ob.reach(Stage::Updates).unwrap());
         recorded(
             ob.satisfy(Stage::Updates, Satisfaction::Updates { automatic: false })

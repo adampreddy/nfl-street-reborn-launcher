@@ -19,7 +19,7 @@ function ok(x) {
 async function load() {
   const reads = {
     sessions: call("sessions"),
-    check: call("launch_check", { runtime: get("runtime"), game: get("game") }),
+    check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -34,7 +34,7 @@ async function act(label, cmd, args, opts = {}) {
   problem = null;
   said = null;
   playing = !!opts.launch;
-  draw();
+  if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
   try {
     const r = await call(cmd, args);
     said = opts.say ? opts.say(r) : JSON.stringify(r);
@@ -44,6 +44,7 @@ async function act(label, cmd, args, opts = {}) {
   playing = false;
   await load();
   busy = false;
+  window.setLauncherBusy?.(false);
   draw();
 }
 
@@ -75,34 +76,34 @@ function lastSessionBlock() {
     sec.append(el("p", { class: "absent", text: "No session has been recorded yet." }));
     return sec;
   }
-  const last = list[list.length - 1];
+  const last = list[0]; // The sessions command returns newest first.
   const bad = list.filter((x) => x.needs_recovery);
   sec.append(
     facts([
       fact("Ended", last.ended),
-      fact("Lasted", minutes(last.minutes)),
+      fact("Duration", minutes(last.minutes)),
       fact("Build", last.build),
-      fact("Needs recovery", last.needs_recovery ? "yes" : "no, it ended normally"),
-      fact("Bad endings on record", bad.length ? `${bad.length} of ${list.length}` : "none"),
+      fact("Session status", last.needs_recovery ? "Interrupted" : "Completed normally"),
+      fact("Interrupted sessions", bad.length ? `${bad.length} of ${list.length}` : "none"),
     ]),
   );
   if (bad.length >= 3) {
-    sec.append(partial("Three or more sessions have ended badly. Start with mods disabled first: if that runs clean, a mod is the likely cause."));
+    sec.append(partial("Several sessions ended unexpectedly. Try starting with mods disabled to check whether a mod is causing the issue."));
   }
   return sec;
 }
 
 function actionsBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Ways forward" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Troubleshooting" }));
   const check = state.check;
   const ready = ok(check) && check.ready;
-  if (ok(check) && !ready) sec.append(refusal(check.problem || "A launch would refuse."));
+  if (ok(check) && !ready) sec.append(refusal(check.problem || "Your installation needs attention before you can play."));
 
   const rows = [
-    ["Relaunch the game", "The same launch as Play.", () => act("Relaunch", "launch", launchArgs({}), { launch: true, say: launchSaid }), ready],
-    ["Start with mods disabled", "One launch on the untouched textures. Your mod selection stays as it is for next time.", () => act("Mods disabled", "launch", launchArgs({ modsDisabled: true }), { launch: true, say: launchSaid }), ready],
-    ["Start with Performance graphics", "Native resolution, this once. Your preset is not changed.", () => act("Performance", "launch", launchArgs({ preset: "performance" }), { launch: true, say: launchSaid }), ready],
-    ["Open NFL Street Reborn Dolphin", "The emulator alone, no game, against the same user folder. For its own settings.", () => act("Open Dolphin", "open_runtime", { runtime: get("runtime"), userDir: get("userDir") }, { say: (r) => `Started ${r.runtime}. ${r.user_dir_note}` }), true],
+    ["Relaunch the game", "Start the game with your current settings.", () => act("Relaunch", "launch", launchArgs({}), { launch: true, say: launchSaid }), ready],
+    ["Start with mods disabled", "Use the original textures for one session. Your mod selections are preserved.", () => act("Mods disabled", "launch", launchArgs({ modsDisabled: true }), { launch: true, say: launchSaid }), ready],
+    ["Start with ReShade off", "Disable ReShade for one session. Your graphics preset is preserved.", () => act("Performance", "launch", launchArgs({ preset: "performance" }), { launch: true, say: launchSaid }), ready],
+    ["Open NFL Street Reborn Dolphin", "Open the emulator to review its settings.", () => act("Open Dolphin", "open_runtime", { runtime: get("runtime"), userDir: get("userDir") }, { say: (r) => `Started ${r.runtime}. ${r.user_dir_note}` }), true],
     ["Create a diagnostic bundle", "Copies settings, the emulator's config and log, and the session list into one folder you can send.", () => act("Diagnostic bundle", "diagnostic_bundle", { runtime: get("runtime") }, { say: (r) => `Written to ${r.folder}: ${r.files.join(", ")}.${r.skipped.length ? ` Not found: ${r.skipped.join("; ")}.` : ""}` }), true],
   ];
   for (const [label, why, on, enabled] of rows) {
@@ -110,11 +111,17 @@ function actionsBlock() {
     sec.append(el("div", { class: "mod" }, button, el("span", { class: "why", text: why })));
   }
   const verify = el("div", { class: "mod" });
-  verify.append(el("span", { class: "what", text: "Verify and repair" }));
-  verify.append(el("span", { class: "why", text: "Checks the installed files against their manifest. On the Advanced page as library_verify and library_repair; a page for it is not built yet." }));
+  verify.append(el("span", { class: "what", text: "Check game files" }));
+  verify.append(el("span", { class: "why", text: "Choose a component manifest to check for missing or changed files. Automatic repair is not available yet." }));
+  verify.append(el("button", { type: "button", text: "Choose manifest & verify", disabled: busy, onclick: async () => {
+    try {
+      const path = await call("pick_path", { kind: "manifest" });
+      if (path) await act("Verify files", "library_verify", { manifestPath: path, root: null }, { say: r => `${r.healthy ? "Files verified." : "Some files need attention."} ${r.intact} intact, ${r.missing} missing, ${r.damaged} damaged, ${r.user_modified} customized.` });
+    } catch (e) { problem = reason(e); draw(); }
+  } }));
   sec.append(verify);
 
-  if (playing) sec.append(el("p", { class: "note", text: "The game is running. This page waits for it to close." }));
+  if (playing) sec.append(el("p", { class: "note", text: "Starting or running your game. The result will appear when the session ends." }));
   if (said) sec.append(el("div", { class: "said" }, el("p", { text: said })));
   return sec;
 }
@@ -138,7 +145,7 @@ async function refresh() {
 
 const pill = document.getElementById("bridge");
 if (pill) {
-  pill.textContent = bridge ? "core attached" : "core not attached";
+  pill.textContent = bridge ? "Launcher connected" : "Preview";
   pill.className = "pill " + (bridge ? "ok" : "bad");
 }
 markCurrent();

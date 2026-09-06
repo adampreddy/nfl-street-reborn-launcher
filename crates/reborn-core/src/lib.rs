@@ -40,8 +40,10 @@
 
 pub mod content;
 pub mod controller;
+pub mod controller_profiles;
 pub mod devices;
 pub mod gamepad;
+pub mod game_import;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
@@ -57,6 +59,7 @@ pub mod origin;
 pub mod platform;
 pub mod roster;
 pub mod runtime;
+pub mod reshade;
 pub mod session;
 pub mod settings;
 pub mod signing;

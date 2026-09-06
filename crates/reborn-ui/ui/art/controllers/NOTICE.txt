@@ -1,0 +1,11 @@
+Controller artwork: datkat21 / ControllerOverlays contributors.
+Source: https://github.com/datkat21/ControllerOverlays
+Original files: styles/xbox/xbox_one_black.svg; styles/ps4/ps4_gray.svg; styles/gcn/gamecube_indigo.svg.
+These SVG files are distributed unmodified under GPL-3.0 (see LICENSE.txt).
+The editable source SVGs are included here. The launcher only changes highlighting at runtime.
+
+DualSense artwork and template: e7d/gamepad-viewer, MIT License.
+Source: https://github.com/e7d/gamepad-viewer/tree/main/templates/dualsense
+Original assets, template and license are included in dualsense/. preview.css scopes the original selectors to the launcher preview.
+
+Xbox One and DualShock 4 layered artwork: e7d/gamepad-viewer, MIT license, adapted from mrmcpowned/Gamepad-Viewer. Source https://github.com/e7d/gamepad-viewer/tree/main/templates . See each folder LICENSE.txt. CSS selectors scoped for launcher use.

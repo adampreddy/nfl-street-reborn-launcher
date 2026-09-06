@@ -16,8 +16,10 @@ function ok(x) {
 
 async function load() {
   const reads = {
+    preferences: call("settings_paths"),
+    installation: call("setup_install_info"),
     paths: call("paths"),
-    check: call("launch_check", { runtime: get("runtime"), game: get("game") }),
+    check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
     token: call("credential_stored", { account: "nsr.league.ingest" }),
     policy: call("update_policy"),
     queue: call("stats_queue"),
@@ -36,71 +38,72 @@ const BOXES = [
     key: "game",
     setting: "game",
     name: "Game image",
-    hint: "Full path to the .iso. Blank: the image in your existing NFL Street Reborn install is used.",
+    hint: "Your game image. Leave empty to find it automatically.",
   },
   {
     key: "legacyRoot",
+    setting: "legacy_root",
     name: "Existing install",
-    hint: "The folder your NFL Street Reborn 2.1 lives in, the one holding User and MODS. This is where the game image, the saves and the mods come from.",
+    hint: "Your earlier Reborn installation, containing the User and MODS folders.",
   },
   {
     key: "runtime",
     setting: "runtime",
     name: "Emulator",
-    hint: "Leave blank on Windows: the emulator that came with the launcher is the only one that works, and it is found by itself. On macOS or Linux, a path to a Dolphin here is allowed and is used as is.",
+    hint: "The bundled Reborn Dolphin is selected automatically on Windows.",
   },
   {
     key: "userDir",
     setting: "user_dir",
     name: "User folder",
-    hint: "Blank: the folder that already holds your saves is found and used. Set this only to play against a different one.",
+    hint: "Contains your saves and Dolphin settings. Leave empty to use the detected folder.",
   },
 ];
 
 function boxesBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Paths you can set" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Game & installation" }));
+  sec.append(el("p", { class: "note", text: "Locations are detected automatically. Choose an override only if you want to use a different installation." }));
   for (const b of BOXES) {
-    const input = el("input", {
-      type: "text",
-      class: "wide",
-      value: get(b.key) || "",
-      placeholder: "blank: found by itself",
-      onchange: (ev) => {
-        const v = cleanPath(ev.target.value);
-        ev.target.value = v;
-        set(b.key, v);
-        // Also on disk, where the Play and files shortcuts can read it.
-        // Kept only in this window, a path set here would be ignored by
-        // every shortcut and nothing would say so.
-        if (b.setting) {
-          act(`Save ${b.name}`, "settings_set_path", { which: b.setting, value: v }, () => {});
-        } else {
-          refresh();
-        }
-      },
-    });
-    sec.append(el("div", { class: "settings-row stack" }, el("span", { class: "name", text: b.name }), input, el("span", { class: "hint", text: b.hint })));
+    const value = ok(state.preferences) ? state.preferences[b.key] : get(b.key);
+    const input = el("input", { id: `path-${b.key}`, type: "text", class: "wide", value: value || "", placeholder: "Detect automatically", disabled: busy });
+    const save = async () => {
+      const v = cleanPath(input.value);
+      await act(`Save ${b.name}`, "settings_set_path", { which: b.setting, value: v }, () => { set(b.key, v); });
+    };
+    const browse = async () => {
+      if (busy) return;
+      try {
+        const path = await call("pick_path", { kind: b.key === "game" ? "game" : b.key === "runtime" ? "runtime" : "folder" });
+        if (path) { input.value = path; await save(); }
+      } catch (e) { problem = reason(e); draw(); }
+    };
+    const row = el("div", { class: "path-entry" }, input,
+      el("button", { type: "button", text: "Browse", "aria-label": `Browse for ${b.name}`, disabled: busy, onclick: browse }),
+      el("button", { type: "button", text: "Save", "aria-label": `Save ${b.name}`, disabled: busy, onclick: save }));
+    sec.append(el("div", { class: "settings-row stack" }, el("label", { for: `path-${b.key}`, text: b.name }), row, el("span", { class: "hint", text: b.hint })));
   }
+  sec.append(el("a", { href: "onboarding.html", class: "button", text: "Resume game setup" }));
   return sec;
 }
 
 function foundBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "What those paths resolve to" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Detected files" }));
   const c = state.check;
   if (!ok(c)) {
     sec.append(partial(`Could not check: ${c ? c.error : "not loaded"}`));
     return sec;
   }
   if (!c.ready) {
-    sec.append(refusal(c.problem || "A launch would refuse."));
+    sec.append(refusal(c.problem || "Your installation needs attention before you can play."));
     return sec;
   }
-  sec.append(facts([fact("Emulator", c.runtime), fact("", c.runtime_note), fact("Game image", c.game)]));
+  const release=state.installation?.installed_release?.release;
+  sec.append(facts([...(release?[fact("Previous release", release)]:[]),fact("Emulator", c.runtime),fact("Game image", c.game)]));
   return sec;
 }
 
 function whereBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Where the launcher keeps things" }));
+  const sec = el("section", { class: "block" }, el("h2", { text: "Storage" }));
   const p = state.paths;
   if (!ok(p)) {
     sec.append(partial(`Could not read: ${p ? p.error : "not loaded"}`));
@@ -108,10 +111,10 @@ function whereBlock() {
   }
   sec.append(
     facts([
-      fact("Channel", `${p.channel}. ${p.channel_note || ""}`.trim()),
+      fact("Channel", p.channel_note || p.channel),
       fact("Program files", p.install_root),
       fact("Your data", p.data_root),
-      fact("Saves survive uninstall", p.saves_survive_uninstall ? "yes: the data folder is outside the program folder" : "NO: the data folder is inside the program folder"),
+      fact("Save data", p.saves_survive_uninstall ? "Kept separately from the application." : "Stored inside the application folder."),
     ]),
   );
   const dirs = Array.isArray(p.directories) ? p.directories : [];
@@ -124,7 +127,7 @@ async function act(label, cmd, args, after) {
   if (busy) return;
   busy = true;
   problem = null;
-  draw();
+  if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
   try {
     const r = await call(cmd, args);
     after(r);
@@ -133,23 +136,24 @@ async function act(label, cmd, args, after) {
   }
   await load();
   busy = false;
+  window.setLauncherBusy?.(false);
   draw();
 }
 
 function updatesBlock() {
   const sec = el("section", { class: "block" }, el("h2", { text: "Updates" }));
-  sec.append(el("p", { class: "note", text: "Three steps, each its own button, so nothing installs behind your back: check the release page, download and verify the installer, then run it. The installer replaces the program files and leaves your data and saves alone." }));
+  sec.append(el("p", { class: "note", text: "Check for a release, download it, then install when you are ready. Your saves stay separate from the launcher." }));
   // Whether it does this on its own. Asked in first run, changed here.
   const pol = state.policy;
   if (ok(pol)) {
     for (const [auto, what, why] of [
-      [true, "Update on its own", "Downloaded in the background and applied before you next play."],
+      [true, "Keep Me Up To Date", "Download and install verified updates automatically."],
       [false, "Ask me first", "Nothing is downloaded until you say so."],
     ]) {
       const input = el("input", { type: "radio", name: "policy", checked: pol.automatic === auto, disabled: busy, onchange: () => act("Update setting", "update_policy_set", { automatic: auto }, () => {}) });
       sec.append(el("label", { class: "choice" + (pol.automatic === auto ? " selected" : "") }, input, el("span", { class: "what", text: what }), el("span", { class: "why", text: why })));
     }
-    sec.append(el("p", { class: "note", text: pol.note }));
+    sec.append(el("p", { class: "note", text: "Use Check for updates below to check this installation now." }));
   } else {
     sec.append(partial(`The update setting could not be read: ${pol ? pol.error : "not loaded"}`));
   }
@@ -177,17 +181,17 @@ function updatesBlock() {
 
 function leagueBlock() {
   const sec = el("section", { class: "block" }, el("h2", { text: "League results" }));
-  sec.append(el("p", { class: "note", text: "Match results the game recorded wait here until they are sent to the league site. Sending needs the league token, kept in Windows' own credential store and never shown again." }));
+  sec.append(el("p", { class: "note", text: "Send your recorded match results to the league. Your access token is stored securely in Windows." }));
   const t = state.token;
   const q = state.queue;
   const rows = [];
   rows.push(fact("Token", ok(t) ? (t.stored ? "stored" : "not stored") : null));
   rows.push(fact("Waiting to send", ok(q) ? String(q.queued ?? q.pending ?? 0) : null));
   sec.append(facts(rows));
-  const input = el("input", { type: "password", class: "wide", placeholder: "league token", autocomplete: "off" });
-  const row = el("div", { class: "settings-row stack" }, el("span", { class: "name", text: "League token" }), input);
+  const input = el("input", { type: "password", class: "wide", id: "league-token", placeholder: "Enter your league token", autocomplete: "off" });
+  const row = el("div", { class: "settings-row stack" }, el("label", { for: "league-token", class: "name", text: "League token" }), input);
   const buttons = el("div", { class: "mod" });
-  buttons.append(el("button", { type: "button", text: "Store token", disabled: busy, onclick: () => { const v = input.value; input.value = ""; act("Store token", "stats_credential_set", { token: v }, (r) => { leagueSaid = `Stored a token of ${r.length} characters.`; }); } }));
+  buttons.append(el("button", { type: "button", text: "Store token", disabled: busy, onclick: () => { const v = input.value; input.value = ""; act("Store token", "stats_credential_set", { token: v }, (r) => { leagueSaid = "League token saved."; }); } }));
   buttons.append(el("button", { type: "button", text: "Forget token", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Forget token", "stats_credential_forget", {}, () => { leagueSaid = "Token removed."; }) }));
   buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Send", "stats_submit", { confirm: true }, (r) => { leagueSaid = r.note; }) }));
   sec.append(row, buttons);
@@ -199,7 +203,8 @@ function draw() {
   const screen = document.getElementById("screen");
   const parts = [];
   if (problem) parts.push(refusal(problem));
-  parts.push(boxesBlock(), foundBlock(), updatesBlock(), leagueBlock(), whereBlock());
+  const advanced = el("details", { class: "block" }, el("summary", { text: "League & storage" }), leagueBlock(), whereBlock());
+  parts.push(boxesBlock(), foundBlock(), updatesBlock(), advanced);
   screen.replaceChildren(...parts);
 }
 
@@ -215,7 +220,7 @@ async function refresh() {
 
 const pill = document.getElementById("bridge");
 if (pill) {
-  pill.textContent = bridge ? "core attached" : "core not attached";
+  pill.textContent = bridge ? "Launcher connected" : "Preview";
   pill.className = "pill " + (bridge ? "ok" : "bad");
 }
 markCurrent();

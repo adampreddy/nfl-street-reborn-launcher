@@ -12,24 +12,29 @@ let busy = false;
 let playing = false;
 let result = null;
 let problem = null;
+let detailsOpen = false;
+let externalSession = false;
 
 const PRESETS = [
-  ["performance", "Performance", "Native resolution. For a weak or hot machine."],
-  ["balanced", "Balanced", "Twice the resolution. The usual choice."],
-  ["quality", "Quality", "Three times the resolution."],
-  ["ultra", "Ultra", "Four times. Needs a strong graphics card."],
+  ["performance", "Performance", "1080p · 3×. ReShade disabled."],
+  ["balanced", "Balanced", "1080p · 3×. ReShade with lighter effects."],
+  ["quality", "All-Out", "1080p · 3×. ReShade with high-end effects."],
 ];
+
+function graphicsLabel() { return state.graphicsOptions?.current?.label || PRESETS.find(p=>p[0]===preset())?.[1] || "Balanced"; }
 
 function preset() {
   const chosen = get("preset");
-  if (chosen) return chosen;
+  if (chosen) return chosen === "ultra" ? "quality" : chosen;
   const s = state.progress && state.progress.summary;
-  return (s && s.graphics) || "balanced";
+  return s?.graphics === "ultra" ? "quality" : (s && s.graphics) || "balanced";
 }
 
 async function load() {
   const reads = {
-    check: call("launch_check", { runtime: get("runtime"), game: get("game") }),
+    active: call("session_active"),
+    graphicsOptions: call("setup_graphics_options"),
+    check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
     devices: call("devices", { runtime: get("runtime") }),
     mods: call("mod_packages"),
     controls: call("controls_current"),
@@ -45,7 +50,7 @@ async function load() {
 }
 
 async function play() {
-  if (busy) return;
+  if (busy || externalSession) return;
   busy = true;
   playing = true;
   result = null;
@@ -65,6 +70,7 @@ async function play() {
       // and in recovery, not here.
       modsDisabled: false,
     });
+    if (result && result.started === false) { problem = result.message || "The game could not start."; result = null; }
   } catch (e) {
     problem = reason(e);
   }
@@ -79,7 +85,7 @@ function ok(x) {
 }
 
 async function openDolphin() {
-  if (busy) return;
+  if (busy || externalSession) return;
   busy = true;
   problem = null;
   draw();
@@ -128,82 +134,37 @@ function modsLine() {
   return { text: `${on.length} on: ${named.join(", ")}`, note: null };
 }
 
-function playBlock() {
-  const sec = el("section", { class: "block" });
-  const check = state.check;
-  const ready = ok(check) && check.ready;
-
-  const button = el("button", {
-    type: "button",
-    class: "play",
-    text: playing ? "Game running" : "Play Now",
-    disabled: busy || !ready,
-    onclick: play,
-  });
-  sec.append(button);
-  sec.append(
-    el("button", {
-      type: "button",
-      text: "Open Dolphin",
-      title: "The emulator alone, no game, against the same user folder",
-      disabled: busy,
-      onclick: openDolphin,
-    }),
-  );
-
-  if (playing) {
-    sec.append(el("p", { class: "note", text: "The game is running. This page waits for it to close, then says how it went." }));
-  }
-  if (problem) sec.append(refusal(problem));
-  if (check && check.error) sec.append(refusal(`Could not check what a launch would use: ${check.error}`));
-  if (ok(check) && !check.ready) {
-    sec.append(refusal(check.problem || "A launch would refuse."));
-    sec.append(el("p", { class: "note", text: "Set a path on the Settings page, or point it at your existing NFL Street Reborn install." }));
-  }
-
-  if (result) {
-    const said = el("div", { class: "said" });
-    said.append(el("p", { text: result.message || "" }));
-    if (result.mods_note) said.append(el("p", { text: result.mods_note }));
-    if (result.stats_note) said.append(el("p", { text: result.stats_note }));
-    if (result.user_dir_note) said.append(el("p", { text: result.user_dir_note }));
-    if (Array.isArray(result.pads) && result.pads.length) said.append(el("p", { text: result.pads.join(". ") + "." }));
-    sec.append(said);
-    if (result.needs_recovery) {
-      const p = el("p", { class: "partial" });
-      p.append("That session ended badly. ");
-      p.append(el("a", { href: "recovery.html", text: "Go to Recovery for the ways forward." }));
-      sec.append(p);
-    }
-  }
-
-  const progress = state.progress;
-  if (ok(progress) && progress.complete === false) {
-    const p = el("p", { class: "partial" });
-    p.append("First run has not finished, so some of the answers below are still absent. ");
-    p.append(el("a", { href: "onboarding.html", text: "Go to First run." }));
-    sec.append(p);
-  }
-  return sec;
-}
-
 function graphicsBlock() {
   const sec = el("section", { class: "block" }, el("h2", { text: "Graphics" }));
-  sec.append(el("p", { class: "note", text: "Picked here, used by the next Play. First run's answer is the starting point." }));
-  const current = preset();
+  sec.append(el("p", { class: "note", text: "Applied when you next start the game." }));
+  const current = state.graphicsOptions?.current ? null : preset();
+  if(state.graphicsOptions?.current) sec.append(el("p",{class:"note",text:`${state.graphicsOptions.current.label} � ${state.graphicsOptions.current.resolution}� resolution. Selecting a preset replaces these settings.`}));
+  const grid = el("div", { class: "preset-grid" });
   for (const [slug, label, why] of PRESETS) {
     const input = el("input", {
       type: "radio",
       name: "preset",
       checked: slug === current,
-      disabled: busy,
-      onchange: () => {
+      value: slug,
+      disabled: busy || externalSession,
+      onchange: async () => {
+        try { await call("setup_save_graphics_options",{mode:"preset",resolution:3,msaa:1,ssaa:false}); state.graphicsOptions={current:null}; } catch(e) { problem=reason(e);draw();return; }
         set("preset", slug);
-        draw();
+        // The native radio has already changed. Keep this panel mounted so
+        // changing resolution does not replay its entrance or reset scrolling.
+        for (const radio of document.querySelectorAll('input[name="preset"]')) {
+          radio.closest('.choice')?.classList.toggle('selected', radio.checked);
+        }
+        const label = document.getElementById('graphics-preset-name');
+        if (label) label.textContent = PRESETS.find(p => p[0] === slug)?.[1] || slug;
+        for (const row of document.querySelectorAll('.facts tr')) {
+          if (row.querySelector('th')?.textContent === 'Graphics') row.querySelector('td').textContent = PRESETS.find(p => p[0] === slug)?.[1] || slug;
+        }
       },
     });
-    sec.append(el("label", { class: "choice" + (slug === current ? " selected" : "") }, input, el("span", { class: "what", text: label }), el("span", { class: "why", text: why })));
+    grid.append(el("label", { class: "choice" + (slug === current ? " selected" : "") }, input, el("span", { class: "what", text: label }), el("span", { class: "why", text: why })));
   }
+  sec.append(grid);
   return sec;
 }
 
@@ -227,7 +188,7 @@ function factsBlock() {
   rows.push(fact("Mods", mods.text));
   if (mods.note) rows.push(fact("", mods.note));
   rows.push(fact("Button art", ok(c) && c.label ? `${c.label}, from ${c.source === "settings" ? "Settings" : "first run"}` : ok(c) ? "nothing chosen; the disc's own art" : null));
-  rows.push(fact("Graphics", PRESETS.find((p) => p[0] === preset())?.[1] || preset()));
+  rows.push(fact("Graphics", graphicsLabel()));
   rows.push(fact("Channel", ok(paths) ? paths.channel : null));
   if (ok(home)) {
     rows.push(
@@ -245,14 +206,78 @@ function factsBlock() {
   return sec;
 }
 
+function heroBlock() {
+  const ready = ok(state.check) && state.check.ready;
+  const inSession = playing || externalSession;
+  const hero = el("section", { class: "hero", "aria-label": "Play NFL Street Reborn" });
+  hero.append(el("div", { class: "hero-art", "aria-hidden": "true" }, el("img", { src: "art/court-night.png", alt: "" })));
+  const content = el("div", { class: "hero-content" });
+  content.append(el("h1", { class: "game-wordmark" }, el("img", { src: "art/reborn-wordmark.png", alt: "NFL Street Reborn" })));
+  const home = state.home;
+  const history = ok(home) && home.sessions_played ? `${minutes(home.minutes_played)} played` : "Ready for your first session";
+  content.append(el("p", { class: "game-meta", text: history }));
+  const actions = el("div", { class: "hero-actions" });
+  if (ready || inSession) {
+    actions.append(el("button", { type: "button", id: "play-now", "data-primary": "true", class: "play", text: inSession ? "Session active" : busy ? "Opening..." : "\u25b6  Play now", disabled: busy || inSession, onclick: play }));
+  } else {
+    actions.append(el("a", { class: "button primary play", "data-primary": "true", href: "onboarding.html", text: "Set up your game" }));
+  }
+  actions.append(el("a", { href: "#game-options", class: "button quiet", text: "Game options", onclick: (event) => { event.preventDefault(); detailsOpen = true; const fold = document.getElementById("game-options"); if (fold) fold.open = true; } }));
+  content.append(actions);
+  const status = inSession ? "Starting or running. Your session is being tracked." : ready ? "Ready to play" : "Finish setup or choose your game in Settings.";
+  content.append(el("p", { class: "status-line", role: "status" }, el("span", { class: "status-dot" + (inSession ? " wait" : ready ? "" : " warn"), "aria-hidden": "true" }), status));
+  hero.append(content);
+  return hero;
+}
+
+function quickLink(href, label, value, note) {
+  return el("a", { href, class: "quick-link" }, el("span", { class: "eyebrow", text: label }), el("strong", { text: value, id: label === "GRAPHICS" ? "graphics-preset-name" : null }), el("span", { class: "arrow", text: "\u2197", "aria-hidden": "true" }));
+}
+
 function draw() {
+  if (typeof state.active === "boolean") externalSession = state.active;
   const screen = document.getElementById("screen");
-  screen.replaceChildren(playBlock(), graphicsBlock(), factsBlock());
+  const content = el("div", { class: "home-content" });
+  if (problem) content.append(refusal(problem));
+  if (state.check?.error) content.append(refusal(`Could not check your game: ${state.check.error}`));
+  if (ok(state.check) && !state.check.ready && state.check.problem) content.append(partial(state.check.problem));
+  if (result) {
+    content.append(el("div", { class: result.needs_recovery ? "partial" : "said", role: "status" }, el("p", { text: result.message || "Done." })));
+    if (result.needs_recovery) content.append(el("a", { href: "recovery.html", class: "button", text: "Troubleshoot this session" }));
+  }
+  if (ok(state.progress) && state.progress.complete === false && state.check?.ready) {
+    content.append(el("div", { class: "partial" }, "Your game is available. ", el("a", { href: "onboarding.html", text: "Finish setting up your preferences" })));
+  }
+  const home = state.home;
+  const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
+  const mods = ok(state.mods) && Array.isArray(state.mods.activation) ? state.mods.activation : null;
+  content.append(el("div", { class: "quick-grid" },
+    quickLink("controls.html", "CONTROLLERS", pads ? (pads.length ? `${pads.length} connected` : "No controller") : "Check controllers", "Manage devices"),
+    quickLink("mods.html", "MODS", mods ? `${mods.length} active mod${mods.length === 1 ? "" : "s"}` : "Explore your mods", "Manage installed mods"),
+    quickLink("#game-options", "GRAPHICS", graphicsLabel(), "Change preset")));
+  const details = el("details", { id: "game-options", class: "home-details" }, el("summary", { text: "Game options" }));
+  details.open = detailsOpen;
+  details.addEventListener("toggle", () => { detailsOpen = details.open; });
+  details.append(graphicsBlock(), factsBlock(), el("button", { type: "button", text: "Open Dolphin settings", disabled: busy || externalSession, onclick: openDolphin }));
+  content.append(details);
+  const hero = heroBlock();
+  // The scene is a persistent layer. Recreating it made selection changes flash.
+  const art = screen.querySelector?.('.hero-art');
+  if (art) hero.querySelector('.hero-art').replaceWith(art);
+  screen.replaceChildren(hero, content);
+  // Open the fold when arriving from the graphics shortcut.
+  if (typeof document.querySelectorAll === "function") for (const link of document.querySelectorAll('a[href="#game-options"]')) {
+    link.addEventListener("click", event => {
+      event.preventDefault(); details.open = true; detailsOpen = true;
+      requestAnimationFrame(() => details.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'}));
+    });
+  }
 }
 
 async function refresh() {
   try {
     await load();
+    if (state.progress?.complete === false && !new URL(location.href).searchParams.has('setup')) { location.replace('onboarding.html'); return; }
   } catch (e) {
     problem = reason(e);
   }
@@ -261,7 +286,7 @@ async function refresh() {
 
 const pill = document.getElementById("bridge");
 if (pill) {
-  pill.textContent = bridge ? "core attached" : "core not attached";
+  pill.textContent = bridge ? "Launcher connected" : "Preview";
   pill.className = "pill " + (bridge ? "ok" : "bad");
 }
 markCurrent();
@@ -271,4 +296,9 @@ if (bridge) {
 } else {
   problem = "The launcher core is not attached. Open this page inside the launcher window.";
   draw();
+}
+
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("session-state", e => { state.active = e.detail; externalSession = e.detail; if (!busy) refresh(); });
+  document.addEventListener("refresh-devices", () => { if (!busy) refresh(); });
 }

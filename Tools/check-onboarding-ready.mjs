@@ -19,7 +19,8 @@ const fake = () => new Proxy(
   { style:{}, classList:{add(){},remove(){}}, value:"", textContent:"", disabled:false, title:"" },
   { get:(t,k)=> k in t ? t[k] : ()=>fake(), set:(t,k,v)=>((t[k]=v),true) });
 global.localStorage = { getItem:()=>null, setItem(){}, removeItem(){} };
-global.document = { getElementById:()=>fake(), createElement:()=>fake() };
+global.document = { body:{dataset:{}}, getElementById:()=>fake(), createElement:()=>fake() };
+global.matchMedia=()=>({matches:true});
 global.window = {};   // no __TAURI__, so bridge is null and refresh() never runs
 
 const mod =
@@ -116,7 +117,7 @@ check("controls, read failed", SCREENS.controls_profile().ready(), false);
 const noSuggestion = { list: opts.list.map((o) => ({ ...o, suggested: false })) };
 __set(cs, { controls: noSuggestion });
 SCREENS.controls_profile();
-check("controls, no pad so no suggestion", SCREENS.controls_profile().ready(), false);
+check("controls, no pad defaults to Xbox", SCREENS.controls_profile().ready(), true);
 
 
 // Reconcile must be actionable, not a notice.
@@ -162,7 +163,7 @@ __set(
   {},
 );
 draw();
-check("reconcile, work outstanding", __current().ready(), false);
+check("recap can save outstanding work on Continue", __current().ready(), true);
 
 
 // Every screen must survive a summary built from the REAL field list.

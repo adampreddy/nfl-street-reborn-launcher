@@ -479,6 +479,11 @@ impl Session {
     /// written. Split out from [`Session::run`] so a caller can offer a dry run
     /// without duplicating the order.
     pub fn prepare(platform: &Platform, req: &LaunchRequest) -> Result<WrittenConfig> {
+        crate::runtime::ensure_runtime_idle(&req.runtime_exe)?;
+        let prefs=crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        if let Some(text)=prefs.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_reshade.as_deref()) {
+            crate::reshade::apply_imported(&req.runtime_exe,text)?;
+        }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics})?;}
         let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
         let config_dir = user_dir.join("Config");
@@ -515,7 +520,24 @@ impl Session {
         // Keys, not files. Writing whole files here deleted ten sections of a
         // real player's Dolphin.ini, including the paths to their own game
         // images. See crate::ini for the measurements.
-        for (name, overlay) in ConfigGenerator::overlays(&config) {
+        let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        for (name, mut overlay) in ConfigGenerator::overlays(&config) {
+            if name == "GFX.ini" {
+                let options = preferences.graphics_override.as_ref();
+                // Retain legacy visual choices, while the compatibility fixes below still win.
+                if options.is_some_and(|o|o.label=="Previous settings") {
+                    if let Some(section)=overlay.get_mut("Settings") { section.remove("MaxAnisotropy"); }
+                }
+                if let Some(previous)=options.filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_gfx.as_deref()) {
+                    let mut retained=crate::ini::Overlay::new();let mut section=String::new();
+                    for line in previous.lines(){let line=line.trim();if line.starts_with('[')&&line.ends_with(']'){section=line[1..line.len()-1].into();}else if !line.starts_with([';','#']){if let Some((key,value))=line.split_once('='){retained.entry(section.clone()).or_default().insert(key.trim().into(),value.trim().into());}}}
+                    for (section,keys) in overlay{retained.entry(section).or_default().extend(keys);}overlay=retained;
+                }
+                let section=overlay.entry("Settings".into()).or_default();
+                section.insert("InternalResolution".into(),"3".into());
+                section.insert("MSAA".into(),"1".into());
+                section.insert("SSAA".into(),"False".into());
+            }
             let path = config_dir.join(&name);
 
             let existing = match std::fs::read_to_string(&path) {
@@ -560,6 +582,21 @@ impl Session {
             written.files.push(path);
         }
 
+        // Per-game overrides take precedence over Dolphin.ini, including old
+        // installations. Keep required emulated memory consistent in both places.
+        let mut game_ids=vec!["GN7E69",req.build.game_id()];game_ids.sort();game_ids.dedup();
+        for game_id in game_ids {
+        let game_settings=user_dir.join("GameSettings").join(format!("{game_id}.ini"));
+        std::fs::create_dir_all(game_settings.parent().unwrap())?;
+        let existing=std::fs::read_to_string(&game_settings).unwrap_or_default();
+        let mut doc=crate::ini::IniDocument::parse(&existing);
+        let report=doc.merge(&ConfigGenerator::required_game_settings());
+        if !report.is_noop(){
+            if !existing.is_empty() && !game_settings.with_extension("ini.launcher-original").exists(){std::fs::write(game_settings.with_extension("ini.launcher-original"),&existing)?;}
+            std::fs::write(&game_settings,doc.render())?;written.keys_set+=report.updated.len()+report.added.len();written.files.push(game_settings);
+        }else{written.unchanged.push(game_settings);}
+
+        }
         // Ask the runtime that is about to be launched. The built in scan sees
         // XInput only, which on a real machine misses an entire backend.
         let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());
@@ -570,7 +607,10 @@ impl Session {
             };
         written.pads_authoritative = authoritative;
 
-        match build_gcpad(&scan, 4) {
+        crate::controller_profiles::adopt_migrated(platform, &scan)?;
+        let saved_profiles = crate::controller_profiles::load(&crate::controller_profiles::path(platform)?)?;
+        let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        match build_gcpad_for_slots(&scan, &saved_profiles, preferences.primary_controller.as_deref(), preferences.controller_slots.as_ref()) {
             Some((ini, assignment)) => {
                 let path = config_dir.join("GCPadNew.ini");
                 // The pad file IS wholly owned by the launcher: it is
@@ -590,6 +630,20 @@ impl Session {
                 })?;
                 written.files.push(path);
                 written.pads = assignment;
+                let dolphin_file=config_dir.join("Dolphin.ini");
+                let dolphin_text = match std::fs::read_to_string(&dolphin_file) {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => return Err(error.into()),
+                };
+                let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
+                let overlay=controller_port_overlay(&written.pads);
+                if !dolphin_doc.merge(&overlay).is_noop(){
+                    std::fs::write(&dolphin_file,dolphin_doc.render())?;
+                    if !written.files.contains(&dolphin_file) { written.files.push(dolphin_file); }
+                }
+                written.no_controller = written.pads.is_empty();
+
             }
             None => written.no_controller = true,
         }
@@ -709,7 +763,39 @@ fn sync_mods_for_launch(
 /// Returns the file contents and the port assignment, or `None` when there is
 /// nothing to bind.
 pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, String)>)> {
-    let pads = scan.playable_pads();
+    build_gcpad_with_profiles(scan, ports, &[])
+}
+
+pub fn build_gcpad_with_profiles(scan: &Enumeration, ports: u8, saved: &[ControllerProfile]) -> Option<(String, Vec<(u8, String)>)> {
+    build_gcpad_for_player(scan, ports, saved, None)
+}
+
+/// Explicit player slots stay fixed even when a controller disconnects.
+pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], primary: Option<&str>, slots: Option<&[Option<String>;4]>) -> Option<(String, Vec<(u8,String)>)> {
+    let Some(slots)=slots else { return build_gcpad_for_player(scan,4,saved,primary); };
+    let pads=scan.playable_pads();let mut used=std::collections::HashSet::new();
+    let mut profiles=Vec::new();let mut assignment=Vec::new();
+    for (index,device) in slots.iter().enumerate(){
+        let Some(device)=device else {continue};
+        if !used.insert(device){continue;}
+        let Some(pad)=pads.iter().find(|p|p.device_string()==*device) else {continue};
+        let mut profile=saved.iter().find(|p|p.identity.profile_key()==pad.identity().profile_key()).cloned().unwrap_or_else(||ControllerProfile::new(pad.identity(),index as u8+1));
+        profile.port=index as u8+1;profiles.push(profile);assignment.push((index as u8+1,device.clone()));
+    }
+    let mut ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
+    for port in 1..=4 {if !assignment.iter().any(|(p,_)|*p==port){ini.push_str(&format!("[GCPad{port}]\nDevice = \n\n"));}}
+    Some((ini,assignment))
+}
+
+pub fn controller_port_overlay(assignment:&[(u8,String)])->crate::ini::Overlay {
+    let mut overlay=crate::ini::Overlay::new();
+    for index in 0..4 {overlay.entry("Core".into()).or_default().insert(format!("SIDevice{index}"),if assignment.iter().any(|(port,_)|*port==index+1){"6"}else{"0"}.into());}
+    overlay
+}
+
+pub fn build_gcpad_for_player(scan: &Enumeration, ports: u8, saved: &[ControllerProfile], primary: Option<&str>) -> Option<(String, Vec<(u8, String)>)> {
+    let mut pads = scan.playable_pads();
+    pads.sort_by_key(|pad| Some(pad.device_string().as_str()) != primary);
     if pads.is_empty() {
         return None;
     }
@@ -718,7 +804,12 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
         .iter()
         .take(ports as usize)
         .enumerate()
-        .map(|(i, d)| ControllerProfile::new(d.identity(), (i + 1) as u8))
+        .map(|(i, d)| {
+            let mut profile = saved.iter().find(|p| p.identity.profile_key()==d.identity().profile_key()).cloned()
+                .unwrap_or_else(|| ControllerProfile::new(d.identity(), (i + 1) as u8));
+            profile.port=(i+1) as u8;
+            profile
+        })
         .collect();
 
     let by_key: std::collections::BTreeMap<String, String> = pads

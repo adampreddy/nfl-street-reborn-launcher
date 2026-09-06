@@ -151,7 +151,7 @@ OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}{#OfflineSuffix}
 DiskSpanning=yes
 DiskSliceSize=2100000000
 #endif
-Compression=lzma2/max
+Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
 

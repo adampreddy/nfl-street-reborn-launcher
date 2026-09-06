@@ -27,7 +27,7 @@ const SETTINGS = [
     key: "legacyRoot",
     name: "2.1 install",
     placeholder: "Folder holding User and MODS",
-    fallback: "C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn",
+    fallback: "",
   },
 ];
 
@@ -146,7 +146,7 @@ const FEATURES = [
       {
         cmd: "launch_check",
         desc: "What a launch would use. Finds, never starts",
-        args: () => ({ runtime: get("runtime"), game: get("game") }),
+        args: () => ({ runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
       },
       {
         cmd: "launch",
@@ -295,7 +295,7 @@ const FEATURES = [
         write: true,
         confirm: true,
         needs: ["legacyRoot"],
-        args: () => ({ legacyRoot: get("legacyRoot") }),
+        args: () => ({ legacyRoot: get("legacyRoot"), savesOnly: true }),
       },
     ],
   },
@@ -438,7 +438,7 @@ const FEATURES = [
       {
         cmd: "onboarding_choose_graphics",
         desc: "Record a preset. Nothing measures this PC, so no recommendation",
-        inputs: [{ key: "preset", placeholder: "performance|balanced|quality|ultra" }],
+        inputs: [{ key: "preset", placeholder: "performance|balanced|quality" }],
         args: () => ({ legacyRoot: get("legacyRoot") }),
         write: true,
       },
@@ -446,6 +446,7 @@ const FEATURES = [
         cmd: "onboarding_choose_controller",
         desc: "Accept the pad on a port. Its device string comes from the emulator",
         inputs: [
+          { key: "expectedDevice", placeholder: "device string from the controller scan" },
           { key: "port", placeholder: "port, 0 based", number: true },
           { key: "runtime", placeholder: "path to Dolphin exe, for every backend" },
         ],
@@ -615,7 +616,7 @@ function launchOptionsRow() {
   const row = el("div", "row");
   row.appendChild(el("span", "name", "options"));
   const sel = document.createElement("select");
-  for (const p of ["performance", "balanced", "quality", "ultra"]) {
+  for (const p of ["performance", "balanced", "quality"]) {
     const o = document.createElement("option");
     o.value = p;
     o.textContent = p;

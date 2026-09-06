@@ -9,9 +9,7 @@ export const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
 // The keys the harness uses, kept identical on purpose: a path set on the
 // Settings page is the path the Advanced page sends, and the other way round.
-const FALLBACKS = {
-  legacyRoot: "C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn",
-};
+const FALLBACKS = {};
 
 export function get(key) {
   try {
@@ -96,7 +94,7 @@ export function facts(rows) {
 }
 
 export function refusal(text) {
-  return el("p", { class: "refusal", text });
+  return el("p", { class: "refusal", role: "alert", text });
 }
 
 export function partial(text) {
@@ -132,4 +130,15 @@ export function minutes(n) {
   const h = Math.floor(n / 60);
   const m = Math.round(n % 60);
   return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+// Disk preferences are authoritative across windows and the Play shortcut.
+// Wait before a page builds its first command arguments from browser storage.
+if (bridge) {
+  try {
+    const saved = await bridge.invoke("settings_paths");
+    for (const key of ["runtime", "game", "userDir", "legacyRoot"]) {
+      if (saved && Object.prototype.hasOwnProperty.call(saved, key)) set(key, saved[key]);
+    }
+  } catch (_) { /* Pages surface their own read failures and keep existing values. */ }
 }

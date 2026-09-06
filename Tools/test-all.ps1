@@ -24,7 +24,9 @@ param(
     # install draws.
     [switch]$Manual,
     # Skip the Rust suite. For iterating on the checkers alone.
-    [switch]$NoRust
+    [switch]$NoRust,
+    # Browser interactions and visual captures. Run npm install --prefix Tools first.
+    [switch]$Browser
 )
 
 $ErrorActionPreference = "Continue"
@@ -97,6 +99,17 @@ foreach ($c in $checkers) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
+# Browser interactions, using a fixture bridge and the installed Edge browser.
+if ($Browser) {
+    $browserSuite = Join-Path $PSScriptRoot "run-browser-tests.mjs"
+    $browserOutput = & node $browserSuite
+    Record "browser" "interaction and responsive layout checks" ($LASTEXITCODE -eq 0) ($browserOutput | Select-Object -Last 1)
+    foreach ($suite in @("review-onboarding.mjs", "check-update-notice.mjs")) {
+        $suiteOutput = & node (Join-Path $PSScriptRoot $suite)
+        Record "browser" $suite ($LASTEXITCODE -eq 0) ($suiteOutput | Select-Object -Last 1)
+    }
+}
+
 # 3. Can an installer still be built from this machine
 # -----------------------------------------------------------------------------
 # Not a build, which takes twenty minutes. Just the inputs, so a missing one is
@@ -169,7 +182,36 @@ if (-not $setup) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
-# 5. The sandbox, on request
+# 5. The update pipeline, end to end
+# -----------------------------------------------------------------------------
+# Publish an origin, serve it on loopback with Range support, update a scratch
+# data root from it. Nine steps: a fresh install, a repair, a differential
+# update that must fetch exactly two blobs, a resume answered 206 from the
+# seeded offset, a replay refused by the publisher, a tampered signature
+# refused by the client. It never touches the real data root. Needs a debug
+# rebornctl, which cargo test does not build.
+Write-Host "-- Update pipeline ----------------------------------------------" -ForegroundColor DarkGray
+if (-not $NoRust) {
+    Push-Location $root
+    $null = & cargo build -p reborn-cli
+    $built = ($LASTEXITCODE -eq 0)
+    Pop-Location
+    if (-not $built) {
+        Record "update" "rebornctl builds" $false "cargo build -p reborn-cli failed"
+    } else {
+        $e2e = & py -3 (Join-Path $PSScriptRoot "e2e-update.py")
+        $ok = ($LASTEXITCODE -eq 0)
+        $last = if ($e2e) { ($e2e | Select-Object -Last 1) } else { "no output" }
+        Record "update" "publish, serve, install, repair, update, resume" $ok $last
+        if (-not $ok) { $e2e | Select-Object -Last 12 | ForEach-Object { Write-Host "       $_" -ForegroundColor Yellow } }
+    }
+} else {
+    Write-Host "       skipped with -NoRust, it needs a rebornctl build"
+}
+Write-Host ""
+
+# -----------------------------------------------------------------------------
+# 6. The sandbox, on request
 # -----------------------------------------------------------------------------
 if ($Sandbox -or $Manual) {
     Write-Host "-- Windows Sandbox ----------------------------------------------" -ForegroundColor DarkGray
