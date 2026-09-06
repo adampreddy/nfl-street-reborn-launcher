@@ -102,11 +102,13 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
         let user=data.join("dolphin-users").join(format!("fresh-{stamp}"));
         std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;
+        let _=app.emit("game-import-progress",serde_json::json!({"stage":"Setting up your game…","percent":99}));
+        let booted=establish_booted(&p,&data,&output)?;
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
-        saved.game_path=Some(output.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
+        saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
         saved.save(&settings).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
-        Ok(serde_json::json!({"path":output,"patched":patched}))
+        Ok(serde_json::json!({"path":booted,"pristine":output,"patched":patched}))
     }).await.map_err(|e|e.to_string())?
 }
 
@@ -300,9 +302,36 @@ fn import_existing_progress(p:&Platform,source:&Path,report:&dyn Fn(&str,Option<
     }Ok(target)
 }
 
+/// The image the player plays is `library/offline/NSR.iso`, a link to the
+/// pristine import until a roster is applied into it. The pristine file is
+/// never opened by the game, so game updates can be applied to it as deltas.
+/// When a roster is already installed it is applied now, so the new image
+/// carries it; a Builder that is missing is not an error here (the roster
+/// is re-applied on the next update).
+fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,String>{
+    use reborn_core::game_image::{establish,EstablishOutcome};
+    let booted=match establish(p,data,pristine).map_err(|e|e.to_string())?{EstablishOutcome::Done(e)=>e.path,EstablishOutcome::Refused(r)=>return Err(r.message())};
+    let roster=data.join(reborn_core::DataDir::LibraryRoster.relative()).join(reborn_core::roster::ROSTER_FILE);
+    if roster.is_file(){
+        let mut dirs=reborn_core::roster::builder_dirs(p,&[]);
+        if let Some(exe_dir)=std::env::current_exe().ok().and_then(|e|e.parent().map(Path::to_path_buf)){dirs.push(exe_dir.join("tools"));dirs.push(exe_dir);}
+        if let Ok(appdata)=std::env::var("APPDATA"){dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));}
+        if let Some(builder)=reborn_core::roster::find_builder(p,&dirs){
+            let textures=reborn_core::mods::pristine_root(p,&reborn_core::mods::GameId::parse("GN7E69").map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,textures_root:Some(&textures),accept_warnings:true}){
+                Ok(reborn_core::roster::ApplyOutcome::Refused(r))=>eprintln!("roster not applied to the imported game: {}",r.message()),
+                Err(e)=>eprintln!("roster not applied to the imported game: {e}"),
+                Ok(_)=>{}
+            }
+        }
+    }
+    Ok(booted)
+}
+
 #[tauri::command]
 pub async fn setup_import_existing_game(image:String)->Result<String,String>{
-    tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let game=import_existing(&p,&reborn_core::session::user_path(&image))?;
+    tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let pristine=import_existing(&p,&reborn_core::session::user_path(&image))?;
+        let data=p.paths.data_root().map_err(|e|e.to_string())?;let game=establish_booted(&p,&data,&pristine)?;
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
@@ -331,7 +360,9 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         report("Copying saves and settings…",None,0);
         let bytes=reborn_core::migration::copy_tree_with_progress(&root.join("User"),&user,&mut |n|{copied+=n;report("Copying saves and settings…",None,copied);}).map_err(|e|e.to_string())?;
         rebase_user_paths(&root,&user)?;
-        let game=import_existing_progress(&p,&source,&report)?;
+        let pristine=import_existing_progress(&p,&source,&report)?;
+        report("Setting up your game…",Some(96),copied);
+        let game=establish_booted(&p,&data,&pristine)?;
         let pad_ini=std::fs::read_to_string(user.join("Config/GCPadNew.ini")).unwrap_or_default();
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-controller.ini"),&pad_ini).map_err(|e|e.to_string())?;

@@ -15,7 +15,7 @@ launcher will do once wired.
 | You change... | It reaches players by... | Cost to a player |
 |---|---|---|
 | a texture, added, changed or deleted | the content system, `textures` component | only the changed files |
-| the game image (`NSR.iso`) | the content system, `offline-content` | the whole image, since one file is one blob |
+| **the game image** (a new Reborn build) | the content system, `game-patch` component: an xdelta from the previous build to the new one, applied by each launcher to its own pristine image, then the roster re-applied. See 7b | about 1 MB per build (measured: 5,336 bytes for a few changed bytes; 1.1 MB between two real consecutive builds) |
 | Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
 | a curated mod package | the content system, `mods` component | only the changed files |
 | **a roster**, published from the website editor | the content system, `roster` component: the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
@@ -39,8 +39,8 @@ rollback brings it back. A file the launcher never shipped, for example
 something a player dropped into the folder, is nobody's to remove and is
 left alone.
 
-Adding a new KIND of thing, an eighth component, is a launcher change: the
-seven names are fixed in the launcher and it refuses any other.
+Adding a new KIND of thing, another component, is a launcher change: the
+component names are fixed in the launcher and it refuses any other.
 
 ## 0. Build the tool
 
@@ -306,6 +306,64 @@ Not yet: the Publish button on the site, which drops the export at a fixed
 URL so `--from` can point at it. And `reborn-builder-cli.exe` has to ship
 beside Dolphin; today the launcher finds it in `<install>\tools`, beside
 the launcher, or in the 2.1 tools folder.
+
+## 7b. Game updates: a new Reborn build
+
+The installer patches the player's own disc once and keeps the result as a
+**pristine** image under `library/imported/<hash>/NSR.iso`. The image the
+game boots is `library/offline/NSR.iso`, a link to the pristine one until
+a roster goes into it. Game updates are deltas between pristine builds, so
+they are about a megabyte and the origin never serves the game. The
+decision and its alternatives are in
+`docs/architecture/GAME_PATCH_COMPONENT.md`.
+
+One command, from two images to "upload the origin":
+
+```
+rebornctl publish game-patch --from <the build players have>.iso --to <the new build>.iso --version 2026.09.07 --origin "C:\Reborn Origin" --key "C:\Users\Adam\Reborn Keys\publisher.key" --apply
+```
+
+`--from` is the build players have now: the head of the chain, or for the
+very first patch, the image the installer's own xdelta produces (the
+`--target` you gave `Tools/create-game-patch.py`). `--to` is the new build.
+`--version` is the label players see. It hashes both, encodes the delta
+with the bundle's xdelta3 (`target\installer-payload\game-import`,
+or pass `--xdelta`), **decodes it back and hashes the result** before
+anything is written, appends the step to the chain kept in
+`C:\Reborn Origin-stage\game-patch`, publishes the chain as the
+`game-patch` component with the next sequence, and re-signs the release
+with every other pin carried forward. Without `--apply` it hashes and
+describes. Then upload the origin folder.
+
+The chain is append-only. A player two builds behind walks two steps; a
+player one behind fetches only the new delta, because that is the only
+file they lack. A player whose image is not in the chain (imported from a
+2.1 copy rather than patched from a disc) is told to import from the disc,
+and nothing of theirs is touched. Publish a patch from any build other
+than the head and the publisher refuses.
+
+A client picks it up like any component:
+   ```
+   rebornctl update content --origin <url> --component game-patch --apply
+   ```
+   After the files land it hashes the pristine image, walks the chain
+   (each step verified by length and hash), moves the result into
+   `library/imported/<new hash>/`, re-links `library/offline/NSR.iso`,
+   removes the old pristine folder, and re-applies the roster with the
+   Builder. By hand, or after the tool was missing:
+   ```
+   rebornctl game-patch apply
+   ```
+
+Measured on 2026-09-06 over the real 1.46 GB image: publish 7 s (two
+hashes, encode, decode-back, hash), client walk 6 s per step, plus the
+roster re-apply (6.6 s). Disk on the player's PC: one pristine image and
+the booted one; the booted one costs nothing until a roster is applied,
+then it is a second 1.46 GB file.
+
+Not carried: rollback of a game update. The old pristine folder is
+removed once the new one is in place, so going back is an import from the
+disc. A reverse delta is the cheap way to add it later.
 
 ## 8. What the launcher does once wired
 

@@ -150,8 +150,10 @@ pub struct ApplyRequest<'a> {
 /// What an applied roster left behind.
 #[derive(Debug, Clone)]
 pub struct ApplyReceipt {
+    /// The booted image the roster was written into.
     pub image: PathBuf,
-    pub before: Sha256Hex,
+    /// What was booted before, or `None` when nothing was.
+    pub before: Option<Sha256Hex>,
     pub after: Sha256Hex,
     pub report: BuilderReport,
 }
@@ -267,23 +269,10 @@ pub fn find_image(offline_dir: &Path) -> std::result::Result<PathBuf, ApplyRefus
     }
 }
 
-/// The image the launcher's game import built from the player's own disc:
-/// `library/imported/<output hash>/NSR.iso`. The newest when there are
-/// several, which happens after a game update re-imports.
+/// The pristine image the game import built: the newest under
+/// `library/imported`. See [`crate::game_image`].
 pub fn find_imported_image(data_root: &Path) -> Option<PathBuf> {
-    let imported = data_root.join("library").join("imported");
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&imported)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path().join(IMAGE_FILE))
-        .filter(|p| p.is_file())
-        .filter_map(|p| {
-            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-            Some((t, p))
-        })
-        .collect();
-    found.sort_by(|a, b| b.0.cmp(&a.0));
-    found.into_iter().next().map(|(_, p)| p)
+    crate::game_image::find_pristine(data_root).map(|p| p.path)
 }
 
 /// Apply a roster to the live image.
@@ -294,21 +283,21 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
     if !req.builder.is_file() {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::NoBuilder { path: req.builder.to_path_buf() }));
     }
-    // Two places an image can be. `library/offline` is where the content
-    // system delivers one. `library/imported/<hash>/NSR.iso` is where the
-    // launcher's game import puts the image it built from the player's own
-    // disc, which is the shipping model since 2026-09-06. The imported one
-    // wins when both exist: it is the one the player made.
+    // The Builder reads the pristine image and writes the booted one, so the
+    // pristine bytes stay exactly what the publisher's game patches expect
+    // (see crate::game_image). With no pristine image, an image already at
+    // library/offline, from the old content system, is rebuilt in place as
+    // before.
     let offline_dir = req.data_root.join(DataDir::LibraryOffline.relative());
-    let live = match find_imported_image(req.data_root).or_else(|| find_image(&offline_dir).ok()) {
-        Some(p) => p,
+    let (input, live) = match find_imported_image(req.data_root) {
+        Some(pristine) => (pristine, crate::game_image::booted_path(req.data_root)),
         None => match find_image(&offline_dir) {
+            Ok(p) => (p.clone(), p),
             Err(r) => return Ok(ApplyOutcome::Refused(r)),
-            Ok(p) => p,
         },
     };
     let offline_dir = live.parent().map(Path::to_path_buf).unwrap_or(offline_dir);
-    if platform.files.is_locked(&live) {
+    if live.exists() && platform.files.is_locked(&live) {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::ImageInUse { path: live }));
     }
 
@@ -321,6 +310,7 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
         .join("roster")
         .join(&roster_sha.as_str()[..12]);
     std::fs::create_dir_all(&staging).map_err(|source| Error::Io { path: staging.clone(), source })?;
+    std::fs::create_dir_all(&offline_dir).map_err(|source| Error::Io { path: offline_dir.clone(), source })?;
     if !platform.files.same_volume(&staging, &offline_dir)? {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::CrossVolume {
             staging,
@@ -347,7 +337,7 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
 
     let mut args: Vec<OsString> = vec![
         "--iso".into(),
-        live.as_os_str().to_os_string(),
+        input.as_os_str().to_os_string(),
         "--update".into(),
         req.roster.as_os_str().to_os_string(),
         "--out".into(),
@@ -371,18 +361,20 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
     }
     let report = parse_report(&run.stdout);
 
-    let expected = std::fs::metadata(&live).map_err(|source| Error::Io { path: live.clone(), source })?.len();
+    let expected = std::fs::metadata(&input).map_err(|source| Error::Io { path: input.clone(), source })?.len();
     let got = std::fs::metadata(&out).map_err(|source| Error::Io { path: out.clone(), source })?.len();
     if got != expected {
         let _ = std::fs::remove_file(&out);
         return Ok(ApplyOutcome::Refused(ApplyRefusal::Truncated { expected, got }));
     }
 
-    let before = hash_file(&live)?;
+    // `before` is what is booted now: absent on a first apply, the pristine
+    // image's own hash when the booted copy is still the plain link to it.
+    let before = if live.is_file() { Some(hash_file(&live)?) } else { None };
     let after = hash_file(&out)?;
-    if after == before {
+    if before.as_ref() == Some(&after) {
         let _ = std::fs::remove_file(&out);
-        return Ok(ApplyOutcome::Unchanged { image: live, sha256: before, report });
+        return Ok(ApplyOutcome::Unchanged { image: live, sha256: after, report });
     }
 
     // Record first, swap second; undo the record if the swap fails. See the

@@ -151,6 +151,10 @@ pub enum ComponentId {
     /// frequent, and the reason a roster change does not cost a 1.4 GB
     /// image download.
     Roster,
+    /// Game updates as a chain of xdeltas between consecutive Reborn builds,
+    /// applied to the player's pristine image. About a megabyte per build,
+    /// against 1.46 GB for the image itself.
+    GamePatch,
 }
 
 impl ComponentId {
@@ -164,6 +168,7 @@ impl ComponentId {
         ComponentId::Mods,
         ComponentId::ControllerDb,
         ComponentId::Roster,
+        ComponentId::GamePatch,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -177,10 +182,11 @@ impl ComponentId {
             ComponentId::Mods => "mods",
             ComponentId::ControllerDb => "controller-db",
             ComponentId::Roster => "roster",
+            ComponentId::GamePatch => "game-patch",
         }
     }
 
-    /// Recognise a wire name. `None` for anything not one of the seven.
+    /// Recognise a wire name. `None` for anything not a component.
     ///
     /// An option rather than a default, because a caller holding an unknown
     /// name has a bug or a tampered file, and picking a component for it would
@@ -227,6 +233,7 @@ impl ComponentId {
             ComponentId::OnlineContent => Some(DataDir::LibraryOnline.relative()),
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
             ComponentId::Roster => Some(DataDir::LibraryRoster.relative()),
+            ComponentId::GamePatch => Some(DataDir::LibraryGamePatch.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -1171,9 +1178,9 @@ impl UnsignedReleaseBuilder {
         let name = component.component().component.clone();
         if ComponentId::parse(&name).is_none() {
             return Err(refuse(format!(
-                "refusing to pin the component {name:?}: it is not one of the \
-                 seven. A release pinning a name no client asks for is a release \
-                 with a typo in it"
+                "refusing to pin the component {name:?}: it is not a component name. \
+                 A release pinning a name no client asks for is a release with a \
+                 typo in it"
             )));
         }
         if url.trim().is_empty() {
@@ -2188,7 +2195,7 @@ mod tests {
             .unwrap()
             .pin("https://example/x.json", &unknown)
             .unwrap_err();
-        assert!(err.to_string().contains("not one of the seven"), "{err}");
+        assert!(err.to_string().contains("not a component name"), "{err}");
     }
 
     /// The release produced here is unsigned, and the type says so. This test

@@ -149,6 +149,51 @@ pub enum PublishCommand {
         #[arg(long)]
         token_file: Option<PathBuf>,
     },
+    /// Publish a game update: the xdelta from the build players have to the
+    /// new build, appended to the chain, then a release carrying every other
+    /// pinned component forward. A player's launcher applies the delta to its
+    /// pristine image and re-applies the roster; nothing is re-downloaded.
+    GamePatch {
+        /// The pristine image players have now: the head of the chain, or
+        /// the build the installer patches to when the chain is empty.
+        #[arg(long)]
+        from: PathBuf,
+        /// The new pristine build.
+        #[arg(long)]
+        to: PathBuf,
+        /// The build's label, for example 2026.09.07. Players see it, and it
+        /// is the component version.
+        #[arg(long)]
+        version: String,
+        /// The tree the chain accumulates in: chain.json and patches/. Kept
+        /// outside the origin so uploads never carry it. Defaults to
+        /// `<origin>-stage\game-patch`.
+        #[arg(long)]
+        tree: Option<PathBuf>,
+        /// xdelta3. Defaults to the import bundle under target\installer-payload
+        /// when run from the repository, else the bundle beside rebornctl.
+        #[arg(long)]
+        xdelta: Option<PathBuf>,
+        #[arg(long)]
+        origin: PathBuf,
+        /// Defaults to one above the highest game-patch sequence in the origin.
+        #[arg(long)]
+        sequence: Option<u64>,
+        /// The publisher.key file. Without it the component is published and
+        /// the release step is only described.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// The release label players see. Defaults to the one already served.
+        #[arg(long)]
+        release_version: Option<String>,
+        /// Defaults to one above the release already served.
+        #[arg(long)]
+        release_sequence: Option<u64>,
+        /// Encode, verify, write and sign. Without this both images are
+        /// hashed and the work is described; no delta is made.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Keep the site's API token in the platform credential vault, so
     /// `publish roster` can fetch a login-only export without the token ever
     /// appearing on a command line or in a file the repository could see.
@@ -205,6 +250,31 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             release_sequence,
             apply,
             token_file.as_deref(),
+        ),
+        PublishCommand::GamePatch {
+            from,
+            to,
+            version,
+            tree,
+            xdelta,
+            origin,
+            sequence,
+            key,
+            release_version,
+            release_sequence,
+            apply,
+        } => publish_game_patch(
+            &from,
+            &to,
+            &version,
+            tree.as_deref(),
+            xdelta.as_deref(),
+            &origin,
+            sequence,
+            key.as_deref(),
+            release_version.as_deref(),
+            release_sequence,
+            apply,
         ),
         PublishCommand::Token { from_file, forget } => site_token(from_file.as_deref(), forget),
     }
@@ -312,7 +382,7 @@ fn publish_component(
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
     let Some(id) = ComponentId::parse(name) else {
-        eprintln!("--component {name:?} is not one of the seven. Use one of:");
+        eprintln!("--component {name:?} is not a component name. Use one of:");
         for known in ComponentId::ALL {
             eprintln!("  {}", known.as_str());
         }
@@ -555,7 +625,7 @@ fn release(
             return Ok(misuse());
         };
         let Some(id) = ComponentId::parse(name) else {
-            eprintln!("--component {spec:?}: {name:?} is not one of the seven.");
+            eprintln!("--component {spec:?}: {name:?} is not a component name.");
             return Ok(misuse());
         };
         let path = manifest_path(origin, id, ver);
@@ -768,7 +838,7 @@ fn publish_roster(
     let sequence = match sequence {
         Some(s) => s,
         None => {
-            let next = next_roster_sequence(origin)?;
+            let next = next_sequence(origin, "roster")?;
             println!("Sequence      {next} (one above the highest roster already in the origin)");
             next
         }
@@ -778,9 +848,199 @@ fn publish_roster(
     if published != OK {
         return Ok(published);
     }
+    republish_pinning(origin, "roster", version, key, release_version, release_sequence, apply)
+}
 
-    // The release. Every component already pinned is carried forward at
-    // the version it is served at; the roster pin is replaced or added.
+/// Publish a game update: encode the delta, verify it decodes to the new
+/// build, append it to the chain, publish the chain as the `game-patch`
+/// component, and re-sign the release with every other pin carried forward.
+#[allow(clippy::too_many_arguments)]
+fn publish_game_patch(
+    from: &Path,
+    to: &Path,
+    version: &str,
+    tree: Option<&Path>,
+    xdelta: Option<&Path>,
+    origin: &Path,
+    sequence: Option<u64>,
+    key: Option<&Path>,
+    release_version: Option<&str>,
+    release_sequence: Option<u64>,
+    apply: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::game_patch::{Chain, Step, CHAIN_FILE};
+    use std::ffi::OsString;
+    use std::time::Instant;
+
+    for (what, p) in [("--from", from), ("--to", to)] {
+        if !p.is_file() {
+            println!("{what} {} is not a file. Nothing was published.", p.display());
+            return Ok(PROBLEM);
+        }
+    }
+    let platform = reborn_core::Platform::detect();
+    let Some(xdelta) = find_xdelta_for_publishing(&platform, xdelta) else {
+        println!("xdelta3 was not found. Pass --xdelta <path to xdelta3.exe>; the import bundle");
+        println!("under target\\installer-payload\\game-import holds one. Nothing was published.");
+        return Ok(PROBLEM);
+    };
+    let tree: PathBuf = match tree {
+        Some(t) => t.to_path_buf(),
+        None => {
+            let name = origin
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "origin".to_string());
+            origin.with_file_name(format!("{name}-stage")).join("game-patch")
+        }
+    };
+    let chain_path = tree.join(CHAIN_FILE);
+    let mut chain = Chain::load(&chain_path)?.unwrap_or_default();
+
+    println!("From          {}", from.display());
+    println!("To            {}", to.display());
+    println!("Tool          {}", xdelta.display());
+    println!("Chain         {} ({} step(s) so far)", chain_path.display(), chain.steps.len());
+    println!("Origin        {}", origin.display());
+    println!();
+    println!("Hashing both images.");
+    let started = Instant::now();
+    let from_sha = hash_file(from)?;
+    let to_sha = hash_file(to)?;
+    let to_bytes = std::fs::metadata(to).map_err(|e| io_err(to, e))?.len();
+    println!("From is       {from_sha}");
+    println!("To is         {to_sha}  ({} bytes), hashed in {:.1} s", thousands(to_bytes), started.elapsed().as_secs_f64());
+    if from_sha == to_sha {
+        println!();
+        println!("Those are the same build. Nothing was published.");
+        return Ok(PROBLEM);
+    }
+    if let Some(head) = chain.head() {
+        if head != from_sha.as_str() {
+            println!();
+            println!("The chain ends at {}… and --from is {}…. A game patch is always made from the", &head[..12], &from_sha.as_str()[..12]);
+            println!("build players have, which is the head of the chain. Nothing was published.");
+            return Ok(PROBLEM);
+        }
+    }
+    if chain.steps.iter().any(|s| s.to_sha256 == to_sha.as_str() || s.from_sha256 == to_sha.as_str()) {
+        println!();
+        println!("That build is already in the chain. Nothing was published.");
+        return Ok(PROBLEM);
+    }
+    let patch_rel = Chain::patch_name(from_sha.as_str(), to_sha.as_str());
+    let patch_path = tree.join(patch_rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let step = Step {
+        from_sha256: from_sha.as_str().to_string(),
+        to_sha256: to_sha.as_str().to_string(),
+        to_bytes,
+        patch: patch_rel.clone(),
+        label: version.to_string(),
+    };
+    println!();
+    println!("Step          {} -> {} as {version}", &from_sha.as_str()[..12], &to_sha.as_str()[..12]);
+    println!("Patch         {}", patch_path.display());
+    if !apply {
+        println!();
+        println!("Nothing was encoded or written. Re-run with --apply to make the delta, verify it,");
+        println!("append it to the chain, publish the component and re-sign the release.");
+        return Ok(OK);
+    }
+
+    if let Some(parent) = patch_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+    }
+    println!();
+    println!("Encoding the delta. This reads both images once.");
+    let started = Instant::now();
+    let args: Vec<OsString> = vec![
+        "-e".into(),
+        "-f".into(),
+        "-B".into(),
+        "268435456".into(),
+        "-s".into(),
+        from.as_os_str().to_os_string(),
+        to.as_os_str().to_os_string(),
+        patch_path.as_os_str().to_os_string(),
+    ];
+    let run = platform.processes.run_capturing(&xdelta, &args, &Default::default())?;
+    if !run.succeeded() {
+        let _ = std::fs::remove_file(&patch_path);
+        println!("xdelta3 failed ({:?}):\n{}\n{}", run.exit, run.stdout, run.stderr);
+        println!("Nothing was published.");
+        return Ok(PROBLEM);
+    }
+    let delta_bytes = std::fs::metadata(&patch_path).map_err(|e| io_err(&patch_path, e))?.len();
+    println!("Delta         {} bytes in {:.1} s", thousands(delta_bytes), started.elapsed().as_secs_f64());
+
+    // Decode it back before anyone else does. A delta that does not
+    // reproduce the new build byte for byte would be served to every player.
+    println!("Verifying     decoding the delta over the old build and hashing the result.");
+    let started = Instant::now();
+    let check = std::env::temp_dir().join("reborn-publish").join(format!("game-patch-check-{}.iso", &to_sha.as_str()[..12]));
+    if let Some(parent) = check.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+    }
+    let patcher = reborn_core::game_patch::Xdelta3::new(&platform, xdelta.clone());
+    let decoded = reborn_core::game_patch::Patcher::decode(&patcher, from, &patch_path, &check)?;
+    let verified = decoded.succeeded && hash_file(&check).map(|h| h == to_sha).unwrap_or(false);
+    let _ = std::fs::remove_file(&check);
+    if !verified {
+        let _ = std::fs::remove_file(&patch_path);
+        println!("The delta did not reproduce the new build ({}). It was deleted. Nothing was published.", decoded.tail);
+        return Ok(PROBLEM);
+    }
+    println!("Verified      in {:.1} s", started.elapsed().as_secs_f64());
+
+    chain.push(step)?;
+    chain.save(&chain_path)?;
+    println!("Chain         now {} step(s), head {}…", chain.steps.len(), &to_sha.as_str()[..12]);
+
+    let sequence = match sequence {
+        Some(s) => s,
+        None => {
+            let next = next_sequence(origin, "game-patch")?;
+            println!("Sequence      {next} (one above the highest game-patch already in the origin)");
+            next
+        }
+    };
+    println!();
+    let published = publish_component(&tree, "game-patch", version, sequence, None, origin, true)?;
+    if published != OK {
+        return Ok(published);
+    }
+    republish_pinning(origin, "game-patch", version, key, release_version, release_sequence, true)
+}
+
+/// xdelta3 for the publisher: as given, the repository's import bundle when
+/// run from the repository, or the bundle beside rebornctl.
+fn find_xdelta_for_publishing(platform: &reborn_core::Platform, given: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = given {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd.join("target").join("installer-payload").join(reborn_core::game_patch::BUNDLE_DIR));
+    }
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        dirs.push(exe_dir.join(reborn_core::game_patch::BUNDLE_DIR));
+        dirs.push(exe_dir);
+    }
+    reborn_core::game_patch::find_xdelta(platform, &dirs)
+}
+
+/// Re-sign the release with one component's pin replaced (or added) and
+/// every other pinned component carried forward at the version it is
+/// served at.
+fn republish_pinning(
+    origin: &Path,
+    name: &str,
+    version: &str,
+    key: Option<&Path>,
+    release_version: Option<&str>,
+    release_sequence: Option<u64>,
+    apply: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
     let release_path = origin.join(RELEASE_FILE);
     let existing = if release_path.is_file() {
         let bytes = std::fs::read(&release_path).map_err(|e| io_err(&release_path, e))?;
@@ -795,8 +1055,8 @@ fn publish_roster(
     };
     let mut pins: Vec<String> = Vec::new();
     if let Some(current) = &existing {
-        for (name, pinned) in &current.components {
-            if name == "roster" {
+        for (pinned_name, pinned) in &current.components {
+            if pinned_name == name {
                 continue;
             }
             let manifest = origin.join(pinned.url.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -807,10 +1067,10 @@ fn publish_roster(
                     format!("{} does not parse: {e}", manifest.display()),
                 ))
             })?;
-            pins.push(format!("{name}={}", component.version));
+            pins.push(format!("{pinned_name}={}", component.version));
         }
     }
-    pins.push(format!("roster={version}"));
+    pins.push(format!("{name}={version}"));
     pins.sort();
 
     let (rv, rs) = match (&existing, release_version, release_sequence) {
@@ -824,7 +1084,7 @@ fn publish_roster(
             println!("The origin serves no release yet, so there is nothing to carry forward.");
             println!("Pass --release-version and --release-sequence, or run publish release");
             println!(
-                "with every component. The roster component itself {}.",
+                "with every component. The {name} component itself {}.",
                 if apply { "was published" } else { "would be published with --apply" }
             );
             return Ok(OK);
@@ -847,14 +1107,16 @@ fn publish_roster(
     release(origin, &rv, rs, key, &pins, apply)
 }
 
-/// One above the highest sequence of any roster manifest in the origin.
-fn next_roster_sequence(origin: &Path) -> reborn_core::Result<u64> {
+/// One above the highest sequence of any manifest of this component in the
+/// origin.
+fn next_sequence(origin: &Path, component: &str) -> reborn_core::Result<u64> {
     let dir = origin.join(COMPONENTS_DIR);
+    let prefix = format!("{component}-");
     let mut highest = 0u64;
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("roster-") || !name.ends_with(".json") {
+            if !name.starts_with(&prefix) || !name.ends_with(".json") {
                 continue;
             }
             let bytes = std::fs::read(entry.path()).map_err(|e| io_err(&entry.path(), e))?;

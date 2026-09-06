@@ -108,6 +108,12 @@ enum Command {
         what: RosterCommand,
     },
 
+    /// The game update chain: apply what is installed to the pristine image.
+    GamePatch {
+        #[command(subcommand)]
+        what: GamePatchCommand,
+    },
+
     /// Show what migrating a 2.1 install would do. Copies nothing without --apply.
     Migrate {
         /// The 2.1 install root. Defaults to the standard location.
@@ -331,6 +337,14 @@ enum UpdateCommand {
         /// Fetch and swap. Without this, nothing is downloaded.
         #[arg(long)]
         apply: bool,
+        /// xdelta3, for a game patch. Found in the import bundle beside the
+        /// launcher when absent.
+        #[arg(long)]
+        xdelta: Option<PathBuf>,
+        /// The Builder's console build, for a roster. Found automatically
+        /// when absent.
+        #[arg(long)]
+        builder: Option<PathBuf>,
     },
 }
 
@@ -355,6 +369,28 @@ enum RosterCommand {
         /// Build even if the site flagged problems. They are printed either way.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum GamePatchCommand {
+    /// Walk the installed chain from the pristine image to its newest build,
+    /// re-establish the booted image, and re-apply the roster. The game
+    /// must be closed.
+    Apply {
+        /// Use this data root instead of the real one. For tests.
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// xdelta3. Found in the import bundle beside the launcher when absent.
+        #[arg(long)]
+        xdelta: Option<PathBuf>,
+        /// The Builder's console build, for the roster. Found automatically when absent.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+        /// Where portraits are written. Defaults to the pristine texture tree
+        /// on the real data root, and to a scratch folder with --data-root.
+        #[arg(long)]
+        textures: Option<PathBuf>,
     },
 }
 
@@ -534,6 +570,8 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 trust,
                 data_root,
                 apply,
+                xdelta,
+                builder,
             } => update_content(
                 &platform,
                 &origin,
@@ -541,6 +579,8 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 trust.as_deref(),
                 data_root.as_deref(),
                 apply,
+                xdelta.as_deref(),
+                builder.as_deref(),
             ),
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
@@ -659,6 +699,20 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         Command::Music => music(&platform),
         Command::Content { apply } => content(&platform, apply),
         Command::Publish { what } => publish::run(what),
+        Command::GamePatch { what } => match what {
+            GamePatchCommand::Apply {
+                data_root,
+                xdelta,
+                builder,
+                textures,
+            } => game_patch_apply(
+                &platform,
+                data_root.as_deref(),
+                xdelta.as_deref(),
+                builder.as_deref(),
+                textures.as_deref(),
+            ),
+        },
         Command::Roster { what } => match what {
             RosterCommand::Apply {
                 roster,
@@ -3878,7 +3932,7 @@ fn inventory(
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
     let Some(id) = ComponentId::parse(component) else {
-        eprintln!("--component {component:?} is not one of the seven. Use one of:");
+        eprintln!("--component {component:?} is not a component name. Use one of:");
         for known in ComponentId::ALL {
             eprintln!("  {}", known.as_str());
         }
@@ -4145,6 +4199,7 @@ fn music(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
 /// signed release, fetch the pinned manifest, plan against what is on disk,
 /// fetch what differs, hash the staged set again, swap. Every step that can
 /// refuse says why and what remains safe, and nothing before `--apply` writes.
+#[allow(clippy::too_many_arguments)]
 fn update_content(
     platform: &Platform,
     origin_url: &str,
@@ -4152,9 +4207,11 @@ fn update_content(
     trust: Option<&str>,
     data_root: Option<&Path>,
     apply: bool,
+    xdelta: Option<&Path>,
+    builder: Option<&Path>,
 ) -> reborn_core::Result<std::process::ExitCode> {
     use reborn_core::content::pipeline::{
-        install_dir, CheckRequest, ComponentState, Depth, FetchOutcomeState, PromoteState, RosterHook,
+        install_dir, CheckRequest, ComponentState, Depth, FetchOutcomeState, ImageHook, PromoteState,
         Updater,
     };
     use reborn_core::origin::Origin;
@@ -4312,12 +4369,15 @@ fn update_content(
     // carries it. With a test root the portraits go to scratch, never into a
     // real texture tree.
     let textures_root = match (id, data_root) {
-        (ComponentId::Roster, None) => Some(reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?),
+        (ComponentId::Roster | ComponentId::GamePatch, None) => {
+            Some(reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?)
+        }
         _ => None,
     };
-    let hook = RosterHook {
-        builder: None,
-        extra_dirs: legacy_tools_dirs(),
+    let hook = ImageHook {
+        builder: builder.map(Path::to_path_buf),
+        xdelta: xdelta.map(Path::to_path_buf),
+        extra_dirs: tool_dirs(),
         textures_root,
     };
     let promoted = updater.promote(&check, &hook)?;
@@ -4326,7 +4386,11 @@ fn update_content(
         .first()
         .expect("one component was available, so one was promoted");
     match &promotion.state {
-        PromoteState::Applied { receipt: r, roster } => {
+        PromoteState::Applied {
+            receipt: r,
+            game_patch,
+            roster,
+        } => {
             println!(
                 "Live          {} {}: {} file(s) swapped in, {} kept as yours",
                 r.component,
@@ -4346,14 +4410,21 @@ fn update_content(
             if let Some(p) = &r.previous {
                 println!("Rollback to   {} sequence {} is available", p.version, p.sequence);
             }
-            match roster {
-                None => Ok(OK),
-                Some(result) => {
-                    println!();
-                    println!("Applying the roster to the game image.");
-                    Ok(print_roster_result(result))
+            let mut code = OK;
+            if let Some(gp) = game_patch {
+                println!();
+                println!("Applying the game update to the image.");
+                code = print_game_patch_result(gp);
+            }
+            if let Some(result) = roster {
+                println!();
+                println!("Applying the roster to the game image.");
+                let roster_code = print_roster_result(result);
+                if code == OK {
+                    code = roster_code;
                 }
             }
+            Ok(code)
         }
         PromoteState::Refused(r) => {
             println!("Not swapped: {}", r.message());
@@ -4370,13 +4441,127 @@ fn update_content(
     }
 }
 
-/// The 2.1 tools folder, where a player who had the old launcher may already
-/// have a Reborn Builder. Found here rather than in the core, which reads no
-/// environment variables.
-fn legacy_tools_dirs() -> Vec<PathBuf> {
-    match std::env::var("APPDATA") {
-        Ok(appdata) => vec![PathBuf::from(appdata).join("NFL Street Reborn").join("Tools")],
-        Err(_) => Vec::new(),
+/// Where the image tools may be, beyond the install root the core searches:
+/// the import bundle and folder beside this program (rebornctl sits next to
+/// the launcher), and the 2.1 tools folder, where a player who had the old
+/// launcher may already have a Reborn Builder. Found here rather than in the
+/// core, which reads no environment variables.
+fn tool_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        dirs.push(exe_dir.join(reborn_core::game_patch::BUNDLE_DIR));
+        dirs.push(exe_dir.join("tools"));
+        dirs.push(exe_dir);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));
+    }
+    dirs
+}
+
+/// Apply the installed game-patch chain by hand. The pipeline does this
+/// after promoting the component; this is for a player whose tool was
+/// missing at the time, and for tests.
+fn game_patch_apply(
+    platform: &Platform,
+    data_root: Option<&Path>,
+    xdelta: Option<&Path>,
+    builder: Option<&Path>,
+    textures: Option<&Path>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::content::pipeline::GamePatchResult;
+    use reborn_core::game_patch::{self, Xdelta3};
+
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    let exe = match xdelta {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let dirs = game_patch::xdelta_dirs(platform, &tool_dirs());
+            match game_patch::find_xdelta(platform, &dirs) {
+                Some(p) => p,
+                None => {
+                    println!("{}", GamePatchResult::NoPatcher { looked: dirs }.message());
+                    println!("Pass --xdelta <path to xdelta3.exe>. Nothing was changed.");
+                    return Ok(PROBLEM);
+                }
+            }
+        }
+    };
+    println!("Data root     {}", root.display());
+    println!("Tool          {}", exe.display());
+    println!();
+    let patcher = Xdelta3::new(platform, exe);
+    let outcome = game_patch::apply(
+        platform,
+        &game_patch::ApplyRequest {
+            data_root: &root,
+            patcher: &patcher,
+        },
+    )?;
+    let result = match outcome {
+        game_patch::Outcome::Applied(r) => GamePatchResult::Applied(r),
+        game_patch::Outcome::UpToDate { sha256, .. } => GamePatchResult::UpToDate { sha256 },
+        game_patch::Outcome::Refused(r) => GamePatchResult::Refused(r),
+    };
+    let code = print_game_patch_result(&result);
+    if !matches!(result, GamePatchResult::Applied(_)) {
+        return Ok(code);
+    }
+    let roster_file = root
+        .join(DataDir::LibraryRoster.relative())
+        .join(reborn_core::roster::ROSTER_FILE);
+    if !roster_file.is_file() {
+        println!();
+        println!("No roster is installed, so there was nothing to re-apply.");
+        return Ok(OK);
+    }
+    println!();
+    println!("Re-applying the roster to the new image.");
+    roster_apply(platform, Some(&roster_file), builder, data_root, textures, true)
+}
+
+/// Report what the delta tool did to the image, and whether that counts as done.
+fn print_game_patch_result(result: &reborn_core::content::pipeline::GamePatchResult) -> std::process::ExitCode {
+    use reborn_core::content::pipeline::GamePatchResult;
+    match result {
+        GamePatchResult::Applied(r) => {
+            println!(
+                "Patched       {} step(s): {}",
+                r.steps.len(),
+                r.steps.join(", ")
+            );
+            println!("Was           {}", r.from_sha256);
+            println!("Now           {}", r.to_sha256);
+            println!("Pristine      {}", r.pristine.display());
+            println!(
+                "Booted        {} ({})",
+                r.booted.display(),
+                match r.booted_how {
+                    reborn_core::game_image::Establish::Linked => "linked, no extra disk",
+                    reborn_core::game_image::Establish::Copied => "copied",
+                }
+            );
+            for p in &r.retired {
+                println!("Removed       {}", p.display());
+            }
+            OK
+        }
+        GamePatchResult::UpToDate { .. } => {
+            println!("{}", result.message());
+            OK
+        }
+        GamePatchResult::NoPatcher { .. } => {
+            println!("{}", result.message());
+            println!("Pass --xdelta to `rebornctl game-patch apply` once the tool is in place; the patches are live.");
+            PROBLEM
+        }
+        GamePatchResult::Refused(r) => {
+            println!("Refused: {}", r.message());
+            PROBLEM
+        }
     }
 }
 
@@ -4384,6 +4569,10 @@ fn legacy_tools_dirs() -> Vec<PathBuf> {
 fn print_roster_result(result: &reborn_core::content::pipeline::RosterResult) -> std::process::ExitCode {
     use reborn_core::content::pipeline::RosterResult;
     match result {
+        RosterResult::NothingToApply => {
+            println!("{}", result.message());
+            OK
+        }
         RosterResult::Applied(r) => {
             println!(
                 "Applied       {} players, {} teams, {} portrait(s) written",
@@ -4392,7 +4581,10 @@ fn print_roster_result(result: &reborn_core::content::pipeline::RosterResult) ->
                 thousands(r.report.portraits)
             );
             println!("Image         {}", r.image.display());
-            println!("Was           {}", r.before);
+            match &r.before {
+                Some(b) => println!("Was           {b}"),
+                None => println!("Was           nothing booted yet"),
+            }
             println!("Now           {}", r.after);
             if let Some(base) = &r.report.base {
                 println!("Base          {base}");
@@ -4457,7 +4649,7 @@ fn roster_apply(
     let builder_path = match builder {
         Some(p) => p.to_path_buf(),
         None => {
-            let dirs = roster::builder_dirs(platform, &legacy_tools_dirs());
+            let dirs = roster::builder_dirs(platform, &tool_dirs());
             match roster::find_builder(platform, &dirs) {
                 Some(p) => p,
                 None => {
@@ -4509,7 +4701,10 @@ fn roster_apply(
                 thousands(r.report.portraits)
             );
             println!("Image         {}", r.image.display());
-            println!("Was           {}", r.before);
+            match &r.before {
+                Some(b) => println!("Was           {b}"),
+                None => println!("Was           nothing booted yet"),
+            }
             println!("Now           {}", r.after);
             if let Some(base) = &r.report.base {
                 println!("Base          {base}");

@@ -29,6 +29,7 @@ use crate::content::{
     PromotionReceipt, PromotionRefusal, SignatureVerifier, StagedVerdict, TrustedRelease,
     UpdatePlan,
 };
+use crate::game_patch::{self, Xdelta3};
 use crate::inventory::ComponentId;
 use crate::library::RebuildState;
 use crate::manifest::Sha256Hex;
@@ -63,17 +64,19 @@ impl ReleaseSource for Origin {
 }
 
 /// The components the content system delivers, in the order they are
-/// promoted. The roster is last because it is applied to an image the
-/// earlier ones may have just put in place.
+/// promoted. The game patch comes before the roster because the roster is
+/// applied to the image the patch builds; the roster is last because it is
+/// applied to whatever image is in place by then.
 ///
 /// The launcher updates through its installer and controller-db has no
 /// artifact, so neither is here.
-pub const UPDATABLE: [ComponentId; 6] = [
+pub const UPDATABLE: [ComponentId; 7] = [
     ComponentId::Runtime,
     ComponentId::OfflineContent,
     ComponentId::OnlineContent,
     ComponentId::Textures,
     ComponentId::Mods,
+    ComponentId::GamePatch,
     ComponentId::Roster,
 ];
 
@@ -90,6 +93,7 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         ComponentId::Textures => Some(DataDir::LibraryTextures),
         ComponentId::Mods => Some(DataDir::ModsPackages),
         ComponentId::Roster => Some(DataDir::LibraryRoster),
+        ComponentId::GamePatch => Some(DataDir::LibraryGamePatch),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }
@@ -285,19 +289,68 @@ impl FetchOutcome {
     }
 }
 
-/// How the roster reaches the image after its file is promoted.
+/// How the image is rebuilt after content lands: the Builder for a roster,
+/// the delta tool for a game patch.
 #[derive(Debug, Clone, Default)]
-pub struct RosterHook {
+pub struct ImageHook {
     /// The Builder's console build, when the caller knows where it is.
     pub builder: Option<PathBuf>,
-    /// Searched for `reborn-builder-cli` when `builder` is not given, after
-    /// the install root and its `tools` folder. The 2.1 tools folder goes
-    /// here; the core does not read environment variables to find it.
+    /// The delta tool (xdelta3), when the caller knows where it is.
+    pub xdelta: Option<PathBuf>,
+    /// Searched for both tools when they are not given, after the install
+    /// root, its `tools` folder and its `game-import` bundle. The 2.1 tools
+    /// folder goes here; the core does not read environment variables to
+    /// find it.
     pub extra_dirs: Vec<PathBuf>,
     /// Where the Builder writes portraits. `None` sends them to a scratch
     /// directory under staging, which is right for a test root and wrong
     /// for a real one.
     pub textures_root: Option<PathBuf>,
+}
+
+/// What happened to the image after a game patch landed.
+#[derive(Debug)]
+pub enum GamePatchResult {
+    Applied(game_patch::ApplyReceipt),
+    /// The pristine image is already the newest build.
+    UpToDate { sha256: String },
+    /// No delta tool in any of the directories searched. The patch files are
+    /// live; the image is as it was. [`Updater::apply_current_game_patch`]
+    /// finishes the job once the tool is present.
+    NoPatcher { looked: Vec<PathBuf> },
+    Refused(game_patch::Refusal),
+}
+
+impl GamePatchResult {
+    /// Whether the image is the newest build now.
+    pub fn reached_the_image(&self) -> bool {
+        matches!(self, GamePatchResult::Applied(_) | GamePatchResult::UpToDate { .. })
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            GamePatchResult::Applied(r) => format!(
+                "Applied {} game update(s), {} through {}; the game is now build {}…",
+                r.steps.len(),
+                r.steps.first().map(String::as_str).unwrap_or("?"),
+                r.steps.last().map(String::as_str).unwrap_or("?"),
+                &r.to_sha256[..12]
+            ),
+            GamePatchResult::UpToDate { sha256 } => format!("The game is already the newest build ({}…).", &sha256[..12]),
+            GamePatchResult::NoPatcher { looked } => {
+                let mut m = String::from(
+                    "The delta tool (xdelta3) was not found, so the game update is downloaded but not                      applied. Looked in:",
+                );
+                for d in looked {
+                    m.push_str("
+  ");
+                    m.push_str(&d.display().to_string());
+                }
+                m
+            }
+            GamePatchResult::Refused(r) => r.message(),
+        }
+    }
 }
 
 /// What happened to the image after a roster landed.
@@ -313,16 +366,24 @@ pub enum RosterResult {
     /// The Builder was found and the apply was refused: no image yet, the
     /// image in use, the Builder failed. Same remedy as above.
     Refused(ApplyRefusal),
+    /// No roster has ever been installed, so there is nothing to apply. Not
+    /// a fault: a game patch on an install without a roster ends here.
+    NothingToApply,
 }
 
 impl RosterResult {
-    /// Whether the image carries the roster now.
+    /// Whether the image carries the current roster now (trivially, when
+    /// there is none).
     pub fn reached_the_image(&self) -> bool {
-        matches!(self, RosterResult::Applied(_) | RosterResult::Unchanged { .. })
+        matches!(
+            self,
+            RosterResult::Applied(_) | RosterResult::Unchanged { .. } | RosterResult::NothingToApply
+        )
     }
 
     pub fn message(&self) -> String {
         match self {
+            RosterResult::NothingToApply => "No roster is installed, so there was nothing to apply.".to_string(),
             RosterResult::Applied(r) => format!(
                 "Applied: {} players, {} teams, {} portrait(s) written to the image.",
                 r.report.players, r.report.teams, r.report.portraits
@@ -354,7 +415,11 @@ impl RosterResult {
 pub enum PromoteState {
     Applied {
         receipt: PromotionReceipt,
-        /// Present for the roster component only.
+        /// Present for the game-patch component only.
+        game_patch: Option<GamePatchResult>,
+        /// Present for the roster component, and for the game-patch
+        /// component when its patch built a new image (the roster is
+        /// re-applied to it).
         roster: Option<RosterResult>,
     },
     /// Nothing was moved.
@@ -577,17 +642,30 @@ impl<'a> Updater<'a> {
     ///
     /// Call only when the game is closed: a file the game holds open cannot
     /// be replaced, and the swap would roll back.
-    pub fn promote(&self, check: &ContentCheck, hook: &RosterHook) -> Result<PromoteOutcome> {
+    pub fn promote(&self, check: &ContentCheck, hook: &ImageHook) -> Result<PromoteOutcome> {
         let mut out = PromoteOutcome::default();
         for (cc, plan) in check.available() {
             let state = match self.service.promote(plan)? {
                 Promoted::Applied(receipt) => {
-                    let roster = if cc.component == ComponentId::Roster {
-                        Some(self.apply_current_roster(hook)?)
-                    } else {
-                        None
+                    let (game_patch, roster) = match cc.component {
+                        ComponentId::Roster => (None, Some(self.apply_current_roster(hook)?)),
+                        ComponentId::GamePatch => {
+                            let gp = self.apply_current_game_patch(hook)?;
+                            // A new image carries no roster; put the current
+                            // one back. Only when an image was actually built.
+                            let roster = match &gp {
+                                GamePatchResult::Applied(_) => Some(self.apply_current_roster(hook)?),
+                                _ => None,
+                            };
+                            (Some(gp), roster)
+                        }
+                        _ => (None, None),
                     };
-                    PromoteState::Applied { receipt, roster }
+                    PromoteState::Applied {
+                        receipt,
+                        game_patch,
+                        roster,
+                    }
                 }
                 Promoted::Refused(r) => PromoteState::Refused(r),
                 Promoted::RolledBack { reason, restored, .. } => PromoteState::RolledBack {
@@ -611,7 +689,14 @@ impl<'a> Updater<'a> {
     /// roster promotion, after a game import puts a new image in place, and
     /// from a Repair button, and it is how a roster that landed before the
     /// image existed reaches it later.
-    pub fn apply_current_roster(&self, hook: &RosterHook) -> Result<RosterResult> {
+    pub fn apply_current_roster(&self, hook: &ImageHook) -> Result<RosterResult> {
+        let roster_file = self
+            .data_root()
+            .join(DataDir::LibraryRoster.relative())
+            .join(ROSTER_FILE);
+        if !roster_file.is_file() {
+            return Ok(RosterResult::NothingToApply);
+        }
         let builder = match &hook.builder {
             Some(b) => b.clone(),
             None => {
@@ -622,10 +707,6 @@ impl<'a> Updater<'a> {
                 }
             }
         };
-        let roster_file = self
-            .data_root()
-            .join(DataDir::LibraryRoster.relative())
-            .join(ROSTER_FILE);
         let req = ApplyRequest {
             data_root: self.data_root(),
             roster: &roster_file,
@@ -640,10 +721,40 @@ impl<'a> Updater<'a> {
         })
     }
 
+    /// Apply the game patches that are live in `library/game-patch` to the
+    /// pristine image, and re-establish the booted image from the result.
+    ///
+    /// Idempotent: an image already at the head of the chain is reported up
+    /// to date. The roster is NOT re-applied here; [`Updater::promote`]
+    /// does that after a patch builds a new image, and a caller using this
+    /// directly should call [`Updater::apply_current_roster`] next.
+    pub fn apply_current_game_patch(&self, hook: &ImageHook) -> Result<GamePatchResult> {
+        let exe = match &hook.xdelta {
+            Some(x) => x.clone(),
+            None => {
+                let dirs = game_patch::xdelta_dirs(self.platform, &hook.extra_dirs);
+                match game_patch::find_xdelta(self.platform, &dirs) {
+                    Some(x) => x,
+                    None => return Ok(GamePatchResult::NoPatcher { looked: dirs }),
+                }
+            }
+        };
+        let patcher = Xdelta3::new(self.platform, exe);
+        let req = game_patch::ApplyRequest {
+            data_root: self.data_root(),
+            patcher: &patcher,
+        };
+        Ok(match game_patch::apply(self.platform, &req)? {
+            game_patch::Outcome::Applied(r) => GamePatchResult::Applied(r),
+            game_patch::Outcome::UpToDate { sha256, .. } => GamePatchResult::UpToDate { sha256 },
+            game_patch::Outcome::Refused(r) => GamePatchResult::Refused(r),
+        })
+    }
+
     /// Check, fetch and promote in one go, for a caller that has already
     /// established the game is closed. Stops after the check when there is
     /// nothing to fetch.
-    pub fn run(&self, req: &CheckRequest<'_>, hook: &RosterHook) -> Result<RunOutcome> {
+    pub fn run(&self, req: &CheckRequest<'_>, hook: &ImageHook) -> Result<RunOutcome> {
         let check = self.check(req)?;
         if !check.has_updates() {
             return Ok(RunOutcome {
@@ -883,7 +994,7 @@ mod tests {
         assert!(fetched.all_staged(), "{fetched:?}");
         assert!(!live(dir.path(), ComponentId::Runtime, "Dolphin.exe").exists(), "a fetch writes nothing live");
 
-        let promoted = updater.promote(&check, &RosterHook::default()).unwrap();
+        let promoted = updater.promote(&check, &ImageHook::default()).unwrap();
         assert!(promoted.all_applied(), "{promoted:?}");
         assert_eq!(std::fs::read(live(dir.path(), ComponentId::Runtime, "Dolphin.exe")).unwrap(), b"dolphin one");
         assert_eq!(std::fs::read(live(dir.path(), ComponentId::Runtime, "Sys/GC/font.bin")).unwrap(), b"font");
@@ -912,7 +1023,7 @@ mod tests {
         let v1 = origin(1, vec![runtime_v1()]);
         {
             let updater = Updater::new(&platform, dir.path(), &v1, &GOOD);
-            let run = updater.run(&quick(&[ComponentId::Runtime]), &RosterHook::default()).unwrap();
+            let run = updater.run(&quick(&[ComponentId::Runtime]), &ImageHook::default()).unwrap();
             assert!(run.promote.unwrap().all_applied());
         }
 
@@ -933,12 +1044,12 @@ mod tests {
         assert_eq!(plan.fetches.len(), 1, "the unchanged font is already the new version of itself");
         assert_eq!(check.download_bytes(), "dolphin two".len() as u64);
 
-        let run = updater.run(&quick(&[ComponentId::Runtime]), &RosterHook::default()).unwrap();
+        let run = updater.run(&quick(&[ComponentId::Runtime]), &ImageHook::default()).unwrap();
         let promoted = run.promote.unwrap();
         match &promoted.components[0].state {
-            PromoteState::Applied { receipt, roster } => {
+            PromoteState::Applied { receipt, roster, game_patch } => {
                 assert_eq!(receipt.previous.as_ref().unwrap().version, "1.0.0", "rollback is available");
-                assert!(roster.is_none(), "the roster hook runs for the roster only");
+                assert!(roster.is_none() && game_patch.is_none(), "the image hooks run for their own components only");
             }
             other => panic!("{other:?}"),
         }
@@ -956,7 +1067,7 @@ mod tests {
         let platform = Platform::detect();
         let src = origin(1, vec![runtime_v1()]);
         let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
-        updater.run(&quick(&[ComponentId::Runtime]), &RosterHook::default()).unwrap();
+        updater.run(&quick(&[ComponentId::Runtime]), &ImageHook::default()).unwrap();
 
         std::fs::write(live(dir.path(), ComponentId::Runtime, "Sys/GC/font.bin"), b"scribbled").unwrap();
 
@@ -985,7 +1096,7 @@ mod tests {
                     components: &[ComponentId::Runtime],
                     depth: Depth::Verify,
                 },
-                &RosterHook::default(),
+                &ImageHook::default(),
             )
             .unwrap();
         assert!(run.promote.unwrap().all_applied());
@@ -1023,7 +1134,7 @@ mod tests {
         }
         assert!(fetched.not_staged().count() == 1 && fetched.staged().count() == 0);
 
-        let promoted = updater.promote(&check, &RosterHook::default()).unwrap();
+        let promoted = updater.promote(&check, &ImageHook::default()).unwrap();
         assert!(matches!(promoted.components[0].state, PromoteState::Refused(_)), "{promoted:?}");
         assert!(!live(dir.path(), ComponentId::Runtime, "Dolphin.exe").exists());
         assert!(updater.service().installed("runtime").unwrap().is_none());
@@ -1036,7 +1147,7 @@ mod tests {
             "the retry resumed the kept part instead of starting over: {:?}",
             src.blob_requests()
         );
-        let promoted = updater.promote(&check, &RosterHook::default()).unwrap();
+        let promoted = updater.promote(&check, &ImageHook::default()).unwrap();
         assert!(promoted.all_applied(), "{promoted:?}");
         assert_eq!(std::fs::read(live(dir.path(), ComponentId::Runtime, "Dolphin.exe")).unwrap(), b"dolphin one");
     }
@@ -1051,8 +1162,9 @@ mod tests {
         );
         let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
         let nowhere = dir.path().join("no-tools-here");
-        let hook = RosterHook {
+        let hook = ImageHook {
             builder: None,
+            xdelta: None,
             extra_dirs: vec![nowhere.clone()],
             textures_root: None,
         };
@@ -1081,8 +1193,9 @@ mod tests {
         std::fs::create_dir_all(&tools).unwrap();
         let name = format!("{}{}", roster::BUILDER_NAME, platform.paths.exe_suffix());
         std::fs::write(tools.join(&name), b"not a program").unwrap();
-        let hook = RosterHook {
+        let hook = ImageHook {
             builder: None,
+            xdelta: None,
             extra_dirs: vec![tools],
             textures_root: None,
         };
@@ -1116,7 +1229,7 @@ mod tests {
             ],
         );
         Updater::new(&platform, dir.path(), &newer, &GOOD)
-            .run(&quick(&[ComponentId::Runtime]), &RosterHook::default())
+            .run(&quick(&[ComponentId::Runtime]), &ImageHook::default())
             .unwrap();
 
         let older = origin(
@@ -1145,11 +1258,11 @@ mod tests {
         let platform = Platform::detect();
         let src = origin(1, vec![runtime_v1()]);
         let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
-        let first = updater.run(&CheckRequest::default(), &RosterHook::default()).unwrap();
+        let first = updater.run(&CheckRequest::default(), &ImageHook::default()).unwrap();
         assert!(first.fetch.is_some() && first.promote.is_some());
         assert_eq!(first.check.components.len(), UPDATABLE.len());
 
-        let second = updater.run(&CheckRequest::default(), &RosterHook::default()).unwrap();
+        let second = updater.run(&CheckRequest::default(), &ImageHook::default()).unwrap();
         assert!(second.fetch.is_none() && second.promote.is_none());
         assert!(!second.check.has_updates());
         for c in &second.check.components {

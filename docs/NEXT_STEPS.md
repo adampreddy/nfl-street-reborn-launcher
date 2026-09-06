@@ -45,31 +45,37 @@ modded game on a public URL had no place in that. Copies are kept at
 
 ## The order of work
 
-### 1. Land the other session's launcher work (blocks everything below)
+### 1. DONE 2026-09-06 evening: taken over, landed, and the game-patch component built
 
-68 uncommitted files in the launcher repo from the other session: the UI
-rebuild (`reborn-ui/*`, `app-shell.js`, `launcher.css`, `update-notice.js`,
-`controller-test.js`), `build.ps1`'s `-GamePatch` / `PromptPackages` model,
-`game_import.rs` (untracked), `settings.rs`, `lib.rs` (`reshade`),
-`Tools/test-all.ps1` (`-Browser`), browser tests, three design docs. Nothing
-of theirs is committed. Until it is, do not edit under it. Have that session
-commit, or Adam says "take it over".
+Adam said "take it over". The other session's 68 files landed as `94880f2`
+(their test run was green; the one failure is the stale dist zip check).
+Then the game-patch component, on top of it:
 
-Three things to raise with that session, found while reading their work:
+- **Two image layers** (`reborn_core::game_image`): pristine at
+  `library/imported/<sha256>/NSR.iso`, never written; booted at
+  `library/offline/NSR.iso`, a hardlink of the pristine file until a roster
+  is applied into it. `settings.game_path` points at the booted one. The
+  roster apply reads pristine and writes booted.
+- **`game-patch` component** (`reborn_core::game_patch`,
+  `ComponentId::GamePatch`, `library/game-patch`): a chain of xdeltas
+  between consecutive builds plus `chain.json`. The pipeline promotes it
+  before the roster, applies the chain, re-links the booted image, and
+  re-applies the roster. `rebornctl publish game-patch --from --to
+  --version` on the publishing side.
+- **Proven** by `Tools/e2e-game-patch.py` over the real image with the
+  real xdelta3 and Builder. Decision breakdown and measurements in
+  `docs/architecture/GAME_PATCH_COMPONENT.md`; the verb in
+  `docs/RUNNING_UPDATES.md` 7b.
 
-- **A game update needs the disc again.** Import discards the player's
-  original after patching. A new Reborn build (new xdelta from the stock
-  disc) would need the disc re-inserted, or a retained 1.4 GB source. The
-  cheaper design: build-to-build xdeltas (measured 1.1 MB between
-  consecutive builds) applied to the image the player already has. That
-  needs the import to stay pristine at `library/imported/<hash>/NSR.iso`
-  and the roster to be applied into a copy Dolphin boots, not in place.
-- **`find_game_image` in `session.rs` must look in `library/imported`**, or
-  Play will not find what onboarding built. `roster::find_imported_image`
-  already does (commit 129a668).
-- **`game_import.rs` uses `std::process::Command` and `#[cfg(windows)]`**
-  outside `platform/`, which the core forbids; `ProcessHost::run_capturing`
-  is the seam.
+Still open from the read of their work: `game_import.rs` uses
+`std::process::Command` and `#[cfg(windows)]` outside `platform/`, which
+the core forbids; `ProcessHost::run_capturing` is the seam. Cosmetic until
+someone ports the core.
+
+**The first real game patch must be published FROM the image the
+installer's xdelta produces** (the `--target` given to
+`Tools/create-game-patch.py`, today `NFL Street 2 FIELDS 12-19.iso`), or
+no imported player will be in the chain.
 
 ### 2. Three launcher items, once 1 lands
 
@@ -90,8 +96,9 @@ Three things to raise with that session, found while reading their work:
    if check.has_updates() { /* show check.download_bytes(), then in the background: */ }
    let fetched = updater.fetch(&check)?;                           // writes only under downloads/ and staging/
    // only when no game session is running:
-   let promoted = updater.promote(&check, &RosterHook {
-       builder: None,
+   let promoted = updater.promote(&check, &ImageHook {
+       builder: None,                                              // found in <install>\tools, beside the launcher, extra_dirs
+       xdelta: None,                                               // found in <install>\game-import
        extra_dirs: vec![legacy_root.join("Tools")],                // settings.legacy_root, when set
        textures_root: Some(mods::pristine_root(&platform, &game)?),
    })?;
@@ -99,9 +106,9 @@ Three things to raise with that session, found while reading their work:
 
    Keep the `ContentCheck` in managed state between the calls; the plans
    live in it. `Depth::Verify` is the Repair button only: on textures it
-   hashes 3.18 GB and takes 45 s. After a game import, call
-   `updater.apply_current_roster(&hook)` so the roster that is already live
-   reaches the new image; it is idempotent.
+   hashes 3.18 GB and takes 45 s. The import flows in `setup_tools.rs`
+   already establish the booted image and apply an installed roster to
+   it, so nothing extra is needed there.
 2. **A one-file installer build** for launcher self-update. `latest.json`
    pins one file; `build.ps1` writes it only for a single-file build, and
    the first-run installer is spanned. Needs a build mode that leaves the
@@ -110,13 +117,11 @@ Three things to raise with that session, found while reading their work:
    the launcher finds it in `<install>\tools`, beside the launcher, or in
    `%APPDATA%\NFL Street Reborn\Tools`.
 
-### 3. The game-patch component (small game updates)
+### 3. DONE: the game-patch component (see item 1)
 
-A `game-patch` content component carrying a build-to-build xdelta plus the
-expected output hash, applied with the bundled `xdelta3.exe` the way
-`game_import.rs` does, then the current roster re-applied. Depends on the
-layering decision in item 1. About a day. Removes the only case where a
-player would ever download hundreds of megabytes again.
+What remains around it: nothing in the launcher window yet says "game
+update applied"; that comes with the window wiring in item 2, where
+`PromoteState::Applied { game_patch, roster, .. }` carries both results.
 
 ### 4. The final installer
 

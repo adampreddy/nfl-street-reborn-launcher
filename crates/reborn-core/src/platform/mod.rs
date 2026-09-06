@@ -269,6 +269,9 @@ pub enum DataDir {
     /// The roster the site published, as delivered. One small file that the
     /// launcher applies to the live image with the Reborn Builder.
     LibraryRoster,
+    /// The game-patch component: `chain.json` and the xdeltas between
+    /// consecutive Reborn builds, applied to the pristine image.
+    LibraryGamePatch,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -300,6 +303,7 @@ impl DataDir {
             DataDir::LibraryXbox => "library/xbox",
             DataDir::LibraryWork => "library/work",
             DataDir::LibraryRoster => "library/roster",
+            DataDir::LibraryGamePatch => "library/game-patch",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -328,6 +332,7 @@ impl DataDir {
         DataDir::LibraryXbox,
         DataDir::LibraryWork,
         DataDir::LibraryRoster,
+        DataDir::LibraryGamePatch,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,
