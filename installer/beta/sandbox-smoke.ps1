@@ -334,6 +334,47 @@ try {
         Check "WebView2 runtime present after install (needs network in the sandbox)" ($null -ne (WebView2Version))
 
         # ------------------------------------------------------------------
+        # 2b. The launcher-only update, over that install
+        #
+        # This is the file self-update downloads. It carries the launcher,
+        # rebornctl and the Builder and nothing else, and it has to leave the
+        # runtime, the textures and the import bundle exactly as they were,
+        # then bring the launcher back, because that is what a player sees
+        # after "Installing verified update".
+        # ------------------------------------------------------------------
+        $updateSetup = Get-ChildItem $dist -Filter "NFL Street Reborn Launcher Update *.exe" | Select-Object -First 1
+        if ($updateSetup) {
+            Phase "Updating the launcher in place" "The small self-update installer. Runtime, textures and the import bundle must survive it."
+            $runtimeBefore = @(Get-ChildItem (Join-Path $stableDir "runtime") -Recurse -File -ErrorAction SilentlyContinue).Count
+            $importBefore = @(Get-ChildItem (Join-Path $stableDir "game-import") -File -ErrorAction SilentlyContinue).Count
+            $texBefore = @(Get-ChildItem $tex -Recurse -File -ErrorAction SilentlyContinue).Count
+            # The switches update.rs passes: /SILENT /NORESTART /RELAUNCH=1 and
+            # the install root, stated so a custom folder is honored.
+            $code = Run-Setup $updateSetup.FullName "install-update.log" @("/RELAUNCH=1", "/DIR=`"$stableDir`"")
+            Check "the update installer exits 0 over the full install" ($code -eq 0)
+            Check "the launcher is still in Programs after the update" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
+            $runtimeAfter = @(Get-ChildItem (Join-Path $stableDir "runtime") -Recurse -File -ErrorAction SilentlyContinue).Count
+            Check "the update kept the runtime" ((Test-Path (Join-Path $stableDir "runtime\Dolphin.exe")) -and ($runtimeAfter -eq $runtimeBefore)) "runtime files before $runtimeBefore, after $runtimeAfter"
+            $texAfter = @(Get-ChildItem $tex -Recurse -File -ErrorAction SilentlyContinue).Count
+            Check "the update kept the textures" (($texAfter -eq $texBefore) -and ($texAfter -gt 1000)) "before $texBefore, after $texAfter"
+            $importAfter = @(Get-ChildItem (Join-Path $stableDir "game-import") -File -ErrorAction SilentlyContinue).Count
+            Check "the update kept the game import bundle" (($importAfter -eq $importBefore) -and ($importAfter -gt 0)) "before $importBefore, after $importAfter"
+            Check "the update shipped the Reborn Builder beside the launcher" (Test-Path (Join-Path $stableDir "tools\reborn-builder-cli.exe"))
+            $b = Run-Ours (Join-Path $stableDir "tools\reborn-builder-cli.exe") "--help" "builder-help.txt"
+            Check "the Reborn Builder runs on this clean Windows" (-not [string]::IsNullOrWhiteSpace($b)) "it produced nothing"
+            $u = Run-Ours (Join-Path $stableDir "rebornctl.exe") "status" "status-after-update.txt"
+            Check "rebornctl runs after the update" (-not [string]::IsNullOrWhiteSpace($u)) "it produced nothing"
+            # /RELAUNCH=1 brings the launcher back, as it does after a self-update.
+            Start-Sleep -Seconds 8
+            $relaunched = @(Get-Process reborn-launcher -ErrorAction SilentlyContinue)
+            Check "the update relaunched the launcher" ($relaunched.Count -ge 1) "no reborn-launcher process 8 s after the update"
+            $relaunched | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+        } else {
+            Say("no launcher-only update installer in dist; the update-in-place checks did not run")
+        }
+
+        # ------------------------------------------------------------------
         # 3. Uninstall stable. The 2.1 folder and the memory card must survive.
         # ------------------------------------------------------------------
         Phase "Uninstalling it again" "The memory card and the 2.1 folder have to survive this. 2.1's own uninstaller did not manage it."

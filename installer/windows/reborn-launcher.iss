@@ -137,7 +137,14 @@ OutputDir={#OutDir}
 #ifndef OfflineSuffix
   #define OfflineSuffix ""
 #endif
+; A launcher-only build (build.ps1 -LauncherOnly) is named Update, not
+; Setup: it is the file the launcher fetches to update itself, and it cannot
+; start a fresh player, so it must never be picked up as the first-run set.
+#ifdef UpdateBuild
+OutputBaseFilename={#AppName} Launcher Update {#AppVersion}
+#else
 OutputBaseFilename={#AppName} Launcher Setup {#AppVersion}{#OfflineSuffix}
+#endif
 
 ; Disk spanning, passed by build.ps1 when the payload warrants it.
 ;

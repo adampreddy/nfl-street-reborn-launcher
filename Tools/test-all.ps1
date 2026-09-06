@@ -153,14 +153,19 @@ if (-not $setup) {
 
     # A spanned build is the exe plus slices. Shipping the exe alone gives a
     # player an installer that stops partway asking for a file they never got.
-    $slices = @(Get-ChildItem $dist -Filter "*.bin" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notlike "*Beta*" })
+    # The set is the newest exe's own: "<prefix>.exe" and "<prefix>-<n>.bin".
+    # Matching every .bin in dist against every zip compared one build's zip
+    # with another build's slices whenever two builds sat in dist together.
+    $prefix = [System.IO.Path]::GetFileNameWithoutExtension($setup.Name)
+    $slicePattern = "^" + [regex]::Escape($prefix) + "-\d+\.bin$"
+    $slices = @(Get-ChildItem $dist -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $slicePattern })
     if ($slices.Count -gt 0) {
-        $zip = Get-ChildItem $dist -Filter "*.zip" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notlike "*Beta*" } | Sort-Object LastWriteTime | Select-Object -Last 1
+        # The zip named for this version: "<AppName> Launcher <version>.zip".
+        $zipName = ($prefix -replace " Launcher Setup ", " Launcher ") + ".zip"
+        $zip = Get-ChildItem $dist -Filter $zipName -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $zip) {
             Record "dist" "the spanned set is packed into one zip" $false `
-                ("{0} slice(s) but no zip: three separate downloads" -f $slices.Count)
+                ("{0} slice(s) but no {1}: three separate downloads" -f $slices.Count, $zipName)
         } else {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
@@ -177,6 +182,26 @@ if (-not $setup) {
             Record "dist" "the zip is not older than the build inside it" ($zip.LastWriteTime -ge $newest) `
                 ("zip {0:HH:mm:ss}, newest part {1:HH:mm:ss}" -f $zip.LastWriteTime, $newest)
         }
+    }
+}
+# The launcher-only update installer: one file, and latest.json beside it
+# must pin THAT file. A manifest pointing at a different build is an update
+# that fails its hash check on every player's machine.
+$update = Get-ChildItem $dist -Filter "*Launcher Update *.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notlike "*Beta*" } | Sort-Object LastWriteTime | Select-Object -Last 1
+if ($update) {
+    $stray = @(Get-ChildItem $dist -Filter ($update.BaseName + "-*.bin") -ErrorAction SilentlyContinue)
+    Record "dist" "the update installer is one file" ($stray.Count -eq 0) `
+        ("{0}, {1:N1} MB" -f $update.Name, ($update.Length / 1MB))
+    $manifest = Join-Path $dist "latest.json"
+    if (-not (Test-Path $manifest)) {
+        Record "dist" "latest.json pins the update installer" $false "no latest.json in dist"
+    } else {
+        $m = Get-Content $manifest -Raw | ConvertFrom-Json
+        $hash = (Get-FileHash $update.FullName -Algorithm SHA256).Hash.ToLower()
+        $pinned = ($m.windows.sha256 -eq $hash) -and ([int64]$m.windows.bytes -eq $update.Length) -and ($m.windows.file_name -eq $update.Name)
+        Record "dist" "latest.json pins the update installer by hash, size and name" $pinned `
+            ("version {0}, sha256 {1}..., {2}" -f $m.version, $hash.Substring(0, 12), $m.windows.url)
     }
 }
 Write-Host ""

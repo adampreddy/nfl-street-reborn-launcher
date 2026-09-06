@@ -40,20 +40,60 @@ param(
     # runtime built in and an updated Windows 10 has it too, so the default
     # stays the 1.7 MB downloader and this is the build to hand to someone
     # who needs it.
-    [switch]$OfflineWebView2
+    [switch]$OfflineWebView2,
+    # A launcher-only build, for self-update: the launcher, rebornctl and the
+    # Reborn Builder, nothing else. It installs over a full install and leaves
+    # the runtime, the textures, the game import bundle and the content in
+    # place, because Inno replaces what it carries and removes nothing. It is
+    # one file, so latest.json can pin it, which the spanned first-run
+    # installer never can. A fresh player cannot start from it: without the
+    # import bundle there is no game.
+    [switch]$LauncherOnly,
+    # The Reborn Builder's console build, shipped under tools\ beside the
+    # launcher so roster updates can be applied to the player's image. The
+    # default is the copy the Builder keeps for its own use on this machine.
+    # Only the executable ships: clean-tree.txt beside it names a folder on
+    # one machine.
+    [string]$Builder = (Join-Path $env:APPDATA "NFL Street Reborn\Tools\reborn-builder-cli.exe"),
+    # Where latest.json says the installer can be downloaded from. Defaults
+    # to the GitHub release page for v<Version>, which is what update.rs
+    # reads. A different host (the content bucket, say) goes here.
+    [string]$UpdateBase = ""
 )
 
 $ErrorActionPreference = "Stop"
 if ($GameImages.Count -gt 0) { throw "This installer imports the player's game in onboarding. Use -GamePatch instead of -GameImages." }
-foreach ($required in @("manifest.json", "reborn.xdelta", "DolphinTool.exe", "xdelta3.exe")) {
-    if (-not $GamePatch -or -not (Test-Path -LiteralPath (Join-Path $GamePatch $required) -PathType Leaf)) { throw "A complete -GamePatch bundle is required ($required)." }
+if ($LauncherOnly) {
+    if ($GamePatch -or $Runtime -or $Textures -or $PromptPackages) { throw "-LauncherOnly ships the launcher alone. Leave -GamePatch, -Runtime, -Textures and -PromptPackages out." }
+} else {
+    foreach ($required in @("manifest.json", "reborn.xdelta", "DolphinTool.exe", "xdelta3.exe")) {
+        if (-not $GamePatch -or -not (Test-Path -LiteralPath (Join-Path $GamePatch $required) -PathType Leaf)) { throw "A complete -GamePatch bundle is required ($required)." }
+    }
+    if (-not $Runtime -or -not $Textures -or -not $PromptPackages) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
 }
-if (-not $Runtime -or -not $Textures -or -not $PromptPackages) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
+if (-not (Test-Path -LiteralPath $Builder -PathType Leaf)) { throw "No Reborn Builder console build at $Builder. Pass -Builder <path to reborn-builder-cli.exe>; roster updates need it. Nothing was built." }
 
 $root = Resolve-Path "$PSScriptRoot\..\.."
 $AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "NFL Street Reborn" }
-$payload = Join-Path $root "target\installer-payload"
+# Two staging folders, one per kind of build. The full payload holds the
+# runtime and the 687 MB import bundle, restaged from their sources on every
+# full build and left alone by a launcher-only build, which stages its few
+# files beside it. Before this, a launcher-only build would have wiped the
+# full payload, and with it the only copy of the bundle on this machine.
+$payloadName = if ($LauncherOnly) { "target\installer-payload-launcher" } else { "target\installer-payload" }
+$payload = Join-Path $root $payloadName
 $dist = Join-Path $root "dist"
+
+# A full build restages the import bundle from -GamePatch into the payload
+# it is about to delete. Pointed at the payload's own copy, it would delete
+# its source first and then have nothing to stage.
+if (-not $LauncherOnly) {
+    $bundleFrom = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $GamePatch).Path)
+    $payloadFull = [System.IO.Path]::GetFullPath($payload)
+    if ($bundleFrom.StartsWith($payloadFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "-GamePatch points inside $payload, which this build deletes before staging. Keep the bundle somewhere else and point -GamePatch at it. Nothing was built."
+    }
+}
 
 Write-Host "Building release binaries"
 Push-Location $root
@@ -62,13 +102,30 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 Pop-Location
 
 $resolvedPayload = [System.IO.Path]::GetFullPath($payload)
-$expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root "target\installer-payload"))
+$expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root $payloadName))
 if ($resolvedPayload -ne $expectedPayload) { throw "Unexpected staging path." }
-if (Test-Path -LiteralPath $resolvedPayload) { Remove-Item -LiteralPath $resolvedPayload -Recurse -Force }
+if (Test-Path -LiteralPath $resolvedPayload) {
+    try {
+        Remove-Item -LiteralPath $resolvedPayload -Recurse -Force -ErrorAction Stop
+    } catch {
+        # A launcher started from the staging folder holds its own exe open,
+        # and Windows refuses to delete a running program. Seen 2026-09-06:
+        # a test launcher run straight out of target\installer-payload.
+        throw ("Could not clear {0}: {1}`nSomething in it is running, most likely a launcher started from that folder. Close it and build again. Nothing was built." -f $resolvedPayload, $_.Exception.Message)
+    }
+}
 New-Item -ItemType Directory -Force $payload | Out-Null
 
 Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
 Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+
+# The Reborn Builder's console build, where the launcher looks first
+# (<install>\tools). It links its own runtime; nothing goes beside it.
+$tools = Join-Path $payload "tools"
+New-Item -ItemType Directory -Force $tools | Out-Null
+Copy-Item -LiteralPath $Builder -Destination (Join-Path $tools "reborn-builder-cli.exe")
+Write-Host ("Builder: {0:N1} MB from {1}" -f ((Get-Item -LiteralPath $Builder).Length / 1MB), $Builder)
+Write-Host $(if ($LauncherOnly) { "Build: launcher only (self-update). No runtime, textures, import bundle or content." } else { "Build: complete first-run installer." })
 
 # The channel marker the launcher reads at start. Only a beta carries one:
 # the absence of the file IS the stable channel, so a stable install has
@@ -221,6 +278,8 @@ if ($Runtime -and (Test-Path $Runtime)) {
     $rsize = (Get-ChildItem $dest -Recurse -File | Measure-Object Length -Sum).Sum
     Write-Host ("Runtime: {0} file(s), {1:N1} MB" -f `
         (Get-ChildItem $dest -Recurse -File).Count, ($rsize / 1MB))
+} elseif ($LauncherOnly) {
+    Write-Host "No runtime staged: a launcher-only build leaves the installed one in place."
 } else {
     Write-Host "No runtime staged. The launcher will look for one in an existing install."
 }
@@ -247,7 +306,7 @@ if ($Textures) {
     }
     Write-Host ("Textures: {0:N0} file(s), {1:N1} GB" -f `
         $texFiles.Count, (($texFiles | Measure-Object Length -Sum).Sum / 1GB))
-} else {
+} elseif (-not $LauncherOnly) {
     Write-Warning "No -Textures given. A player with no 2.1 install to migrate will have no textures."
 }
 
@@ -268,9 +327,12 @@ if ($GameImages.Count -gt 0) {
     }
 }
 
-Copy-Item -LiteralPath $GamePatch -Destination (Join-Path $payload "game-import") -Recurse
-foreach ($n in $crtNames) { Copy-Item -LiteralPath (Join-Path $payload "runtime\$n") -Destination (Join-Path $payload "game-import\$n") -Force }
-Copy-Item -LiteralPath $PromptPackages -Destination (Join-Path $payload "content\prompt-packages") -Recurse
+if (-not $LauncherOnly) {
+    Copy-Item -LiteralPath $GamePatch -Destination (Join-Path $payload "game-import") -Recurse
+    foreach ($n in $crtNames) { Copy-Item -LiteralPath (Join-Path $payload "runtime\$n") -Destination (Join-Path $payload "game-import\$n") -Force }
+    Copy-Item -LiteralPath $PromptPackages -Destination (Join-Path $payload "content\prompt-packages") -Recurse
+}
+# From the repository, so it ships in both builds.
 Copy-Item -LiteralPath (Join-Path $root "crates\reborn-ui\ui\art\controllers") -Destination (Join-Path $payload "content\controller-artwork-source") -Recurse
 $size = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("Payload: {0} file(s), {1:N1} MB" -f `
@@ -381,6 +443,10 @@ if ($span) { $isccArgs += "/DSpan" }
 # A different file name, so the online and offline builds can sit in dist
 # together rather than one silently replacing the other.
 if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
+# "Launcher Update" rather than "Launcher Setup", so the small self-update
+# file and the full first-run set never get mistaken for each other in dist
+# or on a download page.
+if ($LauncherOnly) { $isccArgs += "/DUpdateBuild" }
 if ($redistArg) { $isccArgs += $redistArg }
 if ($webView2Arg) { $isccArgs += $webView2Arg }
 # Compiled with retries. ISCC reads two and a half thousand files it was
@@ -486,7 +552,17 @@ Copy-Item (Join-Path $payload "rebornctl.exe") $dist -Force
 # A spanned build has no single file to pin, so self-update cannot fetch it:
 # update.rs downloads one artifact and runs it. Writing a manifest naming
 # only the stub would publish an update that installs nothing.
-$slices = @(Get-ChildItem $dist -Filter "$AppNameForZip Launcher Setup $Version*.bin" -ErrorAction SilentlyContinue)
+# THIS build's slices and nothing else's. A wildcard after the version
+# ("Setup 3.0.0*.bin") also matched "Setup 3.0.0-onboarding.1-1.bin", and on
+# 2026-09-06 a launcher-only build, which has no slices at all, packed six
+# files from two older full builds into one zip over the top of a good one.
+# The set is exactly "<prefix>.exe" plus "<prefix>-<n>.bin".
+$prefix = "{0} Launcher Setup {1}" -f $AppNameForZip, $Version
+$slicePattern = "^" + [regex]::Escape($prefix) + "-\d+\.bin$"
+$slices = @()
+if (-not $LauncherOnly) {
+    $slices = @(Get-ChildItem $dist -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $slicePattern })
+}
 
 # One file to hand out.
 #
@@ -501,11 +577,10 @@ $slices = @(Get-ChildItem $dist -Filter "$AppNameForZip Launcher Setup $Version*
 # PowerShell.
 if ($slices.Count -gt 0) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    # Anchored on this channel's own name. Matching anything containing
-    # "Setup <version>" swept the beta installer into the stable zip, because
-    # "NFL Street Reborn Beta Launcher Setup 3.0.0-beta.1.exe" contains it.
-    $prefix = "{0} Launcher Setup {1}" -f $AppNameForZip, $Version
-    $setFiles = @(Get-ChildItem $dist -File | Where-Object { $_.Name.StartsWith($prefix) })
+    # Exactly the exe and its numbered slices. Anchored on this channel's
+    # own name and closed at the version: a StartsWith on the prefix swept
+    # in "Setup 3.0.0-onboarding.1" as well as the beta.
+    $setFiles = @(Get-ChildItem $dist -File | Where-Object { $_.Name -eq "$prefix.exe" -or $_.Name -match $slicePattern })
     $zipPath = Join-Path $dist ("{0} Launcher {1}.zip" -f $AppNameForZip, $Version)
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Write-Host ("Packing {0} file(s) into one zip" -f $setFiles.Count)
@@ -533,7 +608,8 @@ if ($slices.Count -gt 0) {
     Write-Host ("Built {0}  {1:N2} GB, holding all {2} file(s)" -f $zipItem.Name, ($zipItem.Length / 1GB), $inside)
     Write-Host "That zip is the whole download. Players extract it and run setup.exe."
 }
-$setup = Get-ChildItem $dist -Filter "*Setup $Version*.exe" | Select-Object -First 1
+$setupPattern = if ($LauncherOnly) { "$AppNameForZip Launcher Update $Version.exe" } else { "$AppNameForZip Launcher Setup $Version*.exe" }
+$setup = Get-ChildItem $dist -Filter $setupPattern | Select-Object -First 1
 if ($span -or $slices.Count -gt 0) {
     # The format expression needs its own parentheses: Write-Warning ("..") -f x
     # binds -f as a parameter of Write-Warning, which is a runtime failure
@@ -543,7 +619,8 @@ if ($span -or $slices.Count -gt 0) {
 } elseif ($setup) {
     $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
     $repo = "https://github.com/adampreddy/nfl-street-reborn-launcher"
-    $assetUrl = "$repo/releases/download/v$Version/" + [uri]::EscapeDataString($setup.Name)
+    $base = if ($UpdateBase) { $UpdateBase.TrimEnd("/") + "/" } else { "$repo/releases/download/v$Version/" }
+    $assetUrl = $base + [uri]::EscapeDataString($setup.Name)
     $manifest = [ordered]@{
         schema   = "nsr.launcher-release.v1"
         version  = $Version

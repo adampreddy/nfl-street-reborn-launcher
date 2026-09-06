@@ -19,19 +19,17 @@ launcher will do once wired.
 | Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
 | a curated mod package | the content system, `mods` component | only the changed files |
 | **a roster**, published from the website editor | the content system, `roster` component: the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
-| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the installer plus `latest.json` on a GitHub release tagged `v<version>` | the installer, one file |
+| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json` on a GitHub release tagged `v<version>`. See 7c | the installer, one file, about 25 MB |
 | which keys are trusted | a launcher release, as above | same |
 | memory cards, saves, a player's own soundtrack | never touched, by design | none |
 | the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
 
-One thing the launcher path needs that does not exist yet: an installer
-build that comes out as ONE file, because `latest.json` pins a single
-download and `build.ps1` writes it only for a single-file build. The full
-first-run installer carries the texture pack and is spanned across three
-files, so it gets no `latest.json`. A launcher-update build that leaves the
-big content out (players get that through the content system anyway) is
-the missing build mode. Until it exists, launcher self-update has nothing
-to fetch.
+The launcher path needs an installer that comes out as ONE file, because
+`latest.json` pins a single download. The full first-run installer carries
+the texture pack and the import bundle and is spanned across three files,
+so it never gets a `latest.json`. `build.ps1 -LauncherOnly` is the build
+that does: the launcher, `rebornctl` and the Reborn Builder, nothing else,
+installing over the full install and leaving everything else in place.
 
 Deleting a file works: the next version's manifest simply does not list
 it, and the client moves it aside into `prior/`, never deletes it, so
@@ -364,6 +362,43 @@ then it is a second 1.46 GB file.
 Not carried: rollback of a game update. The old pristine folder is
 removed once the new one is in place, so going back is an import from the
 disc. A reverse delta is the cheap way to add it later.
+
+## 7c. Launcher updates: the one-file build
+
+The launcher updates itself from a small installer, never from the
+first-run set. Build it:
+
+```
+.\installer\windows\build.ps1 -LauncherOnly -Version 3.0.1
+```
+
+It compiles both binaries, stages the launcher, `rebornctl.exe` and the
+Reborn Builder's console build under `tools\` (from
+`%APPDATA%\NFL Street Reborn\Tools\reborn-builder-cli.exe`, or `-Builder`),
+and compiles `dist\NFL Street Reborn Launcher Update <version>.exe`, one
+file, with `latest.json` beside it pinning that file's hash, size and name.
+Nothing else ships: the runtime, the textures, the import bundle and the
+content are already on the player's machine, and Inno replaces what it
+carries and removes nothing. That is also why a fresh player cannot start
+from this file; the download page hands out the full set.
+
+Publish: upload the Update exe and `latest.json` to a GitHub release tagged
+`v<version>` on the launcher repository. `latest.json` names the exe's URL
+on that release, which is where `update.rs` fetches it from. `-UpdateBase
+<url>` writes a different host into the manifest if the file is put
+somewhere else.
+
+What a player's launcher does with it: checks `latest.json`, downloads the
+exe into its downloads folder, verifies the hash, runs it with
+`/SILENT /NORESTART /RELAUNCH=1 /DIR=<its own install root>`, exits so
+its files can be replaced, and the installer starts it again. `/DIR` is
+stated because the installer's `UsePreviousAppDir=no` (what keeps the
+program files off the 2.1 data folder) would otherwise send a silent
+upgrade to the default folder, and a player who chose another one would
+get a second copy. `Tools\test-all.ps1` checks that `latest.json` pins the
+file in `dist`; `-Sandbox` installs the full set on a clean Windows and
+then this update over it, and checks the runtime, textures and import
+bundle survived and the launcher came back.
 
 ## 8. What the launcher does (wired 2026-09-06)
 

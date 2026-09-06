@@ -279,12 +279,23 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
     // launcher exits for the update and never comes back, and the player is
     // left looking at nothing. A plain first install does not pass it and does
     // not relaunch, which keeps the sandbox smoke test's single launch single.
-    let args: Vec<std::ffi::OsString> =
+    let mut args: Vec<std::ffi::OsString> =
         vec!["/SILENT".into(), "/NORESTART".into(), "/RELAUNCH=1".into()];
+    // The install root, stated. The installer sets UsePreviousAppDir=no,
+    // which is what keeps {app} off the 2.1 data folder, and it also means
+    // a silent upgrade lands in the DEFAULT folder rather than the one this
+    // launcher runs from. A player who chose D:\Games would get a second
+    // copy there and a relaunch of the wrong one.
+    if let Ok(root) = platform.paths.install_root() {
+        args.push(format!("/DIR={}", root.display()).into());
+    }
     let env = std::collections::BTreeMap::new();
     platform.processes.spawn(installer, &args, installer.parent(), &env)?;
     Ok(())
 }
+
+/// The switches [`apply`] passes, for the installer smoke test to mirror.
+pub const APPLY_SWITCHES: [&str; 3] = ["/SILENT", "/NORESTART", "/RELAUNCH=1"];
 
 #[cfg(test)]
 mod tests {
