@@ -252,6 +252,25 @@ pub fn find_image(offline_dir: &Path) -> std::result::Result<PathBuf, ApplyRefus
     }
 }
 
+/// The image the launcher's game import built from the player's own disc:
+/// `library/imported/<output hash>/NSR.iso`. The newest when there are
+/// several, which happens after a game update re-imports.
+pub fn find_imported_image(data_root: &Path) -> Option<PathBuf> {
+    let imported = data_root.join("library").join("imported");
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&imported)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join(IMAGE_FILE))
+        .filter(|p| p.is_file())
+        .filter_map(|p| {
+            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            Some((t, p))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().next().map(|(_, p)| p)
+}
+
 /// Apply a roster to the live image.
 pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome> {
     if !req.roster.is_file() {
@@ -260,11 +279,20 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
     if !req.builder.is_file() {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::NoBuilder { path: req.builder.to_path_buf() }));
     }
+    // Two places an image can be. `library/offline` is where the content
+    // system delivers one. `library/imported/<hash>/NSR.iso` is where the
+    // launcher's game import puts the image it built from the player's own
+    // disc, which is the shipping model since 2026-09-06. The imported one
+    // wins when both exist: it is the one the player made.
     let offline_dir = req.data_root.join(DataDir::LibraryOffline.relative());
-    let live = match find_image(&offline_dir) {
-        Ok(p) => p,
-        Err(r) => return Ok(ApplyOutcome::Refused(r)),
+    let live = match find_imported_image(req.data_root).or_else(|| find_image(&offline_dir).ok()) {
+        Some(p) => p,
+        None => match find_image(&offline_dir) {
+            Err(r) => return Ok(ApplyOutcome::Refused(r)),
+            Ok(p) => p,
+        },
     };
+    let offline_dir = live.parent().map(Path::to_path_buf).unwrap_or(offline_dir);
     if platform.files.is_locked(&live) {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::ImageInUse { path: live }));
     }
@@ -418,6 +446,31 @@ log: C:\\somewhere\\build-log.txt
 
         std::fs::write(dir.path().join(IMAGE_FILE), b"z").unwrap();
         assert_eq!(find_image(dir.path()).unwrap(), dir.path().join(IMAGE_FILE), "the named one wins");
+    }
+
+    #[test]
+    fn the_imported_image_is_found_and_the_newest_wins() {
+        // The game import puts the player's patched disc at
+        // library/imported/<hash>/NSR.iso, not library/offline. Before this,
+        // roster apply on a real install said "no game image".
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(find_imported_image(dir.path()), None, "no imported folder at all");
+
+        let older = dir.path().join("library/imported/aaaa");
+        let newer = dir.path().join("library/imported/bbbb");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(older.join(IMAGE_FILE), b"old build").unwrap();
+        std::fs::write(newer.join(IMAGE_FILE), b"new build").unwrap();
+        // Make the timestamps unambiguous whatever the filesystem resolution.
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        std::fs::File::options().write(true).open(older.join(IMAGE_FILE)).unwrap().set_modified(then).unwrap();
+
+        assert_eq!(find_imported_image(dir.path()), Some(newer.join(IMAGE_FILE)), "the newest import wins");
+
+        // A folder without the image inside does not count.
+        std::fs::create_dir_all(dir.path().join("library/imported/cccc")).unwrap();
+        assert_eq!(find_imported_image(dir.path()), Some(newer.join(IMAGE_FILE)));
     }
 
     #[test]
