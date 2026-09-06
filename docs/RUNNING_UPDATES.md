@@ -221,8 +221,23 @@ real data root is the target and a promotion into it is a real update.
    For a few files the dashboard works. For the blob store use `rclone`
    against the bucket's S3 endpoint:
    `rclone copy "C:\Reborn Origin" r2:reborn-content --progress`
+   Two things about a bucket-scoped token, both found on 2026-09-06:
+   - `rclone lsd r2:` answers 403. It lists every bucket in the account,
+     which a token scoped to one bucket may not do. Test with
+     `rclone lsd r2:reborn-content` instead.
+   - Add `no_check_bucket = true` to the `[r2]` section. Without it rclone
+     tries to confirm the bucket exists, cannot with a scoped token, assumes
+     it is missing, and tries to CREATE it, which is what the 403 on upload
+     is. And check the file ends with a newline before appending a line to
+     it: a value glued onto `acl = private` fails every upload with a 501.
+   Upload order matters: blobs and `components/` first, `release.json` and
+   `release.json.sig` last, so a client mid-upload never sees a release that
+   pins content still in flight. `rclone copy` with `--exclude release.json
+   --exclude release.json.sig`, then `rclone copyto` the two release files.
 3. Bucket settings, Custom Domains, add `files.nflstreetreborn.com`.
-   Cloudflare adds the DNS record itself since you own the zone there.
+   Cloudflare adds the DNS record itself since you own the zone there. The
+   first HTTPS request may fail for a few minutes while the certificate is
+   issued; a 404 from `Server: cloudflare` means it is working.
 4. Check in a browser: `https://files.nflstreetreborn.com/release.json`
    and `https://files.nflstreetreborn.com/release.json.sig` both load.
 5. Prove it the same way as step 6, against the real host:
