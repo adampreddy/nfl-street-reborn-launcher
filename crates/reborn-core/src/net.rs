@@ -40,6 +40,21 @@ pub trait Http: Send + Sync {
     /// file is created or truncated; the caller owns naming and cleanup.
     fn get_to_file(&self, url: &str, to: &Path) -> Result<u64>;
 
+    /// [`Http::get_to_file`] with an `Authorization: Bearer` header, for an
+    /// endpoint that needs a login, such as the site's roster export. The
+    /// token is never logged by this layer. The default refuses a token
+    /// rather than silently dropping it, so an implementation that has not
+    /// been taught to send one cannot look like it did.
+    fn get_to_file_as(&self, url: &str, to: &Path, bearer: Option<&str>) -> Result<u64> {
+        match bearer {
+            None => self.get_to_file(url, to),
+            Some(_) => Err(Error::PlainIo(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("{url}: this HTTP client cannot send a bearer token"),
+            ))),
+        }
+    }
+
     /// POST a JSON body. `bearer` becomes an `Authorization: Bearer` header
     /// and is never logged by this layer.
     fn post_json(&self, url: &str, body: &[u8], bearer: Option<&str>) -> Result<HttpResponse>;
@@ -96,6 +111,32 @@ impl Http for UreqHttp {
 
     fn get_to_file(&self, url: &str, to: &Path) -> Result<u64> {
         let resp = match self.agent.get(url).call() {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(status, _)) => {
+                return Err(Error::PlainIo(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{url} answered {status}"),
+                )))
+            }
+            Err(ureq::Error::Transport(t)) => return Err(transport(url, t)),
+        };
+        let mut file = std::fs::File::create(to).map_err(|source| Error::Io {
+            path: to.to_path_buf(),
+            source,
+        })?;
+        let mut reader = resp.into_reader();
+        std::io::copy(&mut reader, &mut file).map_err(|source| Error::Io {
+            path: to.to_path_buf(),
+            source,
+        })
+    }
+
+    fn get_to_file_as(&self, url: &str, to: &Path, bearer: Option<&str>) -> Result<u64> {
+        let mut req = self.agent.get(url);
+        if let Some(token) = bearer {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        let resp = match req.call() {
             Ok(resp) => resp,
             Err(ureq::Error::Status(status, _)) => {
                 return Err(Error::PlainIo(std::io::Error::new(

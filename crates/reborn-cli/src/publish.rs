@@ -142,8 +142,28 @@ pub enum PublishCommand {
         /// nothing in the origin changes.
         #[arg(long)]
         apply: bool,
+        /// A file holding the site's API token, for an export URL that needs
+        /// a login. Not the token itself: a token on the command line is in
+        /// every process list. The vault entry set by `publish token` is
+        /// used when this is absent.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
+    /// Keep the site's API token in the platform credential vault, so
+    /// `publish roster` can fetch a login-only export without the token ever
+    /// appearing on a command line or in a file the repository could see.
+    Token {
+        /// A file holding the token. Read once; delete it afterwards.
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+        /// Remove the stored token.
+        #[arg(long)]
+        forget: bool,
     },
 }
+
+/// The vault account the site's API token is kept under.
+const SITE_TOKEN_ACCOUNT: &str = "nsr.site.export";
 
 pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
     match cmd {
@@ -174,6 +194,7 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             release_version,
             release_sequence,
             apply,
+            token_file,
         } => publish_roster(
             &from,
             &origin,
@@ -183,8 +204,41 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             release_version.as_deref(),
             release_sequence,
             apply,
+            token_file.as_deref(),
         ),
+        PublishCommand::Token { from_file, forget } => site_token(from_file.as_deref(), forget),
     }
+}
+
+/// Store or forget the site's API token in the platform vault.
+fn site_token(from_file: Option<&Path>, forget: bool) -> reborn_core::Result<std::process::ExitCode> {
+    let platform = reborn_core::Platform::detect();
+    if forget {
+        platform.credentials.delete(SITE_TOKEN_ACCOUNT)?;
+        println!("Forgot the site token ({SITE_TOKEN_ACCOUNT}).");
+        return Ok(OK);
+    }
+    let Some(path) = from_file else {
+        let present = platform.credentials.retrieve(SITE_TOKEN_ACCOUNT)?.is_some();
+        println!(
+            "Site token ({SITE_TOKEN_ACCOUNT}): {}. Pass --from-file <file> to set it, --forget to remove it.",
+            if present { "stored" } else { "not stored" }
+        );
+        return Ok(OK);
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| io_err(path, e))?;
+    let token = text.trim();
+    if token.is_empty() || token.chars().any(char::is_whitespace) {
+        println!("{} does not hold one token on one line. Nothing was stored.", path.display());
+        return Ok(PROBLEM);
+    }
+    platform.credentials.store(SITE_TOKEN_ACCOUNT, token)?;
+    println!(
+        "Stored the site token ({SITE_TOKEN_ACCOUNT}), {} characters. Delete {} now; the vault is its home.",
+        token.len(),
+        path.display()
+    );
+    Ok(OK)
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +694,7 @@ fn publish_roster(
     release_version: Option<&str>,
     release_sequence: Option<u64>,
     apply: bool,
+    token_file: Option<&Path>,
 ) -> reborn_core::Result<std::process::ExitCode> {
     use reborn_core::net::Http as _;
     use reborn_core::roster::ROSTER_FILE;
@@ -654,9 +709,34 @@ fn publish_roster(
     let staged = stage.join(ROSTER_FILE);
 
     if from.starts_with("http://") || from.starts_with("https://") {
-        println!("Fetching      {from}");
+        // The token: the vault first, then a file. Its value is never
+        // printed; only whether one was sent.
+        let token: Option<String> = match token_file {
+            Some(p) => {
+                let t = std::fs::read_to_string(p).map_err(|e| io_err(p, e))?;
+                Some(t.trim().to_string()).filter(|t| !t.is_empty())
+            }
+            None => reborn_core::Platform::detect()
+                .credentials
+                .retrieve(SITE_TOKEN_ACCOUNT)
+                .unwrap_or(None),
+        };
+        println!(
+            "Fetching      {from}{}",
+            if token.is_some() { "  (with the site token)" } else { "" }
+        );
         let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
-        let bytes = http.get_to_file(from, &staged)?;
+        let bytes = match http.get_to_file_as(from, &staged, token.as_deref()) {
+            Ok(b) => b,
+            Err(e) if e.to_string().contains("answered 401") => {
+                println!();
+                println!("The site answered 401: that export needs a login. Store the site's API token");
+                println!("with `rebornctl publish token --from-file <file>` or pass --token-file. Nothing");
+                println!("was published.");
+                return Ok(PROBLEM);
+            }
+            Err(e) => return Err(e),
+        };
         println!("Fetched       {} bytes", thousands(bytes));
     } else {
         let src = Path::new(from);
