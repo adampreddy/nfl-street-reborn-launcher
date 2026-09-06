@@ -1495,7 +1495,15 @@ pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
     let in_data = platform
         .data_dir(DataDir::LibraryTextures)?
         .join(game.as_str());
-    if in_data.join(PRISTINE_MARKER).is_file() {
+    // Two things mark the data root tree as DELIVERED rather than migrated:
+    // the marker file, and a content pointer saying an update installed the
+    // textures component there. Until the second was consulted, an update
+    // could land a newer pack in the data root and composition would keep
+    // reading the one the installer shipped, so no texture update would ever
+    // have reached the game.
+    if in_data.join(PRISTINE_MARKER).is_file()
+        || textures_delivered(&platform.paths.data_root()?, game.as_str())
+    {
         return Ok(in_data);
     }
     if let Some(shipped) = shipped_pristine_root(platform, game) {
@@ -1516,6 +1524,34 @@ pub fn shipped_pristine_root(platform: &Platform, game: &GameId) -> Option<PathB
         .join("textures")
         .join(game.as_str());
     candidate.is_dir().then_some(candidate)
+}
+
+/// Whether a content update has installed the textures component for this
+/// game id into the data root.
+///
+/// The pointer is the evidence. The cached live manifest, when present, says
+/// which game id the delivered tree is for; without it the pointer alone is
+/// taken as delivered, because the textures component has one install root
+/// today. Nothing here can fail the caller: an unreadable pointer is logged
+/// and read as "not delivered", which falls back to the shipped tree.
+fn textures_delivered(data_root: &Path, game: &str) -> bool {
+    use crate::content::{ContentLayout, Pointer};
+    let layout = ContentLayout::new(data_root);
+    match Pointer::load(&layout.pointer_path("textures")) {
+        Ok(Some(_)) => {}
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!("the textures pointer could not be read ({e}); using the shipped tree");
+            return false;
+        }
+    }
+    let Ok(bytes) = std::fs::read(layout.manifest_path("textures")) else {
+        return true;
+    };
+    match serde_json::from_slice::<crate::manifest::Component>(&bytes) {
+        Ok(c) => c.install_root == format!("{}/{game}", DataDir::LibraryTextures.relative()),
+        Err(_) => true,
+    }
 }
 
 /// `mods/active/<gameid>/`, the composed tree Dolphin loads.
@@ -4448,5 +4484,38 @@ mod tests {
         write(&migrated.join(PRISTINE_MARKER), b"x");
         std::fs::remove_file(migrated.join(PRISTINE_MARKER)).unwrap();
         assert_eq!(choose(&migrated, &nowhere), migrated);
+    }
+
+    #[test]
+    fn a_tree_installed_by_a_content_update_counts_as_delivered() {
+        // The marker was the only mark, and nothing in production wrote one.
+        // So a texture update would have landed in the data root and
+        // composition would have gone on reading the installer's tree. The
+        // content pointer is the mark now.
+        use crate::content::{ContentLayout, InstalledVersion, Pointer, POINTER_SCHEMA};
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let layout = ContentLayout::new(&data);
+
+        assert!(!textures_delivered(&data, "GN7E69"), "no pointer, nothing delivered");
+
+        Pointer {
+            schema: POINTER_SCHEMA.to_string(),
+            component: "textures".to_string(),
+            current: InstalledVersion { version: "1.0.1".to_string(), sequence: 3 },
+            previous: None,
+        }
+        .save(&Platform::detect(), &layout.pointer_path("textures"))
+        .unwrap();
+        assert!(textures_delivered(&data, "GN7E69"), "a pointer means an update delivered it");
+
+        // With the cached manifest present, it says which game id the tree is for.
+        std::fs::write(
+            layout.manifest_path("textures"),
+            br#"{"schema":"nsr.component.v1","component":"textures","version":"1.0.1","sequence":3,"install_root":"library/textures/FR4N31","customizable":false,"files":[]}"#,
+        )
+        .unwrap();
+        assert!(!textures_delivered(&data, "GN7E69"), "delivered for another game id is not delivered for this one");
+        assert!(textures_delivered(&data, "FR4N31"));
     }
 }

@@ -4260,6 +4260,15 @@ fn update_content(
                 thousands(r.promoted.len() as u64),
                 thousands(r.preserved.len() as u64)
             );
+            if !r.retired.is_empty() {
+                println!(
+                    "Removed       {} file(s) this version no longer ships, moved aside (not deleted)",
+                    thousands(r.retired.len() as u64)
+                );
+                for p in r.retired.iter().take(8) {
+                    println!("  {p}");
+                }
+            }
             if let Some(p) = r.previous {
                 println!("Rollback to   {} sequence {} is available", p.version, p.sequence);
             }

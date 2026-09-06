@@ -10,6 +10,28 @@ check on its own; `rebornctl update content` is the client until that wiring
 lands. So steps 1 through 7 are real now, and step 8 describes what the
 launcher will do once wired.
 
+## What can be updated, and how
+
+| You change... | It reaches players by... | Cost to a player |
+|---|---|---|
+| a texture, added, changed or deleted | the content system, `textures` component | only the changed files |
+| the game image (`NSR.iso`) | the content system, `offline-content` | the whole image, since one file is one blob |
+| Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
+| a curated mod package | the content system, `mods` component | only the changed files |
+| the launcher itself: a page, a button, a rule, this tool | a launcher release: build a SLIM installer (no `-Textures`, no `-GameImages`) so `build.ps1` writes `latest.json`, and publish both to a GitHub release tagged `v<version>` | about 110 MB, one file |
+| which keys are trusted | a launcher release, as above | same |
+| memory cards, saves, a player's own soundtrack | never touched, by design | none |
+| the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
+
+Deleting a file works: the next version's manifest simply does not list
+it, and the client moves it aside into `prior/`, never deletes it, so
+rollback brings it back. A file the launcher never shipped, for example
+something a player dropped into the folder, is nobody's to remove and is
+left alone.
+
+Adding a new KIND of thing, an eighth component, is a launcher change: the
+seven names are fixed in the launcher and it refuses any other.
+
 ## 0. Build the tool
 
 From inside the repository, not from your home folder: `cargo` finds the

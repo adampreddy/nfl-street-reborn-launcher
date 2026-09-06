@@ -77,6 +77,9 @@ pub const PRIOR_SCHEMA: &str = "nsr.prior.v1";
 
 const POINTER_FILE: &str = "current.json";
 const PRIOR_DIR: &str = "prior";
+/// The manifest of the version that is live, kept beside the pointer so the
+/// NEXT update can tell which files that version had and this one drops.
+const MANIFEST_FILE: &str = "manifest.json";
 const PRIOR_FILE: &str = "prior.json";
 const JOURNAL_FILE: &str = "journal.json";
 
@@ -322,6 +325,17 @@ impl ContentLayout {
     /// The single retained prior version's files.
     pub fn prior_dir(&self, component: &str) -> PathBuf {
         self.versions_dir(component).join(PRIOR_DIR)
+    }
+
+    /// The manifest of the live version, written at promotion.
+    ///
+    /// What it is for: the next update compares it with the incoming manifest
+    /// to find files the new version no longer ships, and retires them. What
+    /// it is NOT for: deciding that anything is verified. It is a local copy
+    /// with no signature, and the worst a tampered one can do is move a file
+    /// into `prior/`, which rollback puts back.
+    pub fn manifest_path(&self, component: &str) -> PathBuf {
+        self.versions_dir(component).join(MANIFEST_FILE)
     }
 
     fn prior_record_path(&self, component: &str) -> PathBuf {
@@ -945,6 +959,11 @@ pub struct PromotionReceipt {
     pub preserved: Vec<String>,
     /// Where the replaced files went, when any were replaced.
     pub prior_dir: Option<PathBuf>,
+    /// Files the previous version shipped and this one does not. Moved into
+    /// the prior directory, never deleted, so rollback brings them back.
+    /// Reported so the launcher can say "3 files removed" rather than have
+    /// a player wonder where a texture went.
+    pub retired: Vec<String>,
 }
 
 /// The result of a swap.
@@ -1464,8 +1483,13 @@ impl<'a> ContentService<'a> {
             .filter(|f| !preserved.contains(f.path.as_str()))
             .collect();
 
-        for fetch in &to_promote {
-            let live = resolve_under(&live_root, &fetch.path)?;
+        // Files the live version ships and the incoming one does not. Known
+        // only from the manifest cached at the last promotion; with no cache,
+        // nothing is retired, which is the safe direction.
+        let retired = self.retired_paths(plan)?;
+
+        for path in to_promote.iter().map(|f| f.path.as_str()).chain(retired.iter().map(String::as_str)) {
+            let live = resolve_under(&live_root, path)?;
             if live.exists() && self.platform.files.is_locked(&live) {
                 return Ok(Promoted::Refused(PromotionRefusal::InUse { path: live }));
             }
@@ -1543,6 +1567,38 @@ impl<'a> ContentService<'a> {
             promoted.push(fetch.path.clone());
         }
 
+        // Retire what the new version dropped: moved into prior, exactly like a
+        // replaced file, so the same reversal and the same rollback bring it
+        // back. Never deleted. A file the previous version never shipped is
+        // not in the cached manifest and is not touched.
+        let mut retired_now: Vec<String> = Vec::new();
+        for path in &retired {
+            let (live, prior, staged) = match (
+                resolve_under(&live_root, path),
+                resolve_under(&prior_dir, path),
+                resolve_under(&staging, path),
+            ) {
+                (Ok(l), Ok(p), Ok(s)) => (l, p, s),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                    return Ok(self.reverse(done, plan, e.to_string()))
+                }
+            };
+            if !live.exists() {
+                continue;
+            }
+            if let Err(e) = ensure_parent(&prior)
+                .and_then(|()| self.platform.files.atomic_replace(&live, &prior))
+            {
+                return Ok(self.reverse(done, plan, e.to_string()));
+            }
+            done.push(DoneMove {
+                live,
+                prior: Some(prior),
+                staged,
+            });
+            retired_now.push(path.clone());
+        }
+
         let pointer = Pointer::new(
             plan.component(),
             InstalledVersion {
@@ -1553,6 +1609,18 @@ impl<'a> ContentService<'a> {
         );
         if let Err(e) = pointer.save(self.platform, &self.layout.pointer_path(plan.component())) {
             return Ok(self.reverse(done, plan, e.to_string()));
+        }
+
+        // After the pointer, on purpose. The swap is complete at this point and
+        // the cache only serves the NEXT update's retirement pass. A failure
+        // here degrades that pass to "retire nothing", which is safe; reversing
+        // a finished swap over it would not be.
+        if let Err(e) = self.save_manifest_cache(plan) {
+            tracing::warn!(
+                "could not record the live manifest for {}: {e}. The next update will \
+                 not retire dropped files",
+                plan.component()
+            );
         }
 
         // In flight no longer. The pointer file is the record of what is live,
@@ -1566,7 +1634,54 @@ impl<'a> ContentService<'a> {
             promoted,
             preserved: plan.preserved.clone(),
             prior_dir: done.iter().any(|m| m.prior.is_some()).then_some(prior_dir),
+            retired: retired_now,
         }))
+    }
+
+    /// Paths the cached live manifest lists that the incoming one does not.
+    ///
+    /// Empty when there is no cache, which is every first install and any
+    /// machine whose cache was lost: nothing is retired on a guess. A cache
+    /// that does not parse is treated the same way, with a warning, because a
+    /// broken local record must not be able to block an update.
+    fn retired_paths(&self, plan: &UpdatePlan) -> Result<Vec<String>> {
+        let path = self.layout.manifest_path(plan.component());
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => return Err(Error::Io { path, source }),
+        };
+        let old: Component = match serde_json::from_slice(&bytes) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    "the cached manifest at {} does not parse ({e}); retiring nothing",
+                    path.display()
+                );
+                return Ok(Vec::new());
+            }
+        };
+        let keep: BTreeSet<&str> = plan.manifest.files.iter().map(|f| f.path.as_str()).collect();
+        Ok(old
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .filter(|p| !keep.contains(p.as_str()))
+            .collect())
+    }
+
+    /// Record the manifest that is now live, write-temp-then-rename.
+    fn save_manifest_cache(&self, plan: &UpdatePlan) -> Result<()> {
+        let path = self.layout.manifest_path(plan.component());
+        ensure_parent(&path)?;
+        let temp = path.with_file_name(format!("{MANIFEST_FILE}.new"));
+        let json = serde_json::to_vec_pretty(&plan.manifest)
+            .map_err(|e| refuse(format!("could not encode the live manifest: {e}")))?;
+        std::fs::write(&temp, json).map_err(|source| Error::Io {
+            path: temp.clone(),
+            source,
+        })?;
+        self.platform.files.atomic_replace(&temp, &path)
     }
 
     /// Undo every move in `done`, newest first.
@@ -1673,6 +1788,11 @@ impl<'a> ContentService<'a> {
             .save(self.platform, &self.layout.pointer_path(component))?;
         remove_dir_all(&prior_dir)?;
         remove_file(&self.layout.prior_record_path(component))?;
+        // The cache described the version just rolled away from. Left in
+        // place it would make the next update retire files against the wrong
+        // baseline; with no cache the next update retires nothing, which is
+        // the safe direction.
+        remove_file(&self.layout.manifest_path(component))?;
         self.clear_operation(component)?;
 
         Ok(RollbackOutcome::Restored {
@@ -2987,6 +3107,130 @@ mod tests {
             }
             other => panic!("expected a root refusal for offline-content, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Retiring files a new version drops
+    // -----------------------------------------------------------------------
+
+    fn install_two_files(service: &ContentService<'_>) {
+        let v1 = manifest(
+            "1.0.0",
+            7,
+            false,
+            vec![file_of("a.dat", b"a1"), file_of("b.dat", b"b1")],
+        );
+        let plan = expect_plan(
+            service
+                .plan(&signed(&v1, 11), "offline-content", &v1, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        let source = Blobs::new(Serving::Whole).with("a.dat", b"a1").with("b.dat", b"b1");
+        service.download(&plan, &source).expect("download");
+        assert!(matches!(service.promote(&plan).expect("promote"), Promoted::Applied(_)));
+    }
+
+    fn drop_b(service: &ContentService<'_>) -> Box<UpdatePlan> {
+        let v2 = manifest("2.0.0", 8, false, vec![file_of("a.dat", b"a1")]);
+        let plan = expect_plan(
+            service
+                .plan(&signed(&v2, 12), "offline-content", &v2, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        assert!(plan.fetches.is_empty(), "a is unchanged, nothing to fetch: {:?}", plan.fetches);
+        plan
+    }
+
+    #[test]
+    fn a_file_the_new_version_drops_is_retired_into_prior_and_rollback_brings_it_back() {
+        // Before this, an update could add and replace files but never remove
+        // one: a texture deleted from the pack stayed on every player's disk.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+        install_two_files(&service);
+        assert!(
+            service.layout().manifest_path("offline-content").is_file(),
+            "the live manifest is cached at promotion, so the next update knows what this one had"
+        );
+        // Something no manifest ever listed sits beside them.
+        write_live(dir.path(), "mine.dat", b"not from any manifest");
+
+        let plan = drop_b(&service);
+        let receipt = match service.promote(&plan).expect("promote") {
+            Promoted::Applied(r) => r,
+            other => panic!("expected an applied swap, got {other:?}"),
+        };
+        assert_eq!(receipt.retired, vec!["b.dat".to_string()]);
+        assert!(!live_root(dir.path()).join("b.dat").exists(), "b is gone from the live tree");
+        assert_eq!(
+            std::fs::read(service.layout().prior_dir("offline-content").join("b.dat")).expect("retired copy"),
+            b"b1",
+            "and sits in prior, not deleted"
+        );
+        assert_eq!(read_live(dir.path(), "a.dat"), b"a1");
+        assert_eq!(
+            read_live(dir.path(), "mine.dat"),
+            b"not from any manifest",
+            "a file no manifest ever listed is nobody's to retire"
+        );
+
+        match service.rollback("offline-content").expect("rollback") {
+            RollbackOutcome::Restored { to, .. } => assert_eq!(to.version, "1.0.0"),
+            other => panic!("expected a restore, got {other:?}"),
+        }
+        assert_eq!(read_live(dir.path(), "b.dat"), b"b1", "rollback brings the retired file back");
+        assert!(
+            !service.layout().manifest_path("offline-content").exists(),
+            "the cache for the version rolled away from is gone, so the next update retires nothing on a stale baseline"
+        );
+    }
+
+    #[test]
+    fn a_swap_that_fails_after_retiring_a_file_puts_it_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let good = Platform::detect();
+        install_two_files(&ContentService::new(&good, dir.path()));
+
+        // The pointer write fails, which is after b has already been moved aside.
+        let pointer_path = ContentLayout::new(dir.path()).pointer_path("offline-content");
+        let failing = platform_failing_on(&pointer_path);
+        let service = ContentService::new(&failing, dir.path());
+        let plan = drop_b(&service);
+        match service.promote(&plan).expect("promote runs") {
+            Promoted::RolledBack { restored, .. } => {
+                assert!(restored.iter().any(|p| p.ends_with("b.dat")), "{restored:?}")
+            }
+            other => panic!("expected a reversed swap, got {other:?}"),
+        }
+        assert_eq!(read_live(dir.path(), "b.dat"), b"b1", "the retired file is back where it was");
+        let pointer = service.installed("offline-content").expect("pointer").expect("installed");
+        assert_eq!(pointer.current.version, "1.0.0");
+    }
+
+    #[test]
+    fn with_no_cached_manifest_nothing_is_retired() {
+        // A machine updated by a launcher from before this record exists has a
+        // pointer and no cache. Retiring on a guess would be deleting on a
+        // guess, so it retires nothing and the update still goes through.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+        write_live(dir.path(), "a.dat", b"a1");
+        write_live(dir.path(), "b.dat", b"b1");
+        install_pointer(&platform, &service, "1.0.0", 7);
+
+        let plan = drop_b(&service);
+        let receipt = match service.promote(&plan).expect("promote") {
+            Promoted::Applied(r) => r,
+            other => panic!("expected an applied swap, got {other:?}"),
+        };
+        assert!(receipt.retired.is_empty());
+        assert_eq!(read_live(dir.path(), "b.dat"), b"b1");
+        assert!(
+            service.layout().manifest_path("offline-content").is_file(),
+            "and from now on the cache exists, so the following update can retire"
+        );
     }
 
     // -----------------------------------------------------------------------

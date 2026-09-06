@@ -203,6 +203,26 @@ def main():
     assert '"1.0.1"' in pointer and '"1.0.0"' in pointer, pointer
     step("update fetched exactly the 2 changed blobs, resumed d.txt from byte 3 with a 206, pointer has current and previous")
 
+    # 6b. a version that DROPS a file: it must leave the player's disk, but
+    # into prior/, never deleted, so rollback can bring it back.
+    v3 = {k: v for k, v in v2.items() if k != "a.txt"}
+    make_tree(WORK / "tree3", v3)
+    run("publish", "component", "--root", str(WORK / "tree3"), "--component", "runtime",
+        "--version", "1.0.2", "--sequence", "3", "--origin", str(ORIGIN), "--apply")
+    run("publish", "release", "--origin", str(ORIGIN), "--version", "1.0.2", "--sequence", "3",
+        "--key", str(WORK / "keys" / "publisher.key"), "--component", "runtime=1.0.2", "--apply")
+    LOG.clear()
+    out = run(*common, "--apply")
+    must(out, "Live          runtime 1.0.2", "update went live")
+    must(out, "Removed       1 file(s)", "the dropped file is reported")
+    must(out, "  a.txt", "by name")
+    assert not blob_gets(), f"nothing changed but the drop, so no blob was fetched: {blob_gets()}"
+    assert not (DATA / "runtime" / "a.txt").exists(), "a.txt is gone from the live tree"
+    assert (DATA / "versions" / "runtime" / "prior" / "a.txt").read_bytes() == v2["a.txt"], "and sits in prior, not deleted"
+    for rel, data in v3.items():
+        assert (DATA / "runtime" / rel).read_bytes() == data, f"{rel}: v3 bytes differ"
+    step("a version that drops a file retires it into prior, fetches nothing, and names it")
+
     # 7. replay at the publisher
     out = run("publish", "release", "--origin", str(ORIGIN), "--version", "1.0.0", "--sequence", "1",
               "--key", str(WORK / "keys" / "publisher.key"), "--component", "runtime=1.0.0", "--apply", expect=1)
@@ -223,7 +243,7 @@ def main():
     assert (DATA / "runtime" / "b.txt").read_bytes() == before, "nothing may change under a bad signature"
     sig_path.write_text(good)
     out = run(*common)
-    must(out, "Up to date: runtime 1.0.1", "with the real signature back, the client is up to date")
+    must(out, "Up to date: runtime 1.0.2", "with the real signature back, the client is up to date")
     step("a tampered signature is refused and the live install is untouched")
 
     print()
