@@ -68,6 +68,9 @@ use crate::library::{hash_file, FileVerdict, RebuildState, Verifier};
 use crate::manifest::{Component, ManifestError, ManifestFile, Release, Sha256Hex};
 use crate::platform::{DataDir, Error, Platform, Result};
 
+/// Check, fetch, promote: the three calls the window and the CLI drive.
+pub mod pipeline;
+
 /// Schema of the installed-version pointer. Ours to keep readable.
 pub const POINTER_SCHEMA: &str = "nsr.pointer.v1";
 /// Schema of the in-flight operation journal.
@@ -646,6 +649,12 @@ pub struct UpdatePlan {
     /// The accepted component manifest. Held here so no later call can be handed
     /// a different manifest than the one the plan was built from.
     pub manifest: Component,
+    /// The manifest exactly as served, the bytes the release's pin is over.
+    /// Cached beside the pointer at promotion so the next check can compare
+    /// the cache with the pin and know, without hashing a file or fetching a
+    /// manifest, that what is live is what is offered. A re-serialized copy
+    /// would never hash to the pin.
+    pub manifest_bytes: Vec<u8>,
     /// What is installed now, if anything.
     pub from: Option<InstalledVersion>,
     pub fetches: Vec<PlannedFetch>,
@@ -1231,6 +1240,7 @@ impl<'a> ContentService<'a> {
 
         Ok(PlanOutcome::Update(Box::new(UpdatePlan {
             manifest: component,
+            manifest_bytes: manifest_bytes.to_vec(),
             from: installed.map(|p| p.current),
             fetches,
             already_present,
@@ -1683,13 +1693,14 @@ impl<'a> ContentService<'a> {
     }
 
     /// Record the manifest that is now live, write-temp-then-rename.
+    ///
+    /// The served bytes, not a re-encoding: the pipeline's quick check hashes
+    /// this file against the release's pin, and only the exact bytes match.
     fn save_manifest_cache(&self, plan: &UpdatePlan) -> Result<()> {
         let path = self.layout.manifest_path(plan.component());
         ensure_parent(&path)?;
         let temp = path.with_file_name(format!("{MANIFEST_FILE}.new"));
-        let json = serde_json::to_vec_pretty(&plan.manifest)
-            .map_err(|e| refuse(format!("could not encode the live manifest: {e}")))?;
-        std::fs::write(&temp, json).map_err(|source| Error::Io {
+        std::fs::write(&temp, &plan.manifest_bytes).map_err(|source| Error::Io {
             path: temp.clone(),
             source,
         })?;

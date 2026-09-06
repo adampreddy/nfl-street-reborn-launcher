@@ -4153,30 +4153,22 @@ fn update_content(
     data_root: Option<&Path>,
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
-    use reborn_core::content::{FetchState, PlanOutcome, Promoted, StagedVerdict};
+    use reborn_core::content::pipeline::{
+        install_dir, CheckRequest, ComponentState, Depth, FetchOutcomeState, PromoteState, RosterHook,
+        Updater,
+    };
     use reborn_core::origin::Origin;
     use reborn_core::signing::{decode_public_key, Ed25519Verifier};
 
     let Some(id) = ComponentId::parse(component) else {
-        eprintln!("--component {component:?} is not one of the seven.");
+        eprintln!("--component {component:?} is not a component name.");
         return Ok(misuse());
     };
-    // Which data directory the manifest must install into. The check is what
-    // stops a `runtime` manifest writing into `saves`, so it is derived here
-    // from the component identity and never taken from the manifest.
-    let expected_root = match id {
-        ComponentId::Runtime => DataDir::Runtime,
-        ComponentId::OfflineContent => DataDir::LibraryOffline,
-        ComponentId::OnlineContent => DataDir::LibraryOnline,
-        ComponentId::Textures => DataDir::LibraryTextures,
-        ComponentId::Mods => DataDir::ModsPackages,
-        ComponentId::Roster => DataDir::LibraryRoster,
-        ComponentId::Launcher | ComponentId::ControllerDb => {
-            println!("{component} is not updated this way. The launcher updates through its");
-            println!("installer (rebornctl update check), and controller-db has no artifact yet.");
-            return Ok(PROBLEM);
-        }
-    };
+    if install_dir(id).is_none() {
+        println!("{component} is not updated this way. The launcher updates through its");
+        println!("installer (rebornctl update check), and controller-db has no artifact yet.");
+        return Ok(PROBLEM);
+    }
 
     let verifier = match trust {
         Some(hex) => match decode_public_key(hex) {
@@ -4197,44 +4189,56 @@ fn update_content(
 
     let origin = Origin::new(origin_url);
     println!("Origin        {}", origin.base());
-    let fetched = origin.fetch_release(&verifier)?;
-    let release = fetched.trusted.release();
-    println!(
-        "Release       {} sequence {}, signature verified over {} bytes",
-        release.version,
-        release.sequence,
-        thousands(fetched.bytes.len() as u64)
-    );
-    let Some(pinned) = release.components.get(component) else {
-        let names: Vec<&str> = release.components.keys().map(String::as_str).collect();
-        println!("The release does not carry {component}. It carries: {}.", names.join(", "));
-        return Ok(PROBLEM);
-    };
-    let manifest_bytes = origin.fetch_component(&pinned.url)?;
-
     let root_owned = match data_root {
         Some(p) => p.to_path_buf(),
         None => platform.paths.data_root()?,
     };
-    let service = ContentService::new(platform, &root_owned);
-    println!("Data root     {}", root_owned.display());
-    // Without this record a rebuilt soundtrack and a corrupted download look
-    // the same: both are "not the shipped hash".
-    let state_path = reborn_core::music::music_root(&root_owned).join("state.json");
-    let rebuilds = reborn_core::library::RebuildState::load(&state_path)?;
+    let updater = Updater::new(platform, &root_owned, &origin, &verifier);
 
-    let plan = match service.plan(&fetched.trusted, component, &manifest_bytes, expected_root, &rebuilds)? {
-        PlanOutcome::UpToDate { version } => {
+    // Verify depth: this command is the repair tool as well as the update
+    // tool, so the live tree is hashed against the manifest even when the
+    // versions match. The window's startup check uses Quick.
+    let check = updater.check(&CheckRequest {
+        components: &[id],
+        depth: Depth::Verify,
+    })?;
+    println!(
+        "Release       {} sequence {}, signature verified over {} bytes",
+        check.release.version,
+        check.release.sequence,
+        thousands(check.signed_bytes)
+    );
+    println!("Data root     {}", root_owned.display());
+
+    let entry = check.component(id).expect("the one component asked for is reported");
+    let plan = match &entry.state {
+        ComponentState::UpToDate { version, .. } => {
             println!();
             println!("Up to date: {component} {version}, and every file checks out.");
             return Ok(OK);
         }
-        PlanOutcome::Refused(r) => {
+        ComponentState::NotCarried => {
+            println!(
+                "The release does not carry {component}. It carries: {}.",
+                check.carried.join(", ")
+            );
+            return Ok(PROBLEM);
+        }
+        ComponentState::NotUpdatable => {
+            println!("{component} is not updated this way.");
+            return Ok(PROBLEM);
+        }
+        ComponentState::Refused(r) => {
             println!();
             println!("Refused: {}", r.message());
             return Ok(PROBLEM);
         }
-        PlanOutcome::Update(plan) => plan,
+        ComponentState::Problem(m) => {
+            println!();
+            println!("Problem: {m}");
+            return Ok(PROBLEM);
+        }
+        ComponentState::Available(plan) => plan,
     };
 
     println!();
@@ -4270,26 +4274,31 @@ fn update_content(
     }
 
     println!();
-    let report = service.download(&plan, &origin)?;
-    let staged = report.results.values().filter(|s| matches!(s, FetchState::Staged)).count();
-    println!("Downloaded    {} file(s) staged and hashed", thousands(staged as u64));
-    if !report.is_complete() {
-        let incomplete = report.incomplete();
-        let corrupt = report.corrupt();
-        println!(
-            "Not complete: {} incomplete (kept, the next run resumes them), {} corrupt (deleted,",
-            incomplete.len(),
-            corrupt.len()
-        );
-        println!("the next run fetches them again). Nothing was swapped; the live install is as it was.");
-        for p in incomplete.iter().chain(corrupt.iter()).take(8) {
-            println!("  {p}");
+    let fetched = updater.fetch(&check)?;
+    let fetch = fetched
+        .components
+        .first()
+        .expect("one component was available, so one was fetched");
+    match &fetch.state {
+        FetchOutcomeState::Staged { files, .. } => {
+            println!("Downloaded    {} file(s) staged and hashed", thousands(*files));
+            println!("Verified      the staged set hashes to the manifest, on disk, now");
         }
-        return Ok(PROBLEM);
-    }
-    match service.verify_staged(&plan)? {
-        StagedVerdict::Complete => println!("Verified      the staged set hashes to the manifest, on disk, now"),
-        StagedVerdict::NotReady { missing, wrong } => {
+        FetchOutcomeState::Incomplete {
+            incomplete, corrupt, ..
+        } => {
+            println!(
+                "Not complete: {} incomplete (kept, the next run resumes them), {} corrupt (deleted,",
+                incomplete.len(),
+                corrupt.len()
+            );
+            println!("the next run fetches them again). Nothing was swapped; the live install is as it was.");
+            for p in incomplete.iter().chain(corrupt.iter()).take(8) {
+                println!("  {p}");
+            }
+            return Ok(PROBLEM);
+        }
+        FetchOutcomeState::NotReady { missing, wrong } => {
             println!(
                 "Staged set is not ready: {} missing, {} wrong. Nothing was swapped.",
                 missing.len(),
@@ -4298,8 +4307,26 @@ fn update_content(
             return Ok(PROBLEM);
         }
     }
-    match service.promote(&plan)? {
-        Promoted::Applied(r) => {
+
+    // A roster is not done when its file lands: it is done when the image
+    // carries it. With a test root the portraits go to scratch, never into a
+    // real texture tree.
+    let textures_root = match (id, data_root) {
+        (ComponentId::Roster, None) => Some(reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?),
+        _ => None,
+    };
+    let hook = RosterHook {
+        builder: None,
+        extra_dirs: legacy_tools_dirs(),
+        textures_root,
+    };
+    let promoted = updater.promote(&check, &hook)?;
+    let promotion = promoted
+        .components
+        .first()
+        .expect("one component was available, so one was promoted");
+    match &promotion.state {
+        PromoteState::Applied { receipt: r, roster } => {
             println!(
                 "Live          {} {}: {} file(s) swapped in, {} kept as yours",
                 r.component,
@@ -4316,33 +4343,89 @@ fn update_content(
                     println!("  {p}");
                 }
             }
-            if let Some(p) = r.previous {
+            if let Some(p) = &r.previous {
                 println!("Rollback to   {} sequence {} is available", p.version, p.sequence);
             }
-            // A roster is not done when its file lands: it is done when the
-            // image carries it. Same data root, same test-root rules.
-            if component == "roster" {
-                println!();
-                println!("Applying the roster to the game image.");
-                let roster_file = root_owned
-                    .join(DataDir::LibraryRoster.relative())
-                    .join(reborn_core::roster::ROSTER_FILE);
-                return roster_apply(platform, Some(&roster_file), None, data_root, None, true);
+            match roster {
+                None => Ok(OK),
+                Some(result) => {
+                    println!();
+                    println!("Applying the roster to the game image.");
+                    Ok(print_roster_result(result))
+                }
             }
-            Ok(OK)
         }
-        Promoted::Refused(r) => {
+        PromoteState::Refused(r) => {
             println!("Not swapped: {}", r.message());
             Ok(PROBLEM)
         }
-        Promoted::RolledBack { reason, restored, .. } => {
+        PromoteState::RolledBack { reason, restored } => {
             println!("The swap failed part way and was reversed: {reason}");
             println!(
-                "{} file(s) put back; the previous version is live and the staged bytes are kept,",
-                restored.len()
+                "{restored} file(s) put back; the previous version is live and the staged bytes are kept,"
             );
             println!("so a retry costs nothing over the network.");
             Ok(PROBLEM)
+        }
+    }
+}
+
+/// The 2.1 tools folder, where a player who had the old launcher may already
+/// have a Reborn Builder. Found here rather than in the core, which reads no
+/// environment variables.
+fn legacy_tools_dirs() -> Vec<PathBuf> {
+    match std::env::var("APPDATA") {
+        Ok(appdata) => vec![PathBuf::from(appdata).join("NFL Street Reborn").join("Tools")],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Report what the Builder did to the image, and whether that counts as done.
+fn print_roster_result(result: &reborn_core::content::pipeline::RosterResult) -> std::process::ExitCode {
+    use reborn_core::content::pipeline::RosterResult;
+    match result {
+        RosterResult::Applied(r) => {
+            println!(
+                "Applied       {} players, {} teams, {} portrait(s) written",
+                thousands(r.report.players),
+                thousands(r.report.teams),
+                thousands(r.report.portraits)
+            );
+            println!("Image         {}", r.image.display());
+            println!("Was           {}", r.before);
+            println!("Now           {}", r.after);
+            if let Some(base) = &r.report.base {
+                println!("Base          {base}");
+            }
+            if !r.report.warnings.is_empty() {
+                println!("Warnings      {} from the site:", thousands(r.report.warnings.len() as u64));
+                for w in r.report.warnings.iter().take(8) {
+                    println!("  {w}");
+                }
+                if r.report.warnings.len() > 8 {
+                    println!("  ... and {} more", thousands((r.report.warnings.len() - 8) as u64));
+                }
+            }
+            println!("Recorded as a rebuilt image, so verification keeps it rather than re-downloading it.");
+            OK
+        }
+        RosterResult::Unchanged { image, report } => {
+            println!(
+                "Unchanged: {} already carries this roster ({} players, {} teams). Nothing was swapped.",
+                image.display(),
+                thousands(report.players),
+                thousands(report.teams)
+            );
+            OK
+        }
+        RosterResult::NoBuilder { .. } => {
+            println!("{}", result.message());
+            println!("Pass --builder to `rebornctl roster apply` once a Builder is in place; the roster is live.");
+            PROBLEM
+        }
+        RosterResult::Refused(r) => {
+            println!("Refused: {}", r.message());
+            PROBLEM
         }
     }
 }
@@ -4374,14 +4457,7 @@ fn roster_apply(
     let builder_path = match builder {
         Some(p) => p.to_path_buf(),
         None => {
-            let mut dirs: Vec<PathBuf> = Vec::new();
-            if let Ok(install) = platform.paths.install_root() {
-                dirs.push(install.join("tools"));
-                dirs.push(install);
-            }
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));
-            }
+            let dirs = roster::builder_dirs(platform, &legacy_tools_dirs());
             match roster::find_builder(platform, &dirs) {
                 Some(p) => p,
                 None => {

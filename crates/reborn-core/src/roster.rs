@@ -114,6 +114,21 @@ pub fn find_builder(platform: &Platform, dirs: &[PathBuf]) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Where the Builder is looked for: the install root's `tools` folder, the
+/// install root itself, then whatever the caller adds (the 2.1 tools folder,
+/// found by the caller because the core reads no environment variables).
+/// An install root that cannot be resolved contributes nothing rather than
+/// failing the search.
+pub fn builder_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(install) = platform.paths.install_root() {
+        dirs.push(install.join("tools"));
+        dirs.push(install);
+    }
+    dirs.extend(extra.iter().cloned());
+    dirs
+}
+
 /// One request to apply a roster to the live image.
 #[derive(Debug)]
 pub struct ApplyRequest<'a> {
