@@ -105,13 +105,23 @@ $resolvedPayload = [System.IO.Path]::GetFullPath($payload)
 $expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root $payloadName))
 if ($resolvedPayload -ne $expectedPayload) { throw "Unexpected staging path." }
 if (Test-Path -LiteralPath $resolvedPayload) {
+    # Rename first, delete second. Remove-Item -Recurse deletes everything
+    # it can and THEN fails on a file it cannot, which on 2026-09-06 twice
+    # emptied this folder around one running exe (a test launcher started
+    # from it) and took the only staged copy of the 687 MB import bundle
+    # with it. Renaming a folder that holds an open file fails before
+    # touching anything, so a rename that succeeds proves nothing is in use,
+    # and a rename that fails leaves the folder as it was: the build then
+    # stages beside it in a fresh folder and says so.
+    $aside = "{0}.old-{1}" -f $resolvedPayload, (Get-Date -Format "yyyyMMdd-HHmmss")
     try {
-        Remove-Item -LiteralPath $resolvedPayload -Recurse -Force -ErrorAction Stop
+        Rename-Item -LiteralPath $resolvedPayload -NewName (Split-Path $aside -Leaf) -ErrorAction Stop
+        Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
-        # A launcher started from the staging folder holds its own exe open,
-        # and Windows refuses to delete a running program. Seen 2026-09-06:
-        # a test launcher run straight out of target\installer-payload.
-        throw ("Could not clear {0}: {1}`nSomething in it is running, most likely a launcher started from that folder. Close it and build again. Nothing was built." -f $resolvedPayload, $_.Exception.Message)
+        $fresh = "{0}-{1}" -f $resolvedPayload, (Get-Date -Format "yyyyMMdd-HHmmss")
+        Write-Warning ("{0} is in use ({1}); most likely a launcher started from it. It was left alone. Staging in {2} instead." -f $resolvedPayload, $_.Exception.Message.Trim(), $fresh)
+        $payload = $fresh
+        $resolvedPayload = $fresh
     }
 }
 New-Item -ItemType Directory -Force $payload | Out-Null

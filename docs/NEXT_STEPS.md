@@ -118,8 +118,10 @@ no imported player will be in the chain.
    `dist\NFL Street Reborn Launcher Update <v>.exe` (37 MB) and `latest.json`
    pinning it. It stages in `target\installer-payload-launcher`, never in
    the full payload. `update.rs` passes `/DIR=<install root>` so a custom
-   install folder is honored. Publish: the exe and `latest.json` on a GitHub
-   release tagged `v<v>` (`-UpdateBase <url>` for another host). Guide 7c.
+   install folder is honored. Publish: the exe and `latest.json` into the
+   bucket's `launcher/` folder, which is where `update.rs` now reads
+   (`DEFAULT_SOURCE`); the GitHub repo is private, so its releases could
+   never have served a player. Guide 7c has the two rclone lines.
    Proof, observed 2026-09-06 20:36 in Windows Sandbox: the full set
    installed, then the Update exe over it with `/RELAUNCH=1 /DIR=...`: exit
    0, launcher still in Programs, runtime kept, textures kept, import bundle

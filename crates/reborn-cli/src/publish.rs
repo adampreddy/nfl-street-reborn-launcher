@@ -1020,7 +1020,26 @@ fn find_xdelta_for_publishing(platform: &reborn_core::Platform, given: Option<&P
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd.join("target").join("installer-payload").join(reborn_core::game_patch::BUNDLE_DIR));
+        // The staged bundle under target: the usual folder first, then any
+        // timestamped sibling build.ps1 staged in when that one was in use.
+        let target = cwd.join("target");
+        dirs.push(target.join("installer-payload").join(reborn_core::game_patch::BUNDLE_DIR));
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            let mut siblings: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("installer-payload-") && !n.ends_with("launcher"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            siblings.sort();
+            siblings.reverse();
+            dirs.extend(siblings.into_iter().map(|p| p.join(reborn_core::game_patch::BUNDLE_DIR)));
+        }
     }
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         dirs.push(exe_dir.join(reborn_core::game_patch::BUNDLE_DIR));

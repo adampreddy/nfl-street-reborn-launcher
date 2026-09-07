@@ -35,7 +35,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 _release = REPO / "target" / "release" / "rebornctl.exe"
 EXE = Path(os.environ.get("REBORNCTL") or (_release if _release.is_file() else REPO / "target" / "debug" / "rebornctl.exe"))
-XDELTA = REPO / "target" / "installer-payload" / "game-import" / "xdelta3.exe"
+def _find_xdelta():
+    given = os.environ.get("REBORN_XDELTA")
+    if given:
+        return Path(given)
+    # The staged import bundle: target/installer-payload/game-import, or a
+    # timestamped sibling when build.ps1 could not reuse the usual folder.
+    candidates = sorted((REPO / "target").glob("installer-payload*/game-import/xdelta3.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else REPO / "target" / "installer-payload" / "game-import" / "xdelta3.exe"
+
+
+XDELTA = _find_xdelta()
 WORK = REPO / "target" / "e2e-game-patch"
 ORIGIN = WORK / "origin"
 TREE = WORK / "tree"
