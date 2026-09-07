@@ -120,8 +120,18 @@ no imported player will be in the chain.
    the full payload. `update.rs` passes `/DIR=<install root>` so a custom
    install folder is honored. Publish: the exe and `latest.json` on a GitHub
    release tagged `v<v>` (`-UpdateBase <url>` for another host). Guide 7c.
-   Proof: `test-all` checks the pin; the sandbox smoke test installs the
-   full set and then the update over it (result recorded below).
+   Proof, observed 2026-09-06 20:36 in Windows Sandbox: the full set
+   installed, then the Update exe over it with `/RELAUNCH=1 /DIR=...`: exit
+   0, launcher still in Programs, runtime kept, textures kept, import bundle
+   kept, `tools\reborn-builder-cli.exe` present and runs on a clean Windows,
+   `rebornctl` runs, the launcher came back on its own; then uninstall left
+   the memory card and the 2.1 folder alone. 52 of 53 checks; the one miss
+   is the WebView2 download the sandbox never gets (known).
+   Sandbox note: killing the session's window processes can leave the VM
+   worker (`vmmemWindowsSandbox`) alive for minutes, and a second launch
+   sits dead until it exits; wait for it, then launch. The host dropped to
+   2.6 GB free during the run with Dolphin open, which is what kills a
+   waiting background task.
 3. **DONE with 2: `reborn-builder-cli.exe` ships** under `<install>\tools`
    in both builds, from `%APPDATA%\NFL Street Reborn\Tools` or `-Builder`.
    Only the exe: `clean-tree.txt` beside it names a folder on this machine.
