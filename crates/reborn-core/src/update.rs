@@ -36,16 +36,19 @@ use crate::{Error, Result};
 
 pub const MANIFEST_SCHEMA: &str = "nsr.launcher-release.v1";
 
-/// Where a launcher looks for its manifest when nothing else is set. A
-/// GitHub release asset named `latest.json` on the launcher's repository,
-/// so publishing a release IS publishing an update: upload the installer and
-/// this file to a release tagged `v<version>`.
-pub const DEFAULT_SOURCE: &str =
-    "https://github.com/adampreddy/nfl-street-reborn-launcher/releases/latest/download/latest.json";
+/// Where a launcher looks for its manifest when nothing else is set: the
+/// `launcher/` folder of the content bucket, beside the installer it names.
+/// Publishing a launcher update is uploading the one-file installer and this
+/// manifest there (docs/RUNNING_UPDATES.md 7c).
+///
+/// Not a GitHub release, which is where this pointed first: the repository
+/// is private, and a private repository's release assets are not fetchable
+/// by a player's launcher. The bucket is public, serves `blobs/*` cached and
+/// everything else uncached, and already hosts every other download.
+pub const DEFAULT_SOURCE: &str = "https://files.nflstreetreborn.com/launcher/latest.json";
 /// The beta channel reads its own file, so a beta never offers a stable
 /// build as an update or the other way round.
-pub const DEFAULT_BETA_SOURCE: &str =
-    "https://github.com/adampreddy/nfl-street-reborn-launcher/releases/latest/download/latest-beta.json";
+pub const DEFAULT_BETA_SOURCE: &str = "https://files.nflstreetreborn.com/launcher/latest-beta.json";
 
 /// One downloadable installer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

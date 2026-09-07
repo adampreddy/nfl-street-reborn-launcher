@@ -17,7 +17,8 @@
   - `profile <name>: bootstrap|synced, updated <n>, harvested <n>, carried <n>, skipped <n>`
   - `profile <name>: skipped (<reason>)`
   - `wrote <path>: <n> byte(s) changed` | `unchanged <path>` | `would write <path>: <n> byte(s)`
-  - exit 0 success, 2 refusal (`Stopped: ...` on stderr), 4 bad arguments.
+  - exit 0 success, 2 refusal (`Stopped: ...` on stderr), 4 bad arguments. Any other exit code is a Builder fault with the card untouched: report it as `BuilderFailed` with the raw tail, never retry.
+  - The Builder (shipped 2026-09-06, commit ddea095 on its `card-gear-sync` branch) infers a profile's creation era from its rows; the `in use` sentence it prints on `PermissionError` is a hint, and the launcher's own quiescence rule remains the real guard.
 - Memory cards are the files in `<user dir>/GC` whose lowercased name starts with `memorycard` and ends with `.raw` (the convention `session.rs::user_dir_score` already uses).
 - State file per card: `<data root>/library/roster/cards/<card file name>.json`. The Builder owns its contents; the launcher only names it.
 - Recovery point before the first real write of a card in a run: `<data root>/recovery/cards/<card file name>.<unix seconds>.bak`, newest three kept per card. Not taken for `--harvest-only` or `--dry-run`, which write no card bytes.

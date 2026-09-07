@@ -56,9 +56,9 @@ param(
     # one machine.
     [string]$Builder = (Join-Path $env:APPDATA "NFL Street Reborn\Tools\reborn-builder-cli.exe"),
     # Where latest.json says the installer can be downloaded from. Defaults
-    # to the GitHub release page for v<Version>, which is what update.rs
-    # reads. A different host (the content bucket, say) goes here.
-    [string]$UpdateBase = ""
+    # to the launcher folder of the content bucket, which is where update.rs
+    # reads the manifest itself. Upload the exe and the manifest there.
+    [string]$UpdateBase = "https://files.nflstreetreborn.com/launcher/"
 )
 
 $ErrorActionPreference = "Stop"
@@ -618,8 +618,7 @@ if ($span -or $slices.Count -gt 0) {
                     "self-update fetches a single installer. Distribute the whole set together.") -f ($slices.Count + 1))
 } elseif ($setup) {
     $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
-    $repo = "https://github.com/adampreddy/nfl-street-reborn-launcher"
-    $base = if ($UpdateBase) { $UpdateBase.TrimEnd("/") + "/" } else { "$repo/releases/download/v$Version/" }
+    $base = $UpdateBase.TrimEnd("/") + "/"
     $assetUrl = $base + [uri]::EscapeDataString($setup.Name)
     $manifest = [ordered]@{
         schema   = "nsr.launcher-release.v1"

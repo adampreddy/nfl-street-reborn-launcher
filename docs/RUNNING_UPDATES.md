@@ -19,7 +19,7 @@ launcher will do once wired.
 | Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
 | a curated mod package | the content system, `mods` component | only the changed files |
 | **a roster**, published from the website editor | the content system, `roster` component: the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
-| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json` on a GitHub release tagged `v<version>`. See 7c | the installer, one file, about 25 MB |
+| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json`, both into the bucket's `launcher/` folder. See 7c | the installer, one file, about 37 MB |
 | which keys are trusted | a launcher release, as above | same |
 | memory cards, saves, a player's own soundtrack | never touched, by design | none |
 | the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
@@ -382,11 +382,20 @@ content are already on the player's machine, and Inno replaces what it
 carries and removes nothing. That is also why a fresh player cannot start
 from this file; the download page hands out the full set.
 
-Publish: upload the Update exe and `latest.json` to a GitHub release tagged
-`v<version>` on the launcher repository. `latest.json` names the exe's URL
-on that release, which is where `update.rs` fetches it from. `-UpdateBase
-<url>` writes a different host into the manifest if the file is put
-somewhere else.
+Publish: upload the Update exe and `latest.json` into the bucket's
+`launcher/` folder, the exe first and the manifest last:
+
+```
+<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto "dist\NFL Street Reborn Launcher Update 3.0.1.exe" "r2:reborn-content/launcher/NFL Street Reborn Launcher Update 3.0.1.exe"
+<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto dist\latest.json r2:reborn-content/launcher/latest.json
+```
+
+`update.rs` reads `https://files.nflstreetreborn.com/launcher/latest.json`
+and the manifest names the exe beside it. Not a GitHub release: the
+repository is private, so its release assets are not fetchable by a
+player's launcher. `-UpdateBase <url>` writes another host into the
+manifest if the file ever lives elsewhere. `launcher/` is outside the
+`blobs/*` cache rule, so a new manifest is seen at once.
 
 What a player's launcher does with it: checks `latest.json`, downloads the
 exe into its downloads folder, verifies the hash, runs it with
