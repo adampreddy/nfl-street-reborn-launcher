@@ -41,6 +41,11 @@ param(
     # stays the 1.7 MB downloader and this is the build to hand to someone
     # who needs it.
     [switch]$OfflineWebView2,
+    # What -OfflineWebView2 appends to the installer's name, so an online
+    # and an offline build can sit in dist together. Empty for the build
+    # that ships, which is the offline one since 2026-09-06: the plain name
+    # is the one the download page, the zip and the smoke test look for.
+    [string]$OfflineSuffix = " offline",
     # A launcher-only build, for self-update: the launcher, rebornctl and the
     # Reborn Builder, nothing else. It installs over a full install and leaves
     # the runtime, the textures, the game import bundle and the content in
@@ -452,7 +457,7 @@ $isccArgs = @(
 if ($span) { $isccArgs += "/DSpan" }
 # A different file name, so the online and offline builds can sit in dist
 # together rather than one silently replacing the other.
-if ($OfflineWebView2) { $isccArgs += "/DOfflineSuffix= offline" }
+if ($OfflineWebView2 -and $OfflineSuffix) { $isccArgs += "/DOfflineSuffix=$OfflineSuffix" }
 # "Launcher Update" rather than "Launcher Setup", so the small self-update
 # file and the full first-run set never get mistaken for each other in dist
 # or on a download page.
