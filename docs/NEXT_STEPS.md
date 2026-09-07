@@ -153,14 +153,41 @@ What remains around it: nothing in the launcher window yet says "game
 update applied"; that comes with the window wiring in item 2, where
 `PromoteState::Applied { game_patch, roster, .. }` carries both results.
 
-### 4. The final installer
+### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 
-The one in `dist` is from 2026-09-05 00:21 and predates the roster
-component, the zero-byte fix, the relaunch fix, and the entire UI rebuild.
-After items 1 and 2: build with `-GamePatch`, run `Tools\test-all.ps1
--Sandbox` and Adam's manual walkthrough, upload the zip to the bucket,
-point the site's `DOWNLOAD_URL` at `files.nflstreetreborn.com`. Never at a
-file on SiteGround.
+Built from commit `0a69415` with:
+
+```
+.\installer\windows\build.ps1 -Version 3.0.0 -OfflineWebView2 -OfflineSuffix "" `
+  -GamePatch "<Codex>\work\game-patch\bundle" -Runtime "<Codex>\work\installer-input\runtime" `
+  -Textures "%APPDATA%\NFL Street Reborn\User\Load\Textures\GN7E69" `
+  -PromptPackages "<Codex>\work\installer-input\content\prompt-packages"
+.\installer\windows\build.ps1 -LauncherOnly -Version 3.0.0
+```
+
+(`<Codex>` = `C:\Users\Adam\Documents\Codex\2026-09-04\c-users-adam-desktop-reborn-installer`.)
+Textures are the 8,192-file tree the origin's `textures 1.0.0` was published
+from, so a fresh install is current at its first check. `-OfflineWebView2`
+bundles the 246.5 MB runtime: the 1.7 MB bootstrapper worked in the sandbox
+on 09-04 and failed in every run on 09-06, and a blank first window is not a
+risk worth 250 MB.
+
+In `dist`: `NFL Street Reborn Launcher 3.0.0.zip` (2.54 GB, the exe and two
+slices), `NFL Street Reborn Launcher Update 3.0.0.exe` (37.2 MB) and
+`latest.json`. `test-all`: 19 of 19 on this set.
+
+**Observed in Windows Sandbox, 22:11 to 22:16, RESULT: PASS (53 checks):**
+full install over a fake 2.1 install in under four minutes, WebView2
+152.0.4191.62 present with no network, runtime, textures, import bundle,
+Builder, shortcuts, memory card untouched, launcher up; the Update exe over
+it kept everything and relaunched the launcher; uninstall left the saves;
+the beta side by side. Copy of the result:
+`target\dist-old-2026-09-06\sandbox-result-final-offline-2026-09-06.txt`.
+
+Still Adam's: point the site's Download button at
+`https://files.nflstreetreborn.com/launcher/NFL%20Street%20Reborn%20Launcher%203.0.0.zip`.
+Never at a file on SiteGround. Adam's manual walkthrough of the wizard
+(`Tools\test-all.ps1 -Manual`) has not been done on this set.
 
 ### 5. Adam's own list
 
