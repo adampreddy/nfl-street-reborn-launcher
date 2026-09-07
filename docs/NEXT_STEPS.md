@@ -113,13 +113,27 @@ no imported player will be in the chain.
    hashes 3.18 GB and takes 45 s. The import flows in `setup_tools.rs`
    already establish the booted image and apply an installed roster to
    it, so nothing extra is needed there.
-2. **A one-file installer build** for launcher self-update. `latest.json`
-   pins one file; `build.ps1` writes it only for a single-file build, and
-   the first-run installer is spanned. Needs a build mode that leaves the
-   big content out (players get that through the content system).
-3. **Ship `reborn-builder-cli.exe`** beside Dolphin (`build.ps1`). Today
-   the launcher finds it in `<install>\tools`, beside the launcher, or in
-   `%APPDATA%\NFL Street Reborn\Tools`.
+2. **DONE 2026-09-06 evening: the one-file installer build.**
+   `.\installer\windows\build.ps1 -LauncherOnly -Version <v>` makes
+   `dist\NFL Street Reborn Launcher Update <v>.exe` (37 MB) and `latest.json`
+   pinning it. It stages in `target\installer-payload-launcher`, never in
+   the full payload. `update.rs` passes `/DIR=<install root>` so a custom
+   install folder is honored. Publish: the exe and `latest.json` on a GitHub
+   release tagged `v<v>` (`-UpdateBase <url>` for another host). Guide 7c.
+   Proof: `test-all` checks the pin; the sandbox smoke test installs the
+   full set and then the update over it (result recorded below).
+3. **DONE with 2: `reborn-builder-cli.exe` ships** under `<install>\tools`
+   in both builds, from `%APPDATA%\NFL Street Reborn\Tools` or `-Builder`.
+   Only the exe: `clean-tree.txt` beside it names a folder on this machine.
+
+**Where the import bundle lives** (the 687 MB `reborn.xdelta` + manifest +
+tools that `-GamePatch` needs): `C:\Users\Adam\Documents\Codex\2026-09-04\
+c-users-adam-desktop-reborn-installer\work\game-patch\bundle`. The copy in
+`target\installer-payload\game-import` is staging, restaged by every full
+build, and was wiped once on 2026-09-06 by a launcher-only build under the
+old script (restored from the Codex folder, hash verified). Keep the Codex
+folder, or move the bundle somewhere named and point `-GamePatch` at it.
+The full build now refuses a `-GamePatch` inside the folder it wipes.
 
 ### 3. DONE: the game-patch component (see item 1)
 

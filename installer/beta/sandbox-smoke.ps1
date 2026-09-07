@@ -79,7 +79,13 @@ function Run-Setup($exe, $logName, $extra = @()) {
     $quiet = if ($Watch) { "/SILENT" } else { "/VERYSILENT" }
     $args = @($quiet, "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$out\$logName`"") + $extra
     Say("running $(Split-Path $exe -Leaf) $($args -join ' ')")
-    $p = Start-Process -FilePath $exe -ArgumentList $args -Wait -PassThru
+    # WaitForExit on the Setup process itself, NOT Start-Process -Wait, which
+    # waits for every descendant too. With /RELAUNCH=1 the installer starts
+    # the launcher as its own child and exits, and -Wait then sat waiting for
+    # the launcher window to close, which nothing in this script does. Seen
+    # 2026-09-06: the update installer finished at 19:54 and the run hung.
+    $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+    $p.WaitForExit()
     Say("exit code $($p.ExitCode)")
     return $p.ExitCode
 }
@@ -250,10 +256,12 @@ try {
         Say("textures installed: $texCount file(s) at $tex")
         Check "the texture tree shipped, and is not empty" ($texCount -gt 1000) "found $texCount file(s)"
 
-        # And the game image, which is the other half of a playable install.
-        $games = @(Get-ChildItem (Join-Path $stableDir "Games") -File -ErrorAction SilentlyContinue |
-                   Where-Object { $_.Extension -in ".iso", ".rvz", ".gcm", ".ciso" })
-        Check "a game image shipped" ($games.Count -ge 1) "none in $stableDir\Games"
+        # And the import bundle, which is the other half of a playable install
+        # since the patch route: the player's own disc plus this delta is the
+        # game. No image ships any more, by design.
+        $bundle = Join-Path $stableDir "game-import"
+        $bundleMissing = @("manifest.json", "reborn.xdelta", "xdelta3.exe", "DolphinTool.exe" | Where-Object { -not (Test-Path (Join-Path $bundle $_)) })
+        Check "the game import bundle shipped" ($bundleMissing.Count -eq 0) ("missing from ${bundle}: " + ($bundleMissing -join ", "))
 
         Check "no channel marker in a stable install" (-not (Test-Path (Join-Path $stableDir "channel")))
         # ------------------------------------------------------------------
