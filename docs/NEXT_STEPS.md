@@ -184,6 +184,14 @@ it kept everything and relaunched the launcher; uninstall left the saves;
 the beta side by side. Copy of the result:
 `target\dist-old-2026-09-06\sandbox-result-final-offline-2026-09-06.txt`.
 
+**Uploaded 22:17 and verified from outside:** all three objects answer
+200 at `https://files.nflstreetreborn.com/launcher/` with the exact sizes
+(zip 2,729,087,836; Update exe 39,045,742; latest.json 554, served
+DYNAMIC), and `rebornctl update check` with no arguments reads the hosted
+manifest and answers "Up to date at 3.0.0". The self-update path is live
+end to end; the next launcher release is `build.ps1 -LauncherOnly
+-Version 3.0.1` and the two rclone lines in the guide.
+
 Still Adam's: point the site's Download button at
 `https://files.nflstreetreborn.com/launcher/NFL%20Street%20Reborn%20Launcher%203.0.0.zip`.
 Never at a file on SiteGround. Adam's manual walkthrough of the wizard
