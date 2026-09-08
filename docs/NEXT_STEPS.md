@@ -178,6 +178,27 @@ lost, and **the shipped installer is built from `bf9590c` in the worktree
 `target\ship-tree`**, where every checker passes. That work can ship later
 as a 37 MB launcher update once it passes the checkers.
 
+**2026-09-08 daytime, Adam's walkthrough in the sandbox, three findings:**
+
+- `DolphinTool.exe` imports `MSVCP140_ATOMIC_WAIT.dll`, which the VC
+  allowlist did not ship; on a clean Windows the import tool could not
+  start and onboarding called the disc unreadable. Fixed in `b1ee54c`:
+  five VC files ship beside Dolphin and the import tools, and the smoke
+  test runs DolphinTool on the clean Windows. After the fix Adam's import
+  built and installed the game from `NFL Street 2 (USA).nkit.iso`.
+- **The sandbox has no internet while Surfshark's WireGuard tunnel is up
+  on the host** (interface metric 5 takes the default route). That was
+  every failed WebView2 download on the 6th and the launcher's
+  "Connection Failed ... 10060" in the sandbox. VPN off, the launcher's
+  own update check read the bucket at once: "Up to date at 3.0.0."
+- With a 32 MB roster pending and updates set to ask first, the window
+  never adopted the seeded textures and runtime, so every check re-hashed
+  the 3 GB pack. Fixed in `810c9fe`: zero-byte components are adopted on
+  their own and the check re-run against their pointers.
+- `beta-sandbox.ps1 -Disc <folder>` maps a stock disc image in at
+  `C:\beta\disc`; manual mode waits for the install and the launcher
+  closing instead of a keypress (`5ab5c0f`, `e1efab6`).
+
 **Shipped 2026-09-08 02:28 from `bf9590c`:** `test-all` 19 of 19 on the
 ship tree, Windows Sandbox RESULT: PASS (53 checks) with WebView2
 152.0.4191.66 present offline (copy at
