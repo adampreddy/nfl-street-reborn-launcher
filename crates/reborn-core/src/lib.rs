@@ -55,6 +55,7 @@ pub mod manifest;
 pub mod migration;
 pub mod mods;
 pub mod music;
+pub mod soundtrack;
 pub mod net;
 pub mod onboarding;
 pub mod origin;
