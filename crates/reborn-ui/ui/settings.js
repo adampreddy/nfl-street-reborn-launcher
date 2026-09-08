@@ -3,6 +3,9 @@
 import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
 
 const state = {};
+const tabForHash = () => ({graphics:"Graphics",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1)] || "General";
+let settingsTab=tabForHash();
+window.addEventListener?.("hashchange", () => { if (!busy) { settingsTab=tabForHash(); draw(); } });
 let problem = null;
 let busy = false;
 // The update flow's last answers, shown in place.
@@ -16,6 +19,10 @@ function ok(x) {
 
 async function load() {
   const reads = {
+    dolphin: call("dolphin_preferences", {runtime:get("runtime")}),
+    graphics: call("setup_graphics_options"),
+    hardware: call("setup_hardware_info"),
+    progress: call("onboarding_progress"),
     preferences: call("settings_paths"),
     installation: call("setup_install_info"),
     paths: call("paths"),
@@ -126,9 +133,12 @@ function whereBlock() {
 
 async function act(label, cmd, args, after) {
   if (busy) return;
+  const focusedId=document.activeElement?.id;
   busy = true;
   problem = null;
   if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
+  const messages={update_check:'Checking for updates…',update_download:'Downloading and verifying…',update_apply:'Starting installer…',content_check:'Checking game files…',content_fetch:'Downloading game content…',content_promote:'Installing game content…'};
+  if(messages[cmd])document.getElementById('screen').append(el('p',{class:'settings-status',role:'status',text:messages[cmd]}));
   try {
     const r = await call(cmd, args);
     after(r);
@@ -139,6 +149,7 @@ async function act(label, cmd, args, after) {
   busy = false;
   window.setLauncherBusy?.(false);
   draw();
+  if(focusedId)document.getElementById(focusedId)?.focus({preventScroll:true});
 }
 
 const mb = (b) => Math.max(1, Math.round((b || 0) / 1048576));
@@ -146,75 +157,84 @@ const mb = (b) => Math.max(1, Math.round((b || 0) / 1048576));
 // Textures, the emulator, mods, game patches and the roster: the content
 // system. The Play page checks on start and installs when the game is
 // closed; this is where a person looks, checks, repairs, or installs now.
+function preferenceRow(label, description, control, id) {
+  return el('div', {class:'preference-row'},
+    el('div', {class:'preference-description'},
+      el(id ? 'label' : 'span', {class:'preference-label', ...(id ? {for:id} : {}), text:label}),
+      description ? el('p', {text:description}) : null),
+    el('div', {class:'preference-value settings-actions'}, control));
+}
+
 function contentBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Game content" }));
-  sec.append(el("p", { class: "note", text: "Textures, the emulator, mods, game patches and the roster arrive as small differences from the content server. Checked when the launcher starts; installed while the game is closed." }));
-  const c = state.content;
-  if (!ok(c)) {
-    sec.append(partial(`The content status could not be read: ${c ? c.error : "not loaded"}`));
-    return sec;
+  const sec=el('section',{class:'preference-group',id:'settings-game-content'},el('h2',{text:'Game content'}));
+  const c=state.content;
+  if(!ok(c)){sec.append(el('p',{class:'partial',text:c?.error||'Content status is unavailable. Refresh settings to try again.'}));return sec;}
+  const working=['checking','fetching','installing'].includes(c.phase);
+  const labels={checking:'Checking for updates',fetching:'Downloading content',installing:'Installing content',available:'Update available',staged:'Ready to install',installed:'Content updated',problem:'Needs attention'};
+  const actions=el('div',{class:'settings-actions'});
+  if(c.phase==='available')actions.append(el('button',{type:'button',class:'primary',text:`Download ${mb(c.download_bytes)} MB`,disabled:busy,onclick:()=>act('Download content','content_fetch',{},()=>{})}));
+  else if(c.phase==='staged')actions.append(el('button',{type:'button',class:'primary',text:'Install now',disabled:busy,onclick:()=>act('Install content','content_promote',{confirm:true},()=>{})}));
+  else if(c.phase==='installed')actions.append(el('button',{type:'button',text:'Dismiss summary',disabled:busy,onclick:()=>act('Dismiss','content_dismiss',{},()=>{})}));
+  else actions.append(el('button',{type:'button',text:working?'Working…':'Check game content',disabled:busy||working,onclick:()=>act('Check content','content_check',{depth:null},()=>{})}));
+  sec.append(preferenceRow(labels[c.phase]||'Game content updates',c.note||'Keep your textures, game patches, roster, and Dolphin up to date.',actions));
+  if(working)sec.append(el('progress',{class:'settings-progress','aria-label':labels[c.phase]}));
+  const details=(c.components||[]).filter(x=>x&&['available','refused','problem'].includes(x.state));
+  if(details.length){
+    const list=el('ul',{class:'settings-update-details'});
+    for(const comp of details)list.append(el('li',{text:comp.state==='available'?`${comp.component}: ${comp.repair?'repair':`${comp.installed?comp.installed+' → ':''}${comp.offered}`}, ${mb(comp.bytes)} MB`:`${comp.component}: ${comp.message||comp.state}`}));
+    sec.append(list);
   }
-  const working = ["checking", "fetching", "installing"].includes(c.phase);
-  const row = el("div", { class: "mod" });
-  row.append(el("button", { type: "button", text: "Check now", disabled: busy || working, onclick: () => act("Check content", "content_check", { depth: null }, () => {}) }));
-  row.append(el("button", { type: "button", text: "Verify and repair", disabled: busy || working, onclick: () => act("Verify content", "content_check", { depth: "verify" }, () => {}) }));
-  if (c.phase === "available") {
-    row.append(el("button", { type: "button", text: `Download ${mb(c.download_bytes)} MB`, disabled: busy, onclick: () => act("Download content", "content_fetch", {}, () => {}) }));
-  }
-  if (c.phase === "staged") {
-    row.append(el("button", { type: "button", class: "write", text: "Install now", disabled: busy, onclick: () => act("Install content", "content_promote", { confirm: true }, () => {}) }));
-  }
-  if (c.phase === "installed") {
-    row.append(el("button", { type: "button", text: "Got it", disabled: busy, onclick: () => act("Dismiss", "content_dismiss", {}, () => {}) }));
-  }
-  sec.append(row);
-  sec.append(el("p", { class: c.phase === "problem" ? "partial" : "", text: c.note || "Not checked yet." }));
-  if (c.release) sec.append(el("p", { class: "note", text: `Release ${c.release} at ${c.origin || "the content server"}.` }));
-  for (const comp of c.components || []) {
-    if (!comp) continue;
-    if (comp.state === "available") sec.append(el("p", { class: "note", text: `${comp.component}: ${comp.repair ? "repair" : `${comp.installed ? `${comp.installed} to ` : ""}${comp.offered}`}, ${comp.files} file(s), ${mb(comp.bytes)} MB.` }));
-    else if (comp.state === "refused" || comp.state === "problem") sec.append(partial(`${comp.component}: ${comp.message || comp.state}`));
-  }
+  sec.append(preferenceRow('Verify game files','Check installed content and prepare repairs for missing or changed files.',el('button',{type:'button',text:'Verify and repair',disabled:busy||working,onclick:()=>act('Verify content','content_check',{depth:'verify'},()=>{})})));
   return sec;
 }
 
 function updatesBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Updates" }));
-  sec.append(el("p", { class: "note", text: "Check for a release, download it, then install when you are ready. Your saves stay separate from the launcher." }));
-  // Whether it does this on its own. Asked in first run, changed here.
-  const pol = state.policy;
-  if (ok(pol)) {
-    for (const [auto, what, why] of [
-      [true, "Keep Me Up To Date", "Download and install verified updates automatically."],
-      [false, "Ask me first", "Nothing is downloaded until you say so."],
-    ]) {
-      const input = el("input", { type: "radio", name: "policy", checked: pol.automatic === auto, disabled: busy, onchange: () => act("Update setting", "update_policy_set", { automatic: auto }, () => {}) });
-      sec.append(el("label", { class: "choice" + (pol.automatic === auto ? " selected" : "") }, input, el("span", { class: "what", text: what }), el("span", { class: "why", text: why })));
-    }
-    sec.append(el("p", { class: "note", text: "Use Check for updates below to check this installation now." }));
-  } else {
-    sec.append(partial(`The update setting could not be read: ${pol ? pol.error : "not loaded"}`));
-  }
+  const wrap=el('div',{class:'settings-content'});
+  const preferences=el('section',{class:'preference-group'},el('h2',{text:'Update preferences'}));
+  if(ok(state.policy)){
+    const policy=el('select',{id:'update-policy',disabled:busy},
+      el('option',{value:'automatic',text:'Keep me up to date'}),el('option',{value:'ask',text:'Ask me first'}));
+    policy.value=state.policy.automatic?'automatic':'ask';
+    policy.addEventListener('change',()=>act('Update preference','update_policy_set',{automatic:policy.value==='automatic'},()=>{}));
+    const row=preferenceRow('Automatic updates',state.policy.automatic?'Download and install verified updates automatically. See a summary when installation is complete.':'Nothing is downloaded until you say so.',policy,'update-policy');
+    if(state.policy.automatic)row.querySelector('.preference-description label').append(el('span',{class:'settings-badge',text:'Recommended'}));
+    preferences.append(row);
+  }else preferences.append(el('p',{class:'partial',text:state.policy?.error||'Your update preference is unavailable.'}));
+  const launcher=el('section',{class:'preference-group'},el('h2',{text:'Launcher'}));
+  const actions=el('div',{class:'settings-actions'});
+  actions.append(el('button',{type:'button',text:'Check for updates',disabled:busy,onclick:()=>act('Check for updates','update_check',{source:null},r=>{update=r;downloaded=null;})}));
+  if(downloaded?.path)actions.append(el('button',{type:'button',class:'primary',text:'Install and restart',disabled:busy,onclick:()=>act('Install update','update_apply',{path:downloaded.path,confirm:true},r=>{update={...update,note:r.note};})}));
+  else if(update?.state==='available')actions.append(el('button',{type:'button',class:'primary',text:`Download ${update.latest}`,disabled:busy,onclick:()=>act('Download update','update_download',{source:null},r=>{downloaded=r;if(r.check)update=r.check;})}));
+  launcher.append(preferenceRow(downloaded?.path?'Ready to install':update?.state==='available'?`Version ${update.latest} available`:'Launcher updates',downloaded?.path?`Downloaded and verified · ${mb(downloaded.bytes)} MB. Restart the launcher to install.`:update?.note||'Check for a new launcher version. Your games and saves are preserved.',actions));
+  if(update?.notes)launcher.append(el('p',{class:'settings-release-notes',text:update.notes}));
+  wrap.append(preferences,launcher,contentBlock());
+  return wrap;
+}
 
-  const row = el("div", { class: "mod" });
-  row.append(el("button", { type: "button", text: "Check for updates", disabled: busy, onclick: () => act("Check", "update_check", { source: null }, (r) => { update = r; downloaded = null; }) }));
-  if (update && update.state === "available") {
-    row.append(el("button", { type: "button", text: `Download ${update.latest}`, disabled: busy, onclick: () => act("Download", "update_download", { source: null }, (r) => { downloaded = r; }) }));
+const GRAPHICS_PRESETS=[['performance','Performance','ReShade disabled.'],['balanced','Balanced','ReShade enabled with lighter effects.'],['quality','All-Out','ReShade enabled with high effects.']];
+function graphicsBlock(){
+  const wrap=dolphinBlock();
+  const group=el('section',{class:'preference-group'},el('h2',{text:'Visual effects'}));
+  if(!ok(state.graphics))group.append(el('p',{class:'partial',text:state.graphics?.error||'Graphics settings are unavailable. Refresh settings to try again.'}));
+  else{
+    const saved=get('preset')||state.progress?.summary?.graphics||'balanced';
+    const current=state.graphics.current;
+    const selected=current?(current.label==='Previous settings'?'previous':'custom'):(saved==='ultra'?'quality':GRAPHICS_PRESETS.some(x=>x[0]===saved)?saved:'balanced');
+    const select=el('select',{id:'graphics-preset',disabled:busy||state.dolphin?.editable===false});
+    for(const [value,label] of GRAPHICS_PRESETS)select.append(el('option',{value,text:label}));
+    if(state.graphics.previous||selected==='previous')select.append(el('option',{value:'previous',text:'Previous settings'}));
+    if(selected==='custom')select.append(el('option',{value:'custom',text:'Custom',disabled:true}));
+    select.value=selected;
+    select.addEventListener('change',()=>act('Graphics preset','setup_save_graphics_options',{mode:select.value==='previous'?'previous':'preset',resolution:3,msaa:1,ssaa:false},()=>{if(select.value!=='previous')set('preset',select.value);}));
+    const description=GRAPHICS_PRESETS.find(x=>x[0]===selected)?.[2]||(selected==='previous'?'Use the graphics settings imported from your previous installation.':'Your saved custom settings are selected.');
+    group.append(preferenceRow('Graphics preset',description,select,'graphics-preset'));
+    if(ok(state.hardware)&&state.hardware.description){
+      const recommended=GRAPHICS_PRESETS.find(x=>x[0]===state.hardware.recommended)?.[1];
+      group.append(preferenceRow('Your PC',state.hardware.description,recommended?el('span',{class:'settings-badge',text:`${recommended} recommended`}):el('span',{class:'note',text:'Choose your preferred effects'})));
+    }
   }
-  if (downloaded && downloaded.path) {
-    row.append(el("button", { type: "button", class: "write", text: "Install and restart", disabled: busy, onclick: () => act("Install", "update_apply", { path: downloaded.path, confirm: true }, (r) => { problem = null; leagueSaid = null; update = { ...update, note: r.note }; }) }));
-  }
-  sec.append(row);
-  if (update) {
-    sec.append(el("p", { class: update.state === "unreachable" || update.state === "unreadable" ? "partial" : "", text: update.note }));
-    if (update.notes) sec.append(el("p", { class: "note", text: update.notes }));
-  } else {
-    sec.append(el("p", { class: "absent", text: "Not checked yet." }));
-  }
-  if (downloaded && downloaded.path) {
-    sec.append(el("div", { class: "said" }, el("p", { text: `Downloaded and verified: ${downloaded.path} (${(downloaded.bytes / 1048576).toFixed(1)} MB).` })));
-  }
-  return sec;
+  wrap.insertBefore(group,wrap.querySelector('.preference-group'));
+  return wrap;
 }
 
 function leagueBlock() {
@@ -237,13 +257,46 @@ function leagueBlock() {
   return sec;
 }
 
+const preferenceGroups={
+ General:[['confirm_stop','Confirm before stopping','Ask before closing a game.','bool'],['pause_unfocused','Pause when unfocused','Pause local play when you switch to another app.','bool'],['osd_messages','Game notifications','Show Dolphin messages over the game.','bool']],
+ Graphics:[['vsync','V-Sync','Reduce screen tearing. May add a small amount of input delay.','bool'],['show_fps','Frame rate','Show a small frames-per-second counter.','bool']],
+ Display:[['fullscreen','Start in fullscreen','Open the game in fullscreen mode.','bool'],['borderless','Borderless fullscreen','Switch between the game and other windows more easily.','bool'],['show_ping','Netplay ping','Show connection latency during online play.','bool'],['always_on_top','Keep game on top','Keep the game window above other windows.','bool']],
+ Audio:[['audio_backend','Audio output','Default shares audio with other apps. Windows exclusive gives Dolphin sole use of the output device.','backend'],['volume','Game volume','Adjust Dolphin audio output.','range',0,100],['muted','Mute audio','Silence game audio without changing the volume.','bool'],['audio_stretch','Audio stretching','Smooth out audio during brief slowdowns.','bool'],['audio_latency','Audio buffer','Audio buffering in milliseconds. Raise it if sound crackles.','range',0,200]],
+ Saves:[['slot_a','Memory Slot A','Choose where Player 1 saves game progress.','slot'],['card_a','Slot A memory card','Used when Slot A is set to Memory card. Leave blank for Dolphin’s default.','card'],['gci_a','Slot A save folder','Used when Slot A is set to GCI folder. Leave blank for the default folder.','folder'],['slot_b','Memory Slot B','An optional second card. Existing saves are kept when you change the type.','slot'],['card_b','Slot B memory card','Used when Slot B is set to Memory card.','card'],['gci_b','Slot B save folder','Used when Slot B is set to GCI folder.','folder']]
+};
+function dolphinBlock(){
+ const group=el('section',{class:'preference-group'},el('h2',{text:settingsTab==='Saves'?'Memory cards & save data':settingsTab==='Graphics'?'Rendering':settingsTab}));
+ if(!ok(state.dolphin)){group.append(el('p',{class:'partial',text:state.dolphin?.error||'Dolphin settings could not be read.'}));return el('div',{class:'settings-content'},group);}
+ const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
+ for(const [key,label,description,type,min,max] of preferenceGroups[settingsTab]||[]){
+  if(key==='audio_latency'&&!['WASAPI (Exclusive Mode)','OpenAL'].includes(values.audio_backend))continue;
+  if(values[key]===undefined){group.append(el('p',{class:'partial',text:label+' is unavailable. Refresh settings to try again.'}));continue;}
+  const id='preference-'+key,area=el('div',{class:'preference-value'});let control;
+  if(type==='backend'){control=el('select',{id});for(const [value,text] of [['Cubeb','Default (shared audio)'],['WASAPI (Exclusive Mode)','Windows exclusive']])control.append(el('option',{value,text}));if(!['Cubeb','WASAPI (Exclusive Mode)'].includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
+  else if(type==='slot'){control=el('select',{id});for(const [value,text] of [['8','GCI folder'],['1','Memory card'],['255','Nothing']])control.append(el('option',{value,text}));if(!['8','1','255'].includes(values[key]))control.append(el('option',{value:values[key],text:'Current device ('+values[key]+')'}));control.value=values[key];}
+  else if(type==='bool')control=el('input',{id,type:'checkbox',checked:String(values[key]).toLowerCase()==='true'});
+  else if(type==='range')control=el('input',{id,type:'range',min,max,step:1,value:values[key]});
+  else control=el('input',{id,type:'text',value:values[key]||'',placeholder:'Use default'});
+  control.disabled=busy||state.dolphin.editable===false;area.append(control);
+  const output=type==='range'?el('output',{for:id,text:values[key]+(key==='volume'?'%':' ms')}):null;if(output){area.append(output);control.addEventListener('input',()=>output.textContent=control.value+(key==='volume'?'%':' ms'));}
+  const save=async()=>{if(busy)return;const hadFocus=document.activeElement===control;document.getElementById("screen").setAttribute("aria-busy","true");const previous=values[key],value=type==='bool'?String(control.checked):control.value;busy=true;group.querySelectorAll('input,select,button').forEach(n=>n.disabled=true);status.textContent='Saving…';try{await call('dolphin_preference_set',{runtime:get('runtime'),key,value});values[key]=value;status.textContent=label+' saved.';}catch(e){if(type==='bool')control.checked=String(previous).toLowerCase()==='true';else control.value=previous||'';if(output)output.textContent=control.value+(key==='volume'?'%':' ms');status.textContent=reason(e);}finally{busy=false;document.getElementById('screen').removeAttribute('aria-busy');group.querySelectorAll('input,select,button').forEach(n=>n.disabled=state.dolphin.editable===false);if(hadFocus)control.focus({preventScroll:true});if(key==='audio_backend'){draw();document.getElementById(id)?.focus({preventScroll:true});}}};
+  control.addEventListener('change',save);
+  if(type==='card'||type==='folder'){area.append(el('button',{type:'button',text:'Browse','aria-label':'Browse '+label,disabled:control.disabled,onclick:async()=>{try{const picked=await call('pick_path',{kind:type==='card'?'memory_card':'folder'});if(picked){control.value=picked;await save();}}catch(e){status.textContent=reason(e);}}}));}
+  group.append(el('div',{class:'preference-row'},el('div',{class:'preference-description'},el('label',{for:id,text:label}),el('p',{text:description})),area));
+ }
+ const wrap=el('div',{class:'settings-content'},status,group);
+ if(settingsTab==='Saves')wrap.append(el('button',{type:'button',text:'Open save folder',onclick:async()=>{try{await call('dolphin_saves_folder',{runtime:get('runtime')});}catch(e){status.textContent=reason(e);}}}));
+ 
+ return wrap;
+}
 function draw() {
-  const screen = document.getElementById("screen");
-  const parts = [];
-  if (problem) parts.push(refusal(problem));
-  const advanced = el("details", { class: "block" }, el("summary", { text: "League & storage" }), leagueBlock(), whereBlock());
-  parts.push(boxesBlock(), foundBlock(), updatesBlock(), contentBlock(), advanced);
-  screen.replaceChildren(...parts);
+ const screen=document.getElementById('screen'),parts=[];
+ if(problem)parts.push(refusal(problem));
+ const status=el('p',{class:'settings-status',role:'status'});
+ parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened. Close it before changing settings here.';state.dolphin&&(state.dolphin.editable=false);screen.querySelectorAll(".settings-content input,.settings-content select,.settings-content button").forEach(n=>n.disabled=true);}catch(e){status.textContent=reason(e);}}})),status);
+ const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
+ if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
+ parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);
 }
 
 async function refresh() {
@@ -255,6 +308,23 @@ async function refresh() {
   }
   draw();
 }
+
+// A content check or download can outlive the page that started it.
+// Update only its group so the preference being edited keeps its focus.
+let pollingContent=false;
+setInterval(async()=>{
+  if(pollingContent||busy||settingsTab!=='Updates'||document.hidden||!['checking','fetching','installing'].includes(state.content?.phase))return;
+  pollingContent=true;
+  try{
+    const next=await call('content_status');
+    if(busy||settingsTab!=='Updates')return;
+    if(JSON.stringify(next)!==JSON.stringify(state.content)){
+      state.content=next;
+      document.getElementById('settings-game-content')?.replaceWith(contentBlock());
+    }
+  }catch(e){problem=reason(e);}
+  finally{pollingContent=false;}
+},2000);
 
 const pill = document.getElementById("bridge");
 if (pill) {

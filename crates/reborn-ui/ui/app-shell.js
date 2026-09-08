@@ -14,7 +14,7 @@ function stopScrolling() {
   cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0; scrollTargets.clear();
 }
 function animateScroll(now) {
-  if (document.hidden || !document.hasFocus() || active || document.body.dataset.controllerTesting) { stopScrolling(); return; }
+  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
   const dt = Math.min(40, now - (scrollTime || now - 16)); scrollTime = now;
   // One continuously retargeted curve, rather than restarting a browser smooth
   // scroll every time the D-pad repeats. Time-based damping works at any refresh rate.
@@ -45,7 +45,8 @@ try { controllerMode = sessionStorage.getItem('reborn:input') === 'controller'; 
 document.body.classList.toggle('gamepad-input', controllerMode);
 
 function visible(n) {
-  return n?.isConnected && !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
+  const modal=document.querySelector('dialog[open]');
+  return (!modal||modal.contains(n)) && n?.isConnected && !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
     !n.closest('[hidden],[inert]') && getComputedStyle(n).visibility !== 'hidden' &&
     !n.classList.contains('skip-link') && !n.closest('details.core:not([open])');
 }
@@ -114,7 +115,7 @@ new MutationObserver(() => {
       const items = reachable();
       if ([...document.querySelectorAll('button:disabled,input:disabled,select:disabled')].some(n => identity(n) === lastFocus.key)) return;
       focus(items.find(n => identity(n) === lastFocus.key) || primary() || items[Math.min(lastFocus.index,items.length-1)], false);
-    } else if (controllerMode && !visible(document.activeElement)) focus(primary());
+    } else if (controllerMode && !visible(document.activeElement)) focus(visible(lastFocus?.node) ? lastFocus.node : primary(), false);
   });
 }).observe(screen,{childList:true,subtree:true});
 
@@ -130,6 +131,7 @@ window.setLauncherBusy = value => {
 function move(direction) {
   const current = document.activeElement;
   if (selectEdit) {
+    if(selectEdit.node.matches('input[type=range]')){const n=selectEdit.node,step=Number(n.step)||1;n.value=String(Math.max(Number(n.min)||0,Math.min(Number(n.max)||100,Number(n.value)+step*(direction==='left'||direction==='down'?-1:1))));n.dispatchEvent(new Event('input',{bubbles:true}));return;}
     if (direction === 'up' || direction === 'down') {
       const options = [...selectEdit.node.options].filter(o => !o.disabled && !o.hidden);
       const index = options.indexOf(selectEdit.node.selectedOptions[0]);
@@ -169,7 +171,7 @@ function endSelect(commit) {
   if (!selectEdit) return;
   const {node,original} = selectEdit; selectEdit = null;
   node.classList.remove('pad-editing');
-  if (!commit) node.value = original;
+  if (!commit) {node.value = original;node.dispatchEvent(new Event('input',{bubbles:true}));}
   else if (node.value !== original) { node.dispatchEvent(new Event('input',{bubbles:true})); node.dispatchEvent(new Event('change',{bubbles:true})); }
   renderHints();
 }
@@ -177,7 +179,7 @@ function activate() {
   const n = document.activeElement;
   if (!visible(n)) { focus(primary()); return; }
   if (selectEdit) { endSelect(true); return; }
-  if (n.matches('select')) {
+  if (n.matches('select,input[type=range]')) {
     selectEdit = {node:n,original:n.value}; n.classList.add('pad-editing'); renderHints(); return;
   }
   if (n.matches('input[type="text"],input[type="password"],textarea')) {
@@ -191,6 +193,7 @@ function activate() {
 }
 function back() {
   if (selectEdit) { endSelect(false); return; }
+  const modal=document.querySelector('dialog[open]');if(modal){modal.close();return;}
   const current = document.activeElement;
   const fold = current?.closest('details[open]') || document.querySelector('#game-options[open]');
   if (fold) {
@@ -206,7 +209,7 @@ function back() {
 function pageStep(delta) {
   if (selectEdit) endSelect(false);
   // First run has saved, ordered steps; bumpers must not bypass its Next action.
-  if (document.body.classList.contains('page-setup')) return;
+  if (document.body.classList.contains('page-setup')||document.querySelector('dialog[open]')) return;
   const links = [...document.querySelectorAll('.shell-nav a:not(.brand)')].filter(visible);
   const index = links.findIndex(n => n.classList.contains('current'));
   const next = links[index+delta];
@@ -231,7 +234,7 @@ if (bridge) { sessionState(); setInterval(sessionState,1500); }
 let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
 function poll(now) {
   requestAnimationFrame(poll);
-  if (document.hidden || !document.hasFocus() || active || document.body.dataset.controllerTesting) {
+  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
     previous = []; direction = null; lastFrame = 0; armed = false; return;
   }
   let pads;

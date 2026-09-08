@@ -1,10 +1,7 @@
-// Play, as a page.
-//
-// One button and the facts behind it. Everything the button will use is read
-// first and shown in words, so a launch is never a surprise, and everything
-// the launch said afterwards is shown the same way.
+// A focused Play screen. Launch checks remain visible; settings and paths
+// live in Game details without moving the artwork or interrupting navigation.
 
-import { bridge, call, el, fact, facts, get, set, log, markCurrent, minutes, partial, reason, refusal, wireCoreFold } from "./shell.js";
+import { bridge, call, el, fact, facts, get, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
 
 // Each read settles on its own: a failed pad scan must not blank the page.
 const state = {};
@@ -12,7 +9,6 @@ let busy = false;
 let playing = false;
 let result = null;
 let problem = null;
-let detailsOpen = false;
 let externalSession = false;
 
 const PRESETS = [
@@ -126,46 +122,12 @@ function modsLine() {
   const m = state.mods;
   if (!ok(m)) return { text: null, note: m && m.error };
   const on = Array.isArray(m.activation) ? m.activation : [];
-  if (on.length === 0) return { text: "none on", note: null };
+  if (on.length === 0) return { text: "none selected", note: null };
   const named = on.map((a) => {
     const p = (m.packages || []).find((x) => x.id === a.id);
     return p ? p.name : `${a.id} (not installed)`;
   });
-  return { text: `${on.length} on: ${named.join(", ")}`, note: null };
-}
-
-function graphicsBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Graphics" }));
-  sec.append(el("p", { class: "note", text: "Applied when you next start the game." }));
-  const current = state.graphicsOptions?.current ? null : preset();
-  if(state.graphicsOptions?.current) sec.append(el("p",{class:"note",text:`${state.graphicsOptions.current.label} � ${state.graphicsOptions.current.resolution}� resolution. Selecting a preset replaces these settings.`}));
-  const grid = el("div", { class: "preset-grid" });
-  for (const [slug, label, why] of PRESETS) {
-    const input = el("input", {
-      type: "radio",
-      name: "preset",
-      checked: slug === current,
-      value: slug,
-      disabled: busy || externalSession,
-      onchange: async () => {
-        try { await call("setup_save_graphics_options",{mode:"preset",resolution:3,msaa:1,ssaa:false}); state.graphicsOptions={current:null}; } catch(e) { problem=reason(e);draw();return; }
-        set("preset", slug);
-        // The native radio has already changed. Keep this panel mounted so
-        // changing resolution does not replay its entrance or reset scrolling.
-        for (const radio of document.querySelectorAll('input[name="preset"]')) {
-          radio.closest('.choice')?.classList.toggle('selected', radio.checked);
-        }
-        const label = document.getElementById('graphics-preset-name');
-        if (label) label.textContent = PRESETS.find(p => p[0] === slug)?.[1] || slug;
-        for (const row of document.querySelectorAll('.facts tr')) {
-          if (row.querySelector('th')?.textContent === 'Graphics') row.querySelector('td').textContent = PRESETS.find(p => p[0] === slug)?.[1] || slug;
-        }
-      },
-    });
-    grid.append(el("label", { class: "choice" + (slug === current ? " selected" : "") }, input, el("span", { class: "what", text: label }), el("span", { class: "why", text: why })));
-  }
-  sec.append(grid);
-  return sec;
+  return { text: `${on.length} selected: ${named.join(", ")}`, note: null };
 }
 
 function factsBlock() {
@@ -206,72 +168,76 @@ function factsBlock() {
   return sec;
 }
 
-function heroBlock() {
-  const ready = ok(state.check) && state.check.ready;
-  const inSession = playing || externalSession;
-  const hero = el("section", { class: "hero", "aria-label": "Play NFL Street Reborn" });
-  hero.append(el("div", { class: "hero-art", "aria-hidden": "true" }, el("img", { src: "art/court-night.png", alt: "" })));
-  const content = el("div", { class: "hero-content" });
-  content.append(el("h1", { class: "game-wordmark" }, el("img", { src: "art/reborn-wordmark.png", alt: "NFL Street Reborn" })));
-  const home = state.home;
-  const history = ok(home) && home.sessions_played ? `${minutes(home.minutes_played)} played` : "Ready for your first session";
-  content.append(el("p", { class: "game-meta", text: history }));
-  const actions = el("div", { class: "hero-actions" });
-  if (ready || inSession) {
-    actions.append(el("button", { type: "button", id: "play-now", "data-primary": "true", class: "play", text: inSession ? "Session active" : busy ? "Opening..." : "\u25b6  Play now", disabled: busy || inSession, onclick: play }));
-  } else {
-    actions.append(el("a", { class: "button primary play", "data-primary": "true", href: "onboarding.html", text: "Set up your game" }));
-  }
-  actions.append(el("a", { href: "#game-options", class: "button quiet", text: "Game options", onclick: (event) => { event.preventDefault(); detailsOpen = true; const fold = document.getElementById("game-options"); if (fold) fold.open = true; } }));
-  content.append(actions);
-  const status = inSession ? "Starting or running. Your session is being tracked." : ready ? "Ready to play" : "Finish setup or choose your game in Settings.";
-  content.append(el("p", { class: "status-line", role: "status" }, el("span", { class: "status-dot" + (inSession ? " wait" : ready ? "" : " warn"), "aria-hidden": "true" }), status));
-  hero.append(content);
-  return hero;
+// The artwork is independent of the action bar and all transient messages.
+function openDetails() {
+  document.getElementById("game-details").showModal();
 }
 
-function quickLink(href, label, value, note) {
-  return el("a", { href, class: "quick-link" }, el("span", { class: "eyebrow", text: label }), el("strong", { text: value, id: label === "GRAPHICS" ? "graphics-preset-name" : null }), el("span", { class: "arrow", text: "\u2197", "aria-hidden": "true" }));
+function detailsDialog() {
+  const dialog = el("dialog", { id: "game-details", class: "play-dialog", "aria-labelledby": "game-details-title" });
+  dialog.append(el("div", { class: "play-dialog-heading" },
+    el("h2", { id: "game-details-title", text: "Game details" }),
+    el("button", { type: "button", text: "Close", onclick: () => dialog.close() })));
+  const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
+  const mods = ok(state.mods) && Array.isArray(state.mods.activation) ? state.mods.activation : null;
+  const links = el("div", { class: "play-detail-links" });
+  for (const [href, title, value] of [
+    ["settings.html#graphics", "Graphics", graphicsLabel()],
+    ["controls.html", "Controllers", pads ? `${pads.length} connected` : "Check devices"],
+    ["mods.html", "Mods", mods ? `${mods.length} selected` : "Manage mods"],
+  ]) links.append(el("a", { href }, el("span", { text: title }), el("span", { class: "play-detail-value", text: value }), el("span", { text: "›", "aria-hidden": "true" })));
+  dialog.append(links);
+  const message = problem || state.check?.error || state.check?.problem || result?.message;
+  if (message) dialog.append(el("p", { class: "play-detail-message", text: message }));
+  if (problem || state.check?.error || state.check?.problem || result?.needs_recovery) dialog.append(el("a", { class: "play-help", href: "recovery.html", text: "Troubleshoot this session" }));
+  const files = el("details", { class: "play-files" }, el("summary", { text: "Files & launch details" }), factsBlock());
+  dialog.append(files, el("div", { class: "play-dialog-actions" },
+    el("a", { href: "settings.html#files", text: "Manage files" }),
+    el("button", { type: "button", text: "Open Dolphin settings", disabled: busy || externalSession, onclick: () => { dialog.close(); openDolphin(); } })));
+  dialog.addEventListener("close", () => document.getElementById("game-details-open")?.focus());
+  dialog.addEventListener("click", event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } });
+  return dialog;
 }
 
 function draw() {
   if (typeof state.active === "boolean") externalSession = state.active;
   const screen = document.getElementById("screen");
-  const content = el("div", { class: "home-content" });
-  if (problem) content.append(refusal(problem));
-  if (state.check?.error) content.append(refusal(`Could not check your game: ${state.check.error}`));
-  if (ok(state.check) && !state.check.ready && state.check.problem) content.append(partial(state.check.problem));
-  if (result) {
-    content.append(el("div", { class: result.needs_recovery ? "partial" : "said", role: "status" }, el("p", { text: result.message || "Done." })));
-    if (result.needs_recovery) content.append(el("a", { href: "recovery.html", class: "button", text: "Troubleshoot this session" }));
-  }
-  if (ok(state.progress) && state.progress.complete === false && state.check?.ready) {
-    content.append(el("div", { class: "partial" }, "Your game is available. ", el("a", { href: "onboarding.html", text: "Finish setting up your preferences" })));
-  }
-  const home = state.home;
+  // Background refreshes must not close an open dialog or discard its focus.
+  const oldDialog = document.getElementById("game-details");
+  const wasOpen = !!oldDialog?.open;
+  const filesOpen = oldDialog?.querySelector?.("details")?.open;
+  const focusedId = document.activeElement?.id;
+  const ready = ok(state.check) && state.check.ready;
+  const inSession = playing || externalSession;
+  const scene = el("section", { class: "play-scene", "aria-label": "NFL Street Reborn" },
+    el("div", { class: "hero-art", "aria-hidden": "true" }, el("img", { src: "art/play-background.png", alt: "" })),
+    el("h1", { class: "play-wordmark" }, el("img", { src: "art/play-logo.png", alt: "NFL Street Reborn" })));
+  const art = screen.querySelector?.(".hero-art");
+  if (art) scene.querySelector(".hero-art").replaceWith(art);
+  const controls = el("div", { class: "play-controls" });
+  const error = problem || state.check?.error || (!ready && state.check?.problem);
+  const bar = el("div", { class: "play-bar" });
+  if (ready || inSession) bar.append(el("button", { type: "button", id: "play-now", "data-primary": "true", class: "play", disabled: busy || inSession, onclick: play },
+    el("span", { class: "play-glyph", text: inSession ? "" : "▶", "aria-hidden": "true" }),
+    el("span", { text: inSession ? "Session active" : busy ? "Opening…" : "Play now" })));
+  else bar.append(el("a", { href: "onboarding.html", class: "button primary play", "data-primary": "true", text: "Set up your game" }));
+  const history = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "NFL Street 2 · GameCube";
+  bar.append(el("div", { class: "play-state" + (error || result?.needs_recovery ? " has-error" : ""), role: error || result?.needs_recovery ? "alert" : "status" },
+    el("span", { class: "play-state-title", text: inSession ? "Enjoy the game" : error ? "Your game could not start" : result?.needs_recovery ? "Game closed unexpectedly" : ready ? "Ready to play" : "Setup required" }),
+    el("span", { class: "play-history", text: inSession ? "Settings apply to your next session" : error || (result?.needs_recovery ? result.message : null) || history })));
+  bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
+    el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
+  controls.append(bar);
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
-  const mods = ok(state.mods) && Array.isArray(state.mods.activation) ? state.mods.activation : null;
-  content.append(el("div", { class: "quick-grid" },
-    quickLink("controls.html", "CONTROLLERS", pads ? (pads.length ? `${pads.length} connected` : "No controller") : "Check controllers", "Manage devices"),
-    quickLink("mods.html", "MODS", mods ? `${mods.length} active mod${mods.length === 1 ? "" : "s"}` : "Explore your mods", "Manage installed mods"),
-    quickLink("#game-options", "GRAPHICS", graphicsLabel(), "Change preset")));
-  const details = el("details", { id: "game-options", class: "home-details" }, el("summary", { text: "Game options" }));
-  details.open = detailsOpen;
-  details.addEventListener("toggle", () => { detailsOpen = details.open; });
-  details.append(graphicsBlock(), factsBlock(), el("button", { type: "button", text: "Open Dolphin settings", disabled: busy || externalSession, onclick: openDolphin }));
-  content.append(details);
-  const hero = heroBlock();
-  // The scene is a persistent layer. Recreating it made selection changes flash.
-  const art = screen.querySelector?.('.hero-art');
-  if (art) hero.querySelector('.hero-art').replaceWith(art);
-  screen.replaceChildren(hero, content);
-  // Open the fold when arriving from the graphics shortcut.
-  if (typeof document.querySelectorAll === "function") for (const link of document.querySelectorAll('a[href="#game-options"]')) {
-    link.addEventListener("click", event => {
-      event.preventDefault(); details.open = true; detailsOpen = true;
-      requestAnimationFrame(() => details.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'}));
-    });
-  }
+  const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });
+  for (const [href, title, value] of [
+    ["controls.html", "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"],
+    ["settings.html#graphics", "Graphics", graphicsLabel()],
+  ]) overview.append(el("a", { href }, el("span", { text: title }), el("strong", { text: value }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
+  const dialog = detailsDialog();
+  screen.replaceChildren(scene, controls, overview, dialog);
+  if (wasOpen) { dialog.showModal(); if (filesOpen) dialog.querySelector("details").open = true; }
+  else if (focusedId) { const target = document.getElementById(focusedId); if (target && !target.disabled) target.focus({preventScroll:true}); }
 }
 
 async function refresh() {

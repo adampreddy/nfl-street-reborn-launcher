@@ -108,6 +108,8 @@ pub struct Settings {
     pub primary_controller: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_slots: Option<[Option<String>; 4]>,
+    #[serde(default)]
+    pub emulator_preferences: std::collections::BTreeMap<String,String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graphics_override: Option<GraphicsOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +177,7 @@ impl Default for Settings {
             legacy_root: None,
             primary_controller: None,
             controller_slots: None,
+            emulator_preferences: Default::default(),
             graphics_override: None,
             migrated_texture_root: None,
         }

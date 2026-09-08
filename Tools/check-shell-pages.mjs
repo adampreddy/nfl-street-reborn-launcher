@@ -46,6 +46,7 @@ const FULL = {
   launch_check: { ready: true, runtime: "C:\\rt\\Dolphin.exe", runtime_note: "Using the emulator that came with the launcher.", runtime_kind: "bundled", game: "C:\\g\\NSR.iso", game_note: "Using NSR.iso, found by name.", user_dir_note: "Using the user folder beside the emulator.", problem: null },
   devices: { pads: [{ device_string: "XInput/0/Gamepad", family: "xbox", port: 1, set_aside: null }], other: [], complete: false, unsearched: ["SDL"], source: "builtin" },
   mod_packages: { packages_root: "x", packages: [{ id: "a", version: "1", name: "A", active: true }], unreadable: [], activation: [{ id: "a", version: "1" }], exclusive: [], managed_by_controls: [] },
+  dolphin_preferences: {values:{},editable:true},
   controller_slots: {slots: null, primary: null},
   controls_current: { profile: "xbox", label: "Xbox", source: "settings" },
   controls_options: [{ slug: "xbox", label: "Xbox", describes: "d", pack: "p", suggested: true }],
@@ -135,12 +136,16 @@ for (const [file, name] of PAGES) {
   check("Recovery shows the last session", t.includes("Terminated") || t.includes("Session status"));
   check("Recovery advises mods-disabled after three bad endings", t.includes("Try starting with mods disabled"));
 }
-// Settings: the token is never shown, only whether one is stored.
+// Settings starts with everyday options; file and update controls have their own sections.
 {
-  const { screen } = await loadPage("crates/reborn-ui/ui/settings.js", FULL, "full");
-  const t = text(screen);
-  check("Settings says a token is stored, and shows no token", t.includes("stored") && !/[A-Za-z0-9]{32,}/.test(t));
-  check("Settings shows how many results wait", t.includes("2"));
+ const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",FULL,"full");const t=text(screen);
+ check("Settings exposes Dolphin and grouped preferences",t.includes("Open Dolphin")&&t.includes("Audio")&&t.includes("Saves"));
+}
+{
+ const message='Could not check whether Dolphin is open. Try again.';
+ const answers={...FULL,dolphin_preferences:{...FULL.dolphin_preferences,editable:false,readonly_reason:message}};
+ const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",answers,"full");
+ check("Settings explains why editing is unavailable",text(screen).includes(message));
 }
 
 console.log(fails === 0 ? "\nPASS: every shell page survives every answer" : `\nFAIL: ${fails}`);

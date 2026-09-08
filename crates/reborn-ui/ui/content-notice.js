@@ -13,7 +13,7 @@ if(window.__TAURI__)(async()=>{
    sessionStorage.setItem('content:checked','true');
    status=await invoke('content_check',{depth:null});
   }
-  const main=document.getElementById('main');
+  const main=(document.getElementById('play-notices')||document.getElementById('main'));
   if(status.phase==='installed'){
    const summary=document.createElement('aside');summary.className='update-notice';summary.setAttribute('role','status');
    const copy=document.createElement('span');copy.textContent=status.installed?.note||status.note;
@@ -24,7 +24,7 @@ if(window.__TAURI__)(async()=>{
   const policy=await invoke('update_policy');
   const notice=document.createElement('aside');notice.className='update-notice';notice.setAttribute('role','status');
   const text=document.createElement('span');text.textContent=`Game content update: ${mb(status.download_bytes)} MB.`;
-  const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html';
+  const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html#updates';
   notice.append(text,button);main.append(notice);
   if(!policy.automatic)return;
   if(status.phase==='available')status=await invoke('content_fetch');
@@ -39,7 +39,7 @@ if(window.__TAURI__)(async()=>{
    const good=done.phase==='installed';
    text.textContent=good?(done.installed?.note||done.note):done.note;
    button.textContent=good?'Got it':'View updates';button.disabled=false;
-   button.onclick=good?()=>{notice.remove();invoke('content_dismiss').catch(()=>{});}:()=>location.href='settings.html';
+   button.onclick=good?()=>{notice.remove();invoke('content_dismiss').catch(()=>{});}:()=>location.href='settings.html#updates';
    return true;
   };
   if(!await install()){const timer=setInterval(async()=>{try{if(await install())clearInterval(timer);}catch(e){clearInterval(timer);text.textContent=String(e.message||e);button.textContent='View updates';button.disabled=false;}},5000);}

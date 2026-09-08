@@ -486,6 +486,7 @@ impl Session {
         }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics})?;}
         let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
+        crate::dolphin_preferences::resolve_portable_paths(&user_dir)?;
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
             path: config_dir.clone(),
@@ -495,7 +496,7 @@ impl Session {
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
-            fullscreen: req.fullscreen,
+            fullscreen: crate::dolphin_preferences::fullscreen(platform,req.fullscreen)?,
             game_path: req.game_path.clone(),
             user_dir: user_dir.clone(),
             match_context: None,
@@ -538,6 +539,7 @@ impl Session {
                 section.insert("MSAA".into(),"1".into());
                 section.insert("SSAA".into(),"False".into());
             }
+            for (section, keys) in crate::dolphin_preferences::overlay(&name,&preferences.emulator_preferences) { overlay.entry(section).or_default().extend(keys); }
             let path = config_dir.join(&name);
 
             let existing = match std::fs::read_to_string(&path) {
@@ -565,6 +567,7 @@ impl Session {
             }
 
             let mut doc = IniDocument::parse(&existing);
+            crate::dolphin_preferences::preserve_existing(&name,&doc,&mut overlay);
             let report = doc.merge(&overlay);
 
             // Nothing to change means nothing to write. A launcher that
@@ -685,7 +688,7 @@ impl Session {
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
-            fullscreen: req.fullscreen,
+            fullscreen: crate::dolphin_preferences::fullscreen(platform,req.fullscreen)?,
             game_path: req.game_path.clone(),
             // The same directory prepare just merged into, never a fresh one.
             user_dir: written.user_dir.path().to_path_buf(),

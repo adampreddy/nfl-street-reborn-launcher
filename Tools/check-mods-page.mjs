@@ -22,6 +22,7 @@ const src = readFileSync(file, "utf8");
 function fakeEl(tag) {
   return {
     tagName: tag,
+    style: {},
     children: [],
     className: "",
     textContent: "",
@@ -185,115 +186,18 @@ const sections = (title) =>
   walk(screen()).filter((n) => n.tagName === "section" && n.children.some((c) => c.tagName === "h2" && c.textContent === title));
 const inputs = (node) => walk(node).filter((n) => n.tagName === "input");
 
-// ---- boot read ----------------------------------------------------------------
-check("boot reads the library, the options and the current profile",
-  ["mod_packages", "controls_options", "controls_current"].every((c) => calls.some(([k]) => k === c)),
-  calls.map((c) => c[0]).join(","));
-
-// ---- the shape of the real machine -------------------------------------------
-{
-  const picks = sections("Choose a variant");
-  check("seven footballs draw as ONE pick-one group, and the controls pair does not", picks.length === 1, `${picks.length} groups`);
-  const radios = picks.length ? inputs(picks[0]).filter((i) => i.attrs.type === "radio") : [];
-  check("the group has None plus seven", radios.length === 8, `${radios.length} radios`);
-  check("exactly one is checked, the active one", radios.filter((r) => r.checked).length === 1);
-  check("None is not checked while purple is on", radios.length && !radios[0].checked);
-  check("the group says WHY it is exclusive", text(picks[0]).includes("same part of the game"));
-
-  const art = sections("Button textures");
-  check("button art is its own section", art.length === 1);
-  const artRadios = art.length ? inputs(art[0]) : [];
-  check("three profiles, Xbox checked", artRadios.length === 3 && artRadios[0].checked && !artRadios[1].checked);
-  check("it says where the current one came from", text(art[0]).includes("from settings"));
-  check("the suggestion is marked, and marked as a suggestion", text(art[0]).includes("Recommended"));
-
-  const other = sections("Other mods");
-  check("a standalone package is its own switch", other.length === 1 && inputs(other[0]).some((i) => i.attrs.type === "checkbox"));
-
-  const stale = sections("Missing mod files");
-  check("an activation entry with no package is drawn, not dropped", stale.length === 1 && text(stale[0]).includes("jsgme.ghost-football"));
-
-  const bad = sections("Unavailable mods");
-  check("an unreadable package is named", bad.length === 1 && text(bad[0]).includes("not a readable manifest"));
-
-  check("nothing is synced until something is done", text(sections("Applied mods")[0]).includes("Not checked yet"));
+// Store behavior, using the same catalog and core mutation contract.
+check("store starts with installed footballs",walk(screen()).filter(n=>n.className==="store-card").length===7);
+check("button texture packs stay in Controllers",!walk(screen()).some(n=>n.attrs["aria-label"]==="XBOX Controls"));
+check("stale activations remain removable",text(screen()).includes("jsgme.ghost-football"));
+check("unreadable packages remain visible",text(screen()).includes("not a readable manifest"));
+const enable=walk(screen()).find(n=>n.attrs["aria-label"]==="Enable Aqua Football");
+await enable.listeners.click[0]();
+check("enable sends the package identity",calls.some(([cmd,args])=>cmd==="mods_toggle"&&args.id==="jsgme.aqua-football"&&args.on===true));
+for(const [label,value] of [["missing",null],["empty",{packages:[],activation:[]}],["null fields",{packages:null,activation:null,exclusive:null,unreadable:null,managed_by_controls:null}]]){
+ __set({library:value,problem:null,notice:null});try{draw();check("store survives "+label,true);}catch(e){check("store survives "+label,false,e.message);}
 }
-
-// ---- clicks do what the rule says -------------------------------------------
-{
-  calls.length = 0;
-  const pick = sections("Choose a variant")[0];
-  const radios = inputs(pick);
-  radios[0].listeners.change[0]();   // None
-  await tick(); await tick(); await tick();
-  const toggled = calls.find(([k]) => k === "mods_toggle");
-  check("choosing None turns the active football OFF",
-    toggled && toggled[1].id === "jsgme.purple-football" && toggled[1].on === false,
-    JSON.stringify(toggled));
-  check("the sync that came back is what the page shows", text(sections("Applied mods")[0]).includes("8059"));
-  check("a moved-aside folder is named, with nothing deleted", text(sections("Applied mods")[0]).includes("nothing was deleted"));
-  check("a listed-but-missing package is shown in the sync facts", text(sections("Applied mods")[0]).includes("jsgme.ghost-football"));
-
-  calls.length = 0;
-  const again = inputs(sections("Choose a variant")[0]);
-  const purple = again.find((r, i) => i > 0 && r.checked);
-  purple.listeners.change[0]();     // the one already on
-  await tick(); await tick();
-  check("choosing the football already on sends nothing", !calls.some(([k]) => k === "mods_toggle"));
-
-  const aqua = again[1];
-  aqua.listeners.change[0]();
-  await tick(); await tick(); await tick();
-  const on = calls.find(([k]) => k === "mods_toggle");
-  check("choosing another football turns it ON, and only names that one",
-    on && on[1].id === "jsgme.aqua-football" && on[1].on === true, JSON.stringify(on));
-
-  calls.length = 0;
-  const art = inputs(sections("Button textures")[0]);
-  art[1].listeners.change[0]();     // PlayStation
-  await tick(); await tick(); await tick();
-  check("picking button art calls controls_set", calls.some(([k, a]) => k === "controls_set" && a.profile === "playstation"));
-  check("a sync the game is holding the lock against is a notice, not a failure",
-    __state().notice && __state().notice.includes("next launch") && !__state().problem, JSON.stringify(__state().notice));
-}
-
-// ---- busy: nothing is clickable while the tree is being composed ------------
-{
-  __set({ busy: true, problem: null, notice: null });
-  draw();
-  const all = walk(screen()).filter((n) => n.tagName === "input" || n.tagName === "button");
-  check("every control is disabled while busy", all.length > 0 && all.every((n) => n.disabled === true), `${all.filter((n) => !n.disabled).length} enabled`);
-  __set({ busy: false });
-}
-
-// ---- states the page has to survive -----------------------------------------
-function survives(what, state) {
-  __set(state);
-  try {
-    draw();
-    check(`survives ${what}`, true);
-  } catch (e) {
-    check(`survives ${what}`, false, e.message);
-  }
-}
-survives("nothing read at all", { library: null, options: null, current: null, lastSync: null, problem: null, notice: null });
-survives("an empty library", {
-  library: { packages_root: "x", packages: [], unreadable: [], activation: [], exclusive: [], managed_by_controls: [] },
-  options: [], current: { profile: null, label: null, source: "none" },
-});
-check("an empty library says so, and says where", text(screen()).includes("No packages are installed under x"));
-survives("every field null", {
-  library: { packages_root: null, packages: null, unreadable: null, activation: null, exclusive: null, managed_by_controls: null },
-  options: { error: "scan failed" }, current: null, lastSync: null,
-});
-check("a failed profile read is said where the profiles would be", text(sections("Button textures")[0]).includes("scan failed"));
-survives("a refused sync", { library, options, current, lastSync: { synced: false, refusal: "two write one file", note: "Mods were not applied: two write one file" } });
-check("a refusal is drawn as a refusal", walk(screen()).some((n) => n.className === "refusal" && n.textContent.includes("not applied")));
-survives("a group whose member could not be read", {
-  library: { ...library, packages: library.packages.filter((p) => p.id !== "jsgme.camo-football") },
-  lastSync: null,
-});
-check("the unreadable member is named inside its group", text(sections("Choose a variant")[0]).includes("jsgme.camo-football is in this group but could not be read"));
-
-console.log(fails === 0 ? "\nPASS: the mods page draws the rules" : `\nFAIL: ${fails}`);
-process.exit(fails ? 1 : 0);
+check("empty store offers import",text(screen()).includes("Import mods"));
+__set({library,problem:"Could not apply the selected mod."});draw();
+check("mutation failures are displayed",text(screen()).includes("Could not apply the selected mod."));
+console.log(fails===0?"PASS: mod store preserves core actions and failure states":`FAIL: ${fails}`);process.exit(fails?1:0);

@@ -373,3 +373,5 @@ mod tests {
         eprintln!("enumerated {} drive(s)", drives.len());
     }
 }
+
+pub mod dolphin_preferences;

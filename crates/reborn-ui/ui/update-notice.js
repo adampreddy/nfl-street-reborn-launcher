@@ -8,13 +8,13 @@ if(window.__TAURI__&&!sessionStorage.getItem('updates:checked'))(async()=>{
   if(receipt&&check.current===receipt.version){
    const summary=document.createElement('aside');summary.className='update-notice';summary.setAttribute('role','status');
    const copy=document.createElement('span');copy.textContent=`Updated to Reborn ${receipt.version}. ${receipt.notes||'Your update is installed.'}`;
-   const dismiss=document.createElement('button');dismiss.textContent='Got it';dismiss.onclick=()=>{summary.remove();localStorage.removeItem('updates:pending-summary');};summary.append(copy,dismiss);document.getElementById('main').append(summary);
+   const dismiss=document.createElement('button');dismiss.textContent='Got it';dismiss.onclick=()=>{summary.remove();localStorage.removeItem('updates:pending-summary');};summary.append(copy,dismiss);(document.getElementById('play-notices')||document.getElementById('main')).append(summary);
   }
   if(check.state!=='available')return;
   const policy=await invoke('update_policy');
   const notice=document.createElement('aside');notice.className='update-notice';notice.setAttribute('role','status');
   const text=document.createElement('span');text.textContent=`Reborn ${check.latest} is available.`;
-  const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html';notice.append(text,button);document.getElementById('main').append(notice);
+  const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html#updates';notice.append(text,button);(document.getElementById('play-notices')||document.getElementById('main')).append(notice);
   if(!policy.automatic)return;
   try{
    const result=await invoke('update_download',{source:null});

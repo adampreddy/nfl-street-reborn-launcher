@@ -89,10 +89,11 @@ const page=await context.newPage();
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 await page.goto(url);await page.getByRole('button',{name:'Play now'}).waitFor();await page.evaluate(()=>document.fonts.ready);
 await page.screenshot({path:path.join(out,'reborn-launcher-home.png')});
-await page.getByRole('link',{name:'Game options',exact:true}).click();
-await page.getByRole('radio').nth(2).check();
-assert.equal(await page.evaluate(()=>localStorage.getItem('h:preset')),'quality');
-assert.equal(await page.evaluate(()=>document.activeElement?.value),'quality','graphics selection retains keyboard focus');
+await page.getByRole('button',{name:'Game details',exact:true}).click();
+await page.getByRole('dialog').getByRole('link',{name:/Graphics Balanced/}).click();
+await page.getByLabel('Graphics preset',{exact:true}).selectOption('quality');
+await page.waitForFunction(()=>localStorage.getItem('h:preset')==='quality');
+await page.goto(url);await page.getByRole('button',{name:'Play now'}).waitFor();
 await page.bringToFront();
 await page.evaluate(()=>{
  window.__testPad={id:'Xbox test controller',connected:true,mapping:'standard',axes:[0,0],buttons:Array.from({length:17},()=>({pressed:false}))};
@@ -112,11 +113,11 @@ assert.equal(await page.getByRole('button',{name:'Session active'}).isDisabled()
 await page.evaluate(()=>window.__finishLaunch({started:false,message:'The emulator could not start.'}));
 await page.getByRole('alert').filter({hasText:'The emulator could not start.'}).waitFor();
 assert.equal(await page.getByRole('button',{name:'Play now'}).isEnabled(),true);
-await page.goto(url+'/settings.html');await page.getByLabel('Game image',{exact:true}).waitFor();
+await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Files & storage',exact:true}).click();await page.getByLabel('Game image',{exact:true}).waitFor();
 await page.screenshot({path:path.join(out,'reborn-launcher-settings.png')});
 await page.getByRole('button',{name:'Browse for Game image',exact:true}).click();
 await page.waitForFunction(()=>localStorage.getItem('h:game')?.includes('NSR.iso'));
-await page.reload();await page.getByLabel('Game image',{exact:true}).waitFor();
+await page.reload();await page.getByRole('button',{name:'Files & storage',exact:true}).click();await page.getByLabel('Game image',{exact:true}).waitFor();
 assert.match(await page.getByLabel('Game image',{exact:true}).inputValue(),/NSR.iso/);
 await page.evaluate(()=>window.__reject='settings_set_path');
 await page.getByLabel('Game image',{exact:true}).fill('C:\\invalid.iso');
@@ -126,7 +127,7 @@ assert.match(await page.evaluate(()=>localStorage.getItem('h:game')),/NSR.iso/);
 // Four-player mapping and live input are covered in review-players.mjs.
 await page.goto(url+'/mods.html');await page.getByText('Red football',{exact:true}).waitFor();
 await page.screenshot({path:path.join(out,'reborn-launcher-mods.png')});
-await page.getByText('Black football',{exact:true}).click();
+await page.getByRole('button',{name:'Enable Black football',exact:true}).click();
 await page.waitForFunction(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='football-black').active);
 for(const viewport of [{width:960,height:600},{width:800,height:600},{width:1920,height:1080}]) {
  await page.setViewportSize(viewport);await page.goto(url+'/index.html');await page.getByRole('button',{name:'Play now'}).waitFor();
@@ -222,7 +223,7 @@ await page.keyboard.press('Escape');
 await page.waitForTimeout(100);
 // Bumper navigation causes a real document change. Release is irrelevant after navigation.
 await page.evaluate(()=>window.__navPad.buttons[5]={pressed:true,value:1});
-await page.waitForURL('**/settings.html');await page.getByLabel('Game image',{exact:true}).waitFor();
+await page.waitForURL('**/online.html');await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Files & storage',exact:true}).waitFor();await page.getByRole('button',{name:'Files & storage',exact:true}).evaluate(n=>n.click());await page.getByLabel('Game image',{exact:true}).waitFor();
 await navPad();
 assert.equal(await page.evaluate(()=>document.body.classList.contains('gamepad-input')),true,'controller mode survives page changes');
 await page.evaluate(()=>document.getElementById('main').scrollTop=0);
@@ -243,21 +244,25 @@ assert.ok(scrolling.frames.every((v,i)=>!i||v>=scrolling.frames[i-1]),'scrolling
 assert.ok(scrolling.frames.every((v,i)=>!i||v-scrolling.frames[i-1]<70),'scrolling has no large frame jumps');
 assert.equal(scrolling.after,scrolling.stopped,'manual scroll input cancels remaining animated travel');
 await page.goto(url+'/index.html');await page.getByRole('button',{name:'Play now'}).waitFor();
-await page.getByRole('link',{name:'Game options',exact:true}).click();
+await page.getByRole('button',{name:'Game details',exact:true}).click();
 await navPad();
-await page.getByRole('radio').first().focus();await tap(1);
-assert.equal(await page.locator('#game-options').evaluate(n=>n.open),false,'Back closes game options from a radio');
-assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('href')),'#game-options','Back returns to visible options opener');
-await page.goto(url+'/index.html');await page.getByRole('button',{name:'Play now'}).waitFor();
+await page.getByRole('dialog').getByRole('link',{name:/Graphics All-Out/}).focus();await tap(1);
+assert.equal(await page.locator('#game-details').evaluate(n=>n.open),false,'Controller Back closes game details');
+assert.equal(await page.evaluate(()=>document.activeElement?.id),'game-details-open','Back returns focus to the details opener');
 const sceneBefore=await page.locator('.hero-art').boundingBox();
-await page.getByRole('link',{name:'Game options',exact:true}).click();
-await page.getByRole('radio').first().waitFor();
-const sceneAfter=await page.locator('.hero-art').boundingBox();
-assert.deepEqual(sceneAfter,sceneBefore,'expanding options does not resize the backdrop');
-await page.evaluate(()=>{window.__originalScene=document.querySelector('.hero-art');window.__originalPreset=document.querySelector('input[name="preset"]');});
-await page.getByRole('radio').nth(2).check();
-assert.equal(await page.evaluate(()=>window.__originalScene.isConnected&&window.__originalPreset.isConnected),true,'preset changes preserve scene and panel');
-assert.equal(await page.locator('#graphics-preset-name').innerText(),'All-Out');
+await page.getByRole('button',{name:'Game details',exact:true}).click();
+await page.getByText('Files & launch details',{exact:true}).click();
+assert.deepEqual(await page.locator('.hero-art').boundingBox(),sceneBefore,'opening files does not move the artwork');
+await page.screenshot({path:path.join(out,'reborn-play-details.png')});
+await page.keyboard.press('Escape');
+assert.equal(await page.evaluate(()=>document.activeElement?.id),'game-details-open','Escape restores focus');
+await page.evaluate(()=>window.__originalScene=document.querySelector('.hero-art'));
+await page.getByRole('button',{name:'Play now'}).click();
+assert.equal(await page.evaluate(()=>window.__originalScene.isConnected),true,'launch preserves the artwork element');
+await page.evaluate(()=>window.__finishLaunch({started:false,message:'The emulator could not start.'}));
+await page.getByRole('alert').waitFor();
+assert.deepEqual(await page.locator('.hero-art').boundingBox(),sceneBefore,'launch failure does not resize the artwork');
+await page.screenshot({path:path.join(out,'reborn-play-error.png')});
 await page.setViewportSize({width:800,height:600});
 const footerBefore=await page.locator('.input-footer').boundingBox();
 await page.evaluate(()=>document.body.classList.toggle('gamepad-input'));
@@ -265,6 +270,29 @@ assert.deepEqual(await page.locator('.input-footer').boundingBox(),footerBefore,
 await page.emulateMedia({reducedMotion:'reduce'});
 assert.equal(await page.locator('.play').evaluate(n=>getComputedStyle(n).transitionDuration),'0s');
 await page.emulateMedia({reducedMotion:'no-preference'});
+// Both update channels share a quiet dock and open the actual Updates settings.
+await page.addInitScript(()=>{
+ if(!new URL(location.href).searchParams.has('notice-test'))return;
+ sessionStorage.removeItem('updates:checked');sessionStorage.removeItem('content:checked');
+ window.__fixture.update_check={state:'available',current:'3.0.0',latest:'3.0.1'};
+ window.__fixture.content_status={phase:'available',download_bytes:4194304,note:'Content update ready.'};
+});
+await page.setViewportSize({width:800,height:560});
+await page.goto(url+'/index.html?notice-test');
+await page.waitForFunction(()=>document.querySelectorAll('#play-notices .update-notice').length===2);
+const notices=await page.locator('#play-notices .update-notice').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
+assert.ok(notices[0].bottom<=notices[1].top,'update notices do not overlap each other');
+assert.ok(notices[1].bottom<=await page.locator('.input-footer').evaluate(n=>n.getBoundingClientRect().top),'update notices fit above the input footer');
+await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
+assert.ok(await page.locator('#play-now').evaluate(n=>n.getBoundingClientRect().bottom)<=notices[0].top,'updates do not cover Play');
+await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
+assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote'].includes(c.cmd))),false,'manual updates do not download or install');
+await page.getByRole('button',{name:'View update',exact:true}).first().click();
+await page.getByRole('button',{name:'Updates',exact:true}).waitFor();
+assert.equal(await page.getByRole('button',{name:'Updates',exact:true}).getAttribute('aria-pressed'),'true');
+await page.goto(url+'/index.html?missing');await page.getByRole('link',{name:'Set up your game',exact:true}).waitFor();
+assert.equal(await page.locator('#play-now').count(),0,'missing game offers setup instead of launch');
+await page.screenshot({path:path.join(out,'reborn-play-setup-800.png')});
 await page.setViewportSize({width:1280,height:800});
 await page.goto(url+'/controls.html');
 await page.getByRole('button',{name:'Finish test',exact:true}).waitFor();
@@ -283,3 +311,5 @@ console.log('PASS: launcher flows, navigation, onboarding, saves, settings, and 
 await browser.close();server.close();
 
 await import('./review-players.mjs');
+
+await import('./review-finish.mjs');

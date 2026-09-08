@@ -341,12 +341,24 @@ end;
 
 function InstallDirIsSafe(Dir: String): Boolean;
 var
-  Normalized, Old: String;
+  Normalized, Old, Current, Beta: String;
 begin
-  Normalized := Lowercase(RemoveBackslashUnlessRoot(Dir));
+  Normalized := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
   Old := Lowercase(RemoveBackslashUnlessRoot(OldDataRoot()));
+  Current := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
+  Beta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
   // Equal to it, or inside it. Both are fatal for the same reason.
-  Result := (Normalized <> Old) and (Pos(Old + '\', Normalized + '\') <> 1);
+  Result := (Pos(Old + '\', Normalized + '\') <> 1)
+    and (Pos(Current + '\', Normalized + '\') <> 1)
+    and (Pos(Beta + '\', Normalized + '\') <> 1);
+end;
+
+function UnsafeInstallDirMessage(): String;
+begin
+  Result := 'That folder contains NFL Street Reborn save data or settings.'
+    + #13#10#13#10
+    + 'Choose a separate folder for the program, such as the default folder '
+    + 'under LocalAppData\Programs. Your existing files have not been changed.';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -356,16 +368,20 @@ begin
   begin
     if not InstallDirIsSafe(WizardDirValue) then
     begin
-      MsgBox(
-        'That folder is the old NFL Street Reborn data folder, which holds '
-        + 'memory cards and settings.' + #13#10#13#10
-        + 'Installing the program files there would mean uninstalling later '
-        + 'deletes your saves. Please choose a different folder.' + #13#10#13#10
-        + WizardDirValue,
-        mbError, MB_OK);
+      if not WizardSilent then
+        MsgBox(UnsafeInstallDirMessage(), mbError, MB_OK);
       Result := False;
     end;
   end;
+end;
+
+// Validate the final destination again at the write boundary, independently
+// of wizard navigation and any future changes to which pages are displayed.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if not InstallDirIsSafe(ExpandConstant('{app}')) then
+    Result := UnsafeInstallDirMessage();
 end;
 
 // WebView2 draws the launcher's window. It ships with Windows 11 and with any

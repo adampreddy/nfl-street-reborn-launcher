@@ -1,21 +1,4 @@
-// Mods, as a screen.
-//
-// A feel-the-flow build, not the product interface. It exists to answer the
-// questions a harness row cannot: what does "only one football" look like as a
-// control, where does the button art live, and what does the page say when a
-// mod is listed as on and its files are gone.
-//
-// Two rules, both correctness rather than style:
-//
-//   Every value on screen comes from a command. Nothing is a placeholder, and
-//   nothing is filled in with a plausible default. What nothing measured is
-//   drawn as absent.
-//
-//   The core owns the rules. This file never decides which packages exclude
-//   each other: the exclusive groups come from the file lists in the core, and
-//   turning one member on is the core turning the others off. A second copy of
-//   that rule here would be a second source of truth.
-
+// Installed mod collection. The core owns package conflicts and activation.
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
 // The emulator the Settings page names, if any. Passed with every action
@@ -99,6 +82,7 @@ async function act(cmd, args) {
       else if (r) notice = r.sync_note;
     } else {
       lastSync = r;
+      if(r?.synced===false)notice=r.note||"Your selection is saved, but the mod files could not be applied yet.";
     }
     await load();
   } catch (e) {
@@ -155,145 +139,6 @@ function managed(id) {
   return list.includes(id);
 }
 
-// One radio row. `checked` is the fact from the core; `pick` is what to do.
-function choice(name, what, why, checked, pick) {
-  const input = el("input", { type: "radio", name, value: what, checked, disabled: busy, onchange: pick });
-  return el(
-    "label",
-    { class: "choice" + (checked ? " selected" : "") },
-    input,
-    el("span", { class: "what", text: what }),
-    why ? el("span", { class: "why", text: why }) : null,
-  );
-}
-
-function controlsSection() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Button textures" }));
-
-  if (current && current.profile) {
-    const from = current.source === "settings" ? "settings" : "first run";
-    sec.append(el("p", { text: `Current: ${current.label}, from ${from}.` }));
-  } else {
-    sec.append(
-      el("p", {
-        class: "absent",
-        text: "Using the original GameCube button textures.",
-      }),
-    );
-  }
-  sec.append(
-    el("p", {
-      class: "note",
-      text:
-        "Choose the artwork that matches your controller. Changes take effect when you next start the game.",
-    }),
-  );
-
-  if (!options || options.error) {
-    sec.append(
-      el("p", {
-        class: "partial",
-        text: `The profile list could not be read: ${options ? options.error : "not loaded"}`,
-      }),
-    );
-    return sec;
-  }
-  const list = Array.isArray(options) ? options : [];
-  for (const o of list) {
-    const isCurrent = !!(current && current.profile === o.slug);
-    const what = o.label;
-    const why = `${o.label} button artwork for the game.`;
-    const option=choice("controls", what, why, isCurrent, () => act("controls_set", { profile: o.slug, runtime: runtimeHint() }));
-    if(o.suggested)option.append(el("span",{class:"recommendation-badge",text:"Recommended"}));
-    sec.append(option);
-  }
-  return sec;
-}
-
-// The pick-one groups. Returns the sections and every id they covered, so the
-// "other mods" list can leave those out.
-function groupSections() {
-  const sections = [];
-  const covered = new Set();
-  const groups = library && Array.isArray(library.exclusive) ? library.exclusive : [];
-
-  for (const g of groups) {
-    const ids = Array.isArray(g.members) ? g.members : [];
-    ids.forEach((id) => covered.add(id));
-    // The controls packs are their own exclusive pair and they are drawn as
-    // the button art setting above. Offering them here too would let a mod
-    // toggle fight the setting.
-    const shown = ids.filter((id) => !managed(id));
-    if (shown.length === 0) continue;
-
-    const entries = shown.map((id) => packages().find((p) => p.id === id)).filter(Boolean);
-    const missing = shown.filter((id) => !packages().some((p) => p.id === id));
-    const active = entries.find((p) => p.active) || null;
-
-    const sec = el("section", { class: "block" }, el("h2", { text: "Choose a variant" }));
-    sec.append(
-      el("p", {
-        class: "note",
-        text: "These mods change the same part of the game. Select one to use.",
-      }),
-    );
-    sec.append(
-      choice("group-" + sections.length, "None", "The game's own texture.", !active, () => {
-        if (active) act("mods_toggle", { id: active.id, version: active.version, on: false, runtime: runtimeHint() });
-      }),
-    );
-    for (const p of entries) {
-      const size = mb(p.bytes);
-      const why = [p.version, `${p.files} ${p.files === 1 ? "file" : "files"}`, size].filter(Boolean).join(", ");
-      sec.append(
-        choice("group-" + sections.length, p.name || p.id, why, !!p.active, () => {
-          if (!p.active) act("mods_toggle", { id: p.id, version: p.version, on: true, runtime: runtimeHint() });
-        }),
-      );
-    }
-    for (const id of missing) {
-      sec.append(el("p", { class: "partial", text: `${id} is in this group but could not be read.` }));
-    }
-    const grid = el("div", { class: "mod-options" });
-    // Move only choices; warnings and the explanation remain full width.
-    if (typeof sec.querySelectorAll === "function") {
-      for (const choice of sec.querySelectorAll(":scope > .choice")) grid.append(choice);
-      sec.append(grid);
-    }
-    sections.push(sec);
-  }
-  return { sections, covered };
-}
-
-function otherSection(covered) {
-  const rest = packages().filter((p) => !covered.has(p.id) && !managed(p.id));
-  if (rest.length === 0) return null;
-  const sec = el("section", { class: "block" }, el("h2", { text: "Other mods" }));
-  sec.append(el("p", { class: "note", text: "Enable the texture packs you want to use." }));
-  for (const p of rest) {
-    const input = el("input", {
-      type: "checkbox",
-      checked: !!p.active,
-      disabled: busy,
-      onchange: () => act("mods_toggle", { id: p.id, version: p.version, on: !p.active, runtime: runtimeHint() }),
-    });
-    const why = [p.version, `${p.files} ${p.files === 1 ? "file" : "files"}`, mb(p.bytes)].filter(Boolean).join(", ");
-    sec.append(
-      el(
-        "label",
-        { class: "choice" + (p.active ? " selected" : "") },
-        input,
-        el("span", { class: "what", text: p.name || p.id }),
-        el("span", { class: "why", text: why }),
-      ),
-    );
-  }
-  return sec;
-}
-
-// Listed as on in activation.json, with no installed package behind it. Drawn
-// rather than dropped: a mod that silently vanishes from the list is
-// indistinguishable from one that was never turned on.
 function staleSection() {
   const listed = library && Array.isArray(library.activation) ? library.activation : [];
   const stale = listed.filter((a) => !packages().some((p) => p.id === a.id && p.version === a.version));
@@ -333,48 +178,8 @@ function unreadableSection() {
   return sec;
 }
 
-function fact(name, value) {
-  const cell = value === null || value === undefined
-    ? el("td", { class: "absent", text: "not recorded" })
-    : el("td", { text: String(value) });
-  return el("tr", {}, el("th", { text: name }), cell);
-}
-
-function appliedSection() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Applied mods" }));
-  if (lastSync) {
-    sec.append(el("p", { class: lastSync.synced ? "" : "refusal", text: lastSync.note || "" }));
-    if (lastSync.synced) {
-      const table = el("table", { class: "facts" });
-      table.append(fact("Tree", lastSync.tree === "rebuilt" ? `rebuilt, ${lastSync.entries} entries` : "already in place"));
-      table.append(fact("Linked at", lastSync.link_at));
-      if (lastSync.moved_aside) {
-        table.append(fact("Folder that was there", `${lastSync.moved_aside} (nothing was deleted; rename it back to undo)`));
-      }
-      const missing = Array.isArray(lastSync.missing) ? lastSync.missing : [];
-      if (missing.length > 0) {
-        table.append(fact("Listed, not installed", missing.map((m) => m.id).join(", ")));
-      }
-      sec.append(table);
-    }
-  } else {
-    sec.append(
-      el("p", {
-        class: "absent",
-        text:
-          "Not checked yet. Sync makes the game load the list above. " +
-          "A launch does this by itself; the button is for seeing it now.",
-      }),
-    );
-  }
-  sec.append(el("button", { type: "button", class: "primary", text: busy ? "Working" : "Sync now", disabled: busy, onclick: () => act("mods_sync", { runtime: runtimeHint() }) }));
-  return sec;
-}
-
-// Draw everything from module state. Never talks to the core, so a harness can
-// feed it any state and see what it does with it.
-let query = '', category = 'All', selectedMod = null;
-const categoryOf = p => /football/i.test(p.name+' '+p.id)?'Footballs':/stadium|court|field/i.test(p.name+' '+p.id)?'Courts':/music|audio/i.test(p.name+' '+p.id)?'Audio':'Textures';
+let query = '', category = 'Footballs', selectedMod = null;
+const categoryOf = p => /football/i.test(p.name+' '+p.id)?'Footballs':/soundtrack|music|audio/i.test(p.name+' '+p.id)?'Soundtrack':null;
 const colors = ['#514941','#3f4c49','#484357','#49505b','#59464a','#514f3e'];
 function storeCard(p, index) {
   const card=el('article',{class:'store-card'});
@@ -399,11 +204,10 @@ function draw() {
   const all=packages().filter(p=>!managed(p.id));
   const toolbar=el('div',{class:'store-toolbar'}),search=el('input',{type:'search',placeholder:'Search your mods','aria-label':'Search mods',value:query});
   const results=el('section',{class:'store-grid','aria-label':'Mods'}),count=el('p',{class:'store-count',role:'status'});
-  const renderResults=()=>{const list=all.filter(p=>(category==='All'||category==='Enabled'?category==='All'||p.active:categoryOf(p)===category)&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
+  const renderResults=()=>{const list=all.filter(p=>categoryOf(p)===category&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
   search.addEventListener('input',()=>{query=search.value;renderResults();});
   toolbar.append(search,el('a',{href:'onboarding.html',class:'button',text:'Import mods'}),el('button',{type:'button',text:'Refresh',disabled:busy,onclick:refresh}));parts.push(toolbar);
-  const tabs=el('div',{class:'section-tabs','aria-label':'Mod categories'});for(const name of ['All','Enabled','Footballs','Courts','Textures','Audio'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===category),onclick:()=>{category=name;tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent===category)));renderResults();}}));parts.push(tabs);
-  if(all.length){const featured=all.find(p=>p.active)||all[0];const banner=el('section',{class:'store-featured'},el('span',{class:'store-kicker',text:'Your Reborn collection'}),el('h2',{text:'Make the game yours.'}),el('p',{text:'Footballs, courts, and textures. One place to customize your next game.'}),el('button',{type:'button',text:'Explore '+(featured.name||featured.id),onclick:()=>showMod(featured)}));parts.push(banner);}
+  const tabs=el('div',{class:'section-tabs','aria-label':'Mod categories'});for(const name of ['Footballs','Soundtrack'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===category),onclick:()=>{category=name;tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent===category)));renderResults();}}));parts.push(tabs);
   parts.push(count,results);renderResults();
   const stale=staleSection(),unreadable=unreadableSection();if(stale)parts.push(stale);if(unreadable)parts.push(unreadable);
   parts.push(el('p',{class:'note store-footnote',text:'Mods are applied automatically when you start the game. Button textures are in Controllers.'}));
