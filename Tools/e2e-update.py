@@ -164,6 +164,32 @@ def main():
     must(out, "Up to date: runtime 1.0.0", "second run is a no-op")
     step("fresh client installs 3 files, pointer says 1.0.0, second run is up to date")
 
+    # 2b. a root seeded from an install root plans nothing and adopts
+    # The installer ships the runtime beside the launcher; the content tree
+    # is under the data root. Seeding links the one into the other so the
+    # first check finds everything already right, and --apply then writes
+    # the pointer without fetching a byte.
+    install = WORK / "install-root"
+    make_tree(install / "runtime", v1)
+    seeded = WORK / "data-seeded"
+    if seeded.exists():
+        shutil.rmtree(seeded)
+    LOG.clear()
+    out = run("update", "content", "--origin", base, "--component", "runtime", "--trust", pub_hex,
+              "--data-root", str(seeded), "--install-root", str(install))
+    must(out, "Seeded        runtime", "the runtime was seeded from the install root")
+    must(out, "Fetch         0 file(s)", "nothing to fetch after seeding")
+    must(out, "Already right 3 file(s)", "every seeded file hashes right")
+    out = run("update", "content", "--origin", base, "--component", "runtime", "--trust", pub_hex,
+              "--data-root", str(seeded), "--install-root", str(install), "--apply")
+    must(out, "Live          runtime 1.0.0: 0 file(s) swapped in", "adopted without a swap")
+    assert not blob_gets(), f"adoption must fetch no blob: {blob_gets()}"
+    assert '"1.0.0"' in (seeded / "versions" / "runtime" / "current.json").read_text()
+    out = run("update", "content", "--origin", base, "--component", "runtime", "--trust", pub_hex,
+              "--data-root", str(seeded), "--install-root", str(install))
+    must(out, "Up to date: runtime 1.0.0", "and it is up to date from then on")
+    step("a data root seeded from the install root fetches nothing and adopts the version")
+
     # 3. repair
     (DATA / "runtime" / "b.txt").write_bytes(b"broken")
     out = run(*common)

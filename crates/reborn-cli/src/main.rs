@@ -346,6 +346,12 @@ enum UpdateCommand {
         /// when absent.
         #[arg(long)]
         builder: Option<PathBuf>,
+        /// The install root whose shipped runtime and textures seed the data
+        /// root before the check. Defaults to the real one when no
+        /// --data-root is given, and to nothing when one is: a test root is
+        /// seeded only when told to.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
     },
 }
 
@@ -573,6 +579,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 apply,
                 xdelta,
                 builder,
+                install_root,
             } => update_content(
                 &platform,
                 origin.as_deref().unwrap_or(reborn_core::origin::DEFAULT_ORIGIN),
@@ -582,6 +589,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 apply,
                 xdelta.as_deref(),
                 builder.as_deref(),
+                install_root.as_deref(),
             ),
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
@@ -4210,6 +4218,7 @@ fn update_content(
     apply: bool,
     xdelta: Option<&Path>,
     builder: Option<&Path>,
+    install_root: Option<&Path>,
 ) -> reborn_core::Result<std::process::ExitCode> {
     use reborn_core::content::pipeline::{
         install_dir, CheckRequest, ComponentState, Depth, FetchOutcomeState, ImageHook, PromoteState,
@@ -4251,6 +4260,28 @@ fn update_content(
         Some(p) => p.to_path_buf(),
         None => platform.paths.data_root()?,
     };
+    // What the installer shipped, into the data root by hardlink, before
+    // anything is planned. See content::seed.
+    let seed_from = match (install_root, data_root) {
+        (Some(p), _) => Some(p.to_path_buf()),
+        (None, None) => platform.paths.install_root().ok(),
+        (None, Some(_)) => None,
+    };
+    if let Some(from) = seed_from {
+        let r = reborn_core::content::seed::seed_from_install(platform, &root_owned, &from, "GN7E69")?;
+        for s in &r.seeded {
+            println!(
+                "Seeded        {} from {}: {} file(s), {}",
+                s.component.as_str(),
+                s.from.display(),
+                thousands(s.files as u64),
+                match s.how {
+                    reborn_core::content::seed::SeedHow::Linked => "linked",
+                    reborn_core::content::seed::SeedHow::Copied => "copied",
+                }
+            );
+        }
+    }
     let updater = Updater::new(platform, &root_owned, &origin, &verifier);
 
     // Verify depth: this command is the repair tool as well as the update

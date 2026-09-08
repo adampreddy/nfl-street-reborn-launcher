@@ -289,14 +289,59 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
     let url = origin_url(&settings);
     let verifier = verifier()?;
     let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+    // What the installer shipped beside the launcher, into the data root
+    // by hardlink, before anything is planned. Without this the first check
+    // on a fresh install plans the whole texture pack again (measured:
+    // 3.18 GB). Idempotent, and a failure here is logged, not fatal: the
+    // check still runs, it just plans more.
+    if let Ok(install_root) = p.paths.install_root() {
+        match reborn_core::content::seed::seed_from_install(&p, &data_root, &install_root, "GN7E69") {
+            Ok(r) if !r.seeded.is_empty() => {
+                for s in &r.seeded {
+                    eprintln!("seeded {} from {} ({} files, {:?})", s.component.as_str(), s.from.display(), s.files, s.how);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("seeding from the install root failed: {e}"),
+        }
+    }
     let origin = Origin::new(&url);
     let updater = Updater::new(&p, &data_root, &origin, &verifier);
-    let check = updater
+    let mut check = updater
         .check(&CheckRequest {
             components: &UPDATABLE,
             depth,
         })
         .map_err(|e| e.to_string())?;
+    // Adoption. A component whose files are all already right but which has
+    // no pointer yet (the seeded trees, on a first run) plans an update of
+    // zero bytes. Promote it here and now: nothing is downloaded, nothing is
+    // swapped, the pointer and the manifest cache are written, and the
+    // player never sees an "update" of 0 MB. Only when no game is running,
+    // which is what the launch guard says.
+    if check.has_updates() && check.download_bytes() == 0 && !crate::session_active() {
+        if let Ok(guard) = LaunchGuard::acquire() {
+            let settings = load_settings(&p)?;
+            let hook = image_hook(&p, &settings);
+            let adopted = updater
+                .fetch(&check)
+                .and_then(|_| updater.promote(&check, &hook))
+                .map_err(|e| e.to_string());
+            drop(guard);
+            match adopted {
+                Ok(po) if po.all_applied() => {
+                    check = updater
+                        .check(&CheckRequest {
+                            components: &UPDATABLE,
+                            depth: Depth::Quick,
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(po) => eprintln!("adoption of the shipped content did not fully apply: {po:?}"),
+                Err(e) => eprintln!("adoption of the shipped content failed: {e}"),
+            }
+        }
+    }
     Ok((url, check))
 }
 

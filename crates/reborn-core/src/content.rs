@@ -70,6 +70,9 @@ use crate::platform::{DataDir, Error, Platform, Result};
 
 /// Check, fetch, promote: the three calls the window and the CLI drive.
 pub mod pipeline;
+/// Fill the data root's trees from what the installer shipped, before the
+/// first check, so a fresh install does not download its own texture pack.
+pub mod seed;
 
 /// Schema of the installed-version pointer. Ours to keep readable.
 pub const POINTER_SCHEMA: &str = "nsr.pointer.v1";
