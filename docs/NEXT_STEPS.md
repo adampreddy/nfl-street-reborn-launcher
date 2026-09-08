@@ -153,6 +153,31 @@ What remains around it: nothing in the launcher window yet says "game
 update applied"; that comes with the window wiring in item 2, where
 `PromoteState::Applied { game_patch, roster, .. }` carries both results.
 
+### 4b. 2026-09-07 night: the first-check gap, and the ship tree
+
+**Found by measuring:** on an empty data root the first content check
+planned 8,192 texture files (3.18 GB) and 2,569 runtime files, all of them
+already under the install root. Fixed in `bf9590c`: `content::seed` fills
+each empty data-root tree from its install-root twin by hardlink before the
+check, and the window adopts a zero-byte update on the spot (pointer and
+cache written, nothing shown). Proven against the final payload and the
+live bucket: runtime and textures both plan zero fetches on a seeded root.
+The origin's `runtime 1.0.0` had been published from a dirty staging tree
+(ReShade logs, a `User/Dump`), so `runtime 1.0.1` was published from the
+clean final payload and the release re-signed at **sequence 3** (live).
+
+**The site's `DOWNLOAD_URL`** in `_site/shell.php` is set to the zip on
+the bucket, deployed and read back identical. The button appears at the
+gate's own release moment, 2026-09-12 17:00 America/New_York.
+
+**Another session is editing the UI in this tree at the same time** (the
+mods page rebuilt as a store, `dolphin_settings.rs`, `finish.css`, the
+`.pad-button` rename). As found, its state broke `check-mods-page` and the
+browser suite. Its edits were committed as found (`a8829c9`) so nothing is
+lost, and **the shipped installer is built from `bf9590c` in the worktree
+`target\ship-tree`**, where every checker passes. That work can ship later
+as a 37 MB launcher update once it passes the checkers.
+
 ### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 
 Built from commit `0a69415` with:
