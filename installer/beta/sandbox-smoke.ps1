@@ -204,8 +204,9 @@ try {
         # Read-Host returned at once: on 2026-09-08 the checks ran one second
         # after the scene was laid, before anyone could install anything. So
         # the wait is for evidence: the launcher exe appearing under Programs,
-        # then the launcher having been opened and closed, or three minutes
-        # with no launcher opened at all.
+        # then the launcher having been opened and closed, or fifteen minutes
+        # with no launcher opened at all (the wizard's own WebView2 step and
+        # the Finish page take longer than three).
         $stableExe = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn\reborn-launcher.exe"
         Write-Host "  (waiting for the install; the checks start on their own)" -ForegroundColor Gray
         while (-not (Test-Path $stableExe)) { Start-Sleep -Seconds 5 }
@@ -216,7 +217,7 @@ try {
             $running = @(Get-Process reborn-launcher -ErrorAction SilentlyContinue).Count -gt 0
             if ($running) { $seenLauncher = $true }
             elseif ($seenLauncher) { break }
-            elseif (((Get-Date) - $since).TotalMinutes -ge 3) { break }
+            elseif (((Get-Date) - $since).TotalMinutes -ge 15) { break }
             Start-Sleep -Seconds 3
         }
         Say("proceeding to the checks (launcher opened and closed: $seenLauncher)")
