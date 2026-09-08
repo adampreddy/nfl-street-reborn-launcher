@@ -242,7 +242,12 @@ if ($Runtime -and (Test-Path $Runtime)) {
     # Preferred source is a Visual Studio redistributable folder, which is
     # the copy meant for shipping. System32 is the fallback: the same files,
     # already on the build machine.
-    $crtNames = @("MSVCP140.dll", "MSVCP140_CODECVT_IDS.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")
+    # MSVCP140_ATOMIC_WAIT.dll is what the bundle's DolphinTool.exe imports
+    # and Dolphin.exe does not. Found 2026-09-08 in Windows Sandbox: with the
+    # other four beside it and this one absent, DolphinTool could not start,
+    # and onboarding reported the player's disc as unreadable. The five ship
+    # beside Dolphin AND beside the import tools.
+    $crtNames = @("MSVCP140.dll", "MSVCP140_CODECVT_IDS.dll", "MSVCP140_ATOMIC_WAIT.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")
     $crtSource = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" `
         -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
     if (-not $crtSource) { $crtSource = Get-Item "$env:WINDIR\System32" }

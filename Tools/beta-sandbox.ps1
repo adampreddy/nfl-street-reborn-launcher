@@ -29,7 +29,12 @@ param(
     [switch]$Watch,
     # Hand the sandbox over: the scene is set, you click through the wizard
     # yourself, and the checks run against what you did when you say so.
-    [switch]$Manual
+    [switch]$Manual,
+    # A folder holding a stock NFL Street 2 (USA) disc image, mapped read-only
+    # at C:\beta\disc inside the sandbox, so onboarding's import step has a
+    # disc to work from. Without it the wizard can be seen but the game
+    # cannot be imported, since a clean Windows has no game.
+    [string]$Disc = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +94,23 @@ if ($Manual) { $flags += "-Manual" }
 $stayOpen = if ($Watch -or $Manual) { "-NoExit " } else { "" }
 $logon = "powershell.exe -NoProfile -ExecutionPolicy Bypass ${stayOpen}-File C:\beta\scripts\sandbox-smoke.ps1 $($flags -join ' ')".Trim()
 
+$discMapping = ""
+if ($Disc) {
+    if (-not (Test-Path -LiteralPath $Disc -PathType Container)) { throw "-Disc must be a folder holding the disc image: $Disc" }
+    $discFull = (Resolve-Path -LiteralPath $Disc).Path
+    $images = @(Get-ChildItem -LiteralPath $discFull -File | Where-Object { $_.Extension -in ".iso", ".gcm", ".rvz", ".ciso", ".wbfs" })
+    if ($images.Count -eq 0) { throw "No disc image in $discFull" }
+    Write-Host "Disc folder mapped in at C:\beta\disc:"
+    $images | ForEach-Object { Write-Host ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
+    $discMapping = @"
+    <MappedFolder>
+      <HostFolder>$discFull</HostFolder>
+      <SandboxFolder>C:\beta\disc</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+"@
+}
+
 # The configuration. Paths must be absolute and must exist before the sandbox
 # starts; a missing mapped folder is a refusal to start, not a warning.
 $xml = @"
@@ -111,6 +133,7 @@ $xml = @"
       <SandboxFolder>C:\beta\out</SandboxFolder>
       <ReadOnly>false</ReadOnly>
     </MappedFolder>
+$discMapping
   </MappedFolders>
   <LogonCommand>
     <Command>$logon</Command>

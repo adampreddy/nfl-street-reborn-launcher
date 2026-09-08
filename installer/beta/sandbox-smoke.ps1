@@ -282,6 +282,21 @@ try {
         $bundle = Join-Path $stableDir "game-import"
         $bundleMissing = @("manifest.json", "reborn.xdelta", "xdelta3.exe", "DolphinTool.exe" | Where-Object { -not (Test-Path (Join-Path $bundle $_)) })
         Check "the game import bundle shipped" ($bundleMissing.Count -eq 0) ("missing from ${bundle}: " + ($bundleMissing -join ", "))
+        # The import tool has to START on a clean Windows. It imports a VC
+        # file Dolphin does not (MSVCP140_ATOMIC_WAIT.dll), and with that one
+        # absent it died with STATUS_DLL_NOT_FOUND while every file check
+        # above passed. Run with no arguments it prints its usage and exits 1;
+        # what matters is that it ran at all.
+        $dt = Join-Path $bundle "DolphinTool.exe"
+        if (Test-Path $dt) {
+            $dtOut = Join-Path $out "dolphintool.txt"
+            $dtErr = "$dtOut.err"
+            $dtp = Start-Process -FilePath $dt -Wait -PassThru -NoNewWindow -RedirectStandardOutput $dtOut -RedirectStandardError $dtErr
+            $said = ((Get-Content $dtOut -Raw -ErrorAction SilentlyContinue) + (Get-Content $dtErr -Raw -ErrorAction SilentlyContinue))
+            Check "the import tool (DolphinTool) starts on this clean Windows" `
+                (($dtp.ExitCode -ne -1073741515) -and -not [string]::IsNullOrWhiteSpace($said)) `
+                ("exit 0x{0:X8}, said: {1}" -f $dtp.ExitCode, $said)
+        }
 
         Check "no channel marker in a stable install" (-not (Test-Path (Join-Path $stableDir "channel")))
         # ------------------------------------------------------------------
