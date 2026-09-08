@@ -353,7 +353,7 @@ Also: `User\Config\Dolphin.ini` `DefaultISO` changes from the 2.1 `NSR.iso`, whi
 
 ### 10.5 Ship path
 
-Build the fork, stage through `build.ps1`'s allowlist with the new exe name, `rebornctl publish component runtime --version 1.1.0`, then a release at sequence 4. The launcher update ships first.
+Build the fork, stage through `build.ps1`'s allowlist with the new exe name, `rebornctl publish component runtime --version 1.1.0`, then a release at the next free sequence (another session published runtime 1.0.2 as sequence 4 on the evening of 2026-09-08, so read `release.json` and use the next one). The launcher update ships first.
 
 ## 11. Rollout, in dependency order
 
