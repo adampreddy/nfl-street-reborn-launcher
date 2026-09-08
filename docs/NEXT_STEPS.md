@@ -178,6 +178,15 @@ lost, and **the shipped installer is built from `bf9590c` in the worktree
 `target\ship-tree`**, where every checker passes. That work can ship later
 as a 37 MB launcher update once it passes the checkers.
 
+**Shipped 2026-09-08 02:28 from `bf9590c`:** `test-all` 19 of 19 on the
+ship tree, Windows Sandbox RESULT: PASS (53 checks) with WebView2
+152.0.4191.66 present offline (copy at
+`target\dist-old-2026-09-06\sandbox-result-ship-bf9590c-2026-09-08.txt`),
+then the zip (2,729,209,564 bytes), the Update exe (39,064,978) and
+`latest.json` uploaded to `launcher/` and verified over HTTPS; `rebornctl
+update check` from the ship build reads the hosted manifest and answers
+up to date. This set supersedes the 22:16 one on the bucket.
+
 ### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 
 Built from commit `0a69415` with:
