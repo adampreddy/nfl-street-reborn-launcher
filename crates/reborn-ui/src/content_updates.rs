@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use reborn_core::content::pipeline::{
-    CheckRequest, ComponentState, ContentCheck, Depth, FetchOutcomeState, GamePatchResult, ImageHook,
-    PromoteOutcome, PromoteState, RosterResult, Updater, UPDATABLE,
+    CheckRequest, ComponentCheck, ComponentState, ContentCheck, Depth, FetchOutcomeState, GamePatchResult,
+    ImageHook, PromoteOutcome, PromoteState, RosterResult, Updater, UPDATABLE,
 };
 use reborn_core::origin::{Origin, DEFAULT_ORIGIN};
 use reborn_core::signing::Ed25519Verifier;
@@ -145,7 +145,11 @@ fn view(h: &Held) -> ContentStatusView {
     let s = &h.snapshot;
     let note = match &h.phase {
         Phase::Idle => "Not checked yet.".to_string(),
-        Phase::Checking => "Checking for content updates…".to_string(),
+        Phase::Checking => {
+            "Checking for content updates… On a fresh install the first check also verifies the shipped \
+             files, 3 GB of them, which takes a few minutes once."
+                .to_string()
+        }
         Phase::UpToDate => match &s.release {
             Some(r) => format!("Everything is current (release {r})."),
             None => "Everything is current.".to_string(),
@@ -315,32 +319,55 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
         .map_err(|e| e.to_string())?;
     // Adoption. A component whose files are all already right but which has
     // no pointer yet (the seeded trees, on a first run) plans an update of
-    // zero bytes. Promote it here and now: nothing is downloaded, nothing is
-    // swapped, the pointer and the manifest cache are written, and the
-    // player never sees an "update" of 0 MB. Only when no game is running,
-    // which is what the launch guard says.
-    if check.has_updates() && check.download_bytes() == 0 && !crate::session_active() {
+    // zero bytes. Promote those, and only those, here and now: nothing is
+    // downloaded, nothing is swapped, the pointer and the manifest cache are
+    // written, and the player never sees an "update" of 0 MB. Each such
+    // component on its own, whatever else is pending: with a 32 MB roster
+    // waiting and updates set to ask first, the first version of this rule
+    // ("adopt only when nothing at all needs downloading") never fired, and
+    // every check re-hashed the 3 GB texture pack. Seen in the sandbox on
+    // 2026-09-08. Only when no game is running, which the launch guard says.
+    let (adoptable, pending): (Vec<ComponentCheck>, Vec<ComponentCheck>) = check
+        .components
+        .into_iter()
+        .partition(|c| c.plan().map(|p| p.download_bytes() == 0).unwrap_or(false));
+    check.components = pending;
+    if !adoptable.is_empty() && !crate::session_active() {
         if let Ok(guard) = LaunchGuard::acquire() {
+            let adopt = ContentCheck {
+                origin: check.origin.clone(),
+                release: check.release.clone(),
+                signed_bytes: check.signed_bytes,
+                carried: check.carried.clone(),
+                components: adoptable,
+            };
             let settings = load_settings(&p)?;
             let hook = image_hook(&p, &settings);
             let adopted = updater
-                .fetch(&check)
-                .and_then(|_| updater.promote(&check, &hook))
+                .fetch(&adopt)
+                .and_then(|_| updater.promote(&adopt, &hook))
                 .map_err(|e| e.to_string());
             drop(guard);
             match adopted {
-                Ok(po) if po.all_applied() => {
-                    check = updater
-                        .check(&CheckRequest {
-                            components: &UPDATABLE,
-                            depth: Depth::Quick,
-                        })
-                        .map_err(|e| e.to_string())?;
-                }
+                Ok(po) if po.all_applied() => {}
                 Ok(po) => eprintln!("adoption of the shipped content did not fully apply: {po:?}"),
                 Err(e) => eprintln!("adoption of the shipped content failed: {e}"),
             }
+            // Fresh states for everything, against the pointers just
+            // written: the adopted components now answer up to date without
+            // a byte hashed, and the pending ones are reported as before.
+            check = updater
+                .check(&CheckRequest {
+                    components: &UPDATABLE,
+                    depth: Depth::Quick,
+                })
+                .map_err(|e| e.to_string())?;
+        } else {
+            // A game started meanwhile; put the components back unadopted.
+            check.components.extend(adoptable);
         }
+    } else {
+        check.components.extend(adoptable);
     }
     Ok((url, check))
 }
