@@ -373,43 +373,41 @@ function appliedSection() {
 
 // Draw everything from module state. Never talks to the core, so a harness can
 // feed it any state and see what it does with it.
+let query = '', category = 'All', selectedMod = null;
+const categoryOf = p => /football/i.test(p.name+' '+p.id)?'Footballs':/stadium|court|field/i.test(p.name+' '+p.id)?'Courts':/music|audio/i.test(p.name+' '+p.id)?'Audio':'Textures';
+const colors = ['#514941','#3f4c49','#484357','#49505b','#59464a','#514f3e'];
+function storeCard(p, index) {
+  const card=el('article',{class:'store-card'});
+  const open=el('button',{type:'button',class:'store-open','aria-label':p.name||p.id,onclick:()=>showMod(p)});
+  const art=el('span',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[index%colors.length];
+  open.append(art,el('span',{class:'store-card-body'},el('strong',{text:p.name||p.id}),el('small',{text:categoryOf(p)+' · '+(p.version?'Version '+p.version:'Installed')})));
+  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()})})));
+  return card;
+}
+function showMod(p) {
+  document.querySelector('.mod-dialog')?.remove();
+  const dialog=el('dialog',{class:'mod-dialog','aria-label':p.name||p.id});
+  const art=el('div',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[Math.max(0,packages().indexOf(p))%colors.length];
+  const conflict=(library?.exclusive||[]).find(g=>(g.members||[]).includes(p.id));
+  dialog.append(art,el('div',{class:'mod-dialog-body'},el('span',{class:'store-kicker',text:categoryOf(p)}),el('h2',{text:p.name||p.id}),el('p',{text:p.description||'Customize your game with this installed Reborn mod.'}),el('p',{class:'note',text:['Version '+p.version,mb(p.bytes),typeof p.files==='number'?p.files+' files':null].filter(Boolean).join(' · ')}),conflict?el('p',{class:'note',text:'Enabling this mod replaces other enabled mods that change the same files.'}):null,el('div',{class:'store-dialog-actions'},el('button',{type:'button',text:'Close',onclick:()=>dialog.close()}),el('button',{type:'button',class:'primary',text:p.active?'Disable mod':'Enable mod',disabled:busy,onclick:()=>{dialog.close();act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}}))));
+  dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
+}
 function draw() {
-  const screen = document.getElementById("screen");
-  const parts = [];
-
-  if (problem) parts.push(el("p", { class: "refusal", text: problem }));
-  if (notice) parts.push(el("p", { class: "partial", text: notice }));
-
-
-
-  if (!library) {
-    parts.push(
-      el("p", {
-        class: problem ? "absent" : "note",
-        text: problem ? "The mod list is not shown because the library could not be read." : "Reading the library.",
-      }),
-    );
-  } else {
-    const { sections, covered } = groupSections();
-    parts.push(...sections);
-    parts.push(otherSection(covered));
-    parts.push(staleSection());
-    parts.push(unreadableSection());
-    if (packages().length === 0 && sections.length === 0) {
-      parts.push(
-        el("p", {
-          class: "absent",
-          text: `No packages are installed under ${library.packages_root || "the packages folder"}. Resume game setup to import your existing mods.`,
-        }),
-      );
-    }
-  }
-
-  parts.push(el("a", { href: "onboarding.html", class: "button", text: "Import from an existing installation" }));
-  parts.push(el("details", { class: "block" }, el("summary", { text: "Button prompts" }), controlsSection()));
-  parts.push(el("details", { class: "block" }, el("summary", { text: "Mod synchronization details" }), appliedSection()));
-  screen.replaceChildren(...parts.filter(Boolean));
-  return parts.filter(Boolean);
+  const screen=document.getElementById('screen'),parts=[];
+  if(problem)parts.push(el('p',{class:'refusal',role:'alert',text:problem}));
+  if(notice)parts.push(el('p',{class:'partial',role:'status',text:notice}));
+  const all=packages().filter(p=>!managed(p.id));
+  const toolbar=el('div',{class:'store-toolbar'}),search=el('input',{type:'search',placeholder:'Search your mods','aria-label':'Search mods',value:query});
+  const results=el('section',{class:'store-grid','aria-label':'Mods'}),count=el('p',{class:'store-count',role:'status'});
+  const renderResults=()=>{const list=all.filter(p=>(category==='All'||category==='Enabled'?category==='All'||p.active:categoryOf(p)===category)&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
+  search.addEventListener('input',()=>{query=search.value;renderResults();});
+  toolbar.append(search,el('a',{href:'onboarding.html',class:'button',text:'Import mods'}),el('button',{type:'button',text:'Refresh',disabled:busy,onclick:refresh}));parts.push(toolbar);
+  const tabs=el('div',{class:'section-tabs','aria-label':'Mod categories'});for(const name of ['All','Enabled','Footballs','Courts','Textures','Audio'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===category),onclick:()=>{category=name;tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent===category)));renderResults();}}));parts.push(tabs);
+  if(all.length){const featured=all.find(p=>p.active)||all[0];const banner=el('section',{class:'store-featured'},el('span',{class:'store-kicker',text:'Your Reborn collection'}),el('h2',{text:'Make the game yours.'}),el('p',{text:'Footballs, courts, and textures. One place to customize your next game.'}),el('button',{type:'button',text:'Explore '+(featured.name||featured.id),onclick:()=>showMod(featured)}));parts.push(banner);}
+  parts.push(count,results);renderResults();
+  const stale=staleSection(),unreadable=unreadableSection();if(stale)parts.push(stale);if(unreadable)parts.push(unreadable);
+  parts.push(el('p',{class:'note store-footnote',text:'Mods are applied automatically when you start the game. Button textures are in Controllers.'}));
+  screen.replaceChildren(...parts);return parts;
 }
 
 // ---------------------------------------------------------------------------

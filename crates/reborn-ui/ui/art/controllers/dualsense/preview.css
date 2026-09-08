@@ -151,22 +151,22 @@
     left: 762px;
 }
 
-.vendor-dualsense .button {
+.vendor-dualsense .pad-button {
     position: absolute;
     width: 55px;
     height: 55px;
     background: url(buttons.png);
 }
 
-.vendor-dualsense[data-color="black"] .button {
+.vendor-dualsense[data-color="black"] .pad-button {
     background-position-y: 55px;
 }
 
-.vendor-dualsense .button[data-pressed="true"] {
+.vendor-dualsense .pad-button[data-pressed="true"] {
     background-position-y: 55px;
 }
 
-.vendor-dualsense[data-color="black"] .button[data-pressed="true"] {
+.vendor-dualsense[data-color="black"] .pad-button[data-pressed="true"] {
     background-position-y: 0;
 }
 

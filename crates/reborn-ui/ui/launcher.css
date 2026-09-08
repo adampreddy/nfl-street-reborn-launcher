@@ -191,4 +191,4 @@ body.shell.page-setup #screen>h1{max-width:600px;margin:0 auto 14px;font-size:32
 .layered-preview>[class^="vendor-"] span{display:block}
 .layered-preview>[class^="vendor-"] .clear{clear:both}
 .layered-preview figcaption{display:none}
-.layered-preview .button{border:0;border-radius:0;padding:0;min-width:0;min-height:0;box-shadow:none;transition:none}
+.layered-preview .pad-button{border:0;border-radius:0;padding:0;min-width:0;min-height:0;box-shadow:none;transition:none}

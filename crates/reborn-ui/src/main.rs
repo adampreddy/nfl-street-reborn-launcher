@@ -24,6 +24,7 @@
 
 mod content_updates;
 mod setup_tools;
+mod dolphin_settings;
 
 use std::path::{Path, PathBuf};
 
@@ -3688,6 +3689,7 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
         "folder" => dialog.pick_folder().await,
         "game" => dialog.add_filter("Game image", &["iso", "gcm", "rvz", "ciso", "wbfs"]).pick_file().await,
         "runtime" => dialog.pick_file().await,
+        "memory_card" => dialog.add_filter("GameCube memory card", &["raw", "gcp"]).pick_file().await,
         "manifest" => dialog.add_filter("Component manifest", &["json"]).pick_file().await,
         _ => return Err("Unknown file type".into()),
     };
@@ -4939,6 +4941,9 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             // Already here.
+            dolphin_settings::dolphin_preferences,
+            dolphin_settings::dolphin_preference_set,
+            dolphin_settings::dolphin_saves_folder,
             setup_tools::setup_install_choice,
             setup_tools::setup_install_info,
             setup_tools::setup_import_existing_game,

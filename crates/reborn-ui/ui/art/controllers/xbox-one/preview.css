@@ -134,14 +134,14 @@
     left: 489px;
 }
 
-.vendor-xbox-one .button {
+.vendor-xbox-one .pad-button {
     position: absolute;
     background: url(buttons.svg);
     width: 53px;
     height: 53px;
 }
 
-.vendor-xbox-one .button[data-pressed="true"] {
+.vendor-xbox-one .pad-button[data-pressed="true"] {
     background-position-y: -53px;
     opacity: 1;
 }

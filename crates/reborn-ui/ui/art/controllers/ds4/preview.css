@@ -144,14 +144,14 @@
     left: 567px;
 }
 
-.vendor-ds4 .button {
+.vendor-ds4 .pad-button {
     position: absolute;
     width: 56px;
     height: 56px;
     background: url(buttons.svg);
 }
 
-.vendor-ds4 .button[data-pressed="true"] {
+.vendor-ds4 .pad-button[data-pressed="true"] {
     background-position-y: 56px;
 }
 
