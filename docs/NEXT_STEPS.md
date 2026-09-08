@@ -198,6 +198,20 @@ as a 37 MB launcher update once it passes the checkers.
 - `beta-sandbox.ps1 -Disc <folder>` maps a stock disc image in at
   `C:\beta\disc`; manual mode waits for the install and the launcher
   closing instead of a keypress (`5ab5c0f`, `e1efab6`).
+- **The installer's game patch targeted the wrong build.** In the real
+  window on the clean Windows the whole content flow ran (textures adopted,
+  runtime 1.0.1 and the roster installed) and then the Builder refused:
+  "This ISO has no Reborn data directory". By hash, the Codex bundle's
+  `output_sha256` is `78a987c7…` = `Games\NSR.iso`, an old build, not
+  `057ef020…` = `NFL Street 2 FIELDS 12-19.iso`, the release candidate the
+  Builder accepts. Rebuilt with `Tools\create-game-patch.py --target
+  "…\NFL Street 2 FIELDS 12-19.iso"` into
+  **`C:\Reborn Origin-stage\game-import-bundle-fields-12-19`** (the delta
+  is 98.7 MB, not 687 MB; the installer shrinks by ~590 MB). Proven on this
+  PC: the import example lands `057ef020…` from the stock nkit and the
+  Builder applies the roster to it. **That folder is now the `-GamePatch`
+  source, and `057ef020…` is the base every game-patch chain must start
+  from.** The Codex bundle is superseded.
 
 **Shipped 2026-09-08 02:28 from `bf9590c`:** `test-all` 19 of 19 on the
 ship tree, Windows Sandbox RESULT: PASS (53 checks) with WebView2
