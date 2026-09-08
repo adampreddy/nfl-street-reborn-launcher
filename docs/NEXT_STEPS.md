@@ -212,6 +212,9 @@ as a 37 MB launcher update once it passes the checkers.
   Builder applies the roster to it. **That folder is now the `-GamePatch`
   source, and `057ef020…` is the base every game-patch chain must start
   from.** The Codex bundle is superseded.
+- **Shipped again 2026-09-08 16:20 with that bundle:** sandbox RESULT: PASS
+  (54 checks), zip 2,141,023,049 bytes on the bucket, verified over HTTPS.
+  The Update exe and `latest.json` are unchanged from 14:35 (sha `452b1466…`).
 
 **Shipped 2026-09-08 02:28 from `bf9590c`:** `test-all` 19 of 19 on the
 ship tree, Windows Sandbox RESULT: PASS (53 checks) with WebView2
