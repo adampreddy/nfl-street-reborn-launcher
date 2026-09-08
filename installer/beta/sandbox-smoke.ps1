@@ -193,13 +193,33 @@ try {
         Write-Host "       downloading about 130 MB. The bar does not move. It is not stuck."
         Write-Host "    4. Leave 'Launch NFL Street Reborn' ticked and press Finish."
         Write-Host "    5. Watch how long the launcher takes to appear. That is the real number."
+        Write-Host "    6. Close the launcher window when you have seen enough. That starts the checks."
         Write-Host ""
         Write-Host "  Install the Beta one too if you want to see them side by side." -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  When you are done, come back here and press Enter. Every check then runs" -ForegroundColor Yellow
-        Write-Host "  against what you actually did, and the memory card is compared byte for byte." -ForegroundColor Yellow
+        Write-Host "  When the launcher opens, look around, then CLOSE its window. Every check then" -ForegroundColor Yellow
+        Write-Host "  runs against what you actually did, and the memory card is compared byte for byte." -ForegroundColor Yellow
         Write-Host ""
-        Read-Host "  Press Enter when you have finished installing"
+        # Not Read-Host. At logon the console has no interactive input, and
+        # Read-Host returned at once: on 2026-09-08 the checks ran one second
+        # after the scene was laid, before anyone could install anything. So
+        # the wait is for evidence: the launcher exe appearing under Programs,
+        # then the launcher having been opened and closed, or three minutes
+        # with no launcher opened at all.
+        $stableExe = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn\reborn-launcher.exe"
+        Write-Host "  (waiting for the install; the checks start on their own)" -ForegroundColor Gray
+        while (-not (Test-Path $stableExe)) { Start-Sleep -Seconds 5 }
+        Say("the launcher exe appeared at $stableExe")
+        $seenLauncher = $false
+        $since = Get-Date
+        while ($true) {
+            $running = @(Get-Process reborn-launcher -ErrorAction SilentlyContinue).Count -gt 0
+            if ($running) { $seenLauncher = $true }
+            elseif ($seenLauncher) { break }
+            elseif (((Get-Date) - $since).TotalMinutes -ge 3) { break }
+            Start-Sleep -Seconds 3
+        }
+        Say("proceeding to the checks (launcher opened and closed: $seenLauncher)")
 
         $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
         $betaDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn Beta"
