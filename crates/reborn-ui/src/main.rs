@@ -5491,6 +5491,51 @@ mod tests {
         );
     }
 
+    /// Nothing the Online page can reach turns a core error into raw text.
+    ///
+    /// `online.js` renders what these commands reject with, verbatim. Five
+    /// call sites in `dolphin_settings.rs` stringified a
+    /// `reborn_core::Error` -- three of them added by fix wave 1 -- and the
+    /// raw `std::io::Error`s beside them did the same, so a settings file
+    /// another program had open, or a full disk, put a full path and an
+    /// operating system error number on the Online page.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// It scans `dolphin_settings.rs`, a different file from the one this test
+    /// lives in, so the patterns written below are not in what is searched at
+    /// all. That file's own inline test module is cut out as well, by the two
+    /// anchors below, so a future test added there cannot satisfy this either.
+    /// The trailing `.await` pair every `spawn_blocking` command ends with is
+    /// removed before the check: it converts a `JoinError` from a panicked
+    /// closure, which is not a core error, and left in it would make this
+    /// check impossible to pass whether or not the real fix was made.
+    #[test]
+    fn nothing_the_online_page_can_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("dolphin_settings.rs");
+        let before = &src[..src.find("\n#[cfg(test)]").expect("the inline test module moved")];
+        let after_at = src
+            .find("\n/// Start Dolphin with NetPlay configured")
+            .expect("netplay_open's doc comment moved");
+        let production = format!("{before}{}", &src[after_at..]);
+
+        let compact: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        let commands_only = compact.replace(".await.map_err(|e|e.to_string())", "");
+        assert!(
+            !commands_only.contains(".map_err(|e|e.to_string())"),
+            "the Online page still gets a core error's raw Display text, so a locked file \
+             or a full disk puts a path and an error number on the screen"
+        );
+        assert!(
+            !commands_only.contains("Err(e.to_string())"),
+            "the Online page still gets an operating system error's own wording"
+        );
+        assert!(
+            commands_only.contains("player_message"),
+            "no core error on this page is mapped to a sentence at all"
+        );
+    }
+
     /// The launcher writes a log, and the diagnostic bundle can collect it.
     ///
     /// Three fix waves moved technical detail off the screens a player reads

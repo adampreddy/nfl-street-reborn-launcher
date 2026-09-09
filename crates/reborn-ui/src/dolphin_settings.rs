@@ -1,15 +1,34 @@
 use super::*;
 use reborn_core::ini::{IniDocument, Overlay};
 
+/// One core error, or one raw operating system error, as the sentence the
+/// player reads.
+///
+/// `online.js` renders whatever these commands reject with, verbatim. Every
+/// call here used to hand it `e.to_string()`, which for `reborn_core::Error`
+/// is `io error at {path}: {source}` and for a bare `std::io::Error` is the
+/// operating system's own wording and number. So a configuration file another
+/// program had open, or a full disk, put a path and `os error 32` on the
+/// Online page.
+///
+/// `Error::player_message` decides what is shown, once, for the whole
+/// workspace: a refusal somebody wrote for a player comes through unchanged,
+/// and a fault becomes one of two sentences with the detail going to the log.
+/// Taking `impl Into<Error>` rather than `Error` is what lets the bare
+/// `std::fs` failures beside them go through the same door.
+fn player(e: impl Into<reborn_core::Error>) -> String {
+    e.into().player_message().to_string()
+}
+
 use reborn_core::dolphin_preferences::{Field, FIELDS};
 fn config_user(p: &Platform, runtime: Option<&str>) -> Result<(PathBuf,PathBuf),String> {
     let exe=runtime_for(p,runtime).ok_or("Dolphin was not found. Choose its location in Files and storage.")?;
-    let prefs=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let user=reborn_core::session::resolve_user_dir_for(p,prefs.user_dir.as_deref(),Some(&exe)).map_err(|e|e.to_string())?;
+    let prefs=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(player)?).map_err(player)?;
+    let user=reborn_core::session::resolve_user_dir_for(p,prefs.user_dir.as_deref(),Some(&exe)).map_err(player)?;
     Ok((exe,user.path().to_path_buf()))
 }
 fn read_ini(path:&Path)->Result<IniDocument,String>{
-    match std::fs::read_to_string(path){Ok(s)=>Ok(IniDocument::parse(&s)),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(IniDocument::parse("")),Err(e)=>Err(e.to_string())}
+    match std::fs::read_to_string(path){Ok(s)=>Ok(IniDocument::parse(&s)),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(IniDocument::parse("")),Err(e)=>Err(player(e))}
 }
 // Old installations can have save/code synchronization disabled. A manual
 // session must begin with the same game state and deterministic settings.
@@ -36,7 +55,7 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
 fn require_closed(exe:&Path)->Result<(),String>{
     #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
-        let result=std::process::Command::new("tasklist.exe").args(["/FO","CSV","/NH"]).creation_flags(0x08000000).output().map_err(|e|e.to_string())?;
+        let result=std::process::Command::new("tasklist.exe").args(["/FO","CSV","/NH"]).creation_flags(0x08000000).output().map_err(player)?;
         if !result.status.success(){return Err("Could not check whether Dolphin is open. Try again.".into());}
         let name=exe.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
         if String::from_utf8_lossy(&result.stdout).lines().any(|line|{let process=line.split(',').next().unwrap_or("").trim_matches('"').to_lowercase();process==name||process=="dolphin.exe"}){return Err("Close Dolphin before changing its settings. Your changes have not been applied.".into());}
@@ -50,15 +69,45 @@ pub async fn dolphin_preferences(runtime:Option<String>)->Result<serde_json::Val
 }
 #[tauri::command]
 pub async fn dolphin_preference_set(runtime:Option<String>,key:String,value:String)->Result<(),String>{
-    tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;require_closed(&exe)?;let field=FIELDS.iter().find(|f|f.id==key).ok_or("Unknown setting.")?;let value=checked_value(field,&value)?;let file=user.join("Config").join(field.file);let mut doc=read_ini(&file)?;let mut overlay=Overlay::new();overlay.entry(field.section.into()).or_default().insert(field.key.into(),value.clone());if !doc.merge(&overlay).is_noop(){std::fs::create_dir_all(file.parent().unwrap()).map_err(|e|e.to_string())?;std::fs::write(&file,doc.render()).map_err(|e|e.to_string())?;}let settings_file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut settings=reborn_core::settings::Settings::load(&settings_file).map_err(|e|e.to_string())?;settings.emulator_preferences.insert(key,value);settings.save(&settings_file).map_err(|e|e.to_string())?;Ok(())}).await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;require_closed(&exe)?;let field=FIELDS.iter().find(|f|f.id==key).ok_or("Unknown setting.")?;let value=checked_value(field,&value)?;let file=user.join("Config").join(field.file);let mut doc=read_ini(&file)?;let mut overlay=Overlay::new();overlay.entry(field.section.into()).or_default().insert(field.key.into(),value.clone());if !doc.merge(&overlay).is_noop(){std::fs::create_dir_all(file.parent().unwrap()).map_err(player)?;std::fs::write(&file,doc.render()).map_err(player)?;}let settings_file=reborn_core::settings::settings_path(&p).map_err(player)?;let mut settings=reborn_core::settings::Settings::load(&settings_file).map_err(player)?;settings.emulator_preferences.insert(key,value);settings.save(&settings_file).map_err(player)?;Ok(())}).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
 pub async fn dolphin_saves_folder(runtime:Option<String>)->Result<(),String>{
-    let p=Platform::detect();let (_,user)=config_user(&p,runtime.as_deref())?;let dir=user.join("GC");std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;open_in_file_manager(&p,&dir)
+    let p=Platform::detect();let (_,user)=config_user(&p,runtime.as_deref())?;let dir=user.join("GC");std::fs::create_dir_all(&dir).map_err(player)?;open_in_file_manager(&p,&dir)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The door every failure on this page goes through keeps a sentence that
+    /// was written for the player, and summarizes one that was not.
+    ///
+    /// Both halves matter. `Session::prepare` refuses with "Close Reborn
+    /// Dolphin before applying settings, then try again." when the emulator is
+    /// already open, which is the most common way starting an online session
+    /// fails; replacing that with "Something unexpected happened" is false
+    /// advice. And a settings file another program has open must still never
+    /// put its path or `os error 32` on the Online page.
+    #[test]
+    fn the_online_page_keeps_a_written_sentence_and_summarizes_a_fault() {
+        let written = reborn_core::runtime::CLOSE_EMULATOR_FIRST;
+        assert_eq!(
+            player(reborn_core::Error::player(written)),
+            written,
+            "the instruction the player has to act on was replaced by a generic one"
+        );
+
+        let locked = std::io::Error::from_raw_os_error(32);
+        let shown = player(locked);
+        assert!(
+            !shown.contains("os error") && !shown.contains("32"),
+            "an operating system error number reached the Online page: {shown}"
+        );
+        assert!(
+            !shown.contains(char::from(92u8)) && !shown.contains('/'),
+            "a file path reached the Online page: {shown}"
+        );
+    }
+
     #[test]
     fn netplay_reenables_synchronization_without_replacing_save_locations() {
         let mut doc = IniDocument::parse("[NetPlay]\nSyncSaves = False\nSyncCodes = False\nStrictSettingsSync = False\nNickname = Player\n[Core]\nMemcardAPath = C:/Saves/My.raw\nMEM1Size = 67108864\n");
@@ -110,22 +159,22 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
-  let Startup::Owner(supervisor)=Supervisor::acquire(&p).map_err(|e|e.to_string())? else { return Err(already_running()); };
-  let _=supervisor.recover_unfinished().map_err(|e|e.to_string())?;
-  let prepared=Session::prepare(&p,&req).map_err(|e|e.to_string())?;
+  let Startup::Owner(supervisor)=Supervisor::acquire(&p).map_err(player)? else { return Err(already_running()); };
+  let _=supervisor.recover_unfinished().map_err(player)?;
+  let prepared=Session::prepare(&p,&req).map_err(player)?;
   let user=prepared.user_dir.path();let file=user.join("Config/Dolphin.ini");let mut doc=read_ini(&file)?;let mut overlay=netplay_sync_overlay();let net=overlay.entry("NetPlay".into()).or_default();
   net.insert("Nickname".into(),nickname.into());net.insert("TraversalChoice".into(),connection.clone());net.insert("ConnectPort".into(),port.to_string());net.insert("HostPort".into(),port.to_string());
   if mode=="join"{net.insert(if connection=="traversal"{"HostCode"}else{"Address"}.into(),address.into());}
   // Make the chosen game discoverable in Dolphin's Host tab without replacing existing folders.
   let count=doc.get("General","ISOPaths").and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(10000);
   if let Some(parent)=game_path.parent(){let path=parent.display().to_string();if !(0..count).any(|i|doc.get("General",&format!("ISOPath{i}"))==Some(path.as_str())){let general=overlay.entry("General".into()).or_default();general.insert(format!("ISOPath{count}"),path);general.insert("ISOPaths".into(),(count+1).to_string());}}
-  doc.merge(&overlay);std::fs::write(&file,doc.render()).map_err(|e|e.to_string())?;
+  doc.merge(&overlay);std::fs::write(&file,doc.render()).map_err(player)?;
   let args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string()];
   let user_dir=user.to_path_buf();
   // Written before the emulator, so the id every capture from this session is
   // filed under exists before there is anything to file.
-  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(|e|e.to_string())?;
-  let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(|e|e.to_string())?;
+  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
+  let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   std::thread::spawn(move||{
    // The lock and the guard are held across the wait AND across the collection
    // and the send, the way Session::run holds them: the queue and the session
