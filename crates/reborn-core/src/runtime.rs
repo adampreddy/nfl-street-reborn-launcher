@@ -170,6 +170,9 @@ impl ConfigGenerator {
         // handler is a popup.
         set(&mut dolphin, "Interface", "UsePanicHandlers", "False");
         set(&mut dolphin, "Interface", "ConfirmStop", "False");
+        // Dolphin's own Discord presence is retired so the launcher can own presence later;
+        // two publishers for one account race on the local IPC socket.
+        set(&mut dolphin, "General", "UseDiscordPresence", "False");
         // Reborn requires 64 MiB of emulated MEM1, regardless of imported preferences.
         set(&mut dolphin, "Core", "RAMOverrideEnable", "True");
         set(&mut dolphin, "Core", "MEM1Size", "67108864");
@@ -194,10 +197,25 @@ impl ConfigGenerator {
         // render black and that gets baked into the player's saves, which is
         // not recoverable from the launcher side.
         set(&mut gfx, "Hacks", "EFBAccessEnable", "True");
+        // Texture dumping was left on in the reference installs: a disk write per new texture.
+        set(&mut gfx, "Settings", "DumpTextures", "False");
+        set(&mut gfx, "Settings", "DumpBaseTextures", "False");
+        set(&mut gfx, "Settings", "DumpMipTextures", "False");
+        // Per-upload CPU cost that the HD pack makes pure waste.
+        set(&mut gfx, "Enhancements", "ArbitraryMipmapDetection", "False");
         for (section,values) in Self::required_game_settings() {
             if let Some(section)=section.strip_prefix("Video_"){gfx.entry(section.into()).or_default().extend(values);}
             else{out.get_mut("Dolphin.ini").unwrap().entry(section).or_default().extend(values);}
         }
+
+        // The freeze instrumentation left file logging on; it costs a write per line.
+        let mut logger = Overlay::new();
+        set(&mut logger, "Options", "WriteToFile", "False");
+        set(&mut logger, "Options", "Verbosity", "1");
+        set(&mut logger, "Options", "WriteToConsole", "False");
+        set(&mut logger, "Options", "WriteToWindow", "False");
+        out.insert("Logger.ini".to_string(), logger);
+
         out.insert("GFX.ini".to_string(), gfx);
 
         out
@@ -211,7 +229,9 @@ impl ConfigGenerator {
             ("Video_Settings","InternalResolution","3"),("Video_Settings","MSAA","1"),("Video_Settings","SSAA","False"),
             ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","True"),
             ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
-            ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True")
+            ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True"),
+            ("Video_Settings","DumpTextures","False"),("Video_Settings","DumpBaseTextures","False"),("Video_Settings","DumpMipTextures","False"),
+            ("Video_Enhancements","ArbitraryMipmapDetection","False"),
         ] { set(&mut out,section,key,value); }
         out
     }
@@ -273,11 +293,12 @@ impl ConfigGenerator {
     }
 
     fn logger_ini() -> String {
-        // Console and window logging off. The Xbox payload ships them on, which
-        // puts a log window in front of a player who never asked for one.
+        // Console, window, and file logging off. The Xbox payload ships them
+        // on, which puts a log window in front of a player who never asked
+        // for one, and file logging costs a disk write per line.
         "[Options]\n\
-         Verbosity = 2\n\
-         WriteToFile = True\n\
+         Verbosity = 1\n\
+         WriteToFile = False\n\
          WriteToConsole = False\n\
          WriteToWindow = False\n"
             .to_string()
@@ -343,6 +364,15 @@ impl RuntimePackager {
                 found.push(PackagingViolation {
                     path: format!("User/{name}"),
                     reason,
+                });
+            }
+        }
+
+        for dir in ["LeagueGameStats", "GameStats"] {
+            if user_dir.join(dir).is_dir() {
+                found.push(PackagingViolation {
+                    path: format!("User/{dir}"),
+                    reason: "captured match results inside the runtime package; they belong to a player",
                 });
             }
         }
@@ -560,6 +590,23 @@ mod tests {
         assert!(logger.contains("WriteToWindow = False"), "{logger}");
     }
 
+    #[test]
+    fn the_optimization_keys_are_generated_and_the_freeze_fix_is_kept() {
+        let cfg = LaunchConfig { build: GameBuild::Offline, graphics: GraphicsPreset::Balanced, fullscreen: true, game_path: "g.iso".into(), user_dir: "u".into(), match_context: None };
+        let o = ConfigGenerator::overlays(&cfg);
+        assert_eq!(o["GFX.ini"]["Settings"]["DumpTextures"], "False");
+        assert_eq!(o["GFX.ini"]["Settings"]["DumpBaseTextures"], "False");
+        assert_eq!(o["GFX.ini"]["Enhancements"]["ArbitraryMipmapDetection"], "False");
+        assert_eq!(o["Dolphin.ini"]["General"]["UseDiscordPresence"], "False");
+        assert_eq!(o["Logger.ini"]["Options"]["WriteToFile"], "False");
+        assert_eq!(o["Logger.ini"]["Options"]["Verbosity"], "1");
+        let g = ConfigGenerator::required_game_settings();
+        assert_eq!(g["Core"]["SyncGPU"], "True");
+        assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "True");
+        assert_eq!(g["Video_Settings"]["DumpTextures"], "False");
+        assert_eq!(g["Video_Enhancements"]["ArbitraryMipmapDetection"], "False");
+    }
+
     /// The launcher writes config and never reads it back, so the Settings page
     /// stays the single source of truth. Two identical configs must therefore
     /// produce byte-identical output.
@@ -640,6 +687,14 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.reason.contains("land on a real fixture")));
+    }
+
+    #[test]
+    fn captured_results_inside_a_runtime_package_are_a_violation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("User").join("GameStats").join("Online")).unwrap();
+        let found = RuntimePackager::audit(dir.path()).unwrap();
+        assert!(found.iter().any(|v| v.path == "User/GameStats"), "{found:?}");
     }
 
     #[test]
