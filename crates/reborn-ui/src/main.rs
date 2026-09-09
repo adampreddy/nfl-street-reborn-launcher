@@ -520,7 +520,7 @@ fn find_runtime_and_game_for(
             // Dolphin.ini's recorded default counts, so it is resolved here
             // the way a launch resolves it.
             let user = reborn_core::session::resolve_user_dir_for(platform, user_dir, Some(found.path()))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.player_message().to_string())?;
             let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
             let search = reborn_core::session::find_game_image(
                 found.path(),
@@ -587,7 +587,7 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     .ok()
                     .map(|d| d.explain()),
                 game_note: {
-                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?.game_path;
+                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
                     let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
                     if given.is_some() {
                         None
@@ -701,7 +701,7 @@ async fn launch(
             league_match: league_match.unwrap_or(false),
         };
 
-        match Session::run(&p, &req).map_err(|e| e.to_string())? {
+        match Session::run(&p, &req).map_err(|e| e.player_message().to_string())? {
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
                 user_dir_note: None,
@@ -3273,7 +3273,6 @@ struct StatsEntryView {
     /// screen showing these values needs to be able to mark them suspect.
     sides_verified: Option<bool>,
     needs_review: Option<bool>,
-    flags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Default, PartialEq, Eq)]
@@ -3328,11 +3327,6 @@ fn entry_view(e: &QueueEntry) -> StatsEntryView {
         players: e.summary.as_ref().map(|s| s.players),
         sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
         needs_review: e.summary.as_ref().map(|s| s.needs_review),
-        flags: e
-            .summary
-            .as_ref()
-            .map(|s| s.flags.clone())
-            .unwrap_or_default(),
     }
 }
 
@@ -3676,8 +3670,8 @@ fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<P
     if let Some(value) = hint.filter(|v| !v.trim().is_empty()) {
         return Ok(Some(reborn_core::session::user_path(value)));
     }
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?.user_dir)
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())?.user_dir)
 }
 
 #[tauri::command]
@@ -4068,29 +4062,29 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
         })?;
         let chosen = selected_user_dir(&p,user_dir.as_deref())?;
         let user = reborn_core::session::resolve_user_dir_for(&p, chosen.as_deref(), Some(&exe))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
         let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
-        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e|e.to_string())?;
-        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e|e.to_string())?;
+        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e| e.player_message().to_string())?;
+        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e| e.player_message().to_string())?;
 
         // The lock, then anything left unfinished, then the record. The same
         // first steps as a launch, because this ends the same way: with a
         // capture that has to belong to something.
-        let Startup::Owner(supervisor) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+        let Startup::Owner(supervisor) = Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())? else {
             return Err(already_running());
         };
-        let _ = supervisor.recover_unfinished().map_err(|e| e.to_string())?;
+        let _ = supervisor.recover_unfinished().map_err(|e| e.player_message().to_string())?;
         // Offline, and not a league match: nothing was asked, and the emulator
         // is being opened on its own rather than pointed at a fixture. The
         // folder Dolphin writes into still says whether the game was online.
         let record = supervisor
             .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false }))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
 
         let env = std::collections::BTreeMap::new();
         let handle = p.processes
             .spawn(&exe, &args, exe.parent(), &env)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
         let user_path = user.path().to_path_buf();
         std::thread::spawn(move || {
             // Held across the wait AND across the collection and the send, the
@@ -4898,8 +4892,8 @@ async fn credential_stored(account: String) -> Result<CredentialView, String> {
 
 /// The paths a person set, or nothing, which means find them.
 fn saved_paths(platform: &Platform) -> Result<reborn_core::settings::Settings, String> {
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())
 }
 
 /// What the shortcuts ask for.
@@ -5250,6 +5244,34 @@ mod tests {
         &rest[..to]
     }
 
+    /// The text of one item, from `start` to the first following `stop`.
+    ///
+    /// Like `command_body`, but for the free functions between commands,
+    /// which have no shared marker like `#[tauri::command]` to stop at. The
+    /// caller names the next item's own text instead.
+    fn body_until<'a>(source: &'a str, start: &str, stop: &str) -> &'a str {
+        let from = source
+            .find(start)
+            .unwrap_or_else(|| panic!("{start} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest
+            .find(stop)
+            .unwrap_or_else(|| panic!("{stop} is not in this file any more, or moved before {start}"));
+        &rest[..to]
+    }
+
+    /// A `spawn_blocking` command's body, with the trailing `.await` /
+    /// `map_err` that turns a `JoinError` into a string trimmed off.
+    ///
+    /// Every command built on `spawn_blocking` ends with that pair, and it
+    /// has nothing to do with `reborn_core::Error`: it only fires if the
+    /// closure itself panicked. Left in, it would satisfy any check for "no
+    /// more turning an error into raw text" by accident, on every command in
+    /// this file, whether or not the real fix was made.
+    fn inner_body(body: &str) -> &str {
+        &body[..body.find("\n    .await").unwrap_or(body.len())]
+    }
+
     /// Every way of starting the emulator records a session and collects what
     /// that session produced.
     ///
@@ -5341,6 +5363,60 @@ mod tests {
             Some(note),
             "the one sentence the server wrote about this player's own game is stored and \
              shown to nobody"
+        );
+    }
+
+    /// A queue row never carries this launcher's own flag codes out to a
+    /// page.
+    ///
+    /// `entry_view` used to copy `CaptureSummary::flags` (`"wrong-schema"`,
+    /// `"no-players"`, and so on) onto the row verbatim. Nothing renders
+    /// them as a message; they are internal vocabulary a player was never
+    /// taught, whether or not a page happens to print them today. The
+    /// meaningful signal for a player, whether a result needs a person to
+    /// look at it, is already on the row as `needs_review`, so the codes are
+    /// dropped rather than translated: there is nothing left worth adding a
+    /// vocabulary for.
+    #[test]
+    fn a_queue_row_never_carries_this_launchers_internal_flag_codes() {
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"b"),
+            state: EntryState::Quarantined {
+                reason: QuarantineReason::FailedValidation {
+                    flags: vec![reborn_core::stats::codes::WRONG_SCHEMA.to_string()],
+                },
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: None,
+            last_error: None,
+            source_path: None,
+            session_id: None,
+            capture_folder: None,
+            note: None,
+            summary: Some(reborn_core::stats::CaptureSummary {
+                captured_at: "2026-01-01T00:00:00Z".to_string(),
+                teams: Vec::new(),
+                players: 2,
+                sides_verified: false,
+                flags: vec![
+                    reborn_core::stats::codes::WRONG_SCHEMA.to_string(),
+                    reborn_core::stats::codes::NO_PLAYERS.to_string(),
+                ],
+                needs_review: true,
+            }),
+        };
+        let view = entry_view(&entry);
+        let json = serde_json::to_value(&view).expect("StatsEntryView serializes");
+        assert!(
+            json.get("flags").is_none(),
+            "a queue row still carries this launcher's own flag codes to a page: {json}"
+        );
+        assert_eq!(
+            view.needs_review,
+            Some(true),
+            "the meaningful signal a player can use has to survive removing the codes"
         );
     }
 
@@ -5442,6 +5518,67 @@ mod tests {
             body.contains("send_backlog_in_background"),
             "signing in no longer starts the backlog send at all"
         );
+    }
+
+    /// No core error's raw `Display` reaches a player through the launch or
+    /// open-emulator path.
+    ///
+    /// `reborn_core::Error::Io` displays as `io error at {path}: {source}`,
+    /// and every one of these functions used to hand that straight to a
+    /// caller with `.map_err(|e| e.to_string())`: a permission problem or a
+    /// full disk starting a game put a full file path and an operating
+    /// system error number on the Play page, because `home.js` renders
+    /// whatever `launch`, `launch_check` and `open_runtime` hand back with no
+    /// wording of its own. `Error::player_message` lives in `reborn-core`,
+    /// not here, because the window has no logger to put the real detail in
+    /// (see `identity::origin`'s doc comment for the same reasoning); this
+    /// checks that every command on the path actually calls it, once, at the
+    /// boundary all of them share.
+    #[test]
+    fn launch_and_open_runtime_never_turn_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        let bodies: [(&str, &str); 7] = [
+            (
+                "find_runtime_and_game",
+                body_until(src, "\nfn find_runtime_and_game(", "\nfn find_runtime_and_game_for("),
+            ),
+            (
+                "find_runtime_and_game_for",
+                body_until(src, "\nfn find_runtime_and_game_for(", "\n/// The emulator a hint resolves to"),
+            ),
+            (
+                "saved_paths",
+                body_until(src, "\nfn saved_paths(", "\n/// What the shortcuts ask for."),
+            ),
+            (
+                "selected_user_dir",
+                body_until(src, "\nfn selected_user_dir(", "\n#[tauri::command]\nasync fn settings_paths"),
+            ),
+            ("launch_check", inner_body(command_body(src, "async fn launch_check"))),
+            ("launch", inner_body(command_body(src, "async fn launch("))),
+            ("open_runtime", inner_body(command_body(src, "async fn open_runtime"))),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                !compact.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text"
+            );
+        }
+        for name in [
+            "find_runtime_and_game_for",
+            "saved_paths",
+            "selected_user_dir",
+            "launch_check",
+            "launch",
+            "open_runtime",
+        ] {
+            let (_, body) = bodies.iter().find(|(n, _)| *n == name).expect("listed above");
+            assert!(
+                body.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
     }
 
     #[test]

@@ -77,6 +77,112 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Shown when an operation could not reach a file or folder it needs: a save
+/// or a settings file locked by something else, a permission problem, a full
+/// disk. The one thing a player can do about any of those is close whatever
+/// else might have it open, make room, and try again; naming the actual path
+/// would not help, because it is very often a folder inside this launcher's
+/// own data root that the player never chose and cannot usefully act on.
+pub const FILE_UNREACHABLE: &str =
+    "A file this launcher needs could not be read or written. Close anything else that might have it open, make sure the disk has room, and try again.";
+
+/// Shown for every other way a platform operation can fail. Nothing here
+/// distinguishes one cause from another for a player, and there is nothing
+/// different for them to do about any of them, so they collapse to this one
+/// sentence; the real detail still reaches a developer through
+/// [`Error::player_message`]'s own `tracing::warn!`.
+pub const SOMETHING_UNEXPECTED: &str = "Something unexpected happened. Try again.";
+
+impl Error {
+    /// A sentence a player can read, in place of this error's own `Display`.
+    ///
+    /// [`Error::Io`] displays as `io error at {path}: {source}`, and
+    /// [`Error::PlainIo`] carries the same operating system wording with no
+    /// path attached. Neither is vocabulary a player was ever taught, and a
+    /// permission problem or a full disk starting a game used to put a full
+    /// file path and text like `os error 112` on the Play page because a
+    /// caller wrote `.map_err(|e| e.to_string())`. This is the replacement,
+    /// once, so every caller gets the same two sentences instead of
+    /// repeating this decision at each call site.
+    ///
+    /// Only two categories, because a player can only act on two things
+    /// differently: a file or folder problem (close whatever has it open,
+    /// make room, try again) versus everything else (try again). The real
+    /// error still reaches a developer, through `tracing::warn!` here rather
+    /// than at each call site, so no caller has to remember to log it.
+    pub fn player_message(&self) -> &'static str {
+        match self {
+            Error::Io { .. } | Error::NoHomeDirectory => {
+                tracing::warn!("could not reach a file or folder: {self}");
+                FILE_UNREACHABLE
+            }
+            Error::PlainIo(_) | Error::CredentialStore(_) | Error::NotImplemented { .. } => {
+                tracing::warn!("a platform operation failed: {self}");
+                SOMETHING_UNEXPECTED
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shape [`Error`] can take reads as a plain sentence through
+    /// [`Error::player_message`], mechanically rather than as a list of
+    /// expected strings, using the same six rules `identity.rs` established.
+    #[test]
+    fn every_platform_error_reads_as_a_plain_sentence() {
+        use crate::player_sentence::assert_player_safe;
+
+        let io = Error::Io {
+            path: PathBuf::from(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn\settings.json"),
+            source: std::io::Error::from_raw_os_error(112), // ERROR_DISK_FULL
+        };
+        assert_player_safe(io.player_message());
+
+        assert_player_safe(Error::NoHomeDirectory.player_message());
+
+        let plain = Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, "something odd"));
+        assert_player_safe(plain.player_message());
+
+        let credential = Error::CredentialStore("the vault refused: 0x8009000".to_string());
+        assert_player_safe(credential.player_message());
+
+        let not_implemented = Error::NotImplemented {
+            operation: "eject",
+            platform: "Windows",
+        };
+        assert_player_safe(not_implemented.player_message());
+    }
+
+    /// A file or folder problem and an unexpected one read as two different
+    /// sentences, because they are the two things a player can act on
+    /// differently; everything else collapses to whichever of the two it is
+    /// closest to, rather than the launcher inventing a third choice with
+    /// nothing different to tell a player to do.
+    #[test]
+    fn a_file_problem_and_an_unexpected_one_are_told_apart() {
+        let io = Error::Io {
+            path: PathBuf::from("settings.json"),
+            source: std::io::Error::from_raw_os_error(5), // ERROR_ACCESS_DENIED
+        };
+        assert_eq!(io.player_message(), FILE_UNREACHABLE);
+        assert_eq!(Error::NoHomeDirectory.player_message(), FILE_UNREACHABLE);
+
+        let plain = Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, "x"));
+        assert_eq!(plain.player_message(), SOMETHING_UNEXPECTED);
+        assert_eq!(
+            Error::CredentialStore("x".to_string()).player_message(),
+            SOMETHING_UNEXPECTED
+        );
+        assert_eq!(
+            Error::NotImplemented { operation: "eject", platform: "Windows" }.player_message(),
+            SOMETHING_UNEXPECTED
+        );
+    }
+}
+
 /// Helper for the stub implementations.
 pub(crate) fn not_implemented<T>(operation: &'static str) -> Result<T> {
     Err(Error::NotImplemented {
