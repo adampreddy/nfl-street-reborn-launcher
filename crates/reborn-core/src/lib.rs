@@ -58,6 +58,8 @@ pub mod music;
 pub mod net;
 pub mod onboarding;
 pub mod origin;
+#[cfg(feature = "publish")]
+pub mod publish;
 pub mod platform;
 pub mod roster;
 pub mod runtime;

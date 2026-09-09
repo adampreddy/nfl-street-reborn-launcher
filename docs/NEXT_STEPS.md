@@ -286,6 +286,12 @@ in `C:\ProgramData\Microsoft\Windows\Containers` (about 24 GB, freed by
 turning the feature off). Deleted this evening: `target\dist-old-2026-09-06`,
 `target\e2e-game-patch`, `target\e2e-roster` (23 GB).
 
+- **Publisher plan 1 landed (2026-09-09):** publishing moved into
+  `reborn_core::publish` with typed requests, outcomes and an event sink;
+  `rebornctl publish` is a printer over it. 34 core unit tests; the three
+  e2e scripts pass unchanged. Plans 2 to 4 (native upload and status, the
+  app, the installer set) are next, written against these names.
+
 ### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 
 Built from commit `0a69415` with:
