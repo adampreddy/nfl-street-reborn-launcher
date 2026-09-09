@@ -3395,6 +3395,10 @@ struct StatsIngestView {
     already_submitted: usize,
     /// Files that could not be read. These were left exactly where they were.
     unreadable: usize,
+    /// Results that were saved, whose file the emulator wrote could not be
+    /// removed afterwards. Nothing was lost; the file is read again next time
+    /// and the content key makes that a no-op.
+    source_kept: usize,
     /// One sentence per capture, from the core, so nothing here paraphrases a
     /// result the player will act on.
     messages: Vec<String>,
@@ -3442,6 +3446,7 @@ async fn stats_ingest(
             already_queued: 0,
             already_submitted: 0,
             unreadable: 0,
+            source_kept: 0,
             messages: results.iter().map(|r| r.message()).collect(),
         };
         for result in &results {
@@ -3451,6 +3456,7 @@ async fn stats_ingest(
                 Enqueued::AlreadyQueued(_) => view.already_queued += 1,
                 Enqueued::AlreadySubmitted { .. } => view.already_submitted += 1,
                 Enqueued::CouldNotRead { .. } => view.unreadable += 1,
+                Enqueued::SourceKept { .. } => view.source_kept += 1,
             }
         }
         Ok(view)

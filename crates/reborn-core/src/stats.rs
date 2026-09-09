@@ -1431,6 +1431,19 @@ pub enum Enqueued {
     /// The file could not be read off disk at all, so nothing was queued and the
     /// file was left where it was.
     CouldNotRead { path: PathBuf, detail: String },
+    /// The capture is safely in the queue, and the file the emulator wrote
+    /// could not be removed afterwards.
+    ///
+    /// Its own outcome rather than an error, because by the time it happens the
+    /// result is already durable and the game is already accounted for. This
+    /// used to abort the whole collection: the online folder is scanned first,
+    /// so one file held open by antivirus or a sync client stopped the offline
+    /// and legacy folders being scanned at all, and stopped the send that
+    /// follows collection in the same chain.
+    ///
+    /// Nothing is lost. The file is read again next time and the content key
+    /// makes that a no-op.
+    SourceKept { path: PathBuf, detail: String },
 }
 
 impl Enqueued {
@@ -1440,7 +1453,7 @@ impl Enqueued {
                 Some(&e.key)
             }
             Enqueued::AlreadySubmitted { key, .. } => Some(key),
-            Enqueued::CouldNotRead { .. } => None,
+            Enqueued::CouldNotRead { .. } | Enqueued::SourceKept { .. } => None,
         }
     }
 
@@ -1464,6 +1477,11 @@ impl Enqueued {
                 "Could not read {}: {detail} The file was left alone.",
                 path.display()
             ),
+            Enqueued::SourceKept { .. } => {
+                "Saved this result, and the file the game wrote could not be tidied \
+                 away afterwards. Nothing was lost, and it will be tidied next time."
+                    .to_string()
+            }
         }
     }
 }
@@ -1767,10 +1785,16 @@ impl StatsQueue {
             // source can go. Leaving it would mean the folder never empties and
             // the same games are re-examined after every launch.
             if !matches!(result, Enqueued::CouldNotRead { .. }) {
-                std::fs::remove_file(&path).map_err(|source| Error::Io {
-                    path: path.clone(),
-                    source,
-                })?;
+                // Reported, never propagated. The capture is already durable by
+                // the time this runs, so a file antivirus or a sync client has
+                // open is not a reason to abandon the rest of the folder, the
+                // folders after it, or the send that follows.
+                if let Err(source) = std::fs::remove_file(&path) {
+                    out.push(Enqueued::SourceKept {
+                        path: path.clone(),
+                        detail: source.to_string(),
+                    });
+                }
             }
             out.push(result);
         }
@@ -1778,10 +1802,21 @@ impl StatsQueue {
     }
 
     /// Everything Dolphin wrote, from both mode folders and the legacy folder.
+    ///
+    /// One folder that cannot be listed does not stop the others. They hold
+    /// games somebody played, and the online folder is scanned first, so
+    /// propagating from there used to mean the offline and legacy folders were
+    /// never looked at.
     pub fn ingest_all(&self, user_dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
         let mut out = Vec::new();
         for (dir, folder) in dolphin_capture_dirs(user_dir) {
-            out.extend(self.ingest_from_folder(&dir, session_id, folder)?);
+            match self.ingest_from_folder(&dir, session_id, folder) {
+                Ok(found) => out.extend(found),
+                Err(e) => out.push(Enqueued::CouldNotRead {
+                    path: dir,
+                    detail: e.to_string(),
+                }),
+            }
         }
         Ok(out)
     }
@@ -3560,6 +3595,10 @@ mod tests {
                 path: PathBuf::from("x.json"),
                 detail: "access denied.".into(),
             },
+            Enqueued::SourceKept {
+                path: PathBuf::from("x.json"),
+                detail: "the file is in use.".into(),
+            },
         ];
         for outcome in outcomes {
             let m = outcome.message();
@@ -3774,6 +3813,108 @@ mod tests {
             !user.join("GameStats/Online/g.json").exists(),
             "ingested files are removed"
         );
+    }
+
+    /// A capture file that cannot be deleted while this is alive, the way one
+    /// antivirus or a sync client is holding open cannot be.
+    ///
+    /// The read-only attribute is NOT enough on Windows: `remove_file` there
+    /// deletes a read-only file on purpose. What actually refuses is an open
+    /// handle that does not share delete, which is exactly what the real
+    /// culprits hold. On Unix, unlinking is governed by the directory.
+    struct HeldOpen {
+        #[cfg(windows)]
+        _handle: std::fs::File,
+        #[cfg(not(windows))]
+        dir: PathBuf,
+    }
+
+    impl HeldOpen {
+        fn on(path: &Path) -> Self {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_SHARE_READ | FILE_SHARE_WRITE, and deliberately not
+                // FILE_SHARE_DELETE.
+                const SHARE_EVERYTHING_BUT_DELETE: u32 = 0x0000_0003;
+                Self {
+                    _handle: std::fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(SHARE_EVERYTHING_BUT_DELETE)
+                        .open(path)
+                        .expect("hold the capture open"),
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let dir = path.parent().expect("a capture is in a folder").to_path_buf();
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+                Self { dir }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    impl Drop for HeldOpen {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    /// One file that cannot be deleted must not stop everything else.
+    ///
+    /// The delete used to be propagated with `?`, and the online folder is
+    /// scanned first. So one capture held open by antivirus or a sync client
+    /// stopped the offline and legacy folders being scanned at all, and
+    /// because collecting sits before sending in the same chain, nothing was
+    /// sent either, on that session and on every session after it. The capture
+    /// whose delete failed was already durably in the queue when it happened,
+    /// which is what makes carrying on the safe thing to do.
+    #[test]
+    fn a_source_file_that_cannot_be_deleted_never_stops_the_other_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("User");
+        for (dir, body) in [
+            ("GameStats/Online", sample_capture_with_style([10, 20])),
+            ("GameStats/Offline", sample_capture_with_style([30, 40])),
+            ("LeagueGameStats", sample_capture_with_style([50, 60])),
+        ] {
+            std::fs::create_dir_all(user.join(dir)).unwrap();
+            std::fs::write(user.join(dir).join("g.json"), body).unwrap();
+        }
+        let stuck = user.join("GameStats/Online/g.json");
+        let held = HeldOpen::on(&stuck);
+
+        let q = StatsQueue::open_at(&root.path().join("q"), FixedClock::new(1)).unwrap();
+        let got = q.ingest_all(&user, Some("s1")).unwrap();
+
+        assert_eq!(
+            q.entries().unwrap().len(),
+            3,
+            "all three folders must still be collected: {got:?}"
+        );
+        assert_eq!(
+            q.pending().unwrap().len(),
+            3,
+            "and all three must still be sendable"
+        );
+        assert!(stuck.exists(), "the file that could not be deleted is left alone");
+        assert!(
+            got.iter().any(|e| matches!(e, Enqueued::SourceKept { .. })),
+            "the failure must be reported, not swallowed: {got:?}"
+        );
+
+        // Read again next time, and the content key makes that a no-op.
+        let again = q.ingest_all(&user, Some("s1")).unwrap();
+        assert!(
+            again.iter().any(|e| matches!(e, Enqueued::AlreadyQueued(_))),
+            "{again:?}"
+        );
+        assert_eq!(q.entries().unwrap().len(), 3, "nothing was duplicated");
+
+        drop(held);
     }
 
     /// A refused token is not a failed submission: nothing about the capture

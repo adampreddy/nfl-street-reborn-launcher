@@ -172,8 +172,18 @@ pub enum StatsAfterSession {
     /// `sent` is None when nobody is signed in, so the entries wait.
     Ingested {
         enqueued: Vec<crate::stats::Enqueued>,
+        /// Set when collecting or sending hit a problem.
+        ///
+        /// Carried rather than returned, and never allowed to stop the other
+        /// half. Collection running before sending in one chain meant a single
+        /// undeletable file stopped everything being sent, on that session and
+        /// on every session after it, and the queue holds games from earlier
+        /// sessions that are still perfectly deliverable.
+        problem: Option<String>,
         sent: Option<crate::stats::SubmitReport>,
     },
+    /// The queue itself could not be opened, so there was nowhere to collect
+    /// into and nothing to send from.
     Failed(String),
 }
 
@@ -182,15 +192,22 @@ impl StatsAfterSession {
     pub fn explain(&self) -> Option<String> {
         use crate::stats::Enqueued;
         match self {
-            StatsAfterSession::Failed(why) => Some(format!("Match results could not be collected: {why}")),
-            StatsAfterSession::Ingested { enqueued, sent } => {
+            // Deliberately not the error text. This line is shown to a player,
+            // and the error carries paths and library wording.
+            StatsAfterSession::Failed(_) => Some(
+                "Match results could not be collected this time. Nothing was lost: they \
+                 are still on disk and the next game will pick them up."
+                    .to_string(),
+            ),
+            StatsAfterSession::Ingested { enqueued, problem, sent } => {
                 let found = enqueued.iter().filter(|e| matches!(e, Enqueued::Queued(_) | Enqueued::Quarantined(_))).count();
                 let mut parts: Vec<String> = Vec::new();
                 if found > 0 {
                     parts.push(format!("{found} result{} recorded", if found == 1 { "" } else { "s" }));
                 }
                 match sent {
-                    None if found > 0 => parts.push("waiting for sign-in".to_string()),
+                    // Only when there is nothing else to explain the silence.
+                    None if found > 0 && problem.is_none() => parts.push("waiting for sign-in".to_string()),
                     None => {}
                     Some(r) => {
                         let n = r.accepted.len() + r.recorded.len();
@@ -201,6 +218,9 @@ impl StatsAfterSession {
                         if r.waiting_for_sign_in { parts.push("waiting for sign-in".to_string()); }
                     }
                 }
+                // Named, without the error text: the player is told something
+                // is being kept, not shown a path or a library's wording.
+                if problem.is_some() { parts.push("some could not be collected or sent this time and are being kept".to_string()); }
                 if parts.is_empty() { None } else { Some(format!("{}.", parts.join(", "))) }
             }
         }
@@ -746,18 +766,38 @@ pub fn collect_and_send(
     session_id: &str,
     user_dir: &Path,
 ) -> StatsAfterSession {
-    let attempt = crate::stats::StatsQueue::open(platform).and_then(|queue| {
-        let enqueued = queue.ingest_all(user_dir, Some(session_id))?;
-        let history = supervisor.history()?;
-        let sent = match crate::backend::auto_submit(platform, &queue, &history)? {
-            crate::backend::SendAttempt::Sent(report) => Some(report),
-            crate::backend::SendAttempt::NotSignedIn => None,
-        };
-        Ok((enqueued, sent))
-    });
-    match attempt {
-        Ok((enqueued, sent)) => StatsAfterSession::Ingested { enqueued, sent },
-        Err(e) => StatsAfterSession::Failed(e.to_string()),
+    let queue = match crate::stats::StatsQueue::open(platform) {
+        Ok(queue) => queue,
+        // The only failure that really ends it: nowhere to collect into, and
+        // nothing to send from.
+        Err(e) => return StatsAfterSession::Failed(e.to_string()),
+    };
+
+    // Collecting and sending are two jobs, not one chain. Collecting used to
+    // come first with a `?` on it, so a folder it could not finish stopped the
+    // send as well, and the queue holds games from earlier sessions that were
+    // still perfectly deliverable.
+    let (enqueued, mut problem) = match queue.ingest_all(user_dir, Some(session_id)) {
+        Ok(found) => (found, None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
+
+    let sent = match supervisor
+        .history()
+        .and_then(|history| crate::backend::auto_submit(platform, &queue, &history))
+    {
+        Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
+        Ok(crate::backend::SendAttempt::NotSignedIn) => None,
+        Err(e) => {
+            problem.get_or_insert(e.to_string());
+            None
+        }
+    };
+
+    StatsAfterSession::Ingested {
+        enqueued,
+        problem,
+        sent,
     }
 }
 
@@ -1548,14 +1588,44 @@ mod tests {
         let mut r = crate::stats::SubmitReport::default();
         r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
         r.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
-        let s = StatsAfterSession::Ingested { enqueued: vec![], sent: Some(r) };
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(r) };
         let text = s.explain().unwrap();
         assert!(text.contains("1 result sent"), "{text}");
         assert!(text.contains("1 held for review"), "{text}");
         let mut w = crate::stats::SubmitReport::default();
         w.waiting_for_sign_in = true;
-        let s = StatsAfterSession::Ingested { enqueued: vec![], sent: Some(w) };
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(w) };
         assert!(s.explain().unwrap().contains("waiting for sign-in"));
+    }
+
+    /// Collecting and sending are two jobs. A problem in one is reported and
+    /// never stops the other, and neither is described to a player in the
+    /// words of an error: no path, no error number, no library.
+    #[test]
+    fn a_collection_problem_is_reported_without_showing_a_path_or_an_error_code() {
+        let s = StatsAfterSession::Failed(
+            r"C:\Users\Adam\AppData\Roaming\queue: Access is denied. (os error 5)".to_string(),
+        );
+        let text = s.explain().expect("a failure has to say something");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
+        assert!(text.contains("Nothing was lost"), "{text}");
+
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        let s = StatsAfterSession::Ingested {
+            enqueued: vec![],
+            problem: Some(r"C:\User\GameStats\Online\g.json (os error 32)".to_string()),
+            sent: Some(r),
+        };
+        let text = s.explain().expect("a send that happened has to say so");
+        assert!(
+            text.contains("1 result sent"),
+            "the send must still have run and still be reported: {text}"
+        );
+        assert!(text.contains("being kept"), "the problem must be named: {text}");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
     }
 
     #[test]

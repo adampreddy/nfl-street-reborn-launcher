@@ -3814,6 +3814,7 @@ fn stats_ingest(
             result,
             reborn_core::stats::Enqueued::CouldNotRead { .. }
                 | reborn_core::stats::Enqueued::Quarantined(_)
+                | reborn_core::stats::Enqueued::SourceKept { .. }
         ) {
             problem = true;
         }
