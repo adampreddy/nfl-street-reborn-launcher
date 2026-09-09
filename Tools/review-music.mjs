@@ -77,7 +77,7 @@ if (process.env.RULES) {
     return out;
   }));
 }
-await page.getByRole("button", { name: "Add a song", exact: true }).click();
+await page.getByRole("button", { name: "Choose a file", exact: true }).click();
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${OUT}/music-add.png`, fullPage: true });
 await browser.close();

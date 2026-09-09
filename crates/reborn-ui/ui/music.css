@@ -1,69 +1,69 @@
-/* The Music page: a tracklist on the left, an inspector on the right. Colors
-   and controls come from the shell (finish.css, product-ui.css). */
+/* The Music page: one column, top to bottom, the old editor's three steps.
+   Colors and controls come from the shell (finish.css, product-ui.css). */
 /* launcher.css lays every non-home #screen out as a grid (body.shell:not(.page-home)
-   #screen); at the launcher's width that becomes two columns. This page is one
-   column of blocks at every width, at the same specificity, later in the cascade. */
-body.shell.page-music #screen{display:flex;flex-direction:column;gap:18px;grid-template-columns:none}
+   #screen); this page is one column of blocks at every width, at the same
+   specificity, later in the cascade. */
+body.shell.page-music #screen{display:flex;flex-direction:column;gap:18px;grid-template-columns:none;max-width:820px}
 body.shell.page-music #screen>*{width:100%;box-sizing:border-box}
 
-/* Top bar: the switch on the left, the apply state on the right */
-.music-top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding:18px 22px;border:1px solid #414439;border-radius:12px;background:#2c2e28;flex-wrap:wrap}
-.music-top-left{display:flex;flex-direction:column;gap:6px;min-width:260px;flex:1}
-.music-top-left .note{margin:0;max-width:560px}
-.music-switch{display:flex;align-items:center;gap:14px}
-.music-switch strong{font:600 26px/1.1 Inter,Segoe UI,sans-serif;letter-spacing:-.03em}
-.music-top-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.music-staged-count{font-size:13px;color:#e8ecdc}
-.music-progress{font-size:13px}
-.music-done{display:flex;gap:14px;align-items:center;padding:12px 16px;border:1px solid #4a5a3f;border-radius:10px;background:#2c3526;font-size:13px}
-.music-done span{margin-right:auto}
+/* Blocks */
+.mz-now,.mz-add,.mz-queue,.mz-disc{padding:20px 24px;border:1px solid #414439;border-radius:12px;background:#2c2e28}
+.mz-now h2,.mz-queue h2,.mz-disc h2{font:600 20px/1.3 Inter,Segoe UI,sans-serif;letter-spacing:-.02em;margin:6px 0 10px;text-transform:none}
+.mz-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.mz-end{justify-content:flex-end}
+.mz-big{padding:12px 22px!important;font-size:14px!important}
+.mz-progress{font-size:13px}
+.mz-done{display:flex;gap:14px;align-items:center;padding:12px 16px;border:1px solid #4a5a3f;border-radius:10px;background:#2c3526;font-size:13px}
+.mz-done span{margin-right:auto}
 
-/* Two panes */
-.music-panes{display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);gap:20px;align-items:start}
-.music-list{min-width:0;border:1px solid #414439;border-radius:12px;background:#2c2e28;overflow:hidden}
-.music-inspector{border:1px solid #414439;border-radius:12px;background:#2c2e28;padding:20px 22px;display:flex;flex-direction:column;gap:10px;position:sticky;top:12px}
-.music-inspector h2{font:600 22px/1.2 Inter,Segoe UI,sans-serif;letter-spacing:-.03em;margin:4px 0 0;overflow-wrap:anywhere;text-transform:none}
-.music-inspector .note{margin:0;font-size:12px}
-.music-inspector .partial{display:flex;align-items:center;gap:12px;margin:4px 0}
-.music-inspector .partial button{margin-left:auto}
+/* Steps */
+.mz-step{padding:16px 0 18px;border-top:1px solid #41443a;display:flex;flex-direction:column;gap:10px}
+.mz-step:first-of-type{border-top:0;padding-top:12px}
+.mz-step-head{display:flex;align-items:center;gap:12px}
+.mz-step-head h3{font:600 16px/1.3 Inter,Segoe UI,sans-serif;margin:0;text-transform:none;letter-spacing:0}
+.mz-step-n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:1px solid #6a6e5f;color:#e8ecdc;font-size:12px;font-weight:600}
+.mz-step-n.done{background:#e8ecdc;color:#1f211c;border-color:#e8ecdc}
+.mz-off{opacity:.45}
+.mz-off .note{margin:0}
+.mz-file{font-size:14px;font-weight:600;margin:0;overflow-wrap:anywhere}
+.mz-fields{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.mz-field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#c9ccbd}
+.mz-field input{font-size:14px;width:100%;box-sizing:border-box}
+.mz-row input[type=search]{flex:1;min-width:200px}
+.mz-candidates{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
+.mz-candidate{width:100%;text-align:left;font-size:13px;padding:8px 10px}
+.mz-privacy{margin:0;font-size:11px}
 
-/* The table */
-.music-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
-.music-table th{text-align:left;overflow:hidden;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#a9ad9f;padding:12px 12px 8px;border-bottom:1px solid #41443a;font-weight:500}
-.music-table td{padding:9px 12px;border-bottom:1px solid #35382f;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.music-col-n{width:44px;color:#a9ad9f;text-align:right}
-.music-col-title{width:auto}
-.music-col-title span{font-weight:600}
-.music-col-artist{width:24%;color:#d3d6c9}
-.music-col-len{width:64px;color:#a9ad9f;font-variant-numeric:tabular-nums}
-.music-col-source{width:118px}
-.music-track{cursor:pointer}
-.music-track:hover td{background:#33352e}
-.music-track.selected td{background:#3b3e35}
-.music-track.selected td:first-child{box-shadow:inset 3px 0 #e8ecdc}
-.music-track:focus-visible{outline:2px solid #e8ecdc;outline-offset:-2px}
-.music-track.staged .music-col-title span::after{content:" \25CF";color:#e8ecdc;font-size:10px;vertical-align:middle}
-.music-staged{display:block;font-size:11px;color:#c9ccbd;white-space:normal}
-.music-chip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #4a4e42;color:#c9ccbd;white-space:nowrap}
-.music-chip-your_file{border-color:#6a7a4f;color:#e8ecdc}
-.music-chip-pack{border-color:#5a6a7a;color:#dde3ec}
-.music-chip-soundtrack_mod{border-color:#7a6a4f;color:#ece3d3}
-.music-list-actions{display:flex;gap:10px;flex-wrap:wrap;padding:14px 12px;border-top:1px solid #41443a}
+/* Slot picker */
+.mz-slots{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;max-height:300px;overflow:auto;padding:4px 2px}
+.mz-slot{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;border:1px solid transparent;cursor:pointer;font-size:13px;min-width:0}
+.mz-slot:hover{background:#33352e}
+.mz-slot.selected{background:#3b3e35;border-color:#6a6e5f}
+.mz-slot input{margin:0}
+.mz-slot-n{width:22px;text-align:right;color:#a9ad9f;flex:none}
+.mz-slot-what{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.mz-slot-tag{font-size:11px;color:#c9ccbd;flex:none}
 
-/* Inspector controls */
-.music-field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#c9ccbd}
-.music-field input{font-size:14px;width:100%;box-sizing:border-box}
-.music-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.music-row input[type=search]{flex:1;min-width:160px}
-.music-candidates{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
-.music-candidate{width:100%;text-align:left;font-size:13px;padding:8px 10px}
-.music-inspector-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:6px;padding-top:12px;border-top:1px solid #41443a}
-.music-inspector-actions button:first-child{margin-right:auto}
+/* Queue */
+.mz-queue-list{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:6px}
+.mz-queue-list li{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:8px;background:#33352e;font-size:13px}
+.mz-queue-list li span{flex:1}
+
+/* What plays today */
+.mz-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+.mz-table td{padding:8px 10px;border-bottom:1px solid #35382f;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mz-col-n{width:36px;color:#a9ad9f;text-align:right}
+.mz-col-what span{font-weight:600}
+.mz-col-tag{width:120px;color:#a9ad9f;font-size:12px}
+.mz-col-actions{width:150px;text-align:right}
+.mz-col-actions button{margin-left:6px;padding:5px 10px!important;font-size:12px!important}
+.mz-track.staged .mz-col-what span::after{content:" \25CF";color:#e8ecdc;font-size:10px;vertical-align:middle}
+.mz-staged{display:block;font-size:11px;color:#c9ccbd;white-space:normal}
 
 /* Dialogs kept for pack operations */
-.music-dialog .music-field{margin:10px 0}
-.music-preview{margin:12px 0;padding-left:18px;font-size:13px;line-height:1.7}
-.music-share-list{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto;margin:12px 0;padding:4px 0}
-.music-share-row{display:flex;gap:10px;align-items:center;font-size:13px}
+.music-dialog .mz-field{margin:10px 0}
+.mz-preview{margin:12px 0;padding-left:18px;font-size:13px;line-height:1.7}
+.mz-share-list{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto;margin:12px 0;padding:4px 0}
+.mz-share-row{display:flex;gap:10px;align-items:center;font-size:13px}
 
-@media (max-width:980px){.music-panes{grid-template-columns:1fr}.music-inspector{position:static}}
+@media (max-width:760px){.mz-fields{grid-template-columns:1fr}.mz-slots{grid-template-columns:1fr}}
