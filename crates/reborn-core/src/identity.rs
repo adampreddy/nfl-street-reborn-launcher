@@ -120,7 +120,7 @@ fn origin_url(origin: &str, path: &str) -> String {
 /// Shown to the player when the sign-in service could not be reached at all: no route, DNS
 /// failure, timeout, connection refused. The one thing a player can do about any of those is
 /// check their own connection and try again, so that is the whole message.
-const SIGNIN_UNREACHABLE: &str =
+const SIGN_IN_SERVICE_UNREACHABLE: &str =
     "The sign-in service could not be reached. Check your internet connection and try again.";
 
 /// Shown to the player when the sign-in service answered but did not behave: a failure status,
@@ -129,10 +129,10 @@ const SIGNIN_UNREACHABLE: &str =
 /// collapse to this one sentence. The technical detail that would distinguish them goes to
 /// `tracing::warn!` instead, the same seam `mods.rs` and `content.rs` already use for detail
 /// that is useful to a developer but not to a player.
-const SIGNIN_UNAVAILABLE: &str = "The sign-in service is not responding properly right now. Try again in a moment.";
+const SIGN_IN_SERVICE_MISBEHAVED: &str = "The sign-in service is not responding properly right now. Try again in a moment.";
 
 /// Shown to the player when a preference change (such as show-offline) could not be sent to
-/// the server because it could not be reached at all. A near-duplicate of `SIGNIN_UNREACHABLE`
+/// the server because it could not be reached at all. A near-duplicate of `SIGN_IN_SERVICE_UNREACHABLE`
 /// on purpose rather than a shared constant: the player is not signing in here, they are
 /// toggling a setting while already signed in, and a message that talks about "sign-in" in
 /// that moment would be confusing even though it is, under the hood, the same backend.
@@ -141,7 +141,7 @@ const SAVE_UNREACHABLE: &str =
 
 /// Shown to the player when a preference change reached the server but the server did not
 /// behave: a failure status, or a reply that could not be understood. Same reasoning as
-/// `SIGNIN_UNAVAILABLE`, worded for a save instead of a sign-in.
+/// `SIGN_IN_SERVICE_MISBEHAVED`, worded for a save instead of a sign-in.
 const SAVE_UNAVAILABLE: &str = "This could not be saved right now. Try again in a moment.";
 
 /// Shown when `clear_token` cannot finish: the vault still reports the credential present
@@ -176,7 +176,13 @@ const SIGN_IN_STATE_UNREADABLE: &str =
 /// settings file will not read. Nothing about that is the player's doing and nothing about it
 /// is theirs to fix, so the message says what they can see (sign-in is not working) and what
 /// to do (wait a moment).
-pub const SIGN_IN_UNAVAILABLE: &str = "Sign-in is not available right now. Try again in a moment.";
+///
+/// Named for what happened rather than for what the player is told. This and
+/// [`SIGN_IN_SERVICE_MISBEHAVED`] used to be `SIGN_IN_UNAVAILABLE` and
+/// `SIGNIN_UNAVAILABLE`: one underscore apart, different sentences, and
+/// picking the wrong one at a call site is a one-character mistake that
+/// compiles and shows a player a sentence about somebody else's problem.
+pub const SIGN_IN_SERVICE_NOT_LOCATED: &str = "Sign-in is not available right now. Try again in a moment.";
 
 /// Shown when the browser step finished and the result could not be written to this PC. The
 /// token is already dropped by [`save_signed_in`] in that case, so signing in again is
@@ -190,15 +196,15 @@ pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> 
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
     let r = http.post_json(&url, &bytes, None).map_err(|e| {
         tracing::warn!("sign-in: could not reach {url}: {e}");
-        plain(SIGNIN_UNREACHABLE.to_string())
+        plain(SIGN_IN_SERVICE_UNREACHABLE.to_string())
     })?;
     if !r.is_success() {
         tracing::warn!("sign-in: {url} answered {}", r.status);
-        return Err(plain(SIGNIN_UNAVAILABLE.to_string()));
+        return Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()));
     }
     serde_json::from_str(&r.body).map_err(|e| {
         tracing::warn!("sign-in: the device-start reply was not understood: {e}");
-        plain(SIGNIN_UNAVAILABLE.to_string())
+        plain(SIGN_IN_SERVICE_MISBEHAVED.to_string())
     })
 }
 
@@ -210,7 +216,7 @@ pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
     let r = http.post_json(&url, &bytes, None).map_err(|e| {
         tracing::warn!("sign-in: could not reach {url}: {e}");
-        plain(SIGNIN_UNREACHABLE.to_string())
+        plain(SIGN_IN_SERVICE_UNREACHABLE.to_string())
     })?;
     match r.status {
         428 => Ok(Poll::Pending),
@@ -220,19 +226,19 @@ pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
         s if (200..300).contains(&s) => {
             let reply: Reply = serde_json::from_str(&r.body).map_err(|e| {
                 tracing::warn!("sign-in: the poll reply was not understood: {e}");
-                plain(SIGNIN_UNAVAILABLE.to_string())
+                plain(SIGN_IN_SERVICE_MISBEHAVED.to_string())
             })?;
             match (reply.token, reply.player) {
                 (Some(token), Some(player)) => Ok(Poll::Done { token, player }),
                 _ => {
                     tracing::warn!("sign-in: the poll reply had no token or player");
-                    Err(plain(SIGNIN_UNAVAILABLE.to_string()))
+                    Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()))
                 }
             }
         }
         s => {
             tracing::warn!("sign-in: {url} answered {s}");
-            Err(plain(SIGNIN_UNAVAILABLE.to_string()))
+            Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()))
         }
     }
 }
@@ -282,7 +288,7 @@ pub fn origin(platform: &Platform) -> Result<String> {
     };
     read().map_err(|e| {
         tracing::warn!("the backend origin could not be read from settings: {e}");
-        plain(SIGN_IN_UNAVAILABLE.to_string())
+        plain(SIGN_IN_SERVICE_NOT_LOCATED.to_string())
     })
 }
 
@@ -582,8 +588,60 @@ mod tests {
         // would risk clobbering a signed-in session on whatever machine runs this test -- so
         // their wording is locked down directly, exactly as the three above are.
         assert_player_safe(SIGN_IN_STATE_UNREADABLE);
-        assert_player_safe(SIGN_IN_UNAVAILABLE);
+        assert_player_safe(SIGN_IN_SERVICE_NOT_LOCATED);
         assert_player_safe(SIGN_IN_NOT_SAVED);
+    }
+
+    /// No two message constants in this module have names that differ only by
+    /// punctuation.
+    ///
+    /// `SIGN_IN_SERVICE_MISBEHAVED` and `SIGN_IN_SERVICE_NOT_LOCATED` both existed, with
+    /// different wording, one underscore apart: "The sign-in service is not
+    /// responding properly right now." for a server that answered badly, and
+    /// "Sign-in is not available right now." for a launcher that could not
+    /// work out where the server is. Picking the wrong one at a call site is
+    /// a one-character mistake that compiles, passes every test, and shows a
+    /// player a sentence about somebody else's problem.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// It reads this file down to the `#[cfg(test)]` that begins this module,
+    /// so the constant names quoted in this test are never part of what is
+    /// scanned.
+    #[test]
+    fn no_two_message_constants_here_are_one_underscore_apart() {
+        let src = include_str!("identity.rs");
+        let production = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+
+        let mut seen: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        for line in production.lines() {
+            let line = line.trim_start();
+            let rest = line
+                .strip_prefix("pub const ")
+                .or_else(|| line.strip_prefix("const "));
+            let Some(rest) = rest else { continue };
+            let Some(name) = rest.split(':').next().map(str::trim) else { continue };
+            if name.is_empty() {
+                continue;
+            }
+            let flattened: String = name
+                .chars()
+                .filter(|c| *c != '_')
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            if let Some(first) = seen.insert(flattened.clone(), name.to_string()) {
+                panic!(
+                    "{first} and {name} are the same name with different punctuation, and \
+                     they hold different sentences: picking the wrong one at a call site is \
+                     a one-character mistake that compiles"
+                );
+            }
+        }
+        assert!(
+            seen.len() > 10,
+            "only {} constants were found, so this scan is not reading what it thinks",
+            seen.len()
+        );
     }
 
     #[test]
