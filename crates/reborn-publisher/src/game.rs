@@ -1,62 +1,875 @@
 //! The Game page: the Reborn Builder's ISO work, and the game patch chain.
 //!
-//! Stub for Task 1. Implemented in Task 5, two sections on one page. Build
-//! ISO drives `reborn-builder-cli.exe`; the game patch section hashes the
-//! new build, refuses a base that is not the chain's tip, then encodes,
-//! decode-verifies, publishes, re-signs, uploads and verifies.
+//! Two sections, both routed through [`crate::ops::run_operation`] for the
+//! steps that touch a whole game image (minutes of work, needs the panel's
+//! progress and busy-lock): Build ISO's plan/run, and the game patch
+//! chain's plan/run/verify. `game_dump` and `game_cardsync` are the
+//! exception: like Keys page's `keys_generate` and `vault_store`, they are
+//! synchronous one-shot commands that do not go through `run_operation`,
+//! because reading a roster out of an ISO or syncing a small memory card
+//! image is a read of kilobytes to a few megabytes, not the 1.4 GB images
+//! the other four steps move. This is a deliberate deviation from
+//! `ops.rs`'s own module doc, which uses `"game:dump"` as its example of a
+//! one-shot op; recorded here rather than silently done, per that same
+//! doc's own convention for deviations.
+//!
+//! # Build ISO's Plan is never truly free
+//!
+//! `reborn-builder-cli.exe` has no `--dry-run` for a real build: without
+//! `--yes`, it still fully builds and writes `--out` the moment the roster
+//! has nothing the site flagged (see `reborn_builder/cli.py`: the
+//! site-flagged check gates only when there is something to flag). To keep
+//! Plan non-destructive regardless of warnings, Plan and a dry-run Run
+//! always target a scratch path under the temp directory, never the
+//! operator's chosen `out`, and delete it afterward. This costs the same
+//! time as a real build when there are no warnings; there is no cheaper
+//! preview the tool offers. Only a real (non-dry-run) Run writes to the
+//! real `out`.
+//!
+//! # `card-sync` grew a `dry_run` parameter the brief's sketch did not have
+//!
+//! The real CLI's `card-sync` needs `--card`, `--update` and `--state`, and
+//! offers `--dry-run`; the brief's sketch was `game_cardsync(card,
+//! roster)`. `--state` is derived here as `<card>.cardsync-state.json`
+//! beside the card image, since main.rs's frozen command list carries no
+//! separate input for it and this app has nowhere else to remember it per
+//! card. `dry_run` was added because writing to a memory card is exactly
+//! the kind of destructive action this task's rules ask to gate behind an
+//! explicit, unchecked choice, matching every other write in this app.
+//! Neither change touches `main.rs`: a command's parameter list is this
+//! file's own to set: nothing in `generate_handler!` fixes an arity.
+//!
+//! # The chain's base is read, never hard-coded
+//!
+//! The game patch section only ever asks the operator for the new build
+//! (`to`). The base (`from`) is resolved from
+//! `settings.remembered["game_patch"]["current_build"]`, falling back to
+//! `settings.remembered["environment"]["base_image"]` (the FIELDS 12-19
+//! build) the first time, and advanced to `to` only after a real,
+//! successful publish. That resolved file is never trusted on its own:
+//! `game_patch_plan`/`game_patch_run` hand it straight to
+//! `reborn_core::publish::game_patch::publish_game_patch`, which hashes it
+//! itself and refuses a mismatch against the chain's own recorded head,
+//! showing both hashes. This file does not re-implement that comparison;
+//! it only resolves which file to offer as `from` and lets the core decide.
+//!
+//! # Verify does not re-decode the images
+//!
+//! `game_patch_verify` does not repeat the multi-minute decode-and-hash
+//! `publish_game_patch` already did during Run (and it could not: the
+//! superseded base image is not necessarily still on disk once the chain
+//! moves past it). Instead it re-hashes every blob the newest published
+//! `game-patch` component manifest claims, against the origin's own
+//! content-addressed store. That is fast (the chain's files are the
+//! manifest, `chain.json`, and each roughly-a-megabyte delta, never a full
+//! image) and catches the failure mode a manifest-based check can: bytes
+//! that changed or went missing under the origin since they were published.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Value};
+
+use reborn_core::game_patch::{Chain, CHAIN_FILE};
+use reborn_core::inventory::{ComponentId, RunToCompletion};
+use reborn_core::library::hash_file;
+use reborn_core::manifest::Component;
+use reborn_core::origin::blob_path;
+use reborn_core::publish::game_patch::{publish_game_patch, GamePatchRequest};
+use reborn_core::publish::roster::Push;
+use reborn_core::publish::{out, refuse, Outcome, Sink, COMPONENTS_DIR};
+use reborn_core::{Error, ExitKind, Platform};
+
+use crate::settings::{settings_path, Settings};
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn str_err(e: String) -> Error {
+    Error::PlainIo(std::io::Error::other(e))
+}
+
+fn load_settings_with_path(platform: &Platform) -> reborn_core::Result<(PathBuf, Settings)> {
+    let path = settings_path(platform).map_err(str_err)?;
+    let settings = Settings::load(&path).map_err(str_err)?;
+    Ok((path, settings))
+}
+
+fn load_settings(platform: &Platform) -> reborn_core::Result<Settings> {
+    Ok(load_settings_with_path(platform)?.1)
+}
+
+/// A path as the operator typed it, made absolute. `run_capturing` sets the
+/// child's working directory to the *program's* own folder (see
+/// `platform/imp.rs`), not this process's, so a relative path handed to
+/// `reborn-builder-cli.exe` would resolve beside the exe rather than
+/// wherever the operator meant. Every path this file passes to it goes
+/// through here first.
+fn absolute_path(p: &str) -> PathBuf {
+    let path = PathBuf::from(p);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().map(|cwd| cwd.join(&path)).unwrap_or(path)
+    }
+}
+
+/// `reborn-builder-cli.exe`: the configured path if one is set (even if it
+/// is presently missing, which is a more specific problem than "never
+/// configured"), else the usual location beside the launcher's tools
+/// folder, matching `status.rs`'s own `builder_item` search.
+fn resolve_builder(settings: &Settings) -> Result<PathBuf, String> {
+    if let Some(p) = settings.builder.as_deref().filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(p);
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!(
+                "The Reborn Builder is configured at {p}, but no file is there now. Fix it on the Status page."
+            ))
+        };
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let candidate = PathBuf::from(appdata).join("NFL Street Reborn").join("Tools").join("reborn-builder-cli.exe");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(
+        "The Reborn Builder (reborn-builder-cli.exe) was not found. Set it on the Status page's \
+         This Machine block."
+            .to_string(),
+    )
+}
+
+/// The pristine build this machine currently has, to offer as the game
+/// patch chain's `from`. See this file's module doc: never a hard-coded
+/// fact, only a starting point the core's own hash-and-chain check either
+/// accepts or refuses.
+fn resolve_current_build(settings: &Settings) -> Result<PathBuf, String> {
+    let from_remembered = |key: &str, field: &str| -> Option<PathBuf> {
+        let p = settings.remembered.get(key)?.get(field)?.as_str()?;
+        let path = PathBuf::from(p);
+        path.is_file().then_some(path)
+    };
+    if let Some(p) = from_remembered("game_patch", "current_build") {
+        return Ok(p);
+    }
+    if let Some(p) = from_remembered("environment", "base_image") {
+        return Ok(p);
+    }
+    Err(
+        "No base image is known for the chain's current build. Set the Base image (FIELDS \
+         12-19) on the Status page's This Machine block, or complete a game patch once to \
+         establish one."
+            .to_string(),
+    )
+}
+
+/// Deletes the file it names when dropped. Used for a scratch build output
+/// that must not outlive the call that made it, on every path out
+/// (success, refusal, or an early `?`).
+struct ScratchGuard(PathBuf);
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn scratch_iso_path(tag: &str) -> PathBuf {
+    std::env::temp_dir().join("reborn-publish").join(format!("game-build-{tag}-{}.iso", std::process::id()))
+}
+
+// ---------------------------------------------------------------------------
+// Build ISO: reading what the Builder printed
+// ---------------------------------------------------------------------------
+
+/// What was pulled out of `reborn-builder-cli`'s own stdout/stderr. Never
+/// trusted as this app's authority on the result (the hash is always
+/// recomputed by this app; see [`hash_file`] calls below), only shown for
+/// context.
+#[derive(Debug, Default)]
+struct BuildParsed {
+    warnings: Vec<String>,
+    players: Option<u64>,
+    teams: Option<u64>,
+    portraits: Option<u64>,
+    base_label: Option<String>,
+}
+
+/// "%d players, %d teams, %d portraits written." -> the three counts.
+fn parse_counts_line(line: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = line.splitn(3, ", ").collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let p = parts[0].split_whitespace().next()?.parse().ok()?;
+    let t = parts[1].split_whitespace().next()?.parse().ok()?;
+    let k = parts[2].split_whitespace().next()?.parse().ok()?;
+    Some((p, t, k))
+}
+
+/// `reborn-builder`'s successful stdout: counts, base label, and any
+/// "N warning(s) from the site:" block (site-flagged problems plus
+/// anything the build itself noticed, per `pipeline.py`).
+fn parse_build_stdout(stdout: &str) -> BuildParsed {
+    let mut parsed = BuildParsed::default();
+    let lines: Vec<&str> = stdout.lines().collect();
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim();
+        if t.ends_with(" portraits written.") {
+            if let Some((p, te, k)) = parse_counts_line(t) {
+                parsed.players = Some(p);
+                parsed.teams = Some(te);
+                parsed.portraits = Some(k);
+            }
+        } else if let (Some(a), Some(b)) = (t.find(" - base "), t.find(" - sha256 ")) {
+            if b > a {
+                parsed.base_label = Some(t[a + 8..b].to_string());
+            }
+        } else if t.ends_with("warning(s) from the site:") {
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].starts_with("  ") {
+                parsed.warnings.push(lines[j].trim_start().to_string());
+                j += 1;
+            }
+        }
+    }
+    parsed
+}
+
+/// The site-flagged problem list from a `--yes`-less run that stopped
+/// (exit code 3): every two-space-indented line.
+fn parse_flagged_stderr(stderr: &str) -> Vec<String> {
+    stderr.lines().filter(|l| l.starts_with("  ")).map(|l| l.trim_start().to_string()).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Build ISO: plan
+// ---------------------------------------------------------------------------
 
 /// Build ISO, plan: what the Builder would do with this base image, roster
 /// and output path, and its warnings.
 #[tauri::command]
-pub fn game_build_plan(base: String, roster: String, out: String) -> Result<serde_json::Value, String> {
-    let _ = (base, roster, out);
-    unimplemented!("Task 5")
+pub fn game_build_plan(base: String, roster: String, out: String) -> Result<Value, String> {
+    let inputs = json!({"base": base, "roster": roster, "out": out});
+    crate::ops::run_operation("game_build:plan", false, inputs, move |sink| game_build_plan_body(&base, &roster, &out, sink))?;
+    Ok(json!({"accepted": true}))
 }
 
-/// Build ISO, run: build it, and hash the result.
-#[tauri::command]
-pub fn game_build_run(
-    base: String,
-    roster: String,
-    out: String,
-    dry_run: bool,
-) -> Result<serde_json::Value, String> {
-    let _ = (base, roster, out, dry_run);
-    unimplemented!("Task 5")
+fn game_build_plan_body(base: &str, roster: &str, out: &str, sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+    let settings = load_settings(&Platform::detect())?;
+    let builder = match resolve_builder(&settings) {
+        Ok(p) => p,
+        Err(e) => return Ok(refuse(sink, &[e])),
+    };
+    let base_path = absolute_path(base);
+    let roster_path = absolute_path(roster);
+    if !base_path.is_file() {
+        return Ok(refuse(sink, &[format!("Base image {} is not a file. Nothing was checked.", base_path.display())]));
+    }
+    if !roster_path.is_file() {
+        return Ok(refuse(sink, &[format!("Roster {} is not a file. Nothing was checked.", roster_path.display())]));
+    }
+    if out.trim().is_empty() {
+        return Ok(refuse(sink, &["An output ISO path is required.".to_string()]));
+    }
+
+    let scratch = scratch_iso_path("plan");
+    if let Some(parent) = scratch.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _guard = ScratchGuard(scratch.clone());
+
+    out!(sink, "Builder       {}", builder.display());
+    out!(sink, "Base image    {}", base_path.display());
+    out!(sink, "Roster        {}", roster_path.display());
+    out!(sink);
+    out!(sink, "Checking for site-flagged problems. This app never writes to {out} during");
+    out!(sink, "Plan; a scratch copy stands in for it, deleted when this step finishes.");
+    out!(sink);
+    let platform = Platform::detect();
+    let run = platform.processes.run_capturing(
+        &builder,
+        &[
+            OsString::from("--iso"),
+            base_path.as_os_str().to_os_string(),
+            OsString::from("--update"),
+            roster_path.as_os_str().to_os_string(),
+            OsString::from("--out"),
+            scratch.as_os_str().to_os_string(),
+        ],
+        &Default::default(),
+    )?;
+
+    match run.exit {
+        ExitKind::Normal => {
+            for line in run.stdout.lines() {
+                out!(sink, "{line}");
+            }
+            let parsed = parse_build_stdout(&run.stdout);
+            let preview_sha = if scratch.is_file() { hash_file(&scratch).ok() } else { None };
+            let summary = format!(
+                "No problems flagged. Preview build: {} player(s), {} team(s), base {}.",
+                parsed.players.unwrap_or_default(),
+                parsed.teams.unwrap_or_default(),
+                parsed.base_label.as_deref().unwrap_or("?")
+            );
+            out!(sink);
+            out!(sink, "{summary}");
+            Ok(Outcome::Done(json!({
+                "summary": summary,
+                "warnings": parsed.warnings,
+                "players": parsed.players,
+                "teams": parsed.teams,
+                "portraits": parsed.portraits,
+                "base_label": parsed.base_label,
+                "preview_sha256": preview_sha.map(|h| h.as_str().to_string()),
+            })))
+        }
+        ExitKind::Error { code: 3 } => {
+            for line in run.stderr.lines() {
+                out!(sink, "{line}");
+            }
+            let warnings = parse_flagged_stderr(&run.stderr);
+            let summary = format!(
+                "{} problem(s) the site flagged. Nothing was built. Review them, then Build anyway.",
+                warnings.len()
+            );
+            out!(sink);
+            out!(sink, "{summary}");
+            Ok(Outcome::Done(json!({
+                "summary": summary,
+                "warnings": warnings,
+                "players": Value::Null,
+                "teams": Value::Null,
+                "portraits": Value::Null,
+                "base_label": Value::Null,
+                "preview_sha256": Value::Null,
+            })))
+        }
+        other => Ok(refuse(
+            sink,
+            &[format!("reborn-builder-cli stopped ({other:?}). Nothing was built."), run.stdout, run.stderr],
+        )),
+    }
 }
 
-/// Dump an ISO's contents through the Builder, for inspection.
+// ---------------------------------------------------------------------------
+// Build ISO: run
+// ---------------------------------------------------------------------------
+
+/// Build ISO, run: build it for real (or, with `dry_run`, into a scratch
+/// copy again), and hash the result ourselves.
 #[tauri::command]
-pub fn game_dump(iso: String, out: String) -> Result<serde_json::Value, String> {
-    let _ = (iso, out);
-    unimplemented!("Task 5")
+pub fn game_build_run(base: String, roster: String, out: String, dry_run: bool) -> Result<Value, String> {
+    let inputs = json!({"base": base, "roster": roster, "out": out, "dry_run": dry_run});
+    crate::ops::run_operation("game_build:run", dry_run, inputs, move |sink| {
+        game_build_run_body(&base, &roster, &out, dry_run, sink)
+    })?;
+    Ok(json!({"accepted": true}))
+}
+
+fn game_build_run_body(base: &str, roster: &str, out: &str, dry_run: bool, sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+    let settings = load_settings(&Platform::detect())?;
+    let builder = match resolve_builder(&settings) {
+        Ok(p) => p,
+        Err(e) => return Ok(refuse(sink, &[e])),
+    };
+    let base_path = absolute_path(base);
+    let roster_path = absolute_path(roster);
+    if !base_path.is_file() {
+        return Ok(refuse(sink, &[format!("Base image {} is not a file. Nothing was built.", base_path.display())]));
+    }
+    if !roster_path.is_file() {
+        return Ok(refuse(sink, &[format!("Roster {} is not a file. Nothing was built.", roster_path.display())]));
+    }
+    if out.trim().is_empty() {
+        return Ok(refuse(sink, &["An output ISO path is required.".to_string()]));
+    }
+    let real_out = absolute_path(out);
+
+    let target = if dry_run { scratch_iso_path("dry-run") } else { real_out.clone() };
+    let _guard = dry_run.then(|| ScratchGuard(target.clone()));
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    out!(sink, "Builder       {}", builder.display());
+    out!(sink, "Base image    {}", base_path.display());
+    out!(sink, "Roster        {}", roster_path.display());
+    if dry_run {
+        out!(sink, "Output        {}  (dry run: a scratch copy, not the real output)", target.display());
+    } else {
+        out!(sink, "Output        {}", target.display());
+    }
+    out!(sink);
+    out!(sink, "Building. This reads the base image once and writes a full new one; it can");
+    out!(sink, "take a few minutes.");
+
+    let platform = Platform::detect();
+    let run = platform.processes.run_capturing(
+        &builder,
+        &[
+            OsString::from("--iso"),
+            base_path.as_os_str().to_os_string(),
+            OsString::from("--update"),
+            roster_path.as_os_str().to_os_string(),
+            OsString::from("--out"),
+            target.as_os_str().to_os_string(),
+            OsString::from("--yes"),
+        ],
+        &Default::default(),
+    )?;
+    for line in run.stdout.lines() {
+        out!(sink, "{line}");
+    }
+    for line in run.stderr.lines() {
+        out!(sink, "ERR  {line}");
+    }
+
+    if run.exit != ExitKind::Normal {
+        return Ok(refuse(sink, &[format!("reborn-builder-cli stopped ({:?}). Nothing was built.", run.exit)]));
+    }
+    if !target.is_file() {
+        return Ok(refuse(sink, &["The builder reported success but the output file is not there.".to_string()]));
+    }
+
+    out!(sink);
+    out!(sink, "Hashing the result ourselves.");
+    let sha = hash_file(&target)?;
+    let parsed = parse_build_stdout(&run.stdout);
+
+    let summary = if dry_run {
+        format!(
+            "(dry run) would write {} - sha256 {} - {} player(s), {} team(s).",
+            real_out.display(),
+            sha.as_str(),
+            parsed.players.unwrap_or_default(),
+            parsed.teams.unwrap_or_default()
+        )
+    } else {
+        format!(
+            "Built {} - sha256 {} - {} player(s), {} team(s).",
+            real_out.display(),
+            sha.as_str(),
+            parsed.players.unwrap_or_default(),
+            parsed.teams.unwrap_or_default()
+        )
+    };
+    out!(sink, "{summary}");
+
+    let mut value = json!({
+        "summary": summary,
+        "out": real_out.display().to_string(),
+        "sha256": sha.as_str(),
+        "players": parsed.players,
+        "teams": parsed.teams,
+        "portraits": parsed.portraits,
+        "base_label": parsed.base_label,
+        "warnings": parsed.warnings,
+        "dry_run": dry_run,
+    });
+    if !dry_run {
+        value["hashes"] = json!([["out", sha.as_str()]]);
+    }
+    Ok(Outcome::Done(value))
+}
+
+// ---------------------------------------------------------------------------
+// Dump and card-sync: synchronous one-shot commands (see module doc)
+// ---------------------------------------------------------------------------
+
+/// Dump an ISO's current roster through the Builder, for inspection.
+/// Read-only on the ISO; writes only the new `.rebornroster` at `out`.
+#[tauri::command]
+pub fn game_dump(iso: String, out: String) -> Result<Value, String> {
+    let platform = Platform::detect();
+    let settings = Settings::load(&settings_path(&platform)?)?;
+    let builder = resolve_builder(&settings)?;
+
+    let iso_path = absolute_path(&iso);
+    if !iso_path.is_file() {
+        return Err(format!("{} is not a file.", iso_path.display()));
+    }
+    if out.trim().is_empty() {
+        return Err("An output .rebornroster path is required.".to_string());
+    }
+    let out_path = absolute_path(&out);
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let sha = hash_file(&iso_path).map_err(|e| e.to_string())?;
+    let run = platform
+        .processes
+        .run_capturing(
+            &builder,
+            &[
+                OsString::from("dump"),
+                OsString::from("--iso"),
+                iso_path.as_os_str().to_os_string(),
+                OsString::from("--out"),
+                out_path.as_os_str().to_os_string(),
+            ],
+            &Default::default(),
+        )
+        .map_err(|e| e.to_string())?;
+    if run.exit != ExitKind::Normal {
+        return Err(format!("reborn-builder-cli dump stopped ({:?}): {}{}", run.exit, run.stdout, run.stderr));
+    }
+
+    Ok(json!({
+        "summary": run.stdout.trim(),
+        "iso": iso_path.display().to_string(),
+        "iso_sha256": sha.as_str(),
+        "out": out_path.display().to_string(),
+    }))
 }
 
 /// Sync a memory card's gear and faces into a roster file through the
-/// Builder.
+/// Builder, keeping in-game edits. `--state` is derived beside the card
+/// image; see this file's module doc. Defaults to a dry run.
 #[tauri::command]
-pub fn game_cardsync(card: String, roster: String) -> Result<serde_json::Value, String> {
-    let _ = (card, roster);
-    unimplemented!("Task 5")
+pub fn game_cardsync(card: String, roster: String, dry_run: bool) -> Result<Value, String> {
+    let platform = Platform::detect();
+    let settings = Settings::load(&settings_path(&platform)?)?;
+    let builder = resolve_builder(&settings)?;
+
+    let card_path = absolute_path(&card);
+    if !card_path.is_file() {
+        return Err(format!("{} is not a file.", card_path.display()));
+    }
+    let roster_path = absolute_path(&roster);
+    if !roster_path.is_file() {
+        return Err(format!("{} is not a file.", roster_path.display()));
+    }
+    let state_path = card_path.with_extension("cardsync-state.json");
+
+    let mut args: Vec<OsString> = vec![
+        OsString::from("card-sync"),
+        OsString::from("--card"),
+        card_path.as_os_str().to_os_string(),
+        OsString::from("--update"),
+        roster_path.as_os_str().to_os_string(),
+        OsString::from("--state"),
+        state_path.as_os_str().to_os_string(),
+    ];
+    if dry_run {
+        args.push(OsString::from("--dry-run"));
+    }
+    let run = platform.processes.run_capturing(&builder, &args, &Default::default()).map_err(|e| e.to_string())?;
+    if run.exit != ExitKind::Normal {
+        return Err(format!("reborn-builder-cli card-sync stopped ({:?}): {}{}", run.exit, run.stdout, run.stderr));
+    }
+
+    Ok(json!({
+        "summary": run.stdout.lines().last().unwrap_or("").to_string(),
+        "lines": run.stdout.lines().collect::<Vec<_>>(),
+        "card": card_path.display().to_string(),
+        "state": state_path.display().to_string(),
+        "dry_run": dry_run,
+    }))
 }
 
+// ---------------------------------------------------------------------------
+// Game patch: plan
+// ---------------------------------------------------------------------------
+
 /// Game patch, plan: hash the new build, read the chain's head, and refuse
-/// a base that is not the chain's tip, with both hashes shown.
+/// a base that is not the chain's tip, with both hashes shown. Delegates
+/// entirely to `publish_game_patch` with `apply: false`, which already does
+/// exactly this and nothing more (see this file's module doc); no chain
+/// rule is re-implemented here.
 #[tauri::command]
-pub fn game_patch_plan(to: String) -> Result<serde_json::Value, String> {
-    let _ = to;
-    unimplemented!("Task 5")
+pub fn game_patch_plan(to: String) -> Result<Value, String> {
+    let inputs = json!({"to": to});
+    crate::ops::run_operation("game_patch:plan", false, inputs, move |sink| game_patch_plan_body(&to, sink))?;
+    Ok(json!({"accepted": true}))
 }
+
+fn game_patch_plan_body(to: &str, sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+    let platform = Platform::detect();
+    let settings = load_settings(&platform)?;
+    let from_path = match resolve_current_build(&settings) {
+        Ok(p) => p,
+        Err(e) => return Ok(refuse(sink, &[e])),
+    };
+    let to_path = absolute_path(to);
+    if !to_path.is_file() {
+        return Ok(refuse(sink, &[format!("{} is not a file. Nothing was checked.", to_path.display())]));
+    }
+    let origin = PathBuf::from(&settings.origin);
+    let xdelta = settings.xdelta.as_deref().map(Path::new);
+
+    let req = GamePatchRequest {
+        from: &from_path,
+        to: &to_path,
+        version: "(preview)",
+        tree: None,
+        xdelta,
+        origin: &origin,
+        sequence: None,
+        key: None,
+        release_version: None,
+        release_sequence: None,
+        apply: false,
+    };
+    match publish_game_patch(&platform, &req, &RunToCompletion, sink)? {
+        Outcome::Refused(r) => Ok(Outcome::Refused(r)),
+        Outcome::Described => Ok(Outcome::Done(json!({
+            "summary": "No problems. This build is ready to publish as a game patch.",
+            "from": from_path.display().to_string(),
+            "to": to_path.display().to_string(),
+        }))),
+        Outcome::Done(_) => Ok(refuse(
+            sink,
+            &["publish_game_patch reported a completed publish during a plan step (apply was false). \
+               Treating this as a refusal rather than trusting an unexpected result."
+                .to_string()],
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game patch: run
+// ---------------------------------------------------------------------------
 
 /// Game patch, run: encode, decode-verify, publish, re-sign, upload.
 #[tauri::command]
-pub fn game_patch_run(to: String, version: String, dry_run: bool) -> Result<serde_json::Value, String> {
-    let _ = (to, version, dry_run);
-    unimplemented!("Task 5")
+pub fn game_patch_run(to: String, version: String, dry_run: bool) -> Result<Value, String> {
+    let inputs = json!({"to": to, "version": version, "dry_run": dry_run});
+    crate::ops::run_operation("game_patch:run", dry_run, inputs, move |sink| {
+        game_patch_run_body(&to, &version, dry_run, sink)
+    })?;
+    Ok(json!({"accepted": true}))
 }
 
-/// Game patch, verify.
+fn push_to_json(push: &Push) -> Value {
+    json!({
+        "component": {
+            "manifest_path": push.component.manifest_path.display().to_string(),
+            "sha256": push.component.sha256.as_str(),
+            "files": push.component.files,
+            "bytes": push.component.bytes,
+            "new_blobs": push.component.new_blobs,
+            "new_bytes": push.component.new_bytes,
+            "shared_blobs": push.component.shared_blobs,
+            "shared_bytes": push.component.shared_bytes,
+        },
+        "release": push.release.as_ref().map(|s| json!({
+            "version": s.version,
+            "sequence": s.sequence,
+            "public_hex": s.public_hex,
+            "shipped": s.shipped,
+            "files": s.files,
+            "bytes": s.bytes,
+        })),
+    })
+}
+
+fn game_patch_run_body(to: &str, version: &str, dry_run: bool, sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+    let platform = Platform::detect();
+    let (settings_file, mut settings) = load_settings_with_path(&platform)?;
+    let from_path = match resolve_current_build(&settings) {
+        Ok(p) => p,
+        Err(e) => return Ok(refuse(sink, &[e])),
+    };
+    let to_path = absolute_path(to);
+    if !to_path.is_file() {
+        return Ok(refuse(sink, &[format!("{} is not a file. Nothing was published.", to_path.display())]));
+    }
+    if version.trim().is_empty() {
+        return Ok(refuse(sink, &["A version label is required, for example today's date.".to_string()]));
+    }
+    let origin = PathBuf::from(&settings.origin);
+    let xdelta = settings.xdelta.as_deref().map(Path::new);
+    let key = settings.publisher_key.as_deref().map(Path::new);
+    if !dry_run && key.is_none() {
+        return Ok(refuse(
+            sink,
+            &["No publisher.key is configured. Set it on the Keys page before publishing for real, \
+               or check dry run to preview only."
+                .to_string()],
+        ));
+    }
+
+    out!(sink, "Computing the new build's hash ourselves, not trusting any tool's claim.");
+    let to_sha = hash_file(&to_path)?;
+    out!(sink, "To is         {to_sha}");
+
+    let req = GamePatchRequest {
+        from: &from_path,
+        to: &to_path,
+        version,
+        tree: None,
+        xdelta,
+        origin: &origin,
+        sequence: None,
+        key,
+        release_version: None,
+        release_sequence: None,
+        apply: !dry_run,
+    };
+    match publish_game_patch(&platform, &req, &RunToCompletion, sink)? {
+        Outcome::Refused(r) => Ok(Outcome::Refused(r)),
+        Outcome::Described => Ok(Outcome::Done(json!({
+            "summary": format!("(dry run) would publish {version} from the current build to {}.", to_path.display()),
+            "dry_run": true,
+            "to_sha256": to_sha.as_str(),
+        }))),
+        Outcome::Done(push) => {
+            if !dry_run {
+                // The next patch's default base moves forward only because
+                // this real, successful publish moved it. See this file's
+                // module doc: never a hard-coded fact.
+                let mut game_patch_settings = settings.remembered.get("game_patch").cloned().unwrap_or_else(|| json!({}));
+                if !game_patch_settings.is_object() {
+                    // Never trust an external value's shape before indexing into
+                    // it: `Value`'s `IndexMut` panics on anything but an object,
+                    // and a panic on this worker thread would leave `OpState`
+                    // stuck busy forever (see this file's and `ops.rs`'s own
+                    // "never panic" rule). A shape this file did not itself
+                    // write is replaced rather than trusted.
+                    game_patch_settings = json!({});
+                }
+                game_patch_settings["current_build"] = json!(to_path.display().to_string());
+                settings.remembered.insert("game_patch".to_string(), game_patch_settings);
+                // Best effort: the publish already happened and stands on
+                // its own terms regardless of whether this bookkeeping
+                // write succeeds.
+                let _ = settings.save(&settings_file);
+            }
+            let mut value = push_to_json(&push);
+            let sequence = push.release.as_ref().map(|s| s.sequence);
+            value["summary"] = json!(match sequence {
+                Some(seq) => format!("Published game patch {version} at release sequence {seq}."),
+                None => format!("Published game patch {version} (component only; no key to sign a release)."),
+            });
+            value["dry_run"] = json!(dry_run);
+            value["hashes"] = json!([["to", to_sha.as_str()]]);
+            if let Some(seq) = sequence {
+                value["sequence"] = json!(seq);
+            }
+            Ok(Outcome::Done(value))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game patch: verify
+// ---------------------------------------------------------------------------
+
+/// Game patch, verify: re-hash every blob the newest published `game-patch`
+/// component manifest claims, against the origin's own store. See this
+/// file's module doc for why this does not re-decode the images.
 #[tauri::command]
-pub fn game_patch_verify() -> Result<serde_json::Value, String> {
-    unimplemented!("Task 5")
+pub fn game_patch_verify() -> Result<Value, String> {
+    crate::ops::run_operation("game_patch:verify", false, json!({}), move |sink| game_patch_verify_body(sink))?;
+    Ok(json!({"accepted": true}))
+}
+
+/// The highest-sequence `game-patch-*.json` manifest under `origin`'s
+/// components folder, parsed. A manifest of some OTHER component, or one
+/// that fails to parse, is skipped rather than treated as a hard error:
+/// this is a best-known-good lookup, not the strict origin-wide inventory
+/// `next_sequence` performs.
+fn latest_game_patch_manifest(origin: &Path) -> reborn_core::Result<Option<(PathBuf, Component)>> {
+    let dir = origin.join(COMPONENTS_DIR);
+    let prefix = format!("{}-", ComponentId::GamePatch.as_str());
+    let mut best: Option<(u64, PathBuf, Component)> = None;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&prefix) || !name.ends_with(".json") {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = std::fs::read(&path)?;
+        let Ok(component) = Component::parse(&bytes) else {
+            continue;
+        };
+        if best.as_ref().map(|(seq, _, _)| component.sequence > *seq).unwrap_or(true) {
+            best = Some((component.sequence, path, component));
+        }
+    }
+    Ok(best.map(|(_, path, component)| (path, component)))
+}
+
+fn game_patch_verify_body(sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+    let settings = load_settings(&Platform::detect())?;
+    let origin = PathBuf::from(&settings.origin);
+
+    let Some((manifest_path, component)) = latest_game_patch_manifest(&origin)? else {
+        return Ok(refuse(sink, &["No game-patch component has been published to this origin yet. Nothing to verify.".to_string()]));
+    };
+    out!(sink, "Manifest      {}", manifest_path.display());
+    out!(sink, "Version       {} sequence {}", component.version, component.sequence);
+    out!(sink, "Checking {} file(s) in the origin's blob store against this manifest.", component.files.len());
+
+    let mut mismatches: Vec<String> = Vec::new();
+    let mut chain_report: Option<(usize, String, String)> = None;
+    for file in &component.files {
+        let blob = origin.join(blob_path(&file.sha256));
+        match std::fs::metadata(&blob) {
+            Err(_) => mismatches.push(format!("{}: blob is missing at {}", file.path, blob.display())),
+            Ok(m) if m.len() != file.bytes => mismatches.push(format!(
+                "{}: {} is {} bytes, the manifest says {}",
+                file.path,
+                blob.display(),
+                m.len(),
+                file.bytes
+            )),
+            Ok(_) => match hash_file(&blob) {
+                Ok(h) if h == file.sha256 => {
+                    if file.path == CHAIN_FILE {
+                        if let Ok(chain_bytes) = std::fs::read(&blob) {
+                            if let Ok(chain) = Chain::parse(&chain_bytes) {
+                                chain_report = Some((
+                                    chain.steps.len(),
+                                    chain.base().unwrap_or("(empty)").to_string(),
+                                    chain.head().unwrap_or("(empty)").to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Ok(h) => {
+                    mismatches.push(format!("{}: {} hashes to {h}, the manifest says {}", file.path, blob.display(), file.sha256))
+                }
+                Err(e) => mismatches.push(format!("{}: {} could not be hashed: {e}", file.path, blob.display())),
+            },
+        }
+    }
+
+    if !mismatches.is_empty() {
+        let mut lines = vec![format!("{} of {} file(s) did not verify against the origin:", mismatches.len(), component.files.len())];
+        lines.extend(mismatches);
+        return Ok(refuse(sink, &lines));
+    }
+
+    let summary = match &chain_report {
+        Some((steps, base, head)) => format!(
+            "{} file(s) verified. Chain has {steps} step(s), base {}\u{2026}, head {}\u{2026}.",
+            component.files.len(),
+            &base[..12.min(base.len())],
+            &head[..12.min(head.len())]
+        ),
+        None => format!("{} file(s) verified.", component.files.len()),
+    };
+    out!(sink, "{summary}");
+    Ok(Outcome::Done(json!({
+        "summary": summary,
+        "verified": summary,
+        "version": component.version,
+        "sequence": component.sequence,
+        "files_checked": component.files.len(),
+        "chain_steps": chain_report.as_ref().map(|(s, _, _)| *s),
+        "chain_base": chain_report.as_ref().map(|(_, b, _)| b.clone()),
+        "chain_head": chain_report.as_ref().map(|(_, _, h)| h.clone()),
+    })))
 }
