@@ -318,7 +318,7 @@ fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,Strin
         if let Ok(appdata)=std::env::var("APPDATA"){dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));}
         if let Some(builder)=reborn_core::roster::find_builder(p,&dirs){
             let textures=reborn_core::mods::pristine_root(p,&reborn_core::mods::GameId::parse("GN7E69").map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,textures_root:Some(&textures),accept_warnings:true}){
+            match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,output:None,textures_root:Some(&textures),accept_warnings:true}){
                 Ok(reborn_core::roster::ApplyOutcome::Refused(r))=>eprintln!("roster not applied to the imported game: {}",r.message()),
                 Err(e)=>eprintln!("roster not applied to the imported game: {e}"),
                 Ok(_)=>{}

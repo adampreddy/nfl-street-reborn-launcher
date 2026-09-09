@@ -55,8 +55,10 @@ pub mod manifest;
 pub mod migration;
 pub mod mods;
 pub mod music;
+pub mod soundtrack;
 pub mod net;
 pub mod onboarding;
+pub mod online_image;
 pub mod origin;
 #[cfg(feature = "publish")]
 pub mod publish;

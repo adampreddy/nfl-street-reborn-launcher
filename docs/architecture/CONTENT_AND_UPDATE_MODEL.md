@@ -1068,6 +1068,18 @@ JSGME's own redistribution terms are unchecked (questionnaire row 11.8). **This 
 
 ## 15. Music and content versioning
 
+> **As built (2026-09-08, `docs/superpowers/specs/2026-09-08-music-editor-design.md`):**
+> the shipped design has no `library/work/` tree. An apply reads the two files
+> it changes straight out of the pristine and booted images and streams a new
+> ISO with a regenerated FST, so nothing is extracted and nothing is purged.
+> The record is `music/soundtrack.json` (schema `nsr.soundtrack.v2`: the
+> switch, the base soundtrack package, the 21 slots, the staged changes);
+> `music/state.json` stays the shared `RebuildState` this section describes.
+> After a roster or game patch rebuilds the image, `Updater::promote` replays
+> the soundtrack through `apply_current_soundtrack`, which is the "Reapply your
+> custom music" step below, done inline rather than queued. The rest of this
+> section is the design as it was proposed.
+
 The music feature is the only thing in the product that deliberately makes a managed artifact stop matching its manifest. That makes it a content-versioning problem, not only a feature.
 
 ### `library/work/`, and what it is derived from

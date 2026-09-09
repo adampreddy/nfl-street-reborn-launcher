@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 mod content_updates;
+mod music_page;
 mod setup_tools;
 mod dolphin_settings;
 
@@ -886,6 +887,10 @@ struct PackageEntryView {
     bytes: u64,
     /// True when `mods/activation.json` lists this exact id and version.
     active: bool,
+    /// The manifest's `kind`, when it declares one. "soundtrack" packages
+    /// carry a music pack instead of textures: switching one rebuilds the
+    /// disc rather than composing a tree.
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -922,6 +927,111 @@ struct ModLibraryView {
     /// Packages the controls profile owns, so a mods list does not offer them
     /// twice. Turning one of these on by hand would fight the controls setting.
     managed_by_controls: Vec<String>,
+}
+
+/// The manifest's `kind` field, read raw so composition's typed view need
+/// not know about it. Absent for every texture package.
+fn package_kind(dir: &Path) -> Option<String> {
+    let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    v.get("kind").and_then(|k| k.as_str()).map(str::to_string)
+}
+
+/// Soundtrack packages under `mods/packages`: schema `nsr.soundtrack-mod.v1`,
+/// one `.nsrmusic` (or an empty pack.json for the original soundtrack) instead
+/// of textures. The composition loader refuses them by design, so they are
+/// read raw here, listed beside the texture packages, and switched through
+/// the soundtrack record rather than activation.json. Returns the entries and
+/// the `unreadable` list with their loader complaints removed.
+fn read_soundtrack_packages(root: &Path, unreadable: Vec<String>, data_root: &Path) -> (Vec<PackageEntryView>, Vec<String>) {
+    use reborn_core::soundtrack::state::{Base, Soundtrack};
+    let record = Soundtrack::load(data_root).ok();
+    let mut found = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let Ok(ids) = std::fs::read_dir(root) else { return (found, unreadable) };
+    for id_entry in ids.flatten() {
+        let Ok(versions) = std::fs::read_dir(id_entry.path()) else { continue };
+        for version_entry in versions.flatten() {
+            let dir = version_entry.path();
+            let Ok(raw) = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)) else { continue };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else { continue };
+            if v.get("schema").and_then(|x| x.as_str()) != Some("nsr.soundtrack-mod.v1") {
+                continue;
+            }
+            let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let (id, version) = (get("id"), get("version"));
+            if id.is_empty() || version.is_empty() {
+                continue;
+            }
+            let files = v.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+            let bytes: u64 = files.iter().filter_map(|f| f.get("bytes").and_then(|b| b.as_u64())).sum();
+            let has_songs = files.iter().any(|f| f.get("path").and_then(|p| p.as_str()).map(|p| p.ends_with(".nsrmusic")).unwrap_or(false));
+            // Active means "this is the soundtrack base": the package with a
+            // pack when the record names it, the original when the base is stock.
+            let active = match record.as_ref().map(|r| &r.base) {
+                Some(Base::Package { id: bid, version: bver, .. }) => *bid == id && *bver == version,
+                Some(Base::Stock) => !has_songs,
+                None => !has_songs,
+            };
+            found.push(PackageEntryView {
+                id,
+                version,
+                name: get("name"),
+                targets: Vec::new(),
+                conflict_group: Some("soundtrack".to_string()),
+                files: files.len(),
+                bytes,
+                active,
+                kind: Some("soundtrack".to_string()),
+            });
+            dirs.push(dir);
+        }
+    }
+    found.sort_by(|a, b| (a.id.as_str(), a.version.as_str()).cmp(&(b.id.as_str(), b.version.as_str())));
+    let unreadable = unreadable
+        .into_iter()
+        .filter(|line| !dirs.iter().any(|d| line.starts_with(&d.display().to_string())))
+        .collect();
+    (found, unreadable)
+}
+
+/// A soundtrack package switched on or off: set the soundtrack base and
+/// rebuild the disc now, under the launch guard. Returns the sentence to show.
+///
+/// A package whose pack carries no songs (the "original" package) sets the
+/// base to stock, and so does switching any soundtrack package off.
+fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: bool) -> Result<String, String> {
+    use reborn_core::soundtrack::state::{Base, Soundtrack};
+    let mut st = Soundtrack::load(data_root).map_err(|e| e.to_string())?;
+    let mut base = Base::Stock;
+    if on {
+        let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        let file = v.get("files").and_then(|f| f.as_array()).and_then(|a| a.first()).and_then(|f| f.get("path")).and_then(|p| p.as_str()).unwrap_or("");
+        // Only a .nsrmusic payload is a pack; the original package carries a
+        // bare pack.json with no songs, which means the disc's own soundtrack.
+        if file.ends_with(".nsrmusic") {
+            let pack_path = dir.join("files").join(file);
+            match reborn_core::soundtrack::pack::read_pack(&pack_path) {
+                Ok(p) if !p.manifest.songs.is_empty() => {
+                    let rel = pack_path.strip_prefix(data_root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| pack_path.to_string_lossy().into_owned());
+                    base = Base::Package { id: id.to_string(), version: version.to_string(), pack: rel };
+                }
+                Ok(_) => {}
+                Err(e) => return Err(format!("{id} could not be read as a soundtrack pack: {e}")),
+            }
+        }
+    }
+    st.base = base;
+    if on {
+        st.enabled = true;
+    }
+    st.save(data_root).map_err(|e| e.to_string())?;
+    let outcome = music_page::rebuild_now(data_root, &mut |_| {})?;
+    Ok(match outcome {
+        reborn_core::soundtrack::apply::Outcome::Refused(reborn_core::soundtrack::Refusal::NothingStaged) => "Your game plays the original soundtrack.".to_string(),
+        other => other.note(),
+    })
 }
 
 /// Enumerate `mods/packages/<id>/<version>/package.json`.
@@ -988,6 +1098,8 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
         let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
+        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+        let (soundtracks, unreadable) = read_soundtrack_packages(&root, unreadable, &data_root);
 
         // Per game, because exclusivity is a fact about a composed tree and two
         // packages that collide on one build may not both target another. Every
@@ -1001,6 +1113,13 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
             }
         }
         let mut exclusive: Vec<ExclusiveGroupView> = Vec::new();
+        if soundtracks.len() > 1 {
+            exclusive.push(ExclusiveGroupView {
+                members: soundtracks.iter().map(|s| s.id.clone()).collect(),
+                example_path: None,
+                computed: false,
+            });
+        }
         for game in &builds {
             for group in reborn_core::mods::exclusive_groups(&packages, game) {
                 let members: Vec<String> = group.members.iter().map(|m| m.to_string()).collect();
@@ -1045,7 +1164,9 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
                         .active
                         .iter()
                         .any(|a| a.id == pkg.id && a.version == pkg.version),
+                    kind: package_kind(&root.join(pkg.id.as_str()).join(pkg.version.as_str())),
                 })
+                .chain(soundtracks)
                 .collect(),
             unreadable,
             activation: activation
@@ -1197,6 +1318,10 @@ struct ModSyncView {
     /// is deleted; a player renames it back to undo the link.
     moved_aside: Option<String>,
     composed_root: Option<String>,
+    /// Present when the package switched was a soundtrack: what the disc
+    /// rebuild did, in a sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    soundtrack_note: Option<String>,
 }
 
 fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackageView> {
@@ -1227,6 +1352,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             link_at: None,
             moved_aside: None,
             composed_root: None,
+            soundtrack_note: None,
         },
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
@@ -1256,6 +1382,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
                 link_at: Some(link_at.display().to_string()),
                 moved_aside: moved_aside.map(|p| p.display().to_string()),
                 composed_root: Some(r.composed_root.display().to_string()),
+            soundtrack_note: None,
             }
         }
     }
@@ -1321,6 +1448,34 @@ async fn mods_toggle(
         let id = ModId::parse(&id).map_err(|e| e.to_string())?;
         let version = PackageVersion::parse(&version).map_err(|e| e.to_string())?;
         let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+
+        // A soundtrack package changes the disc, not the texture tree, and is
+        // never listed in activation.json: the soundtrack record is its state.
+        let dir = root.join(id.as_str()).join(version.as_str());
+        if package_kind(&dir).as_deref() == Some("soundtrack") {
+            if !dir.join(reborn_core::mods::PACKAGE_MANIFEST).is_file() {
+                return Err(format!("{} is not an installed package, so it cannot be switched.", dir.display()));
+            }
+            let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+            let note = soundtrack_switch(&data_root, &dir, id.as_str(), version.as_str(), on)?;
+            return Ok(ModSyncView {
+                game: GameBuild::Offline.game_id().to_string(),
+                synced: true,
+                refusal: None,
+                note: note.clone(),
+                active: Vec::new(),
+                missing: Vec::new(),
+                tree: None,
+                entries: 0,
+                overlaid: 0,
+                link: None,
+                link_at: None,
+                moved_aside: None,
+                composed_root: None,
+                soundtrack_note: Some(note),
+            });
+        }
+
         let activation_path =
             reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
         let mut activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
@@ -3691,6 +3846,9 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
         "runtime" => dialog.pick_file().await,
         "memory_card" => dialog.add_filter("GameCube memory card", &["raw", "gcp"]).pick_file().await,
         "manifest" => dialog.add_filter("Component manifest", &["json"]).pick_file().await,
+        "audio" => dialog.set_title("Choose a song").add_filter("Audio", reborn_core::soundtrack::decode::EXTENSIONS).pick_file().await,
+        "pack" => dialog.set_title("Choose a soundtrack pack").add_filter("Soundtrack pack", &["nsrmusic", "nsmp"]).pick_file().await,
+        "save_pack" => dialog.set_title("Save a soundtrack pack").add_filter("Soundtrack pack", &["nsrmusic"]).set_file_name("my-soundtrack.nsrmusic").save_file().await,
         _ => return Err("Unknown file type".into()),
     };
     Ok(picked.map(|f| f.path().display().to_string()))
@@ -4023,90 +4181,6 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
 // Music
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct MusicSourceView {
-    /// Path relative to `music/sources`, always forward slashes, so the same
-    /// record reads the same way on every platform.
-    relative_path: String,
-    bytes: u64,
-    /// Always absent from a scan, and not a zero. Length needs a decoder, which
-    /// is the bundled FFmpeg and not this codebase, so nothing renders a running
-    /// time nobody measured.
-    duration_ms: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct MusicSourcesView {
-    dir: String,
-    files: Vec<MusicSourceView>,
-    total_bytes: u64,
-    /// How many stream slots the game's position table holds. A hard bound: a
-    /// slot number the table cannot hold is a disc that boots and plays garbage.
-    stream_slots: u8,
-}
-
-/// The audio the player has imported, off disk.
-///
-/// An absent directory is an empty list rather than an error: nothing imported
-/// yet is the normal state of a fresh install, and failing here would make the
-/// Music page unopenable before it has ever been used.
-#[tauri::command]
-async fn music_sources() -> Result<MusicSourcesView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let p = Platform::detect();
-        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
-        let dir = reborn_core::music::sources_dir(&data_root);
-        let found = reborn_core::music::scan_sources(&dir).map_err(|e| e.to_string())?;
-
-        Ok(MusicSourcesView {
-            dir: dir.display().to_string(),
-            total_bytes: found.iter().map(|f| f.bytes).sum(),
-            files: found
-                .iter()
-                .map(|f| MusicSourceView {
-                    relative_path: f.relative_path.clone(),
-                    bytes: f.bytes,
-                    duration_ms: f.duration.map(|d| d.as_millis()),
-                })
-                .collect(),
-            stream_slots: reborn_core::music::STREAM_SLOTS,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Write a custom soundtrack into the offline image.
-///
-/// Refuses, from the core, and the message names the three things that are
-/// missing: the per-stream position table layout inside `pathfind.dat`, the
-/// EA-exact sample accounting, and the title, artist and album record layout in
-/// `template.dat`. Guessing any of them produces a disc that mounts, boots and
-/// plays silence, which is the worst kind of failure because it looks like
-/// success.
-///
-/// Exposed rather than omitted so a Music screen can print why the feature is
-/// not built. An empty state and a not-built state are different claims.
-#[tauri::command]
-async fn music_build_pack(confirm: bool) -> Result<String, String> {
-    confirmed(
-        confirm,
-        "music_build_pack",
-        "rewrite the offline game image with a new soundtrack",
-    )?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let order = reborn_core::music::TrackOrder::new();
-        match reborn_core::music::write_soundtrack(Path::new("."), &order) {
-            // Unreachable today. Left as a real branch rather than an
-            // unreachable!(), because the day the writer lands this command
-            // must return the hash it produced and not panic.
-            Ok(hash) => Ok(hash.to_string()),
-            Err(e) => Err(e.to_string()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
 
 // ---------------------------------------------------------------------------
 // Content and updates
@@ -4945,6 +5019,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Already here.
             dolphin_settings::netplay_open,
+            dolphin_settings::netplay_status,
+            dolphin_settings::netplay_action,
             dolphin_settings::dolphin_preferences,
             dolphin_settings::dolphin_preference_set,
             dolphin_settings::dolphin_saves_folder,
@@ -5034,8 +5110,20 @@ fn main() {
             open_runtime,
             diagnostic_bundle,
             // Custom soundtrack.
-            music_sources,
-            music_build_pack,
+            music_page::music_status,
+            music_page::music_inspect,
+            music_page::music_lookup,
+            music_page::music_stage_file,
+            music_page::music_stage_stock,
+            music_page::music_stage_details,
+            music_page::music_unstage,
+            music_page::music_pack_preview,
+            music_page::music_stage_pack,
+            music_page::music_export,
+            music_page::music_set_enabled,
+            music_page::music_apply,
+            music_page::music_reset_all,
+            music_page::music_dismiss,
             // Installed versions and updates.
             content_installed,
             content_update,
