@@ -383,7 +383,14 @@ const FEATURES = [
         desc: "A file's tags and length, with an online lookup when the tags are missing",
         inputs: [{ key: "path", placeholder: "audio file path" }],
       },
-      { cmd: "music_lookup", desc: "Look a song up online by a typed query", inputs: [{ key: "query", placeholder: "artist and title" }] },
+      {
+        cmd: "music_lookup",
+        desc: "Look a song up online by a typed query, ranked against a length when one is known",
+        inputs: [
+          { key: "query", placeholder: "artist and title" },
+          { key: "durationMs", placeholder: "length in ms, optional", number: true, optional: true },
+        ],
+      },
       {
         cmd: "music_stage_file",
         desc: "Encode a file for a slot and stage it (runs in the background; poll music_status)",
@@ -425,6 +432,7 @@ const FEATURES = [
       },
       { cmd: "music_set_enabled", desc: "Switch the custom soundtrack on or off and rebuild the disc", write: true, inputs: [{ key: "on", placeholder: "true|false", bool: true }] },
       { cmd: "music_apply", desc: "Rebuild the disc from the staged slots. One rebuild", write: true, confirm: true },
+      { cmd: "music_reset_all", desc: "Forget every custom song and rebuild with the game's own soundtrack", write: true, confirm: true },
       { cmd: "music_dismiss", desc: "Clear a finished or failed rebuild note" },
     ],
   },

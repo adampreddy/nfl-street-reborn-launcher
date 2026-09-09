@@ -337,10 +337,10 @@ pub async fn music_inspect(path: String) -> Result<InspectView, String> {
 }
 
 #[tauri::command]
-pub async fn music_lookup(query: String) -> Result<Vec<CandidateView>, String> {
+pub async fn music_lookup(query: String, duration_ms: Option<u64>) -> Result<Vec<CandidateView>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let h = http();
-        Ok(apply::lookup_query(&h, &query).iter().map(candidate).collect())
+        Ok(apply::lookup_query(&h, &query, duration_ms).iter().map(candidate).collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -574,6 +574,24 @@ pub async fn music_set_enabled(on: bool) -> Result<MusicStatusView, String> {
     refuse_if_busy()?;
     let root = data_root()?;
     apply::set_enabled(&root, on).map_err(|e| e.to_string())?;
+    start_rebuild(root)
+}
+
+/// Forget every custom song and rebuild the disc with its own soundtrack.
+#[tauri::command]
+pub async fn music_reset_all(confirm: bool) -> Result<MusicStatusView, String> {
+    crate::confirmed(confirm, "music_reset_all", "remove every custom song and rebuild the game with its own soundtrack")?;
+    refuse_if_busy()?;
+    let root = data_root()?;
+    let had = apply::reset_all(&root).map_err(|e| e.to_string())?;
+    {
+        let mut h = held();
+        h.note = if had == 0 {
+            "There was nothing to remove.".to_string()
+        } else {
+            format!("Removed {had} custom song{}. Your files are kept.", if had == 1 { "" } else { "s" })
+        };
+    }
     start_rebuild(root)
 }
 

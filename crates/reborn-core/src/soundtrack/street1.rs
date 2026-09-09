@@ -33,7 +33,10 @@ pub const PACK_DESCRIPTION: &str = "The 14 songs from the first NFL Street, in s
 
 pub const ORIGINAL_ID: &str = "reborn.soundtrack.original";
 pub const ORIGINAL_NAME: &str = "NFL Street 2 Original Soundtrack";
-pub const ORIGINAL_DESCRIPTION: &str = "Every slot plays the song the disc shipped with.";
+pub const ORIGINAL_DESCRIPTION: &str =
+    "The 21 songs NFL Street 2 shipped with. The Reborn disc replaces three of them, so this puts those back.";
+/// The original soundtrack's payload when it carries real audio.
+pub const ORIGINAL_PACK_FILE: &str = "nfl-street-2.nsrmusic";
 /// The original package's payload: a pack with no songs, which means "every
 /// slot is the disc's own".
 pub const ORIGINAL_PACK_JSON: &str =
@@ -438,10 +441,24 @@ fn write_package(out_dir: &Path, id: &str, name: &str, version: &str, descriptio
 /// Write the two soundtrack package folders under `out_dir`:
 /// `reborn.soundtrack.original/<version>` (a pack with no songs) and
 /// `reborn.soundtrack.nfl-street-1/<version>` (a copy of `pack`).
-pub fn write_packages(pack_path: &Path, out_dir: &Path, version: &str) -> Result<()> {
+/// Write the two soundtrack packages.
+///
+/// `original` is a pack of the retail NFL Street 2 songs, built from a retail
+/// disc with [`crate::soundtrack::apply::export_from_files`]. Without one the
+/// original package ships an empty pack, which means "whatever this disc
+/// shipped with"; that is only the true original when the disc is retail, and
+/// the Reborn disc is not, so pass it.
+pub fn write_packages(pack_path: &Path, original: Option<&Path>, out_dir: &Path, version: &str) -> Result<()> {
     let pack_bytes = std::fs::read(pack_path).map_err(|e| io(pack_path, e))?;
     pack::read_pack(pack_path)?;
-    write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, "pack.json", ORIGINAL_PACK_JSON.as_bytes())?;
+    match original {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| io(path, e))?;
+            pack::read_pack(path)?;
+            write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, ORIGINAL_PACK_FILE, &bytes)?;
+        }
+        None => write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, "pack.json", ORIGINAL_PACK_JSON.as_bytes())?,
+    }
     write_package(out_dir, STREET1_ID, STREET1_NAME, version, STREET1_DESCRIPTION, STREET1_PACK_FILE, &pack_bytes)
 }
 
@@ -470,7 +487,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pack_path = small_pack(dir.path());
         let out = dir.path().join("packages");
-        write_packages(&pack_path, &out, "1.0.0").unwrap();
+        write_packages(&pack_path, None, &out, "1.0.0").unwrap();
 
         let orig_dir = out.join(ORIGINAL_ID).join("1.0.0");
         let s1_dir = out.join(STREET1_ID).join("1.0.0");

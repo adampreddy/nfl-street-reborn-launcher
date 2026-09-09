@@ -380,6 +380,23 @@ pub fn unstage_all(data_root: &Path) -> Result<usize> {
     Ok(n)
 }
 
+/// Forget every custom song: the base goes back to the disc's own soundtrack
+/// and every slot override and staged change is dropped. Returns how many
+/// slots were carrying something.
+///
+/// The audio itself is not deleted. Imported files stay in `music/sources`,
+/// packs in `music/packs`, and encoded blobs in `music/encoded`, so putting a
+/// song back is a staging step and not another encode.
+pub fn reset_all(data_root: &Path) -> Result<usize> {
+    let mut st = Soundtrack::load(data_root)?;
+    let had = st.slots.len() + st.pending.len();
+    st.base = state::Base::Stock;
+    st.slots.clear();
+    st.pending.clear();
+    st.save(data_root)?;
+    Ok(had)
+}
+
 pub fn set_enabled(data_root: &Path, on: bool) -> Result<()> {
     let mut st = Soundtrack::load(data_root)?;
     st.enabled = on;
@@ -476,10 +493,26 @@ pub fn inspect(http: Option<&dyn crate::net::Http>, path: &Path) -> Result<Inspe
     let audio = decode::decode_file(path)?;
     let t = tags::read(path);
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let query = tags::clean_query(&stem);
+    // Tags beat a file name, so when the file has them they are the query
+    // too: "Nas" and "Disciple" from an ID3 frame are not a guess.
+    let parsed = tags::parse_name(&stem);
+    let artist = t.artist.clone().or_else(|| parsed.artist.clone());
+    let title = t.title.clone().or_else(|| parsed.title.clone());
+    let query = match (&t.artist, &t.title) {
+        (Some(a), Some(ti)) => format!("{a} {ti}"),
+        _ => parsed.query.clone(),
+    };
     let complete = t.title.is_some() && t.artist.is_some();
     let candidates = match (complete, http) {
-        (false, Some(h)) if !query.is_empty() => lookup::lookup(h, &query),
+        (false, Some(h)) if !query.is_empty() => lookup::search(
+            h,
+            &lookup::Request {
+                text: &query,
+                artist: artist.as_deref(),
+                title: title.as_deref(),
+                duration_ms: Some(audio.duration_ms),
+            },
+        ),
         _ => Vec::new(),
     };
     let details_from = if complete {
@@ -493,9 +526,23 @@ pub fn inspect(http: Option<&dyn crate::net::Http>, path: &Path) -> Result<Inspe
     Ok(Inspection { tags: t, query, duration_ms: audio.duration_ms, too_long, candidates, details_from })
 }
 
-/// Look a typed query up online. Never errors; empty when nothing was found.
-pub fn lookup_query(http: &dyn crate::net::Http, query: &str) -> Vec<lookup::Candidate> {
-    lookup::lookup(http, tags::clean_query(query).as_str())
+/// Look a typed query up online, with the length of the file being replaced
+/// when one is known: it is the strongest signal there is, and a person
+/// typing a song name usually means the one they are holding.
+pub fn lookup_query(http: &dyn crate::net::Http, query: &str, duration_ms: Option<u64>) -> Vec<lookup::Candidate> {
+    let parsed = tags::parse_name(query);
+    if parsed.query.is_empty() {
+        return Vec::new();
+    }
+    lookup::search(
+        http,
+        &lookup::Request {
+            text: &parsed.query,
+            artist: parsed.artist.as_deref(),
+            title: parsed.title.as_deref(),
+            duration_ms,
+        },
+    )
 }
 
 /// Stage a song from a file: copy the file into `music/sources`, decode it,
@@ -620,6 +667,40 @@ pub fn apply_or_revert(
         return Ok(Outcome::Refused(Refusal::NothingStaged));
     }
     revert(platform, data_root, updater, hook)
+}
+
+/// A pack built straight out of a game image's own files.
+///
+/// The audio is already in the game's format and already laid out 40 segments
+/// to a slot, so the blobs are copied rather than decoded and re-encoded, and
+/// the banner text comes from the same image. That makes a pack of a disc's
+/// own soundtrack exact and quick: no sample ever passes through a codec.
+pub fn export_from_files(
+    pathfind: &[u8],
+    template: &[u8],
+    slots: &[Slot],
+    out: &Path,
+    name: &str,
+    author: &str,
+    description: &str,
+) -> Result<pack::Manifest> {
+    let records = eatx::read_records(template)?;
+    let asf = pathfind::asf(pathfind);
+    if asf.is_empty() {
+        pathfind::Pathfind::parse(pathfind)?;
+    }
+    let mut songs = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let r = &records[slot.index()];
+        songs.push(pack::SongInput {
+            slot: *slot,
+            blob: asf::slot_blob(asf, *slot)?,
+            title: r.title.clone(),
+            artist: r.artist.clone(),
+            album: r.album.clone(),
+        });
+    }
+    pack::write_pack(out, name, author, description, &songs)
 }
 
 #[cfg(test)]
@@ -758,6 +839,27 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_built_from_an_image_carries_its_blobs_and_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let pf = synthetic_pathfind(256);
+        let tpl = synthetic_template();
+        let out = dir.path().join("disc.nsrmusic");
+        let want = [Slot::new(1).unwrap(), Slot::new(21).unwrap()];
+        let man = export_from_files(&pf, &tpl, &want, &out, "Disc", "me", "its own songs").unwrap();
+        assert_eq!(man.songs.len(), 2);
+        assert_eq!(man.songs[&1].title, "Song 1");
+        assert_eq!(man.songs[&21].artist, "Artist 21");
+        let back = pack::read_pack(&out).unwrap();
+        for slot in want {
+            assert_eq!(
+                pack::read_blob(&back, slot).unwrap(),
+                asf::slot_blob(pathfind::asf(&pf), slot).unwrap(),
+                "slot {slot} is the image's own audio, byte for byte"
+            );
+        }
+    }
+
+    #[test]
     fn stock_songs_come_from_the_pristine_image() {
         let (dir, pristine, _booted, _size) = scratch_root();
         let _ = dir.path();
@@ -766,6 +868,25 @@ mod tests {
         assert_eq!(songs[0].title, "Song 1");
         assert_eq!(songs[20].artist, "Artist 21");
         assert_eq!(songs[0].duration_ms, 4000);
+    }
+
+    #[test]
+    fn reset_all_forgets_every_song_and_the_base_but_keeps_the_audio() {
+        let (dir, _pristine, _booted, _size) = scratch_root();
+        let root = dir.path();
+        let pack_path = root.join("p.nsrmusic");
+        pack::write_pack(&pack_path, "P", "", "", &[pack::SongInput { slot: Slot::new(2).unwrap(), blob: blob(4800), title: "S".into(), artist: String::new(), album: String::new() }]).unwrap();
+        stage_pack(root, &pack_path).unwrap();
+        let mut st = Soundtrack::load(root).unwrap();
+        st.base = state::Base::Package { id: "reborn.soundtrack.x".into(), version: "1.0.0".into(), pack: "music/packs/p.nsrmusic".into() };
+        st.slots.insert(5, st.pending[&2].clone());
+        st.save(root).unwrap();
+
+        assert_eq!(reset_all(root).unwrap(), 2);
+        let st = Soundtrack::load(root).unwrap();
+        assert_eq!(st.base, state::Base::Stock);
+        assert!(st.slots.is_empty() && st.pending.is_empty());
+        assert!(state::packs_dir(root).join("p.nsrmusic").is_file(), "the audio is kept");
     }
 
     #[test]

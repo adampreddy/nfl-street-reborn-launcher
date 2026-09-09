@@ -5019,6 +5019,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Already here.
             dolphin_settings::netplay_open,
+            dolphin_settings::netplay_status,
+            dolphin_settings::netplay_action,
             dolphin_settings::dolphin_preferences,
             dolphin_settings::dolphin_preference_set,
             dolphin_settings::dolphin_saves_folder,
@@ -5120,6 +5122,7 @@ fn main() {
             music_page::music_export,
             music_page::music_set_enabled,
             music_page::music_apply,
+            music_page::music_reset_all,
             music_page::music_dismiss,
             // Installed versions and updates.
             content_installed,

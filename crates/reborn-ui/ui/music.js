@@ -251,7 +251,7 @@ function renderEditor() {
   if(reading){form.append(el('p',{class:'note',role:'status',text:'Getting the title, artist, and album…'}));editor.replaceChildren(form);return;}
   if(lookupNote)form.append(el('p',{class:'note',role:'status',text:lookupNote}));
   const field=(key,label)=>el('label',{class:'mz-field'},el('span',{text:label}),el('input',{id:'music-'+key,type:'text',maxlength:'49',required:key==='title'?'':null,value:fields[key],disabled,oninput:ev=>{fields[key]=ev.target.value;}}));
-  form.append(el('div',{class:'mz-fields'},field('title','Title'),field('artist','Artist')));
+  form.append(el('div',{class:'mz-fields'},field('title','Title'),field('artist','Artist'),field('album','Album')));
   if(editing===null){
     const select=el('select',{id:'music-slot','aria-label':'Replace song',disabled,onchange:ev=>{targetSlot=Number(ev.target.value);}});
     for(const song of slots())select.append(el('option',{value:String(song.slot),text:`${String(song.slot).padStart(2,'0')} · ${song.pending ? pendingWhat(song.pending, song) : slotTitle(song)}`,selected:song.slot===targetSlot}));
@@ -259,7 +259,7 @@ function renderEditor() {
   }
   const extra=el('details',{class:'music-extra'});extra.open=extraOpen;
   extra.addEventListener('toggle',()=>{extraOpen=extra.open;});
-  extra.append(el('summary',{text:'Album and online lookup'}),field('album','Album'));
+  extra.append(el('summary',{text:'Find these details online'}));
   const search=el('input',{type:'search','aria-label':'Find song details',placeholder:'Song or artist',value:searchText,disabled,oninput:ev=>{searchText=ev.target.value;},onkeydown:ev=>{if(ev.key==='Enter'){ev.preventDefault();runSearch();}}});
   extra.append(el('div',{class:'mz-row'},search,el('button',{type:'button',text:searchBusy?'Searching…':'Search',disabled,onclick:runSearch})));
   if(candidates.length){const list=el('ul',{class:'mz-candidates'});for(const c of candidates)list.append(el('li',{},el('button',{type:'button',class:'mz-candidate',disabled,text:[c.title,c.artist,c.album].filter(Boolean).join(' · '),onclick:()=>{fields={title:c.title||'',artist:c.artist||'',album:c.album||''};lookupNote='Details updated.';renderEditor();}})));extra.append(list);}
@@ -274,7 +274,7 @@ function renderEditor() {
 async function runSearch(){
   if(searchBusy||busy||!searchText.trim())return;
   searchBusy=true;lookupNote='Searching…';renderEditor();
-  try{candidates=await call('music_lookup',{query:searchText.trim()});lookupNote=candidates.length?'Choose a result or edit the details yourself.':'No matches found. You can enter the details yourself.';}
+  try{candidates=await call('music_lookup',{query:searchText.trim(),durationMs:picked&&!picked.failed?picked.duration_ms??null:slotAt(targetSlot)?.duration_ms??null});lookupNote=candidates.length?'Choose a result or edit the details yourself.':'No matches found. You can enter the details yourself.';}
   catch(e){lookupNote=reason(e);}
   finally{searchBusy=false;if(editor?.open)renderEditor();}
 }
@@ -292,7 +292,8 @@ async function addToQueue(){
 
 function discNow(){
   const toggle=el('input',{type:'checkbox',role:'switch','aria-label':'Custom soundtrack',checked:!!status?.enabled,disabled:locked()||!status?.image_ok,onchange:ev=>act('music_set_enabled',{on:ev.target.checked})});
-  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
+  const nothingCustom=!slots().some(s=>s.source!=='original'||s.pending)&&status?.base?.kind!=='package';
+  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',class:'music-quiet',text:'Reset soundtrack',disabled:locked()||!status?.image_ok||nothingCustom,onclick:resetDialog}),el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
   return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Original songs play. Your custom songs are kept.'}))),buttons);
 }
 function statusLine(){
@@ -362,6 +363,24 @@ function showDialog(dialog) {
   if (typeof dialog.showModal === "function") dialog.showModal();
 }
 
+function resetDialog() {
+  const custom=slots().filter(s=>s.source!=='original').length;
+  const base=status?.base?.kind==='package'?status.base.name:null;
+  const dialog=openDialog('Reset soundtrack');
+  const body=el('div',{class:'mod-dialog-body'});
+  const lines=el('ul',{class:'mz-preview'});
+  if(custom)lines.append(el('li',{text:`${custom} custom song${custom===1?'':'s'} go back to the song your game shipped with.`}));
+  if(base)lines.append(el('li',{text:`The ${base} is switched off.`}));
+  lines.append(el('li',{text:'Your song files and packs are kept, so you can add them again without converting.'}));
+  body.append(
+    el('h2',{text:'Reset the soundtrack?'}),
+    el('p',{text:'Every song goes back to the one your game shipped with. This rebuilds the game once, about half a minute.'}),
+    lines,
+    el('div',{class:'store-dialog-actions'},
+      el('button',{type:'button',text:'Cancel',onclick:()=>dialog.close()}),
+      el('button',{type:'button',class:'primary',text:'Reset soundtrack',disabled:locked(),onclick:()=>{dialog.close();act('music_reset_all',{confirm:true});}})));
+  dialog.append(body);showDialog(dialog);
+}
 async function packDialog() {
   const path = await pickPath("pack");
   if (!path) return;

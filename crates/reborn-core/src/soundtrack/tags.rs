@@ -106,10 +106,72 @@ pub fn clean_query(file_stem: &str) -> String {
         .to_string()
 }
 
+/// A file name read as far as it can be trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Parsed {
+    /// The whole cleaned name, always worth searching.
+    pub query: String,
+    /// The halves of "Artist - Title", when the name had that shape.
+    pub artist: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Read a file name for the "Artist - Title" convention.
+///
+/// Worth doing because a fielded search is a different question from a
+/// full-text one: "Nas" and "Disciple" as artist and recording finds the
+/// song, while the same words as loose text also match every recording
+/// called Nas and every artist called Disciple.
+///
+/// Only the first separator splits, so "Nas - Disciple - Live" is Nas and
+/// "Disciple - Live". A half that is empty, or that is only digits (a track
+/// number the cleaner left behind), makes the whole thing unstructured.
+pub fn parse_name(file_stem: &str) -> Parsed {
+    let query = clean_query(file_stem);
+    // The cleaner collapses " - " to a space, so the raw name is what still
+    // holds the separator.
+    let raw = file_stem.replace('_', " ");
+    let split = raw.split_once(" - ").or_else(|| raw.split_once(" ‐ ")).or_else(|| raw.split_once(" – "));
+    let Some((left, right)) = split else {
+        return Parsed { query, ..Parsed::default() };
+    };
+    let artist = clean_query(left.trim());
+    let title = clean_query(right.trim());
+    let usable = |s: &str| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit() || c.is_whitespace());
+    if usable(&artist) && usable(&title) {
+        Parsed { query, artist: Some(artist), title: Some(title) }
+    } else {
+        Parsed { query, ..Parsed::default() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::soundtrack::testing::write_wav_24k;
+
+    #[test]
+    fn artist_and_title_are_read_when_the_name_has_them() {
+        let p = parse_name("03. Alicia Keys - Unthinkable (Official Video)");
+        assert_eq!(p.artist.as_deref(), Some("Alicia Keys"));
+        assert_eq!(p.title.as_deref(), Some("Unthinkable"));
+        assert_eq!(p.query, "Alicia Keys Unthinkable");
+
+        let p = parse_name("Nas - Disciple - Live");
+        assert_eq!(p.artist.as_deref(), Some("Nas"));
+        assert_eq!(p.title.as_deref(), Some("Disciple Live"));
+
+        // No separator, so nothing is claimed about which half is which.
+        let p = parse_name("9 4 26 Z89 Cast");
+        assert_eq!(p.artist, None);
+        assert_eq!(p.title, None);
+        assert!(!p.query.is_empty());
+
+        // A separator with a number on one side is a track number, not an artist.
+        let p = parse_name("07 - Ground Zero");
+        assert_eq!(p.artist, None);
+        assert_eq!(p.title, None);
+    }
 
     #[test]
     fn clean_query_table() {

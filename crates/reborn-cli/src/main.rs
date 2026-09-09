@@ -5315,12 +5315,30 @@ enum MusicCommand {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Build a pack from a game image's own soundtrack, copying its audio and
+    /// banner text without re-encoding. `--from` takes an ISO or a directory
+    /// holding pathfind.dat and template.dat (a DolphinTool extract).
+    PackFromImage {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "")]
+        name: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
     /// Write the two soundtrack mod packages (original, NFL Street 1) as a
     /// mods/packages tree ready to publish.
     SoundtrackPackages {
         /// The .nsrmusic built by pack-from-street1.
         #[arg(long)]
         pack: PathBuf,
+        /// A pack of the retail NFL Street 2 songs, for the original package.
+        #[arg(long)]
+        original: Option<PathBuf>,
         #[arg(long)]
         out_dir: PathBuf,
         #[arg(long, default_value = "1.0.0")]
@@ -5529,7 +5547,7 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
         MusicCommand::Lookup { query } => {
             let q = query.join(" ");
             let http = music_http();
-            let found = apply::lookup_query(&http, &q);
+            let found = apply::lookup_query(&http, &q, None);
             if found.is_empty() {
                 println!("Nothing found for {q:?}.");
             }
@@ -5580,8 +5598,24 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
             println!("Wrote {} ({} songs, {} bytes)", out.display(), report.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
             Ok(if report.songs.is_empty() { PROBLEM } else { std::process::ExitCode::SUCCESS })
         }
-        MusicCommand::SoundtrackPackages { pack, out_dir, version } => {
-            reborn_core::soundtrack::street1::write_packages(&pack, &out_dir, &version)?;
+        MusicCommand::PackFromImage { from, out, name, author, description } => {
+            use reborn_core::soundtrack::{apply, gcm, Slot};
+            let (pf, tpl) = if from.is_dir() {
+                (std::fs::read(from.join("pathfind.dat"))?, std::fs::read(from.join("template.dat"))?)
+            } else {
+                let disc = gcm::Disc::open(&from)?;
+                (disc.read_file("pathfind.dat")?, disc.read_file("template.dat")?)
+            };
+            let all: Vec<Slot> = Slot::all().collect();
+            let man = apply::export_from_files(&pf, &tpl, &all, &out, &name, &author, &description)?;
+            println!("Wrote {} ({} songs, {} bytes)", out.display(), man.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            for (slot, song) in &man.songs {
+                println!("  slot {slot:>2}: {} , {}", song.title, song.artist);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::SoundtrackPackages { pack, original, out_dir, version } => {
+            reborn_core::soundtrack::street1::write_packages(&pack, original.as_deref(), &out_dir, &version)?;
             for id in ["reborn.soundtrack.original", "reborn.soundtrack.nfl-street-1"] {
                 let dir = out_dir.join(id).join(&version);
                 println!("{}: {}", id, if dir.join("package.json").is_file() { "written" } else { "MISSING" });
