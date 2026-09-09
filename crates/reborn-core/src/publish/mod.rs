@@ -149,8 +149,20 @@ pub fn next_sequence(origin: &Path, component: ComponentId) -> Result<u64> {
                 continue;
             }
             let bytes = std::fs::read(entry.path()).map_err(|e| io_err(&entry.path(), e))?;
-            if let Ok(c) = Component::parse(&bytes) {
-                highest = highest.max(c.sequence);
+            match Component::parse(&bytes) {
+                Ok(c) => {
+                    highest = highest.max(c.sequence);
+                }
+                Err(_) => {
+                    let path = entry.path();
+                    return Err(Error::Io {
+                        path: path.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Failed to parse component manifest {}. Fix or remove the file before retrying.", path.display()),
+                        ),
+                    });
+                }
             }
         }
     }
@@ -242,5 +254,37 @@ mod tests {
         out!(sink, "hello {}", 1);
         err!(sink, "world");
         assert_eq!(seen, vec![Event::out("hello 1"), Event::err("world")]);
+    }
+
+    #[test]
+    fn next_sequence_refuses_a_corrupt_manifest_of_the_target_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let components = dir.path().join("components");
+        std::fs::create_dir_all(&components).unwrap();
+        // Good runtime-1.0.0.json
+        let text = format!("{{\"schema\":\"nsr.component.v1\",\"component\":\"runtime\",\"version\":\"1.0.0\",\"sequence\":1,\"install_root\":\"x\",\"customizable\":false,\"files\":[]}}");
+        std::fs::write(components.join("runtime-1.0.0.json"), text).unwrap();
+        // Corrupt runtime-1.0.1.json (truncated JSON)
+        std::fs::write(components.join("runtime-1.0.1.json"), "{\"schema\":\"nsr").unwrap();
+
+        let result = next_sequence(dir.path(), ComponentId::Runtime);
+        assert!(result.is_err(), "Expected error for corrupt runtime manifest, got Ok");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("runtime-1.0.1.json"), "Error should name the corrupt file: {}", err_msg);
+    }
+
+    #[test]
+    fn next_sequence_ignores_corrupt_manifest_of_different_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let components = dir.path().join("components");
+        std::fs::create_dir_all(&components).unwrap();
+        // Good runtime-1.0.0.json
+        let text = format!("{{\"schema\":\"nsr.component.v1\",\"component\":\"runtime\",\"version\":\"1.0.0\",\"sequence\":5,\"install_root\":\"x\",\"customizable\":false,\"files\":[]}}");
+        std::fs::write(components.join("runtime-1.0.0.json"), text).unwrap();
+        // Corrupt roster-x.json (truncated JSON) - should be ignored
+        std::fs::write(components.join("roster-x.json"), "{\"schema\":\"nsr").unwrap();
+
+        let result = next_sequence(dir.path(), ComponentId::Runtime);
+        assert_eq!(result.unwrap(), 6, "Should ignore corrupt roster manifest and return one above runtime");
     }
 }
