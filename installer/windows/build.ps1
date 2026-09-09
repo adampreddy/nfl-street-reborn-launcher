@@ -537,7 +537,18 @@ Get-ChildItem (Join-Path $scratch "*") -File -Exclude "iscc.*.log" | ForEach-Obj
     $mb = $_.Length / 1MB
     $target = Join-Path $dist $name
     try {
-        Move-Item $from $target -Force -ErrorAction Stop
+        try {
+            Move-Item $from $target -Force -ErrorAction Stop
+        } catch {
+            # A rename INTO dist is refused with a sharing violation for as long
+            # as a Windows Sandbox VM worker (vmmemWindowsSandbox) lingers with
+            # dist mapped, minutes after its window is closed, while creating a
+            # file there still works. Seen 2026-09-08 19:02: the compile
+            # succeeded and the move failed. Copy then delete gets the same
+            # result; only if that fails too is something really holding it.
+            Copy-Item -LiteralPath $from -Destination $target -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $from -Force -ErrorAction Stop
+        }
         Write-Host ("Built {0}  {1:N1} MB" -f $name, $mb)
     } catch {
         # A failure here used to be a warning, and the build then reported

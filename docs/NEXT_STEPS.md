@@ -13,8 +13,10 @@ session starts from facts, not memory.
   alone.
 - Origin: `https://files.nflstreetreborn.com/` (R2 bucket `reborn-content`,
   DNS on Cloudflare since today, registrar GoDaddy). Serves release
-  **3.0.0 sequence 2**: `textures 1.0.0` (8,192 files), `runtime 1.0.0`
-  (2,569 files), `roster 2026.09.06`. 10,490 objects, 2.95 GiB.
+  **3.0.0 sequence 4** (since 2026-09-08 19:31): `textures 1.0.0` (8,192
+  files), `runtime 1.0.2` (2,531 files, from a fresh payload), `roster
+  2026.09.06`. Earlier: sequence 2 with `runtime 1.0.0`, sequence 3 with
+  `runtime 1.0.1`; both runtimes came from trees the launcher had run.
 - Proven over the internet: a launcher with only the compiled-in keys
   installed the runtime and the roster from that URL into a scratch root.
 - Edge cache rule `files blobs` (`/blobs/*`, one year) deployed and
@@ -224,6 +226,65 @@ then the zip (2,729,209,564 bytes), the Update exe (39,064,978) and
 `latest.json` uploaded to `launcher/` and verified over HTTPS; `rebornctl
 update check` from the ship build reads the hosted manifest and answers
 up to date. This set supersedes the 22:16 one on the bucket.
+
+### 4c. 2026-09-08 evening: the other session's finish work shipped, runtime 1.0.2
+
+Adam runs the other session's desktop build (GPTAstra, the Codex agent,
+from `target\installer-payload` in the main tree) on his regular PC and
+asked for that build to be the shipped one: "the version you keep shipping
+is the old one and not our most current build". Its working tree was
+committed as found (`dd27b6c`: the Play page, the store-style Mods page,
+Settings sections with Dolphin preferences and Graphics presets, Online
+with manual Netplay, ReShade preset fixes, the installer's protected-folder
+guard, and the review scripts that cover them), the ship worktree was moved
+to that commit, and `test-all -Browser` passed there: 639 Rust tests, every
+checker, the browser suites, the 13-step e2e. Built from it with the
+FIELDS 12-19 bundle and the offline WebView2 runtime:
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `NFL Street Reborn Launcher 3.0.0.zip` | 2,161,338,617 | `dbff3f6467b6c0aa…` |
+| `NFL Street Reborn Launcher Setup 3.0.0.exe` | 7,910,343 | `060958b978a1d3b8…` |
+| `… Setup 3.0.0-1.bin` / `-2.bin` | 2,092,089,600 / 61,008,359 | `f1c406880db37003…` / `ca502473ec15b17b…` |
+| `NFL Street Reborn Launcher Update 3.0.0.exe` | 59,379,981 | `038f664a2654a5d9…` |
+
+GPTAstra's `Tools\verify-launcher-update.ps1` passes on the set (manifest
+pins the Update exe; staging equals the release binaries). Uploaded to the
+bucket's `launcher/` folder (zip, exe, `latest.json` last) and read back
+over HTTPS: both files hash identically to `dist`. `rebornctl update check`
+from the set reads the hosted manifest: up to date at 3.0.0. The Windows
+Sandbox was not used: Adam retired it (disk space), and the set is proven
+by the suites, the manifest check, and the shipped CLI against the live
+bucket.
+
+**Found by the seeded check with the new payload:** `runtime 1.0.1` on the
+bucket had been published from a runtime the launcher had already run. It
+carried `ReShade.ini.launcher-original`, `ReShade.log`, `ReShade.log1` and
+a launcher-managed `ReShade.ini`, so a fresh install would have been
+offered a 27 KB runtime "update" on its first check. `runtime 1.0.2`
+(sequence 3) was published from the ship payload's runtime (2,531 files,
+one new blob), release **3.0.0 sequence 4** signed and read back, tested
+on a loopback server, then uploaded blobs and components first and the
+release files last. Against the live bucket a payload-seeded root plans 0
+fetches for runtime and textures; the roster (30.6 MB) is the only pending
+component. **Rule: publish `runtime` only from `target\installer-payload\runtime`
+of a fresh build, never from a runtime the launcher has started.**
+
+**The 550 MB content update on Adam's PC** is a true answer for that data
+root, measured against the live manifests: `%APPDATA%\NFL Street Reborn
+Launcher` has no Dolphin runtime (`runtime\` holds only `user`, which is
+enough for seeding to skip it: 103 MB), no roster (31 MB), and a texture
+library missing 628 of the pack's files with 476 local extras (415 MB).
+Not a wrong manifest.
+
+**Windows Sandbox, retired:** its VM worker (`vmmemWindowsSandbox`) lingered
+after the window and server were stopped and refused every rename into the
+mapped `dist` while file creation there worked, which is why the 18:56 full
+build compiled and then failed to move into `dist`. `build.ps1` now copies
+and deletes when the rename is refused (`4a54369`). Sandbox storage lives
+in `C:\ProgramData\Microsoft\Windows\Containers` (about 24 GB, freed by
+turning the feature off). Deleted this evening: `target\dist-old-2026-09-06`,
+`target\e2e-game-patch`, `target\e2e-roster` (23 GB).
 
 ### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 

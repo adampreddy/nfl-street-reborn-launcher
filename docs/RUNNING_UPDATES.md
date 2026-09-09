@@ -146,6 +146,14 @@ rebornctl publish component --root "C:\Users\Adam\AppData\Roaming\NFL Street Reb
 rebornctl publish component --root "target\installer-payload\runtime" ^
     --component runtime --version 1.0.0 --sequence 1 --origin "C:\Reborn Origin" --apply
 
+The runtime tree must be the `runtime` folder of a FRESH `build.ps1` payload,
+never one the launcher has started: a started runtime carries
+`ReShade.ini.launcher-original`, `ReShade.log*` and a managed `ReShade.ini`,
+and every fresh install is then offered a tiny "update" that only undoes the
+staging. `runtime 1.0.0` (a `User\Dump` and logs) and `runtime 1.0.1` (the
+ReShade backup and logs) were both published that way; `runtime 1.0.2`
+(2026-09-08, sequence 3, release sequence 4) is the first clean one.
+
 rebornctl publish component --root "C:\somewhere\holding\NSR.iso" ^
     --component offline-content --version 3.0.0 --sequence 1 --origin "C:\Reborn Origin" --apply
 ```
