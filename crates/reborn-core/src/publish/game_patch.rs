@@ -36,11 +36,13 @@ pub struct GamePatchRequest<'a> {
     pub apply: bool,
 }
 
-/// Removes the decode-and-verify check file when it drops, on every path out
-/// of that step: an early `?` from [`Patcher::decode`], a failed
-/// verification, or the ordinary continuation into the chain and component
-/// publish. A file unique to this build under the temp directory must not
-/// outlive the call that writes it.
+/// Removes the decode-and-verify check file when it drops. Covers every path
+/// out of the decode-and-hash step that runs before the explicit `drop`
+/// below: an early `?` from [`Patcher::decode`], a panic, or the ordinary
+/// continuation. Dropped explicitly right after the hash comparison so the
+/// file (a full decoded game image) does not sit on disk for the rest of the
+/// call; kept as a guard rather than a plain `remove_file` so the early-exit
+/// paths above it are covered too.
 struct CheckGuard(PathBuf);
 
 impl Drop for CheckGuard {
@@ -161,12 +163,18 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
     if let Some(parent) = check.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
     }
-    // Cleared on every return below, including a `?` propagation from
-    // `Patcher::decode`.
-    let _check_guard = CheckGuard(check.clone());
+    // Covers every return between here and the explicit drop below,
+    // including a `?` propagation from `Patcher::decode`.
+    let check_guard = CheckGuard(check.clone());
     let patcher = Xdelta3::new(platform, xdelta.clone());
     let decoded = Patcher::decode(&patcher, from, &patch_path, &check)?;
     let verified = decoded.succeeded && hash_file(&check).map(|h| h == to_sha).unwrap_or(false);
+    // Dropped here rather than left for the function to return: `check` can
+    // be a full decoded game image, and nothing from here on (the chain
+    // save, the sequence lookup, the component publish, the release
+    // re-sign) needs it on disk. Do not remove this drop to "simplify" the
+    // guard away: without it the file sits for the rest of the call.
+    drop(check_guard);
     if !verified {
         let _ = std::fs::remove_file(&patch_path);
         return Ok(refuse(sink, &[format!(
@@ -313,6 +321,59 @@ mod tests {
         let (outcome, lines) = run(&r);
         assert!(outcome.refused().is_some());
         assert!(lines.iter().any(|l| l.contains("Those are the same build")), "{lines:?}");
+    }
+
+    #[test]
+    fn xdelta3_not_found_is_refused_before_a_process_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.iso");
+        let b = d.path().join("b.iso");
+        std::fs::write(&a, b"A").unwrap();
+        std::fs::write(&b, b"B").unwrap();
+        let origin = d.path().join("origin");
+        let stage = d.path().join("stage");
+        // A path that is not a file: find_xdelta_for_publishing refuses to
+        // fall back to a search when one was given explicitly.
+        let missing_xdelta = d.path().join("nope.exe");
+        let r = req(&a, &b, &origin, &stage, &missing_xdelta);
+        let (outcome, lines) = run(&r);
+        assert!(outcome.refused().is_some());
+        assert!(lines.iter().any(|l| l.contains("xdelta3 was not found")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_build_already_in_the_chain_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.iso");
+        let b = d.path().join("b.iso");
+        std::fs::write(&a, b"A").unwrap();
+        std::fs::write(&b, b"B").unwrap();
+        let from_sha = hash_file(&a).unwrap();
+        let to_sha = hash_file(&b).unwrap();
+        let stage = d.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        // A chain whose head is `a` (so the head-of-chain check passes) but
+        // which already carries `b`'s hash earlier in it (so the
+        // already-in-the-chain check is the one that fires). Two steps,
+        // linear: to_sha -> mid -> from_sha.
+        let mid = "2".repeat(64);
+        let mut chain = Chain::new();
+        chain.push(Step {
+            from_sha256: to_sha.as_str().to_string(), to_sha256: mid.clone(), to_bytes: 1,
+            patch: Chain::patch_name(to_sha.as_str(), &mid), label: "old1".into(),
+        }).unwrap();
+        chain.push(Step {
+            from_sha256: mid.clone(), to_sha256: from_sha.as_str().to_string(), to_bytes: 1,
+            patch: Chain::patch_name(&mid, from_sha.as_str()), label: "old2".into(),
+        }).unwrap();
+        chain.save(&stage.join(CHAIN_FILE)).unwrap();
+        let fake_xdelta = d.path().join("xdelta3.exe");
+        std::fs::write(&fake_xdelta, b"").unwrap();
+        let origin = d.path().join("origin");
+        let r = req(&a, &b, &origin, &stage, &fake_xdelta);
+        let (outcome, lines) = run(&r);
+        assert!(outcome.refused().is_some());
+        assert!(lines.iter().any(|l| l.contains("already in the chain")), "{lines:?}");
     }
 
     #[test]
