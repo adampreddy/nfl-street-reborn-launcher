@@ -141,30 +141,11 @@ fn format_rfc3339(t: SystemTime) -> String {
     let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let days = (secs / 86_400) as i64;
     let time_of_day = secs % 86_400;
-    let (year, month, day) = civil_from_days(days);
+    let (year, month, day) = crate::publish::civil_from_days(days);
     let hour = time_of_day / 3600;
     let minute = (time_of_day % 3600) / 60;
     let second = time_of_day % 60;
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+00:00")
-}
-
-/// Days since 1970-01-01 to a (year, month, day) triple, proleptic
-/// Gregorian. Howard Hinnant's `civil_from_days`:
-/// <http://howardhinnant.github.io/date_algorithms.html>. Chosen over
-/// reaching for a time crate for this one conversion: it is a small, closed,
-/// well-known algorithm, not a timezone database.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let year = if month <= 2 { y + 1 } else { y };
-    (year, month, day)
 }
 
 #[cfg(test)]

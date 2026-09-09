@@ -233,6 +233,29 @@ pub(crate) fn io_err(path: &Path, source: std::io::Error) -> Error {
     Error::Io { path: path.to_path_buf(), source }
 }
 
+/// Days since 1970-01-01 to a (year, month, day) triple, proleptic
+/// Gregorian. Howard Hinnant's `civil_from_days`:
+/// <http://howardhinnant.github.io/date_algorithms.html>. Shared by
+/// [`journal::format_rfc3339`] and `upload::format_amz_date`, which each
+/// need the same civil-date conversion for a different string format and
+/// used to carry an identical, independently hand-typed copy of it; a fix to
+/// one used to have no way of reaching the other. Chosen over reaching for a
+/// time crate for this one conversion: it is a small, closed, well-known
+/// algorithm, not a timezone database.
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    (year, month, day)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
