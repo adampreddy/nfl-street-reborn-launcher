@@ -14,7 +14,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -134,18 +134,7 @@ pub fn read_last(origin: &Path, n: usize) -> Result<Vec<Record>> {
 /// in the viewer's local time, if wanted, belongs to whatever displays the
 /// record, not to this stamp.
 pub fn now() -> String {
-    format_rfc3339(SystemTime::now())
-}
-
-fn format_rfc3339(t: SystemTime) -> String {
-    let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let days = (secs / 86_400) as i64;
-    let time_of_day = secs % 86_400;
-    let (year, month, day) = crate::publish::civil_from_days(days);
-    let hour = time_of_day / 3600;
-    let minute = (time_of_day % 3600) / 60;
-    let second = time_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+00:00")
+    crate::publish::format_rfc3339(SystemTime::now())
 }
 
 #[cfg(test)]
@@ -169,23 +158,11 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Time formatting
+    // Time formatting: the algorithm itself (`format_rfc3339`, shared with
+    // `download.rs`) is tested once, in `publish::mod`'s own test module,
+    // against known UTC instants. This is `now()`'s own, thinner test: it
+    // only needs to prove `now()` still calls through to it correctly.
     // -------------------------------------------------------------------
-
-    #[test]
-    fn format_rfc3339_matches_known_utc_instants() {
-        let cases: &[(u64, &str)] = &[
-            (0, "1970-01-01T00:00:00+00:00"),
-            (86_399, "1970-01-01T23:59:59+00:00"),
-            (951_782_400, "2000-02-29T00:00:00+00:00"), // leap day
-            (1_757_430_727, "2025-09-09T15:12:07+00:00"),
-            (1_893_456_000, "2030-01-01T00:00:00+00:00"), // year boundary
-        ];
-        for (epoch, want) in cases {
-            let t = UNIX_EPOCH + std::time::Duration::from_secs(*epoch);
-            assert_eq!(&format_rfc3339(t), want, "epoch {epoch}");
-        }
-    }
 
     #[test]
     fn now_produces_a_plausible_rfc3339_string() {

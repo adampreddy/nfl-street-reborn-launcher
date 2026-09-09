@@ -27,7 +27,23 @@ impl HttpResponse {
     }
 }
 
-/// The network, as three calls.
+/// A HEAD reply: status and, when the server sent one, the `Content-Length`.
+/// No body is read or returned, which is the point: confirming a
+/// multi-gigabyte object is live and the size it claims to be should never
+/// cost transferring it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpHead {
+    pub status: u16,
+    pub content_length: Option<u64>,
+}
+
+impl HttpHead {
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
+/// The network, as four calls.
 ///
 /// A transport failure (no route, DNS, timeout, refused) is an `Err`. A reply
 /// with an error status is an `Ok(HttpResponse)`, because the server said
@@ -58,6 +74,22 @@ pub trait Http: Send + Sync {
     /// POST a JSON body. `bearer` becomes an `Authorization: Bearer` header
     /// and is never logged by this layer.
     fn post_json(&self, url: &str, body: &[u8], bearer: Option<&str>) -> Result<HttpResponse>;
+
+    /// HEAD a URL: status and `Content-Length`, without transferring the
+    /// body. For confirming a large published object (a multi-gigabyte
+    /// zip) is reachable at the size it claims, where [`Http::get_text`]
+    /// would work but would mean paying for the whole download just to
+    /// read one header.
+    ///
+    /// The default falls back to [`Http::get_text`] and reports the body's
+    /// own length as `content_length`, so an implementation written before
+    /// this method existed (this crate's own test fakes, for example)
+    /// keeps compiling and keeps working, only without the bandwidth
+    /// saving; [`UreqHttp`] overrides this with a real HEAD request.
+    fn head(&self, url: &str) -> Result<HttpHead> {
+        let reply = self.get_text(url)?;
+        Ok(HttpHead { status: reply.status, content_length: Some(reply.body.len() as u64) })
+    }
 }
 
 fn transport(url: &str, e: impl std::fmt::Display) -> Error {
@@ -168,6 +200,21 @@ impl Http for UreqHttp {
         }
         Self::reply(url, req.send_bytes(body))
     }
+
+    fn head(&self, url: &str) -> Result<HttpHead> {
+        match self.agent.head(url).call() {
+            Ok(resp) => {
+                let status = resp.status();
+                let content_length = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok());
+                Ok(HttpHead { status, content_length })
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let content_length = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok());
+                Ok(HttpHead { status, content_length })
+            }
+            Err(ureq::Error::Transport(t)) => Err(transport(url, t)),
+        }
+    }
 }
 
 /// A fake for tests: canned replies by URL, and a record of what was sent.
@@ -230,5 +277,38 @@ pub mod fake {
                 .push((url.to_string(), body.to_vec(), bearer.map(str::to_string)));
             self.get_text(url)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeHttp;
+    use super::*;
+
+    /// [`Http::head`]'s default falls back to [`Http::get_text`] and reports
+    /// the body's length as `content_length`. `FakeHttp` never overrides
+    /// `head`, so this is a test of the default itself, not of the fake.
+    #[test]
+    fn heads_default_reports_the_bodys_length_and_status() {
+        let http = FakeHttp::default().reply("https://x/thing.zip", 200, "twelve bytes");
+        let head = http.head("https://x/thing.zip").unwrap();
+        assert_eq!(head.status, 200);
+        assert_eq!(head.content_length, Some(12));
+        assert!(head.is_success());
+    }
+
+    #[test]
+    fn heads_default_surfaces_a_non_success_status_without_erroring() {
+        let http = FakeHttp::default().reply("https://x/gone.zip", 404, "");
+        let head = http.head("https://x/gone.zip").unwrap();
+        assert_eq!(head.status, 404);
+        assert!(!head.is_success());
+    }
+
+    #[test]
+    fn heads_default_is_a_transport_error_for_an_unknown_url() {
+        let http = FakeHttp::default();
+        let err = http.head("https://x/nowhere").unwrap_err();
+        assert!(err.to_string().contains("nowhere"), "{err}");
     }
 }

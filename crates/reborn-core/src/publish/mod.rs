@@ -12,6 +12,7 @@
 //! and verified before success is reported.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::inventory::ComponentId;
 use crate::manifest::Component;
@@ -26,6 +27,7 @@ pub mod game_patch;
 pub mod upload;
 pub mod journal;
 pub mod status;
+pub mod download;
 
 /// Where component manifests live under the origin.
 pub const COMPONENTS_DIR: &str = "components";
@@ -236,10 +238,10 @@ pub(crate) fn io_err(path: &Path, source: std::io::Error) -> Error {
 /// Days since 1970-01-01 to a (year, month, day) triple, proleptic
 /// Gregorian. Howard Hinnant's `civil_from_days`:
 /// <http://howardhinnant.github.io/date_algorithms.html>. Shared by
-/// [`journal::format_rfc3339`] and `upload::format_amz_date`, which each
-/// need the same civil-date conversion for a different string format and
-/// used to carry an identical, independently hand-typed copy of it; a fix to
-/// one used to have no way of reaching the other. Chosen over reaching for a
+/// [`format_rfc3339`] and `upload::format_amz_date`, which each need the
+/// same civil-date conversion for a different string format and used to
+/// carry an identical, independently hand-typed copy of it; a fix to one
+/// used to have no way of reaching the other. Chosen over reaching for a
 /// time crate for this one conversion: it is a small, closed, well-known
 /// algorithm, not a timezone database.
 pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -256,10 +258,55 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
+/// An RFC 3339 timestamp, stamped UTC with an explicit `+00:00` offset:
+/// `"{y}-{m}-{d}T{h}:{m}:{s}+00:00"`, built from [`civil_from_days`]. Used
+/// for every timestamp this crate writes into a file a launcher or the
+/// site reads back (a journal record's `at`, a download pointer's
+/// `published`), so the two can never drift into disagreeing about the
+/// format.
+///
+/// This used to be two independently hand-typed copies, one in
+/// `journal.rs` (predating `download.rs`) and one in `download.rs` (added
+/// by a task scoped to that one file, which could not reach into
+/// `journal.rs`'s private copy). Hoisted here once a task touched both:
+/// the same shared home `civil_from_days` already has, for the same
+/// reason -- one algorithm, one place a fix reaches every caller.
+pub(crate) fn format_rfc3339(t: SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let days = (secs / 86_400) as i64;
+    let time_of_day = secs % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = time_of_day / 3600;
+    let minute = (time_of_day % 3600) / 60;
+    let second = time_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+00:00")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::inventory::ComponentId;
+
+    // -------------------------------------------------------------------
+    // format_rfc3339: moved here from journal.rs's own test module when
+    // the function itself was hoisted to be shared with download.rs. Same
+    // known-instants table, unchanged.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn format_rfc3339_matches_known_utc_instants() {
+        let cases: &[(u64, &str)] = &[
+            (0, "1970-01-01T00:00:00+00:00"),
+            (86_399, "1970-01-01T23:59:59+00:00"),
+            (951_782_400, "2000-02-29T00:00:00+00:00"), // leap day
+            (1_757_430_727, "2025-09-09T15:12:07+00:00"),
+            (1_893_456_000, "2030-01-01T00:00:00+00:00"), // year boundary
+        ];
+        for (epoch, want) in cases {
+            let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(*epoch);
+            assert_eq!(&format_rfc3339(t), want, "epoch {epoch}");
+        }
+    }
 
     #[test]
     fn thousands_groups_digits() {

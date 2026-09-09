@@ -1,8 +1,8 @@
 //! The Reborn Publisher window.
 //!
-//! Seven pages over `reborn_core::publish`: Status, Roster, Launcher, Game,
-//! Content, History and Keys. Every operation a page can run, plan, run or
-//! verify, goes through [`ops::run_operation`], which is the one path from
+//! Eight pages over `reborn_core::publish`: Status, Roster, Launcher, Game,
+//! Content, Set, History and Keys. Every operation a page can run, plan, run
+//! or verify, goes through [`ops::run_operation`], which is the one path from
 //! any page into the core and the one place a journal record gets written.
 //! Nothing here decides a sequence, computes a rule, or parses a tool's
 //! output; that all lives in `reborn_core` and in the process this window
@@ -12,21 +12,24 @@
 //! # Every command registered here, once
 //!
 //! This file declares every module and registers every command in one
-//! `generate_handler!` call. Six of the seven pages each build by editing
+//! `generate_handler!` call. Seven of the eight pages each build by editing
 //! exactly two files, their own `src/<page>.rs` and `ui/<page>.js`, and
 //! none of them collide with another because none of them needs to touch
 //! this file. If a page later needs a command this file does not already
 //! list, that parallelism breaks for whoever needs it; the fix is to add
-//! the command here deliberately, which is exactly what happened twice
+//! the command here deliberately, which is exactly what happened three times
 //! now: the Status page's Upload button needed a page-agnostic upload
 //! command no existing page owned, so `upload.rs` and its two entries
-//! below were added rather than worked around inside `status.rs`; later,
-//! the Game and Roster pages both needed a native file/folder picker for
+//! below were added rather than worked around inside `status.rs`; the
+//! Game and Roster pages both needed a native file/folder picker for
 //! their own plain path fields (not a Settings field, which
 //! `keys::settings_browse` already covers), so `pick.rs` was added the
-//! same way. The Launcher and Content pages have the same plain-text-box
-//! paths and want the same treatment; that is follow-up work for whoever
-//! owns those pages next, not done here.
+//! same way; and the Set page needed `set_plan`, `set_run` and
+//! `set_verify`, three commands no existing page owned, added here the same
+//! deliberate way rather than bent to fit a frozen list. The Launcher and
+//! Content pages have the same plain-text-box paths and want the same
+//! Browse treatment `pick.rs` gives Set's own four folder fields; that is
+//! still follow-up work for whoever owns those pages next, not done here.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -39,6 +42,7 @@ mod launcher;
 mod ops;
 mod pick;
 mod roster;
+mod set;
 mod settings;
 mod status;
 mod upload;
@@ -82,6 +86,11 @@ fn main() {
             content::content_run,
             content::content_verify,
             content::content_lint_runtime,
+            // Set: build, upload and point the download link at the full
+            // first-run installer set.
+            set::set_plan,
+            set::set_run,
+            set::set_verify,
             // History and rollback.
             history::history_list,
             history::history_versions,
