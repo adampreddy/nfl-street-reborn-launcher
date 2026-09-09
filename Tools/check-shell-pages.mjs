@@ -128,6 +128,16 @@ async function loadPageDriven(file, invoke) {
   };
 }
 
+function findByAttr(node, key, wanted) {
+  if (!node || typeof node !== "object") return null;
+  if (node.attrs && node.attrs[key] === wanted) return node;
+  for (const child of node.children || []) {
+    const hit = findByAttr(child, key, wanted);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function findByText(node, wanted) {
   if (!node || typeof node !== "object") return null;
   if ((node.textContent || "") === wanted) return node;
@@ -258,6 +268,36 @@ for (const [file, name] of PAGES) {
     const t = text(page.screen());
     check("A finished sign-in is shown", t.includes("Signed in as Adam"), t.slice(0, 300));
     check("A finished sign-in leaves no failure text beside it", !t.includes("expired"), t.slice(0, 300));
+  }
+  page.done();
+}
+
+// The results note, after a game, while signed out.
+//
+// The account card only drew `result.stats_note` inside the signed-in branch,
+// so the one sentence written for a signed-out player -- their game was
+// recorded and is waiting for them to sign in -- was never displayed to the
+// only person it was for.
+{
+  const NOTE = "Match results: 1 result recorded, waiting for sign-in.";
+  const invoke = async (cmd) => {
+    if (cmd === "identity_status") {
+      return { signed_in: false, display_name: null, player_id: null, show_offline: null };
+    }
+    if (cmd === "launch") {
+      return { started: true, message: "Session ended after 12 minutes.", minutes: 12, needs_recovery: false, pads: [], pads_authoritative: true, mods_note: null, session_id: "s1", user_dir_note: "u", stats_note: NOTE };
+    }
+    if (cmd in FULL) return FULL[cmd];
+    throw new Error(`no fake answer for ${cmd}`);
+  };
+  const page = await loadPageDriven("crates/reborn-ui/ui/home.js", invoke);
+  const play = findByAttr(page.screen(), "id", "play-now");
+  check("Play offers Play now when the checks are ready", !!play);
+  if (play) {
+    await play.listeners.click[0]();
+    await tick(); await tick(); await tick();
+    const t = text(page.screen());
+    check("A signed-out player is told their results are waiting", t.includes(NOTE), t.slice(0, 300));
   }
   page.done();
 }

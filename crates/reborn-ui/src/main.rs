@@ -3254,6 +3254,12 @@ struct StatsEntryView {
     first_seen_ms: u64,
     last_error: Option<String>,
     session_id: Option<String>,
+    /// What the server said about a terminal result, such as "Recorded as
+    /// incomplete". Written to the entry and shown to nobody until fix wave 2:
+    /// it is the only place a player learns their game was counted with a
+    /// qualification, and the state alone says "sent and counted", which is
+    /// true and is not the whole truth.
+    note: Option<String>,
     /// "online", "offline", "unknown", or absent for the folder older runtimes
     /// wrote. Reported rather than kept internal: "unknown" is the launcher
     /// saying it found a capture in a folder neither it nor the emulator agreed
@@ -3294,6 +3300,40 @@ struct StatsQueueView {
     /// bytes on disk that nothing will ever send and nothing mentions.
     orphaned_payloads: usize,
     entries: Vec<StatsEntryView>,
+}
+
+/// One queue row, as a page reads it.
+///
+/// Its own function so it can be checked without a `Platform`, a real queue
+/// and a real disk: what a row says about a result is exactly the kind of
+/// thing that has to be testable.
+fn entry_view(e: &QueueEntry) -> StatsEntryView {
+    let (state, reason) = entry_state_label(&e.state);
+    StatsEntryView {
+        key: e.key.to_string(),
+        state,
+        reason,
+        attempts: e.attempts,
+        first_seen_ms: e.first_seen_ms,
+        last_error: e.last_error.clone(),
+        session_id: e.session_id.clone(),
+        note: e.note.clone(),
+        capture_folder: e.capture_folder.clone(),
+        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
+        teams: e
+            .summary
+            .as_ref()
+            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default(),
+        players: e.summary.as_ref().map(|s| s.players),
+        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
+        needs_review: e.summary.as_ref().map(|s| s.needs_review),
+        flags: e
+            .summary
+            .as_ref()
+            .map(|s| s.flags.clone())
+            .unwrap_or_default(),
+    }
 }
 
 fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
@@ -3355,36 +3395,7 @@ async fn stats_queue() -> Result<StatsQueueView, String> {
             dir: queue.dir().display().to_string(),
             counts: queue_counts(&entries),
             orphaned_payloads: orphaned.len(),
-            entries: entries
-                .iter()
-                .map(|e| {
-                    let (state, reason) = entry_state_label(&e.state);
-                    StatsEntryView {
-                        key: e.key.to_string(),
-                        state,
-                        reason,
-                        attempts: e.attempts,
-                        first_seen_ms: e.first_seen_ms,
-                        last_error: e.last_error.clone(),
-                        session_id: e.session_id.clone(),
-                        capture_folder: e.capture_folder.clone(),
-                        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
-                        teams: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
-                            .unwrap_or_default(),
-                        players: e.summary.as_ref().map(|s| s.players),
-                        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
-                        needs_review: e.summary.as_ref().map(|s| s.needs_review),
-                        flags: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.flags.clone())
-                            .unwrap_or_default(),
-                    }
-                })
-                .collect(),
+            entries: entries.iter().map(entry_view).collect(),
         })
     })
     .await
@@ -3474,8 +3485,7 @@ async fn stats_ingest(
 /// Send everything queued to the backend. No confirmation: sending is what the queue is for,
 /// and the server's idempotency makes a repeat harmless.
 #[tauri::command]
-async fn stats_submit(confirm: Option<bool>) -> Result<StatsSubmitView, String> {
-    let _ = confirm;
+async fn stats_submit() -> Result<StatsSubmitView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let url = backend_origin(&p)?;
@@ -5296,6 +5306,63 @@ mod tests {
                  session from starting in the middle of it"
             );
         }
+    }
+
+    /// A sentence the server wrote about a player's own game has to reach them.
+    ///
+    /// `QueueEntry::note` is set by exactly one answer: `Recorded`, which is
+    /// the server saying it stored the result and counted it as incomplete
+    /// because the winner did not reach 36 points. It was written to the entry
+    /// and shown to nobody, and the row it belongs to says "sent and counted",
+    /// which is true and is not the whole truth.
+    ///
+    /// Kept rather than deleted, and surfaced: it is the only place a player
+    /// learns their game was counted with a qualification, and that is a fact
+    /// about a game they played.
+    #[test]
+    fn a_result_recorded_with_a_qualification_shows_what_the_server_said() {
+        let note = "Recorded as incomplete: the winner did not reach 36 points.";
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"a"),
+            state: EntryState::Accepted,
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: None,
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: Some(note.to_string()),
+            summary: None,
+        };
+        assert_eq!(
+            entry_view(&entry).note.as_deref(),
+            Some(note),
+            "the one sentence the server wrote about this player's own game is stored and \
+             shown to nobody"
+        );
+    }
+
+    /// A command must not declare a parameter it ignores.
+    ///
+    /// `stats_submit` took `confirm: Option<bool>` and threw it away on the
+    /// first line, while the harness row still sent `confirm: true` under a
+    /// description of behavior the command no longer had. A parameter that is
+    /// declared and ignored teaches a caller that the flag means something,
+    /// and the next person to read the page believes the description.
+    #[test]
+    fn stats_submit_declares_no_parameter_it_ignores() {
+        let body = command_body(include_str!("main.rs"), "async fn stats_submit");
+        let signature = &body[..body.find('{').unwrap_or(body.len())];
+        assert!(
+            !signature.contains("confirm"),
+            "stats_submit still takes a confirm it does not use: {signature}"
+        );
+        assert!(
+            !body.contains("let _ = confirm;"),
+            "stats_submit still throws away an argument it declared"
+        );
     }
 
     /// The retired league credential is actually taken off the machine.

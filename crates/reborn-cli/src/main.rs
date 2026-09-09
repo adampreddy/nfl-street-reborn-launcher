@@ -3671,6 +3671,13 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 // be described is shown as one that cannot be described.
                 None => println!("      The capture could not be read, so there is no box score."),
             }
+            // What the server said about a terminal result, such as "Recorded
+            // as incomplete". Stored on the entry and shown to nobody until fix
+            // wave 2: the state alone says "sent and counted", which is true
+            // and is not the whole truth.
+            if let Some(note) = &entry.note {
+                println!("      {note}");
+            }
             if entry.attempts > 0 {
                 println!("      {} failed attempt(s)", entry.attempts);
             }

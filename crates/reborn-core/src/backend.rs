@@ -54,7 +54,15 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
     }
     let hash = crate::stats::wire_hash_of(capture_bytes)?;
     let runtime_version = capture.pointer("/reborn_match/runtime_version").cloned().unwrap_or(serde_json::Value::Null);
-    let folder = entry.capture_folder.clone().unwrap_or_else(|| "offline".to_string());
+    // Not "offline". A capture with no folder came from the legacy folder,
+    // whose mode nobody recorded, and saying "offline" is the launcher
+    // asserting a fact it does not have. An offline game, a league game and a
+    // ranked game make byte identical captures, so a mode is exactly the kind
+    // of thing that must never be invented on the way out.
+    let folder = entry
+        .capture_folder
+        .clone()
+        .unwrap_or_else(|| crate::stats::UNKNOWN_MODE.to_string());
     Some(serde_json::json!({
         "schema": "nsr.submission.v1",
         "capture": capture,
@@ -348,11 +356,32 @@ mod tests {
         assert_eq!(env["submitted_at"], "2026-09-08T21:00:00Z");
     }
 
+    /// A legacy capture's mode is not known, and the envelope has to say so.
+    ///
+    /// It used to say "offline". That is not a default, it is an assertion:
+    /// the launcher telling the backend which mode a game was played in, about
+    /// a game it has no mode for. An offline game, a league game and a ranked
+    /// game make byte identical captures, so a mode is exactly the kind of
+    /// thing that must never be invented.
+    ///
+    /// It also collided with the drift sweep: a capture found in a folder
+    /// nobody agreed on is stamped `unknown` on the entry, and flattening that
+    /// to "offline" on the way out would undo the whole point of recording it.
     #[test]
-    fn a_legacy_folder_entry_is_sent_as_offline_and_no_session_means_no_league_intent() {
+    fn a_capture_with_no_known_mode_is_sent_as_unknown_rather_than_guessed_offline() {
         let env = envelope(&entry("s9", None), CAP, None, "3.1.0", "t").unwrap();
-        assert_eq!(env["capture_folder"], "offline");
+        assert_eq!(
+            env["capture_folder"], crate::stats::UNKNOWN_MODE,
+            "the launcher stated a mode it does not know"
+        );
         assert_eq!(env["intent"]["league"], false);
+
+        // A mode it does know still goes out as itself, including the one the
+        // drift sweep records.
+        for mode in ["online", "offline", crate::stats::UNKNOWN_MODE] {
+            let env = envelope(&entry("s1", Some(mode)), CAP, None, "3.1.0", "t").unwrap();
+            assert_eq!(env["capture_folder"], mode);
+        }
     }
 
     #[test]

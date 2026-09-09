@@ -136,7 +136,6 @@ function identityCard() {
     card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
   } else if (ok(id) && id.signed_in) {
     card.append(el("p", { text: `Signed in as ${id.display_name}` }));
-    if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
   } else {
     // Never `id.error`. A failed read hands back the command's own name, the
     // credential vault's wording or a path, and none of that is something a
@@ -146,6 +145,11 @@ function identityCard() {
     card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : ACCOUNT_UNREADABLE }));
     card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
   }
+  // In every state, not only when signed in. The sentence written for a
+  // signed-out player -- their game was recorded and is waiting for them to
+  // sign in -- used to be drawn inside the signed-in branch, so the only
+  // person it was written for never saw it.
+  if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
   if (signIn.message) card.append(el("p", { class: "note", text: signIn.message }));
   return card;
 }
