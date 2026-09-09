@@ -16,7 +16,7 @@ use crate::library::{hash_file, RebuildState};
 use crate::manifest::Sha256Hex;
 use crate::platform::{DataDir, Error, Platform, Result};
 use crate::soundtrack::state::{self, BlobRef, Effective, Entry, Soundtrack, Source};
-use crate::soundtrack::{asf, eatx, gcm, pack, pathfind, Refusal, Slot};
+use crate::soundtrack::{asf, decode, eatx, gcm, lookup, pack, pathfind, segments, tags, Refusal, Slot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
@@ -396,6 +396,132 @@ pub fn export(req: &ExportRequest<'_>) -> Result<pack::Manifest> {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// A song from a file
+// ---------------------------------------------------------------------------
+
+/// What the launcher learned about a file before the user decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inspection {
+    pub tags: tags::Tags,
+    /// The cleaned file name, which is what the lookup searched for when the
+    /// tags were missing. Shown so "not right?" starts from something.
+    pub query: String,
+    pub duration_ms: u64,
+    pub too_long: bool,
+    /// Online candidates, best first. Empty when the tags were complete or
+    /// nothing was found.
+    pub candidates: Vec<lookup::Candidate>,
+    /// Where the pre-filled details came from: "tags", "lookup", or "none".
+    pub details_from: &'static str,
+}
+
+impl Inspection {
+    /// Title, artist, and album to pre-fill: tags first, else the best
+    /// candidate, else nothing.
+    pub fn suggested(&self) -> (String, String, String) {
+        let t = &self.tags;
+        if t.title.is_some() && t.artist.is_some() {
+            return (t.title.clone().unwrap_or_default(), t.artist.clone().unwrap_or_default(), t.album.clone().unwrap_or_default());
+        }
+        if let Some(c) = self.candidates.first() {
+            return (
+                t.title.clone().unwrap_or_else(|| c.title.clone()),
+                t.artist.clone().unwrap_or_else(|| c.artist.clone()),
+                t.album.clone().unwrap_or_else(|| c.album.clone()),
+            );
+        }
+        (t.title.clone().unwrap_or_default(), t.artist.clone().unwrap_or_default(), t.album.clone().unwrap_or_default())
+    }
+}
+
+/// Read a file's tags and length, and look it up online by its cleaned name
+/// when the title or artist is missing. `http` is `None` for an offline
+/// inspection (the CLI's --offline, the tests).
+pub fn inspect(http: Option<&dyn crate::net::Http>, path: &Path) -> Result<Inspection> {
+    let audio = decode::decode_file(path)?;
+    let t = tags::read(path);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let query = tags::clean_query(&stem);
+    let complete = t.title.is_some() && t.artist.is_some();
+    let candidates = match (complete, http) {
+        (false, Some(h)) if !query.is_empty() => lookup::lookup(h, &query),
+        _ => Vec::new(),
+    };
+    let details_from = if complete {
+        "tags"
+    } else if !candidates.is_empty() {
+        "lookup"
+    } else {
+        "none"
+    };
+    let too_long = audio.duration_ms > segments::slot_limit_hint() * 1000;
+    Ok(Inspection { tags: t, query, duration_ms: audio.duration_ms, too_long, candidates, details_from })
+}
+
+/// Look a typed query up online. Never errors; empty when nothing was found.
+pub fn lookup_query(http: &dyn crate::net::Http, query: &str) -> Vec<lookup::Candidate> {
+    lookup::lookup(http, tags::clean_query(query).as_str())
+}
+
+/// Stage a song from a file: copy the file into `music/sources`, decode it,
+/// encode it for the slot, cache the blob, and record the slot as pending.
+/// `on(k, 40)` reports encoding progress.
+#[derive(Debug, Clone, Copy)]
+pub struct FileRequest<'a> {
+    pub data_root: &'a Path,
+    pub pristine_pathfind: &'a [u8],
+    pub path: &'a Path,
+    pub slot: Slot,
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album: &'a str,
+}
+
+pub fn stage_file(req: &FileRequest<'_>, on: &mut dyn FnMut(usize, usize)) -> Result<Entry> {
+    let FileRequest { data_root, pristine_pathfind, path, slot, title, artist, album } = *req;
+    for (field, text) in [("title", title), ("artist", artist), ("album", album)] {
+        if text.chars().count() > eatx::MAX_TEXT {
+            return Err(Refusal::TooLongText { field, len: text.chars().count() }.into());
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|e| io(path, e))?;
+    let track = state::track_id(&bytes);
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_else(|| "bin".into());
+    let sources = state::sources_dir(data_root);
+    std::fs::create_dir_all(&sources).map_err(|e| io(&sources, e))?;
+    let copy = sources.join(format!("{track}.{ext}"));
+    if !copy.is_file() {
+        let tmp = sources.join(format!("{track}.{ext}.tmp"));
+        std::fs::write(&tmp, &bytes).map_err(|e| io(&tmp, e))?;
+        std::fs::rename(&tmp, &copy).map_err(|e| io(&copy, e))?;
+    }
+    drop(bytes);
+
+    let audio = decode::decode_file(&copy)?;
+    let pts = segments::stock_pt_headers(pathfind::asf(pristine_pathfind), slot)?;
+    let blob = segments::encode_slot(&audio.left, &audio.right, &pts, on)?;
+    let encoded = state::encoded_dir(data_root);
+    std::fs::create_dir_all(&encoded).map_err(|e| io(&encoded, e))?;
+    let blob_path = state::encoded_blob_path(data_root, &track, slot);
+    let tmp = blob_path.with_extension("asf.tmp");
+    std::fs::write(&tmp, &blob).map_err(|e| io(&tmp, e))?;
+    std::fs::rename(&tmp, &blob_path).map_err(|e| io(&blob_path, e))?;
+
+    let entry = Entry {
+        source: Source::UserFile { track: track.clone(), file: format!("music/sources/{track}.{ext}") },
+        title: title.to_string(),
+        artist: artist.to_string(),
+        album: album.to_string(),
+        duration_ms: Some(audio.duration_ms),
+    };
+    let mut st = Soundtrack::load(data_root)?;
+    st.stage(slot, entry.clone());
+    st.save(data_root)?;
+    Ok(entry)
+}
+
 // ---------------------------------------------------------------------------
 // Revert, and the one entry point the page and the CLI call
 // ---------------------------------------------------------------------------
@@ -721,5 +847,55 @@ mod tests {
         assert_eq!(first_diff, None, "pathfind.dat differs at 0x{:X}", first_diff.unwrap_or(0));
         assert_eq!(built.template, py_tpl, "template.dat differs");
         eprintln!("oracle 2: pathfind.dat {} bytes and template.dat identical", py_pf.len());
+    }
+
+    #[test]
+    fn stage_file_encodes_for_the_slot_caches_the_blob_and_copies_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pf = synthetic_pathfind(256);
+        // three seconds of two tones
+        let n = 24_000 * 3;
+        let left: Vec<i16> = (0..n).map(|i| ((i as f64 * 0.03).sin() * 9000.0) as i16).collect();
+        let right: Vec<i16> = (0..n).map(|i| ((i as f64 * 0.05).sin() * 6000.0) as i16).collect();
+        let wav = root.join("My Song.wav");
+        crate::soundtrack::testing::write_wav_24k(&wav, &left, &right);
+        let mut ticks = 0;
+        let entry = stage_file(&FileRequest { data_root: root, pristine_pathfind: &pf, path: &wav, slot: Slot::new(7).unwrap(), title: "My Song", artist: "Me", album: "" }, &mut |_, _| ticks += 1).unwrap();
+        assert_eq!(ticks, 40);
+        assert_eq!(entry.duration_ms, Some(3000));
+        let Source::UserFile { track, file } = &entry.source else { panic!("{entry:?}") };
+        assert_eq!(track.len(), 16);
+        assert!(root.join(file).is_file(), "source copied");
+        let blob_path = state::encoded_blob_path(root, track, Slot::new(7).unwrap());
+        let blob = std::fs::read(&blob_path).unwrap();
+        let info = asf::validate_blob(&blob).unwrap();
+        assert_eq!(info.streams, 40);
+        // Segments are padded to a uniform size with silent blocks, and by
+        // the EA-exact rule those count in PT 0x85, so a 3 s clip declares
+        // more stream than audio. The entry keeps the real length.
+        assert!(info.duration_ms >= 3000, "{}", info.duration_ms);
+        let st = Soundtrack::load(root).unwrap();
+        assert_eq!(st.pending[&7].title, "My Song");
+        // the same file again reuses the copy and re-encodes without error
+        let before = std::fs::metadata(root.join(file)).unwrap().modified().unwrap();
+        stage_file(&FileRequest { data_root: root, pristine_pathfind: &pf, path: &wav, slot: Slot::new(8).unwrap(), title: "My Song", artist: "Me", album: "" }, &mut |_, _| {}).unwrap();
+        assert_eq!(std::fs::metadata(root.join(file)).unwrap().modified().unwrap(), before);
+        assert!(state::encoded_blob_path(root, track, Slot::new(8).unwrap()).is_file());
+        // too much text is refused before any work
+        assert!(stage_file(&FileRequest { data_root: root, pristine_pathfind: &pf, path: &wav, slot: Slot::new(9).unwrap(), title: &"x".repeat(60), artist: "", album: "" }, &mut |_, _| {}).is_err());
+    }
+
+    #[test]
+    fn inspect_reads_tags_and_length_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("03. Alicia Keys - Unthinkable (Official Video).wav");
+        crate::soundtrack::testing::write_wav_24k(&wav, &[0; 24_000], &[0; 24_000]);
+        let i = inspect(None, &wav).unwrap();
+        assert_eq!(i.duration_ms, 1000);
+        assert_eq!(i.query, "Alicia Keys Unthinkable");
+        assert_eq!(i.details_from, "none");
+        assert!(!i.too_long);
+        assert_eq!(i.suggested(), (String::new(), String::new(), String::new()));
     }
 }

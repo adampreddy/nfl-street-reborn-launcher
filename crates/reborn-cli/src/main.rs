@@ -5259,6 +5259,34 @@ enum MusicCommand {
         #[arg(long)]
         builder: Option<PathBuf>,
     },
+    /// Read a file's tags and length, and look it up online when the tags are
+    /// missing. Changes nothing.
+    Inspect {
+        file: PathBuf,
+        /// Skip the online lookup.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Look a song up online by a typed query (iTunes, then MusicBrainz).
+    Lookup { query: Vec<String> },
+    /// Stage a song from a file into a slot. Details default to the file's
+    /// tags, then the best online match, then the file name.
+    Add {
+        file: PathBuf,
+        #[arg(long)]
+        slot: u8,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        /// Skip the online lookup.
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
     /// Write the staged slots into a dev root tree (pathfind.dat, template.dat)
     /// and stop, so tools/build_iso_fields.py stays the disc builder there.
     WriteTree {
@@ -5274,6 +5302,10 @@ fn music_root(platform: &Platform, data_root: Option<&Path>) -> reborn_core::Res
         Some(p) => Ok(p.to_path_buf()),
         None => platform.paths.data_root(),
     }
+}
+
+fn music_http() -> reborn_core::net::UreqHttp {
+    reborn_core::net::UreqHttp::new(concat!("NFL Street Reborn Launcher/", env!("CARGO_PKG_VERSION")))
 }
 
 fn music_slot(n: u8) -> reborn_core::Result<reborn_core::soundtrack::Slot> {
@@ -5439,6 +5471,60 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
         MusicCommand::Apply { data_root, builder } => {
             let root = music_root(platform, data_root.as_deref())?;
             music_rebuild(platform, &root, builder.as_deref())
+        }
+        MusicCommand::Inspect { file, offline } => {
+            let http = music_http();
+            let i = apply::inspect(if offline { None } else { Some(&http) }, &file)?;
+            println!("File      {}", file.display());
+            println!("Length    {}:{:02}{}", i.duration_ms / 60_000, (i.duration_ms / 1000) % 60, if i.too_long { "  (too long for a slot)" } else { "" });
+            println!("Tags      title {:?}, artist {:?}, album {:?}", i.tags.title, i.tags.artist, i.tags.album);
+            println!("Query     {}", i.query);
+            println!("Details   from {}", i.details_from);
+            let (t, a, l) = i.suggested();
+            println!("Suggested {t} , {a} , {l}");
+            for (k, c) in i.candidates.iter().enumerate() {
+                println!("  {:>2}. {} , {} , {}  [{}]", k + 1, c.title, c.artist, c.album, c.source);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Lookup { query } => {
+            let q = query.join(" ");
+            let http = music_http();
+            let found = apply::lookup_query(&http, &q);
+            if found.is_empty() {
+                println!("Nothing found for {q:?}.");
+            }
+            for (k, c) in found.iter().enumerate() {
+                println!("  {:>2}. {} , {} , {}  [{}]", k + 1, c.title, c.artist, c.album, c.source);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Add { file, slot, title, artist, album, offline, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let slot = music_slot(slot)?;
+            let http = music_http();
+            let i = apply::inspect(if offline { None } else { Some(&http) }, &file)?;
+            if i.too_long {
+                println!("{}", reborn_core::soundtrack::Refusal::SongTooLong { seconds: i.duration_ms / 1000, limit_seconds: reborn_core::soundtrack::segments::slot_limit_hint() }.message());
+                return Ok(PROBLEM);
+            }
+            let (st, sa, sl) = i.suggested();
+            let stem = file.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            let title = title.unwrap_or(if st.is_empty() { stem.clone() } else { st });
+            let artist = artist.unwrap_or(sa);
+            let album = album.unwrap_or(sl);
+            println!("Details from {}: {title} , {artist} , {album}", i.details_from);
+            let (pf, _) = music_pristine_files(&root)?;
+            let entry = apply::stage_file(
+                &apply::FileRequest { data_root: &root, pristine_pathfind: &pf, path: &file, slot, title: &title, artist: &artist, album: &album },
+                &mut |k, n| {
+                    if k == 0 || k + 1 == n || k % 10 == 0 {
+                        println!("Encoding segment {} of {n}", k + 1);
+                    }
+                },
+            )?;
+            println!("Staged into slot {slot}: {} , {} ({}). Run: rebornctl music apply", entry.title, entry.artist, entry.duration_ms.map(|d| format!("{}:{:02}", d / 60_000, (d / 1000) % 60)).unwrap_or_default());
+            Ok(std::process::ExitCode::SUCCESS)
         }
         MusicCommand::WriteTree { tree, data_root } => {
             let root = music_root(platform, data_root.as_deref())?;
