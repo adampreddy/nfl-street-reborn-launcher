@@ -236,6 +236,33 @@ if (-not $NoRust) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
+# 5b. The publisher's own upload, against a loopback S3 stand-in
+# -----------------------------------------------------------------------------
+# A first upload sends every blob and manifest before release.json and
+# release.json.sig last; status reports pending then clean around a second
+# published version; a part that never succeeds aborts its multipart upload
+# and leaves none open, and a retry with the failure lifted completes it; a
+# wrong secret in the vault is rejected by the stand-in and nothing arrives
+# under it. Never touches the real bucket -- see `rebornctl publish upload
+# --endpoint --bucket` against `Tools/fake-s3.py`. Needs the same debug
+# rebornctl the update pipeline above builds.
+Write-Host "-- Upload pipeline ------------------------------------------------" -ForegroundColor DarkGray
+if (-not $NoRust) {
+    if (-not $built) {
+        Record "upload" "rebornctl builds" $false "cargo build -p reborn-cli failed"
+    } else {
+        $e2e = & py -3 (Join-Path $PSScriptRoot "e2e-upload.py")
+        $ok = ($LASTEXITCODE -eq 0)
+        $last = if ($e2e) { ($e2e | Select-Object -Last 1) } else { "no output" }
+        Record "upload" "sign, plan, multipart, abort, status, tamper rejection" $ok $last
+        if (-not $ok) { $e2e | Select-Object -Last 12 | ForEach-Object { Write-Host "       $_" -ForegroundColor Yellow } }
+    }
+} else {
+    Write-Host "       skipped with -NoRust, it needs a rebornctl build"
+}
+Write-Host ""
+
+# -----------------------------------------------------------------------------
 # 6. The sandbox, on request
 # -----------------------------------------------------------------------------
 if ($Sandbox -or $Manual) {
