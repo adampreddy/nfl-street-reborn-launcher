@@ -942,7 +942,14 @@ fn php_trim(s: &str) -> &str {
     s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0B'))
 }
 
-/// PHP `(int)` for the values a capture carries.
+/// PHP `(int)` for every shape a real capture carries: a JSON number, a bool,
+/// or null. For a non-numeric string this does not reproduce true PHP
+/// `(int)` (which would read a leading numeric prefix, so `"12abc"` becomes
+/// `12`); it yields `0` instead, because that is what the backend's own
+/// `Number()`-based cast also yields for that string. The backend
+/// recomputes this hash and refuses a mismatch, so agreement with the
+/// backend, not with PHP's parsing quirks, is the property the wire
+/// actually depends on.
 fn php_int(v: &Value) -> i64 {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)).unwrap_or(0),
@@ -967,8 +974,21 @@ fn php_sorted_int_map(v: Option<&Value>) -> String {
 }
 
 fn php_str(v: Option<&Value>) -> String {
-    let s = match v {
+    let owned;
+    let s: &str = match v {
         Some(Value::String(s)) => s.as_str(),
+        // A numeric name is real: the backend does `phpTrim(String(s ?? ""))`,
+        // so a JSON number here must stringify before trimming or the
+        // backend recomputes a different name and refuses the hash.
+        Some(Value::Number(n)) => {
+            owned = n.to_string();
+            owned.as_str()
+        }
+        Some(Value::Null) | None => "",
+        // A bool, array or object is not a shape either the game or the site
+        // ever produces for a name. Very large or exponential numbers can
+        // also render differently between Rust's and JavaScript's number
+        // formatting, but neither side emits one here.
         _ => "",
     };
     serde_json::to_string(php_trim(s)).unwrap_or_else(|_| "\"\"".to_string())
