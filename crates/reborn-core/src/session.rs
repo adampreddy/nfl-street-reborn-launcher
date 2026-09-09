@@ -123,9 +123,27 @@ pub enum Launched {
         mods: ModsAtLaunch,
         /// The session record's id, which is what a capture is filed under.
         session_id: String,
-        /// What happened to the match results Dolphin wrote during the
-        /// session. Never fails a launch that already happened.
-        stats: StatsAfterSession,
+        /// The match results this session produced, already moved into the
+        /// queue and NOT yet sent.
+        ///
+        /// # Why the caller does the sending
+        ///
+        /// Collecting needs the single-instance lock; sending does not, and
+        /// sending is one request per queued game with the client's full
+        /// timeout each, so a backlog against a slow or unreachable backend is
+        /// minutes. `run` held the lock across both, and the caller holds a
+        /// launch guard across the whole of `run`, so for those minutes,
+        /// with the emulator already exited, pressing Play answered "A game
+        /// session is already active", the Online page said to close the
+        /// emulator first, opening the emulator from Settings was refused and
+        /// the command line retry was refused. All four were false.
+        ///
+        /// So `run` returns here with the lock given back, the caller gives
+        /// the guard back, and then calls [`SessionResults::send`].
+        ///
+        /// Nothing is at risk in between: the captures are already in the
+        /// queue on disk, and an unsent queue is picked up by the next send.
+        results: SessionResults,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
@@ -763,8 +781,20 @@ impl Session {
         let finished = supervisor.finish(record, &exit)?;
 
         // The match results, collected while the lock is still held and the
-        // session id is still in hand, then sent if the player is signed in.
-        let stats = collect_and_send(platform, &supervisor, &finished.id, written.user_dir.path());
+        // session id is still in hand. Collecting is the half that needs the
+        // lock: the queue and the session log are shared state, and a second
+        // launcher moving captures out of the same folder is the case the lock
+        // exists for.
+        let results = collect(platform, &supervisor, &finished.id, written.user_dir.path());
+
+        // The lock, back, before this returns and before anything reaches the
+        // network. The caller still holds a launch guard across this whole
+        // call, so it gives that back too and then calls
+        // `SessionResults::send`. Held across the send, the two of them made
+        // four screens say something that was not true for as long as a
+        // backlog took to deliver. Nothing is dropped by returning early: the
+        // captures are already in the queue on disk.
+        drop(supervisor);
 
         let end = finished
             .end
@@ -779,44 +809,9 @@ impl Session {
             user_dir: written.user_dir,
             mods,
             session_id: finished.id.clone(),
-            stats,
+            results,
         })
     }
-}
-
-/// Collect the match results a session produced, and send them.
-///
-/// # Why this is not private to [`Session::run`]
-///
-/// It used to be, written inline in the middle of the launch sequence. That
-/// made it unreachable from anywhere else, and two front end commands start
-/// the emulator without going through `Session::run`: the NetPlay dialog and
-/// the "open the emulator on its own" button. Neither recorded a session and
-/// neither collected anything, so an online game was written to
-/// `GameStats\Online` and left there. If the player never launched an offline
-/// game afterwards it was never delivered at all, and if they did, that
-/// session's collection pass adopted it and stamped it with an id, an exit
-/// reason and a league intent belonging to a game it did not produce.
-///
-/// So the order lives here, once, and every way of starting the emulator ends
-/// in the same call.
-///
-/// # It never returns an error
-///
-/// By the time this runs the game has been played. A queue that will not open
-/// or a server that will not answer is reported through [`StatsAfterSession`]
-/// and never turned into a failed launch of a game that already happened.
-///
-/// Call it with the lock still held: the queue and the session log are shared
-/// state, and a second launcher collecting the same folder at the same time is
-/// the case the lock exists for.
-pub fn collect_and_send(
-    platform: &Platform,
-    supervisor: &Supervisor,
-    session_id: &str,
-    user_dir: &Path,
-) -> StatsAfterSession {
-    collect(platform, supervisor, session_id, user_dir).send(platform)
 }
 
 /// The results of a finished session, collected and not yet sent.
@@ -829,15 +824,23 @@ pub fn collect_and_send(
 /// is one network round trip per queued game, each with the client's full
 /// timeout, so a backlog against a slow or unreachable backend is minutes.
 ///
-/// Holding the lock and the launch guard across the send made two screens say
-/// something untrue for those minutes: pressing Play answered "a game session
-/// is already active", and the Online page answered "close the emulator
-/// first", when the emulator had already exited. So a caller holding them
+/// Holding the lock and the launch guard across the send made four things the
+/// product says untrue for those minutes, with the emulator already exited:
+/// pressing Play answered "A game session is already active", the Online page
+/// answered "close the emulator first", opening the emulator from Settings was
+/// refused, and the command line retry was refused. So a caller holding them
 /// gives them back between these two calls.
 ///
-/// [`Session::run`] still does both in one call, through
-/// [`collect_and_send`]: it is the launch itself, and it has nothing to hand
-/// the lock back to until it returns.
+/// Every path does this, the launch included. [`Session::run`] returns this
+/// value with the lock already given back, and its caller gives the launch
+/// guard back before calling [`send`](Self::send). There is deliberately no
+/// helper that does both in one call: one existed, the launch used it, and
+/// that is how the primary path kept doing this after the two secondary paths
+/// were fixed.
+///
+/// Nothing is at risk between the two calls. The captures are in the queue on
+/// disk by the end of [`collect`], and an unsent queue is picked up whole by
+/// the next send.
 #[derive(Debug)]
 pub struct SessionResults {
     /// `None` when the queue would not open, which is the one failure that
@@ -1530,6 +1533,77 @@ mod tests {
     use super::*;
     use crate::player_sentence::assert_player_safe;
 
+    /// The launch gives the single-instance lock back before the network work.
+    ///
+    /// This is the primary path: the Play button, every time. Two secondary
+    /// ways of starting the emulator were fixed to collect, give the lock and
+    /// the guard back, and only then send. `Session::run` was left calling
+    /// `collect_and_send`, which does both under the lock it is still holding.
+    ///
+    /// A send is one request per queued game with the client's full timeout
+    /// each, so a backlog against a slow or unreachable backend is minutes.
+    /// For all of those minutes, with the emulator already exited, pressing
+    /// Play answered "A game session is already active", the Online page said
+    /// to close the emulator first, opening the emulator from Settings was
+    /// refused, and `rebornctl stats retry` was refused. Every one of those was
+    /// false.
+    ///
+    /// Collecting stays under the lock and that is not negotiable: the session
+    /// id has to be in hand and no second launcher may be moving captures into
+    /// the same queue. Only the send moves out.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The slice runs from `pub fn run(` to the doc comment that introduces
+    /// [`SessionResults`], both of which are production text roughly eight
+    /// hundred lines above this module. `find` returns the first match, so the
+    /// copies of those markers inside this test are never reached, and the
+    /// searched text ends long before them. The stop marker matters: run one
+    /// item further and the slice swallows `SessionResults::send`, whose whole
+    /// job is the network call this test forbids.
+    #[test]
+    fn the_launch_gives_the_lock_back_before_the_network_work() {
+        let src = include_str!("session.rs");
+        let from = src
+            .find("    pub fn run(platform: &Platform, req: &LaunchRequest)")
+            .expect("Session::run is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest
+            .find("\n/// The results of a finished session")
+            .expect("the SessionResults doc comment no longer follows Session::run")];
+
+        assert!(
+            !body.contains("collect_and_send"),
+            "Session::run still collects and sends in one call, with the single-instance lock \
+             held across the network work, so Play says a game session is active and the Online \
+             page says to close an emulator that has already exited"
+        );
+
+        let collect = body
+            .find("collect(platform, &supervisor")
+            .expect("Session::run no longer collects what the session produced under the lock");
+        let release = body.find("drop(supervisor)").unwrap_or_else(|| {
+            panic!(
+                "Session::run never gives the single-instance lock back before it returns, so \
+                 the caller cannot send outside it"
+            )
+        });
+        assert!(
+            collect < release,
+            "Session::run gives the lock back before the results are safely collected"
+        );
+
+        // And the send really is the caller's job now: nothing in the body
+        // reaches the backend.
+        for reaches_the_network in ["auto_submit", ".send(platform)", ".send(&p)"] {
+            assert!(
+                !body.contains(reaches_the_network),
+                "Session::run still does the network work itself, under the lock and under the \
+                 caller's launch guard"
+            );
+        }
+    }
+
     /// The stats step has nowhere to put an error string.
     ///
     /// `collect_and_send` used to write `e.to_string()` into three places: the
@@ -1546,18 +1620,34 @@ mod tests {
     /// ([`StatsProblem`]), the sentence is a constant, and the detail goes to
     /// `tracing::warn!` where it is produced. This test holds both halves,
     /// because "it happens not to be rendered today" is not a guarantee.
+    ///
+    /// `collect_and_send` itself is gone: the launch used it and that is how
+    /// the primary path kept sending under the lock. Its two halves,
+    /// `SessionResults::send` and `collect`, are what is scanned now, which is
+    /// strictly more code than the one-line wrapper ever held.
     #[test]
     fn a_stats_result_has_nowhere_to_put_an_error_string() {
         let src = include_str!("session.rs");
-        let from = src
-            .find("pub fn collect_and_send")
-            .expect("collect_and_send is not in this file any more");
-        let rest = &src[from..];
-        let body = &rest[..rest.find("\n/// Close a session").unwrap_or(rest.len())];
-        assert!(
-            !body.contains("e.to_string()"),
-            "collect_and_send puts an error string on a value a player sees"
-        );
+        // Both halves of what `collect_and_send` used to be, each bounded by
+        // the production text that follows it. All of it is hundreds of lines
+        // above this module, and `find` returns the first match, so this
+        // test's own text is never inside what is searched.
+        for (name, start, stop) in [
+            ("the send", "impl SessionResults {", "\n/// Collect the match results"),
+            ("the collection", "pub fn collect(", "\n/// Close a session"),
+        ] {
+            let from = src
+                .find(start)
+                .unwrap_or_else(|| panic!("{name} is not in this file any more"));
+            let rest = &src[from..];
+            let body = &rest[..rest
+                .find(stop)
+                .unwrap_or_else(|| panic!("{name} no longer ends where it did"))];
+            assert!(
+                !body.contains("e.to_string()"),
+                "{name} puts an error string on a value a player sees"
+            );
+        }
 
         // Every sentence the type can produce, mechanically checked.
         assert_player_safe(RESULTS_NOT_COLLECTED);

@@ -104,7 +104,11 @@ fn main() {
             eprintln!("FAIL: refused when it should have started: {}", r.message());
             std::process::exit(1);
         }
-        Ok(Launched::Finished { end, minutes, .. }) => {
+        Ok(Launched::Finished { end, minutes, results, .. }) => {
+            // The lock came back with the return. Sending is the caller's job
+            // now, and this example is a caller: dropping it would leave the
+            // sequence it claims to smoke test half run.
+            let _ = results.send(&platform);
             println!("  ended as: {end:?}");
             println!("  duration: {minutes:.2} min");
 

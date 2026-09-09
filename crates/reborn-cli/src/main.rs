@@ -1284,9 +1284,12 @@ fn play(
             pads_authoritative,
             user_dir,
             mods,
-            stats,
+            results,
             ..
         } => {
+            // `Session::run` gave the single-instance lock back before it
+            // returned, so the send happens out here, holding nothing.
+            let stats = results.send(platform);
             println!("{}", user_dir.explain());
             println!("{}", mods.explain());
             if let Some(line) = stats.explain() {

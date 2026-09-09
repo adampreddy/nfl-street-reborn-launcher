@@ -701,7 +701,24 @@ async fn launch(
             league_match: league_match.unwrap_or(false),
         };
 
-        match Session::run(&p, &req).map_err(|e| e.player_message().to_string())? {
+        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
+
+        // The guard, back, before anything reaches the network. `Session::run`
+        // has already given the single-instance lock back; this is the other
+        // half. A send is one request per queued game with the client's full
+        // timeout each, so a backlog against a slow or unreachable backend is
+        // minutes, and for all of those minutes the emulator has already
+        // exited while Play answers "A game session is already active", the
+        // Online page says to close the emulator, opening the emulator from
+        // Settings is refused and the command line retry is refused.
+        //
+        // Nothing is at risk in the gap: the captures are already in the queue
+        // on disk, and a second launch starting here would collect an empty
+        // folder and send the same queue, which is the send this one was going
+        // to do.
+        drop(_guard);
+
+        match launched {
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
                 user_dir_note: None,
@@ -722,9 +739,12 @@ async fn launch(
                 user_dir,
                 mods,
                 session_id,
-                stats,
+                results,
                 ..
             } => {
+                // With the lock and the guard both back. Never surfaced as a
+                // failure: the game was played whatever the backend answered.
+                let stats = results.send(&p);
                 let needs_recovery = end.needs_recovery();
                 let message = match &end {
                     SessionEnd::Exited { code: Some(0) } => {
@@ -4996,7 +5016,16 @@ fn play_now(platform: &Platform) -> Result<String, String> {
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
-        Launched::Finished { minutes, .. } => Ok(format!("Session ended after {minutes:.0} minutes.")),
+        Launched::Finished { minutes, results, .. } => {
+            // The shortcut holds no launch guard and `Session::run` has given
+            // the lock back, so this is simply the send. Its report is not
+            // shown: this mode draws no window. Skipping it would leave the
+            // player's game sitting in the queue until they next opened the
+            // launcher, and the whole point of the shortcut is that they may
+            // not.
+            let _ = results.send(platform);
+            Ok(format!("Session ended after {minutes:.0} minutes."))
+        }
     }
 }
 
@@ -5535,32 +5564,55 @@ mod tests {
     /// outright. The Play path was given the waiting acquire for exactly that
     /// reason and this path was not.
     ///
+    /// The third path is the one every player takes. `launch` is the Play
+    /// button. It holds the launch guard across the whole of `Session::run`,
+    /// and `Session::run` collected AND sent while still holding the
+    /// single-instance lock, so on the primary path both of those false
+    /// sentences were still being said for the length of a send. The two
+    /// commands above were the only ones fixed. Its markers differ because the
+    /// work is split across two crates: `Session::run` collects and hands the
+    /// lock back by returning, this command hands the guard back, and only
+    /// then does anything reach the network. What `Session::run` itself does
+    /// under the lock is held by
+    /// `reborn_core::session::tests::the_launch_gives_the_lock_back_before_the_network_work`.
+    ///
     /// # How this is bounded so it cannot find itself
     ///
-    /// `open_runtime` is read with `command_body`, which stops at the next
-    /// `#[tauri::command]`, and `netplay_open` is read out of
-    /// `dolphin_settings.rs`, a different file from this one. Both slices end
-    /// thousands of lines before this test, so the names below are never
+    /// `open_runtime` and `launch` are read with `command_body`, which stops
+    /// at the next `#[tauri::command]`, and `netplay_open` is read out of
+    /// `dolphin_settings.rs`, a different file from this one. All three slices
+    /// end thousands of lines before this test, so the names below are never
     /// inside what is searched.
     #[test]
     fn the_lock_and_the_guard_go_back_before_the_network_work() {
-        for (name, body) in [
+        for (name, body, collects, releases) in [
             (
                 "open_runtime",
                 command_body(include_str!("main.rs"), "async fn open_runtime"),
+                "finish_and_collect",
+                "drop(supervisor)",
             ),
             (
                 "netplay_open",
                 command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+                "finish_and_collect",
+                "drop(supervisor)",
+            ),
+            (
+                "launch",
+                command_body(include_str!("main.rs"), "async fn launch("),
+                "Session::run",
+                "drop(_guard)",
             ),
         ] {
             let collect = body
-                .find("finish_and_collect")
+                .find(collects)
                 .unwrap_or_else(|| panic!("{name} no longer collects what the session produced"));
-            let release = body.find("drop(supervisor)").unwrap_or_else(|| {
+            let release = body.find(releases).unwrap_or_else(|| {
                 panic!(
-                    "{name} never gives the single-instance lock back, so every other screen \
-                     is told a launcher is running for as long as the send takes"
+                    "{name} never gives the single-instance lock and the launch guard back, so \
+                     every other screen is told a launcher is running for as long as the send \
+                     takes"
                 )
             });
             let send = body.find(".send(&p)").unwrap_or_else(|| {
