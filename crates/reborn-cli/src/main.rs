@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{dolphin_capture_dir, EntryState, StatsQueue};
+use reborn_core::stats::{dolphin_capture_dirs, EntryState, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -502,8 +502,9 @@ enum StatsCommand {
 
     /// Take the captures Dolphin wrote into the queue.
     Ingest {
-        /// The folder Dolphin wrote them to. Defaults to LeagueGameStats inside
-        /// the user folder a launch would use.
+        /// Read one folder instead of all of them. Without this, every folder a
+        /// launch reads is swept: the mode folders inside GameStats, the folder
+        /// itself, and the folder older runtimes wrote.
         #[arg(long)]
         from: Option<PathBuf>,
         /// The launcher session that accounts for these results. Without it
@@ -3727,62 +3728,96 @@ fn stats_ingest(
     session: Option<&str>,
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
-    let dir = match from {
-        Some(p) => p,
+    let queue = StatsQueue::open(platform)?;
+
+    // With no --from, the same sweep a launch does: every folder a capture can
+    // be in. This used to default to the parent GameStats folder and call the
+    // single-folder ingest, and Dolphin writes into GameStats\Online and
+    // GameStats\Offline. The parent exists, so the command did not even report
+    // a missing folder. It found nothing, said there was nothing to do, and
+    // left the captures a person was looking for one level down.
+    let (user_dir, folders) = match &from {
+        Some(one) => (None, vec![(one.clone(), None)]),
         None => {
             let user = resolve_user_dir(platform, None)?;
             println!("{}", user.explain());
-            dolphin_capture_dir(user.path())
+            let dirs = dolphin_capture_dirs(user.path());
+            (Some(user.path().to_path_buf()), dirs)
         }
     };
-    let queue = StatsQueue::open(platform)?;
-    println!("Captures      {}", dir.display());
-    println!("Queue         {}", queue.dir().display());
 
-    if !dir.exists() {
-        println!();
-        println!("That folder does not exist, so Dolphin has not written a capture to");
-        println!("it. Nothing to do.");
-        return Ok(OK);
+    println!("Queue         {}", queue.dir().display());
+    for (dir, mode) in &folders {
+        println!(
+            "Captures      {}{}",
+            dir.display(),
+            match mode {
+                Some(m) => format!("  ({m})"),
+                None => String::new(),
+            }
+        );
     }
 
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|source| reborn_core::Error::Io {
-        path: dir.clone(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| reborn_core::Error::Io {
+    // What is there, per folder, so a person can see which folder a capture is
+    // actually sitting in rather than a single total.
+    let mut found: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    let mut missing = 0usize;
+    for (dir, _) in &folders {
+        if !dir.exists() {
+            missing += 1;
+            continue;
+        }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|source| reborn_core::Error::Io {
             path: dir.clone(),
             source,
-        })?;
-        let path = entry.path();
-        let is_json = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("json"))
-            .unwrap_or(false);
-        if path.is_file() && is_json {
-            found.push(path);
+        })? {
+            let entry = entry.map_err(|source| reborn_core::Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+            if path.is_file() && is_json {
+                files.push(path);
+            }
+        }
+        files.sort();
+        if !files.is_empty() {
+            found.push((dir.clone(), files));
         }
     }
-    found.sort();
 
+    let total: usize = found.iter().map(|(_, f)| f.len()).sum();
     println!();
-    if found.is_empty() {
-        println!("No capture files there. Only *.json directly in that folder counts, so");
-        println!("uploaded.txt and the _previous folder are left alone by design.");
+    if total == 0 {
+        if missing == folders.len() {
+            println!("None of those folders exists, so Dolphin has not written a capture to");
+            println!("any of them. Nothing to do.");
+        } else {
+            println!("No capture files in any of those folders. Only *.json directly in a");
+            println!("folder counts, so uploaded.txt and the _previous folder are left alone");
+            println!("by design.");
+        }
         return Ok(OK);
     }
-    println!("{} capture file(s):", found.len());
-    let lines: Vec<String> = found
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.display().to_string())
-        })
-        .collect();
-    print_list("  ", &lines);
+    println!("{total} capture file(s):");
+    for (dir, files) in &found {
+        println!("  {}", dir.display());
+        let lines: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        print_list("    ", &lines);
+    }
 
     println!();
     match session {
@@ -3802,7 +3837,13 @@ fn stats_ingest(
         return Ok(OK);
     }
 
-    let results = queue.ingest_from(&dir, session)?;
+    // The same call a launch makes, so the recovery tool and the product can
+    // never disagree about which folders hold a game somebody played.
+    let results = match (&user_dir, &from) {
+        (Some(user), _) => queue.ingest_all(user, session)?,
+        (None, Some(one)) => queue.ingest_from(one, session)?,
+        (None, None) => unreachable!("one of the two is always set"),
+    };
     println!();
     let mut problem = false;
     for result in &results {
@@ -5009,6 +5050,67 @@ mod tests {
                 path.join(" ")
             );
         }
+    }
+
+    /// The only recovery tool this product has must look where the emulator
+    /// actually writes.
+    ///
+    /// `stats ingest` defaulted to the parent `GameStats` folder and called the
+    /// single-folder ingest. Dolphin writes into `GameStats\Online` and
+    /// `GameStats\Offline`. The parent exists, so the command did not even
+    /// report a missing folder: it found nothing, printed "Nothing to do", and
+    /// left every real capture sitting one level down. That is the command a
+    /// person reaches for when the queue is stuck, and it could not find
+    /// anything at all.
+    ///
+    /// Its help text said it defaulted to `LeagueGameStats`, which had not been
+    /// true since the mode folders arrived, so the one place a person could
+    /// check what it was about to read was wrong too.
+    ///
+    /// Checked in two places, because the defect had two halves. The help text
+    /// is read from clap, which is what a person actually sees. The default
+    /// path is read from the source of the function, because it takes a
+    /// `Platform` and a resolved user directory and cannot be called in a test
+    /// without one; what has to be true is that the no-flag path reaches
+    /// `ingest_all` and the flag path still reaches the single-folder call.
+    #[test]
+    fn stats_ingest_defaults_to_every_folder_the_emulator_writes_to() {
+        let root = Cli::command();
+        let cmd = find(&root, &["stats", "ingest"]);
+        let from = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "from")
+            .expect("stats ingest has no --from any more");
+        let help = from
+            .get_help()
+            .map(|h| h.to_string())
+            .unwrap_or_default();
+        assert!(
+            !help.contains("LeagueGameStats"),
+            "the help still promises a folder the emulator has not written to for two \
+             releases: {help}"
+        );
+        assert!(
+            help.contains("one folder"),
+            "the help has to say --from narrows the sweep to one folder, because the \
+             default is now every folder: {help}"
+        );
+
+        let src = include_str!("main.rs");
+        let from_fn = src
+            .find("\nfn stats_ingest(")
+            .expect("stats_ingest is not in this file any more");
+        let rest = &src[from_fn..];
+        let body = &rest[..rest.find("\n/// Put stalled").unwrap_or(rest.len())];
+        assert!(
+            body.contains("ingest_all"),
+            "with no --from, stats ingest still reads one folder the emulator never \
+             writes to, so it can never find a stuck capture"
+        );
+        assert!(
+            body.contains("ingest_from"),
+            "--from no longer narrows the sweep to the one folder it names"
+        );
     }
 
     /// Read-only subcommands must not grow an `--apply`, because a flag that
