@@ -495,7 +495,7 @@ fn summarize(outcome: PromoteOutcome) -> InstalledSummary {
     let mut roster = None;
     for c in outcome.components {
         match c.state {
-            PromoteState::Applied { receipt, game_patch: gp, roster: r } => {
+            PromoteState::Applied { receipt, game_patch: gp, roster: r, soundtrack } => {
                 components.push(format!("{} {}", receipt.component, receipt.version));
                 if let Some(gp) = gp {
                     let m = gp.message();

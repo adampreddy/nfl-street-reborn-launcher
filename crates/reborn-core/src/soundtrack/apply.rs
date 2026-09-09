@@ -186,7 +186,6 @@ pub fn apply_with_size(
         return Ok(Outcome::Refused(Refusal::ImageInUse { path: booted }));
     }
 
-    on(Progress::Reading);
     let pristine = gcm::Disc::open(&pristine_path)?;
     let source = gcm::Disc::open(&booted)?;
     let pristine_pathfind = pristine.read_file("pathfind.dat")?;

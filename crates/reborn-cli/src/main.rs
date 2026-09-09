@@ -4329,6 +4329,7 @@ fn update_content(
             receipt: r,
             game_patch,
             roster,
+            ..
         } => {
             println!(
                 "Live          {} {}: {} file(s) swapped in, {} kept as yours",
