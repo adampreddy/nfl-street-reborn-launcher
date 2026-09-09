@@ -323,7 +323,7 @@ function discList(){
     const pending=song.pending,original=pending?pending.kind==='original':song.source==='original';
     const o=song.original;
     const title=original?(o?.title||slotTitle({...song,title:'',original:null,source:'original'})):(pending?.title||song.title||'Untitled');
-    const artist=original?(o?.artist?`${o.artist} · Original soundtrack`:'Original soundtrack'):(pending?.artist??song.artist)||'Unknown artist';
+    const artist=original?(o?.artist||'On your disc'):(pending?.artist??song.artist)||'Unknown artist';
     const actions=el('td',{class:'mz-col-actions'},el('button',{type:'button',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
     if(pending)actions.append(el('button',{type:'button',class:'music-quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
     else if(song.source!=='original')actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
