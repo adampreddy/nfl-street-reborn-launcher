@@ -14,8 +14,9 @@
 //! [`read_hosted`] is the site's side of the same file. `None` for a 404:
 //! before the first publish there genuinely is no pointer, and that is a
 //! state, not a fault. Anything that answers but does not parse as a
-//! pointer is an error, because that means the bucket is serving garbage,
-//! not "nothing yet".
+//! pointer, or parses but carries a `schema` other than
+//! [`DOWNLOAD_SCHEMA`], is an error, because either means the bucket is
+//! serving something this reader should not trust, not "nothing yet".
 
 use std::path::Path;
 use std::time::SystemTime;
@@ -87,15 +88,19 @@ pub fn pointer_for(zip: &Path, version: &str, public_base: &str, now: SystemTime
         url,
         bytes,
         sha256: sha256.to_string(),
-        published: format_rfc3339(now),
+        published: crate::publish::format_rfc3339(now),
     })
 }
 
 /// Fetch the pointer the bucket serves. `None` for a 404: before the first
 /// publish there genuinely is no pointer, and that is not an error. Any
-/// other unsuccessful status, or a body that does not parse as a pointer,
-/// is an error: either means the bucket is serving something broken, not
-/// simply "nothing yet".
+/// other unsuccessful status, a body that does not parse as a pointer, or a
+/// pointer whose `schema` is not [`DOWNLOAD_SCHEMA`], is an error: each
+/// means the bucket is serving something broken (or from a future,
+/// incompatible version of this format), not simply "nothing yet". The
+/// schema check mirrors `update::check`'s own rejection of a `latest.json`
+/// whose schema does not match: Task 1 left it out as scoped beyond that
+/// task's own tests, recorded as a follow-up in its report.
 pub fn read_hosted(http: &dyn Http, public_base: &str) -> Result<Option<DownloadPointer>> {
     let url = Origin::new(public_base).url(DOWNLOAD_FILE);
     let reply = http.get_text(&url)?;
@@ -108,29 +113,19 @@ pub fn read_hosted(http: &dyn Http, public_base: &str) -> Result<Option<Download
             format!("{url} answered {}", reply.status),
         )));
     }
-    serde_json::from_str(&reply.body).map(Some).map_err(|e| {
+    let pointer: DownloadPointer = serde_json::from_str(&reply.body).map_err(|e| {
         Error::PlainIo(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{url} did not answer with a download pointer: {e}"),
         ))
-    })
-}
-
-/// The same RFC 3339 rule as `publish::journal::now`, built from
-/// [`crate::publish::civil_from_days`] rather than a timezone dependency.
-/// Not the same function: this task's brief scopes the change to this file
-/// and one `pub mod` line in `publish::mod`, so this keeps its own thin
-/// formatting wrapper around the shared date algorithm rather than making
-/// `journal`'s private copy reachable from here.
-fn format_rfc3339(t: SystemTime) -> String {
-    let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let days = (secs / 86_400) as i64;
-    let time_of_day = secs % 86_400;
-    let (year, month, day) = crate::publish::civil_from_days(days);
-    let hour = time_of_day / 3600;
-    let minute = (time_of_day % 3600) / 60;
-    let second = time_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+00:00")
+    })?;
+    if pointer.schema != DOWNLOAD_SCHEMA {
+        return Err(Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{url} has schema {:?}, this app reads {DOWNLOAD_SCHEMA:?}", pointer.schema),
+        )));
+    }
+    Ok(Some(pointer))
 }
 
 #[cfg(test)]
@@ -233,5 +228,19 @@ mod tests {
         let pointer = sample_pointer();
         let http = FakeHttp::default().reply(POINTER_URL, 200, serde_json::to_string(&pointer).unwrap());
         assert_eq!(read_hosted(&http, "https://files.nflstreetreborn.com/").unwrap(), Some(pointer));
+    }
+
+    /// Carried from Task 1's review: `read_hosted` must reject a pointer
+    /// whose `schema` is not [`DOWNLOAD_SCHEMA`], the same way
+    /// `update::check` refuses a `latest.json` with the wrong schema,
+    /// rather than misreading a future or foreign format as today's.
+    #[test]
+    fn read_hosted_errors_on_a_pointer_with_the_wrong_schema() {
+        let mut pointer = sample_pointer();
+        pointer.schema = "nsr.download.v2".to_string();
+        let http = FakeHttp::default().reply(POINTER_URL, 200, serde_json::to_string(&pointer).unwrap());
+        let err = read_hosted(&http, "https://files.nflstreetreborn.com/").unwrap_err();
+        assert!(err.to_string().contains("nsr.download.v2"), "{err}");
+        assert!(err.to_string().contains(DOWNLOAD_SCHEMA), "{err}");
     }
 }

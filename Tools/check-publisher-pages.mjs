@@ -1,13 +1,13 @@
 // Check that every Publisher page survives every answer the core can give.
 //
-// Seven pages (Status, Roster, Launcher, Game, Content, History, Keys) each
-// read several commands and draw from whatever came back. The failure this
-// guards against is the one the launcher's own first-run screens had before
-// its own checker existed: a page that works when every read succeeds and
-// throws when one field is absent. So each page is loaded three times, with
-// a fake core that answers everything, answers with every field null, and
-// rejects every call, and each time the page has to draw without throwing,
-// with nothing on screen blank without an explanation.
+// Eight pages (Status, Roster, Launcher, Game, Content, Set, History, Keys)
+// each read several commands and draw from whatever came back. The failure
+// this guards against is the one the launcher's own first-run screens had
+// before its own checker existed: a page that works when every read succeeds
+// and throws when one field is absent. So each page is loaded three times,
+// with a fake core that answers everything, answers with every field null,
+// and rejects every call, and each time the page has to draw without
+// throwing, with nothing on screen blank without an explanation.
 //
 // Shape follows Tools/check-shell-pages.mjs exactly: a fake DOM that records
 // structure, a fake `window.__TAURI__.core.invoke`, and the same
@@ -239,6 +239,7 @@ const PAGES = [
   ["crates/reborn-publisher/ui/launcher.js", "Launcher"],
   ["crates/reborn-publisher/ui/game.js", "Game"],
   ["crates/reborn-publisher/ui/content.js", "Content"],
+  ["crates/reborn-publisher/ui/set.js", "Set"],
   ["crates/reborn-publisher/ui/history.js", "History"],
   ["crates/reborn-publisher/ui/keys.js", "Keys"],
 ];
@@ -299,6 +300,14 @@ current = "(between page checks)";
   const { screen } = await loadPage("crates/reborn-publisher/ui/content.js", FULL, "full");
   const t = text(screen);
   check("Content explains the proposed version", /Proposed next version/i.test(t), t.slice(0, 300));
+}
+
+// Set: the plan-details block has not gone blank before Plan is ever
+// clicked; it says so instead of showing an empty section.
+{
+  const { screen } = await loadPage("crates/reborn-publisher/ui/set.js", FULL, "full");
+  const t = text(screen);
+  check("Set explains that Plan has not been run yet", /Plan has not been run yet/i.test(t), t.slice(0, 300));
 }
 
 // History: a journal and a version list both drew something explanatory,

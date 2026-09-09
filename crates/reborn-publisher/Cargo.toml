@@ -24,16 +24,19 @@ serde.workspace = true
 serde_json.workspace = true
 rfd = "0.15"
 
+# `set.rs`'s Run step opens the zip `build.ps1` just produced and reads its
+# central directory (names only, nothing decompressed) to independently
+# confirm it holds exactly the setup exe and its own numbered slices before
+# uploading it -- the "never trust the tool's own claim" rule every other
+# page in this app already follows. Same version and minimal feature set
+# reborn-core already resolves transitively for its own `publish` feature
+# (`roster.rs` reads a `.rebornroster`, which is a zip, the same way); a
+# regular dependency here rather than relying on that transitive one, since
+# this crate's own production code, not only its tests, now opens one.
+zip = { version = "5", default-features = false, features = ["deflate-flate2"] }
+
 [dev-dependencies]
 # `ops.rs`'s tests run every operation against a fresh tempdir rather than
 # this machine's real publishing origin. Same version reborn-core already
 # pins for the same reason.
 tempfile = "3"
-
-# `roster.rs`'s own tests build a real zip (a proper central directory, not
-# just local headers) to prove the delegation to
-# `reborn_core::publish::roster::read_counts` end to end. Only reborn-core
-# links this for real (behind its own `publish` feature, which pulls it in
-# transitively already); this is a dev-only, test-only use of the same
-# crate reborn-core already resolved, same minimal features.
-zip = { version = "5", default-features = false, features = ["deflate-flate2"] }
