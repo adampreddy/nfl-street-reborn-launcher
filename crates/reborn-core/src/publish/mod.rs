@@ -139,6 +139,51 @@ pub fn manifest_url(id: ComponentId, version: &str) -> String {
     format!("{COMPONENTS_DIR}/{}-{}.json", id.as_str(), version)
 }
 
+/// Why a component manifest already in the origin could not be used by
+/// [`next_sequence`] to compute the next sequence number.
+///
+/// This does not add a variant to [`crate::Error`]: that type lives in
+/// [`crate::platform`], out of scope for this fix. Instead it travels as the
+/// source of an [`Error::Io`], which is otherwise also how a genuine
+/// filesystem failure (permission denied, not found) is reported here. A
+/// caller that needs to tell "this manifest is corrupt, fix or remove it"
+/// apart from "the disk could not be read" (the desktop app's History page
+/// is exactly such a caller) uses [`SequenceProblem::from_error`] rather
+/// than being unable to tell the two apart, which is what plainly formatting
+/// the message into `Error::Io` used to mean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SequenceProblem {
+    /// The file at `path` was read from disk successfully but its bytes did
+    /// not parse as a component manifest. `why` is the parse error.
+    Unreadable { path: PathBuf, why: String },
+}
+
+impl std::fmt::Display for SequenceProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SequenceProblem::Unreadable { path, .. } => write!(
+                f,
+                "Failed to parse component manifest {}. Fix or remove the file before retrying.",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SequenceProblem {}
+
+impl SequenceProblem {
+    /// `err`'s [`SequenceProblem`], if it carries one. `None` for every other
+    /// `Error`, including an `Error::Io` that is a genuine filesystem
+    /// failure rather than a corrupt manifest.
+    pub fn from_error(err: &Error) -> Option<&SequenceProblem> {
+        match err {
+            Error::Io { source, .. } => source.get_ref().and_then(|e| e.downcast_ref::<SequenceProblem>()),
+            _ => None,
+        }
+    }
+}
+
 /// One above the highest sequence of any manifest of this component in the
 /// origin. 1 when there is none.
 pub fn next_sequence(origin: &Path, component: ComponentId) -> Result<u64> {
@@ -156,14 +201,12 @@ pub fn next_sequence(origin: &Path, component: ComponentId) -> Result<u64> {
                 Ok(c) => {
                     highest = highest.max(c.sequence);
                 }
-                Err(_) => {
+                Err(parse_err) => {
                     let path = entry.path();
+                    let problem = SequenceProblem::Unreadable { path: path.clone(), why: parse_err.to_string() };
                     return Err(Error::Io {
-                        path: path.clone(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Failed to parse component manifest {}. Fix or remove the file before retrying.", path.display()),
-                        ),
+                        path,
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, problem),
                     });
                 }
             }
@@ -188,6 +231,29 @@ pub fn thousands(n: u64) -> String {
 
 pub(crate) fn io_err(path: &Path, source: std::io::Error) -> Error {
     Error::Io { path: path.to_path_buf(), source }
+}
+
+/// Days since 1970-01-01 to a (year, month, day) triple, proleptic
+/// Gregorian. Howard Hinnant's `civil_from_days`:
+/// <http://howardhinnant.github.io/date_algorithms.html>. Shared by
+/// [`journal::format_rfc3339`] and `upload::format_amz_date`, which each
+/// need the same civil-date conversion for a different string format and
+/// used to carry an identical, independently hand-typed copy of it; a fix to
+/// one used to have no way of reaching the other. Chosen over reaching for a
+/// time crate for this one conversion: it is a small, closed, well-known
+/// algorithm, not a timezone database.
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -274,6 +340,41 @@ mod tests {
         assert!(result.is_err(), "Expected error for corrupt runtime manifest, got Ok");
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("runtime-1.0.1.json"), "Error should name the corrupt file: {}", err_msg);
+    }
+
+    /// The typed distinction a caller (the desktop app's History page) needs:
+    /// a manifest that parsed the bytes fine and found garbage must be
+    /// reported differently than a manifest whose bytes could not be read at
+    /// all, even though both surface as `Error::Io`.
+    #[test]
+    fn next_sequence_distinguishes_a_corrupt_manifest_from_an_unreadable_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let components = dir.path().join("components");
+        std::fs::create_dir_all(&components).unwrap();
+
+        // Corrupt: the bytes are read fine, but do not parse.
+        std::fs::write(components.join("runtime-1.0.1.json"), "{\"schema\":\"nsr").unwrap();
+        let corrupt = next_sequence(dir.path(), ComponentId::Runtime).unwrap_err();
+        match SequenceProblem::from_error(&corrupt) {
+            Some(SequenceProblem::Unreadable { path, why }) => {
+                assert!(path.ends_with("runtime-1.0.1.json"), "{}", path.display());
+                assert!(!why.is_empty(), "why should carry the parse error");
+            }
+            None => panic!("a corrupt manifest must carry a SequenceProblem: {corrupt}"),
+        }
+
+        // Unreadable: nothing named runtime-1.0.1.json can be read as a file
+        // at all (a directory sits where the manifest was), so this fails at
+        // the `std::fs::read` step rather than at parse. This must NOT carry
+        // a SequenceProblem: the file was never read, so there is nothing to
+        // say did not parse.
+        std::fs::remove_file(components.join("runtime-1.0.1.json")).unwrap();
+        std::fs::create_dir_all(components.join("runtime-1.0.1.json")).unwrap();
+        let unreadable = next_sequence(dir.path(), ComponentId::Runtime).unwrap_err();
+        assert!(
+            SequenceProblem::from_error(&unreadable).is_none(),
+            "an unreadable file must not be mistaken for a corrupt manifest: {unreadable}"
+        );
     }
 
     #[test]

@@ -33,8 +33,10 @@ pub const JOURNAL_SCHEMA: &str = "nsr.publisher-journal.v1";
 pub struct Record {
     /// Must be exactly [`JOURNAL_SCHEMA`].
     pub schema: String,
-    /// RFC 3339, stamped by [`now`]. See that function's doc for why this is
-    /// UTC rather than a true timezone-aware local reading.
+    /// RFC 3339, stamped by [`now`] as UTC with an explicit `+00:00` offset,
+    /// never a local time. Rendering this in the operator's local time, if
+    /// wanted, is a display-layer concern; nothing that reads this field
+    /// should treat it as already local.
     pub at: String,
     /// `"roster"`, `"game-patch"`, `"release"`, `"component"`, `"upload"`,
     /// `"launcher"`.
@@ -120,19 +122,17 @@ pub fn read_last(origin: &Path, n: usize) -> Result<Vec<Record>> {
     Ok(all.records[start..].to_vec())
 }
 
-/// The current moment as an RFC 3339 timestamp.
-///
-/// This is UTC (offset `+00:00`), not a genuine timezone-aware local
-/// reading, and that is a real gap against the `at` field's stated intent
-/// ("RFC 3339 local time"). It is not an oversight: finding the operator's
-/// UTC offset needs either an OS call (`GetTimeZoneInformation` on Windows,
-/// `tzset`/`localtime_r` elsewhere), which is `unsafe` on every platform and
-/// this crate is `#![forbid(unsafe_code)]` (see `lib.rs`), or a timezone
-/// dependency, which this task's brief says to avoid rather than add for
-/// this. Both routes are closed from inside this file, so this reports the
-/// day and time correctly and the offset as `+00:00`, which is exact only
-/// when the machine's zone is UTC. Flagged in the task report as a decision
-/// for the plan owner, not settled quietly here.
+/// The current moment as an RFC 3339 timestamp, stamped UTC with an explicit
+/// `+00:00` offset. That is deliberate and correct, not a stand-in for a
+/// local reading: unambiguous, sortable as text, and never wrong across a
+/// daylight-saving change. It is also the only option available from inside
+/// this file: finding the operator's local offset needs either an OS call
+/// (`GetTimeZoneInformation` on Windows, `tzset`/`localtime_r` elsewhere),
+/// which is `unsafe` on every platform and this crate is
+/// `#![forbid(unsafe_code)]` (see `lib.rs`), or a timezone dependency, which
+/// this task's brief says to avoid rather than add for this. Rendering this
+/// in the viewer's local time, if wanted, belongs to whatever displays the
+/// record, not to this stamp.
 pub fn now() -> String {
     format_rfc3339(SystemTime::now())
 }
@@ -141,30 +141,11 @@ fn format_rfc3339(t: SystemTime) -> String {
     let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let days = (secs / 86_400) as i64;
     let time_of_day = secs % 86_400;
-    let (year, month, day) = civil_from_days(days);
+    let (year, month, day) = crate::publish::civil_from_days(days);
     let hour = time_of_day / 3600;
     let minute = (time_of_day % 3600) / 60;
     let second = time_of_day % 60;
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+00:00")
-}
-
-/// Days since 1970-01-01 to a (year, month, day) triple, proleptic
-/// Gregorian. Howard Hinnant's `civil_from_days`:
-/// <http://howardhinnant.github.io/date_algorithms.html>. Chosen over
-/// reaching for a time crate for this one conversion: it is a small, closed,
-/// well-known algorithm, not a timezone database.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let year = if month <= 2 { y + 1 } else { y };
-    (year, month, day)
 }
 
 #[cfg(test)]
