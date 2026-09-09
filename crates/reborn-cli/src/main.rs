@@ -555,6 +555,12 @@ fn main() -> std::process::ExitCode {
         default_hook(info);
     }));
 
+    // The same log the window writes, from the same place, so a person running
+    // a recovery command and a player pressing a button leave their detail in
+    // one file rather than in two or in none. It says nothing and it cannot
+    // fail a command.
+    reborn_core::logging::start(&Platform::detect());
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
@@ -5092,6 +5098,35 @@ mod tests {
     /// `Platform` and a resolved user directory and cannot be called in a test
     /// without one; what has to be true is that the no-flag path reaches
     /// `ingest_all` and the flag path still reaches the single-folder call.
+    /// The command line tool writes to the same log the window does.
+    ///
+    /// Every failure this tool decides not to print in full goes to
+    /// `tracing::warn!` in the core, and until fix wave 4 nothing in the
+    /// workspace subscribed, so those events were dropped. A person running a
+    /// recovery command is exactly the person who needs them.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text is cut at the `fn run(` that follows it, which is
+    /// thousands of lines before this test, so the name written below is never
+    /// inside what is searched.
+    #[test]
+    fn every_run_of_the_command_line_tool_writes_to_the_launchers_log() {
+        let src = include_str!("main.rs");
+        let body = {
+            let from = src
+                .find("\nfn main() -> std::process::ExitCode {")
+                .expect("main is not in this file any more");
+            let rest = &src[from..];
+            &rest[..rest.find("\nfn run(").expect("run is not in this file any more")]
+        };
+        assert!(
+            body.contains("logging::start"),
+            "rebornctl never starts a log, so every warning the core raises while it runs \
+             is dropped and the detail is gone"
+        );
+    }
+
     #[test]
     fn stats_ingest_defaults_to_every_folder_the_emulator_writes_to() {
         let root = Cli::command();

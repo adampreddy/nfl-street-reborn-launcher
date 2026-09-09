@@ -52,6 +52,7 @@ pub mod ini;
 pub mod inventory;
 pub mod jsgme;
 pub mod library;
+pub mod logging;
 pub mod manifest;
 pub mod migration;
 pub mod mods;
@@ -74,6 +75,32 @@ pub mod xbox;
 pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,
     RemovableDrive, RemovableDrives, Result, CURRENT_PLATFORM, Channel, ChannelSource};
+
+/// The wall clock, in UTC, as `YYYY-MM-DDTHH:MM:SSZ`.
+///
+/// Here rather than in one module because two need it and neither owns time:
+/// [`backend`] stamps every envelope with it, and [`logging`] stamps every
+/// line. No dependency: civil time from seconds is Howard Hinnant's algorithm,
+/// which is a dozen lines and has no calendar to get out of date.
+pub fn utc_now_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let (h, m, s) = ((secs % 86_400) / 3600, (secs % 3600) / 60, secs % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mth <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mth:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
 
 /// The mechanical "no errors ever" check, shared by every module that produces
 /// a sentence a player reads.

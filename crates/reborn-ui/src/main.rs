@@ -4150,6 +4150,19 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
             take(user.path().join("Logs").join("dolphin.log"), "dolphin.log");
         }
 
+        // The launcher's own log, which is where every failure it decided not
+        // to show a player went. The bundle could only ever collect the
+        // emulator's, because until fix wave 4 the launcher did not have one.
+        let logs = data.join(DataDir::Logs.relative());
+        take(
+            logs.join(reborn_core::logging::LOG_FILE),
+            reborn_core::logging::LOG_FILE,
+        );
+        take(
+            logs.join(reborn_core::logging::PREVIOUS_LOG_FILE),
+            reborn_core::logging::PREVIOUS_LOG_FILE,
+        );
+
         // What the launcher itself knows, as text.
         let mut status = String::new();
         status.push_str(&format!("launcher {}\n", env!("CARGO_PKG_VERSION")));
@@ -5068,6 +5081,15 @@ mod shortcut_tests {
 }
 
 fn main() {
+    // The log, first, before anything can produce a warning worth keeping.
+    //
+    // Every module in the core answers a failure it will not show a player by
+    // sending the detail to `tracing::warn!`. Until this call existed there
+    // was no subscriber anywhere in the workspace, and a `tracing` event with
+    // no subscriber is dropped: the detail was not moved off the screen, it
+    // was deleted. It says nothing and it cannot fail a start.
+    reborn_core::logging::start(&Platform::detect());
+
     // A credential this product retired, taken off the machine. `nsr.league.ingest`
     // was the bearer token Dolphin's own uploader posted with; the module that
     // used it is gone, and this branch removed the commands that could forget
@@ -5457,6 +5479,51 @@ mod tests {
             body.contains("forget_retired_league_token"),
             "a token this project has already had to rotate stays in the credential vault \
              forever, on every machine that ever stored one"
+        );
+    }
+
+    /// The launcher writes a log, and the diagnostic bundle can collect it.
+    ///
+    /// Three fix waves moved technical detail off the screens a player reads
+    /// and said it goes to the log. There was no log: 56 `tracing::warn!` call
+    /// sites and no subscriber anywhere in the workspace, and a `tracing`
+    /// event with no subscriber is dropped. So the detail was not moved, it
+    /// was deleted, and the bundle collected the emulator's log and could not
+    /// collect the launcher's, because there was not one.
+    ///
+    /// That a warning really reaches a file on disk is proved in
+    /// `reborn_core::logging`, against a real file. What is checked here is
+    /// the wiring this binary owns: the window starts the log before anything
+    /// can warn, and the bundle picks the file up.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text stops at the `#[cfg(test)]` that begins this module,
+    /// and `diagnostic_bundle`'s stops at the next `#[tauri::command]`. Both
+    /// cuts are before this test's own line, so the names written below are
+    /// never inside what is searched.
+    #[test]
+    fn the_launcher_writes_a_log_and_the_bundle_collects_it() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        let rest = &src[from..];
+        let main_body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            main_body.contains("logging::start"),
+            "the window never starts a log, so every warning the core raises is dropped \
+             and the detail three fix waves moved off the screen is simply gone"
+        );
+
+        let bundle = command_body(src, "async fn diagnostic_bundle");
+        assert!(
+            bundle.contains("logging::LOG_FILE"),
+            "the bundle collects the emulator's log and not the launcher's, which is the \
+             only place the launcher's own failures are written down"
+        );
+        assert!(
+            bundle.contains("logging::PREVIOUS_LOG_FILE"),
+            "the bundle takes the live log and not the rolled one, so anything that \
+             happened before the log filled is left behind"
         );
     }
 
