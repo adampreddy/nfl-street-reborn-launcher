@@ -68,6 +68,13 @@ If that prints the three verbs (keygen, component, release) the tool is
 current. `installer\windows\build.ps1` also builds this exe, but a copy from
 before the publisher landed will not have them.
 
+Since 2026-09-09 the publishing logic is `reborn_core::publish` (behind the
+`publish` cargo feature): `keys`, `component`, `release`, `roster`,
+`game_patch`, `vault`. `rebornctl publish` builds a request, prints the
+core's events and maps the outcome to an exit code; the Reborn Publisher
+app calls the same functions. The lines this runbook quotes are the core's
+lines. Unit tests: `cargo test -p reborn-core --features publish publish::`.
+
 ## 1. Generate the keys. Once, ever.
 
 ```

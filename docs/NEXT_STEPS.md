@@ -330,6 +330,12 @@ Still Adam's: point the site's Download button at
 Never at a file on SiteGround. Adam's manual walkthrough of the wizard
 (`Tools\test-all.ps1 -Manual`) has not been done on this set.
 
+- **Publisher plan 1 landed (2026-09-09):** publishing moved into
+  `reborn_core::publish` with typed requests, outcomes and an event sink;
+  `rebornctl publish` is a printer over it. 34 core unit tests; the three
+  e2e scripts pass unchanged. Plans 2 to 4 (native upload and status, the
+  app, the installer set) are next, written against these names.
+
 ### 5. Adam's own list
 
 - `rotation.key` is still beside `publisher.key` in
