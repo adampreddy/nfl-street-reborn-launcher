@@ -72,8 +72,9 @@ Since 2026-09-09 the publishing logic is `reborn_core::publish` (behind the
 `publish` cargo feature): `keys`, `component`, `release`, `roster`,
 `game_patch`, `vault`. `rebornctl publish` builds a request, prints the
 core's events and maps the outcome to an exit code; the Reborn Publisher
-app, when it is built in plans 2 to 4, will call the same functions. The lines this runbook quotes are the core's
-lines. Unit tests: `cargo test -p reborn-core --features publish publish::`.
+app, when it is built in plans 2 to 4, will call the same functions. The
+lines this runbook quotes are the core's lines. Unit tests: `cargo test -p
+reborn-core --features publish publish::`.
 
 ## 1. Generate the keys. Once, ever.
 

@@ -11,7 +11,6 @@ use crate::publish::{io_err, next_sequence, out, refuse, thousands, Outcome, Sin
 use crate::roster::ROSTER_FILE;
 use crate::Result;
 
-#[derive(Debug)]
 pub struct RosterRequest<'a> {
     /// A URL, or a local .rebornroster path.
     pub from: &'a str,
@@ -27,6 +26,25 @@ pub struct RosterRequest<'a> {
     pub apply: bool,
     /// The site's bearer token, for a login-only export. Resolved by the caller.
     pub token: Option<&'a str>,
+}
+
+/// Hand-written so the token, which the vault holds, never appears in a log
+/// or a journal: `<set>` or `<unset>`, never the value. Every other field
+/// prints normally.
+impl std::fmt::Debug for RosterRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RosterRequest")
+            .field("from", &self.from)
+            .field("origin", &self.origin)
+            .field("version", &self.version)
+            .field("sequence", &self.sequence)
+            .field("key", &self.key)
+            .field("release_version", &self.release_version)
+            .field("release_sequence", &self.release_sequence)
+            .field("apply", &self.apply)
+            .field("token", if self.token.is_some() { &"<set>" } else { &"<unset>" })
+            .finish()
+    }
 }
 
 /// A component pushed, and the release that pins it when one was signed.
@@ -67,6 +85,13 @@ pub fn publish_roster(http: &dyn Http, req: &RosterRequest<'_>, observer: &dyn S
         .join("reborn-publish")
         .join("roster")
         .join(format!("{}-{}-{call}", req.version, std::process::id()));
+    // A per-call unique path removes the common collision, but a process
+    // killed rather than unwound (Ctrl+C on Windows) skips the `Drop` guard
+    // below, and Windows recycles process ids, so a leftover directory from
+    // an earlier, killed call can still land on this exact path.
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
+    }
     std::fs::create_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
     // Cleared on every return below, including a `?` propagation. Made only
     // after the directory exists, so nothing above ever has to clean up a
@@ -255,18 +280,24 @@ mod tests {
         let (_dir, origin, key) = origin_with_runtime_and_keys();
         let site = FakeSite { url: "https://site.test/export".into(), body: roster_zip(), seen_bearer: Default::default() };
         let mut lines = Vec::new();
+        // Distinctive rather than a short word like "tok", which could
+        // appear inside an unrelated word and false-positive the check below.
+        let token = "s3cr3t-token-value";
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: "2026.09.06", sequence: None,
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: Some("tok"),
+            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: Some(token),
         };
         let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         let push = match outcome { Outcome::Done(p) => p, o => panic!("{o:?}") };
         assert_eq!(push.release.as_ref().map(|s| s.sequence), Some(4));
-        assert_eq!(*site.seen_bearer.lock().unwrap(), Some(Some("tok".to_string())));
+        assert_eq!(*site.seen_bearer.lock().unwrap(), Some(Some(token.to_string())));
         assert!(lines.iter().any(|l| l.starts_with("Fetched")), "{lines:?}");
         assert!(lines.iter().any(|l| l == "Sequence      1 (one above the highest roster already in the origin)"), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("pinning roster=2026.09.06, runtime=1.0.2")), "{lines:?}");
         assert!(origin.join("components").join("roster-2026.09.06.json").is_file());
+        // The token itself never appears in any emitted line: only whether
+        // one was sent (the "with the site token" suffix on "Fetching").
+        assert!(!lines.iter().any(|l| l.contains(token)), "{lines:?}");
     }
 
     #[test]

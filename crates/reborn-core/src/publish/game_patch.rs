@@ -147,8 +147,12 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
     let run = platform.processes.run_capturing(&xdelta, &args, &Default::default())?;
     if !run.succeeded() {
         let _ = std::fs::remove_file(&patch_path);
+        // One entry per line: `Event::line` is one human line (see its doc
+        // comment), and a GUI renders one event per row.
         return Ok(refuse(sink, &[
-            format!("xdelta3 failed ({:?}):\n{}\n{}", run.exit, run.stdout, run.stderr),
+            format!("xdelta3 failed ({:?}):", run.exit),
+            run.stdout,
+            run.stderr,
             "Nothing was published.".to_string(),
         ]));
     }

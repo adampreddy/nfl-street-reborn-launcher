@@ -395,6 +395,13 @@ mod tests {
         let sig = signing::decode_signature(&std::fs::read_to_string(&s.sig_path).unwrap()).unwrap();
         let trusted = TrustedRelease::open(&verifier, &std::fs::read(&s.release_path).unwrap(), &sig).unwrap();
         assert_eq!(trusted.release().sequence, 1);
+        // The signing key's secret never appears in any emitted line. Its
+        // public half is expected to appear (the "Signing key" and "public"
+        // lines print it) and must still be allowed.
+        let secret = read_key(&w.key).unwrap().expect("a key");
+        let secret_hex = publisher::encode_secret(&secret);
+        assert!(!lines.iter().any(|l| l.contains(&secret_hex)), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains(&s.public_hex)), "{lines:?}");
     }
 
     #[test]

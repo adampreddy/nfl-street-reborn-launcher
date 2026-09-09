@@ -40,7 +40,13 @@ pub enum Channel {
 }
 
 /// One human line from a publishing operation, exactly as the CLI prints it.
+///
+/// `#[non_exhaustive]`: nothing outside this module builds one with a struct
+/// literal (see [`Event::out`] and [`Event::err`]), and this makes that a
+/// compiler rule instead of a convention, so a progress field can be added
+/// later without a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Event {
     pub channel: Channel,
     pub line: String,
@@ -59,10 +65,13 @@ impl Event {
 pub type Sink<'a> = &'a mut dyn FnMut(Event);
 
 /// Why an operation stopped without writing. The lines were already emitted;
-/// `summary` is the first of them, for a caller that shows one line.
+/// `summary` is the first of them, for a caller that shows one line, and
+/// `lines` is all of them, for a caller (a GUI dialog) that needs the whole
+/// reason rather than scraping its log pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub summary: String,
+    pub lines: Vec<String>,
 }
 
 /// What an operation came to.
@@ -90,12 +99,16 @@ impl<T> Outcome<T> {
     }
 }
 
-/// Emit every line to `Out` and stop with the first as the summary.
+/// Emit every line to `Out` and stop with the first as the summary and all
+/// of them kept.
 pub fn refuse<T>(sink: Sink<'_>, lines: &[String]) -> Outcome<T> {
     for line in lines {
         sink(Event::out(line.clone()));
     }
-    Outcome::Refused(Refusal { summary: lines.first().cloned().unwrap_or_default() })
+    Outcome::Refused(Refusal {
+        summary: lines.first().cloned().unwrap_or_default(),
+        lines: lines.to_vec(),
+    })
 }
 
 /// `out!(sink, "fmt", args)`: one stdout line. `out!(sink)` is a blank line.
@@ -214,7 +227,10 @@ mod tests {
         assert_eq!(seen[0], Event::out("first line"));
         assert_eq!(seen[1].channel, Channel::Out);
         match outcome {
-            Outcome::Refused(r) => assert_eq!(r.summary, "first line"),
+            Outcome::Refused(r) => {
+                assert_eq!(r.summary, "first line");
+                assert_eq!(r.lines, vec!["first line".to_string(), "second".to_string()]);
+            }
             _ => panic!("expected Refused"),
         }
     }
