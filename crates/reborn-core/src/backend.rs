@@ -539,7 +539,7 @@ mod tests {
                     assert_eq!(
                         code.as_deref(),
                         Some(want_code),
-                        "the server's own word for the refusal was thrown away, so the                          person who has to retry it cannot tell which refusal it was"
+                        "the server's own word for the refusal was thrown away, so the person who has to retry it cannot tell which refusal it was"
                     );
                 }
                 other => panic!("{status} with {body} should be a refusal, got {other:?}"),

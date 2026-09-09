@@ -224,7 +224,10 @@ const LOCK_FILE: &str = "launcher.lock";
 /// and replaced the whole thing with "Something unexpected happened. Try
 /// again." The folder is in the log; the player gets the part they can act on.
 pub const OLDER_INSTALL_IN_THE_WAY: &str =
-    "This folder already holds an older NFL Street Reborn installation, so the launcher will      not put its own files there: doing that could delete mods that are already installed.      Choose a different folder, and bring the older installation across from inside the      launcher instead.";
+    "This folder already holds an older NFL Street Reborn installation, so the \
+     launcher will not put its own files there: doing that could delete mods that \
+     are already installed. Choose a different folder, and bring the older \
+     installation across from inside the launcher instead.";
 
 /// How long a launch waits for a lock before it believes the refusal.
 ///

@@ -3985,7 +3985,7 @@ mod tests {
         q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
 
-        let sentence = "The server would not take this result because it does not match the                         game that was played. It is kept on this PC.";
+        let sentence = "The server would not take this result because it does not match the game that was played. It is kept on this PC.";
         let refuse = Recorder::new(SubmitOutcome::Rejected {
             reason: sentence.to_string(),
             code: Some("hash-mismatch".to_string()),
@@ -3996,7 +3996,7 @@ mod tests {
         assert_eq!(
             entry.refusal_code.as_deref(),
             Some("hash-mismatch"),
-            "the server's own word for the refusal was not kept, so the person retrying it              is retrying blind"
+            "the server's own word for the refusal was not kept, so the person retrying it is retrying blind"
         );
         // And it is not in anything a player reads.
         assert!(
