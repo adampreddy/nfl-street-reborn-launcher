@@ -133,7 +133,11 @@ async function loadJournal() {
     journalNote.replaceChildren(refusal(answer.error));
     return;
   }
-  const { records, total, skipped } = answer.value;
+  const { total, skipped } = answer.value;
+  // A field is absent, not an empty list, when the core answers with every
+  // field null: `records` must never be assumed present here, the same way
+  // `status.js` and `content.js` guard their own list answers.
+  const records = Array.isArray(answer.value.records) ? answer.value.records : [];
   const notes = [];
   if (total === 0) {
     notes.push("No publishing operation has been recorded in this origin's journal yet.");
@@ -200,7 +204,10 @@ async function loadVersions() {
     versionNote.replaceChildren(refusal(answer.error));
     return;
   }
-  const { versions, current_version: current } = answer.value;
+  const { current_version: current } = answer.value;
+  // Same guard `content.js` already applies to this same command's answer:
+  // an absent `versions` is not an empty list.
+  const versions = Array.isArray(answer.value.versions) ? answer.value.versions : [];
   const candidates = versions.filter((v) => !v.current);
   if (!versions.length) {
     versionNote.replaceChildren(partial(`The origin holds no manifest for ${component}. Nothing can be rolled back to.`));

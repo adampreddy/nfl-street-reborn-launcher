@@ -89,18 +89,25 @@ function keysBlock(answer) {
     );
   }
   const state = answer.value;
+  // Every field the real command sends is a populated object or array, never
+  // null, but a page that assumes that throws the moment that stops being
+  // true. Guarded the same way `status.js` and `content.js` guard their own
+  // list and object answers.
+  const trusted = Array.isArray(state.trusted) ? state.trusted : [];
+  const publisherKey = state.publisher_key || {};
+  const rotationKey = state.rotation_key || {};
 
   const children = [
     el("h2", { text: "Signing keys" }),
     el("p", { class: "hint", text: "The public keys a shipped launcher trusts, compiled into every player's build." }),
-    facts(state.trusted.map((t) => fact(t.role, t.public_hex))),
+    facts(trusted.map((t) => fact(t.role, t.public_hex))),
     el("p", { class: "hint", text: "The everyday key on this machine." }),
     facts([
-      fact("Path", state.publisher_key.path),
-      fact("On disk", state.publisher_key.path === null ? null : state.publisher_key.exists ? "yes" : "no"),
-      ...(state.publisher_key.public_hex ? [fact("Public key", state.publisher_key.public_hex)] : []),
+      fact("Path", publisherKey.path),
+      fact("On disk", publisherKey.path === null || publisherKey.path === undefined ? null : publisherKey.exists ? "yes" : "no"),
+      ...(publisherKey.public_hex ? [fact("Public key", publisherKey.public_hex)] : []),
     ]),
-    trustNote(state.publisher_key),
+    trustNote(publisherKey),
   ];
 
   if (state.same_folder_warning) {
@@ -114,8 +121,8 @@ function keysBlock(answer) {
   children.push(
     el("p", { class: "hint", text: "The rotation key, generated alongside it and meant to move offline." }),
     facts([
-      fact("Path", state.rotation_key.path),
-      fact("On disk", state.rotation_key.path === null ? null : state.rotation_key.exists ? "yes" : "no"),
+      fact("Path", rotationKey.path),
+      fact("On disk", rotationKey.path === null || rotationKey.path === undefined ? null : rotationKey.exists ? "yes" : "no"),
     ])
   );
 
@@ -230,9 +237,12 @@ function vaultBlock(answer) {
 
   children.push(
     facts([
-      storedFact("Site token", state.site_token.stored),
-      storedFact("R2 access key id", state.r2_access_key.stored),
-      storedFact("R2 secret access key", state.r2_secret.stored),
+      // Guarded the same way `publisherKey`/`rotationKey` are above: each of
+      // these three is always a populated object from the real command, but
+      // a page that assumes that throws the moment it stops being true.
+      storedFact("Site token", (state.site_token || {}).stored),
+      storedFact("R2 access key id", (state.r2_access_key || {}).stored),
+      storedFact("R2 secret access key", (state.r2_secret || {}).stored),
     ]),
     vaultFieldRow("site_token", "Site token", "the league site's API export token"),
     vaultFieldRow("r2_access_key", "R2 access key id", "the bucket's write credentials, first half"),

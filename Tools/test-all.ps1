@@ -104,7 +104,7 @@ if ($Browser) {
     $browserSuite = Join-Path $PSScriptRoot "run-browser-tests.mjs"
     $browserOutput = & node $browserSuite
     Record "browser" "interaction and responsive layout checks" ($LASTEXITCODE -eq 0) ($browserOutput | Select-Object -Last 1)
-    foreach ($suite in @("review-onboarding.mjs", "check-update-notice.mjs")) {
+    foreach ($suite in @("review-onboarding.mjs", "check-update-notice.mjs", "review-publisher.mjs")) {
         $suiteOutput = & node (Join-Path $PSScriptRoot $suite)
         Record "browser" $suite ($LASTEXITCODE -eq 0) ($suiteOutput | Select-Object -Last 1)
     }
