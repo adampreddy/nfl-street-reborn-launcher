@@ -1,13 +1,5 @@
-// The Music page: the old editor's flow, one column, top to bottom.
-//
-//   Your disc right now        one sentence, and the switch
-//   1. Choose a song file      a button; nothing else until a file is chosen
-//   2. Check the details       title, artist, album, filled from the file or online
-//   3. Choose where it goes    the 21 slots as a list, the first free one picked
-//   Ready to apply             the queue of staged changes, one Apply button
-//   Songs on your disc         what plays today, with Change and Reset per song
-//
-// The core owns the disc; this page draws music_status and asks for changes.
+// A soundtrack list with focused editing and one apply action.
+// The core owns soundtrack changes; this page presents them for review.
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
 let status = null; // music_status; null until read or after a failed read
@@ -195,273 +187,151 @@ async function pickPath(kind) {
   }
 }
 
-// Step 1: choose a file. Reads its details and moves on to steps 2 and 3.
-async function chooseFile() {
-  const path = await pickPath("audio");
+// Song editing stays in one dialog; the soundtrack list never becomes a wizard.
+let editor = null;
+let editorProblem = '';
+let editorOpener = null;
+let extraOpen = false;
+let searchBusy = false;
+
+async function chooseFile(n) {
+  if (locked()) return;
+  busy = true;
+  const path = await pickPath('audio');
+  busy = false;
   if (!path) return;
-  editing = null;
-  picked = { path, reading: true };
-  lookupNote = "Reading the file…";
-  draw();
+  editorOpener = document.activeElement;
+  targetSlot = typeof n === 'number' ? n : firstFreeSlot();
+  editing = null; picked = {path, reading:true}; fields = {title:'',artist:'',album:''};
+  editorProblem = ''; candidates = []; lookupNote = ''; extraOpen = false;
+  openEditor(); renderEditor();
   try {
-    picked = await call("music_inspect", { path });
-    fields = { title: picked.title || "", artist: picked.artist || "", album: picked.album || "" };
-    candidates = picked.candidates || [];
-    searchText = picked.query || "";
-    lookupNote = `${picked.note} Length ${mmss(picked.duration_ms)}.`;
-    if (picked.too_long) lookupNote += ` This song is too long for a slot (up to ${mmss((status && status.limit_seconds ? status.limit_seconds : 380) * 1000)}). Trim it in an audio editor and choose it again.`;
-    if (targetSlot === null) targetSlot = firstFreeSlot();
-  } catch (e) {
-    picked = null;
-    problem = reason(e);
-  }
-  draw();
+    picked = await call('music_inspect', {path});
+    fields = {title:picked.title||'',artist:picked.artist||'',album:picked.album||''};
+    candidates = picked.candidates || []; searchText = picked.query || '';
+    lookupNote = picked.details_from === 'lookup' ? 'Details found online. You can edit them below.' : picked.details_from === 'tags' ? 'Details read from your file. You can edit them below.' : 'Check the song details before adding it.';
+    if (picked.too_long) editorProblem = `This song is too long. Choose a track under ${mmss((status?.limit_seconds || 380)*1000)}.`;
+  } catch(e) { picked = {path, failed:true}; editorProblem = reason(e); }
+  if (editor?.open) renderEditor();
 }
 
-// Change a song's details without a new file: steps 2 and 3 with the slot fixed.
 function editDetails(n) {
-  const s = slotAt(n);
-  const src = s && s.pending ? s.pending : s;
-  picked = null;
-  editing = n;
-  targetSlot = n;
-  fields = { title: (src && src.title) || "", artist: (src && src.artist) || "", album: (src && src.album) || "" };
-  candidates = [];
-  lookupNote = "";
-  searchText = "";
-  draw();
-  const anchor = document.getElementById("step-details");
-  if (anchor && typeof anchor.scrollIntoView === "function") anchor.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (locked()) return;
+  editorOpener = document.activeElement;
+  const song = slotAt(n), src = song?.pending || song;
+  clearFlow(); editing = n; targetSlot = n; editorProblem = ''; extraOpen = false;
+  fields = {title:src?.title||'',artist:src?.artist||'',album:src?.album||''};
+  openEditor(); renderEditor();
+}
+function openEditor() {
+  if(editor?.open) return;
+  editor = openDialog('Song details'); editor.classList.add('music-editor');
+  editor.addEventListener('cancel', ev=>{if(busy||picked?.reading||searchBusy)ev.preventDefault();});
+  editor.addEventListener('close',()=>{editor=null;clearFlow();editorOpener?.focus?.({preventScroll:true});});
+  showDialog(editor);
+}
+function renderEditor() {
+  if(!editor) return;
+  const reading=!!picked?.reading, saving=busy, disabled=reading||saving||searchBusy;
+  const heading=editing!==null?'Edit song details':'Add a song';
+  const form=el('form',{class:'music-editor-form'});
+  form.append(el('div',{class:'music-dialog-heading'},el('h2',{text:heading}),el('button',{type:'button',text:'Cancel',disabled,onclick:()=>editor.close()})));
+  if(picked) form.append(el('div',{class:'music-file'},el('div',{},el('strong',{text:picked.path.split(/[\\/]/).pop()}),el('small',{text:reading?'Reading song details…':mmss(picked.duration_ms)||'Audio file'})),el('button',{type:'button',text:'Change file',disabled,onclick:()=>chooseFile(targetSlot)})));
+  if(editorProblem)form.append(el('p',{class:'music-error',role:'alert',text:editorProblem}));
+  if(reading){form.append(el('p',{class:'note',role:'status',text:'Getting the title, artist, and album…'}));editor.replaceChildren(form);return;}
+  if(lookupNote)form.append(el('p',{class:'note',role:'status',text:lookupNote}));
+  const field=(key,label)=>el('label',{class:'mz-field'},el('span',{text:label}),el('input',{id:'music-'+key,type:'text',maxlength:'49',required:key==='title'?'':null,value:fields[key],disabled,oninput:ev=>{fields[key]=ev.target.value;}}));
+  form.append(el('div',{class:'mz-fields'},field('title','Title'),field('artist','Artist')));
+  if(editing===null){
+    const select=el('select',{id:'music-slot','aria-label':'Replace song',disabled,onchange:ev=>{targetSlot=Number(ev.target.value);}});
+    for(const song of slots())select.append(el('option',{value:String(song.slot),text:`${String(song.slot).padStart(2,'0')} · ${song.pending ? pendingWhat(song.pending) : slotTitle(song)}`,selected:song.slot===targetSlot}));
+    form.append(el('label',{class:'mz-field'},el('span',{text:'Replace song'}),select));
+  }
+  const extra=el('details',{class:'music-extra'});extra.open=extraOpen;
+  extra.addEventListener('toggle',()=>{extraOpen=extra.open;});
+  extra.append(el('summary',{text:'Album and online lookup'}),field('album','Album'));
+  const search=el('input',{type:'search','aria-label':'Find song details',placeholder:'Song or artist',value:searchText,disabled,oninput:ev=>{searchText=ev.target.value;},onkeydown:ev=>{if(ev.key==='Enter'){ev.preventDefault();runSearch();}}});
+  extra.append(el('div',{class:'mz-row'},search,el('button',{type:'button',text:searchBusy?'Searching…':'Search',disabled,onclick:runSearch})));
+  if(candidates.length){const list=el('ul',{class:'mz-candidates'});for(const c of candidates)list.append(el('li',{},el('button',{type:'button',class:'mz-candidate',disabled,text:[c.title,c.artist,c.album].filter(Boolean).join(' · '),onclick:()=>{fields={title:c.title||'',artist:c.artist||'',album:c.album||''};lookupNote='Details updated.';renderEditor();}})));extra.append(list);}
+  extra.append(el('p',{class:'note mz-privacy',text:'Online lookup sends the song name to iTunes or MusicBrainz. Your audio stays on this PC.'}));
+  form.append(extra,el('div',{class:'music-dialog-footer'},el('p',{class:'note',text:'Save here, then apply your changes to the game.'}),el('button',{type:'submit',class:'primary',text:saving?'Saving…':editing!==null?'Save details':'Add song',disabled:disabled||!!picked?.too_long||!!picked?.failed})));
+  form.addEventListener('submit',ev=>{ev.preventDefault();if(form.reportValidity())addToQueue();});
+  const focus=document.activeElement?.id;
+  editor.replaceChildren(form);
+  if(focus)document.getElementById(focus)?.focus({preventScroll:true});
+  else if(!disabled)form.querySelector('input')?.focus({preventScroll:true});
+}
+async function runSearch(){
+  if(searchBusy||busy||!searchText.trim())return;
+  searchBusy=true;lookupNote='Searching…';renderEditor();
+  try{candidates=await call('music_lookup',{query:searchText.trim()});lookupNote=candidates.length?'Choose a result or edit the details yourself.':'No matches found. You can enter the details yourself.';}
+  catch(e){lookupNote=reason(e);}
+  finally{searchBusy=false;if(editor?.open)renderEditor();}
+}
+async function addToQueue(){
+  if(locked()||picked?.reading||picked?.too_long||picked?.failed)return;
+  busy=true;editorProblem='';renderEditor();
+  const args={slot:targetSlot,title:fields.title.trim(),artist:fields.artist.trim(),album:fields.album.trim()};
+  try{
+    const result=await call(editing!==null?'music_stage_details':'music_stage_file',editing!==null?args:{...args,path:picked.path});
+    if(result?.slots)status=result;else await load();
+    editor.close();notice=null;problem=null;
+  }catch(e){editorProblem=reason(e);}
+  finally{busy=false;if(editor?.open)renderEditor();draw();schedulePoll();}
 }
 
-async function runSearch() {
-  const q = searchText.trim();
-  if (!q) return;
-  lookupNote = "Searching…";
-  draw();
-  try {
-    candidates = await call("music_lookup", { query: q });
-    lookupNote = candidates.length ? "Pick the right one, or edit the fields." : "Nothing found online. Type the details.";
-  } catch (e) {
-    lookupNote = `The search did not work: ${reason(e)}`;
-  }
-  draw();
+function discNow(){
+  const toggle=el('input',{type:'checkbox',role:'switch','aria-label':'Custom soundtrack',checked:!!status?.enabled,disabled:locked()||!status?.image_ok,onchange:ev=>act('music_set_enabled',{on:ev.target.checked})});
+  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
+  return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Original songs play. Your custom songs are kept.'}))),buttons);
 }
-
-async function addToQueue() {
-  const n = targetSlot || firstFreeSlot();
-  const title = fields.title.trim();
-  const artist = fields.artist.trim();
-  const album = fields.album.trim();
-  if (picked && picked.path && !picked.reading) {
-    const path = picked.path;
-    clearFlow();
-    await act("music_stage_file", { path, slot: n, title, artist, album });
-  } else if (editing !== null) {
-    clearFlow();
-    await act("music_stage_details", { slot: n, title, artist, album });
+function statusLine(){
+  if(working()){
+    const p=status.progress||{},pct=p.total?Math.min(100,Math.max(0,Math.round((p.done||0)/p.total*100))):null;
+    const label=status.phase==='encoding'?'Preparing your song':'Applying your soundtrack';
+    return el('div',{class:'music-progress',role:'status'},el('div',{},el('strong',{text:label}),el('span',{text:pct===null?'Please wait…':`${pct}%`})),el('progress',{max:'100',value:pct,'aria-label':label}),el('p',{class:'note',text:status.phase==='encoding'?'Your song will appear in the list when it is ready.':'Keep the launcher open until this finishes.'}));
   }
-}
-
-// ---------------------------------------------------------------------------
-// Sections
-// ---------------------------------------------------------------------------
-
-function discNow() {
-  const st = status;
-  const sec = el("section", { class: "mz-now" });
-  if (!st) {
-    sec.append(el("h2", { text: "Your disc" }), el("p", { class: "note", text: "The launcher has not read the disc yet." }));
-    return sec;
-  }
-  const custom = slots().filter((s) => s.source !== "original").length;
-  const baseName = st.base && st.base.kind === "package" ? st.base.name : null;
-  let sentence;
-  if (!st.image_ok) sentence = st.image_note || "There is no game image yet.";
-  else if (!st.enabled) sentence = "Your disc plays the original soundtrack. Your own songs are kept for when you turn the custom soundtrack back on.";
-  else if (custom === 0) sentence = "Your disc plays the original soundtrack.";
-  else sentence = `Your disc plays ${custom} custom song${custom === 1 ? "" : "s"}${baseName ? ` on top of the ${baseName}` : ""}.`;
-  sec.append(el("span", { class: "store-kicker", text: "Your disc right now" }), el("h2", { text: sentence }));
-  if (st.image_ok) {
-    sec.append(el("div", { class: "mz-row" },
-      el("button", { type: "button", text: st.enabled ? "Turn the custom soundtrack off" : "Turn the custom soundtrack on", disabled: locked(), onclick: () => act("music_set_enabled", { on: !st.enabled }) }),
-      el("button", { type: "button", text: "Import a pack", disabled: locked(), onclick: packDialog }),
-      el("button", { type: "button", text: "Share a pack", disabled: locked(), onclick: shareDialog }),
-      el("button", { type: "button", text: "Refresh", disabled: busy, onclick: refresh }),
-    ));
-  }
-  return sec;
-}
-
-function statusLine() {
-  const st = status;
-  if (!st) return null;
-  if (working()) {
-    const p = st.progress || {};
-    const pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
-    const text = st.phase === "encoding" ? `${p.label || "Encoding"}: segment ${Math.min((p.done || 0) + 1, p.total || 40)} of ${p.total || 40}` : `${p.label || "Building your game disc"}: ${pct}%. This rebuilds the disc once, about half a minute.`;
-    return el("p", { class: "partial mz-progress", role: "status", text });
-  }
-  if (st.phase === "done" || st.phase === "problem") {
-    const line = el("aside", { class: st.phase === "done" ? "mz-done" : "refusal mz-done", role: "status" });
-    line.append(el("span", { text: st.note || (st.phase === "done" ? "Done." : "Something went wrong.") }), el("button", { type: "button", text: "Got it", onclick: () => act("music_dismiss") }));
-    return line;
-  }
+  if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
   return null;
 }
-
-function stepHeader(n, title, done) {
-  return el("div", { class: "mz-step-head" }, el("span", { class: `mz-step-n${done ? " done" : ""}`, text: String(n) }), el("h3", { text: title }));
+function queue(){
+  const count=slots().filter(s=>s.pending).length;
+  if(!count)return null;
+  return el('section',{class:'music-apply', 'aria-label':'Pending changes'},el('div',{},el('strong',{text:`${count} pending change${count===1?'':'s'}`}),el('p',{text:'Apply once when you are finished editing.'})),el('div',{class:'mz-row'},el('button',{type:'button',text:'Discard changes',disabled:locked(),onclick:()=>act('music_unstage',{slot:null})}),el('button',{type:'button',class:'primary',text:'Apply changes',disabled:locked()||!status?.image_ok,onclick:()=>act('music_apply',{confirm:true})})));
 }
-
-function stepChoose() {
-  const sec = el("section", { class: "mz-step", id: "step-choose" });
-  const hasFile = !!(picked && picked.path);
-  sec.append(stepHeader(1, editing !== null ? `Changing the details of slot ${editing}` : "Choose a song file", hasFile || editing !== null));
-  if (editing !== null) {
-    sec.append(el("p", { class: "note", text: `No new file. Fix the title, artist, or album below, then add it to the queue.` }), el("div", { class: "mz-row" }, el("button", { type: "button", text: "Cancel", onclick: () => { clearFlow(); draw(); } })));
-    return sec;
+function discList(){
+  const list=slots();
+  const sec=el('section',{class:'mz-disc',id:'disc'});
+  const custom=list.filter(s=>s.source!=='original').length;
+  sec.append(el('div',{class:'music-list-heading'},el('h2',{text:'Soundtrack'}),el('span',{text:`${list.length} songs${custom?` · ${custom} custom`:''}`})));
+  if(!list.length){sec.append(el('div',{class:'music-empty'},el('h3',{text:status?.image_ok?'No songs found':'Set up your game first'}),el('p',{class:'note',text:status?.image_note||problem||'Your soundtrack will appear here once your game is ready.'}),el('button',{type:'button',text:'Try again',disabled:busy,onclick:refresh})));return sec;}
+  const table=el('table',{class:'mz-table','aria-label':'Soundtrack songs'});
+  table.append(el('thead',{},el('tr',{},el('th',{scope:'col',class:'mz-col-n',text:'#'}),el('th',{scope:'col',text:'Song'}),el('th',{scope:'col',class:'mz-col-time',text:'Length'}),el('th',{scope:'col',class:'mz-col-actions',text:'Actions'}))));
+  const body=el('tbody');
+  for(const song of list){
+    const pending=song.pending,original=pending?pending.kind==='original':song.source==='original';
+    const title=original?slotTitle({...song,title:'',source:'original'}):(pending?.title||song.title||'Untitled');
+    const artist=original?'Original soundtrack':(pending?.artist??song.artist)||'Unknown artist';
+    const actions=el('td',{class:'mz-col-actions'},el('button',{type:'button',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
+    if(pending)actions.append(el('button',{type:'button',class:'music-quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
+    else if(song.source!=='original')actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
+    const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),original?null:el('small',{text:artist}));
+    if(pending)name.append(el('span',{class:'music-pending',text:original?'Restore original':'Pending'}));
+    body.append(el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)},el('td',{class:'mz-col-n',text:String(song.slot).padStart(2,'0')}),name,el('td',{class:'mz-col-time',text:pending||original?'':mmss(song.duration_ms)||''}),actions));
   }
-  if (!hasFile) {
-    sec.append(
-      el("p", { class: "note", text: "MP3, M4A, FLAC, OGG, WAV, or AIFF. Songs up to about 6:20 fit a slot." }),
-      el("div", { class: "mz-row" }, el("button", { type: "button", class: "primary mz-big", text: "Choose a file", disabled: locked() || !(status && status.image_ok), onclick: chooseFile })),
-    );
-  } else {
-    sec.append(
-      el("p", { class: "mz-file", text: picked.path.split(/[\\/]/).pop() + (picked.reading ? " (reading…)" : mmss(picked.duration_ms) ? ` · ${mmss(picked.duration_ms)}` : "") }),
-      el("div", { class: "mz-row" }, el("button", { type: "button", text: "Choose a different file", disabled: locked(), onclick: chooseFile }), el("button", { type: "button", text: "Cancel", onclick: () => { clearFlow(); draw(); } })),
-    );
-    if (picked.too_long) sec.append(el("p", { class: "refusal", text: lookupNote }));
-  }
-  return sec;
+  table.append(body);sec.append(table);return sec;
 }
-
-function stepDetails() {
-  const active = (picked && picked.path && !picked.reading) || editing !== null;
-  const sec = el("section", { class: `mz-step${active ? "" : " mz-off"}`, id: "step-details", "aria-disabled": String(!active) });
-  sec.append(stepHeader(2, "Check the details", false));
-  if (!active) {
-    sec.append(el("p", { class: "note", text: "The title, artist, and album show on the in-game banner. They fill in from the file, or from an online lookup by its name." }));
-    return sec;
-  }
-  if (picked && lookupNote && !picked.too_long) sec.append(el("p", { class: "note", text: lookupNote }));
-  const title = el("input", { type: "text", maxlength: "49", value: fields.title, placeholder: "Title", oninput: (ev) => { fields.title = ev.target.value; } });
-  const artist = el("input", { type: "text", maxlength: "49", value: fields.artist, placeholder: "Artist", oninput: (ev) => { fields.artist = ev.target.value; } });
-  const album = el("input", { type: "text", maxlength: "49", value: fields.album, placeholder: "Album", oninput: (ev) => { fields.album = ev.target.value; } });
-  sec.append(el("div", { class: "mz-fields" },
-    el("label", { class: "mz-field" }, el("span", { text: "Title" }), title),
-    el("label", { class: "mz-field" }, el("span", { text: "Artist" }), artist),
-    el("label", { class: "mz-field" }, el("span", { text: "Album" }), album),
-  ));
-  const search = el("input", { type: "search", value: searchText, placeholder: "Not right? Search by song or artist", oninput: (ev) => { searchText = ev.target.value; }, onkeydown: (ev) => { if (ev.key === "Enter") { ev.preventDefault(); runSearch(); } } });
-  sec.append(el("div", { class: "mz-row" }, search, el("button", { type: "button", text: "Search", onclick: runSearch })));
-  if (editing !== null && lookupNote) sec.append(el("p", { class: "note", text: lookupNote }));
-  if (candidates.length) {
-    const list = el("ul", { class: "mz-candidates" });
-    for (const c of candidates) {
-      list.append(el("li", {}, el("button", { type: "button", class: "mz-candidate", text: [c.title, c.artist, c.album].filter(Boolean).join(" · ") + (c.source ? `  (${c.source})` : ""), onclick: () => { fields = { title: c.title || "", artist: c.artist || "", album: c.album || "" }; draw(); } })));
-    }
-    sec.append(list);
-  }
-  sec.append(el("p", { class: "note mz-privacy", text: "Searching sends the song name to iTunes or MusicBrainz. Nothing else leaves this computer." }));
-  return sec;
-}
-
-function stepSlot() {
-  const active = (picked && picked.path && !picked.reading) || editing !== null;
-  const sec = el("section", { class: `mz-step${active ? "" : " mz-off"}`, id: "step-slot", "aria-disabled": String(!active) });
-  sec.append(stepHeader(3, editing !== null ? `Slot ${editing}` : "Choose where it goes", false));
-  if (!active) {
-    sec.append(el("p", { class: "note", text: "The disc has 21 song slots. The new song replaces the one in the slot you pick; the first untouched slot is picked for you." }));
-    return sec;
-  }
-  if (editing !== null) {
-    sec.append(el("p", { class: "note", text: `The details apply to slot ${editing}.` }));
-  } else {
-    const list = el("div", { class: "mz-slots", role: "radiogroup", "aria-label": "Slot" });
-    for (const s of slots()) {
-      const id = `slot-${s.slot}`;
-      const radio = el("input", { type: "radio", name: "slot", id, value: String(s.slot), checked: s.slot === targetSlot, onchange: () => { targetSlot = s.slot; draw(); } });
-      const what = s.pending ? `staged: ${pendingWhat(s.pending)}` : slotLine(s);
-      list.append(el("label", { class: `mz-slot${s.slot === targetSlot ? " selected" : ""}`, for: id }, radio, el("span", { class: "mz-slot-n", text: String(s.slot) }), el("span", { class: "mz-slot-what", text: what }), s.source !== "original" || s.pending ? el("span", { class: "mz-slot-tag", text: s.pending ? "staged" : SOURCE_LABEL[s.source] || "" }) : null));
-    }
-    sec.append(list);
-  }
-  const n = targetSlot || firstFreeSlot();
-  const current = slotAt(n);
-  const label = editing !== null ? `Add the new details to the queue` : `Add to the queue: slot ${n}${current && current.source !== "original" ? ` (replaces ${slotTitle(current)})` : ""}`;
-  sec.append(el("div", { class: "mz-row mz-end" }, el("button", { type: "button", class: "primary mz-big", text: label, disabled: locked() || (picked && (picked.too_long || picked.reading)), onclick: addToQueue })));
-  return sec;
-}
-
-function queue() {
-  const st = status;
-  const sec = el("section", { class: "mz-queue", id: "queue" });
-  const staged = slots().filter((s) => s.pending);
-  sec.append(el("span", { class: "store-kicker", text: "Ready to apply" }));
-  if (!staged.length) {
-    sec.append(el("h2", { text: "Nothing queued" }), el("p", { class: "note", text: "Add a song above, or use Change or Reset on a song below. Changes are written to the disc when you apply." }));
-    return sec;
-  }
-  sec.append(el("h2", { text: `${staged.length} change${staged.length === 1 ? "" : "s"} ready` }));
-  const list = el("ul", { class: "mz-queue-list" });
-  for (const s of staged) {
-    list.append(el("li", {}, el("span", { text: `Slot ${s.slot}: ${pendingWhat(s.pending)}` }), el("button", { type: "button", text: "Remove", "aria-label": `Remove the change for slot ${s.slot}`, disabled: locked(), onclick: () => act("music_unstage", { slot: s.slot }) })));
-  }
-  sec.append(list);
-  sec.append(el("p", { class: "note", text: "Applying rebuilds your game disc once, about half a minute. Close the game first." }));
-  sec.append(el("div", { class: "mz-row mz-end" },
-    el("button", { type: "button", text: "Discard all", disabled: locked(), onclick: () => act("music_unstage", { slot: null }) }),
-    el("button", { type: "button", class: "primary mz-big", text: "Apply to the game", disabled: locked() || !(st && st.image_ok), onclick: () => act("music_apply", { confirm: true }) }),
-  ));
-  return sec;
-}
-
-function discList() {
-  const sec = el("section", { class: "mz-disc", id: "disc" });
-  sec.append(el("span", { class: "store-kicker", text: "Songs on your disc" }), el("h2", { text: "What plays today" }));
-  const list = slots();
-  if (!list.length) {
-    sec.append(el("p", { class: "note", text: "The launcher has not read the disc yet." }));
-    return sec;
-  }
-  const table = el("table", { class: "mz-table" });
-  const body = el("tbody");
-  for (const s of list) {
-    const row = el("tr", { class: `mz-track${s.pending ? " staged" : ""}`, "data-slot": String(s.slot) });
-    row.append(
-      el("td", { class: "mz-col-n", text: String(s.slot) }),
-      el("td", { class: "mz-col-what" }, el("span", { text: slotLine(s) }), s.pending ? el("small", { class: "mz-staged", text: `Staged: ${pendingWhat(s.pending)}` }) : null),
-      el("td", { class: "mz-col-tag", text: s.source === "original" ? "" : SOURCE_LABEL[s.source] || "" }),
-      el("td", { class: "mz-col-actions" },
-        el("button", { type: "button", text: "Change", "aria-label": `Change the details of slot ${s.slot}`, disabled: locked(), onclick: () => editDetails(s.slot) }),
-        s.source !== "original" && !s.pending ? el("button", { type: "button", text: "Reset", "aria-label": `Reset slot ${s.slot} to the original song`, disabled: locked(), onclick: () => act("music_stage_stock", { slot: s.slot }) }) : null,
-        s.pending ? el("button", { type: "button", text: "Undo", "aria-label": `Undo the change for slot ${s.slot}`, disabled: locked(), onclick: () => act("music_unstage", { slot: s.slot }) }) : null,
-      ),
-    );
-    body.append(row);
-  }
-  table.append(body);
-  sec.append(table);
-  return sec;
-}
-
-function draw() {
-  const screen = document.getElementById("screen");
-  const parts = [];
-  if (problem) parts.push(el("p", { class: "refusal", role: "alert", text: problem }));
-  if (notice) parts.push(el("p", { class: "partial", role: "status", text: notice }));
-  const line = statusLine();
-  if (line) parts.push(line);
-  parts.push(discNow());
-  const add = el("section", { class: "mz-add" });
-  add.append(el("span", { class: "store-kicker", text: "Add a song" }), stepChoose(), stepDetails(), stepSlot());
-  parts.push(add);
-  parts.push(queue());
-  parts.push(discList());
-  parts.push(el("p", { class: "note store-footnote", text: "Songs are written into your offline game disc when you apply. The online game always keeps the original soundtrack. Soundtrack mods such as the NFL Street 1 soundtrack live on the Mods page." }));
+function draw(){
+  const screen=document.getElementById('screen'),parts=[discNow()];
+  if(problem)parts.push(el('p',{class:'music-error',role:'alert',text:problem}));
+  if(notice)parts.push(el('p',{class:'note',role:'status',text:notice}));
+  if(status&&!status.image_ok&&slots().length)parts.push(el('p',{class:'music-error',role:'status',text:status.image_note||'Set up your game before editing its soundtrack.'}));
+  const progress=statusLine();if(progress)parts.push(progress);
+  parts.push(discList());const bar=queue();if(bar)parts.push(bar);
+  parts.push(el('p',{class:'music-footnote',text:'Custom music applies to offline play. Online play uses the original soundtrack.'}));
+  const focus=document.activeElement?.getAttribute?.('aria-label');
   screen.replaceChildren(...parts);
+  if(focus&&!editor?.open)Array.from(screen.querySelectorAll('[aria-label]')).find(n=>n.getAttribute('aria-label')===focus)?.focus({preventScroll:true});
   return parts;
 }
 
@@ -506,7 +376,7 @@ async function packDialog() {
     rows,
     el("div", { class: "store-dialog-actions" },
       el("button", { type: "button", text: "Cancel", onclick: () => dialog.close() }),
-      el("button", { type: "button", class: "primary", text: "Add these songs to the queue", disabled: locked(), onclick: async () => { dialog.close(); await act("music_stage_pack", { path }); } }),
+      el("button", { type: "button", class: "primary", text: "Import songs", disabled: locked(), onclick: async () => { dialog.close(); await act("music_stage_pack", { path }); } }),
     ),
   );
   dialog.append(body);
@@ -529,7 +399,7 @@ function shareDialog() {
   body.append(
     el("span", { class: "store-kicker", text: "Share" }),
     el("h2", { text: "Save a soundtrack pack" }),
-    el("p", { text: "A pack carries the songs as the game plays them, so a friend can apply it without any converting. Songs still in the queue are not included until you apply." }),
+    el("p", { text: "Choose songs to share. Apply any pending changes before exporting." }),
     list,
     el("label", { class: "mz-field" }, el("span", { text: "Name" }), name),
     el("label", { class: "mz-field" }, el("span", { text: "Author" }), author),
@@ -538,7 +408,7 @@ function shareDialog() {
       el("button", { type: "button", text: "Cancel", onclick: () => dialog.close() }),
       el("button", { type: "button", class: "primary", text: "Save pack", onclick: async () => {
         const chosen = boxes.filter(([, b]) => b.checked).map(([n]) => n);
-        if (!chosen.length) { notice = "Pick at least one slot to share."; draw(); return; }
+        if (!chosen.length) { let warning=body.querySelector("[role=alert]");if(!warning){warning=el("p",{role:"alert",class:"music-error"});body.append(warning);}warning.textContent="Choose at least one song to export."; return; }
         const path = await pickPath("save_pack");
         if (!path) return;
         dialog.close();
