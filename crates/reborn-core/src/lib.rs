@@ -38,6 +38,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod backend;
 pub mod content;
 pub mod controller;
 pub mod controller_profiles;
