@@ -98,12 +98,23 @@ pub fn dolphin_capture_dir(user_dir: &Path) -> PathBuf {
 }
 
 /// Every folder a capture can be in, with the lowercase mode it implies (None for legacy).
+///
+/// The mode folders are read from [`CAPTURE_FOLDERS`] rather than typed out again here, so
+/// there is exactly one place that names them and the two cannot drift apart.
 pub fn dolphin_capture_dirs(user_dir: &Path) -> Vec<(PathBuf, Option<&'static str>)> {
-    vec![
-        (user_dir.join(DOLPHIN_CAPTURE_DIR).join("Online"), Some("online")),
-        (user_dir.join(DOLPHIN_CAPTURE_DIR).join("Offline"), Some("offline")),
-        (user_dir.join(LEGACY_CAPTURE_DIR), None),
-    ]
+    let mut dirs: Vec<(PathBuf, Option<&'static str>)> = CAPTURE_FOLDERS
+        .iter()
+        .map(|name| {
+            let mode: &'static str = match *name {
+                "Online" => "online",
+                "Offline" => "offline",
+                other => unreachable!("CAPTURE_FOLDERS grew a name with no lowercase mode: {other}"),
+            };
+            (user_dir.join(DOLPHIN_CAPTURE_DIR).join(name), Some(mode))
+        })
+        .collect();
+    dirs.push((user_dir.join(LEGACY_CAPTURE_DIR), None));
+    dirs
 }
 
 // ---------------------------------------------------------------------------
@@ -1911,6 +1922,7 @@ impl StatsQueue {
 
             let outcome = submitter.submit(&entry, &bytes);
             let now = self.clock.now_ms();
+            let was_last_attempt_ms = entry.last_attempt_ms;
             entry.last_attempt_ms = Some(now);
 
             match outcome {
@@ -1965,7 +1977,11 @@ impl StatsQueue {
                 }
                 SubmitOutcome::Unauthorized => {
                     // Not a failed attempt: nothing about the capture was wrong.
-                    entry.last_attempt_ms = None;
+                    // Restoring the prior last_attempt_ms rather than clearing it matters
+                    // for an entry that already came back Deferred once: clearing it would
+                    // leave attempts > 0 with no last_attempt_ms, a combination the rest of
+                    // this module never otherwise produces.
+                    entry.last_attempt_ms = was_last_attempt_ms;
                     entry.last_error = Some("waiting for sign-in".to_string());
                     self.write_entry(&entry)?;
                     report.waiting_for_sign_in = true;
@@ -3547,6 +3563,47 @@ mod tests {
             .unwrap()
             .iter()
             .all(|e| e.state == EntryState::Queued && e.attempts == 0));
+    }
+
+    /// An entry that already came back `Deferred` once carries a real
+    /// `last_attempt_ms` and `attempts > 0`. An `Unauthorized` reply after
+    /// that must restore that timestamp, not clear it: clearing it would
+    /// leave `attempts > 0` with no `last_attempt_ms`, a combination the
+    /// rest of this module never otherwise produces.
+    #[test]
+    fn an_unauthorized_reply_restores_the_previous_attempt_time_rather_than_clearing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap();
+
+        let offline = Recorder::new(SubmitOutcome::Deferred {
+            reason: "no connection".into(),
+        });
+        q.submit_pending(&offline, 5).unwrap();
+        let after_deferred = q.entries().unwrap()[0].clone();
+        assert_eq!(after_deferred.attempts, 1);
+        let original_last_attempt_ms = after_deferred
+            .last_attempt_ms
+            .expect("a deferred attempt records when it was tried");
+
+        // A later pass, so a bug that stamps the new time instead of restoring
+        // the old one is caught rather than hidden by the clock not moving.
+        let later = queue(dir.path(), 5_000);
+        let unauth = Recorder::new(SubmitOutcome::Unauthorized);
+        let r = later.submit_pending(&unauth, 5).unwrap();
+        assert!(r.waiting_for_sign_in);
+
+        let after_unauthorized = &later.entries().unwrap()[0];
+        assert_eq!(
+            after_unauthorized.attempts, 1,
+            "unauthorized must not touch the attempt count"
+        );
+        assert_eq!(
+            after_unauthorized.last_attempt_ms,
+            Some(original_last_attempt_ms),
+            "the real attempt time must be restored, not cleared or replaced"
+        );
     }
 
     /// Some games are stored and finished but do not count as a win or a
