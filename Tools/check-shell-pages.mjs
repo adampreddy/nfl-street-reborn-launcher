@@ -98,6 +98,47 @@ async function loadPage(file, answers, mode) {
   return { calls, screen: byId["screen"] };
 }
 
+// A loader that hands the page its own `invoke` and a clock it does not own,
+// so a timer-driven flow can be stepped tick by tick instead of waited on.
+async function loadPageDriven(file, invoke) {
+  const timers = [];
+  const realInterval = global.setInterval;
+  const realClear = global.clearInterval;
+  global.setInterval = (fn) => timers.push(fn);
+  global.clearInterval = (id) => {
+    if (id) timers[id - 1] = null;
+  };
+  global.window = { addEventListener() {}, __TAURI__: { core: { invoke } } };
+  byId["screen"] = fakeEl("div#screen");
+  const src = readFileSync(file, "utf8").replace(IMPORT_LINE, "");
+  const mod = SHELL + "\n" + src + `\n// ${file} driven ${Math.random()}`;
+  await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
+  await tick(); await tick(); await tick();
+  return {
+    screen: () => byId["screen"],
+    // Fired, not awaited. A real interval does not wait for its own callback,
+    // and the whole point of this check is what happens while one is still out.
+    async step() {
+      for (const fn of timers) if (fn) fn();
+      await tick(); await tick(); await tick();
+    },
+    done() {
+      global.setInterval = realInterval;
+      global.clearInterval = realClear;
+    },
+  };
+}
+
+function findByText(node, wanted) {
+  if (!node || typeof node !== "object") return null;
+  if ((node.textContent || "") === wanted) return node;
+  for (const child of node.children || []) {
+    const hit = findByText(child, wanted);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 const PAGES = [
   ["crates/reborn-ui/ui/home.js", "Play"],
   ["crates/reborn-ui/ui/controls.js", "Controls"],
@@ -163,6 +204,63 @@ for (const [file, name] of PAGES) {
  const answers={...FULL,dolphin_preferences:{...FULL.dolphin_preferences,editable:false,readonly_reason:message}};
  const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",answers,"full");
  check("Settings explains why editing is unavailable",text(screen).includes(message));
+}
+
+// The sign-in poll, driven tick by tick.
+//
+// `identity_sign_in_poll` does not answer until the sign-in is saved AND the
+// whole backlog has been sent, which is exactly the slow case this feature
+// exists for. The interval had an async body and no in-flight guard, so a
+// later tick fired with a device code the server had already consumed, and the
+// failure it got overwrote the screen. Success never cleared that text, so the
+// card could read "Signed in as Adam" with "The sign-in code expired. Try
+// again." underneath it.
+{
+  let pollCalls = 0;
+  let signedIn = false;
+  let finishFirstPoll;
+  const invoke = async (cmd) => {
+    if (cmd === "identity_status") {
+      return signedIn
+        ? { signed_in: true, display_name: "Adam", player_id: "p1", show_offline: false }
+        : { signed_in: false, display_name: null, player_id: null, show_offline: null };
+    }
+    if (cmd === "identity_sign_in_start") {
+      return { device_code: "dc", user_code: "ABCD-EFGH", verify_url: "https://b/link", interval: 1, opened: true };
+    }
+    if (cmd === "identity_sign_in_poll") {
+      pollCalls += 1;
+      // The first one is the slow one: it is still out when the next tick fires.
+      if (pollCalls === 1) {
+        return new Promise((resolve) => {
+          finishFirstPoll = () => { signedIn = true; resolve({ state: "done", display_name: "Adam" }); };
+        });
+      }
+      // Anything after it is asking about a code the server has consumed.
+      throw new Error("The sign-in code expired. Try again.");
+    }
+    if (cmd in FULL) return FULL[cmd];
+    throw new Error(`no fake answer for ${cmd}`);
+  };
+
+  const page = await loadPageDriven("crates/reborn-ui/ui/home.js", invoke);
+  const button = findByText(page.screen(), "Sign in with Discord");
+  check("Play offers a sign-in button when signed out", !!button);
+  if (button) {
+    await button.listeners.click[0]();
+    await tick(); await tick();
+    await page.step();
+    await page.step();
+    check("Sign-in polls never overlap", pollCalls === 1, `${pollCalls} polls went out while one was still in flight`);
+    if (finishFirstPoll) {
+      finishFirstPoll();
+      await tick(); await tick(); await tick(); await tick();
+    }
+    const t = text(page.screen());
+    check("A finished sign-in is shown", t.includes("Signed in as Adam"), t.slice(0, 300));
+    check("A finished sign-in leaves no failure text beside it", !t.includes("expired"), t.slice(0, 300));
+  }
+  page.done();
 }
 
 console.log(fails === 0 ? "\nPASS: every shell page survives every answer" : `\nFAIL: ${fails}`);

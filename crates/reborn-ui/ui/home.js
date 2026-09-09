@@ -11,7 +11,7 @@ let result = null;
 let problem = null;
 let externalSession = false;
 let leagueMatch = false;
-const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null };
+const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null, polling: false };
 
 // Shown when `identity_status` fails, whatever the reason. The same sentence
 // the core uses for the same situation, so a player never sees two wordings
@@ -99,11 +99,22 @@ async function startSignIn() {
     if (!s.opened) signIn.message = `Open ${s.verify_url} in a browser.`;
     draw();
     signIn.timer = setInterval(async () => {
+      // One poll at a time. The command does not answer until the sign-in is
+      // saved, and a poll that is still out is the normal case rather than a
+      // rare one. A second poll fired while the first is in flight asks about
+      // a device code the server has already consumed, so it gets a refusal,
+      // and that refusal used to land on the screen next to the sign-in that
+      // was about to succeed.
+      if (signIn.polling || !signIn.active) return;
+      signIn.polling = true;
       try {
         const r = await call("identity_sign_in_poll", { deviceCode: signIn.deviceCode });
+        // stopSignIn with no message clears the message, so an earlier
+        // failure cannot sit underneath "Signed in as ...".
         if (r.state === "done") { stopSignIn(); await refresh(); }
         else if (r.state === "expired") { stopSignIn("The sign-in code expired. Try again."); draw(); }
       } catch (e) { stopSignIn(reason(e)); draw(); }
+      finally { signIn.polling = false; }
     }, Math.max(2, s.interval || 3) * 1000);
   } catch (e) { signIn.message = reason(e); draw(); }
 }
@@ -111,7 +122,10 @@ async function startSignIn() {
 function stopSignIn(message) {
   if (signIn.timer) clearInterval(signIn.timer);
   signIn.timer = null; signIn.active = false; signIn.deviceCode = null; signIn.userCode = null;
-  if (message) signIn.message = message;
+  // Always assigned, never only when there is something to say. Leaving the
+  // old text in place is how a successful sign-in ended up displayed under a
+  // stale "The sign-in code expired." from a poll that raced it.
+  signIn.message = message || null;
 }
 
 function identityCard() {

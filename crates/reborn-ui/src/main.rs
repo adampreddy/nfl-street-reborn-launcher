@@ -3760,6 +3760,32 @@ fn backend_origin(p: &Platform) -> Result<String, String> {
     reborn_core::identity::origin(p).map_err(|e| e.to_string())
 }
 
+/// Send whatever is queued, without making anybody wait for it.
+///
+/// Its own thread on purpose. A send is one network round trip per queued
+/// game, each with the client's full timeout, so a backlog is minutes of
+/// waiting. Nothing about it belongs on the answer to a command a page is
+/// polling.
+///
+/// Nothing here is reported. The player already knows they signed in, and a
+/// send that could not happen leaves every result exactly where it was, to go
+/// out at the end of the next game or when they press Send results now.
+fn send_backlog_in_background() {
+    std::thread::spawn(|| {
+        let p = Platform::detect();
+        let Ok(queue) = StatsQueue::open(&p) else { return };
+        // The lock is taken for the session history and given straight back.
+        // Holding it across the send is what made Play refuse to start with
+        // "Another launcher is already running", about this launcher's own
+        // background work.
+        let history = match Supervisor::acquire(&p) {
+            Ok(Startup::Owner(sup)) => sup.history().unwrap_or_default(),
+            _ => return,
+        };
+        let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
+    });
+}
+
 #[tauri::command]
 async fn identity_status() -> Result<IdentityView, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -3795,13 +3821,15 @@ async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, St
             reborn_core::identity::Poll::Done { token, player } => {
                 let name = player.display_name.clone();
                 reborn_core::identity::save_signed_in(&p, &token, player, now_ms()).map_err(|e| e.to_string())?;
-                // The backlog goes out the moment a token exists.
-                if let Ok(Startup::Owner(sup)) = Supervisor::acquire(&p) {
-                    if let Ok(queue) = StatsQueue::open(&p) {
-                        let history = sup.history().unwrap_or_default();
-                        let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
-                    }
-                }
+                // The backlog goes out the moment a token exists, on its own
+                // thread. It used to go out here, so this command did not
+                // answer until every queued game had been posted: a network
+                // round trip each, with a two minute timeout each. The window
+                // polls on an interval, so the ticks that fired during that
+                // wait asked about a device code the server had already
+                // consumed, and the refusals they got landed on the screen
+                // beside the sign-in that had just succeeded.
+                send_backlog_in_background();
                 Ok(SignInPollView { state: "done", display_name: Some(name) })
             }
         }
@@ -5229,6 +5257,28 @@ mod tests {
                  session from starting in the middle of it"
             );
         }
+    }
+
+    /// Signing in answers the window before the backlog goes out.
+    ///
+    /// `identity_sign_in_poll` used to save the sign-in and then send the whole
+    /// queue before it returned: one network round trip per game, each with the
+    /// client's full two minute timeout. The window polls this command on an
+    /// interval, so every tick that fired during that wait asked about a device
+    /// code the server had already consumed, and the refusals landed on the
+    /// screen beside the sign-in that had just succeeded.
+    #[test]
+    fn signing_in_answers_the_window_before_the_backlog_is_sent() {
+        let body = command_body(include_str!("main.rs"), "async fn identity_sign_in_poll");
+        assert!(
+            !body.contains("auto_submit"),
+            "the sign-in poll still sends the backlog before it answers, so the window \
+             keeps polling with a code the server has already taken"
+        );
+        assert!(
+            body.contains("send_backlog_in_background"),
+            "signing in no longer starts the backlog send at all"
+        );
     }
 
     #[test]
