@@ -10,6 +10,8 @@ let playing = false;
 let result = null;
 let problem = null;
 let externalSession = false;
+let leagueMatch = false;
+const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null };
 
 const PRESETS = [
   ["performance", "Performance", "1080p · 3×. ReShade disabled."],
@@ -37,6 +39,7 @@ async function load() {
     home: call("home_state", { runtime: get("runtime"), legacyRoot: get("legacyRoot") }),
     progress: call("onboarding_progress", { legacyRoot: get("legacyRoot") }),
     paths: call("paths"),
+    identity: call("identity_status"),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -65,6 +68,7 @@ async function play() {
       // is what Play has always meant. Turning mods off lives on the mods page
       // and in recovery, not here.
       modsDisabled: false,
+      leagueMatch,
     });
     if (result && result.started === false) { problem = result.message || "The game could not start."; result = null; }
   } catch (e) {
@@ -72,12 +76,57 @@ async function play() {
   }
   playing = false;
   busy = false;
+  leagueMatch = false;
   await load();
   draw();
 }
 
 function ok(x) {
   return x && !x.error;
+}
+
+async function startSignIn() {
+  if (busy || signIn.active) return;
+  signIn.message = null;
+  try {
+    const s = await call("identity_sign_in_start");
+    signIn.active = true; signIn.deviceCode = s.device_code; signIn.userCode = s.user_code;
+    if (!s.opened) signIn.message = `Open ${s.verify_url} in a browser.`;
+    draw();
+    signIn.timer = setInterval(async () => {
+      try {
+        const r = await call("identity_sign_in_poll", { deviceCode: signIn.deviceCode });
+        if (r.state === "done") { stopSignIn(); await refresh(); }
+        else if (r.state === "expired") { stopSignIn("The sign-in code expired. Try again."); draw(); }
+      } catch (e) { stopSignIn(reason(e)); draw(); }
+    }, Math.max(2, s.interval || 3) * 1000);
+  } catch (e) { signIn.message = reason(e); draw(); }
+}
+
+function stopSignIn(message) {
+  if (signIn.timer) clearInterval(signIn.timer);
+  signIn.timer = null; signIn.active = false; signIn.deviceCode = null; signIn.userCode = null;
+  if (message) signIn.message = message;
+}
+
+function identityCard() {
+  const id = state.identity;
+  const card = el("section", { class: "block play-identity", "aria-label": "Account" });
+  if (signIn.active) {
+    card.append(el("p", { text: `Waiting for Discord. Your code is ${signIn.userCode}.` }));
+    card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
+  } else if (ok(id) && id.signed_in) {
+    card.append(el("p", { text: `Signed in as ${id.display_name}` }));
+    const box = el("input", { type: "checkbox", id: "league-match", onchange: (e) => { leagueMatch = !!e.target.checked; } });
+    box.checked = leagueMatch;
+    card.append(el("label", { for: "league-match", class: "name" }, box, el("span", { text: " This is a league match" })));
+    if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
+  } else {
+    card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : (id && id.error) || "Sign-in state could not be read." }));
+    card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
+  }
+  if (signIn.message) card.append(el("p", { class: "note", text: signIn.message }));
+  return card;
 }
 
 async function openDolphin() {
@@ -228,6 +277,7 @@ function draw() {
   bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
     el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
   controls.append(bar);
+  controls.append(identityCard());
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });
   for (const [href, title, value] of [

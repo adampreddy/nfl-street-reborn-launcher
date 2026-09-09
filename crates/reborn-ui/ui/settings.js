@@ -27,7 +27,7 @@ async function load() {
     installation: call("setup_install_info"),
     paths: call("paths"),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
-    token: call("credential_stored", { account: "nsr.league.ingest" }),
+    identity: call("identity_status"),
     policy: call("update_policy"),
     queue: call("stats_queue"),
     content: call("content_status"),
@@ -237,22 +237,25 @@ function graphicsBlock(){
   return wrap;
 }
 
-function leagueBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "League results" }));
-  sec.append(el("p", { class: "note", text: "Send your recorded match results to the league. Your access token is stored securely in Windows." }));
-  const t = state.token;
+function accountBlock() {
+  const sec = el("section", { class: "block" }, el("h2", { text: "Account and match results" }));
+  const id = state.identity;
   const q = state.queue;
   const rows = [];
-  rows.push(fact("Token", ok(t) ? (t.stored ? "stored" : "not stored") : null));
-  rows.push(fact("Waiting to send", ok(q) ? String(q.queued ?? q.pending ?? 0) : null));
+  rows.push(fact("Discord", ok(id) ? (id.signed_in ? `Signed in as ${id.display_name}` : "not signed in") : null));
+  rows.push(fact("Waiting to send", ok(q) ? String((q.counts && q.counts.queued) ?? q.queued ?? 0) : null));
   sec.append(facts(rows));
-  const input = el("input", { type: "password", class: "wide", id: "league-token", placeholder: "Enter your league token", autocomplete: "off" });
-  const row = el("div", { class: "settings-row stack" }, el("label", { for: "league-token", class: "name", text: "League token" }), input);
   const buttons = el("div", { class: "mod" });
-  buttons.append(el("button", { type: "button", text: "Store token", disabled: busy, onclick: () => { const v = input.value; input.value = ""; act("Store token", "stats_credential_set", { token: v }, (r) => { leagueSaid = "League token saved."; }); } }));
-  buttons.append(el("button", { type: "button", text: "Forget token", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Forget token", "stats_credential_forget", {}, () => { leagueSaid = "Token removed."; }) }));
-  buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Send", "stats_submit", { confirm: true }, (r) => { leagueSaid = r.note; }) }));
-  sec.append(row, buttons);
+  if (ok(id) && id.signed_in) {
+    const box = el("input", { type: "checkbox", id: "show-offline", onchange: (e) => act("Offline visibility", "identity_set_show_offline", { show: !!e.target.checked }, () => { leagueSaid = "Saved."; }) });
+    box.checked = !!id.show_offline;
+    sec.append(el("label", { for: "show-offline", class: "name" }, box, el("span", { text: " Show my offline games on my profile" })));
+    buttons.append(el("button", { type: "button", text: "Sign out", disabled: busy, onclick: () => act("Sign out", "identity_sign_out", {}, () => { leagueSaid = "Signed out."; }) }));
+  } else {
+    sec.append(el("p", { class: "note", text: "Sign in from the Play page to send results." }));
+  }
+  buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy, onclick: () => act("Send", "stats_submit", {}, (r) => { leagueSaid = r.note; }) }));
+  sec.append(buttons);
   if (leagueSaid) sec.append(el("div", { class: "said" }, el("p", { text: leagueSaid })));
   return sec;
 }
@@ -295,7 +298,7 @@ function draw() {
  const status=el('p',{class:'settings-status',role:'status'});
  parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened. Close it before changing settings here.';state.dolphin&&(state.dolphin.editable=false);screen.querySelectorAll(".settings-content input,.settings-content select,.settings-content button").forEach(n=>n.disabled=true);}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
- if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
+ if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock(),accountBlock());
  parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);
 }
 

@@ -161,6 +161,7 @@ const FEATURES = [
           fullscreen: fullscreenValue,
           userDir: get("userDir"),
           modsDisabled: false,
+          leagueMatch: false,
         }),
       },
     ],
@@ -359,13 +360,6 @@ const FEATURES = [
           { key: "value", placeholder: "path, or empty to clear" },
         ],
       },
-      {
-        cmd: "stats_credential_set",
-        desc: "Store the league token in the OS credential store. Never shown again",
-        write: true,
-        inputs: [{ key: "token", placeholder: "bearer token" }],
-      },
-      { cmd: "stats_credential_forget", desc: "Remove the stored league token", write: true },
       {
         cmd: "stats_submit",
         desc: "Send the queue. Refuses unverified sides",
