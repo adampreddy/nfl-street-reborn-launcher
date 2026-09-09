@@ -46,6 +46,7 @@ pub mod gamepad;
 pub mod game_image;
 pub mod game_import;
 pub mod game_patch;
+pub mod identity;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
