@@ -65,8 +65,8 @@ Nothing listens on the player's machine. The launcher never receives a Discord t
 
 1. Launcher: `POST /v1/auth/device` with `{ "label": "<machine name>" }`. Reply: `{ device_code, user_code, verify_url, expires_in: 600, interval: 3 }`.
 2. Launcher opens `verify_url` (which carries the user code) in the system browser through the platform process host, the same way the folder button opens Explorer. The user code is also shown in the launcher in case the browser did not open.
-3. Browser: the verify page shows the code and a "Continue with Discord" button. Clicking it redirects to Discord OAuth with scope `identify` only and the redirect URI `https://api.nflstreetreborn.com/v1/auth/discord/callback`. The device code travels in the OAuth `state` parameter, signed by the backend.
-4. Backend callback: exchanges the code for a Discord access token server side, fetches `/users/@me`, upserts the `player` row by Discord user id, marks the device login approved for that player, discards the Discord token, and shows "You can close this tab."
+3. Browser: the verify page shows the code, names the device that asked ("This signs in the launcher on ADAM-PC"), and offers a "Continue with Discord" button. The form is protected against cross-site submission (a same-site cookie paired with a hidden field, plus a same-origin check), so nobody can approve a code on a player's behalf from another page. Clicking redirects to Discord OAuth with scope `identify` only and the redirect URI `https://api.nflstreetreborn.com/v1/auth/discord/callback`, never with `prompt=none`, so Discord's own consent screen stays in the path. A random nonce bound to the device login travels in the OAuth `state` parameter, signed by the backend; the device code itself never reaches the browser.
+4. Backend callback: exchanges the code for a Discord access token server side, fetches `/users/@me`, upserts the `player` row by Discord user id, binds the device login to that player in one guarded update (pending and unexpired, or 410), discards the Discord token, and shows "You can close this tab." Everything rendered from user or Discord input is HTML-escaped.
 5. Launcher polls `POST /v1/auth/device/poll` with the device code every 3 seconds. Replies: `428` still pending, `410` expired, `200 { token, player: { id, display_name, avatar_hash } }` once. A second poll after the 200 gets `410`.
 6. Launcher stores the token in the vault under account `nsr.reborn.player` and the non-secret player facts in `config\identity.json`.
 
@@ -79,7 +79,7 @@ Opaque, 32 random bytes, base64url on the wire, stored as SHA-256 hex. One per d
 ### 4.3 Tables
 
 ```
-player         id uuid pk, discord_user_id text unique not null, display_name text,
+player         id uuid pk, discord_user_id text unique (null after unlink or delete), display_name text,
                avatar_hash text, show_offline boolean not null default false,
                created_at, last_seen_at, deleted_at null
 device_token   id uuid pk, player_id fk, token_hash char(64) unique, label text,
@@ -180,7 +180,7 @@ Both the launcher (`Capture::canonical_bytes`) and the backend must produce the 
 
 ## 7. The backend
 
-Node 20 or later, ESM, Express 5 and `pg`, no ORM, numbered SQL migrations applied at boot, `node:test` for tests. Railway service with the Postgres addon, `DATABASE_URL` injected. Environment: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `STATE_SECRET`, `ADMIN_TOKEN`, `LEAGUE_FORWARD_URL`, `LEAGUE_FORWARD_TOKEN`, `PUBLIC_ORIGIN`. Body cap 512 KB. 60 requests per minute per token.
+Node 20 or later, ESM, Express 5 and `pg`, no ORM, numbered SQL migrations applied at boot, `node:test` for tests. Railway service with the Postgres addon, `DATABASE_URL` injected. Environment: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `STATE_SECRET`, `ADMIN_TOKEN`, `LEAGUE_FORWARD_URL`, `LEAGUE_FORWARD_TOKEN`, `PUBLIC_ORIGIN`, plus optional `RATE_LIMIT_PER_MINUTE` (default 60) and `TRUST_PROXY_HOPS` (default 1; 2 when the Cloudflare record is proxied). Body cap 512 KB on results. 60 requests per minute per client address (a caller-controlled header cannot open a new window).
 
 ### 7.1 Tables
 
@@ -190,6 +190,8 @@ game           id uuid pk, capture_hash char(64) unique not null,
                team_totals jsonb null, players jsonb,
                target_reached boolean, status text (accepted | incomplete | held | void),
                hold_reason text null, flags text[] not null default '{}',
+               decided_by text null (null = the server decided; 'admin' = a person; a later
+               submission never overwrites an admin decision or a void),
                captured_at timestamptz, first_seen_at, resolved_at null
 submission     id uuid pk, game_id fk, player_id fk, envelope jsonb,
                capture_folder text, session jsonb, intent_league boolean,
@@ -217,7 +219,7 @@ Envelopes are stored whole and never overwritten.
 5. For an online game with two submissions, the two players' registry teams must differ and cover both teams. Otherwise hold with `seat-conflict`. An online game with one submission is complete as a box score and annotated `unpaired-online`; it counts for the sender.
 6. Status: `held` for `no-players`, `online-signals-disagree`, `tied-final-score`, `no-seat-claim` (empty `local_pads`), `seat-conflict`. `incomplete` when the higher score is below 36 (`below-target-score`). Otherwise `accepted`.
 7. Every plausibility flag the launcher computes (`sides-unverified`, `no-team-totals`, `passer-credited-with-sacks`, and the rest of `codes::ALL` in `stats.rs`) is recomputed and stored in `flags`. Flags annotate; only the codes in step 6 change status.
-8. If `intent.league` is true, insert `league_forward` pending and attempt the forward (section 8) inline once; failures retry on a schedule.
+8. If `intent.league` is true, insert `league_forward` pending. Forwards are attempted by a timer every five minutes and by the admin's forward-run route, never inline in the request; only games whose status is `accepted` are sent, so a held game reaches the league site once a person accepts it.
 9. Reply `200 { ok: true, status, game_id, reason }` where status is `accepted`, `duplicate`, `held` or `incomplete`. A revoked token gets `401`.
 
 Wins and losses are credited only when `target_reached` is true and the player's `team_index` is known. Every other game still appears on the record with its box score.

@@ -128,8 +128,10 @@ The solution's project name stays `Dolphin`, so `-t:Dolphin` in the build script
 
 - [ ] **Step 5: Icon and version resource**
 
+Adam supplied the icon on 2026-09-08: `C:\Users\Adam\Downloads\NSRICON.ico`. It is the only source; do not substitute QuickIcon.ico or the launcher's icon.
+
 ```powershell
-Copy-Item "C:\Users\Adam\nflstreet2_clean\DOLPHIN ONLINE TEST\CREATION LEAGUE AND NEW DOLPHIN\QuickIcon.ico" "Installer\NFLStreetReborn.ico"
+Copy-Item "C:\Users\Adam\Downloads\NSRICON.ico" "Installer\NFLStreetReborn.ico"
 ```
 Replace the whole of `DolphinQt.rc` with:
 ```
@@ -165,7 +167,7 @@ BEGIN
   END
 END
 ```
-If `QuickIcon.ico` turns out not to be the Reborn mark when viewed, use the launcher's icon source instead (`Desktop\Reborn Installer\NFL Street Reborn Launcher\crates\reborn-ui\icons\icon.ico` or the nearest `.ico` there) and note which file was used in the commit message.
+Confirm the copy is byte-identical to the Downloads file (`Get-FileHash` on both) before committing.
 
 - [ ] **Step 6: Build script**
 

@@ -1074,7 +1074,10 @@ test("hold codes", async () => {
     const tied = structuredClone(base); tied.teams[1].score = 36;
     r = await processSubmission(t.pool, clock, p, envelope(tied));
     assert.deepEqual([r.status, r.reason], ["held", "tied-final-score"]);
-    r = await processSubmission(t.pool, clock, p, envelope(base, { pads: [] }));
+    // A distinct capture: the first call already stored `base` for this player, and the same hash
+    // from the same player is correctly a duplicate, never a second status decision.
+    const noSeat = structuredClone(base); noSeat.style = [11, 12];
+    r = await processSubmission(t.pool, clock, p, envelope(noSeat, { pads: [] }));
     assert.deepEqual([r.status, r.reason], ["held", "no-seat-claim"]);
   } finally { await t.close(); }
 });
@@ -1827,7 +1830,12 @@ test("health, sign-in over HTTP, a result, and the record", async () => {
     const start = await (await fetch(`${base}/v1/auth/device`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "PC" }) })).json();
     assert.equal((await fetch(`${base}/v1/auth/device/poll`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_code: start.device_code }) })).status, 428);
 
-    const startPage = await fetch(`${base}/link/start`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `code=${start.user_code}`, redirect: "manual" });
+    // The verify page hands out the CSRF cookie and hidden field; the form post must carry both and a same-origin Origin.
+    const linkPage = await fetch(`${base}/link?code=${start.user_code}`);
+    const cookie = /nsr_link=([A-Za-z0-9_-]+)/.exec(linkPage.headers.get("set-cookie") ?? "")?.[1];
+    const csrf = /name="csrf" value="([A-Za-z0-9_-]+)"/.exec(await linkPage.text())?.[1];
+    assert.ok(cookie && csrf, "the verify page must set the CSRF pair");
+    const startPage = await fetch(`${base}/link/start`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: `nsr_link=${cookie}`, Origin: "http://127.0.0.1" }, body: `code=${start.user_code}&csrf=${csrf}`, redirect: "manual" });
     assert.equal(startPage.status, 302);
     const state = new URL(startPage.headers.get("location")).searchParams.get("state");
     const cb = await fetch(`${base}/v1/auth/discord/callback?code=good-code&state=${encodeURIComponent(state)}`);
@@ -1840,7 +1848,8 @@ test("health, sign-in over HTTP, a result, and the record", async () => {
 
     const cap = JSON.parse(readFileSync(new URL("./fixtures/captures/tri_city_001.json", import.meta.url), "utf8"));
     cap.teams[0].score = 36; cap.teams[1].score = 24;
-    cap.reborn_match = { schema: "nsr.reborn_match.v1", netplay_running: false, game_id: "GN7E69", runtime_version: "1.1.0", local_pads: [{ pad: 0, registry_team: 1 }], local_team_index: 1 };
+    // local_team_index 0 is the 36-point side, so the summary below counts one win.
+    cap.reborn_match = { schema: "nsr.reborn_match.v1", netplay_running: false, game_id: "GN7E69", runtime_version: "1.1.0", local_pads: [{ pad: 0, registry_team: 1 }], local_team_index: 0 };
     const env = { schema: "nsr.submission.v1", capture: cap, capture_hash: wireHash(cap), capture_folder: "offline", session: { session_id: "1" }, intent: { league: false }, submitted_at: "2026-09-08T21:00:00Z" };
     const r = await (await fetch(`${base}/v1/results`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${done.token}` }, body: JSON.stringify(env) })).json();
     assert.equal(r.status, "accepted");
@@ -1996,6 +2005,23 @@ git push
 ```
 
 ---
+
+## Amendments made during execution (2026-09-08)
+
+Rulings recorded in the execution ledger that changed this plan's code. The code in the repository is authoritative where it differs from the blocks above.
+
+- Task 1: the test database is EnterpriseDB's portable PostgreSQL 16 at `C:\Users\Adam\pgsql16`, port 54329, trust auth on localhost, not the winget install (which needs a UAC prompt a non-interactive shell cannot answer).
+- Task 1 and 3: the test script is `"test": "node --env-file-if-exists=.env --test"`; `node --test test/` fails on Node 24 and `.env` is not loaded otherwise.
+- Task 3: `createPool` applies the schema as a connection startup parameter (`options: "-c search_path=<schema>,public"`), not in a connect hook, which raced the first query; `testPool` drops its schema and ends the pool if migration fails; `close()` ends the pool in `finally`; `migrate()` guards its ROLLBACK.
+- Task 4: the OAuth `state` carries a random nonce stored in a new `device_login.state_nonce` column (migration `002_device_login_state_nonce.sql`), never the device code; the approve step is one guarded UPDATE; `/link` shows the device label and sets an HttpOnly SameSite=Strict `nsr_link` cookie paired with a hidden `csrf` field that `/link/start` requires together with a same-origin check; `prompt=none` is gone; the callback error page escapes its input; the router has HTTP-level tests; `POST /v1/auth/device` replies with `ok: true`; `Bearer` is matched case-insensitively; `newUserCode` uses rejection sampling.
+- Task 5: the no-seat-claim test uses a distinct capture; `entity.too.large` and `entity.parse.failed` are mapped by a router-scoped error middleware (the in-handler branch was unreachable); `processSubmission` takes `pg_advisory_xact_lock(hashtext(capture_hash))` first so submissions for one game serialize.
+- Task 6: `gameView` excludes void games; the games route validates `limit` (integer 1 to 200) and `before` (a parseable date) and answers 400 otherwise; the submissions route answers 404 for a missing game before the admin or participant branch; `playersRouter` has HTTP-level tests.
+- Task 7: the retry UPDATE returns the status it wrote, and the pass summary counts a row that hit `maxAttempts` as `failed`, not `deferred`.
+- Task 8: `requireAdmin` is mounted before the JSON parser and compares tokens in constant time (SHA-256 digests through `timingSafeEqual`); `/v1/admin/forward/run` tolerates a missing `forwardEnv`; the resolve route runs in one transaction, validates its id and `participations`, answers 404 for a missing game and stamps `resolved_at` only when the new status is not held; the admin and account routers have HTTP-level tests.
+- Task 9 (carried): `engines` becomes `>=22` for `--env-file-if-exists`; the rate limiter also covers `/link` and `/link/start`; the app test drives `/link/start` with the cookie, `csrf` field and `Origin`; `src/players.js`'s inline `x-admin-token` check is replaced by an exported `isAdmin(req, adminToken)` helper from `src/admin.js` (the same constant-time compare `requireAdmin` uses), with `playersRouter` taking `adminToken`; `adminRouter`'s guard and JSON parser are scoped with `r.use("/v1/admin", ...)` so an unknown route reaches the 404 handler instead of a 401, proven by the app test. The rate limiter keys on the client address only (a caller-controlled header would mint unlimited buckets), evicts quiet clients instead of clearing every window, sends `Retry-After: 60`, and reads an optional `RATE_LIMIT_PER_MINUTE` so a test can prove a 429; the error handler guards `res.headersSent`; `/health` logs its failure; `PORT` is validated.
+
+- Final review fix wave: `authRouter`'s body parsers are per route, so the 512 KB cap on `/v1/results` is real; `TRUST_PROXY_HOPS` sets the proxy hop count; migration `003_game_decided_by.sql` adds `game.decided_by`, and a submission never overwrites an admin decision or a void; pairing removes `unpaired-online`; only accepted games are forwarded; malformed uuids answer 404; `captured_at` is validated; HTML pages carry `frame-ancestors 'none'`, `nosniff` and `no-store`; migrations take an advisory lock; the test glob is `test/*.test.js`; `engines` is `>=22.9`.
+- Spec corrections recorded here rather than silently: `player.discord_user_id` is nullable because unlink and delete null it (spec 4.3 said not null); forwards are enqueued and attempted by the timer or the admin route, not inline (spec 7.2 step 8 said inline once).
 
 ## Self-review
 
