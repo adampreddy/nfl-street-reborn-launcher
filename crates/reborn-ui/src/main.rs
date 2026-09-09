@@ -1008,7 +1008,9 @@ fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: 
         let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).map_err(|e| e.to_string())?;
         let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
         let file = v.get("files").and_then(|f| f.as_array()).and_then(|a| a.first()).and_then(|f| f.get("path")).and_then(|p| p.as_str()).unwrap_or("");
-        if !file.is_empty() {
+        // Only a .nsrmusic payload is a pack; the original package carries a
+        // bare pack.json with no songs, which means the disc's own soundtrack.
+        if file.ends_with(".nsrmusic") {
             let pack_path = dir.join("files").join(file);
             match reborn_core::soundtrack::pack::read_pack(&pack_path) {
                 Ok(p) if !p.manifest.songs.is_empty() => {

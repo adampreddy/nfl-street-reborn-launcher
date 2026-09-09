@@ -59,7 +59,7 @@ global.window = {
         if (!(cmd in answers)) throw new Error(`no fake answer for ${cmd}`);
         const a = answers[cmd];
         if (a instanceof Error) throw a;
-        return a;
+        return typeof a === "function" ? a(args) : a;
       },
     },
   },
@@ -120,9 +120,15 @@ const standalone = {
   active: false,
 };
 
+// Two soundtrack packages: read raw by the window (schema nsr.soundtrack-mod.v1),
+// never composed, switched through the soundtrack record.
+const soundtracks = [
+  { id: "reborn.soundtrack.original", version: "1.0.0", name: "NFL Street 2 Original Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 90, active: true, kind: "soundtrack" },
+  { id: "reborn.soundtrack.nfl-street-1", version: "1.0.0", name: "NFL Street 1 Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 78_894_680, active: false, kind: "soundtrack" },
+];
 const library = {
   packages_root: "C:\\data\\mods\\packages",
-  packages: [...footballs, ...controls, standalone],
+  packages: [...footballs, ...controls, standalone, ...soundtracks],
   unreadable: ["C:\\data\\mods\\packages\\broken\\1.0.0: package.json is not a readable manifest"],
   activation: [
     { id: "jsgme.purple-football", version: "1.0.0" },
@@ -161,7 +167,7 @@ answers = {
   mod_packages: library,
   controls_options: options,
   controls_current: current,
-  mods_toggle: syncDone,
+  mods_toggle: (args) => (args && String(args.id).startsWith("reborn.soundtrack.") ? { ...syncDone, soundtrack_note: "Your soundtrack is on the disc: 14 custom songs." } : syncDone),
   mods_sync: syncDone,
   controls_set: { profile: "playstation", synced: null, sync_note: "Recorded. Applied at the next launch: Another launcher is running" },
 };
@@ -193,6 +199,18 @@ check("stale activations remain removable",text(screen()).includes("jsgme.ghost-
 check("unreadable packages remain visible",text(screen()).includes("not a readable manifest"));
 const enable=walk(screen()).find(n=>n.attrs["aria-label"]==="Enable Aqua Football");
 await enable.listeners.click[0]();
+{
+  const tab = walk(screen()).find((n) => n.tagName === "button" && n.textContent === "Soundtrack");
+  tab.listeners.click[0]();
+  check("the Soundtrack tab lists the soundtrack packages", walk(screen()).filter((n) => n.className.split(" ").includes("store-card")).length === 2 && text(screen()).includes("NFL Street 1 Soundtrack"));
+  const enable = walk(screen()).find((n) => n.attrs["aria-label"] === "Enable NFL Street 1 Soundtrack");
+  check("a soundtrack package offers Enable", !!enable);
+  await enable.listeners.click[0]();
+  await tick(); await tick(); await tick();
+  check("switching a soundtrack package shows what the disc rebuild did", text(screen()).includes("14 custom songs"));
+  const back = walk(screen()).find((n) => n.tagName === "button" && n.textContent === "Footballs");
+  back.listeners.click[0]();
+}
 check("enable sends the package identity",calls.some(([cmd,args])=>cmd==="mods_toggle"&&args.id==="jsgme.aqua-football"&&args.on===true));
 for(const [label,value] of [["missing",null],["empty",{packages:[],activation:[]}],["null fields",{packages:null,activation:null,exclusive:null,unreadable:null,managed_by_controls:null}]]){
  __set({library:value,problem:null,notice:null});try{draw();check("store survives "+label,true);}catch(e){check("store survives "+label,false,e.message);}
