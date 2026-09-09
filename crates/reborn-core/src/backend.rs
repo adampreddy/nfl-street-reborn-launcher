@@ -73,11 +73,35 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
     }))
 }
 
+/// One sentence a player can read, for every answer that is not a refusal the
+/// launcher could actually read. Deliberately says nothing about status codes,
+/// bodies or hosts: this string is carried on the queue entry as `last_error`
+/// and shown on the results screen.
+const COULD_NOT_DELIVER: &str = "The server could not take this result just now. It is being kept and will be sent again.";
+
 /// What the backend's answer means for the queue.
+///
+/// # Only a refusal the launcher can read is permanent
+///
+/// [`SubmitOutcome::Rejected`] is irreversible by design: it writes a ledger
+/// row, the row is applied over the record on every read, and nothing in the
+/// launcher retries it. That is the right answer to a server that has looked
+/// at a result and said no, and the wrong answer to everything else.
+///
+/// Every status that was not 2xx, 401, 429 or 5xx used to become a rejection,
+/// with the status code and 200 characters of the body as the reason. So a
+/// wrong path answering 404, an edge rule answering 403, or a proxy answering
+/// 400 with its own error page destroyed every queued game permanently, and
+/// put raw transport text on the player's screen while doing it.
+///
+/// Now a refusal has to be legible to count: a reply in the server's own
+/// format that says why. Anything else defers, and the capture stays sendable.
 pub fn classify(status: u16, body: &str) -> SubmitOutcome {
     #[derive(serde::Deserialize, Default)]
     struct Reply { #[serde(default)] ok: bool, #[serde(default)] status: String, #[serde(default)] reason: Option<String>, #[serde(default)] error: Option<String> }
     let parsed: Option<Reply> = serde_json::from_str(body).ok();
+    // The server's own words for why it refused, or nothing.
+    let stated = |r: Reply| r.error.or(r.reason).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     match status {
         401 => SubmitOutcome::Unauthorized,
         200..=299 => match parsed {
@@ -87,11 +111,19 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
                 "incomplete" => SubmitOutcome::Recorded { note: "Recorded as incomplete: the winner did not reach 36 points.".to_string() },
                 other => SubmitOutcome::Held { reason: format!("server status {other:?}") },
             },
-            Some(r) => SubmitOutcome::Rejected { reason: r.error.or(r.reason).unwrap_or_else(|| "the server said ok: false".to_string()) },
-            None => SubmitOutcome::Rejected { reason: "the server answered 200 with something that is not its reply format".to_string() },
+            // ok: false in the server's own format IS a considered refusal.
+            Some(r) => SubmitOutcome::Rejected { reason: stated(r).unwrap_or_else(|| "the server said ok: false".to_string()) },
+            // A 2xx carrying something that is not the reply format is most
+            // likely a proxy's page over a request that worked. Sending it
+            // again is safe, because the server answers a repeat as a
+            // duplicate; destroying it is not.
+            None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         },
-        429 | 500..=599 => SubmitOutcome::Deferred { reason: format!("server answered {status}") },
-        _ => SubmitOutcome::Rejected { reason: parsed.and_then(|r| r.error.or(r.reason)).unwrap_or_else(|| format!("refused with {status}: {}", body.chars().take(200).collect::<String>().trim())) },
+        429 | 500..=599 => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
+        _ => match parsed.and_then(stated) {
+            Some(reason) => SubmitOutcome::Rejected { reason },
+            None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
+        },
     }
 }
 
@@ -149,7 +181,9 @@ impl Submitter for BackendSubmitter<'_> {
         let url = format!("{}/v1/results", self.origin.trim_end_matches('/'));
         match self.http.post_json(&url, &serde_json::to_vec(&env).unwrap_or_default(), Some(&self.token)) {
             Ok(reply) => classify(reply.status, &reply.body),
-            Err(e) => SubmitOutcome::Deferred { reason: e.to_string() },
+            // The transport's own words name hosts, ports and libraries, and
+            // this reason is shown on the results screen.
+            Err(_) => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         }
     }
 }
@@ -224,6 +258,78 @@ mod tests {
         assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason } if reason == "hash-mismatch"));
         assert!(matches!(classify(429, ""), SubmitOutcome::Deferred { .. }));
         assert!(matches!(classify(503, ""), SubmitOutcome::Deferred { .. }));
+    }
+
+    /// A rejection is permanent and nothing in the product could undo it: the
+    /// ledger row is applied over the record on every read, the stall retry
+    /// does not touch rejected entries, and enqueuing the same game again
+    /// answers AlreadySubmitted forever.
+    ///
+    /// So a status the launcher cannot read a refusal out of must never
+    /// produce one. A wrong path answering 404, an edge rule answering 403, a
+    /// proxy's own error page: none of those is this server refusing this
+    /// result, and treating them as one turns a recoverable outage into every
+    /// queued game destroyed at once.
+    #[test]
+    fn an_unstructured_refusal_leaves_the_capture_sendable() {
+        for (status, body) in [
+            (404, "<html><title>404 Not Found</title></html>"),
+            (403, ""),
+            (400, "Bad Request"),
+            (400, "{"),
+            (413, "{\"detail\":\"too large\"}"),
+            (502, "<html>bad gateway</html>"),
+        ] {
+            assert!(
+                matches!(classify(status, body), SubmitOutcome::Deferred { .. }),
+                "{status} with {body:?} was made permanent, so the game is gone"
+            );
+        }
+    }
+
+    /// The other half. A reply the launcher can read, which says it was
+    /// refused and why, IS terminal: that is the server's considered answer
+    /// and resending it forever would be the retry loop this design exists to
+    /// prevent.
+    #[test]
+    fn a_structured_refusal_is_still_terminal_and_carries_its_reason() {
+        for (status, body, want) in [
+            (400, r#"{"ok":false,"error":"hash-mismatch"}"#, "hash-mismatch"),
+            (422, r#"{"ok":false,"reason":"no such fixture"}"#, "no such fixture"),
+            (409, r#"{"ok":false,"error":"seat-conflict"}"#, "seat-conflict"),
+        ] {
+            assert!(
+                matches!(classify(status, body), SubmitOutcome::Rejected { reason } if reason == want),
+                "{status} with {body} should be a refusal saying {want}"
+            );
+        }
+    }
+
+    /// No errors ever: these strings are carried on the entry as `last_error`
+    /// and shown on the results screen.
+    #[test]
+    fn nothing_this_module_decides_puts_a_status_code_or_a_raw_body_on_screen() {
+        for (status, body, fragment) in [
+            (404, "<html><h1>404 Not Found</h1></html>", "html"),
+            (429, "rate limited by upstream", "upstream"),
+            (503, "Service Unavailable: pool exhausted", "pool"),
+            (400, "panic at src/main.rs:41", "src/main.rs"),
+        ] {
+            let reason = match classify(status, body) {
+                SubmitOutcome::Deferred { reason }
+                | SubmitOutcome::Rejected { reason }
+                | SubmitOutcome::Held { reason } => reason,
+                other => panic!("{status} produced {other:?}, which carries no reason"),
+            };
+            assert!(
+                !reason.contains(&status.to_string()),
+                "the status code reached the player: {reason}"
+            );
+            assert!(
+                !reason.contains(fragment),
+                "the raw body reached the player: {reason}"
+            );
+        }
     }
 
     #[test]

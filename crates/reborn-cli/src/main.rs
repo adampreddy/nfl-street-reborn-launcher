@@ -3819,22 +3819,58 @@ fn stats_ingest(
     Ok(if problem { PROBLEM } else { OK })
 }
 
+/// Put stalled AND refused results back in the queue.
+///
+/// Stalled entries are put back by every send pass on their own; this stays
+/// because it is how a person does it now rather than at the end of the next
+/// game.
+///
+/// Refused ones are the reason this command matters. A rejection writes a
+/// ledger row and nothing else in the launcher can undo it, so one server-side
+/// fault refusing a queue used to destroy every game in it permanently. This
+/// is the only way back, and it is deliberately a person typing a command:
+/// resending a considered refusal on a timer is the retry loop the whole
+/// design exists to prevent.
 fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::process::ExitCode> {
     let queue = StatsQueue::open(platform)?;
     let stalled = queue.stalled()?;
+    let refused: Vec<_> = queue
+        .entries()?
+        .into_iter()
+        .filter(|e| matches!(e.state, reborn_core::stats::EntryState::Rejected { .. }))
+        .collect();
     println!("Queue         {}", queue.dir().display());
     println!();
-    if stalled.is_empty() {
-        println!("Nothing is stalled.");
+    if stalled.is_empty() && refused.is_empty() {
+        println!("Nothing is stalled, and nothing was refused.");
         return Ok(OK);
     }
-    println!("{} stalled result(s):", stalled.len());
-    for entry in &stalled {
-        println!(
-            "  {}  {}",
-            short_key(&entry.key),
-            describe_state(&entry.state)
-        );
+    if !stalled.is_empty() {
+        println!("{} stalled result(s):", stalled.len());
+        for entry in &stalled {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+        }
+    }
+    if !refused.is_empty() {
+        if !stalled.is_empty() {
+            println!();
+        }
+        println!("{} refused result(s):", refused.len());
+        for entry in &refused {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+        }
+        println!();
+        println!("A refusal means the server looked at the result and did not store it,");
+        println!("so putting one back cannot duplicate anything. Results the server DID");
+        println!("store are never touched by this.");
     }
     if !apply {
         println!();
@@ -3842,10 +3878,12 @@ fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::pro
         return Ok(PROBLEM);
     }
     let moved = queue.retry_stalled()?;
+    let unrefused = queue.requeue_rejected()?;
     println!();
     println!(
-        "{} result(s) put back in the queue, attempt counts reset.",
-        moved.len()
+        "{} stalled and {} refused result(s) put back in the queue, attempt counts reset.",
+        moved.len(),
+        unrefused.len()
     );
     println!("Nothing expires a stalled capture on its own: the game happened, so the");
     println!("only ways out are sending it or the player deleting it.");

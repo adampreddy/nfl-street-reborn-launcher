@@ -2009,6 +2009,83 @@ impl StatsQueue {
         Ok(moved)
     }
 
+    /// Put refused results back in the queue, and make the ledger let go.
+    ///
+    /// The way back out of [`EntryState::Rejected`], which is otherwise
+    /// permanent: the ledger row is applied over the record on every read,
+    /// [`retry_stalled`](Self::retry_stalled) does not touch a rejection, and
+    /// enqueuing the same game again answers
+    /// [`Enqueued::AlreadySubmitted`] forever. Without this, one server-side
+    /// fault refusing a whole queue destroyed every game in it and nothing in
+    /// the product could undo that.
+    ///
+    /// Safe to do, because of what a rejection means: the server looked at the
+    /// result and did NOT store it. There is nothing a resend could duplicate.
+    /// That is exactly the opposite of accepted and held, whose rows are the
+    /// only thing standing between a crash and a duplicate on a real fixture,
+    /// and which this leaves untouched.
+    ///
+    /// Deliberate, never automatic. A rejection is still the server's
+    /// considered answer, and retrying one on a timer is the loop this design
+    /// exists to prevent. It is reached by a person running
+    /// `rebornctl stats retry --apply`.
+    ///
+    /// The ledger is rewritten without the rejection rows, through a temporary
+    /// file and a rename, so an interruption leaves either the old ledger or
+    /// the new one and never half of either. Lines that do not parse are
+    /// carried over verbatim rather than dropped.
+    pub fn requeue_rejected(&self) -> Result<Vec<CaptureKey>> {
+        let rejected: BTreeSet<CaptureKey> = self
+            .entries()?
+            .into_iter()
+            .filter(|e| matches!(e.state, EntryState::Rejected { .. }))
+            .map(|e| e.key)
+            .collect();
+        if rejected.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // The ledger first. Either order is safe, because a record and a row
+        // that disagree resolve to "not sent" in both directions, but the
+        // ledger is the authority and it goes first.
+        let path = self.ledger_path();
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            let mut kept = String::new();
+            for line in raw.lines() {
+                let drop = serde_json::from_str::<LedgerRow>(line)
+                    .map(|row| row.state == TerminalState::Rejected && rejected.contains(&row.key))
+                    .unwrap_or(false);
+                if !drop {
+                    kept.push_str(line);
+                    kept.push('\n');
+                }
+            }
+            let temporary = path.with_extension("jsonl.rewriting");
+            std::fs::write(&temporary, &kept).map_err(|source| Error::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            std::fs::rename(&temporary, &path).map_err(|source| Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+
+        let mut moved = Vec::new();
+        for mut entry in self.entries()? {
+            if !rejected.contains(&entry.key) {
+                continue;
+            }
+            entry.state = EntryState::Queued;
+            entry.attempts = 0;
+            entry.finished_ms = None;
+            entry.last_error = None;
+            self.write_entry(&entry)?;
+            moved.push(entry.key);
+        }
+        Ok(moved)
+    }
+
     /// Delete payloads for results that have reached the server.
     ///
     /// `keep_for_ms` is how long a finished result is kept so the player can
@@ -3491,6 +3568,91 @@ mod tests {
             q.terminal_state(&entry.key).unwrap(),
             Some(TerminalState::Rejected)
         );
+    }
+
+    /// A refusal has to have a way back, or one bad afternoon on the server
+    /// destroys every game in the queue with nothing anyone can do about it.
+    ///
+    /// Deliberate, never automatic. The ledger's job is to answer "has this
+    /// game already reached the server", and for a refusal the answer is no:
+    /// the server does not hold it, so there is nothing a resend could
+    /// duplicate. Accepted and held rows are the ones that must never be
+    /// touched, and this leaves them exactly where they were.
+    #[test]
+    fn a_refused_result_can_be_put_back_and_the_ledger_lets_go_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap();
+        q.enqueue(REAL_OUTLAWS.as_bytes(), None, Some("s1"), None)
+            .unwrap();
+
+        let refuse = Recorder::new(SubmitOutcome::Rejected {
+            reason: "hash-mismatch".into(),
+        });
+        assert_eq!(q.submit_pending(&refuse, 3).unwrap().rejected.len(), 2);
+
+        let back = q.requeue_rejected().unwrap();
+        assert_eq!(back.len(), 2, "both refusals must come back");
+        assert_eq!(
+            q.pending().unwrap().len(),
+            2,
+            "the ledger has to let go too, or entries() puts them straight back"
+        );
+        for key in &back {
+            assert!(
+                q.terminal_state(key).unwrap().is_none(),
+                "the ledger still says this reached the server"
+            );
+        }
+
+        let good = Recorder::new(SubmitOutcome::Accepted);
+        assert_eq!(q.submit_pending(&good, 3).unwrap().accepted.len(), 2);
+    }
+
+    /// The other half of the same method: what the ledger is FOR must survive
+    /// it. A result the server stored can never be put back by anything.
+    #[test]
+    fn putting_refusals_back_never_disturbs_a_result_the_server_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        let Enqueued::Queued(accepted) = q
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap()
+        else {
+            panic!("the falcons capture is well formed")
+        };
+        q.submit_pending(&Recorder::new(SubmitOutcome::Accepted), 3)
+            .unwrap();
+
+        let Enqueued::Queued(refused) = q
+            .enqueue(REAL_OUTLAWS.as_bytes(), None, Some("s1"), None)
+            .unwrap()
+        else {
+            panic!("the outlaws capture is well formed")
+        };
+        q.submit_pending(
+            &Recorder::new(SubmitOutcome::Rejected {
+                reason: "hash-mismatch".into(),
+            }),
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(q.requeue_rejected().unwrap(), vec![refused.key.clone()]);
+        assert_eq!(
+            q.terminal_state(&accepted.key).unwrap(),
+            Some(TerminalState::Accepted),
+            "an accepted result must still be recorded as sent"
+        );
+        assert!(matches!(
+            q.entries()
+                .unwrap()
+                .iter()
+                .find(|e| e.key == accepted.key)
+                .map(|e| &e.state),
+            Some(EntryState::Accepted)
+        ));
     }
 
     /// The queue lives under a directory the launcher classes as user data, so a
