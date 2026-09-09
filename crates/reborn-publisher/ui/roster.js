@@ -18,12 +18,12 @@
 // and log, which `roster.rs` writes in full sentences for exactly that
 // reason.
 //
-// Choosing a file is a plain text box, not a native picker: the only
-// browse dialog this app has (`settings_browse`) is wired to a fixed set
-// of Settings fields by Task 8's Keys page, and this page's brief gives it
-// no command of its own to add one (`main.rs` is finished and not part of
-// this task). A single-operator, single-machine app pasting in a path is
-// a fair trade for not needing a third file touched to add a dialog.
+// Choosing a file is a plain text box beside a Browse button: `pick_file`
+// (see `pick.rs`) opens a native "choose an existing file" dialog filtered
+// for a `.rebornroster`, drops the chosen path into the box, and switches
+// the radio to "A .rebornroster file" for whoever clicked Browse without
+// first clicking the radio. `settings_browse` still exists for Settings
+// fields; this page's file is not one of those.
 
 import { call, el, fact, facts, partial, fmtBytes, markCurrent } from "./shell.js";
 import { panel } from "./panel.js";
@@ -74,6 +74,21 @@ function currentSource() {
   return { kind: "site" };
 }
 
+/// Opens the native picker for a `.rebornroster`, fills `fileInput` with
+/// whatever was chosen, and switches the source radio to "A .rebornroster
+/// file" so Browse works on its own without first clicking the radio. A
+/// cancelled dialog leaves everything as it was.
+const browseButton = el("button", {
+  text: "Browse",
+  onclick: async () => {
+    const answer = await call("pick_file", { kind: "roster" });
+    if (!answer.ok || !answer.value) return;
+    fileInput.value = answer.value;
+    kindFile.checked = true;
+    fileInput.disabled = false;
+  },
+});
+
 const sourceBlock = block(
   "Source and version",
   el(
@@ -81,7 +96,8 @@ const sourceBlock = block(
     { class: "row" },
     el("label", { class: "inline" }, kindSite, " The site's export"),
     el("label", { class: "inline" }, kindFile, " A .rebornroster file"),
-    fileInput
+    fileInput,
+    browseButton
   ),
   el("p", { class: "hint", text: "The site's export needs the site token stored on the Keys page." }),
   el("div", { class: "row", style: "margin-top:10px" }, el("label", { class: "inline" }, "Version ", versionInput)),

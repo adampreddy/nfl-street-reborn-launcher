@@ -17,10 +17,16 @@
 //! none of them collide with another because none of them needs to touch
 //! this file. If a page later needs a command this file does not already
 //! list, that parallelism breaks for whoever needs it; the fix is to add
-//! the command here deliberately, which is exactly what happened once: the
-//! Status page's Upload button needed a page-agnostic upload command no
-//! existing page owned, so `upload.rs` and its two entries below were
-//! added rather than worked around inside `status.rs`.
+//! the command here deliberately, which is exactly what happened twice
+//! now: the Status page's Upload button needed a page-agnostic upload
+//! command no existing page owned, so `upload.rs` and its two entries
+//! below were added rather than worked around inside `status.rs`; later,
+//! the Game and Roster pages both needed a native file/folder picker for
+//! their own plain path fields (not a Settings field, which
+//! `keys::settings_browse` already covers), so `pick.rs` was added the
+//! same way. The Launcher and Content pages have the same plain-text-box
+//! paths and want the same treatment; that is follow-up work for whoever
+//! owns those pages next, not done here.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -31,6 +37,7 @@ mod history;
 mod keys;
 mod launcher;
 mod ops;
+mod pick;
 mod roster;
 mod settings;
 mod status;
@@ -88,6 +95,12 @@ fn main() {
             keys::vault_store,
             keys::vault_forget,
             keys::settings_browse,
+            // A general file/folder picker for any page's own path fields,
+            // not tied to a settings key. See pick.rs's module doc for why
+            // this is not just settings_browse with a wider `which`.
+            pick::pick_file,
+            pick::pick_save_file,
+            pick::pick_folder,
         ])
         .run(tauri::generate_context!())
         .expect("the publisher window could not start");

@@ -45,6 +45,26 @@ function labeledRow(labelText, input) {
   return el("div", { class: "row" }, el("label", { text: labelText }), input);
 }
 
+/// A Browse button beside a path `input`: opens the native picker for
+/// `kind` (see `pick.rs`'s own list -- "disc image", "roster" or "memory
+/// card" is all this page ever needs) and drops the chosen path straight
+/// into the field, exactly as if it had been typed. `save` picks a "save
+/// as" dialog (a path that need not exist yet, for an output field)
+/// instead of an "open" one; a cancelled dialog leaves the field alone.
+function browseButton(input, kind, save) {
+  return el("button", {
+    text: "Browse",
+    onclick: async () => {
+      const answer = await call(save ? "pick_save_file" : "pick_file", { kind });
+      if (answer.ok && answer.value) input.value = answer.value;
+    },
+  });
+}
+
+function labeledPathRow(labelText, input, kind, save) {
+  return el("div", { class: "row" }, el("label", { text: labelText }), input, browseButton(input, kind, save));
+}
+
 /// Poll `op_status` until the operation it reports has settled (anything
 /// but planning/running/verifying), so a caller that needs the structured
 /// `plan` value a `*_plan` command just started can read it once it lands.
@@ -223,16 +243,16 @@ function buildSection() {
         "reborn-builder-cli.exe the standalone Builder used. This is why that window is no " +
         "longer needed.",
     }),
-    labeledRow("Base image (.iso)", baseInput),
-    labeledRow("Roster (.rebornroster)", rosterInput),
-    labeledRow("Output ISO path", outInput),
+    labeledPathRow("Base image (.iso)", baseInput, "disc image"),
+    labeledPathRow("Roster (.rebornroster)", rosterInput, "roster"),
+    labeledPathRow("Output ISO path", outInput, "disc image", true),
     buildWarnings,
     buildPanelHost,
     buildVerifyResult,
     el("h3", { text: "Dump" }),
     el("p", { class: "hint", text: "Read an ISO's current roster back out, for inspection." }),
-    labeledRow("ISO", dumpIso),
-    labeledRow("Output .rebornroster", dumpOut),
+    labeledPathRow("ISO", dumpIso, "disc image"),
+    labeledPathRow("Output .rebornroster", dumpOut, "roster", true),
     dumpBtn,
     dumpResult,
     el("h3", { text: "Card sync" }),
@@ -240,8 +260,8 @@ function buildSection() {
       class: "hint",
       text: "Bring a memory card's gear up to date with a roster, keeping in-game edits. Defaults to a dry run.",
     }),
-    labeledRow("Memory card (.raw)", cardPath),
-    labeledRow("Roster (.rebornroster)", cardRoster),
+    labeledPathRow("Memory card (.raw)", cardPath, "memory card"),
+    labeledPathRow("Roster (.rebornroster)", cardRoster, "roster"),
     el("label", { class: "inline" }, cardDryRun, " Dry run (say what would change; write nothing)"),
     cardBtn,
     cardResult
@@ -292,7 +312,7 @@ function patchSection() {
         "recorded tip rather than assuming it.",
     }),
     patchFromFact,
-    labeledRow("New build (.iso)", toInput),
+    labeledPathRow("New build (.iso)", toInput, "disc image"),
     labeledRow("Version label", versionInput),
     patchPanelHost
   );
