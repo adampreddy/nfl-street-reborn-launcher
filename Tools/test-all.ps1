@@ -298,6 +298,35 @@ if (-not $NoRust) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
+# 5c. The Reborn Publisher, end to end
+# -----------------------------------------------------------------------------
+# A whole publishing cycle against loopback services only: a component and a
+# signed release uploaded in order, status clean, a roster pushed from a URL
+# and a seeded scratch-root check, a game-patch component (a small fake
+# chain, no xdelta), and a rollback through a small headless harness this
+# script builds and deletes on the fly, since rebornctl has no rollback
+# subcommand and the journal is written only by the app's own operation path.
+# Ends with the journal holding exactly one record per harness-driven
+# operation and no scratch root left behind. Needs the same debug rebornctl
+# the update pipeline above builds, plus a working cargo/rustc to compile the
+# harness.
+Write-Host "-- Publisher end to end --------------------------------------------" -ForegroundColor DarkGray
+if (-not $NoRust) {
+    if (-not $built) {
+        Record "publisher-e2e" "rebornctl builds" $false "cargo build -p reborn-cli failed"
+    } else {
+        $e2e = & py -3 (Join-Path $PSScriptRoot "e2e-publisher.py")
+        $ok = ($LASTEXITCODE -eq 0)
+        $last = if ($e2e) { ($e2e | Select-Object -Last 1) } else { "no output" }
+        Record "publisher-e2e" "publish, upload, roster, game-patch, rollback, journal, cleanup" $ok $last
+        if (-not $ok) { $e2e | Select-Object -Last 20 | ForEach-Object { Write-Host "       $_" -ForegroundColor Yellow } }
+    }
+} else {
+    Write-Host "       skipped with -NoRust, it needs a rebornctl build"
+}
+Write-Host ""
+
+# -----------------------------------------------------------------------------
 # 6. The sandbox, on request
 # -----------------------------------------------------------------------------
 if ($Sandbox -or $Manual) {
