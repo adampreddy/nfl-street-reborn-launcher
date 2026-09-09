@@ -156,6 +156,30 @@ Songs longer than about 6:20 are refused; opus and wma files are refused with
 imported files are copied to `music/sources`, packs to `music/packs`, encoded
 blobs to `music/encoded`. Nothing under `music/` is ever deleted by repair.
 
+## The netplay copy of the game
+
+Netplay is lockstep: both sides run the same bytes. The offline image is the
+one a custom soundtrack rewrites, so netplay never boots it. It boots
+`library/online/NSR.iso`, which is the pristine game plus the roster and
+nothing else, rebuilt whenever a game patch or a roster push moves what it is
+made of.
+
+```
+rebornctl netplay-image                     what it was built from, and whether it is current
+rebornctl netplay-image --build             build or refresh it
+rebornctl netplay-image --build --builder <path to reborn-builder-cli.exe>
+```
+
+`source.json` beside the image records the pristine hash and the roster hash,
+so the freshness check is two small file reads rather than hashing 1.4 GB.
+Measured on the development machine: about 6 seconds to build with a 569
+player roster, and 0.2 seconds to confirm it is current. With no roster
+installed the image is a hardlink of the pristine one and costs no disk.
+
+The Online page starts netplay with this image, building it first if it has to.
+Textures are not part of it: Dolphin reads those from a folder at run time, so
+they can never make two players' discs differ.
+
 ## What is not here yet
 
 Said plainly so nothing looks more finished than it is.

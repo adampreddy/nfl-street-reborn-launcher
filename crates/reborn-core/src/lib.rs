@@ -58,6 +58,7 @@ pub mod music;
 pub mod soundtrack;
 pub mod net;
 pub mod onboarding;
+pub mod online_image;
 pub mod origin;
 pub mod platform;
 pub mod roster;

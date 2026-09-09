@@ -284,6 +284,19 @@ enum Command {
         apply: bool,
     },
 
+    /// The copy of the game netplay boots: the pristine game plus the roster,
+    /// never any custom music. Reports its state, and builds it with --build.
+    NetplayImage {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// Build or refresh it. Without this, nothing is written.
+        #[arg(long)]
+        build: bool,
+        /// The Builder's console build, needed only when a roster is installed.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+    },
+
     /// The custom soundtrack: stage songs and packs, apply, share.
     Music {
         #[command(subcommand)]
@@ -709,6 +722,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
             apply,
         ),
         Command::Music { what } => music_command(&platform, what),
+        Command::NetplayImage { data_root, build, builder } => netplay_image(&platform, data_root.as_deref(), build, builder.as_deref()),
         Command::Content { apply } => content(&platform, apply),
         Command::Publish { what } => publish::run(what),
         Command::GamePatch { what } => match what {
@@ -4630,6 +4644,7 @@ fn roster_apply(
         builder: &builder_path,
         textures_root,
         accept_warnings: yes,
+        output: None,
     };
     match roster::apply(platform, &req)? {
         ApplyOutcome::Applied(r) => {
@@ -5603,4 +5618,56 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
             Ok(std::process::ExitCode::SUCCESS)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// netplay-image
+// ---------------------------------------------------------------------------
+
+fn netplay_image(
+    platform: &Platform,
+    data_root: Option<&Path>,
+    build: bool,
+    builder: Option<&Path>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::online_image::{ensure, freshness, online_path, wanted, Freshness, Outcome};
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    println!("Image         {}", online_path(&root).display());
+    match wanted(&root)? {
+        None => println!("Built from    nothing yet: no imported game"),
+        Some(w) => {
+            println!("Built from    pristine {}", &w.pristine_sha256[..16.min(w.pristine_sha256.len())]);
+            println!(
+                "              roster   {}",
+                w.roster_sha256.as_ref().map(|r| r[..16.min(r.len())].to_string()).unwrap_or_else(|| "none installed".to_string())
+            );
+        }
+    }
+    match freshness(&root)? {
+        Freshness::Current => println!("State         up to date"),
+        Freshness::Missing => println!("State         not built yet"),
+        Freshness::Stale { have, .. } => println!(
+            "State         out of date (built from pristine {})",
+            &have.pristine_sha256[..16.min(have.pristine_sha256.len())]
+        ),
+    }
+    if !build {
+        println!();
+        println!("Nothing was written. Pass --build to build or refresh it.");
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    let dirs = reborn_core::roster::builder_dirs(platform, &tool_dirs());
+    let outcome = ensure(platform, &root, builder, &dirs)?;
+    println!();
+    println!("{}", outcome.note());
+    if let Some(path) = outcome.path() {
+        println!("{} ({} bytes)", path.display(), std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+    }
+    Ok(match outcome {
+        Outcome::Refused(_) => PROBLEM,
+        _ => std::process::ExitCode::SUCCESS,
+    })
 }

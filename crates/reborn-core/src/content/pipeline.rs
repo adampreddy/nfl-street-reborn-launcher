@@ -762,6 +762,7 @@ impl<'a> Updater<'a> {
             builder: &builder,
             textures_root: hook.textures_root.as_deref(),
             accept_warnings: true,
+            output: None,
         };
         Ok(match roster::apply(self.platform, &req)? {
             ApplyOutcome::Applied(r) => RosterResult::Applied(r),
