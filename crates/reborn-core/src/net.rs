@@ -58,6 +58,26 @@ pub trait Http: Send + Sync {
     /// POST a JSON body. `bearer` becomes an `Authorization: Bearer` header
     /// and is never logged by this layer.
     fn post_json(&self, url: &str, body: &[u8], bearer: Option<&str>) -> Result<HttpResponse>;
+
+    /// GET a small text body with an `Authorization: Bearer` header.
+    fn get_text_as(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        match bearer {
+            None => self.get_text(url),
+            Some(_) => Err(Error::PlainIo(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("{url}: this HTTP client cannot send a bearer token"),
+            ))),
+        }
+    }
+
+    /// DELETE, optionally with a bearer. Used to revoke this device's token.
+    fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let _ = bearer;
+        Err(Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("{url}: this HTTP client cannot DELETE"),
+        )))
+    }
 }
 
 fn transport(url: &str, e: impl std::fmt::Display) -> Error {
@@ -168,6 +188,22 @@ impl Http for UreqHttp {
         }
         Self::reply(url, req.send_bytes(body))
     }
+
+    fn get_text_as(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let mut req = self.agent.get(url).set("Accept", "application/json");
+        if let Some(token) = bearer {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        Self::reply(url, req.call())
+    }
+
+    fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+        let mut req = self.agent.delete(url).set("Accept", "application/json");
+        if let Some(token) = bearer {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        Self::reply(url, req.call())
+    }
 }
 
 /// A fake for tests: canned replies by URL, and a record of what was sent.
@@ -186,6 +222,10 @@ pub mod fake {
         pub replies: BTreeMap<String, (u16, Vec<u8>)>,
         /// Every POST, in order: (url, body, bearer).
         pub posts: Mutex<Vec<Post>>,
+        /// Every GET made through `get_text_as`, in order: (url, bearer).
+        pub gets: Mutex<Vec<(String, Option<String>)>>,
+        /// Every DELETE, in order: (url, bearer).
+        pub deletes: Mutex<Vec<(String, Option<String>)>>,
     }
 
     impl FakeHttp {
@@ -230,5 +270,38 @@ pub mod fake {
                 .push((url.to_string(), body.to_vec(), bearer.map(str::to_string)));
             self.get_text(url)
         }
+
+        fn get_text_as(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+            self.gets.lock().unwrap().push((url.to_string(), bearer.map(str::to_string)));
+            match self.replies.get(url) {
+                Some((status, body)) => Ok(HttpResponse { status: *status, body: String::from_utf8_lossy(body).into_owned() }),
+                None => Err(transport(url, "no canned reply")),
+            }
+        }
+
+        fn delete(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse> {
+            self.deletes.lock().unwrap().push((url.to_string(), bearer.map(str::to_string)));
+            match self.replies.get(url) {
+                Some((status, body)) => Ok(HttpResponse { status: *status, body: String::from_utf8_lossy(body).into_owned() }),
+                None => Err(transport(url, "no canned reply")),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fake_answers_get_with_bearer_and_delete_and_records_them() {
+        let http = fake::FakeHttp::default().reply("https://b/v1/me", 200, r#"{"ok":true}"#);
+        let r = http.get_text_as("https://b/v1/me", Some("tok")).unwrap();
+        assert_eq!(r.status, 200);
+        let d = http.delete("https://b/v1/me", Some("tok")).unwrap();
+        assert_eq!(d.status, 200);
+        assert!(http.get_text_as("https://b/nope", None).is_err(), "an unlisted URL is a transport failure");
+        assert_eq!(http.gets.lock().unwrap()[0], ("https://b/v1/me".to_string(), Some("tok".to_string())));
+        assert_eq!(http.deletes.lock().unwrap()[0], ("https://b/v1/me".to_string(), Some("tok".to_string())));
     }
 }
