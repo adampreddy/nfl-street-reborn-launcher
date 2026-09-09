@@ -212,6 +212,27 @@ if ($update) {
     }
 }
 
+# The full first-run installer set: download.json, when present, must pin
+# its zip by hash, size and name, the same rule latest.json is held to
+# above. The site's download button reads this file directly, so a pointer
+# that does not match what dist actually holds sends a player a link that
+# fails its hash check, or a 404.
+$downloadManifest = Join-Path $dist "download.json"
+if (Test-Path $downloadManifest) {
+    $dm = Get-Content $downloadManifest -Raw | ConvertFrom-Json
+    $zipName = [uri]::UnescapeDataString(([uri]$dm.url).Segments[-1])
+    $zipPath = Join-Path $dist $zipName
+    if (-not (Test-Path $zipPath)) {
+        Record "dist" "download.json pins a zip that is in dist" $false "no $zipName in $dist"
+    } else {
+        $zipItem = Get-Item $zipPath
+        $zHash = (Get-FileHash $zipItem.FullName -Algorithm SHA256).Hash.ToLower()
+        $pinned = ($dm.sha256 -eq $zHash) -and ([int64]$dm.bytes -eq $zipItem.Length)
+        Record "dist" "download.json pins the full set's zip by hash, size and name" $pinned `
+            ("version {0}, sha256 {1}..., {2}" -f $dm.version, $zHash.Substring(0, 12), $zipName)
+    }
+}
+
 # The Publisher installer: Adam's admin tool, never shipped to a player and
 # never on the bucket, so it is checked only when one happens to be in dist.
 # Two things matter: it is one file (no zip, no slices: build.ps1 -Publisher
