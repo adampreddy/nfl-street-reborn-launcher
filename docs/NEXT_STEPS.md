@@ -286,11 +286,22 @@ in `C:\ProgramData\Microsoft\Windows\Containers` (about 24 GB, freed by
 turning the feature off). Deleted this evening: `target\dist-old-2026-09-06`,
 `target\e2e-game-patch`, `target\e2e-roster` (23 GB).
 
-- **Publisher plan 1 landed (2026-09-09):** publishing moved into
+- **Publisher plans 1 to 4 landed (2026-09-09):** publishing moved into
   `reborn_core::publish` with typed requests, outcomes and an event sink;
-  `rebornctl publish` is a printer over it. 34 core unit tests; the three
-  e2e scripts pass unchanged. Plans 2 to 4 (native upload and status, the
-  app, the installer set) are next, written against these names.
+  `rebornctl publish` is a printer over it, now with `upload`, `status`
+  and `token` verbs alongside the original `keygen`, `component`,
+  `release`, `roster` and `game-patch`. `crates/reborn-publisher` is a
+  real Tauri app over the same core: Status, Roster, Launcher, Game,
+  Content, Set, History and Keys, each page the same Plan (writes
+  nothing), Run (one click, in the enforced upload order), Verify (reads
+  the bucket back fresh) shape. `docs/RUNNING_UPDATES.md` is rewritten to
+  describe the app as the way this is done day to day, with the console
+  kept as the documented fallback for when the app cannot run; the two
+  things worth knowing before reaching for that fallback are that it
+  never writes to the app's own History journal, and that the upload
+  order is enforced by the code either way. `Tools/e2e-upload.py` against
+  `Tools/fake-s3.py` proves the native upload path; the three original
+  e2e scripts pass unchanged.
 
 ### 4. DONE 2026-09-06 22:16: the final installer, built and proven
 

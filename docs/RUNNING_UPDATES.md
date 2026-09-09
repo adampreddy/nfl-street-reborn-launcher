@@ -1,35 +1,73 @@
 # Running updates, step by step
 
-How to go from "the code exists" to "players receive updates". Every command
-is `rebornctl`, built from this repository. Nothing here needs a server that
-runs code: the origin is a folder of static files.
+How to go from "the code exists" to "players receive updates". The Reborn
+Publisher app (`crates/reborn-publisher`, eight pages: Status, Roster,
+Launcher, Game, Content, Set, History, Keys) is how this is done day to day
+now. Every operation below reads the same way: here is the page, here is
+what **Plan** shows you (it writes nothing), here is what **Run** does (one
+click, with a "Dry run" checkbox that does everything except write and
+upload), here is what **Verify** proves (it reads the bucket back fresh and
+checks the actual claim, not just that something happened). Then, in a
+smaller note, here is the console command for when the app cannot run.
+
+The console path is not a lesser copy kept out of nostalgia. `rebornctl`,
+built from this repository, calls the exact same `reborn_core::publish`
+functions the app calls, and `Tools/e2e-update.py`, `Tools/e2e-roster.py`,
+`Tools/e2e-game-patch.py` and `Tools/e2e-upload.py` drive it directly, so it
+stays the regression net for everything the app does. It is also what a
+from-scratch bucket bring-up and a scripted release still reach for.
+
+Two things worth knowing before you reach for either path:
+
+- **The console never writes to History.** Only the app does: every Plan,
+  Run and Verify it runs becomes one line in
+  `<origin>\publisher-journal.jsonl` (`ops::run_operation`, the one door
+  into the core every page uses), and the History page reads that file.
+  `rebornctl publish component`, `roster`, `game-patch`, `release` and
+  `upload` write to the origin and the bucket the same way, but none of
+  them touch that journal. A publish done on the console is real, and it
+  will not show up in History. If that gap in the record matters for what
+  you are about to do, use the app, or write down what you did somewhere
+  the app cannot lose it.
+- **Upload order is enforced by the code, not by which command you type
+  first.** Blobs and component manifests always go up before
+  `release.json` and `release.json.sig`; for the launcher, the installer
+  always goes up before `latest.json`; for the full installer set, the zip
+  always goes up before `download.json`. This used to be something a
+  person had to get right by hand with `rclone`; it is now a property of
+  the upload plan's own type (`UploadPlan` always yields blob-shaped items
+  before release-shaped ones, whatever order they were added in), true on
+  both the app and `rebornctl publish upload`. Manual `rclone` is still
+  documented below as the deepest fallback, and it is still on you to run
+  those commands in order if you ever use it.
 
 Where this stands today: the publisher, the client, and the proof between
-them all work (`py -3 Tools\e2e-update.py`). The launcher window does not yet
-check on its own; `rebornctl update content` is the client until that wiring
-lands. So steps 1 through 7 are real now, and step 8 describes what the
-launcher will do once wired.
+them all work (`py -3 Tools\e2e-update.py`), and the launcher window checks
+for updates on its own, live since 2026-09-06 (section 8). Nothing here
+needs a server that runs code: the origin is a folder of static files.
 
 ## What can be updated, and how
 
 | You change... | It reaches players by... | Cost to a player |
 |---|---|---|
-| a texture, added, changed or deleted | the content system, `textures` component | only the changed files |
-| **the game image** (a new Reborn build) | the content system, `game-patch` component: an xdelta from the previous build to the new one, applied by each launcher to its own pristine image, then the roster re-applied. See 7b | about 1 MB per build (measured: 5,336 bytes for a few changed bytes; 1.1 MB between two real consecutive builds) |
-| Dolphin, its INI files, ReShade presets | the content system, `runtime` component | only the changed files |
-| a curated mod package | the content system, `mods` component | only the changed files |
-| **a roster**, published from the website editor | the content system, `roster` component: the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
-| the launcher itself: a page, a button, a rule, this tool | a launcher release. The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json`, both into the bucket's `launcher/` folder. See 7c | the installer, one file, about 37 MB |
-| which keys are trusted | a launcher release, as above | same |
+| a texture, added, changed or deleted | the content system, `textures` component (Content page) | only the changed files |
+| **the game image** (a new Reborn build) | the content system, `game-patch` component (Game page): an xdelta from the previous build to the new one, applied by each launcher to its own pristine image, then the roster re-applied. See 7b | about 1 MB per build (measured: 5,336 bytes for a few changed bytes; 1.1 MB between two real consecutive builds) |
+| Dolphin, its INI files, ReShade presets | the content system, `runtime` component (Content page) | only the changed files |
+| a curated mod package | the content system, `mods` component (Content page) | only the changed files |
+| **a roster**, published from the website editor | the content system, `roster` component (Roster page): the `.rebornroster` travels, and each launcher applies it to its own image with the Reborn Builder. Measured: 6.6 s including 455 portraits | 0.5 MB, or about 30 MB with portraits |
+| **a brand new player's very first download** | not a component: `launcher/download.json` (Set page) points the site's download button at a zip of the spanned installer, the game-import bundle, the runtime and the texture pack. See 7d | the whole set, roughly 2 GB, once |
+| the launcher itself: a page, a button, a rule, this tool | a launcher release (Launcher page). The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json`, both into the bucket's `launcher/` folder. See 7c | the installer, one file, about 37 MB |
+| which keys are trusted | a launcher release (Launcher page), as above | same |
 | memory cards, saves, a player's own soundtrack | never touched, by design | none |
 | the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
 
 The launcher path needs an installer that comes out as ONE file, because
 `latest.json` pins a single download. The full first-run installer carries
 the texture pack and the import bundle and is spanned across three files,
-so it never gets a `latest.json`. `build.ps1 -LauncherOnly` is the build
-that does: the launcher, `rebornctl` and the Reborn Builder, nothing else,
-installing over the full install and leaving everything else in place.
+so it never gets a `latest.json`; it gets `download.json` instead (7d).
+`build.ps1 -LauncherOnly` is the build that does the one-file kind: the
+launcher, `rebornctl` and the Reborn Builder, nothing else, installing over
+the full install and leaving everything else in place.
 
 Deleting a file works: the next version's manifest simply does not list
 it, and the client moves it aside into `prior/`, never deletes it, so
@@ -40,10 +78,20 @@ left alone.
 Adding a new KIND of thing, another component, is a launcher change: the
 component names are fixed in the launcher and it refuses any other.
 
-## 0. Build the tool
+## 0. Get the tools
 
-From inside the repository, not from your home folder: `cargo` finds the
-workspace by the directory it is run in.
+The app and the console tool are built together and ship together:
+`installer\windows\build.ps1 -Publisher -Version <v>` compiles both
+`reborn-publisher.exe` and `rebornctl.exe`, stages them side by side, and
+produces `dist\Reborn Publisher Setup <v>.exe`, one file. Install it once
+on this machine (it is Adam's own tool, on this PC; see the design doc
+section 2), and it is never uploaded anywhere and never ships to a player,
+never on the bucket and never in the player's zip. Installing it also
+installs `rebornctl.exe` beside it, so the console fallback below is always
+available wherever the app is.
+
+To build just the console tool, for example on a machine where the app is
+not installed yet:
 
 ```
 cd "C:\Users\Adam\Desktop\Reborn Installer\NFL Street Reborn Launcher"
@@ -64,19 +112,22 @@ Check it is the right build before anything else:
 target\release\rebornctl.exe publish --help
 ```
 
-If that prints the three verbs (keygen, component, release) the tool is
-current. `installer\windows\build.ps1` also builds this exe, but a copy from
-before the publisher landed will not have them.
+If that prints `keygen`, `component`, `release`, `roster`, `game-patch`,
+`upload`, `status` and `token`, the tool is current.
 
-Since 2026-09-09 the publishing logic is `reborn_core::publish` (behind the
+Publishing logic itself lives in `reborn_core::publish` (behind the
 `publish` cargo feature): `keys`, `component`, `release`, `roster`,
-`game_patch`, `vault`. `rebornctl publish` builds a request, prints the
-core's events and maps the outcome to an exit code; the Reborn Publisher
-app, when it is built in plans 2 to 4, will call the same functions. The
-lines this runbook quotes are the core's lines. Unit tests: `cargo test -p
-reborn-core --features publish publish::`.
+`game_patch`, `upload`, `status`, `journal`, `vault`. `rebornctl publish`
+builds a request, prints the core's events and maps the outcome to an exit
+code; the app calls the same functions directly and streams the same
+events into its own panel. The lines this runbook quotes are the core's
+lines. Unit tests: `cargo test -p reborn-core --features publish publish::`.
 
 ## 1. Generate the keys. Once, ever.
+
+The Keys page has a Generate button that does exactly this, into a folder
+you choose, and refuses to overwrite either file, same as the console. The
+console command, for a machine that has never had the app installed on it:
 
 ```
 rebornctl publish keygen --out "C:\Users\Adam\Reborn Keys"
@@ -113,6 +164,11 @@ pub const TRUSTED_KEYS: &[[u8; PUBLIC_KEY_LEN]] = &[
 both arrays to their hex. Proven the same day: a release signed with
 `publisher.key` opened in a launcher with no `--trust` override.
 
+The Keys page shows which public keys a shipped launcher trusts and
+whether the key file on this machine is actually one of them; that check
+is the single most expensive mistake this step exists to prevent, a key
+that signs fine but that no launcher in the field will accept.
+
 If the keys are ever regenerated, paste the new lines over the old ones and
 update that test's two hex strings; it fails loudly until both match.
 
@@ -122,13 +178,16 @@ launcher will accept releases signed by either key.
 ## 3. Decide what a component's tree is
 
 A component is one folder, published as-is. Publish a PRISTINE tree: a mod
-file sitting in it becomes content every client is told is genuine.
+file sitting in it becomes content every client is told is genuine. The
+Content page fills in the install root and computes the next sequence
+number for you (below); this section is the background for what it is
+doing, and what you still have to type by hand on the console.
 
 | Component | Tree to publish | `--install-root` |
 |---|---|---|
 | `textures` | the texture pack for one game id | `library/textures/GN7E69` (required) |
 | `runtime` | `target\installer-payload\runtime` after a `build.ps1` run, which is Dolphin with the junk already stripped | follows from the name |
-| `offline-content` | a folder holding only `NSR.iso` | follows from the name |
+| `mods` | a curated mod package tree | follows from the name |
 
 `build.ps1` already stages the runtime through an allowlist (no `Games`, no
 `User`, no `.bak_*`, no logs) and drops `IntermediateCachePath` from
@@ -139,48 +198,79 @@ Versions and sequences:
 - `--version` is the label people see, for example `1.0.1`.
 - `--sequence` is a whole number that must be STRICTLY HIGHER than the last
   one published for that component. It is what stops an old release being
-  replayed. Start at 1.
+  replayed. Start at 1. The Content page computes this for you and never
+  offers a version the origin already holds.
 
-## 4. Publish each component into an origin folder
+## 4. Content: textures, runtime and mods
 
-The origin is any empty folder. Run each command once without `--apply` to
-see what it would do, then with it.
+### The Content page
+
+**Plan**: point it at a folder, a component (`textures`, `runtime` or
+`mods`) and a version. It hashes the tree once (the same hash Run will use
+again, so the two can never disagree about what tree Run touches), and
+shows the file count and total size, how many blobs are new against how
+many the origin already holds, the release sequence before and after
+(computed, never typed), and one sentence on what a player already on the
+previous version would actually fetch.
+
+**Run**: publishes the component (writes its manifest and any new blobs),
+signs a release that carries every other pinned component forward
+unchanged (or, for an origin that has never signed one yet, bootstraps the
+very first release from this component's own version), and uploads exactly
+what changed, in the enforced order: the new blobs, then the new manifest,
+then `release.json` and `release.json.sig`. Dry run does the hashing and
+the checking and skips every write and every upload.
+
+**Verify**: reads the bucket back fresh over HTTPS and confirms it now
+pins the version and sequence this Run just signed, with a signature that
+verifies.
+
+**Never publish the `runtime` component from a runtime the launcher has
+already started.** Dolphin and ReShade write `ReShade.log`, `ReShade.log1`,
+`ReShade.ini.launcher-original`, a `User` folder, a `Dump` folder, and a
+non-empty `ReShadePreset.ini` only once they have actually run against
+that exact folder. `runtime 1.0.0` and `runtime 1.0.1` were both published
+from a folder the launcher had already staged and started, which meant
+every fresh install downloaded those extra files as part of the component
+and was then offered a pointless "update" whose only effect was undoing
+the launcher's own staging, before a player had even played. Publish from
+the `runtime` folder of a FRESH `build.ps1` payload, never one the
+launcher has pointed at and run.
+
+The Content page refuses to let this happen: both Plan and Run scan the
+folder first for exactly those marks, name every one they find, and stop
+before anything is written. **The console has no such check.**
+`rebornctl publish component --component runtime ...` will hash and
+publish a dirty folder without complaint. If you use the console for a
+runtime publish, check yourself, at the top level of the folder you are
+about to publish: no `ReShade.log*`, no `ReShade.ini.launcher-original`, no
+non-empty `ReShadePreset.ini`, no `User\`, no `Dump\`.
+
+Console fallback:
 
 ```
-rebornctl publish component --root "C:\Users\Adam\AppData\Roaming\NFL Street Reborn\User\Load\Textures\GN7E69" ^
-    --component textures --version 1.0.0 --sequence 1 ^
-    --install-root library/textures/GN7E69 --origin "C:\Reborn Origin" --apply
+rebornctl publish component --root <folder> --component textures --version <v> --sequence <n> --install-root library/textures/GN7E69 --origin "C:\Reborn Origin" --apply
+rebornctl publish component --root <folder> --component runtime --version <v> --sequence <n> --origin "C:\Reborn Origin" --apply
+rebornctl publish component --root <folder> --component mods --version <v> --sequence <n> --origin "C:\Reborn Origin" --apply
 
-rebornctl publish component --root "target\installer-payload\runtime" ^
-    --component runtime --version 1.0.0 --sequence 1 --origin "C:\Reborn Origin" --apply
+rebornctl publish release --origin "C:\Reborn Origin" --version <v> --sequence <n> --key "C:\Users\Adam\Reborn Keys\publisher.key" --component textures=<v> --component runtime=<v> --component mods=<v> --apply
 
-The runtime tree must be the `runtime` folder of a FRESH `build.ps1` payload,
-never one the launcher has started: a started runtime carries
-`ReShade.ini.launcher-original`, `ReShade.log*` and a managed `ReShade.ini`,
-and every fresh install is then offered a tiny "update" that only undoes the
-staging. `runtime 1.0.0` (a `User\Dump` and logs) and `runtime 1.0.1` (the
-ReShade backup and logs) were both published that way; `runtime 1.0.2`
-(2026-09-08, sequence 3, release sequence 4) is the first clean one.
-
-rebornctl publish component --root "C:\somewhere\holding\NSR.iso" ^
-    --component offline-content --version 3.0.0 --sequence 1 --origin "C:\Reborn Origin" --apply
+rebornctl publish upload --origin "C:\Reborn Origin" --apply
 ```
 
-What it does: hashes every file, copies each into
-`blobs\by-hash\<xx>\<sha256>` (one copy per distinct content, so shared
-files are stored once), hashes the copy again, and writes
-`components\<name>-<version>.json`. It prints how many blobs were new and how
-many the origin already held.
-
-A published manifest is never rewritten. If you change a tree, publish it as
-a new version with a higher sequence.
+`--sequence` on the console has to be typed by hand, one higher than the
+last one this component used (the Content page computes it). `textures`
+needs `--install-root` (`library/textures/GN7E69` offline,
+`library/textures/FR4N31` online); `runtime` and `mods` have a fixed one
+built in. Remember: none of this will appear in History unless it also ran
+through the app.
 
 ## 5. Sign the release
 
 ```
 rebornctl publish release --origin "C:\Reborn Origin" --version 3.0.0 --sequence 1 ^
     --key "C:\Users\Adam\Reborn Keys\publisher.key" ^
-    --component textures=1.0.0 --component runtime=1.0.0 --component offline-content=3.0.0 ^
+    --component textures=1.0.0 --component runtime=1.0.0 --component mods=1.0.0 ^
     --apply
 ```
 
@@ -189,6 +279,13 @@ the origin at its published length, writes `release.json` and
 `release.json.sig`, then reads both back off the disk and verifies them the
 way a launcher will. The last line must say `Read back and verified`. If it
 warns that the key is not in `TRUSTED_KEYS`, step 2 has not shipped yet.
+
+Every page below signs a release as part of its own Run; you run this by
+hand only for a genuine bootstrap (an origin that has never signed a
+release at all: the Content page's own Run detects that case and
+bootstraps it automatically, using the component's own version as the
+release version and sequence 1) or when reconstructing something by hand
+that a page's own Plan has already refused to touch.
 
 The release `--sequence` must be strictly higher than the one already in the
 origin. The release version is the label players see ("Reborn 3.0.0").
@@ -200,6 +297,22 @@ The full automated proof, on a loopback server, against a scratch data root:
 ```
 py -3 Tools\e2e-update.py
 ```
+
+That proves the client side: what a launcher does once content is hosted.
+The publishing side of the same pipeline, the upload itself, has its own
+proof:
+
+```
+py -3 Tools\e2e-upload.py
+```
+
+(needs `target\debug\rebornctl.exe`), against `Tools\fake-s3.py`, a
+loopback stand-in for the R2 bucket that checks every request's signature
+the way the real bucket would. It proves: a first upload sends blobs and
+manifests before `release.json` and its signature; `rebornctl publish
+status` reports nothing pending once the bucket matches the local origin;
+a failed multipart part is retried and a wrong secret in the vault is
+rejected before anything reaches the "bucket".
 
 Or by hand. Serve the origin:
 
@@ -222,18 +335,57 @@ rebornctl update content --origin http://127.0.0.1:8000/ --component textures ^
 The first prints the plan and downloads nothing. The second fetches, hashes,
 stages, hashes again, and swaps. Run it a third time and it says up to date.
 Note that Python's built-in server does not support `Range`, so a resumed
-download is refused against it; the e2e script uses its own server that does.
+download is refused against it; the e2e scripts use their own servers that do.
 
 Never run `--apply` without `--data-root` while testing: without it, the
 real data root is the target and a promotion into it is a real update.
 
 ## 7. Host it
 
+The bucket itself is set up once, ever, and none of it depends on whether
+the app or the console does the day-to-day publishing that follows: it is
+infrastructure, not a publish.
+
 1. Cloudflare dashboard, R2, create a bucket, for example `reborn-content`.
-2. Upload the CONTENTS of the origin folder, keeping the paths:
-   `release.json`, `release.json.sig`, `components\...`, `blobs\...`.
-   For a few files the dashboard works. For the blob store use `rclone`
-   against the bucket's S3 endpoint:
+2. Point the app (or the console) at it: on the Keys page, the origin
+   folder (`C:\Reborn Origin` by default), the R2 bucket endpoint and name,
+   and the R2 access key and secret. The two secrets live in the Windows
+   credential vault, never in a settings file; Keys offers to import them
+   from `rclone.conf` the first time it finds one there. The console
+   equivalent, once:
+   ```
+   rebornctl publish token --r2-access-from-file <file holding the access key id>
+   rebornctl publish token --r2-secret-from-file <file holding the secret>
+   ```
+   Neither value is ever typed on a command line or written anywhere this
+   tool keeps; each is read once from the file you name and the file
+   remains yours to delete afterward.
+
+   Getting the CONTENTS of the origin onto the bucket, day to day, is
+   already part of each page's own Run above (sections 4, 7a, 7b, 7c, 7d):
+   it uploads exactly what that operation touched, in the enforced order,
+   as one click. You do not normally run a separate upload step.
+
+   Two situations still call for one, on purpose:
+   - **The Status page's Local origin panel** lists every component and
+     release sitting in `C:\Reborn Origin` that the bucket does not yet
+     serve, with the reason (never served at all, an older version on the
+     bucket, or a local release signed but never uploaded), and its own
+     Run button uploads all of it in the same enforced order. The console
+     equivalent is `rebornctl publish upload --origin "C:\Reborn Origin"
+     --apply`; `rebornctl publish status` shows the same pending list
+     first, without writing anything.
+   - **The very first bring-up of a bucket that has never served
+     anything**: publish each component once (section 4), sign the first
+     release (section 5), then run the upload step above once for
+     everything at once. This is the one case where a bulk, whole-origin
+     upload really is the shape of the job, and it is exactly what the
+     manual `rclone` recipe below still does.
+
+   Manual `rclone`, kept as the deepest fallback for when neither the app
+   nor `rebornctl publish upload` can reach the bucket (both go over the
+   same S3 API, so reaching for this is a genuinely different situation,
+   not a routine choice):
    `rclone copy "C:\Reborn Origin" r2:reborn-content --progress`
    Two things about a bucket-scoped token, both found on 2026-09-06:
    - `rclone lsd r2:` answers 403. It lists every bucket in the account,
@@ -244,20 +396,25 @@ real data root is the target and a promotion into it is a real update.
      it is missing, and tries to CREATE it, which is what the 403 on upload
      is. And check the file ends with a newline before appending a line to
      it: a value glued onto `acl = private` fails every upload with a 501.
-   Upload order matters: blobs and `components/` first, `release.json` and
-   `release.json.sig` last, so a client mid-upload never sees a release that
-   pins content still in flight. `rclone copy` with `--exclude release.json
-   --exclude release.json.sig`, then `rclone copyto` the two release files.
+   Upload order still matters here, by hand: blobs and `components/` first,
+   `release.json` and `release.json.sig` last, so a client mid-upload never
+   sees a release that pins content still in flight. `rclone copy` with
+   `--exclude release.json --exclude release.json.sig`, then `rclone
+   copyto` the two release files.
 3. Bucket settings, Custom Domains, add `files.nflstreetreborn.com`.
    Cloudflare adds the DNS record itself since you own the zone there. The
    first HTTPS request may fail for a few minutes while the certificate is
    issued; a 404 from `Server: cloudflare` means it is working.
 4. Check in a browser: `https://files.nflstreetreborn.com/release.json`
    and `https://files.nflstreetreborn.com/release.json.sig` both load.
-5. Prove it the same way as step 6, against the real host:
+5. Prove it the same way as step 6, against the real host: the Status page
+   reads `release.json`, `release.json.sig` and `launcher/latest.json` from
+   the live host the same way a player's launcher does
+   (`rebornctl publish status` on the console, or
    `rebornctl update content --origin https://files.nflstreetreborn.com/ --component textures --data-root "C:\reborn-test-root"`
-   Done 2026-09-06: runtime and roster installed from the live URL into a
-   scratch root with only the compiled-in keys.
+   for the client side specifically). Done 2026-09-06: runtime and roster
+   installed from the live URL into a scratch root with only the
+   compiled-in keys.
 6. Cache the blobs at the edge. Without this every blob fetch is an R2 read
    (`cf-cache-status: DYNAMIC`); with it, repeat fetches are served by
    Cloudflare and never touch the bucket. Dashboard, the
@@ -266,8 +423,9 @@ real data root is the target and a promotion into it is a real update.
      AND URI Path starts with `/blobs/`. Then: Cache eligibility Eligible,
      Edge TTL Override, 1 year; Browser TTL Override, 1 year. Blobs are
      named by their own hash, so they can never change; a year is honest.
-   - Leave `release.json` and `components/` uncached (they change on every
-     publish); no rule needed, DYNAMIC is the correct answer for them.
+   - Leave `release.json`, `components/` and `launcher/` uncached (they
+     change on every publish); no rule needed, DYNAMIC is the correct
+     answer for them.
 
 R2 charges nothing for egress, which is the reason it was chosen: 20,000
 players pulling gigabytes costs storage only.
@@ -278,20 +436,38 @@ A roster is the one thing that changes often, so it does not travel as a
 new image. The `.rebornroster` the site exports travels, and every launcher
 applies it to its own image with the Reborn Builder's console build.
 
-One command, from the export to "upload the origin":
+### The Roster page
+
+**Plan**: choose the source, the site's own export (fetched with the
+vaulted API token, `Store` it once on the Keys page) or a `.rebornroster`
+file, and a version (defaults to today's date). It reads the file's own
+player, team and portrait counts, and shows the component sequence and the
+release sequence before and after.
+
+**Run**: publishes the roster component, signs a release carrying every
+other pinned component forward, and uploads it, blobs and the manifest
+before the release files. Dry run still fetches and reads the file, since
+there is no way to publish a file that was never read, but writes and sends
+nothing.
+
+**Verify**: reads the hosted release back over HTTPS, then runs the exact
+check a player's launcher runs against a scratch data root seeded from
+that release, and confirms the roster comes back pending at its real size
+while every other component reports zero fetches, the same "just the
+roster, nothing else" outcome a real update should produce.
+
+Console fallback:
 
 ```
 rebornctl publish roster --from <URL or file of the export> --origin "C:\Reborn Origin" --version 2026.09.06 --key "C:\Users\Adam\Reborn Keys\publisher.key" --apply
+rebornctl publish upload --origin "C:\Reborn Origin" --apply
 ```
 
-It fetches the export, refuses anything that is not a roster (a saved
-error page, say), publishes it as the `roster` component with the next
-sequence, and re-signs a release that carries every other pinned component
-forward at its served version. Run it without `--apply` to see what it
-would do. Then upload the origin folder. Half a megabyte without
-portraits, about thirty with them.
-
-`--from` can be a local path while the site has no Publish button yet.
+If the export URL needs a login, store the site's token once with
+`rebornctl publish token --from-file <file>`, or pass `--token-file` on
+this command; never type it on the command line. `--from` can also be a
+local path. This will not appear in History unless it also ran through
+the app.
 
 A client picks it up like any component, and then applies it:
    ```
@@ -316,10 +492,9 @@ roster that names a player the image does not have is refused by the
 Builder with the player's id, and the launcher relays it with "the game is
 as it was".
 
-Not yet: the Publish button on the site, which drops the export at a fixed
-URL so `--from` can point at it. And `reborn-builder-cli.exe` has to ship
-beside Dolphin; today the launcher finds it in `<install>\tools`, beside
-the launcher, or in the 2.1 tools folder.
+`reborn-builder-cli.exe` has to ship beside Dolphin; today the launcher
+finds it in `<install>\tools`, beside the launcher, or in the 2.1 tools
+folder.
 
 ## 7b. Game updates: a new Reborn build
 
@@ -331,10 +506,41 @@ they are about a megabyte and the origin never serves the game. The
 decision and its alternatives are in
 `docs/architecture/GAME_PATCH_COMPONENT.md`.
 
-One command, from two images to "upload the origin":
+### The Game page
+
+Two sections. **Build ISO** is not a publish at all: base image, roster
+file, output path, and it runs the Reborn Builder to produce an ISO for
+local testing or inspection, showing the Builder's own warnings with a
+"Build anyway" button that never moves once it has appeared (the Builder's
+own hard-won rule). Also here: `dump` (read a roster back out of an ISO)
+and `card-sync` (fold a memory card's in-game gear and face edits back
+into a roster). None of this touches the origin or the bucket.
+
+**Game patch** is the publish. **Plan**: give it the new build's ISO. It
+hashes the build the chain currently ends at (never hard-coded: read from
+the chain itself, falling back to the FIELDS 12-19 base the first time
+there is nothing to read), hashes the new build, and refuses if the base
+on record is not actually the chain's tip, showing both hashes.
+
+**Run**: encodes the xdelta, decodes it back and hashes the result before
+writing anything, appends the step to the chain, publishes the
+`game-patch` component, and signs a release carrying every other pin
+forward. This writes to the LOCAL origin only; it does not upload. Follow
+it with the Status page's own Upload (or `rebornctl publish upload
+--origin "C:\Reborn Origin" --apply` on the console) to actually put the
+new chain step on the bucket.
+
+**Verify**: re-hashes every blob the newest published `game-patch`
+manifest names, against the origin's own blob store. This proves the
+local copy is intact; it does not check the bucket, so treat a completed
+upload (the Status page again, or `rebornctl publish status` afterward,
+showing nothing pending) as the real proof players can reach it.
+
+Console fallback:
 
 ```
 rebornctl publish game-patch --from <the build players have>.iso --to <the new build>.iso --version 2026.09.07 --origin "C:\Reborn Origin" --key "C:\Users\Adam\Reborn Keys\publisher.key" --apply
+rebornctl publish upload --origin "C:\Reborn Origin" --apply
 ```
 
 `--from` is the build players have now: the head of the chain, or for the
@@ -347,7 +553,7 @@ anything is written, appends the step to the chain kept in
 `C:\Reborn Origin-stage\game-patch`, publishes the chain as the
 `game-patch` component with the next sequence, and re-signs the release
 with every other pin carried forward. Without `--apply` it hashes and
-describes. Then upload the origin folder.
+describes.
 
 The chain is append-only. A player two builds behind walks two steps; a
 player one behind fetches only the new delta, because that is the only
@@ -382,7 +588,43 @@ disc. A reverse delta is the cheap way to add it later.
 ## 7c. Launcher updates: the one-file build
 
 The launcher updates itself from a small installer, never from the
-first-run set. Build it:
+first-run set.
+
+### The Launcher page
+
+**Plan**: type (or accept the proposed) version. It reads what the bucket
+currently serves the same way a player's launcher would, and warns,
+without refusing outright, when the version you gave would not be newer
+than what is hosted, since a build that is not newer is a build no
+launcher would ever be offered. It also shows the repository's current
+commit, whether the working tree is dirty, and whether the Reborn Builder
+is where it expects.
+
+**Run**: builds `installer\windows\build.ps1 -LauncherOnly -Version <v>`
+itself, streaming every line it prints as it prints it (the build takes
+minutes; the panel stays live the whole time), then hashes the exe it
+produced ITSELF rather than trusting what the script's own `latest.json`
+claims, refusing to upload anything if the two disagree.
+
+**The exe uploads before the manifest, never the other way around, and
+this is enforced by the upload plan's own type, not by the order this page
+happens to call things in.** `UploadPlan` always yields every blob-shaped
+item before every release-shaped one, whatever order they were added in;
+the exe is added as a blob, `latest.json` as a release file. A launcher
+mid-download can never be pointed at a manifest naming a file that is not
+there yet.
+
+**Verify**: reads `latest.json` back over HTTPS exactly as a launcher
+still on the version this build replaces would, confirms it is offered
+the new version, downloads the installer it names, and checks that
+download against the manifest too.
+
+Console fallback, and this is still a two-step, hand-ordered process: there
+is no single `rebornctl publish` verb for the launcher's own update
+channel (it is a different mechanism from the content origin, unlike
+everything else in this guide), and `rebornctl publish upload` does not
+reach it either, since that command only knows about `C:\Reborn Origin`,
+never the bucket's `launcher/` folder.
 
 ```
 .\installer\windows\build.ps1 -LauncherOnly -Version 3.0.1
@@ -396,15 +638,17 @@ file, with `latest.json` beside it pinning that file's hash, size and name.
 Nothing else ships: the runtime, the textures, the import bundle and the
 content are already on the player's machine, and Inno replaces what it
 carries and removes nothing. That is also why a fresh player cannot start
-from this file; the download page hands out the full set.
+from this file; the download page hands out the full set (7d).
 
-Publish: upload the Update exe and `latest.json` into the bucket's
-`launcher/` folder, the exe first and the manifest last:
+Publish, in this order, the exe first and the manifest last:
 
 ```
 <rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto "dist\NFL Street Reborn Launcher Update 3.0.1.exe" "r2:reborn-content/launcher/NFL Street Reborn Launcher Update 3.0.1.exe"
 <rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto dist\latest.json r2:reborn-content/launcher/latest.json
 ```
+
+That order is on you to get right by hand on this path. On the app it is
+not a choice you get to make.
 
 `update.rs` reads `https://files.nflstreetreborn.com/launcher/latest.json`
 and the manifest names the exe beside it. Not a GitHub release: the
@@ -424,6 +668,94 @@ get a second copy. `Tools\test-all.ps1` checks that `latest.json` pins the
 file in `dist`; `-Sandbox` installs the full set on a clean Windows and
 then this update over it, and checks the runtime, textures and import
 bundle survived and the launcher came back.
+
+This will not appear in History either way, since the app's Run above
+still goes through `ops::run_operation`, but the console path above never
+does.
+
+## 7d. The full first-run installer set
+
+This is what a brand new player downloads, and it is a different thing
+from the launcher's own self-update in 7c: the spanned installer exe and
+its numbered slices, the game-import bundle, the Dolphin runtime, the
+texture pack and, optionally, the offline WebView2 runtime, all built by
+the full `build.ps1` (no `-LauncherOnly`, no `-Publisher`) and packed into
+one zip, plus `launcher/download.json`, which is what the site's download
+button now reads instead of a constant baked into `_site/shell.php`. Once
+this ships, a new set never needs a separate site deploy.
+
+### The Set page
+
+**Plan**: point it at the four inputs (the game-import bundle, the
+runtime tree, the texture tree, the prompt packages) and a version. It
+measures each one (a plain walk for file count and size; nothing is
+hashed yet, these are build inputs, not published blobs), shows what
+`download.json` currently points at and warns if the version you typed
+would replace it under the exact same label, and lists exactly what a zip
+for this version would be packed from: the setup exe plus its own
+numbered `.bin` slices, never a wildcard match against whatever else
+happens to be sitting in `dist`.
+
+**Run**: runs the full `build.ps1` with every one of those inputs (about
+twenty minutes; every line streams into the panel as it prints), then,
+before uploading anything, reopens the zip it just produced and confirms
+its entries are EXACTLY the expected set, no more and no less. A zip
+missing a slice, or one that swept in a stray file from a different
+build, is refused right there rather than uploaded. Only then does it
+upload the zip, and only after that succeeds does it write and upload
+`download.json`, in that order: `download.json` can never point at a zip
+that is not there yet, the same guarantee the Launcher page's exe-then-
+manifest order relies on.
+
+**Verify**: reads `download.json` back over the public host, re-hashes
+the local copy of the zip still sitting in `dist` against what the
+pointer claims, and sends a HEAD request (no re-download of a
+multi-gigabyte file) to the zip's own URL to confirm it is reachable
+there at the size the pointer names.
+
+Two guards worth knowing about, both learned the expensive way. **The
+game-import bundle must never sit inside `target\installer-payload`**:
+`build.ps1` deletes that folder before staging a fresh build into it, so
+building from a bundle inside it would delete the bundle before it could
+be copied in. This happened once and cost the only staged copy of a 687 MB
+bundle. Both the Set page and `build.ps1` itself refuse this before
+anything is built, naming the exact path. And **the zip is packed from an
+exact file list**, the setup exe's own name plus its own numbered slices,
+never a wildcard, because a wildcard once swept another build's slices
+into a 5 GB zip alongside a good one.
+
+Console fallback: there is no single `rebornctl publish` verb for this.
+Build it by hand, then construct `download.json` yourself:
+
+```
+.\installer\windows\build.ps1 -Version 3.0.0 -GamePatch <bundle folder> -Runtime <runtime folder> -Textures <texture folder> -PromptPackages <prompt packages folder> -OfflineWebView2 -OfflineSuffix ""
+```
+
+That produces `dist\NFL Street Reborn Launcher 3.0.0.zip`. Hash it, then
+write `download.json` beside it (`schema` is always `nsr.download.v1`;
+`url` is the same percent-encoding rule `latest.json`'s own asset URL
+uses, so the two never disagree about how a space in the name comes out):
+
+```json
+{
+  "schema": "nsr.download.v1",
+  "version": "3.0.0",
+  "url": "https://files.nflstreetreborn.com/launcher/NFL%20Street%20Reborn%20Launcher%203.0.0.zip",
+  "bytes": 2161338617,
+  "sha256": "<the zip's sha256, lowercase hex>",
+  "published": "2026-09-09T14:03:00+00:00"
+}
+```
+
+Then upload, the zip first, `download.json` last:
+
+```
+<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto "dist\NFL Street Reborn Launcher 3.0.0.zip" "r2:reborn-content/launcher/NFL Street Reborn Launcher 3.0.0.zip"
+<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto dist\download.json r2:reborn-content/launcher/download.json
+```
+
+This will not appear in History either way, the same reason as 7c: the
+console path never reaches the app's journal.
 
 ## 8. What the launcher does (wired 2026-09-06)
 
@@ -464,7 +796,12 @@ online build that does not exist yet.
 
 ## 9. Publishing an update later
 
-Only what changed is republished. Say twelve textures changed:
+This is exactly section 4 (or 7a, 7b, 7c, 7d) again, for whichever page
+fits what changed: open it, Plan, look at what is new, Run. Only what
+changed is republished; the sequence and the carried-forward pins are
+computed, never guessed.
+
+Say twelve textures changed, done by hand on the console:
 
 ```
 rebornctl publish component --root <texture tree> --component textures ^
@@ -479,13 +816,19 @@ existing versions, with a higher release sequence:
 ```
 rebornctl publish release --origin "C:\Reborn Origin" --version 3.0.1 --sequence 2 ^
     --key "C:\Users\Adam\Reborn Keys\publisher.key" ^
-    --component textures=1.0.1 --component runtime=1.0.0 --component offline-content=3.0.0 ^
+    --component textures=1.0.1 --component runtime=1.0.0 --component mods=1.0.0 ^
     --apply
 ```
 
 Upload the new files: the new component manifest, the new blobs,
-`release.json` and `release.json.sig`. `rclone copy` only sends what is not
-already there. A player on 1.0.0 downloads twelve files.
+`release.json` and `release.json.sig`.
+
+```
+rebornctl publish upload --origin "C:\Reborn Origin" --apply
+```
+
+That sends only what is not already on the bucket. A player on 1.0.0
+downloads twelve files.
 
 ## 10. If publisher.key is lost or leaks
 
@@ -496,13 +839,29 @@ already there. A player on 1.0.0 downloads twelve files.
 4. Once that launcher has reached players, sign with the new everyday key and
    take the new spare offline.
 
+The Keys page carries a reminder of its own for step 2's lead-up: it flags
+when `rotation.key` still sits beside `publisher.key` on the same disk,
+since a spare that never left home leaks in the same breach as the
+everyday key. Move it to a USB stick or paper before that reminder is the
+only thing standing between you and starting this whole list.
+
 ## Rules that are easy to forget
 
 - Never commit `*.key`. The repository's `.gitignore` refuses them.
-- A sequence never goes down and never repeats. Keep a note of the last one
-  used per component and per release.
+- A sequence never goes down and never repeats. The app computes it for
+  every page above; on the console it is still typed by hand, so keep a
+  note of the last one used per component and per release if you use that
+  path.
 - A published manifest or blob is never edited in place. New version, higher
   sequence.
 - Publish pristine trees. The textures folder you test in is fine as long as
-  no mod has been applied into it at the time.
+  no mod has been applied into it at the time. Never publish `runtime` from
+  a folder the launcher has started (section 4); the Content page checks
+  for you, the console does not.
 - Test with `--data-root` pointing at a throwaway folder. Every time.
+- The console never writes to History. If the audit trail matters for what
+  you are about to do, use the app.
+- Upload order (blobs and manifests before release files; the installer
+  before its manifest; the zip before `download.json`) is enforced by the
+  code on both the app and `rebornctl publish upload`. Manual `rclone` is
+  the one place left where it is still on you.

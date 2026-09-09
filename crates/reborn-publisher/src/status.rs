@@ -51,20 +51,22 @@
 //!   exactly this purpose (see `settings.rs`'s doc comment); Task 8 saving
 //!   a browsed path anywhere else would need this file updated to match.
 //!
-//! # The Upload button this page cannot fully wire up
+//! # The Upload button now has a path
 //!
 //! The brief for this page asks for "an Upload button that runs the
 //! upload operation through the panel" beside the pending components list.
-//! No command reachable from this page can do that: `main.rs`'s
-//! `generate_handler!` list (frozen for this task) carries no
-//! page-agnostic "upload whatever the origin holds" command, and every
-//! other page's own `_run` command bundles a fresh publish (fetch, build,
-//! or hash) together with its upload rather than exposing a bare
-//! re-upload. The panel below is real (Plan and Verify both call
-//! `publisher_status` again, a real read), but Run answers honestly that
-//! this build has no path for it and names the page that does. See this
-//! task's report for the fuller note; the fix is either a new command or a
-//! deliberate decision that Status never uploads, not a workaround here.
+//! When this file's own doc comment was first written, no command
+//! reachable from this page could do that: `main.rs`'s `generate_handler!`
+//! list carried no page-agnostic "upload whatever the origin holds"
+//! command, and every other page's own `_run` command bundled a fresh
+//! publish (fetch, build, or hash) together with its upload rather than
+//! exposing a bare re-upload. `upload.rs` is that command now: a plan/run
+//! pair over `reborn_core::publish::upload::{plan_origin, upload}`, run
+//! through `crate::ops::run_operation` exactly like every other page's
+//! pair, so an upload started from Status is journalled like any other
+//! operation. `status.js`'s own panel wires Plan and Verify to
+//! `publisher_status` (a real read, unchanged) and Run to `upload_run`; see
+//! `upload.rs`'s own doc comment for the rest.
 
 use std::path::{Path, PathBuf};
 
