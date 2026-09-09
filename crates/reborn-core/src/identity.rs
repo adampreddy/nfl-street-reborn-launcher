@@ -110,6 +110,27 @@ const SAVE_UNREACHABLE: &str =
 /// `SIGNIN_UNAVAILABLE`, worded for a save instead of a sign-in.
 const SAVE_UNAVAILABLE: &str = "This could not be saved right now. Try again in a moment.";
 
+/// Shown when `clear_token` cannot finish: the vault still reports the credential present
+/// after a delete. This is reached from `sign_out`, which the player triggered on purpose by
+/// asking to sign out, so the message says plainly that it did not fully happen and what to
+/// try -- never "token" or "vault", which are our vocabulary, not the player's.
+const SIGN_OUT_FAILED: &str = "You are still signed in. Try signing out again.";
+
+/// Shown when a player who is not signed in tries to change a preference such as show-offline
+/// (the show-offline checkbox is meant to be hidden while signed out, but `set_show_offline`
+/// still guards itself). States plainly that they are signed out and what to do about it.
+const MUST_BE_SIGNED_IN: &str = "You are signed out. Sign in to change this setting.";
+
+/// Shown when `open_in_browser` refuses to open a non-http(s) url. Not reachable today -- its
+/// one caller discards the error via `.is_ok()` -- fixed anyway so a future caller that does
+/// propagate it cannot put a fragment, let alone the url itself, on screen.
+const PAGE_NOT_OPENED: &str = "That page could not be opened automatically. Please open it yourself.";
+
+/// The 401 case in `set_show_offline`: the server itself ended the session. This is the
+/// wording every other message in this file is held to: short, calm, plain sentences that say
+/// what happened and what to do next.
+const SESSION_EXPIRED: &str = "Signed out. Sign in again.";
+
 pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> {
     let body = serde_json::json!({ "label": label });
     let url = origin_url(origin, "/v1/auth/device");
@@ -208,7 +229,7 @@ pub fn clear_token(platform: &Platform) -> Result<()> {
     // silently survives a "successful" sign-out is the worst outcome this function could
     // produce.
     if platform.credentials.retrieve(TOKEN_ACCOUNT)?.is_some() {
-        return Err(plain("could not remove the stored sign-in token; try again".to_string()));
+        return Err(plain(SIGN_OUT_FAILED.to_string()));
     }
     let path = identity_path(platform)?;
     match std::fs::remove_file(&path) {
@@ -256,10 +277,10 @@ fn parse_show_offline_reply(r: &crate::net::HttpResponse, url: &str) -> Result<P
 }
 
 pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show: bool) -> Result<PlayerFacts> {
-    let tok = token(platform)?.ok_or_else(|| plain("not signed in".to_string()))?;
+    let tok = token(platform)?.ok_or_else(|| plain(MUST_BE_SIGNED_IN.to_string()))?;
     let url = origin_url(origin, "/v1/me/show_offline");
     let r = post_show_offline(http, &url, &tok, show)?;
-    if r.status == 401 { clear_token(platform)?; return Err(plain("Signed out. Sign in again.".to_string())); }
+    if r.status == 401 { clear_token(platform)?; return Err(plain(SESSION_EXPIRED.to_string())); }
     let player = parse_show_offline_reply(&r, &url)?;
     let path = identity_path(platform)?;
     let file = match read_identity(&path)? {
@@ -291,7 +312,7 @@ pub fn open_in_browser(platform: &Platform, url: &str) -> Result<()> {
         // carry the player's own sign-in code, and a hostile origin could put anything in it --
         // the same reason `DeviceStart`'s Debug impl excludes verify_url.
         tracing::warn!("refused to open a link that was not http or https");
-        return Err(plain("that link could not be opened".to_string()));
+        return Err(plain(PAGE_NOT_OPENED.to_string()));
     }
     let program: &str = if cfg!(windows) { "explorer.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let args = vec![std::ffi::OsString::from(url)];
@@ -353,11 +374,19 @@ mod tests {
     /// `open_in_browser`'s link check. Renamed from `every_sign_in_error_...` (task 10b round 1)
     /// because it now covers more than sign-in: `set_show_offline` is a settings toggle, not a
     /// sign-in step, but it is reachable from the same screen through the same kind of network
-    /// call and was found to leak the same way. None of these messages may carry raw technical
-    /// text: no scheme word, no URL, no three-digit status code. This is mechanical -- a run of
-    /// 3+ ASCII digits, or the substring "http" -- rather than a list of expected sentences, so
-    /// a future edit that slips a URL or a status code back into a message fails this test even
-    /// if nobody updates the list by hand.
+    /// call and was found to leak the same way.
+    ///
+    /// Every message is checked against five things, mechanically rather than as a list of
+    /// expected strings, so a future edit cannot slip a bad one past this test just by not
+    /// being on a hand-maintained list:
+    /// - no scheme word ("http")
+    /// - no URL ("://")
+    /// - no three-or-more-digit run (a status code)
+    /// - starts with a capital letter
+    /// - ends with a full stop, a question mark, or an exclamation mark (a sentence, not a
+    ///   fragment -- task 10b round 3, after `"not signed in"` and
+    ///   `"could not remove the stored sign-in token; try again"` reached this test as
+    ///   fragments and were rewritten rather than the check being loosened to let them through)
     #[test]
     fn every_identity_error_reads_as_a_plain_sentence() {
         fn has_run_of_three_or_more_digits(s: &str) -> bool {
@@ -375,67 +404,86 @@ mod tests {
             false
         }
 
-        fn assert_player_safe(err: &Error) {
-            let msg = format!("{err}");
+        fn assert_player_safe(msg: &str) {
             let lower = msg.to_ascii_lowercase();
             assert!(!lower.contains("http"), "message leaked transport jargon: {msg}");
             assert!(!msg.contains("://"), "message leaked a URL: {msg}");
             assert!(
-                !has_run_of_three_or_more_digits(&msg),
+                !has_run_of_three_or_more_digits(msg),
                 "message leaked a status code: {msg}"
+            );
+            let first = msg.chars().next().expect("a non-empty message");
+            assert!(
+                first.is_ascii_uppercase(),
+                "message is a fragment, not a sentence (no capital letter to start): {msg}"
+            );
+            let last = msg.chars().last().expect("a non-empty message");
+            assert!(
+                matches!(last, '.' | '?' | '!'),
+                "message is a fragment, not a sentence (no closing punctuation): {msg}"
             );
         }
 
         // start: the server cannot be reached at all (no canned reply -> a transport failure).
         let start_unreachable = FakeHttp::default();
-        assert_player_safe(&start(&start_unreachable, "https://b", "ADAM-PC").unwrap_err());
+        assert_player_safe(&start(&start_unreachable, "https://b", "ADAM-PC").unwrap_err().to_string());
 
         // start: the server answers, but with a failure status.
         let start_failure = FakeHttp::default().reply("https://b/v1/auth/device", 500, "internal error");
-        assert_player_safe(&start(&start_failure, "https://b", "ADAM-PC").unwrap_err());
+        assert_player_safe(&start(&start_failure, "https://b", "ADAM-PC").unwrap_err().to_string());
 
         // start: a 200 whose body is not the expected shape.
         let start_garbage = FakeHttp::default().reply("https://b/v1/auth/device", 200, "not json");
-        assert_player_safe(&start(&start_garbage, "https://b", "ADAM-PC").unwrap_err());
+        assert_player_safe(&start(&start_garbage, "https://b", "ADAM-PC").unwrap_err().to_string());
 
         // poll: the server cannot be reached at all.
         let poll_unreachable = FakeHttp::default();
-        assert_player_safe(&poll(&poll_unreachable, "https://b", "dc").unwrap_err());
+        assert_player_safe(&poll(&poll_unreachable, "https://b", "dc").unwrap_err().to_string());
 
         // poll: a failure status that is neither 428 pending nor 410 expired.
         let poll_failure = FakeHttp::default().reply("https://b/v1/auth/device/poll", 500, "internal error");
-        assert_player_safe(&poll(&poll_failure, "https://b", "dc").unwrap_err());
+        assert_player_safe(&poll(&poll_failure, "https://b", "dc").unwrap_err().to_string());
 
         // poll: a 200 whose body is not the expected shape.
         let poll_garbage = FakeHttp::default().reply("https://b/v1/auth/device/poll", 200, "not json");
-        assert_player_safe(&poll(&poll_garbage, "https://b", "dc").unwrap_err());
+        assert_player_safe(&poll(&poll_garbage, "https://b", "dc").unwrap_err().to_string());
 
         // poll: a 200 with valid JSON that is missing the token and player.
         let poll_incomplete = FakeHttp::default().reply("https://b/v1/auth/device/poll", 200, r#"{"ok":true}"#);
-        assert_player_safe(&poll(&poll_incomplete, "https://b", "dc").unwrap_err());
+        assert_player_safe(&poll(&poll_incomplete, "https://b", "dc").unwrap_err().to_string());
 
         // poll: the 404-is-not-Expired case must also read as a plain sentence.
         let poll_wrong_path = FakeHttp::default().reply("https://b/v1/auth/device/poll", 404, "");
-        assert_player_safe(&poll(&poll_wrong_path, "https://b", "dc").unwrap_err());
+        assert_player_safe(&poll(&poll_wrong_path, "https://b", "dc").unwrap_err().to_string());
 
         // set_show_offline (via its network halves): the server cannot be reached at all.
         let show_unreachable = FakeHttp::default();
-        assert_player_safe(&post_show_offline(&show_unreachable, "https://b/v1/me/show_offline", "tok", true).unwrap_err());
+        assert_player_safe(&post_show_offline(&show_unreachable, "https://b/v1/me/show_offline", "tok", true).unwrap_err().to_string());
 
         // set_show_offline: the server answers, but with a failure status.
         let show_failure = FakeHttp::default().reply("https://b/v1/me/show_offline", 500, "internal error");
         let r = post_show_offline(&show_failure, "https://b/v1/me/show_offline", "tok", true).unwrap();
-        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err());
+        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err().to_string());
 
         // set_show_offline: a 200 whose body is not the expected shape.
         let show_garbage = FakeHttp::default().reply("https://b/v1/me/show_offline", 200, "not json");
         let r = post_show_offline(&show_garbage, "https://b/v1/me/show_offline", "tok", true).unwrap();
-        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err());
+        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err().to_string());
 
         // open_in_browser: a non-http url is refused, and its error must not repeat the url back.
         let platform = crate::platform::imp::platform();
-        assert_player_safe(&open_in_browser(&platform, "file:///C:/secrets.txt").unwrap_err());
-        assert_player_safe(&open_in_browser(&platform, "javascript:alert(1)").unwrap_err());
+        assert_player_safe(&open_in_browser(&platform, "file:///C:/secrets.txt").unwrap_err().to_string());
+        assert_player_safe(&open_in_browser(&platform, "javascript:alert(1)").unwrap_err().to_string());
+
+        // clear_token's "the vault still has it" message and set_show_offline's "you are
+        // signed out" guard are not reachable through a fake Http or a fake vault (this crate
+        // has no in-memory CredentialVault, and using the real OS vault under the real
+        // TOKEN_ACCOUNT would risk clobbering a signed-in session on whatever machine runs this
+        // test). Their wording is still locked down here directly, so a future edit that turns
+        // either back into a fragment fails this test even without a live vault.
+        assert_player_safe(SIGN_OUT_FAILED);
+        assert_player_safe(MUST_BE_SIGNED_IN);
+        assert_player_safe(SESSION_EXPIRED);
     }
 
     #[test]
