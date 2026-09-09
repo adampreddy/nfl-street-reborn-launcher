@@ -72,6 +72,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ($GameImages.Count -gt 0) { throw "This installer imports the player's game in onboarding. Use -GamePatch instead of -GameImages." }
+# -RuntimeOnly relaxes the other required arguments (GamePatch, Textures,
+# PromptPackages) below, but never this one: without -Runtime there is
+# nothing to stage.
+if ($RuntimeOnly -and -not $Runtime) { throw "-RuntimeOnly needs -Runtime pointing at the folder to stage. Nothing was built." }
 if ($LauncherOnly) {
     if ($GamePatch -or $Runtime -or $Textures -or $PromptPackages) { throw "-LauncherOnly ships the launcher alone. Leave -GamePatch, -Runtime, -Textures and -PromptPackages out." }
 } else {
