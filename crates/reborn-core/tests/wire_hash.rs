@@ -1,0 +1,28 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+}
+
+#[test]
+fn every_real_capture_hashes_exactly_as_the_site_php_does() {
+    let expected: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(fixtures().join("expected-hashes.json")).unwrap()).unwrap();
+    assert_eq!(expected.len(), 6);
+    for (name, want) in &expected {
+        let bytes = fs::read(fixtures().join("captures").join(name)).unwrap();
+        let got = reborn_core::stats::wire_hash_of(&bytes).expect("a JSON object");
+        assert_eq!(&got, want, "{name}");
+    }
+}
+
+#[test]
+fn php_shapes_are_reproduced() {
+    let v: serde_json::Value = serde_json::json!({"teams":[{"name":"A","score":1},{"name":"B","score":0}],"style":[1,0],"players":[]});
+    assert_eq!(reborn_core::stats::wire_canonical(&v), r#"{"teams":[{"name":"A","score":1},{"name":"B","score":0}],"style":[1,0],"team_totals":[],"players":[]}"#);
+    let v: serde_json::Value = serde_json::json!({"teams":[],"style":[],"players":[{"digp":3,"name":" x ","side":1,"stats":{}}]});
+    assert_eq!(reborn_core::stats::wire_canonical(&v), r#"{"teams":[],"style":[],"team_totals":[],"players":[{"digp":3,"name":"x","side":1,"stats":[]}]}"#);
+    assert!(reborn_core::stats::wire_hash_of(b"[]").is_none());
+}

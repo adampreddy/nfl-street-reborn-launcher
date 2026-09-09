@@ -937,6 +937,104 @@ fn sorted_object(fields: BTreeMap<&str, Value>) -> Value {
     )
 }
 
+/// PHP `trim()`: only " \t\n\r\0\x0B". Rust's `trim()` strips more, so it is not used here.
+fn php_trim(s: &str) -> &str {
+    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0B'))
+}
+
+/// PHP `(int)` for the values a capture carries.
+fn php_int(v: &Value) -> i64 {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)).unwrap_or(0),
+        Value::String(s) => s.trim().parse::<f64>().map(|f| f.trunc() as i64).unwrap_or(0),
+        Value::Bool(b) => i64::from(*b),
+        _ => 0,
+    }
+}
+
+/// A PHP assoc array after ksort(): keys in byte order, values cast to int, and an EMPTY one is `[]`.
+fn php_sorted_int_map(v: Option<&Value>) -> String {
+    let Some(Value::Object(m)) = v else { return "[]".to_string() };
+    if m.is_empty() {
+        return "[]".to_string();
+    }
+    let sorted: BTreeMap<&String, i64> = m.iter().map(|(k, v)| (k, php_int(v))).collect();
+    let body: Vec<String> = sorted
+        .iter()
+        .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap_or_default(), v))
+        .collect();
+    format!("{{{}}}", body.join(","))
+}
+
+fn php_str(v: Option<&Value>) -> String {
+    let s = match v {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    serde_json::to_string(php_trim(s)).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// The wire hash's input: `si_capture_hash()` from the league site, byte for byte.
+///
+/// Key order is the PHP array's insertion order (teams, style, team_totals, players),
+/// players are sorted by digp, every map is ksorted and int-cast, an absent
+/// team_totals is `[]`, and an empty stats map is `[]` because PHP encodes an empty
+/// array that way. `serde_json` and PHP's json_encode with UNESCAPED_SLASHES and
+/// UNESCAPED_UNICODE escape strings identically for everything a team or player
+/// name can hold, except U+2028 and U+2029, which PHP escapes and serde does not.
+///
+/// This is deliberately separate from [`Capture::canonical_bytes`]. That recipe
+/// sorts all keys alphabetically and exists to name queue files locally; this one
+/// reproduces the site's insertion order and int-casting rules so the resulting
+/// hash matches what the PHP backend and the site itself compute over the same
+/// bytes. The two must never be merged into one function.
+pub fn wire_canonical(cap: &Value) -> String {
+    let arr = |k: &str| -> Vec<&Value> {
+        match cap.get(k) {
+            Some(Value::Array(a)) => a.iter().collect(),
+            _ => Vec::new(),
+        }
+    };
+    let teams: Vec<String> = arr("teams")
+        .iter()
+        .map(|t| format!("{{\"name\":{},\"score\":{}}}", php_str(t.get("name")), php_int(t.get("score").unwrap_or(&Value::Null))))
+        .collect();
+    let style: Vec<String> = arr("style").iter().map(|s| php_int(s).to_string()).collect();
+    let totals: Vec<String> = arr("team_totals").iter().map(|row| php_sorted_int_map(Some(row))).collect();
+    let mut players: Vec<(i64, String)> = arr("players")
+        .iter()
+        .map(|p| {
+            let digp = php_int(p.get("digp").unwrap_or(&Value::Null));
+            let line = format!(
+                "{{\"digp\":{},\"name\":{},\"side\":{},\"stats\":{}}}",
+                digp,
+                php_str(p.get("name")),
+                php_int(p.get("side").unwrap_or(&Value::Null)),
+                php_sorted_int_map(p.get("stats"))
+            );
+            (digp, line)
+        })
+        .collect();
+    players.sort_by_key(|(d, _)| *d); // stable, like PHP 8's usort
+    format!(
+        "{{\"teams\":[{}],\"style\":[{}],\"team_totals\":[{}],\"players\":[{}]}}",
+        teams.join(","),
+        style.join(","),
+        totals.join(","),
+        players.into_iter().map(|(_, l)| l).collect::<Vec<_>>().join(",")
+    )
+}
+
+/// The wire `capture_hash`: sha256 hex of [`wire_canonical`]. None when the bytes are not a JSON object.
+pub fn wire_hash_of(bytes: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    if !v.is_object() {
+        return None;
+    }
+    use sha2::Digest;
+    Some(hex::encode(sha2::Sha256::digest(wire_canonical(&v).as_bytes())))
+}
+
 // ---------------------------------------------------------------------------
 // Validation results
 // ---------------------------------------------------------------------------
