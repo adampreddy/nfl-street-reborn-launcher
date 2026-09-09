@@ -190,16 +190,35 @@ const NOT_A_CAPTURE: &str =
 ///
 /// Now a refusal has to be legible to count: a reply in the server's own
 /// format that says why. Anything else defers, and the capture stays sendable.
+///
+/// # What "the server's own format" means, and why the first attempt at this
+/// was not enough
+///
+/// The first version parsed the body into a reply type whose every field
+/// defaults, then asked whether it carried an `error` or a `reason`. Any JSON
+/// object at all parses into a type like that, so the test was really "is this
+/// JSON, and does it happen to have an error field". Content delivery networks
+/// and API gateways answer 403 and 404 with exactly that shape as a matter of
+/// course, so the case this rule exists for -- an edge refusing the request
+/// before it ever reaches the server -- still destroyed every queued game
+/// permanently whenever the edge answered in JSON rather than in HTML.
+///
+/// Our server always states whether it succeeded. So `ok` has to be **present**
+/// for a body to be ours at all, and a non-2xx refusal has to say `ok: false`.
+/// A body that merely happens to contain an error field is not our server
+/// talking, and nothing that is not our server may make a refusal permanent.
 pub fn classify(status: u16, body: &str) -> SubmitOutcome {
     #[derive(serde::Deserialize, Default)]
-    struct Reply { #[serde(default)] ok: bool, #[serde(default)] status: String, #[serde(default)] reason: Option<String>, #[serde(default)] error: Option<String> }
-    let parsed: Option<Reply> = serde_json::from_str(body).ok();
+    struct Reply { #[serde(default)] ok: Option<bool>, #[serde(default)] status: String, #[serde(default)] reason: Option<String>, #[serde(default)] error: Option<String> }
+    // Ours only if it says whether it succeeded. Everything else is somebody
+    // between us and the server, however well formed it looks.
+    let parsed: Option<Reply> = serde_json::from_str(body).ok().filter(|r: &Reply| r.ok.is_some());
     // The server's own words for why it refused, or nothing.
     let stated = |r: Reply| r.error.or(r.reason).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     match status {
         401 => SubmitOutcome::Unauthorized,
         200..=299 => match parsed {
-            Some(r) if r.ok => match r.status.as_str() {
+            Some(r) if r.ok == Some(true) => match r.status.as_str() {
                 "accepted" | "duplicate" => SubmitOutcome::Accepted,
                 "held" => {
                     if let Some(why) = r.reason.as_deref() {
@@ -225,7 +244,9 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
             None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         },
         429 | 500..=599 => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
-        _ => match parsed.and_then(stated) {
+        // Terminal only when our server says, in its own words, that it
+        // looked at this result and did not store it.
+        _ => match parsed.filter(|r| r.ok == Some(false)).and_then(stated) {
             Some(code) => refused(Some(code)),
             None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         },
@@ -422,6 +443,41 @@ mod tests {
             assert!(
                 matches!(classify(status, body), SubmitOutcome::Deferred { .. }),
                 "{status} with {body:?} was made permanent, so the game is gone"
+            );
+        }
+    }
+
+    /// An edge that answers in JSON is still not this server refusing this
+    /// result.
+    ///
+    /// The previous rule was "the body parses as the reply type and carries an
+    /// error or a reason". Every field of that type defaults, so any JSON
+    /// object at all satisfied it, and content delivery networks and API
+    /// gateways return exactly this shape on 403 and 404 as a matter of
+    /// course. So the case the rule was written to fix -- an edge refusing the
+    /// request -- still destroyed every queued game permanently whenever the
+    /// edge answered in JSON rather than in HTML.
+    ///
+    /// Our server always states whether it succeeded. A body that merely
+    /// happens to contain an error field is not our server talking, and
+    /// nothing that is not our server may make a refusal permanent.
+    #[test]
+    fn an_edge_answering_in_json_is_not_this_server_refusing_this_result() {
+        for (status, body) in [
+            // Cloudflare, and anything modeled on it.
+            (403, r#"{"error":"Forbidden"}"#),
+            (403, r#"{"success":false,"errors":[{"code":1020,"message":"Access denied"}]}"#),
+            // API gateways and reverse proxies.
+            (404, r#"{"message":"Not Found","error":"NotFound"}"#),
+            (400, r#"{"error":"invalid_request","error_description":"bad host"}"#),
+            (451, r#"{"reason":"blocked by policy"}"#),
+            // A bare object with nothing in it at all.
+            (409, r#"{}"#),
+        ] {
+            assert!(
+                matches!(classify(status, body), SubmitOutcome::Deferred { .. }),
+                "{status} with {body} was made permanent by something that is not our \
+                 server, so every game in the queue is gone"
             );
         }
     }
