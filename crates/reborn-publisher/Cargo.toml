@@ -1,0 +1,25 @@
+[package]
+name = "reborn-publisher"
+description = "The Reborn Publisher window: plan, run, verify, over reborn_core::publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "reborn-publisher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `publish` is the publisher's half of the core: key generation, signing,
+# the journal, upload. A player's launcher never links any of it; this is
+# the one window that does.
+reborn-core = { path = "../reborn-core", features = ["publish"] }
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+rfd = "0.15"

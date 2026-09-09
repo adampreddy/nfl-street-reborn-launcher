@@ -3295,6 +3295,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reborn-publisher"
+version = "3.0.0"
+dependencies = [
+ "reborn-core",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "reborn-ui"
 version = "3.0.0"
 dependencies = [

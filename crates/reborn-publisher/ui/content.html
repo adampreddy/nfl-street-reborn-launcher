@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Content | Reborn Publisher</title>
+  <link rel="stylesheet" href="publisher.css">
+</head>
+<body>
+  <header class="pub-header"><span class="brand">Reborn Publisher</span></header>
+  <nav class="pub-nav" aria-label="Main navigation">
+    <a href="index.html">Status<small>Live, local, this machine</small></a>
+    <a href="roster.html">Roster<small>Publish the site's export</small></a>
+    <a href="launcher.html">Launcher<small>Build and publish an update</small></a>
+    <a href="game.html">Game<small>The Builder, and the patch</small></a>
+    <a href="content.html">Content<small>Textures, runtime, mods</small></a>
+    <a href="history.html">History<small>The journal, and rollback</small></a>
+    <a href="keys.html">Keys<small>Signing keys and the vault</small></a>
+  </nav>
+  <main id="main">
+    <div class="page-heading">
+      <h1>Content</h1>
+      <p class="purpose">
+        Publish textures, the runtime, or mods from a folder. A runtime
+        folder is linted first, so a runtime the launcher has already
+        started is never published by mistake.
+      </p>
+    </div>
+    <section id="screen"></section>
+  </main>
+  <script type="module" src="shell.js"></script>
+  <script type="module" src="content.js"></script>
+</body>
+</html>
