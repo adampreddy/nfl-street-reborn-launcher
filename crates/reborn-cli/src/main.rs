@@ -1179,6 +1179,7 @@ fn play(
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
+        league_match: false,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same

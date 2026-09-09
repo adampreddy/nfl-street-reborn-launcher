@@ -445,6 +445,7 @@ async fn prepare_launch(
             build: GameBuild::Offline,
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
+            league_match: false,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -675,6 +676,7 @@ async fn launch(
     fullscreen: bool,
     user_dir: Option<String>,
     mods_disabled: bool,
+    league_match: Option<bool>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LaunchGuard::acquire()?;
@@ -696,6 +698,7 @@ async fn launch(
             build: GameBuild::Offline,
             mods_disabled,
             user_dir: chosen_user,
+            league_match: league_match.unwrap_or(false),
         };
 
         match Session::run(&p, &req).map_err(|e| e.to_string())? {
@@ -2904,6 +2907,7 @@ async fn onboarding_run_task(
                     // here is the bug that booted the game to factory defaults
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
+                    league_match: false,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -3418,7 +3422,7 @@ async fn stats_ingest(
 
         let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
         let results = queue
-            .ingest_from(&from, session_id.as_deref())
+            .ingest_all(Path::new(&user_dir), session_id.as_deref())
             .map_err(|e| e.to_string())?;
 
         let mut view = StatsIngestView {
@@ -3445,52 +3449,25 @@ async fn stats_ingest(
     .map_err(|e| e.to_string())?
 }
 
-/// Send everything queued to the league server.
-///
-/// Refuses, and names what is missing. `StatsQueue::submit_pending` takes a
-/// `Submitter`, and that trait is the whole network seam: the core holds no URL,
-/// no credential and no HTTP client, and nothing in this workspace implements
-/// it. Writing one here that always deferred would be worse than refusing,
-/// because the queue page would show a submission pass that ran and moved
-/// nothing.
+/// Send everything queued to the backend. No confirmation: sending is what the queue is for,
+/// and the server's idempotency makes a repeat harmless.
 #[tauri::command]
-async fn stats_submit(confirm: bool) -> Result<StatsSubmitView, String> {
-    confirmed(
-        confirm,
-        "stats_submit",
-        "upload every queued result, which cannot be taken back",
-    )?;
+async fn stats_submit(confirm: Option<bool>) -> Result<StatsSubmitView, String> {
+    let _ = confirm;
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
-            return Err(already_running());
-        };
-        let token = p
-            .credentials
-            .retrieve(reborn_core::league::TOKEN_ACCOUNT)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| {
-                "No league token is stored, so nothing was sent. Enter the token on the \
-                 Settings page; the results stay queued until then."
-                    .to_string()
-            })?;
-        let url = league_url(&p)?;
-        let http = http_client();
-        let sender = reborn_core::league::LeagueSubmitter::new(&http, url.clone(), token);
+        let Startup::Owner(sup) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else { return Err(already_running()); };
+        let url = backend_origin(&p)?;
         let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let report = queue.submit_pending(&sender, 5).map_err(|e| e.to_string())?;
-        Ok(StatsSubmitView {
-            url,
-            accepted: report.accepted.len(),
-            held: report.held.len(),
-            rejected: report.rejected.len(),
-            deferred: report.deferred.len(),
-            stalled: report.stalled.len(),
-            note: submit_note(&report),
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let history = sup.history().map_err(|e| e.to_string())?;
+        match reborn_core::backend::auto_submit(&p, &queue, &history).map_err(|e| e.to_string())? {
+            reborn_core::backend::SendAttempt::NotSignedIn => Ok(StatsSubmitView { url, accepted: 0, held: 0, rejected: 0, deferred: 0, stalled: 0, note: "Sign in with Discord to send your results. They are kept until then.".to_string() }),
+            reborn_core::backend::SendAttempt::Sent(report) => Ok(StatsSubmitView {
+                url, accepted: report.accepted.len() + report.recorded.len(), held: report.held.len(), rejected: report.rejected.len(), deferred: report.deferred.len(), stalled: report.stalled.len(),
+                note: if report.waiting_for_sign_in { "The server no longer accepts this sign-in. Sign in again; nothing was lost.".to_string() } else { submit_note(&report) },
+            }),
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Serialize)]
@@ -3508,8 +3485,9 @@ struct StatsSubmitView {
 
 fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
     let mut parts = Vec::new();
-    if !r.accepted.is_empty() {
-        parts.push(format!("{} accepted", r.accepted.len()));
+    let accepted = r.accepted.len() + r.recorded.len();
+    if accepted > 0 {
+        parts.push(format!("{accepted} accepted"));
     }
     if !r.held.is_empty() {
         parts.push(format!("{} held for commissioner review", r.held.len()));
@@ -3528,16 +3506,6 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
     } else {
         format!("{}.", parts.join(", "))
     }
-}
-
-/// The league endpoint: the setting, or the site's ingest endpoint.
-fn league_url(p: &Platform) -> Result<String, String> {
-    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
-    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
-    Ok(settings
-        .league_ingest_url
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| reborn_core::league::DEFAULT_INGEST_URL.to_string()))
 }
 
 fn http_client() -> reborn_core::net::UreqHttp {
@@ -3729,45 +3697,114 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Who the player is.
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Serialize)]
-struct CredentialSetView {
-    account: &'static str,
-    stored: bool,
-    /// The token's length, never the token.
-    length: usize,
+struct IdentityView {
+    signed_in: bool,
+    display_name: Option<String>,
+    player_id: Option<String>,
+    show_offline: Option<bool>,
+}
+#[derive(Debug, Serialize)]
+struct SignInStartView {
+    device_code: String,
+    user_code: String,
+    verify_url: String,
+    interval: u64,
+    opened: bool,
+}
+#[derive(Debug, Serialize)]
+struct SignInPollView {
+    state: &'static str,
+    display_name: Option<String>,
 }
 
-/// Store the league token in the operating system's credential store.
-///
-/// Never written to disk by the launcher, never logged, never echoed back:
-/// the view carries its length so a page can say something was stored.
+fn identity_view(file: Option<&reborn_core::identity::IdentityFile>) -> IdentityView {
+    match file {
+        Some(f) => IdentityView { signed_in: true, display_name: Some(f.player.display_name.clone()), player_id: Some(f.player.id.clone()), show_offline: Some(f.player.show_offline) },
+        None => IdentityView { signed_in: false, display_name: None, player_id: None, show_offline: None },
+    }
+}
+
+/// The backend: the setting, or the product origin.
+fn backend_origin(p: &Platform) -> Result<String, String> {
+    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
+    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
+    Ok(settings.backend_origin.filter(|u| !u.trim().is_empty()).unwrap_or_else(|| reborn_core::identity::DEFAULT_ORIGIN.to_string()))
+}
+
 #[tauri::command]
-async fn stats_credential_set(token: String) -> Result<CredentialSetView, String> {
+async fn identity_status() -> Result<IdentityView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Err("the token is empty; nothing was stored".to_string());
+        let p = Platform::detect();
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Start a Discord sign-in and open the verify page in the default browser.
+#[tauri::command]
+async fn identity_sign_in_start() -> Result<SignInStartView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        let s = reborn_core::identity::start(&http, &origin, &reborn_core::identity::machine_label()).map_err(|e| e.to_string())?;
+        let opened = reborn_core::identity::open_in_browser(&p, &s.verify_url).is_ok();
+        Ok(SignInStartView { device_code: s.device_code, user_code: s.user_code, verify_url: s.verify_url, interval: s.interval.max(2), opened })
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Ask whether the browser step finished. On "done" the token is already in the vault.
+#[tauri::command]
+async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        match reborn_core::identity::poll(&http, &origin, &device_code).map_err(|e| e.to_string())? {
+            reborn_core::identity::Poll::Pending => Ok(SignInPollView { state: "pending", display_name: None }),
+            reborn_core::identity::Poll::Expired => Ok(SignInPollView { state: "expired", display_name: None }),
+            reborn_core::identity::Poll::Done { token, player } => {
+                let name = player.display_name.clone();
+                reborn_core::identity::save_signed_in(&p, &token, player, now_ms()).map_err(|e| e.to_string())?;
+                // The backlog goes out the moment a token exists.
+                if let Ok(Startup::Owner(sup)) = Supervisor::acquire(&p) {
+                    if let Ok(queue) = StatsQueue::open(&p) {
+                        let history = sup.history().unwrap_or_default();
+                        let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
+                    }
+                }
+                Ok(SignInPollView { state: "done", display_name: Some(name) })
+            }
         }
-        let p = Platform::detect();
-        p.credentials
-            .store(reborn_core::league::TOKEN_ACCOUNT, &token)
-            .map_err(|e| e.to_string())?;
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: true, length: token.len() })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }).await.map_err(|e| e.to_string())?
 }
 
-/// Remove the league token from the credential store.
 #[tauri::command]
-async fn stats_credential_forget() -> Result<CredentialSetView, String> {
+async fn identity_sign_out() -> Result<IdentityView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let _ = p.credentials.delete(reborn_core::league::TOKEN_ACCOUNT);
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: false, length: 0 })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::sign_out(&p, &http, &origin).map_err(|e| e.to_string())?;
+        Ok(identity_view(None))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn identity_set_show_offline(show: bool) -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::set_show_offline(&p, &http, &origin, show).map_err(|e| e.to_string())?;
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
 }
 
 // ---------------------------------------------------------------------------
@@ -4797,6 +4834,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
+        league_match: false,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
@@ -5019,6 +5057,12 @@ fn main() {
             onboarding_start_over,
             // The Xbox wizard's drive picker.
             removable_drives,
+            // Who the player is.
+            identity_status,
+            identity_sign_in_start,
+            identity_sign_in_poll,
+            identity_sign_out,
+            identity_set_show_offline,
             // Captured results.
             stats_queue,
             stats_ingest,
@@ -5026,8 +5070,6 @@ fn main() {
             settings_set_path,
             settings_paths,
             pick_path,
-            stats_credential_set,
-            stats_credential_forget,
             update_check,
             update_download,
             update_apply,
@@ -5057,6 +5099,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_view_from_a_file_and_from_nothing() {
+        let file = reborn_core::identity::IdentityFile {
+            player: reborn_core::identity::PlayerFacts { id: "p1".into(), display_name: "Adam".into(), avatar_hash: None, show_offline: true },
+            signed_in_at_ms: 1,
+        };
+        let v = identity_view(Some(&file));
+        assert!(v.signed_in);
+        assert_eq!(v.display_name.as_deref(), Some("Adam"));
+        assert_eq!(v.show_offline, Some(true));
+        let none = identity_view(None);
+        assert!(!none.signed_in && none.player_id.is_none());
+    }
 
     #[test]
     fn setup_image_rejects_missing_empty_directory_and_unreadable_content() {
@@ -5109,6 +5165,8 @@ mod tests {
             source_path: None,
             session_id: None,
             summary: None,
+            capture_folder: None,
+            note: None,
         }
     }
 
