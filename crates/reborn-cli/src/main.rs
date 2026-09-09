@@ -3988,6 +3988,20 @@ fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::pro
         println!("Nothing was changed. Re-run with --apply to put them back in the queue.");
         return Ok(PROBLEM);
     }
+    // The lock, for the rewrite. `requeue_rejected` reads the ledger, drops
+    // the rejection rows, writes a temporary file and renames it over the
+    // original, and an append landing between the read and the rename is
+    // inside the file that gets replaced. A ledger row is the only thing
+    // standing between a crash and a result being sent twice on a real
+    // fixture, so losing one is not acceptable. The appends come from a
+    // launcher running at the same time, and this is the lock that stops one
+    // existing -- the same lock every other piece of queue work takes.
+    let Startup::Owner(_lock) = Supervisor::acquire(platform)? else {
+        println!();
+        println!("Another launcher is running and owns this install. Close it and try again;");
+        println!("nothing was changed.");
+        return Ok(PROBLEM);
+    };
     let moved = queue.retry_stalled()?;
     let unrefused = queue.requeue_rejected()?;
     println!();
@@ -5138,6 +5152,51 @@ mod tests {
     /// `Platform` and a resolved user directory and cannot be called in a test
     /// without one; what has to be true is that the no-flag path reaches
     /// `ingest_all` and the flag path still reaches the single-folder call.
+    /// Rewriting the ledger takes the lock the rest of the queue work takes.
+    ///
+    /// `requeue_rejected` reads the ledger, drops the rejection rows, writes a
+    /// temporary file and renames it over the original. An append landing
+    /// between the read and the rename is inside the file that gets replaced,
+    /// so it is lost -- and a ledger row is the only thing standing between a
+    /// crash and a result being sent twice on a real fixture.
+    ///
+    /// Nothing here can hold that window open on its own, because the appends
+    /// come from a launcher running at the same time. The single-instance lock
+    /// is what stops that launcher existing, and it is the lock every other
+    /// piece of queue work already takes.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The function's text is cut at the next item's own first line, which is
+    /// thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn putting_results_back_takes_the_lock_the_rest_of_the_queue_work_takes() {
+        let src = include_str!("main.rs");
+        let from = src
+            .find("\nfn stats_retry(")
+            .expect("stats_retry is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\nfn stats_prune(").expect("stats_prune moved")];
+
+        let lock = body.find("Supervisor::acquire").unwrap_or_else(|| {
+            panic!(
+                "stats retry rewrites the ledger with no lock, so an append from a launcher \
+                 running at the same time is dropped on the rename"
+            )
+        });
+        // The call, not the name: the comment above the lock explains what
+        // `requeue_rejected` does, and searching for the bare name would find
+        // that comment first and always read as "the lock came too late".
+        let rewrite = body
+            .find("queue.requeue_rejected(")
+            .expect("stats retry no longer puts refused results back");
+        assert!(
+            lock < rewrite,
+            "the lock is taken after the ledger has already been rewritten"
+        );
+    }
+
     /// The person who has to act on a refusal can see which refusal it was.
     ///
     /// A rejection is permanent, and `stats retry --apply` is the documented
