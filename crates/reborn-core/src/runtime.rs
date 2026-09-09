@@ -806,6 +806,19 @@ mod tests {
     }
 }
 
+/// Shown when the emulator is open and something is about to write the files
+/// it has in memory.
+///
+/// A finished instruction rather than a fault report, so it is carried as
+/// [`crate::Error::player`] and reaches the player unchanged. It used to be an
+/// [`std::io::Error`] wrapped in `Error::PlainIo`, which is transparent over
+/// the operating system's own wording, so `Error::player_message` could not
+/// tell it from a full disk and answered "Something unexpected happened. Try
+/// again." That is false advice for the single most common failure of the
+/// Settings page's open-the-emulator button.
+pub const CLOSE_EMULATOR_FIRST: &str =
+    "Close Reborn Dolphin before applying settings, then try again.";
+
 /// Avoid Dolphin's in-memory settings overwriting configuration written during a session.
 pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
     #[cfg(windows)] {
@@ -815,7 +828,7 @@ pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
             let canonical=std::fs::canonicalize(exe)?.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
             let script="$ErrorActionPreference='Stop'; $running=@(Get-Process -Name $env:REBORN_PROCESS_NAME -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $env:REBORN_PROCESS_PATH -or $_.Path -eq $env:REBORN_PROCESS_CANONICAL}); if($running.Count -gt 0){'running'}";
             let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
-            if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(std::io::Error::other("Close Reborn Dolphin before applying settings, then try again.").into());}
+            if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(crate::Error::player(CLOSE_EMULATOR_FIRST));}
         }
     }
     Ok(())

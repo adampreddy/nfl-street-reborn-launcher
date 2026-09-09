@@ -100,8 +100,17 @@ impl std::fmt::Debug for Poll {
     }
 }
 
+/// Every refusal in this module is a finished sentence for the player, so all
+/// of them are carried as [`Error::player`].
+///
+/// They used to be `Error::PlainIo`, which is transparent over an operating
+/// system error and therefore indistinguishable from one. Anything routing an
+/// identity failure through [`Error::player_message`] would have replaced
+/// "The sign-in service could not be reached. Check your internet connection
+/// and try again." with "Something unexpected happened. Try again.", which
+/// says less and is not true.
 fn plain(msg: String) -> Error {
-    Error::PlainIo(std::io::Error::other(msg))
+    Error::player(msg)
 }
 
 fn origin_url(origin: &str, path: &str) -> String {

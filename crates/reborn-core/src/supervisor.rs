@@ -214,6 +214,18 @@ impl SessionRecord {
 /// Filenames under the run directory. Named here so nothing else guesses them.
 const LOCK_FILE: &str = "launcher.lock";
 
+/// Shown when the folder the launcher was pointed at is an existing 2.1
+/// install.
+///
+/// A finished instruction rather than a fault report, so it is carried as
+/// [`crate::Error::player`] and reaches the player unchanged. It used to be an
+/// `Error::PlainIo` carrying the folder's full path, which meant
+/// `Error::player_message` could not tell it from an operating system failure
+/// and replaced the whole thing with "Something unexpected happened. Try
+/// again." The folder is in the log; the player gets the part they can act on.
+pub const OLDER_INSTALL_IN_THE_WAY: &str =
+    "This folder already holds an older NFL Street Reborn installation, so the launcher will      not put its own files there: doing that could delete mods that are already installed.      Choose a different folder, and bring the older installation across from inside the      launcher instead.";
+
 /// How long a launch waits for a lock before it believes the refusal.
 ///
 /// Long enough to cover this launcher giving its own lock back, short enough
@@ -323,16 +335,15 @@ impl Supervisor {
         // than merely avoided.
         let data_root = run_dir.parent().unwrap_or(run_dir);
         if crate::migration::LegacyInstall::detect(data_root).is_some() {
-            return Err(Error::PlainIo(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "refusing to use {} for launcher data: it is an existing \
-                     NFL Street Reborn 2.1 install. The launcher would write \
-                     into the player's live Dolphin tree, and a cache purge \
-                     could delete their mods. Migrate from it instead.",
-                    data_root.display()
-                ),
-            )));
+            // Which folder, to the log. The player is told what is wrong and
+            // what to do; naming a folder they did not choose and cannot act
+            // on is the raw technical text this product does not show.
+            tracing::warn!(
+                "refusing to use {} for launcher data: it is an existing NFL Street \
+                 Reborn 2.1 install, and writing there could delete mods already in it",
+                data_root.display()
+            );
+            return Err(Error::player(OLDER_INSTALL_IN_THE_WAY));
         }
 
         std::fs::create_dir_all(run_dir).map_err(|source| Error::Io {
@@ -757,6 +768,19 @@ mod tests {
     /// The launcher must not adopt a 2.1 install as its own data root. Doing so
     /// put `mods/staging` and `mods/active`, both purgeable, inside the
     /// player's JSGME mod library.
+    ///
+    /// The refusal is one of the two in this crate whose wording was already
+    /// written for a player. It used to be carried as `Error::PlainIo`, which
+    /// is transparent over an operating system error, so
+    /// `Error::player_message` could not tell it from a full disk and replaced
+    /// the whole instruction with "Something unexpected happened. Try again."
+    /// It is now `Error::player`, and this asserts the wording survives that
+    /// call rather than only surviving `Display`.
+    ///
+    /// The two string assertions this test used to make were on the old
+    /// wording, which named the folder's full path and the version number.
+    /// What has to be true is asserted instead, and mechanically: it refuses,
+    /// it gives a way forward, and it reads as a sentence a player can act on.
     #[test]
     fn a_legacy_install_is_refused_as_a_data_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -767,11 +791,20 @@ mod tests {
         let p = platform();
         let err = Supervisor::acquire_at(&p, &legacy.join("cache"), SystemClock)
             .expect_err("a 2.1 install must not be adopted as launcher data");
-        let msg = err.to_string();
-        assert!(msg.contains("2.1 install"), "unhelpful message: {msg}");
+
+        let shown = err.player_message();
+        assert_eq!(
+            shown, OLDER_INSTALL_IN_THE_WAY,
+            "the instruction written for the player was flattened on its way out: {shown}"
+        );
+        crate::player_sentence::assert_player_safe(shown);
         assert!(
-            msg.contains("Migrate from it"),
-            "no way forward given: {msg}"
+            shown.contains("Choose a different folder"),
+            "no way forward given: {shown}"
+        );
+        assert!(
+            !shown.contains(&legacy.display().to_string()),
+            "the folder's full path reached the player: {shown}"
         );
     }
 

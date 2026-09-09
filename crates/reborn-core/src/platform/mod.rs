@@ -73,6 +73,35 @@ pub enum Error {
 
     #[error(transparent)]
     PlainIo(#[from] std::io::Error),
+
+    /// A refusal whose text is already a finished sentence for a player.
+    ///
+    /// # The shape this variant exists to make explicit
+    ///
+    /// Several modules refuse something with wording that was written for the
+    /// player and is complete as it stands: "Close Reborn Dolphin before
+    /// applying settings, then try again." is not a fault report, it is an
+    /// instruction. Those used to be carried in [`Error::PlainIo`], which is
+    /// transparent over an operating system error, so they were
+    /// indistinguishable from `os error 112` and
+    /// [`Error::player_message`] flattened them all to
+    /// [`SOMETHING_UNEXPECTED`]. The Settings page's open-the-emulator button
+    /// then answered "Something unexpected happened. Try again." to its single
+    /// most common failure, which is false advice: the emulator is open and
+    /// the player has to close it.
+    ///
+    /// So the distinction is a variant rather than a list of known strings.
+    /// Anything constructed with [`Error::player`] is a sentence somebody
+    /// wrote for a player, and reaches them unchanged; everything else is a
+    /// fault, and is summarized. A future refusal is carried through by using
+    /// the constructor, and cannot be silently flattened by not being on a
+    /// list.
+    ///
+    /// Put the wording in a named constant beside the code that refuses, and
+    /// hold it to the same rules as every other player-facing sentence: no
+    /// path, no status code, no internal name.
+    #[error("{0}")]
+    PlayerMessage(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -94,6 +123,15 @@ pub const FILE_UNREACHABLE: &str =
 pub const SOMETHING_UNEXPECTED: &str = "Something unexpected happened. Try again.";
 
 impl Error {
+    /// A refusal whose wording is already the sentence the player should read.
+    ///
+    /// See [`Error::PlayerMessage`] for when this is the right constructor and
+    /// when it is not. In short: an instruction somebody wrote for a player,
+    /// never an operating system message and never a formatted fault.
+    pub fn player(message: impl Into<String>) -> Self {
+        Error::PlayerMessage(message.into())
+    }
+
     /// A sentence a player can read, in place of this error's own `Display`.
     ///
     /// [`Error::Io`] displays as `io error at {path}: {source}`, and
@@ -110,8 +148,11 @@ impl Error {
     /// make room, try again) versus everything else (try again). The real
     /// error still reaches a developer, through `tracing::warn!` here rather
     /// than at each call site, so no caller has to remember to log it.
-    pub fn player_message(&self) -> &'static str {
+    pub fn player_message(&self) -> &str {
         match self {
+            // Already a sentence somebody wrote for a player. Nothing to
+            // summarize, nothing to log: this is not a fault, it is an answer.
+            Error::PlayerMessage(message) => message,
             Error::Io { .. } | Error::NoHomeDirectory => {
                 tracing::warn!("could not reach a file or folder: {self}");
                 FILE_UNREACHABLE
@@ -154,6 +195,59 @@ mod tests {
             platform: "Windows",
         };
         assert_player_safe(not_implemented.player_message());
+
+        assert_player_safe(
+            Error::player(crate::runtime::CLOSE_EMULATOR_FIRST).player_message(),
+        );
+    }
+
+    /// A message that is already a finished player sentence survives.
+    ///
+    /// Two modules refuse something with wording written for the player:
+    /// [`crate::runtime::CLOSE_EMULATOR_FIRST`] and
+    /// [`crate::supervisor::OLDER_INSTALL_IN_THE_WAY`]. Both used to be
+    /// carried in [`Error::PlainIo`], which is transparent over an operating
+    /// system error, so [`Error::player_message`] could not tell them from
+    /// `os error 112` and replaced both with "Something unexpected happened.
+    /// Try again." The Settings page's open-the-emulator button then gave
+    /// false advice for its single most common failure: the emulator is
+    /// already open, and the player has to close it.
+    ///
+    /// The distinction is the variant, not the two strings. Anything built
+    /// with [`Error::player`] reaches the player unchanged, so the next person
+    /// who writes such a sentence is carried through by using the constructor
+    /// rather than by being added to a list; anything else is a fault and is
+    /// still summarized, which the second half asserts.
+    #[test]
+    fn a_message_that_is_already_a_player_sentence_survives() {
+        use crate::player_sentence::assert_player_safe;
+
+        for designed in [
+            crate::runtime::CLOSE_EMULATOR_FIRST,
+            crate::supervisor::OLDER_INSTALL_IN_THE_WAY,
+        ] {
+            assert_player_safe(designed);
+            assert_eq!(
+                Error::player(designed).player_message(),
+                designed,
+                "a sentence written for the player was flattened into a generic one"
+            );
+        }
+
+        // A sentence nobody in this crate has written yet is carried too. The
+        // shape is what decides, not a list of known strings.
+        let future = "The other player left before the game finished. Nothing was lost.";
+        assert_eq!(Error::player(future).player_message(), future);
+
+        // And the half that must not change: an operating system failure is
+        // still a fault, and is still summarized rather than shown.
+        let disk_full = Error::PlainIo(std::io::Error::from_raw_os_error(112));
+        assert_eq!(disk_full.player_message(), SOMETHING_UNEXPECTED);
+        let locked = Error::Io {
+            path: PathBuf::from(r"C:\Users\Adam\AppData\Roaming\settings.json"),
+            source: std::io::Error::from_raw_os_error(32),
+        };
+        assert_eq!(locked.player_message(), FILE_UNREACHABLE);
     }
 
     /// A file or folder problem and an unexpected one read as two different
