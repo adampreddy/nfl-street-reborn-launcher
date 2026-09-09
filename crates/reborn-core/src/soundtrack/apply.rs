@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::game_image::{self, IMAGE_FILE};
+use crate::content::pipeline::{ImageHook, RosterResult, Updater};
+use crate::game_image::{self, EstablishOutcome, EstablishRefusal, IMAGE_FILE};
 use crate::library::{hash_file, RebuildState};
 use crate::manifest::Sha256Hex;
 use crate::platform::{DataDir, Error, Platform, Result};
@@ -33,6 +34,10 @@ pub struct Applied {
     pub slots_changed: Vec<u8>,
     /// Slots left as the disc's own song because their audio was gone.
     pub skipped: Vec<(u8, String)>,
+    /// What the roster re-apply said on a revert, when it did not simply
+    /// succeed. `None` after an apply.
+    #[allow(clippy::type_complexity)]
+    pub roster_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +51,10 @@ impl Outcome {
     /// One sentence for a page or a console.
     pub fn note(&self) -> String {
         match self {
-            Outcome::Applied(a) if a.slots_changed.is_empty() => "Your game now plays the original soundtrack.".to_string(),
+            Outcome::Applied(a) if a.slots_changed.is_empty() => match &a.roster_note {
+                Some(n) => format!("Your game now plays the original soundtrack. {n}"),
+                None => "Your game now plays the original soundtrack.".to_string(),
+            },
             Outcome::Applied(a) => {
                 let mut s = format!(
                     "Your soundtrack is on the disc: {} custom {}.",
@@ -248,7 +256,7 @@ pub fn apply_with_size(
     st.base_sha256 = game_image::find_pristine(data_root).map(|p| p.folder_sha256);
     st.rebuilt_sha256 = Some(after.as_str().to_string());
     st.save(data_root)?;
-    Ok(Outcome::Applied(Applied { image: booted, before: Some(before), after, slots_changed: built.changed, skipped: built.skipped }))
+    Ok(Outcome::Applied(Applied { image: booted, before: Some(before), after, slots_changed: built.changed, skipped: built.skipped, roster_note: None }))
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +360,7 @@ pub fn set_enabled(data_root: &Path, on: bool) -> Result<()> {
 
 /// Write a pack from the slots as the disc has them (applied, not pending).
 /// Stock slots are exported from the pristine image with their own text.
+#[derive(Debug, Clone, Copy)]
 pub struct ExportRequest<'a> {
     pub data_root: &'a Path,
     pub pristine_pathfind: &'a [u8],
@@ -385,6 +394,74 @@ pub fn export(req: &ExportRequest<'_>) -> Result<pack::Manifest> {
         songs.push(pack::SongInput { slot: *slot, blob, title, artist, album });
     }
     pack::write_pack(out, name, author, description, &songs)
+}
+
+
+// ---------------------------------------------------------------------------
+// Revert, and the one entry point the page and the CLI call
+// ---------------------------------------------------------------------------
+
+/// Put the original soundtrack back: re-establish the pristine image as the
+/// booted one and re-apply the installed roster through the content
+/// pipeline. Custom slots are kept in the record so the switch can go back
+/// on without re-encoding anything.
+pub fn revert(platform: &Platform, data_root: &Path, updater: &Updater<'_>, hook: &ImageHook) -> Result<Outcome> {
+    let Some(pristine) = game_image::find_pristine(data_root) else {
+        return Ok(Outcome::Refused(Refusal::NoPristine));
+    };
+    let booted = game_image::booted_path(data_root);
+    let before = if booted.is_file() { Some(hash_file(&booted)?) } else { None };
+    match game_image::establish(platform, data_root, &pristine.path)? {
+        EstablishOutcome::Done(_) => {}
+        EstablishOutcome::Refused(EstablishRefusal::NoPristine { .. }) => return Ok(Outcome::Refused(Refusal::NoPristine)),
+        EstablishOutcome::Refused(EstablishRefusal::BootedInUse { path }) => {
+            return Ok(Outcome::Refused(Refusal::ImageInUse { path }))
+        }
+    }
+    let roster_note = match updater.apply_current_roster(hook)? {
+        RosterResult::Applied(_) | RosterResult::Unchanged { .. } | RosterResult::NothingToApply => None,
+        RosterResult::NoBuilder { .. } => {
+            Some("The roster could not be put back because no Reborn Builder was found; the next content check will do it.".to_string())
+        }
+        RosterResult::Refused(r) => Some(format!("The roster was not put back: {}", r.message())),
+    };
+    let after = hash_file(&booted)?;
+    let mut st = Soundtrack::load(data_root)?;
+    st.commit_pending();
+    st.rebuilt_sha256 = None;
+    st.base_sha256 = Some(pristine.folder_sha256);
+    st.save(data_root)?;
+    Ok(Outcome::Applied(Applied { image: booted, before, after, slots_changed: Vec::new(), skipped: Vec::new(), roster_note }))
+}
+
+/// Apply when the switch is on and any slot is custom; otherwise put the
+/// original soundtrack back. A record that was never applied and has
+/// nothing staged is refused rather than rebuilt for nothing.
+pub fn apply_or_revert(
+    platform: &Platform,
+    data_root: &Path,
+    updater: &Updater<'_>,
+    hook: &ImageHook,
+    disc_size: Option<u64>,
+    on: &mut dyn FnMut(Progress),
+) -> Result<Outcome> {
+    let st = Soundtrack::load(data_root)?;
+    let base_pack = match st.base_pack(data_root) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("the soundtrack base pack could not be read, treating the base as stock: {e}");
+            None
+        }
+    };
+    let effective = st.effective(data_root, base_pack.as_ref(), true);
+    let custom = st.enabled && !Soundtrack::is_all_stock(&effective);
+    if custom {
+        return apply_with_size(platform, data_root, disc_size, on);
+    }
+    if st.rebuilt_sha256.is_none() && !st.has_pending() {
+        return Ok(Outcome::Refused(Refusal::NothingStaged));
+    }
+    revert(platform, data_root, updater, hook)
 }
 
 #[cfg(test)]
@@ -555,5 +632,95 @@ mod tests {
         assert_eq!(man.songs[&2].title, "Song 2");
         let back = pack::read_pack(&out).unwrap();
         assert_eq!(pack::read_blob(&back, Slot::new(1).unwrap()).unwrap(), asf::slot_blob(pathfind::asf(&pf), Slot::new(1).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn revert_puts_the_pristine_image_back_and_clears_the_record() {
+        let (dir, pristine, booted, size) = scratch_root();
+        let root = dir.path();
+        let platform = Platform::detect();
+        let pack_path = root.join("p.nsrmusic");
+        pack::write_pack(&pack_path, "P", "", "", &[pack::SongInput { slot: Slot::new(2).unwrap(), blob: blob(4800), title: "S".into(), artist: String::new(), album: String::new() }]).unwrap();
+        stage_pack(root, &pack_path).unwrap();
+        let origin = crate::origin::Origin::new("http://127.0.0.1:9/");
+        let verifier = crate::signing::Ed25519Verifier::embedded();
+        let updater = Updater::new(&platform, root, &origin, &verifier);
+        let hook = ImageHook { builder: None, xdelta: None, extra_dirs: Vec::new(), textures_root: None };
+        // custom slot staged: apply_or_revert applies
+        match apply_or_revert(&platform, root, &updater, &hook, Some(size + 0x40000), &mut |_| {}).unwrap() {
+            Outcome::Applied(a) => assert_eq!(a.slots_changed, vec![2]),
+            other => panic!("{other:?}"),
+        }
+        assert_ne!(hash_file(&booted).unwrap(), hash_file(&pristine).unwrap());
+        // switch off: apply_or_revert reverts, roster apply has nothing to do
+        set_enabled(root, false).unwrap();
+        match apply_or_revert(&platform, root, &updater, &hook, Some(size + 0x40000), &mut |_| {}).unwrap() {
+            Outcome::Applied(a) => {
+                assert!(a.slots_changed.is_empty());
+                assert_eq!(a.roster_note, None);
+                assert_eq!(a.after, hash_file(&pristine).unwrap());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(hash_file(&booted).unwrap(), hash_file(&pristine).unwrap());
+        let st = Soundtrack::load(root).unwrap();
+        assert_eq!(st.rebuilt_sha256, None);
+        assert!(st.slots.contains_key(&2), "the custom slot is kept for the switch to go back on");
+        assert!(!RebuildState::load(&state::rebuild_state_path(root)).unwrap().rebuilt.contains_key(IMAGE_FILE));
+        // a fresh record with nothing staged and nothing applied is refused
+        std::fs::remove_file(state::soundtrack_path(root)).unwrap();
+        assert!(matches!(apply_or_revert(&platform, root, &updater, &hook, Some(size), &mut |_| {}).unwrap(), Outcome::Refused(Refusal::NothingStaged)));
+    }
+
+    /// Oracle 2: applying a pack through Rust yields the same pathfind.dat
+    /// and template.dat as `music_pack.py import` on the same inputs.
+    #[test]
+    fn oracle_pack_import_matches_music_pack_py() {
+        let Some(clean) = std::env::var_os("NSR_CLEAN") else {
+            eprintln!("skipped: NSR_CLEAN unset");
+            return;
+        };
+        let clean = PathBuf::from(clean);
+        let root_dir = clean.join("GameCube Version").join("root");
+        let stock_pf = root_dir.join("pathfind.dat.bak_good_2026-07-02");
+        let pf = std::fs::read(&stock_pf).unwrap();
+        let tpl = std::fs::read(root_dir.join("template.dat")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // a real different song into slot 21: slot 3's stock blob
+        let blob = asf::slot_blob(pathfind::asf(&pf), Slot::new(3).unwrap()).unwrap();
+        let pack_path = dir.path().join("oracle.nsmp");
+        crate::soundtrack::testing::write_v1_pack(&pack_path, 21, &blob, "Ground Zero", "Oracle Artist", "Oracle Album");
+        // Python
+        let out = dir.path().join("py");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("Tools").join("oracle-pack-import.py");
+        let status = std::process::Command::new("py")
+            .args(["-3", &script.to_string_lossy(), &pack_path.to_string_lossy(), &stock_pf.to_string_lossy()])
+            .arg(root_dir.join("template.dat"))
+            .arg(&out)
+            .env("NSR_CLEAN", &clean)
+            .status()
+            .unwrap();
+        assert!(status.success(), "the Python oracle failed");
+        let py_pf = std::fs::read(out.join("pathfind.dat")).unwrap();
+        let py_tpl = std::fs::read(out.join("template.dat")).unwrap();
+        // Rust
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock)).collect();
+        eff.insert(
+            Slot::new(21).unwrap(),
+            Effective::Blob {
+                blob: BlobRef::Pack { pack: pack_path.clone(), slot: Slot::new(21).unwrap() },
+                title: "Ground Zero".into(),
+                artist: "Oracle Artist".into(),
+                album: "Oracle Album".into(),
+                origin: Origin::Pack,
+            },
+        );
+        let built = build_files(&pf, &tpl, &tpl, &eff, &mut |_| {}).unwrap();
+        assert_eq!(built.changed, vec![21]);
+        assert_eq!(built.pathfind.len(), py_pf.len(), "pathfind.dat length");
+        let first_diff = built.pathfind.iter().zip(&py_pf).position(|(a, b)| a != b);
+        assert_eq!(first_diff, None, "pathfind.dat differs at 0x{:X}", first_diff.unwrap_or(0));
+        assert_eq!(built.template, py_tpl, "template.dat differs");
+        eprintln!("oracle 2: pathfind.dat {} bytes and template.dat identical", py_pf.len());
     }
 }

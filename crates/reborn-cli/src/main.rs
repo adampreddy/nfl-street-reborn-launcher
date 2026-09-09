@@ -284,8 +284,11 @@ enum Command {
         apply: bool,
     },
 
-    /// The custom soundtrack: imported audio, the record, and what is missing.
-    Music,
+    /// The custom soundtrack: stage songs and packs, apply, share.
+    Music {
+        #[command(subcommand)]
+        what: MusicCommand,
+    },
 
     /// Installed component versions, and any update the last run left half done.
     Content {
@@ -705,7 +708,7 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
             pin_url.as_deref(),
             apply,
         ),
-        Command::Music => music(&platform),
+        Command::Music { what } => music_command(&platform, what),
         Command::Content { apply } => content(&platform, apply),
         Command::Publish { what } => publish::run(what),
         Command::GamePatch { what } => match what {
@@ -4100,102 +4103,6 @@ fn inventory(
 
 /// The custom soundtrack: what the user imported, what is recorded, what is
 /// missing.
-fn music(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
-    let data = platform.paths.data_root()?;
-    let sources = reborn_core::music::sources_dir(&data);
-    let packs = reborn_core::music::packs_dir(&data);
-    let record = reborn_core::music::soundtrack_path(&data);
-
-    println!("Sources       {}", sources.display());
-    println!("Packs         {}", packs.display());
-    println!("Record        {}", record.display());
-
-    let imported = reborn_core::music::scan_sources(&sources)?;
-    println!();
-    if imported.is_empty() {
-        println!("No audio has been imported. That is what a fresh install looks like.");
-    } else {
-        let bytes: u64 = imported.iter().map(|s| s.bytes).sum();
-        println!(
-            "{} imported file(s), {} bytes:",
-            imported.len(),
-            thousands(bytes)
-        );
-        let lines: Vec<String> = imported
-            .iter()
-            .map(|s| format!("{} , {} bytes", s.relative_path, thousands(s.bytes)))
-            .collect();
-        print_list("  ", &lines);
-        println!("Running times are absent because measuring one needs a decoder, which");
-        println!("is the bundled FFmpeg and not this crate. A track list here shows no");
-        println!("duration rather than a guessed one.");
-    }
-
-    let pack_count = std::fs::read_dir(&packs)
-        .map(|entries| entries.flatten().filter(|e| e.path().is_file()).count())
-        .unwrap_or(0);
-    println!();
-    println!("{pack_count} file(s) in the packs directory.");
-
-    match reborn_core::music::SoundtrackState::load(&record)? {
-        None => {
-            println!();
-            println!("No soundtrack record, so no custom soundtrack has been applied. The");
-            println!("offline image should match its shipped hash.");
-        }
-        Some(state) => {
-            println!();
-            println!("Applied to    offline-content {}", state.base_version);
-            println!("Base artifact {}", state.base_artifact_sha256);
-            println!(
-                "Rebuilt image {}",
-                state
-                    .rebuilt_sha256
-                    .as_ref()
-                    .map(|h| h.to_string())
-                    // Absent is the honest state for edited but not built yet,
-                    // and it is what stops a half finished edit claiming an
-                    // image that does not exist.
-                    .unwrap_or_else(|| "not built yet".to_string())
-            );
-            println!("Slots filled  {}", state.order.len());
-
-            let report = state.verify(&data)?;
-            let skipped = report.skipped();
-            let present = report.present_user_slots();
-            println!(
-                "User audio    {} slot(s) present: {}",
-                present.len(),
-                present
-                    .iter()
-                    .map(u8::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            if report.is_fully_replayable() {
-                println!("Every slot can be replayed onto a fresh base.");
-            } else {
-                println!();
-                println!("{} slot(s) would be skipped on a rebuild:", skipped.len());
-                for (slot, why) in &skipped {
-                    println!("  slot {slot}: {why}");
-                }
-                println!("The row is kept either way. Dropping it would destroy the only");
-                println!("record of what the user wanted there.");
-            }
-        }
-    }
-
-    println!();
-    println!("Building a soundtrack is not implemented, and reborn-core says so with a");
-    println!("typed refusal rather than a guess. Three things are missing and none is");
-    println!("recorded anywhere in the repository: the per stream position entry layout");
-    println!("inside pathfind.dat, the sample accounting extend_slot_40big.py performs");
-    println!("when a slot grows, and the title, artist and album record layout in");
-    println!("template.dat. Guessing any of them yields a disc that boots and plays");
-    println!("silence, which is worse than a crash because it looks like success.");
-    Ok(OK)
-}
 
 // ---------------------------------------------------------------------------
 // Content
@@ -5271,6 +5178,295 @@ mod tests {
                 !step_is_refused(true, safe),
                 "{safe:?} carries irreplaceable data and must always move"
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// music
+// ---------------------------------------------------------------------------
+
+#[derive(Subcommand, Debug)]
+enum MusicCommand {
+    /// The 21 slots as the disc has them, what is staged, and the switch.
+    Status {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage a pack (.nsrmusic or .nsmp): every song it carries goes to its slot.
+    Import {
+        pack: PathBuf,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage a slot back to the disc's own song.
+    Reset {
+        slot: u8,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage new banner text for a slot.
+    Details {
+        slot: u8,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Drop a staged change (or every staged change with --all).
+    Unstage {
+        slot: Option<u8>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Write a pack from slots as the disc has them now.
+    Export {
+        out: PathBuf,
+        /// Slots to include, for example 3,7,21.
+        #[arg(long, value_delimiter = ',')]
+        slots: Vec<u8>,
+        #[arg(long, default_value = "")]
+        name: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Turn the custom soundtrack on and rebuild the disc.
+    Enable {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Turn the custom soundtrack off and put the original disc back.
+    Disable {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Build the disc from the staged slots. One rebuild.
+    Apply {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// The Builder's console build, for putting the roster back on a revert.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+    },
+    /// Write the staged slots into a dev root tree (pathfind.dat, template.dat)
+    /// and stop, so tools/build_iso_fields.py stays the disc builder there.
+    WriteTree {
+        #[arg(long)]
+        tree: PathBuf,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+}
+
+fn music_root(platform: &Platform, data_root: Option<&Path>) -> reborn_core::Result<PathBuf> {
+    match data_root {
+        Some(p) => Ok(p.to_path_buf()),
+        None => platform.paths.data_root(),
+    }
+}
+
+fn music_slot(n: u8) -> reborn_core::Result<reborn_core::soundtrack::Slot> {
+    reborn_core::soundtrack::Slot::new(n).map_err(Into::into)
+}
+
+fn music_progress(p: reborn_core::soundtrack::apply::Progress) {
+    use reborn_core::soundtrack::apply::Progress;
+    match p {
+        Progress::Reading => println!("Reading the disc"),
+        Progress::Splicing { slot } => println!("Splicing slot {slot}"),
+        Progress::Building { done, total } => {
+            if done == total || done % (256 << 20) < (4 << 20) {
+                println!("Building the disc: {} of {} MB", done >> 20, total >> 20);
+            }
+        }
+        Progress::Hashing => println!("Reading the new disc back"),
+    }
+}
+
+/// The pristine image's pathfind.dat and template.dat, for exports.
+fn music_pristine_files(root: &Path) -> reborn_core::Result<(Vec<u8>, Vec<u8>)> {
+    use reborn_core::soundtrack::{apply, gcm};
+    let (pristine, _) = apply::images(root)?;
+    let disc = gcm::Disc::open(&pristine)?;
+    Ok((disc.read_file("pathfind.dat")?, disc.read_file("template.dat")?))
+}
+
+fn music_rebuild(platform: &Platform, root: &Path, builder: Option<&Path>) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::content::pipeline::{ImageHook, Updater};
+    let origin = reborn_core::origin::Origin::new(reborn_core::origin::DEFAULT_ORIGIN);
+    let verifier = reborn_core::signing::Ed25519Verifier::embedded();
+    let updater = Updater::new(platform, root, &origin, &verifier);
+    let hook = ImageHook {
+        builder: builder.map(Path::to_path_buf),
+        xdelta: None,
+        extra_dirs: tool_dirs(),
+        textures_root: None,
+    };
+    let outcome = reborn_core::soundtrack::apply::apply_or_revert(platform, root, &updater, &hook, None, &mut music_progress)?;
+    println!();
+    println!("{}", outcome.note());
+    Ok(match outcome {
+        reborn_core::soundtrack::apply::Outcome::Refused(_) => PROBLEM,
+        _ => std::process::ExitCode::SUCCESS,
+    })
+}
+
+fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::soundtrack::state::{Base, Effective, Origin as SlotOrigin, Soundtrack};
+    use reborn_core::soundtrack::{apply, Slot};
+
+    match what {
+        MusicCommand::Status { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let st = Soundtrack::load(&root)?;
+            let base_pack = st.base_pack(&root).ok().flatten();
+            println!("Record        {}", reborn_core::soundtrack::state::soundtrack_path(&root).display());
+            println!("Switch        {}", if st.enabled { "on" } else { "off" });
+            match &st.base {
+                Base::Stock => println!("Base          the disc's own soundtrack"),
+                Base::Package { id, version, .. } => println!("Base          {id} {version}"),
+            }
+            println!(
+                "Rebuilt image {}",
+                st.rebuilt_sha256.as_deref().unwrap_or("not built yet (the disc plays its own songs)")
+            );
+            println!();
+            let applied = st.effective(&root, base_pack.as_ref(), false);
+            for slot in Slot::all() {
+                let line = match &applied[&slot] {
+                    Effective::Stock => "original song".to_string(),
+                    Effective::Blob { title, artist, origin, .. } => format!(
+                        "{title} , {artist}  [{}]",
+                        match origin {
+                            SlotOrigin::UserFile => "your file",
+                            SlotOrigin::Pack => "pack",
+                            SlotOrigin::BasePackage => "soundtrack mod",
+                        }
+                    ),
+                };
+                let pending = st.pending.get(&slot.get()).map(|e| match &e.source {
+                    reborn_core::soundtrack::state::Source::Stock => "staged: original song".to_string(),
+                    _ => format!("staged: {} , {}", e.title, e.artist),
+                });
+                match pending {
+                    Some(p) => println!("  slot {:>2}  {line}  ({p})", slot.get()),
+                    None => println!("  slot {:>2}  {line}", slot.get()),
+                }
+            }
+            if st.has_pending() {
+                println!();
+                println!("{} change(s) staged. Run: rebornctl music apply", st.pending.len());
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Import { pack, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let slots = apply::stage_pack(&root, &pack)?;
+            println!("Staged {} song(s) into slot(s) {:?}. Run: rebornctl music apply", slots.len(), slots);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Reset { slot, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::stage_stock(&root, music_slot(slot)?)?;
+            println!("Slot {slot} staged back to the disc's own song. Run: rebornctl music apply");
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Details { slot, title, artist, album, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::stage_details(&root, music_slot(slot)?, title.as_deref(), artist.as_deref(), album.as_deref())?;
+            println!("Slot {slot} details staged. Run: rebornctl music apply");
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Unstage { slot, all, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            if all {
+                let n = apply::unstage_all(&root)?;
+                println!("Dropped {n} staged change(s).");
+            } else if let Some(n) = slot {
+                let was = apply::unstage(&root, music_slot(n)?)?;
+                println!("{}", if was { format!("Slot {n} is no longer staged.") } else { format!("Slot {n} had nothing staged.") });
+            } else {
+                println!("Give a slot, or --all.");
+                return Ok(PROBLEM);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Export { out, slots, name, author, description, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            if slots.is_empty() {
+                println!("Give --slots, for example --slots 3,7,21.");
+                return Ok(PROBLEM);
+            }
+            let slots: Vec<Slot> = slots.into_iter().map(music_slot).collect::<reborn_core::Result<_>>()?;
+            let (pf, tpl) = music_pristine_files(&root)?;
+            let man = apply::export(&apply::ExportRequest {
+                data_root: &root,
+                pristine_pathfind: &pf,
+                pristine_template: &tpl,
+                slots: &slots,
+                out: &out,
+                name: &name,
+                author: &author,
+                description: &description,
+            })?;
+            println!("Wrote {} ({} song(s), {} bytes)", out.display(), man.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            for (slot, song) in &man.songs {
+                println!("  slot {slot:>2}: {} , {}", song.title, song.artist);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Enable { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::set_enabled(&root, true)?;
+            music_rebuild(platform, &root, None)
+        }
+        MusicCommand::Disable { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::set_enabled(&root, false)?;
+            music_rebuild(platform, &root, None)
+        }
+        MusicCommand::Apply { data_root, builder } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            music_rebuild(platform, &root, builder.as_deref())
+        }
+        MusicCommand::WriteTree { tree, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let pf_path = tree.join("pathfind.dat");
+            let tpl_path = tree.join("template.dat");
+            let pf = std::fs::read(&pf_path)?;
+            let tpl = std::fs::read(&tpl_path)?;
+            let st = Soundtrack::load(&root)?;
+            let base_pack = st.base_pack(&root)?;
+            let effective = st.effective(&root, base_pack.as_ref(), true);
+            let built = apply::build_files(&pf, &tpl, &tpl, &effective, &mut music_progress)?;
+            let stamp = {
+                let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                format!("{}", secs)
+            };
+            for (path, bytes) in [(&pf_path, &built.pathfind), (&tpl_path, &built.template)] {
+                let bak = path.with_extension(format!("dat.bak_pre_music_{stamp}"));
+                if !bak.exists() {
+                    std::fs::copy(path, &bak)?;
+                    println!("backup -> {}", bak.display());
+                }
+                std::fs::write(path, bytes)?;
+                println!("wrote {} ({} bytes)", path.display(), bytes.len());
+            }
+            println!("Changed slot(s): {:?}. Now run: py -3 tools/build_iso_fields.py", built.changed);
+            for (slot, why) in &built.skipped {
+                println!("  slot {slot} left as the disc's own song: {why}");
+            }
+            Ok(std::process::ExitCode::SUCCESS)
         }
     }
 }

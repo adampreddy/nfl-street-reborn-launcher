@@ -192,3 +192,24 @@ pub fn write_wav(path: &Path, rate: u32, left: &[i16], right: &[i16]) {
     }
     std::fs::write(path, w).unwrap();
 }
+
+/// A format 1 `.nsmp` exactly as music_pack.py writes it (deflated entries,
+/// `slots` keyed by slot number, `seconds`), so the Python oracle accepts it.
+pub fn write_v1_pack(out: &Path, slot: u8, blob: &[u8], title: &str, artist: &str, album: &str) {
+    use std::io::Write;
+    let f = std::fs::File::create(out).unwrap();
+    let mut z = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let name = format!("slot{slot}.asf");
+    z.start_file(&name, opts).unwrap();
+    z.write_all(blob).unwrap();
+    let manifest = serde_json::json!({
+        "magic": "NSMP", "format": 1, "name": "oracle", "author": "test", "description": "",
+        "created": "2026-09-09", "game": "NFL Street 2 (GC)",
+        "slots": { slot.to_string(): { "title": title, "artist": artist, "album": album,
+                                       "blob": name, "bytes": blob.len(), "seconds": 0 } }
+    });
+    z.start_file("pack.json", opts).unwrap();
+    z.write_all(manifest.to_string().as_bytes()).unwrap();
+    z.finish().unwrap();
+}
