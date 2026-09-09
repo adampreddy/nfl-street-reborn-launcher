@@ -97,6 +97,19 @@ const SIGNIN_UNREACHABLE: &str =
 /// that is useful to a developer but not to a player.
 const SIGNIN_UNAVAILABLE: &str = "The sign-in service is not responding properly right now. Try again in a moment.";
 
+/// Shown to the player when a preference change (such as show-offline) could not be sent to
+/// the server because it could not be reached at all. A near-duplicate of `SIGNIN_UNREACHABLE`
+/// on purpose rather than a shared constant: the player is not signing in here, they are
+/// toggling a setting while already signed in, and a message that talks about "sign-in" in
+/// that moment would be confusing even though it is, under the hood, the same backend.
+const SAVE_UNREACHABLE: &str =
+    "This could not be saved because the server could not be reached. Check your internet connection and try again.";
+
+/// Shown to the player when a preference change reached the server but the server did not
+/// behave: a failure status, or a reply that could not be understood. Same reasoning as
+/// `SIGNIN_UNAVAILABLE`, worded for a save instead of a sign-in.
+const SAVE_UNAVAILABLE: &str = "This could not be saved right now. Try again in a moment.";
+
 pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> {
     let body = serde_json::json!({ "label": label });
     let url = origin_url(origin, "/v1/auth/device");
@@ -213,20 +226,44 @@ pub fn sign_out(platform: &Platform, http: &dyn Http, origin: &str) -> Result<()
     clear_token(platform)
 }
 
-pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show: bool) -> Result<PlayerFacts> {
+/// The network half of `set_show_offline`: send the preference and get a raw response back.
+/// Split out so the one path that can be unreachable -- the server cannot be reached at all --
+/// is testable with just a fake `Http`, no `Platform` or vault involved, the same way `start`
+/// and `poll` are.
+fn post_show_offline(http: &dyn Http, url: &str, tok: &str, show: bool) -> Result<crate::net::HttpResponse> {
+    // PATCH is not on the Http trait; the backend accepts the same body on POST /v1/me/show_offline.
+    let body = serde_json::to_vec(&serde_json::json!({ "show_offline": show })).expect("a serializable request body");
+    http.post_json(url, &body, Some(tok)).map_err(|e| {
+        tracing::warn!("show-offline: could not reach {url}: {e}");
+        plain(SAVE_UNREACHABLE.to_string())
+    })
+}
+
+/// The other half: a non-401 status or a reply body that turned out not to be the expected
+/// shape. Also independently testable with a canned [`crate::net::HttpResponse`].
+fn parse_show_offline_reply(r: &crate::net::HttpResponse, url: &str) -> Result<PlayerFacts> {
     #[derive(Deserialize)]
     struct Reply { player: PlayerFacts }
+    if !r.is_success() {
+        tracing::warn!("show-offline: {url} answered {}", r.status);
+        return Err(plain(SAVE_UNAVAILABLE.to_string()));
+    }
+    let reply: Reply = serde_json::from_str(&r.body).map_err(|e| {
+        tracing::warn!("show-offline: the reply was not understood: {e}");
+        plain(SAVE_UNAVAILABLE.to_string())
+    })?;
+    Ok(reply.player)
+}
+
+pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show: bool) -> Result<PlayerFacts> {
     let tok = token(platform)?.ok_or_else(|| plain("not signed in".to_string()))?;
-    // PATCH is not on the Http trait; the backend accepts the same body on POST /v1/me/show_offline.
     let url = origin_url(origin, "/v1/me/show_offline");
-    let body = serde_json::to_vec(&serde_json::json!({ "show_offline": show })).expect("a serializable request body");
-    let r = http.post_json(&url, &body, Some(&tok))?;
+    let r = post_show_offline(http, &url, &tok, show)?;
     if r.status == 401 { clear_token(platform)?; return Err(plain("Signed out. Sign in again.".to_string())); }
-    if !r.is_success() { return Err(plain(format!("{url} answered {}", r.status))); }
-    let reply: Reply = serde_json::from_str(&r.body).map_err(|e| plain(format!("reply not understood: {e}")))?;
+    let player = parse_show_offline_reply(&r, &url)?;
     let path = identity_path(platform)?;
     let file = match read_identity(&path)? {
-        Some(mut existing) => { existing.player = reply.player.clone(); existing }
+        Some(mut existing) => { existing.player = player.clone(); existing }
         None => {
             // No facts file to update -- either this is the first write, or the existing one
             // was unreadable. Either way, write a fresh one rather than silently dropping the
@@ -235,11 +272,11 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            IdentityFile { player: reply.player.clone(), signed_in_at_ms: now_ms }
+            IdentityFile { player: player.clone(), signed_in_at_ms: now_ms }
         }
     };
     std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("a serializable identity file")).map_err(|source| Error::Io { path, source })?;
-    Ok(reply.player)
+    Ok(player)
 }
 
 /// Open a URL in the player's default browser through the platform process host.
@@ -247,10 +284,14 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
 /// so the handle is dropped, exactly as the folder button does.
 pub fn open_in_browser(platform: &Platform, url: &str) -> Result<()> {
     // Lowercase a copy before comparing so "HTTPS://..." is accepted rather than refused by
-    // accident; the original-case url is still what gets reported and opened.
+    // accident; the original-case url is still what gets opened.
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(plain(format!("refusing to open a non-http URL: {url}")));
+        // The url itself is never logged or returned: for a device-start verify_url it can
+        // carry the player's own sign-in code, and a hostile origin could put anything in it --
+        // the same reason `DeviceStart`'s Debug impl excludes verify_url.
+        tracing::warn!("refused to open a link that was not http or https");
+        return Err(plain("that link could not be opened".to_string()));
     }
     let program: &str = if cfg!(windows) { "explorer.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let args = vec![std::ffi::OsString::from(url)];
@@ -303,17 +344,22 @@ mod tests {
         let wrong_path = FakeHttp::default().reply("https://b/v1/auth/device/poll", 404, "");
         // A 404 must show up as an error, never as Expired -- Expired would send the player
         // round a device-code loop that can never succeed. (Message wording is covered by
-        // `every_sign_in_error_reads_as_a_plain_sentence` below.)
+        // `every_identity_error_reads_as_a_plain_sentence` below.)
         assert!(poll(&wrong_path, "https://b", "dc").is_err());
     }
 
-    /// A player can see the message from every failing path through `start` and `poll`. None
-    /// of them may carry raw technical text: no scheme word, no URL, no three-digit status
-    /// code. This is mechanical -- a run of 3+ ASCII digits, or the substring "http" -- rather
-    /// than a list of expected sentences, so a future edit that slips a URL or a status code
-    /// back into a message fails this test even if nobody updates the list by hand.
+    /// A player can see the message from every failing path this file has that a `reborn-ui`
+    /// command can reach: `start`, `poll`, the two network halves of `set_show_offline`, and
+    /// `open_in_browser`'s link check. Renamed from `every_sign_in_error_...` (task 10b round 1)
+    /// because it now covers more than sign-in: `set_show_offline` is a settings toggle, not a
+    /// sign-in step, but it is reachable from the same screen through the same kind of network
+    /// call and was found to leak the same way. None of these messages may carry raw technical
+    /// text: no scheme word, no URL, no three-digit status code. This is mechanical -- a run of
+    /// 3+ ASCII digits, or the substring "http" -- rather than a list of expected sentences, so
+    /// a future edit that slips a URL or a status code back into a message fails this test even
+    /// if nobody updates the list by hand.
     #[test]
-    fn every_sign_in_error_reads_as_a_plain_sentence() {
+    fn every_identity_error_reads_as_a_plain_sentence() {
         fn has_run_of_three_or_more_digits(s: &str) -> bool {
             let mut run = 0;
             for c in s.chars() {
@@ -371,6 +417,25 @@ mod tests {
         // poll: the 404-is-not-Expired case must also read as a plain sentence.
         let poll_wrong_path = FakeHttp::default().reply("https://b/v1/auth/device/poll", 404, "");
         assert_player_safe(&poll(&poll_wrong_path, "https://b", "dc").unwrap_err());
+
+        // set_show_offline (via its network halves): the server cannot be reached at all.
+        let show_unreachable = FakeHttp::default();
+        assert_player_safe(&post_show_offline(&show_unreachable, "https://b/v1/me/show_offline", "tok", true).unwrap_err());
+
+        // set_show_offline: the server answers, but with a failure status.
+        let show_failure = FakeHttp::default().reply("https://b/v1/me/show_offline", 500, "internal error");
+        let r = post_show_offline(&show_failure, "https://b/v1/me/show_offline", "tok", true).unwrap();
+        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err());
+
+        // set_show_offline: a 200 whose body is not the expected shape.
+        let show_garbage = FakeHttp::default().reply("https://b/v1/me/show_offline", 200, "not json");
+        let r = post_show_offline(&show_garbage, "https://b/v1/me/show_offline", "tok", true).unwrap();
+        assert_player_safe(&parse_show_offline_reply(&r, "https://b/v1/me/show_offline").unwrap_err());
+
+        // open_in_browser: a non-http url is refused, and its error must not repeat the url back.
+        let platform = crate::platform::imp::platform();
+        assert_player_safe(&open_in_browser(&platform, "file:///C:/secrets.txt").unwrap_err());
+        assert_player_safe(&open_in_browser(&platform, "javascript:alert(1)").unwrap_err());
     }
 
     #[test]
