@@ -1123,7 +1123,7 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
             Activation::load(&activation_path).map_err(|e| e.player_message().to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
-        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+        let data_root = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
         let (soundtracks, unreadable) = read_soundtrack_packages(&root, unreadable, &data_root);
 
         // Per game, because exclusivity is a fact about a composed tree and two

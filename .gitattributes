@@ -1,0 +1,33 @@
+# Line endings, decided here rather than by whatever core.autocrlf a machine
+# happens to have set.
+#
+# Why this file exists: several tests read their own source with include_str!
+# and search it for newline-delimited patterns, for example
+# "\n#[tauri::command]\nasync fn settings_paths". Those searches only match on
+# LF. With core.autocrlf=true a fresh clone or a new git worktree gets CRLF,
+# the searches stop matching, and two tests fail in a checkout that is
+# byte-identical in git to one where they pass. That happened on 2026-09-09
+# and cost an hour to diagnose, because the code was never the problem.
+#
+# So: text files are LF in the working tree as well as in the repository.
+# Windows tooling here (PowerShell, Inno Setup, cargo, node) all read LF fine.
+
+* text=auto eol=lf
+
+# Anything Windows genuinely wants as CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Binary, never touched.
+*.png  binary
+*.bmp  binary
+*.ico  binary
+*.iso  binary
+*.exe  binary
+*.dll  binary
+*.zip  binary
+*.bin  binary
+*.raw  binary
+*.dds  binary
+*.xdelta binary
+*.rebornroster binary
