@@ -110,11 +110,16 @@ if (-not $LauncherOnly -and -not $RuntimeOnly) {
     }
 }
 
-Write-Host "Building release binaries"
-Push-Location $root
-cargo build --release -p reborn-ui -p reborn-cli
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-Pop-Location
+# -RuntimeOnly ships no launcher binary, so building one here is waste, and
+# depending on it would couple a runtime-only publish to the launcher
+# compiling, which it does not need to do.
+if (-not $RuntimeOnly) {
+    Write-Host "Building release binaries"
+    Push-Location $root
+    cargo build --release -p reborn-ui -p reborn-cli
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    Pop-Location
+}
 
 $resolvedPayload = [System.IO.Path]::GetFullPath($payload)
 $expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root $payloadName))
@@ -141,8 +146,12 @@ if (Test-Path -LiteralPath $resolvedPayload) {
 }
 New-Item -ItemType Directory -Force $payload | Out-Null
 
-Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
-Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+# Skipped for -RuntimeOnly along with the build above: without it these
+# files may be absent or stale, and a runtime-only publish never ships them.
+if (-not $RuntimeOnly) {
+    Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
+    Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+}
 
 # The Reborn Builder's console build, where the launcher looks first
 # (<install>\tools). It links its own runtime; nothing goes beside it.
