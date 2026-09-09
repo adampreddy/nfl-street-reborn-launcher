@@ -85,13 +85,25 @@ pub const TARGET_SCORE: i64 = 36;
 /// rather than after it is rejected.
 pub const MAX_PAYLOAD_BYTES: usize = 512 * 1024;
 
-/// The folder Dolphin writes captures into, inside the per-launch user
-/// directory. Named here so no caller has to guess it.
-pub const DOLPHIN_CAPTURE_DIR: &str = "LeagueGameStats";
+/// The folder Dolphin writes captures into, inside the per-launch user directory,
+/// with one subfolder per mode. Dolphin decides the subfolder from its NetPlay state.
+pub const DOLPHIN_CAPTURE_DIR: &str = "GameStats";
+pub const CAPTURE_FOLDERS: [&str; 2] = ["Online", "Offline"];
+/// The folder older runtimes wrote. Still read, so nothing left behind is lost.
+pub const LEGACY_CAPTURE_DIR: &str = "LeagueGameStats";
 
 /// Where Dolphin will have written this launch's captures.
 pub fn dolphin_capture_dir(user_dir: &Path) -> PathBuf {
     user_dir.join(DOLPHIN_CAPTURE_DIR)
+}
+
+/// Every folder a capture can be in, with the lowercase mode it implies (None for legacy).
+pub fn dolphin_capture_dirs(user_dir: &Path) -> Vec<(PathBuf, Option<&'static str>)> {
+    vec![
+        (user_dir.join(DOLPHIN_CAPTURE_DIR).join("Online"), Some("online")),
+        (user_dir.join(DOLPHIN_CAPTURE_DIR).join("Offline"), Some("offline")),
+        (user_dir.join(LEGACY_CAPTURE_DIR), None),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,6 +1388,12 @@ pub struct QueueEntry {
     /// does, and the entry is quarantined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// "online" or "offline", from the folder Dolphin wrote into. Absent for the legacy folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_folder: Option<String>,
+    /// A sentence from the server about a terminal result, such as "Recorded as incomplete".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Absent when the capture could not be parsed. Not filled in with
     /// placeholder team names: a row that cannot be described is shown as one
     /// that cannot be described.
@@ -1456,6 +1474,11 @@ pub enum SubmitOutcome {
     Rejected { reason: String },
     /// Could not be delivered this time. Try later.
     Deferred { reason: String },
+    /// The server stored it as a completed record that does not count as a win or loss,
+    /// for example a game that ended below 36. Terminal, with a note for the player.
+    Recorded { note: String },
+    /// The token was refused. The entry stays queued; the caller clears the token.
+    Unauthorized,
 }
 
 /// Sending a capture somewhere. Implemented by the caller.
@@ -1485,12 +1508,17 @@ pub struct SubmitReport {
     /// Queued entries whose payload has gone missing. Quarantined, not silently
     /// dropped.
     pub lost_payload: Vec<CaptureKey>,
+    /// Stored as a completed record that does not count as a win or loss. Terminal.
+    pub recorded: Vec<CaptureKey>,
+    /// The stored token was refused. Nothing in the queue changed state; the
+    /// caller must clear the token and get the player signed in again.
+    pub waiting_for_sign_in: bool,
 }
 
 impl SubmitReport {
     /// How many captures reached the server in this pass.
     pub fn sent(&self) -> usize {
-        self.accepted.len() + self.held.len() + self.rejected.len()
+        self.accepted.len() + self.held.len() + self.rejected.len() + self.recorded.len()
     }
 
     /// How many are still waiting.
@@ -1569,6 +1597,10 @@ impl StatsQueue {
     /// `session_id` is the launcher session that accounts for this result.
     /// `None` quarantines it: see [`QuarantineReason::NoSession`].
     ///
+    /// `folder` is the mode implied by the folder Dolphin wrote it into
+    /// ("online" or "offline"), or `None` when the capture came from the
+    /// legacy folder or was handed over directly.
+    ///
     /// The payload is written before the record, so an interruption leaves bytes
     /// without a record rather than a record without bytes.
     pub fn enqueue(
@@ -1576,6 +1608,7 @@ impl StatsQueue {
         bytes: &[u8],
         source_path: Option<&Path>,
         session_id: Option<&str>,
+        folder: Option<&str>,
     ) -> Result<Enqueued> {
         let parsed = Capture::parse(bytes);
         let key = match &parsed {
@@ -1646,6 +1679,8 @@ impl StatsQueue {
             last_error: None,
             source_path: source_path.map(|p| p.to_path_buf()),
             session_id: session_id.map(|s| s.to_string()),
+            capture_folder: folder.map(str::to_string),
+            note: None,
             summary,
         };
         self.write_entry(&entry)?;
@@ -1657,7 +1692,7 @@ impl StatsQueue {
         }
     }
 
-    /// Move everything Dolphin wrote into the queue.
+    /// Move everything Dolphin wrote in one folder into the queue.
     ///
     /// Only `*.json` directly in `dir` is touched, so `uploaded.txt` and the
     /// `_previous` folder the manual test procedure uses are left alone.
@@ -1666,7 +1701,15 @@ impl StatsQueue {
     /// so an interruption re-reads it and the content key makes that a no-op.
     /// Running this twice on the same folder is therefore safe, which matters
     /// because it runs after every game.
-    pub fn ingest_from(&self, dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
+    ///
+    /// `folder` is stamped onto every entry as [`QueueEntry::capture_folder`];
+    /// see [`enqueue`](Self::enqueue).
+    pub fn ingest_from_folder(
+        &self,
+        dir: &Path,
+        session_id: Option<&str>,
+        folder: Option<&str>,
+    ) -> Result<Vec<Enqueued>> {
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -1708,7 +1751,7 @@ impl StatsQueue {
                     continue;
                 }
             };
-            let result = self.enqueue(&bytes, Some(&path), session_id)?;
+            let result = self.enqueue(&bytes, Some(&path), session_id, folder)?;
             // Every one of these means the capture is accounted for, so the
             // source can go. Leaving it would mean the folder never empties and
             // the same games are re-examined after every launch.
@@ -1721,6 +1764,20 @@ impl StatsQueue {
             out.push(result);
         }
         Ok(out)
+    }
+
+    /// Everything Dolphin wrote, from both mode folders and the legacy folder.
+    pub fn ingest_all(&self, user_dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
+        let mut out = Vec::new();
+        for (dir, folder) in dolphin_capture_dirs(user_dir) {
+            out.extend(self.ingest_from_folder(&dir, session_id, folder)?);
+        }
+        Ok(out)
+    }
+
+    /// Legacy entry point: one folder, no mode.
+    pub fn ingest_from(&self, dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
+        self.ingest_from_folder(dir, session_id, None)
     }
 
     /// Every entry, with the ledger applied over it.
@@ -1896,6 +1953,23 @@ impl StatsQueue {
                         self.write_entry(&entry)?;
                         report.deferred.push(entry.key.clone());
                     }
+                }
+                SubmitOutcome::Recorded { note } => {
+                    self.record_terminal(&entry.key, TerminalState::Accepted, None)?;
+                    entry.state = EntryState::Accepted;
+                    entry.finished_ms = Some(now);
+                    entry.last_error = None;
+                    entry.note = Some(note);
+                    self.write_entry(&entry)?;
+                    report.recorded.push(entry.key.clone());
+                }
+                SubmitOutcome::Unauthorized => {
+                    // Not a failed attempt: nothing about the capture was wrong.
+                    entry.last_attempt_ms = None;
+                    entry.last_error = Some("waiting for sign-in".to_string());
+                    self.write_entry(&entry)?;
+                    report.waiting_for_sign_in = true;
+                    break;
                 }
             }
         }
@@ -2168,6 +2242,20 @@ mod tests {
 
     fn outlaws() -> Capture {
         Capture::parse(REAL_OUTLAWS.as_bytes()).expect("the real capture must parse")
+    }
+
+    /// A well formed capture whose top level `style` array carries the two
+    /// given numbers, so two calls with different values produce two
+    /// different content keys and can sit in the queue side by side. Built by
+    /// substituting into [`REAL_FALCONS`], the fixture every other test here
+    /// already trusts, rather than inventing a second shape to keep in sync.
+    fn sample_capture_with_style(style: [i64; 2]) -> Vec<u8> {
+        doctor(
+            REAL_FALCONS,
+            "\"style\": [0, 0]",
+            &format!("\"style\": [{}, {}]", style[0], style[1]),
+        )
+        .into_bytes()
     }
 
     /// Change exactly one thing in a real capture.
@@ -2797,7 +2885,7 @@ mod tests {
         let q = queue(dir.path(), 1_000);
 
         let Enqueued::Queued(entry) = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("1000-offline"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("1000-offline"), None)
             .unwrap()
         else {
             panic!("a well formed capture with a session must be queued");
@@ -2831,10 +2919,10 @@ mod tests {
         let q = queue(dir.path(), 1_000);
 
         let first = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
         let second = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
         assert!(matches!(first, Enqueued::Queued(_)));
         assert!(
@@ -2853,7 +2941,7 @@ mod tests {
         let key = {
             let q = queue(dir.path(), 1_000);
             let Enqueued::Queued(entry) = q
-                .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+                .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
                 .unwrap()
             else {
                 panic!("expected a queued capture");
@@ -2871,7 +2959,7 @@ mod tests {
         assert!(later.capture_bytes(&key).unwrap().is_none());
 
         let again = later
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s2"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s2"), None)
             .unwrap();
         match again {
             Enqueued::AlreadySubmitted { state, .. } => {
@@ -2889,7 +2977,7 @@ mod tests {
     fn held_for_review_is_a_success_and_is_never_sent_again() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
 
         let submitter = Recorder::expecting(
@@ -2922,7 +3010,7 @@ mod tests {
     fn a_deferred_capture_stays_on_disk_and_is_tried_again() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
 
         let offline = Recorder::new(SubmitOutcome::Deferred {
@@ -2952,7 +3040,7 @@ mod tests {
     fn a_stalled_capture_is_kept_and_can_be_put_back_in_the_queue() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
 
         let dead = Recorder::new(SubmitOutcome::Deferred {
@@ -2989,10 +3077,10 @@ mod tests {
         let q = queue(dir.path(), 1_000);
 
         // Queued, quarantined, and stalled, all left behind by a failed send.
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
-        q.enqueue(REAL_OUTLAWS.as_bytes(), None, None).unwrap();
-        q.enqueue(b"{ truncated", None, Some("s1")).unwrap();
+        q.enqueue(REAL_OUTLAWS.as_bytes(), None, None, None).unwrap();
+        q.enqueue(b"{ truncated", None, Some("s1"), None).unwrap();
 
         let dead = Recorder::new(SubmitOutcome::Deferred {
             reason: "gone".into(),
@@ -3024,7 +3112,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
 
-        let Enqueued::Quarantined(entry) = q.enqueue(REAL_OUTLAWS.as_bytes(), None, None).unwrap()
+        let Enqueued::Quarantined(entry) = q.enqueue(REAL_OUTLAWS.as_bytes(), None, None, None).unwrap()
         else {
             panic!("a capture with no session must be quarantined");
         };
@@ -3059,7 +3147,7 @@ mod tests {
         let q = queue(dir.path(), 1_000);
 
         let truncated = b"{\"schema\": \"nsr.game.v1\", \"teams\": [{\"name\": \"Fal";
-        let Enqueued::Quarantined(entry) = q.enqueue(truncated, None, Some("s1")).unwrap() else {
+        let Enqueued::Quarantined(entry) = q.enqueue(truncated, None, Some("s1"), None).unwrap() else {
             panic!("unreadable bytes must be quarantined, not discarded");
         };
         assert!(matches!(
@@ -3134,7 +3222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
         let Enqueued::Queued(entry) = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap()
         else {
             panic!("expected a queued capture");
@@ -3171,7 +3259,7 @@ mod tests {
     fn the_ledger_survives_a_half_written_line() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
         q.submit_pending(&Recorder::new(SubmitOutcome::Accepted), 3)
             .unwrap();
@@ -3197,7 +3285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
         let Enqueued::Queued(entry) = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap()
         else {
             panic!("expected a queued capture");
@@ -3226,7 +3314,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
         let Enqueued::Queued(entry) = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap()
         else {
             panic!("expected a queued capture");
@@ -3254,7 +3342,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 4_242);
         let Enqueued::Queued(entry) = q
-            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap()
         else {
             panic!("expected a queued capture");
@@ -3273,7 +3361,7 @@ mod tests {
             "an unsent result must not carry a finish time"
         );
 
-        let quarantined = q.enqueue(b"nonsense", None, Some("s1")).unwrap();
+        let quarantined = q.enqueue(b"nonsense", None, Some("s1"), None).unwrap();
         let key = quarantined.key().unwrap();
         let json: Value =
             serde_json::from_slice(&std::fs::read(q.entry_path(key)).unwrap()).unwrap();
@@ -3291,12 +3379,12 @@ mod tests {
         let q = queue(dir.path(), 1_000);
 
         let outcomes = vec![
-            q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
                 .unwrap(),
-            q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+            q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
                 .unwrap(),
-            q.enqueue(REAL_OUTLAWS.as_bytes(), None, None).unwrap(),
-            q.enqueue(b"{ truncated", None, Some("s1")).unwrap(),
+            q.enqueue(REAL_OUTLAWS.as_bytes(), None, None, None).unwrap(),
+            q.enqueue(b"{ truncated", None, Some("s1"), None).unwrap(),
             Enqueued::CouldNotRead {
                 path: PathBuf::from("x.json"),
                 detail: "access denied.".into(),
@@ -3334,7 +3422,7 @@ mod tests {
         let q = queue(dir.path(), 1_000);
         let broken = doctor(REAL_FALCONS, "\"nsr.game.v1\"", "\"nsr.game.v2\"");
 
-        let Enqueued::Quarantined(entry) = q.enqueue(broken.as_bytes(), None, Some("s1")).unwrap()
+        let Enqueued::Quarantined(entry) = q.enqueue(broken.as_bytes(), None, Some("s1"), None).unwrap()
         else {
             panic!("a capture the endpoint would refuse must not be queued for sending");
         };
@@ -3361,7 +3449,7 @@ mod tests {
     fn a_rejected_result_is_kept_and_not_retried() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
-        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"))
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
             .unwrap();
 
         let submitter = Recorder::new(SubmitOutcome::Rejected {
@@ -3395,5 +3483,94 @@ mod tests {
     fn the_queue_directory_is_user_data_and_never_purgeable() {
         assert!(DataDir::StatsQueue.is_user_data());
         assert!(!DataDir::StatsQueue.is_derived());
+    }
+
+    /// Dolphin now writes into `GameStats\Online` and `GameStats\Offline`
+    /// instead of one folder, and older runtimes still leave files in
+    /// `LeagueGameStats`. A launch must not lose captures written by either
+    /// the new emulator or an old one, and the queue must remember which
+    /// folder each capture came from so the results screen can label it.
+    #[test]
+    fn ingest_all_reads_online_offline_and_the_legacy_folder_and_records_the_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("User");
+        for (dir, body) in [
+            ("GameStats/Online", sample_capture_with_style([10, 20])),
+            ("GameStats/Offline", sample_capture_with_style([30, 40])),
+            ("LeagueGameStats", sample_capture_with_style([50, 60])),
+        ] {
+            std::fs::create_dir_all(user.join(dir)).unwrap();
+            std::fs::write(user.join(dir).join("g.json"), body).unwrap();
+        }
+        let q = StatsQueue::open_at(&root.path().join("q"), FixedClock::new(1)).unwrap();
+        let got = q.ingest_all(&user, Some("s1")).unwrap();
+        assert_eq!(got.len(), 3);
+        let folders: Vec<Option<String>> = q
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.capture_folder)
+            .collect();
+        assert!(folders.contains(&Some("online".into())));
+        assert!(folders.contains(&Some("offline".into())));
+        assert!(folders.contains(&None));
+        assert!(
+            !user.join("GameStats/Online/g.json").exists(),
+            "ingested files are removed"
+        );
+    }
+
+    /// A refused token is not a failed submission: nothing about the capture
+    /// was wrong, the player just is not signed in any more. Treating it as a
+    /// failure would burn an attempt on every entry in the queue for a
+    /// problem no retry can fix; treating it as a mistaken capture would lose
+    /// a game that has not actually been rejected.
+    #[test]
+    fn an_unauthorized_reply_leaves_everything_queued_and_says_so() {
+        struct Unauth;
+        impl Submitter for Unauth {
+            fn submit(&self, _e: &QueueEntry, _c: &[u8]) -> SubmitOutcome {
+                SubmitOutcome::Unauthorized
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), None)
+            .unwrap();
+        q.enqueue(&sample_capture_with_style([3, 4]), None, Some("s1"), None)
+            .unwrap();
+        let r = q.submit_pending(&Unauth, 5).unwrap();
+        assert!(r.waiting_for_sign_in);
+        assert_eq!(r.accepted.len() + r.held.len() + r.rejected.len(), 0);
+        assert!(q
+            .entries()
+            .unwrap()
+            .iter()
+            .all(|e| e.state == EntryState::Queued && e.attempts == 0));
+    }
+
+    /// Some games are stored and finished but do not count as a win or a
+    /// loss, for example one that ended below 36. That is terminal, like
+    /// Accepted, and the server's note about why has to survive to the
+    /// player.
+    #[test]
+    fn a_recorded_reply_is_terminal_and_keeps_its_note() {
+        struct Rec;
+        impl Submitter for Rec {
+            fn submit(&self, _e: &QueueEntry, _c: &[u8]) -> SubmitOutcome {
+                SubmitOutcome::Recorded {
+                    note: "Recorded as incomplete.".into(),
+                }
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), None)
+            .unwrap();
+        let r = q.submit_pending(&Rec, 5).unwrap();
+        assert_eq!(r.recorded.len(), 1);
+        let e = &q.entries().unwrap()[0];
+        assert_eq!(e.state, EntryState::Accepted);
+        assert_eq!(e.note.as_deref(), Some("Recorded as incomplete."));
     }
 }
