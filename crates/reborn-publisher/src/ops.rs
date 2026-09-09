@@ -65,6 +65,26 @@
 //! A page is free to put whatever else it wants in the same object for the
 //! panel to draw; only these five keys are read here.
 //!
+//! # The origin a journal record lands in
+//!
+//! [`run_operation`] resolves the real origin from this app's own settings
+//! file, the same `origin` field every page already reads through
+//! [`crate::settings::Settings`], and hands it down to [`finish`] and
+//! [`write_journal`] as a plain parameter rather than letting either of
+//! them look the settings file up for themselves. That split exists for one
+//! reason: a test must never be able to reach the real origin just by
+//! calling the function every page calls.
+//!
+//! [`run_operation_with_origin`] is the function that actually does the
+//! work; `run_operation` is a two-line wrapper that resolves the real
+//! origin and calls it. A test in this module calls
+//! `run_operation_with_origin` directly, with a `tempfile::tempdir()` in
+//! hand, and never goes near [`resolve_origin`] or the settings file it
+//! reads. `C:\Reborn Origin`, the real publishing origin for a live game,
+//! is consequently not a path this module's tests can write into even by
+//! a future mistake: the only function that resolves it is not the one
+//! they call.
+//!
 //! # Cancellation
 //!
 //! [`op_cancel`] reaches only a body that registered a
@@ -87,6 +107,7 @@
 // honest fact about this task's scope rather than dead code to delete.
 #![allow(dead_code)]
 
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
@@ -233,7 +254,45 @@ fn page_name(op: &str) -> &str {
 /// and let the page poll `op_status` for progress. The only way this
 /// returns an `Err` is the concurrency refusal: an operation is already
 /// busy, named in the message.
+///
+/// This resolves the real origin from settings and hands it to
+/// [`run_operation_with_origin`], which does the actual work. See the
+/// module doc's "The origin a journal record lands in" for why the split
+/// exists: it is what lets this module's own tests call
+/// `run_operation_with_origin` with a `tempfile::tempdir()` instead,
+/// without this function's settings lookup ever running.
 pub fn run_operation(
+    op: &str,
+    dry_run: bool,
+    inputs: Value,
+    body: impl FnOnce(Sink<'_>) -> reborn_core::Result<Outcome<Value>> + Send + 'static,
+) -> Result<(), String> {
+    run_operation_with_origin(resolve_origin(), op, dry_run, inputs, body)
+}
+
+/// The origin this machine's own settings name, the same `origin` field
+/// every page reads through [`crate::settings::Settings`]. `None` when the
+/// settings file cannot be found or read; `write_journal` treats that as
+/// "nothing to journal into" rather than an operation failure, exactly as
+/// it did before this lookup was pulled out into its own function.
+fn resolve_origin() -> Option<PathBuf> {
+    let platform = Platform::detect();
+    let path = settings::settings_path(&platform).ok()?;
+    let loaded = settings::Settings::load(&path).ok()?;
+    Some(PathBuf::from(loaded.origin))
+}
+
+/// Do the work [`run_operation`] describes, journalling into `origin`
+/// rather than whatever this machine's settings happen to name.
+///
+/// `run_operation` is the only production caller, and it always supplies
+/// the real origin by calling [`resolve_origin`] first, so this split
+/// changes nothing about what a page sees. A test calls this directly
+/// with a `tempfile::tempdir()`'s path instead, which is what keeps the
+/// real settings file, and the real origin it would otherwise name, out of
+/// reach of `cargo test`.
+fn run_operation_with_origin(
+    origin: Option<PathBuf>,
     op: &str,
     dry_run: bool,
     inputs: Value,
@@ -271,7 +330,7 @@ pub fn run_operation(
             shared().state.lock().expect("op state lock").lines.push(line);
         };
         let result = body(&mut sink);
-        finish(&op_owned, step, dry_run, inputs, result);
+        finish(&op_owned, step, dry_run, inputs, origin, result);
     });
 
     Ok(())
@@ -285,8 +344,17 @@ pub fn set_cancel_signal(signal: CancelSignal) {
 }
 
 /// Settle `OpState`, then write the one journal record this operation
-/// earns, whatever it ended with.
-fn finish(op: &str, step: Step, dry_run: bool, inputs: Value, result: reborn_core::Result<Outcome<Value>>) {
+/// earns, whatever it ended with. `origin` is whatever [`run_operation`] (or
+/// a test's [`run_operation_with_origin`]) was given; this function never
+/// resolves one of its own.
+fn finish(
+    op: &str,
+    step: Step,
+    dry_run: bool,
+    inputs: Value,
+    origin: Option<PathBuf>,
+    result: reborn_core::Result<Outcome<Value>>,
+) {
     let page = page_name(op);
 
     let (phase, journal_outcome, mut summary, value): (Phase, &'static str, String, Option<Value>) =
@@ -322,11 +390,17 @@ fn finish(op: &str, step: Step, dry_run: bool, inputs: Value, result: reborn_cor
     // The operation has settled; nothing left to cancel.
     *shared().cancel.lock().expect("cancel lock") = None;
 
-    write_journal(page, dry_run, inputs, journal_outcome, summary, value);
+    write_journal(page, dry_run, inputs, origin, journal_outcome, summary, value);
 }
 
 /// Pull `hashes`, `uploaded`, `verified` and `sequence` out of `value` by
-/// the convention documented on the module, and append one record.
+/// the convention documented on the module, and append one record into
+/// `origin`.
+///
+/// `origin` is `None` when [`resolve_origin`] could not find or read this
+/// machine's settings file; the journal write is skipped in that case
+/// rather than guessed at, exactly as before this became a parameter
+/// instead of a lookup done here.
 ///
 /// A journal write that fails is not reported as this operation's own
 /// failure: the operation already finished (done, described, refused or
@@ -338,6 +412,7 @@ fn write_journal(
     page: &str,
     dry_run: bool,
     inputs: Value,
+    origin: Option<PathBuf>,
     outcome: &'static str,
     summary: String,
     value: Option<Value>,
@@ -370,14 +445,9 @@ fn write_journal(
         summary,
     };
 
-    let platform = Platform::detect();
-    let Ok(path) = settings::settings_path(&platform) else {
+    let Some(origin) = origin else {
         return;
     };
-    let Ok(loaded) = settings::Settings::load(&path) else {
-        return;
-    };
-    let origin = std::path::PathBuf::from(&loaded.origin);
     let _ = journal::append(&origin, &record);
 }
 
@@ -451,6 +521,7 @@ pub fn op_clear() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::MutexGuard;
     use std::time::Duration;
@@ -484,6 +555,27 @@ mod tests {
         let _ = op_clear();
     }
 
+    /// Every test below runs an operation against a fresh
+    /// `tempfile::tempdir()` rather than calling [`run_operation`] itself,
+    /// which would resolve this machine's real settings file and, on a
+    /// machine that has never touched `Settings.origin`, the real
+    /// `C:\Reborn Origin` -- the live publishing origin for a game other
+    /// people play. `run_operation_with_origin` is the one function in this
+    /// module that takes the origin as a plain argument instead of looking
+    /// one up, so calling it directly here is what makes that lookup
+    /// unreachable from a test, not a convention a future test could
+    /// forget to follow. See the module doc's "The origin a journal record
+    /// lands in".
+    fn run(
+        origin: &Path,
+        op: &str,
+        dry_run: bool,
+        inputs: Value,
+        body: impl FnOnce(Sink<'_>) -> reborn_core::Result<Outcome<Value>> + Send + 'static,
+    ) -> Result<(), String> {
+        run_operation_with_origin(Some(origin.to_path_buf()), op, dry_run, inputs, body)
+    }
+
     #[test]
     fn step_of_reads_the_suffix_after_the_last_colon() {
         assert_eq!(step_of("roster:plan"), Step::Plan);
@@ -504,8 +596,9 @@ mod tests {
     fn a_second_operation_is_refused_and_names_the_first() {
         let _guard = exclusive();
         reset();
+        let dir = tempfile::tempdir().expect("tempdir");
         let started = AtomicUsize::new(0);
-        run_operation("roster:run", false, Value::Null, move |_sink| {
+        run(dir.path(), "roster:run", false, Value::Null, move |_sink| {
             // Block long enough for the refusal check below to observe
             // this operation as busy.
             thread::sleep(Duration::from_millis(150));
@@ -514,7 +607,7 @@ mod tests {
         .expect("the first call should be accepted");
         thread::sleep(Duration::from_millis(20));
 
-        let err = run_operation("launcher:run", false, Value::Null, move |_sink| {
+        let err = run(dir.path(), "launcher:run", false, Value::Null, move |_sink| {
             started.fetch_add(1, Ordering::SeqCst);
             Ok(Outcome::Described)
         })
@@ -529,7 +622,8 @@ mod tests {
     fn a_plan_step_populates_plan_and_a_run_step_leaves_it_alone() {
         let _guard = exclusive();
         reset();
-        run_operation("content:plan", false, Value::Null, |_sink| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "content:plan", false, Value::Null, |_sink| {
             Ok(Outcome::Done(serde_json::json!({"found": 3})))
         })
         .unwrap();
@@ -540,7 +634,7 @@ mod tests {
             assert_eq!(state.plan, Some(serde_json::json!({"found": 3})));
         }
 
-        run_operation("content:run", false, Value::Null, |_sink| Ok(Outcome::Described)).unwrap();
+        run(dir.path(), "content:run", false, Value::Null, |_sink| Ok(Outcome::Described)).unwrap();
         wait_until_settled();
         let state = op_status();
         assert_eq!(state.phase, Phase::Done);
@@ -554,7 +648,8 @@ mod tests {
     fn a_refusal_sets_phase_refused_and_keeps_the_summary() {
         let _guard = exclusive();
         reset();
-        run_operation("content:lint", false, Value::Null, |sink| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "content:lint", false, Value::Null, |sink| {
             Ok(reborn_core::publish::refuse(
                 sink,
                 &["a User folder was found under this tree.".to_string()],
@@ -572,7 +667,8 @@ mod tests {
     fn an_error_sets_phase_failed() {
         let _guard = exclusive();
         reset();
-        run_operation("keys:generate", false, Value::Null, |_sink| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "keys:generate", false, Value::Null, |_sink| {
             Err(reborn_core::Error::PlainIo(std::io::Error::other("disk fell over")))
         })
         .unwrap();
@@ -587,7 +683,8 @@ mod tests {
     fn op_clear_refuses_while_busy_and_succeeds_once_settled() {
         let _guard = exclusive();
         reset();
-        run_operation("history:rollback-run", false, Value::Null, |_sink| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "history:rollback-run", false, Value::Null, |_sink| {
             thread::sleep(Duration::from_millis(120));
             Ok(Outcome::Described)
         })
@@ -605,7 +702,8 @@ mod tests {
         reset();
         assert!(op_cancel().is_err(), "cancel with nothing running must be refused");
 
-        run_operation("game:dump", false, Value::Null, |_sink| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "game:dump", false, Value::Null, |_sink| {
             thread::sleep(Duration::from_millis(80));
             Ok(Outcome::Described)
         })
@@ -620,9 +718,10 @@ mod tests {
     fn op_cancel_reaches_a_registered_signal() {
         let _guard = exclusive();
         reset();
+        let dir = tempfile::tempdir().expect("tempdir");
         let cancel = CancelSignal::new();
         let observed = cancel.clone();
-        run_operation("roster:plan", false, Value::Null, move |_sink| {
+        run(dir.path(), "roster:plan", false, Value::Null, move |_sink| {
             set_cancel_signal(observed.clone());
             for _ in 0..200 {
                 if observed.is_cancelled() {
@@ -637,6 +736,54 @@ mod tests {
         op_cancel().expect("a registered signal should be reachable");
         wait_until_settled();
         assert!(cancel.is_cancelled());
+        reset();
+    }
+
+    #[test]
+    fn run_operation_with_origin_journals_into_the_given_origin_and_not_the_real_one() {
+        let _guard = exclusive();
+        reset();
+
+        // The real, live publishing origin this whole fix exists to keep a
+        // test out of. Not read from settings on purpose: this is the exact
+        // path named in the bug report, and the assertion below should
+        // fail loudly if anything ever again resolves it from inside a
+        // test.
+        let real_origin = Path::new(r"C:\Reborn Origin");
+        let real_journal = real_origin.join(reborn_core::publish::journal::JOURNAL_FILE);
+        let real_journal_existed_before = real_journal.is_file();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "upload:run", false, serde_json::json!({"kind": "isolation-test"}), |_sink| {
+            Ok(Outcome::Done(serde_json::json!({"summary": "isolation test wrote here"})))
+        })
+        .expect("accepted");
+        wait_until_settled();
+
+        // The journal this operation earned appears in the temp origin it
+        // was given, naming the operation and carrying the inputs through.
+        let temp_journal = dir.path().join(reborn_core::publish::journal::JOURNAL_FILE);
+        let written = std::fs::read_to_string(&temp_journal)
+            .unwrap_or_else(|e| panic!("{} was not written: {e}", temp_journal.display()));
+        let record: Record = serde_json::from_str(written.lines().next().expect("one journal line"))
+            .expect("the line is a valid journal record");
+        assert_eq!(record.operation, "upload");
+        assert_eq!(record.outcome, "done");
+        assert_eq!(record.inputs, serde_json::json!({"kind": "isolation-test"}));
+
+        // The real origin's journal is exactly as it was before this test
+        // ran. `run_operation_with_origin` never resolves `resolve_origin`
+        // (only `run_operation` does, and this test never calls it), so by
+        // construction the real settings file, and the real origin it
+        // names, were never consulted; this is the closest a filesystem
+        // check can come to proving that from outside, and is offered as
+        // the next-best assertion rather than a substitute for it.
+        assert_eq!(
+            real_journal.is_file(),
+            real_journal_existed_before,
+            "the real origin's journal must be untouched by this test"
+        );
+
         reset();
     }
 

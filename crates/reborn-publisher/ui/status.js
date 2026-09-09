@@ -125,13 +125,7 @@ function uploadPanel() {
     operation: "status",
     describe: "Push whatever this machine has published locally that the bucket does not yet serve.",
     plan: () => call("publisher_status"),
-    run: async () => ({
-      ok: false,
-      error:
-        "This build has no command that re-uploads from Status directly. Publish the pending " +
-        "component again from its own page (Roster, Content, Game or Launcher); that page's Run " +
-        "step uploads for you.",
-    }),
+    run: (dryRun) => call("upload_run", { dry_run: dryRun }),
     verify: () => call("publisher_status"),
   });
   return host;

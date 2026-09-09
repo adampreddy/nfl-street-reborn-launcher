@@ -23,3 +23,9 @@ tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 rfd = "0.15"
+
+[dev-dependencies]
+# `ops.rs`'s tests run every operation against a fresh tempdir rather than
+# this machine's real publishing origin. Same version reborn-core already
+# pins for the same reason.
+tempfile = "3"

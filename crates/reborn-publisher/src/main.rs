@@ -12,13 +12,15 @@
 //! # Every command registered here, once
 //!
 //! This file declares every module and registers every command in one
-//! `generate_handler!` call, and is not touched again after this task. That
-//! is deliberate: six later tasks each build one page by editing exactly
-//! two files, its own `src/<page>.rs` and `ui/<page>.js`, and none of them
-//! can collide with another because none of them needs to touch this file.
-//! If a page later needs a command this file does not already list, that
-//! parallelism breaks for whoever needs it; the fix is to add the command
-//! here deliberately; it is not something to work around inside a page.
+//! `generate_handler!` call. Six of the seven pages each build by editing
+//! exactly two files, their own `src/<page>.rs` and `ui/<page>.js`, and
+//! none of them collide with another because none of them needs to touch
+//! this file. If a page later needs a command this file does not already
+//! list, that parallelism breaks for whoever needs it; the fix is to add
+//! the command here deliberately, which is exactly what happened once: the
+//! Status page's Upload button needed a page-agnostic upload command no
+//! existing page owned, so `upload.rs` and its two entries below were
+//! added rather than worked around inside `status.rs`.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -32,6 +34,7 @@ mod ops;
 mod roster;
 mod settings;
 mod status;
+mod upload;
 
 fn main() {
     tauri::Builder::default()
@@ -47,6 +50,10 @@ fn main() {
             status::publisher_status,
             status::publisher_environment,
             status::publisher_recent,
+            // Upload: the page-agnostic re-upload Status's own Upload
+            // button calls.
+            upload::upload_plan,
+            upload::upload_run,
             // Roster push.
             roster::roster_plan,
             roster::roster_run,
