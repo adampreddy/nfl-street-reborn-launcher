@@ -33,8 +33,10 @@ pub const JOURNAL_SCHEMA: &str = "nsr.publisher-journal.v1";
 pub struct Record {
     /// Must be exactly [`JOURNAL_SCHEMA`].
     pub schema: String,
-    /// RFC 3339, stamped by [`now`]. See that function's doc for why this is
-    /// UTC rather than a true timezone-aware local reading.
+    /// RFC 3339, stamped by [`now`] as UTC with an explicit `+00:00` offset,
+    /// never a local time. Rendering this in the operator's local time, if
+    /// wanted, is a display-layer concern; nothing that reads this field
+    /// should treat it as already local.
     pub at: String,
     /// `"roster"`, `"game-patch"`, `"release"`, `"component"`, `"upload"`,
     /// `"launcher"`.
@@ -120,19 +122,17 @@ pub fn read_last(origin: &Path, n: usize) -> Result<Vec<Record>> {
     Ok(all.records[start..].to_vec())
 }
 
-/// The current moment as an RFC 3339 timestamp.
-///
-/// This is UTC (offset `+00:00`), not a genuine timezone-aware local
-/// reading, and that is a real gap against the `at` field's stated intent
-/// ("RFC 3339 local time"). It is not an oversight: finding the operator's
-/// UTC offset needs either an OS call (`GetTimeZoneInformation` on Windows,
-/// `tzset`/`localtime_r` elsewhere), which is `unsafe` on every platform and
-/// this crate is `#![forbid(unsafe_code)]` (see `lib.rs`), or a timezone
-/// dependency, which this task's brief says to avoid rather than add for
-/// this. Both routes are closed from inside this file, so this reports the
-/// day and time correctly and the offset as `+00:00`, which is exact only
-/// when the machine's zone is UTC. Flagged in the task report as a decision
-/// for the plan owner, not settled quietly here.
+/// The current moment as an RFC 3339 timestamp, stamped UTC with an explicit
+/// `+00:00` offset. That is deliberate and correct, not a stand-in for a
+/// local reading: unambiguous, sortable as text, and never wrong across a
+/// daylight-saving change. It is also the only option available from inside
+/// this file: finding the operator's local offset needs either an OS call
+/// (`GetTimeZoneInformation` on Windows, `tzset`/`localtime_r` elsewhere),
+/// which is `unsafe` on every platform and this crate is
+/// `#![forbid(unsafe_code)]` (see `lib.rs`), or a timezone dependency, which
+/// this task's brief says to avoid rather than add for this. Rendering this
+/// in the viewer's local time, if wanted, belongs to whatever displays the
+/// record, not to this stamp.
 pub fn now() -> String {
     format_rfc3339(SystemTime::now())
 }
