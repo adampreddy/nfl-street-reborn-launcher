@@ -80,6 +80,14 @@ pub struct PendingView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OriginalView {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SlotView {
     pub slot: u8,
     pub title: String,
@@ -90,6 +98,9 @@ pub struct SlotView {
     pub source: &'static str,
     pub source_name: Option<String>,
     pub pending: Option<PendingView>,
+    /// The song the disc shipped with in this slot, whatever plays now.
+    /// Absent only when no pristine image can be read.
+    pub original: Option<OriginalView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +172,23 @@ pub struct PackPreviewView {
     pub songs: Vec<PackSongView>,
 }
 
+/// The disc's own 21 songs, read once per pristine image and kept for the
+/// life of the process (music_status is polled every second during a build).
+static STOCK: Mutex<Option<(String, Vec<apply::StockSong>)>> = Mutex::new(None);
+
+fn stock_songs(root: &Path) -> Option<Vec<apply::StockSong>> {
+    let pristine = reborn_core::game_image::find_pristine(root)?;
+    let mut cache = STOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((sha, songs)) = cache.as_ref() {
+        if *sha == pristine.folder_sha256 {
+            return Some(songs.clone());
+        }
+    }
+    let songs = apply::stock_songs(&pristine.path).ok()?;
+    *cache = Some((pristine.folder_sha256.clone(), songs.clone()));
+    Some(songs)
+}
+
 fn data_root() -> Result<PathBuf, String> {
     Platform::detect().paths.data_root().map_err(|e| e.to_string())
 }
@@ -189,11 +217,16 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
         Base::Stock => BaseView { kind: "original", name: None },
         Base::Package { id, .. } => BaseView { kind: "package", name: Some(base_pack.as_ref().map(|p| p.manifest.name.clone()).unwrap_or_else(|| id.clone())) },
     };
+    let stock = stock_songs(root);
     let mut slots = Vec::with_capacity(21);
     for slot in Slot::all() {
         let n = slot.get();
+        let original = stock.as_ref().and_then(|s| s.get(slot.index())).map(|o| OriginalView { title: o.title.clone(), artist: o.artist.clone(), album: o.album.clone(), duration_ms: o.duration_ms });
         let (title, artist, album, duration_ms, source, source_name) = match &applied[&slot] {
-            Effective::Stock => (String::new(), String::new(), String::new(), None, "original", None),
+            Effective::Stock => match &original {
+                Some(o) => (o.title.clone(), o.artist.clone(), o.album.clone(), Some(o.duration_ms), "original", None),
+                None => (String::new(), String::new(), String::new(), None, "original", None),
+            },
             Effective::Blob { title, artist, album, origin, .. } => {
                 let entry = st.slots.get(&n);
                 let duration = entry.and_then(|e| e.duration_ms).or_else(|| base_pack.as_ref().and_then(|p| p.manifest.songs.get(&n)).and_then(|s| s.duration_ms));
@@ -215,7 +248,7 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
             artist: e.artist.clone(),
             album: e.album.clone(),
         });
-        slots.push(SlotView { slot: n, title, artist, album, duration_ms, source, source_name, pending });
+        slots.push(SlotView { slot: n, title, artist, album, duration_ms, source, source_name, pending, original });
     }
     let (image_ok, image_note) = match apply::images(root) {
         Ok(_) => (true, String::new()),
@@ -408,19 +441,24 @@ pub async fn music_pack_preview(path: String) -> Result<PackPreviewView, String>
         let st = Soundtrack::load(&root).map_err(|e| e.to_string())?;
         let base_pack = st.base_pack(&root).ok().flatten();
         let applied = st.effective(&root, base_pack.as_ref(), false);
+        let stock = stock_songs(&root);
         let songs = p
             .manifest
             .songs
             .iter()
             .filter_map(|(n, s)| {
                 let slot = Slot::new(*n).ok()?;
+                let replaces = match (&applied[&slot], stock.as_ref().and_then(|v| v.get(slot.index()))) {
+                    (Effective::Stock, Some(o)) if !o.title.is_empty() => format!("the original song ({} by {})", o.title, o.artist),
+                    (eff, _) => slot_phrase(eff),
+                };
                 Some(PackSongView {
                     slot: *n,
                     title: s.title.clone(),
                     artist: s.artist.clone(),
                     album: s.album.clone(),
                     duration_ms: s.duration_ms,
-                    replaces: slot_phrase(&applied[&slot]),
+                    replaces,
                 })
             })
             .collect();
@@ -571,7 +609,7 @@ mod tests {
             progress: None,
             enabled: true,
             base: BaseView { kind: "original", name: None },
-            slots: vec![SlotView { slot: 1, title: String::new(), artist: String::new(), album: String::new(), duration_ms: None, source: "original", source_name: None, pending: None }],
+            slots: vec![SlotView { slot: 1, title: String::new(), artist: String::new(), album: String::new(), duration_ms: None, source: "original", source_name: None, pending: None, original: None }],
             pending_count: 0,
             note: String::new(),
             image_ok: false,

@@ -78,6 +78,18 @@ pub fn with_asf(bytes: &[u8], new_asf: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// A slot's length in milliseconds as the position table records it: the
+/// sum of w1 over its 40 segments.
+pub fn slot_duration_ms(bytes: &[u8], slot: Slot) -> Result<u64> {
+    let p = Pathfind::parse(bytes)?;
+    let first = slot_first_stream(slot);
+    let mut total = 0u64;
+    for k in first..first + SEGMENTS_PER_SONG {
+        total += u64::from(be32(bytes, p.toc_offset + 8 * k + 4)?);
+    }
+    Ok(total)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TocReport {
     pub w0_rewritten: usize,
@@ -165,6 +177,14 @@ mod tests {
         // a second pass changes nothing
         let again = rewrite_toc(&mut out, &[Slot::new(4).unwrap()]).unwrap();
         assert_eq!(again.w0_rewritten, 0);
+    }
+
+    #[test]
+    fn a_slot_length_is_the_sum_of_its_segment_lengths() {
+        let pf = synthetic_pathfind(256);
+        // synthetic_stream(k) carries 2400 + k % 7 samples: 100 ms each, rounded
+        let ms = slot_duration_ms(&pf, Slot::new(1).unwrap()).unwrap();
+        assert_eq!(ms, 40 * 100);
     }
 
     #[test]

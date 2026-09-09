@@ -259,6 +259,39 @@ pub fn apply_with_size(
 }
 
 // ---------------------------------------------------------------------------
+// The disc's own songs
+// ---------------------------------------------------------------------------
+
+/// What a slot plays when nothing replaces it: the pristine image's banner
+/// text and the length its position table records.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StockSong {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+}
+
+/// The 21 stock songs of a pristine image, in slot order. Reads the image's
+/// template.dat and pathfind.dat once; callers cache by the image.
+pub fn stock_songs(pristine: &Path) -> Result<Vec<StockSong>> {
+    let disc = gcm::Disc::open(pristine)?;
+    let template = disc.read_file("template.dat")?;
+    let pf = disc.read_file("pathfind.dat")?;
+    let records = eatx::read_records(&template)?;
+    let mut out = Vec::with_capacity(records.len());
+    for (record, slot) in records.iter().zip(Slot::all()) {
+        out.push(StockSong {
+            title: record.title.clone(),
+            artist: record.artist.clone(),
+            album: record.album.clone(),
+            duration_ms: pathfind::slot_duration_ms(&pf, slot).unwrap_or(0),
+        });
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Staging
 // ---------------------------------------------------------------------------
 
@@ -722,6 +755,17 @@ mod tests {
         // the switch off refuses
         set_enabled(root, false).unwrap();
         assert!(matches!(apply_with_size(&platform, root, Some(size + 0x40000), &mut |_| {}).unwrap(), Outcome::Refused(Refusal::Disabled)));
+    }
+
+    #[test]
+    fn stock_songs_come_from_the_pristine_image() {
+        let (dir, pristine, _booted, _size) = scratch_root();
+        let _ = dir.path();
+        let songs = stock_songs(&pristine).unwrap();
+        assert_eq!(songs.len(), 21);
+        assert_eq!(songs[0].title, "Song 1");
+        assert_eq!(songs[20].artist, "Artist 21");
+        assert_eq!(songs[0].duration_ms, 4000);
     }
 
     #[test]

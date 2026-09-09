@@ -148,13 +148,19 @@ const SOURCE_LABEL = {
 };
 
 function slotTitle(s) {
-  if (!s || s.source === "original" || !s.title) return s ? `Original song ${s.slot}` : "";
-  return s.title;
+  if (!s) return "";
+  if (s.title) return s.title;
+  if (s.original && s.original.title) return s.original.title;
+  return `Original song ${s.slot}`;
 }
 
 function slotLine(s) {
   if (!s) return "";
-  if (s.source === "original") return `Original song ${s.slot}`;
+  const o = s.original;
+  if (s.source === "original") {
+    if (!(o && o.title)) return `Original song ${s.slot}`;
+    return [o.title, o.artist].filter(Boolean).join(" by ") + (mmss(o.duration_ms) ? ` (${mmss(o.duration_ms)})` : "");
+  }
   return [s.title || "Untitled", s.artist].filter(Boolean).join(" by ") + (mmss(s.duration_ms) ? ` (${mmss(s.duration_ms)})` : "");
 }
 
@@ -163,8 +169,12 @@ function firstFreeSlot() {
   return free ? free.slot : 21;
 }
 
-function pendingWhat(p) {
-  return p.kind === "original" ? "the original song" : [p.title, p.artist].filter(Boolean).join(" by ") || "a song";
+function pendingWhat(p, s) {
+  if (p.kind === "original") {
+    const o = s && s.original;
+    return o && o.title ? `the original song (${[o.title, o.artist].filter(Boolean).join(" by ")})` : "the original song";
+  }
+  return [p.title, p.artist].filter(Boolean).join(" by ") || "a song";
 }
 
 function clearFlow() {
@@ -244,7 +254,7 @@ function renderEditor() {
   form.append(el('div',{class:'mz-fields'},field('title','Title'),field('artist','Artist')));
   if(editing===null){
     const select=el('select',{id:'music-slot','aria-label':'Replace song',disabled,onchange:ev=>{targetSlot=Number(ev.target.value);}});
-    for(const song of slots())select.append(el('option',{value:String(song.slot),text:`${String(song.slot).padStart(2,'0')} · ${song.pending ? pendingWhat(song.pending) : slotTitle(song)}`,selected:song.slot===targetSlot}));
+    for(const song of slots())select.append(el('option',{value:String(song.slot),text:`${String(song.slot).padStart(2,'0')} · ${song.pending ? pendingWhat(song.pending, song) : slotTitle(song)}`,selected:song.slot===targetSlot}));
     form.append(el('label',{class:'mz-field'},el('span',{text:'Replace song'}),select));
   }
   const extra=el('details',{class:'music-extra'});extra.open=extraOpen;
@@ -310,14 +320,15 @@ function discList(){
   const body=el('tbody');
   for(const song of list){
     const pending=song.pending,original=pending?pending.kind==='original':song.source==='original';
-    const title=original?slotTitle({...song,title:'',source:'original'}):(pending?.title||song.title||'Untitled');
-    const artist=original?'Original soundtrack':(pending?.artist??song.artist)||'Unknown artist';
+    const o=song.original;
+    const title=original?(o?.title||slotTitle({...song,title:'',original:null,source:'original'})):(pending?.title||song.title||'Untitled');
+    const artist=original?(o?.artist?`${o.artist} · Original soundtrack`:'Original soundtrack'):(pending?.artist??song.artist)||'Unknown artist';
     const actions=el('td',{class:'mz-col-actions'},el('button',{type:'button',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
     if(pending)actions.append(el('button',{type:'button',class:'music-quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
     else if(song.source!=='original')actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
-    const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),original?null:el('small',{text:artist}));
+    const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),el('small',{text:artist}));
     if(pending)name.append(el('span',{class:'music-pending',text:original?'Restore original':'Pending'}));
-    body.append(el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)},el('td',{class:'mz-col-n',text:String(song.slot).padStart(2,'0')}),name,el('td',{class:'mz-col-time',text:pending||original?'':mmss(song.duration_ms)||''}),actions));
+    body.append(el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)},el('td',{class:'mz-col-n',text:String(song.slot).padStart(2,'0')}),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions));
   }
   table.append(body);sec.append(table);return sec;
 }
