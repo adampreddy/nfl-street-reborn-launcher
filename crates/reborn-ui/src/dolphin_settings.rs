@@ -159,7 +159,11 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
-  let Startup::Owner(supervisor)=Supervisor::acquire(&p).map_err(player)? else { return Err(already_running()); };
+  // The waiting acquire, the same one a launch takes. A lock this launcher's
+  // own background work holds for a moment is not a second launcher, and
+  // refusing an online session over it tells the player to close something
+  // that is not open.
+  let Startup::Owner(supervisor)=Supervisor::acquire_waiting(&p).map_err(player)? else { return Err(already_running()); };
   let _=supervisor.recover_unfinished().map_err(player)?;
   let prepared=Session::prepare(&p,&req).map_err(player)?;
   let user=prepared.user_dir.path();let file=user.join("Config/Dolphin.ini");let mut doc=read_ini(&file)?;let mut overlay=netplay_sync_overlay();let net=overlay.entry("NetPlay".into()).or_default();
@@ -176,16 +180,23 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   std::thread::spawn(move||{
-   // The lock and the guard are held across the wait AND across the collection
-   // and the send, the way Session::run holds them: the queue and the session
-   // log are shared state, and nothing may start a second session in the middle
-   // of filing this one's results.
+   // The lock and the guard are held across the wait AND across the collection:
+   // the queue and the session log are shared state, and nothing may start a
+   // second session in the middle of filing this one's results.
    let _guard=guard;
    let exit=p.processes.wait(handle).ok();
+   let collected=reborn_core::session::finish_and_collect(&p,&supervisor,record,exit.as_ref(),&user_dir);
+   // Both given back before the network work. A send is one request per queued
+   // game with the client's full timeout each, so against a slow or unreachable
+   // backend it is minutes, and for those minutes pressing Play said a game
+   // session was already active and this page said to close the emulator. The
+   // emulator had already exited: both were false.
+   drop(supervisor);
+   drop(_guard);
    // Reported through the session record, never to a screen. The window has
    // already been told the game started, and a game that was played is not a
    // failure however collecting or sending it went.
-   let _=reborn_core::session::finish_and_collect(&p,&supervisor,record,exit.as_ref(),&user_dir);
+   let _=collected.send(&p);
   });
   Ok(serde_json::json!({"started":true,"mode":mode,"game":game_path.file_name().unwrap_or_default().to_string_lossy()}))
  }).await.map_err(|e|e.to_string())?

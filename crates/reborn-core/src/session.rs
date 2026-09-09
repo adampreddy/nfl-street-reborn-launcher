@@ -816,14 +816,98 @@ pub fn collect_and_send(
     session_id: &str,
     user_dir: &Path,
 ) -> StatsAfterSession {
+    collect(platform, supervisor, session_id, user_dir).send(platform)
+}
+
+/// The results of a finished session, collected and not yet sent.
+///
+/// # Why collecting and sending are two calls
+///
+/// Both have to happen and only one of them needs the lock. Collecting reads
+/// the emulator's folders into the queue and reads the session log, which are
+/// shared state and are exactly what the single-instance lock is for. Sending
+/// is one network round trip per queued game, each with the client's full
+/// timeout, so a backlog against a slow or unreachable backend is minutes.
+///
+/// Holding the lock and the launch guard across the send made two screens say
+/// something untrue for those minutes: pressing Play answered "a game session
+/// is already active", and the Online page answered "close the emulator
+/// first", when the emulator had already exited. So a caller holding them
+/// gives them back between these two calls.
+///
+/// [`Session::run`] still does both in one call, through
+/// [`collect_and_send`]: it is the launch itself, and it has nothing to hand
+/// the lock back to until it returns.
+#[derive(Debug)]
+pub struct SessionResults {
+    /// `None` when the queue would not open, which is the one failure that
+    /// really ends it: nowhere to collect into and nothing to send from.
+    queue: Option<crate::stats::StatsQueue>,
+    /// Read while the lock was still held, because it is the supervisor's own
+    /// log, and carried so the send needs nothing from the supervisor.
+    history: Vec<SessionRecord>,
+    enqueued: Vec<crate::stats::Enqueued>,
+    problem: Option<StatsProblem>,
+}
+
+impl SessionResults {
+    /// Send what was collected, and everything else already queued.
+    ///
+    /// Needs no lock and no guard. Never returns an error: by the time this
+    /// runs the game has been played.
+    pub fn send(self, platform: &Platform) -> StatsAfterSession {
+        let SessionResults {
+            queue,
+            history,
+            enqueued,
+            mut problem,
+        } = self;
+        let Some(queue) = queue else {
+            return StatsAfterSession::Failed;
+        };
+
+        let sent = match crate::backend::auto_submit(platform, &queue, &history) {
+            Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
+            Ok(crate::backend::SendAttempt::NotSignedIn) => None,
+            Err(e) => {
+                tracing::warn!("results could not be sent: {e}");
+                problem.get_or_insert(StatsProblem::Sending);
+                None
+            }
+        };
+
+        StatsAfterSession::Ingested {
+            enqueued,
+            problem,
+            sent,
+        }
+    }
+}
+
+/// Collect the match results a session produced, without sending them.
+///
+/// Call it with the lock still held: the queue and the session log are shared
+/// state, and a second launcher collecting the same folder at the same time is
+/// the case the lock exists for. Then give the lock back and call
+/// [`SessionResults::send`].
+pub fn collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    session_id: &str,
+    user_dir: &Path,
+) -> SessionResults {
     let queue = match crate::stats::StatsQueue::open(platform) {
         Ok(queue) => queue,
-        // The only failure that really ends it: nowhere to collect into, and
-        // nothing to send from. The detail goes to the log; the value a caller
-        // shows carries none of it.
+        // The detail goes to the log; the value a caller shows carries none of
+        // it.
         Err(e) => {
             tracing::warn!("the results queue could not be opened: {e}");
-            return StatsAfterSession::Failed;
+            return SessionResults {
+                queue: None,
+                history: Vec::new(),
+                enqueued: Vec::new(),
+                problem: None,
+            };
         }
     };
 
@@ -839,27 +923,30 @@ pub fn collect_and_send(
         }
     };
 
-    let sent = match supervisor
-        .history()
-        .and_then(|history| crate::backend::auto_submit(platform, &queue, &history))
-    {
-        Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
-        Ok(crate::backend::SendAttempt::NotSignedIn) => None,
+    // The last thing that needs the lock.
+    let history = match supervisor.history() {
+        Ok(history) => history,
         Err(e) => {
-            tracing::warn!("results could not be sent: {e}");
+            tracing::warn!("the session log could not be read: {e}");
             problem.get_or_insert(StatsProblem::Sending);
-            None
+            Vec::new()
         }
     };
 
-    StatsAfterSession::Ingested {
+    SessionResults {
+        queue: Some(queue),
+        history,
         enqueued,
         problem,
-        sent,
     }
 }
 
-/// Close a session whose emulator has stopped, then [`collect_and_send`].
+/// Close a session whose emulator has stopped, then [`collect`].
+///
+/// The send is deliberately not part of this. The caller spawned the emulator
+/// itself and is holding the launch guard and the single-instance lock, and a
+/// send is minutes against a slow backend, so it gives both back and then
+/// calls [`SessionResults::send`].
 ///
 /// For a caller that spawned the emulator itself and waited for it on its own
 /// thread, rather than going through [`Session::run`]. The session id comes
@@ -881,14 +968,14 @@ pub fn finish_and_collect(
     record: SessionRecord,
     exit: Option<&ExitKind>,
     user_dir: &Path,
-) -> StatsAfterSession {
+) -> SessionResults {
     let session_id = record.id.clone();
     if let Some(exit) = exit {
         // Reported through the session log on the next launch if it fails.
         // Nothing here may stop the collection below.
         let _ = supervisor.finish(record, exit);
     }
-    collect_and_send(platform, supervisor, &session_id, user_dir)
+    collect(platform, supervisor, &session_id, user_dir)
 }
 
 /// Point this build at what `activation.json` says is on.

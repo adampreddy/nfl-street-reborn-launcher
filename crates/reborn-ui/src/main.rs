@@ -4096,13 +4096,22 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
             .map_err(|e| e.player_message().to_string())?;
         let user_path = user.path().to_path_buf();
         std::thread::spawn(move || {
-            // Held across the wait AND across the collection and the send, the
-            // way Session::run holds them.
+            // Held across the wait and across the collection, which is what
+            // the lock is for: the queue and the session log are shared state.
             let _guard = guard;
             let exit = p.processes.wait(handle).ok();
+            let collected = reborn_core::session::finish_and_collect(&p, &supervisor, record, exit.as_ref(), &user_path);
+            // Both given back before the network work. A send is one request
+            // per queued game with the client's full timeout each, so against
+            // a slow or unreachable backend it is minutes, and for those
+            // minutes pressing Play said a game session was already active and
+            // the Online page said to close the emulator. The emulator had
+            // already exited: both were false.
+            drop(supervisor);
+            drop(_guard);
             // Never surfaced: the window was told the emulator started, and a
-            // game that was played is not a failure however collecting it went.
-            let _ = reborn_core::session::finish_and_collect(&p, &supervisor, record, exit.as_ref(), &user_path);
+            // game that was played is not a failure however sending it went.
+            let _ = collected.send(&p);
         });
         Ok(OpenRuntimeView { started: true, runtime: exe.display().to_string(), user_dir_note: user.explain() })
     })
@@ -5497,6 +5506,80 @@ mod tests {
             body.contains("forget_retired_league_token"),
             "a token this project has already had to rotate stays in the credential vault \
              forever, on every machine that ever stored one"
+        );
+    }
+
+    /// The lock and the guard go back before the network work, and the online
+    /// start waits for a lock that is about to be given back.
+    ///
+    /// Opening the emulator from Settings, and starting an online session,
+    /// held the launch guard and the single-instance lock across the whole
+    /// collect-and-send. A send is one request per queued game with the
+    /// client's full timeout each, so on a slow or unreachable backend that is
+    /// minutes. During it, pressing Play said a game session was already
+    /// active and the Online page said to close the emulator first. Both were
+    /// false: the emulator had already exited.
+    ///
+    /// The order that has to hold is collect, then give both back, then send.
+    /// Collecting is the part that needs the lock, because the queue and the
+    /// session log are shared state; sending needs neither.
+    ///
+    /// The second half: the online start took the plain `acquire`, so a lock
+    /// held for a moment by this launcher's own background work refused it
+    /// outright. The Play path was given the waiting acquire for exactly that
+    /// reason and this path was not.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `open_runtime` is read with `command_body`, which stops at the next
+    /// `#[tauri::command]`, and `netplay_open` is read out of
+    /// `dolphin_settings.rs`, a different file from this one. Both slices end
+    /// thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn the_lock_and_the_guard_go_back_before_the_network_work() {
+        for (name, body) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+            ),
+        ] {
+            let collect = body
+                .find("finish_and_collect")
+                .unwrap_or_else(|| panic!("{name} no longer collects what the session produced"));
+            let release = body.find("drop(supervisor)").unwrap_or_else(|| {
+                panic!(
+                    "{name} never gives the single-instance lock back, so every other screen \
+                     is told a launcher is running for as long as the send takes"
+                )
+            });
+            let send = body.find(".send(&p)").unwrap_or_else(|| {
+                panic!("{name} no longer sends what it collected, so results sit in the queue")
+            });
+            assert!(
+                collect < release,
+                "{name} gives the lock back before the results are safely collected"
+            );
+            assert!(
+                release < send,
+                "{name} holds the lock and the guard across the network work, so Play says a \
+                 game session is active and the Online page says to close an emulator that \
+                 has already exited"
+            );
+        }
+
+        let netplay = command_body(
+            include_str!("dolphin_settings.rs"),
+            "pub async fn netplay_open",
+        );
+        assert!(
+            netplay.contains("acquire_waiting"),
+            "starting an online session is still refused outright by a lock that is about to \
+             be given back"
         );
     }
 
