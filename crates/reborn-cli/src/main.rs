@@ -3916,6 +3916,7 @@ fn stats_ingest(
         if matches!(
             result,
             reborn_core::stats::Enqueued::CouldNotRead { .. }
+                | reborn_core::stats::Enqueued::FolderCouldNotBeRead { .. }
                 | reborn_core::stats::Enqueued::Quarantined(_)
                 | reborn_core::stats::Enqueued::SourceKept { .. }
         ) {

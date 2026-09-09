@@ -1577,6 +1577,16 @@ pub enum Enqueued {
     /// The file could not be read off disk at all, so nothing was queued and the
     /// file was left where it was.
     CouldNotRead { path: PathBuf, detail: String },
+    /// A whole folder could not be listed, so nothing in it was looked at.
+    ///
+    /// Its own variant because the two say different things. A file that could
+    /// not be read is one known file, still where it was, and the next
+    /// collection reads it again. A folder that could not be listed is an
+    /// unknown number of games, possibly none and possibly all of them, and
+    /// nothing here can promise anything about what is inside it. Both used to
+    /// answer with the file sentence, which made a claim about one file that
+    /// nobody had established.
+    FolderCouldNotBeRead { path: PathBuf, detail: String },
     /// The capture is safely in the queue, and the file the emulator wrote
     /// could not be removed afterwards.
     ///
@@ -1599,7 +1609,9 @@ impl Enqueued {
                 Some(&e.key)
             }
             Enqueued::AlreadySubmitted { key, .. } => Some(key),
-            Enqueued::CouldNotRead { .. } | Enqueued::SourceKept { .. } => None,
+            Enqueued::CouldNotRead { .. }
+            | Enqueued::FolderCouldNotBeRead { .. }
+            | Enqueued::SourceKept { .. } => None,
         }
     }
 
@@ -1627,6 +1639,16 @@ impl Enqueued {
             Enqueued::CouldNotRead { .. } => {
                 "A result file could not be read this time, so it was left exactly where \
                  it is. Nothing was lost, and it will be read again after your next game."
+                    .to_string()
+            }
+            // A folder, not a file. The file sentence promises that one known
+            // result was left where it is and will be read again, and none of
+            // that can be said about a folder nothing could be listed from:
+            // how many games are in it is exactly what was not established.
+            Enqueued::FolderCouldNotBeRead { .. } => {
+                "One of the folders the game saves results into could not be opened this \
+                 time, so whatever is in it was not looked at. Nothing was deleted, and it \
+                 will be tried again after your next game."
                     .to_string()
             }
             Enqueued::SourceKept { .. } => {
@@ -2008,7 +2030,7 @@ impl StatsQueue {
                         "a capture folder could not be listed at {}: {e}",
                         folder.path.display()
                     );
-                    out.push(Enqueued::CouldNotRead {
+                    out.push(Enqueued::FolderCouldNotBeRead {
                         path: folder.path,
                         detail: e.to_string(),
                     });
@@ -2562,6 +2584,10 @@ mod tests {
         let os = "The process cannot access the file because it is being used by another process. (os error 32)";
 
         assert_player_safe(&Enqueued::CouldNotRead { path: stuck.clone(), detail: os.to_string() }.message());
+        assert_player_safe(
+            &Enqueued::FolderCouldNotBeRead { path: stuck.clone(), detail: os.to_string() }
+                .message(),
+        );
         assert_player_safe(&Enqueued::SourceKept { path: stuck.clone(), detail: os.to_string() }.message());
 
         assert_player_safe(
@@ -4196,6 +4222,63 @@ mod tests {
         assert!(
             !user.join("GameStats/Online/g.json").exists(),
             "ingested files are removed"
+        );
+    }
+
+    /// A folder that could not be listed does not borrow the sentence written
+    /// for one file.
+    ///
+    /// `ingest_all` reported a folder it could not list as
+    /// `Enqueued::CouldNotRead`, whose message is "A result file could not be
+    /// read this time, so it was left exactly where it is. Nothing was lost,
+    /// and it will be read again after your next game." Every clause of that
+    /// is about one known file. A folder nothing could be listed from holds an
+    /// unknown number of games -- possibly none, possibly all of them -- and
+    /// how many is exactly what was not established.
+    #[test]
+    fn a_folder_that_cannot_be_listed_does_not_promise_a_file_was_left_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("User");
+        std::fs::create_dir_all(user.join("GameStats")).unwrap();
+        // A file where the folder should be. `exists` says yes and `read_dir`
+        // refuses, which is the same shape as a folder that cannot be listed
+        // and needs no permissions to arrange.
+        std::fs::write(user.join("GameStats").join("Online"), b"not a folder").unwrap();
+        std::fs::create_dir_all(user.join("GameStats").join("Offline")).unwrap();
+        std::fs::write(
+            user.join("GameStats").join("Offline").join("g.json"),
+            sample_capture_with_style([10, 20]),
+        )
+        .unwrap();
+
+        let q = StatsQueue::open_at(&root.path().join("q"), FixedClock::new(1)).unwrap();
+        let out = q.ingest_all(&user, Some("s1")).unwrap();
+        let messages: Vec<String> = out.iter().map(|o| o.message()).collect();
+
+        let one_file = Enqueued::CouldNotRead {
+            path: PathBuf::from("g.json"),
+            detail: "held open".to_string(),
+        }
+        .message();
+        assert!(
+            !messages.contains(&one_file),
+            "a folder that could not be listed answered with the sentence written for one \
+             file, which promises it was left where it is and will be read again: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("folder")),
+            "nothing said a folder could not be opened: {messages:?}"
+        );
+        for message in &messages {
+            assert_player_safe(message);
+        }
+
+        // And the folder after it was still read, which is the other half of
+        // what this reports.
+        assert_eq!(
+            q.entries().unwrap().len(),
+            1,
+            "one folder that could not be listed stopped the others"
         );
     }
 

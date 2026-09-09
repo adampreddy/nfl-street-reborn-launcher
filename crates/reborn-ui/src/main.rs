@@ -3410,6 +3410,10 @@ struct StatsIngestView {
     already_submitted: usize,
     /// Files that could not be read. These were left exactly where they were.
     unreadable: usize,
+    /// Whole folders that could not be listed, so nothing in them was looked
+    /// at. Counted apart from `unreadable` because how many results are in one
+    /// is exactly what was not established.
+    unreadable_folders: usize,
     /// Results that were saved, whose file the emulator wrote could not be
     /// removed afterwards. Nothing was lost; the file is read again next time
     /// and the content key makes that a no-op.
@@ -3463,6 +3467,7 @@ async fn stats_ingest(
             already_queued: 0,
             already_submitted: 0,
             unreadable: 0,
+            unreadable_folders: 0,
             source_kept: 0,
             messages: results.iter().map(|r| r.message()).collect(),
         };
@@ -3473,6 +3478,7 @@ async fn stats_ingest(
                 Enqueued::AlreadyQueued(_) => view.already_queued += 1,
                 Enqueued::AlreadySubmitted { .. } => view.already_submitted += 1,
                 Enqueued::CouldNotRead { .. } => view.unreadable += 1,
+                Enqueued::FolderCouldNotBeRead { .. } => view.unreadable_folders += 1,
                 Enqueued::SourceKept { .. } => view.source_kept += 1,
             }
         }
