@@ -158,6 +158,13 @@ impl SessionEnd {
     }
 }
 
+/// What the launcher asserted about a session before the game started. The only routing
+/// fact the launcher supplies; online or offline comes from Dolphin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionIntent {
+    pub league_match: bool,
+}
+
 /// One play session, as it is written to disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -172,6 +179,10 @@ pub struct SessionRecord {
     /// Absent while the session is still running.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<SessionEnd>,
+    /// What the player said this session was, recorded before the game started.
+    /// Absent for a plain `begin`, and for every record an older build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<SessionIntent>,
 }
 
 impl SessionRecord {
@@ -186,6 +197,7 @@ impl SessionRecord {
             started_ms,
             ended_ms: None,
             end: None,
+            intent: None,
         }
     }
 
@@ -334,9 +346,26 @@ impl Supervisor {
         Ok(Some(record))
     }
 
-    /// Mark a session as started and write the on-disk marker.
+    /// Mark a session as started and write the on-disk marker, with no intent
+    /// recorded.
     pub fn begin(&self, build: GameBuild) -> Result<SessionRecord> {
-        let record = SessionRecord::new(build.into(), self.clock.now_ms());
+        self.begin_with_intent(build, None)
+    }
+
+    /// Mark a session as started, recording what the launcher intends it to be.
+    ///
+    /// This is the only routing fact the launcher itself asserts. Whether the
+    /// session turns out online or offline is Dolphin's business, not this
+    /// one's; whether it counts as a league match is a question only the
+    /// player can answer, and has to be on record before the game starts,
+    /// because nothing later can ask them.
+    pub fn begin_with_intent(
+        &self,
+        build: GameBuild,
+        intent: Option<SessionIntent>,
+    ) -> Result<SessionRecord> {
+        let mut record = SessionRecord::new(build.into(), self.clock.now_ms());
+        record.intent = intent;
         self.write_current(&record)?;
         Ok(record)
     }
@@ -655,5 +684,28 @@ mod tests {
             msg.contains("Migrate from it"),
             "no way forward given: {msg}"
         );
+    }
+
+    /// The only routing fact the launcher itself asserts. `begin` must still
+    /// leave it unset, and the log has to keep it through a round trip.
+    #[test]
+    fn a_session_records_its_intent_and_the_log_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = platform();
+        let Startup::Owner(sup) =
+            Supervisor::acquire_at(&p, dir.path(), FixedClock::new(10)).unwrap()
+        else {
+            panic!("expected to own the lock");
+        };
+        let rec = sup
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: true }))
+            .unwrap();
+        assert!(rec.intent.as_ref().unwrap().league_match);
+        let done = sup.finish(rec, &ExitKind::Normal).unwrap();
+        let hist = sup.history().unwrap();
+        assert_eq!(hist.last().unwrap().id, done.id);
+        assert!(hist.last().unwrap().intent.as_ref().unwrap().league_match);
+        let plain = sup.begin(GameBuild::Offline).unwrap();
+        assert!(plain.intent.is_none());
     }
 }
