@@ -1061,6 +1061,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common 0.1.7",
+ "subtle",
 ]
 
 [[package]]
@@ -1885,7 +1886,16 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
 dependencies = [
- "hmac",
+ "hmac 0.13.0",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -3382,7 +3392,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "reborn-cli"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "clap",
  "reborn-core",
@@ -3390,14 +3400,17 @@ dependencies = [
 
 [[package]]
 name = "reborn-core"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
+ "base64 0.22.1",
  "ed25519-dalek",
  "fs4",
  "getrandom 0.2.17",
  "hex",
+ "hmac 0.12.1",
  "keyring",
  "lofty",
+ "percent-encoding",
  "rusty-xinput",
  "serde",
  "serde_json",
@@ -3413,8 +3426,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "reborn-publisher"
+version = "3.1.0"
+dependencies = [
+ "reborn-core",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "reborn-ui"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "reborn-core",
  "rfd",
@@ -6204,19 +6231,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "2.4.2"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+checksum = "2f852905151ac8d4d06fdca66520a661c09730a74c6d4e2b0f27b436b382e532"
 dependencies = [
  "arbitrary",
  "crc32fast",
- "crossbeam-utils",
- "displaydoc",
  "flate2",
  "indexmap 2.14.1",
  "memchr",
- "thiserror 2.0.20",
- "zopfli",
 ]
 
 [[package]]
@@ -6230,18 +6253,6 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "zopfli"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
-dependencies = [
- "bumpalo",
- "crc32fast",
- "log",
- "simd-adler32",
-]
 
 [[package]]
 name = "zvariant"

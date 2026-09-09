@@ -33,11 +33,11 @@ use std::path::{Path, PathBuf};
 use crate::controller::{ControllerProfile, GcPadConfig};
 use crate::devices::{DeviceScanner, Enumeration};
 use crate::ini::IniDocument;
-use crate::platform::{DataDir, Error, Platform, Result};
+use crate::platform::{DataDir, Error, ExitKind, Platform, Result};
 use crate::runtime::{
     ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, SessionOutcome,
 };
-use crate::supervisor::{SessionEnd, Startup, Supervisor};
+use crate::supervisor::{SessionEnd, SessionRecord, Startup, Supervisor};
 
 /// What the caller asks for.
 #[derive(Debug, Clone)]
@@ -62,6 +62,9 @@ pub struct LaunchRequest {
     /// `GameSettings`, and none of the 27,025 files of their texture pack. The
     /// game booted to factory defaults with no save data visible.
     pub user_dir: Option<PathBuf>,
+    /// The player said this is a league match. Recorded in the session before Dolphin
+    /// starts; the backend forwards the game to the league site only when it is true.
+    pub league_match: bool,
 }
 
 /// Why a launch could not even be attempted.
@@ -98,7 +101,10 @@ impl Refusal {
 }
 
 /// What happened.
-#[derive(Debug, Clone)]
+// Not Clone: StatsAfterSession is not, and nothing in the workspace clones a
+// Launched value. A caller that needs to keep what happened should hold the
+// explained string, not the value itself.
+#[derive(Debug)]
 pub enum Launched {
     /// The game ran and stopped.
     Finished {
@@ -117,9 +123,27 @@ pub enum Launched {
         mods: ModsAtLaunch,
         /// The session record's id, which is what a capture is filed under.
         session_id: String,
-        /// What happened to the match results Dolphin wrote during the
-        /// session. Never fails a launch that already happened.
-        stats: StatsAfterSession,
+        /// The match results this session produced, already moved into the
+        /// queue and NOT yet sent.
+        ///
+        /// # Why the caller does the sending
+        ///
+        /// Collecting needs the single-instance lock; sending does not, and
+        /// sending is one request per queued game with the client's full
+        /// timeout each, so a backlog against a slow or unreachable backend is
+        /// minutes. `run` held the lock across both, and the caller holds a
+        /// launch guard across the whole of `run`, so for those minutes,
+        /// with the emulator already exited, pressing Play answered "A game
+        /// session is already active", the Online page said to close the
+        /// emulator first, opening the emulator from Settings was refused and
+        /// the command line retry was refused. All four were false.
+        ///
+        /// So `run` returns here with the lock given back, the caller gives
+        /// the guard back, and then calls [`SessionResults::send`].
+        ///
+        /// Nothing is at risk in between: the captures are already in the
+        /// queue on disk, and an unsent queue is picked up by the next send.
+        results: SessionResults,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
@@ -160,59 +184,108 @@ impl ModsAtLaunch {
 ///
 /// Its own type for the same reason as [`ModsAtLaunch`]: a failure here is
 /// reported, never turned into a failed launch of a game that already ran.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StatsAfterSession {
-    /// One entry per capture file found, including the ones refused.
-    Ingested(Vec<crate::stats::Enqueued>),
-    Failed(String),
+    /// One entry per capture file found, including the ones refused, and what sending did.
+    /// `sent` is None when nobody is signed in, so the entries wait.
+    Ingested {
+        enqueued: Vec<crate::stats::Enqueued>,
+        /// Set when collecting or sending hit a problem.
+        ///
+        /// Carried rather than returned, and never allowed to stop the other
+        /// half. Collection running before sending in one chain meant a single
+        /// undeletable file stopped everything being sent, on that session and
+        /// on every session after it, and the queue holds games from earlier
+        /// sessions that are still perfectly deliverable.
+        ///
+        /// A named failure and not a string: see [`StatsProblem`].
+        problem: Option<StatsProblem>,
+        sent: Option<crate::stats::SubmitReport>,
+    },
+    /// The queue itself could not be opened, so there was nowhere to collect
+    /// into and nothing to send from.
+    ///
+    /// It carries nothing. It used to carry `e.to_string()`, and
+    /// [`crate::Error::Io`] displays as `io error at {path}: {source}`, so a
+    /// full disk while writing the queue put a path out of the player's
+    /// roaming profile and `os error 112` into a value the window renders.
+    Failed,
 }
 
+/// Which half of the results step had a problem.
+///
+/// A named failure rather than a message, because the alternative was an
+/// `Option<String>` filled in with `e.to_string()` at the two places it is
+/// set. Every error type in this workspace formats itself for a developer --
+/// paths, error numbers, library wording -- and none of that may reach a
+/// player. Making the type unable to hold a string is a stronger guarantee
+/// than remembering not to put one in it, and the detail is not lost: it goes
+/// to `tracing::warn!` where the failure happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsProblem {
+    /// A capture folder could not be read, or a file could not be moved.
+    Collecting,
+    /// The results could not be sent this time.
+    Sending,
+}
+
+impl StatsProblem {
+    /// A sentence for a player.
+    pub fn message(self) -> &'static str {
+        match self {
+            StatsProblem::Collecting => {
+                "Some results could not be collected this time, so they are being kept where \
+                 they are. Nothing was lost, and the next game will pick them up."
+            }
+            StatsProblem::Sending => {
+                "Some results could not be sent this time, so they are being kept. Nothing was \
+                 lost, and they will be sent again."
+            }
+        }
+    }
+}
+
+/// Shown when the queue itself could not be opened: there was nowhere to
+/// collect into and nothing to send from. Nothing about the failure is in it,
+/// because nothing about the failure is a thing a player can act on.
+const RESULTS_NOT_COLLECTED: &str = "Match results could not be collected this time. Nothing was \
+     lost: they are still on disk and the next game will pick them up.";
+
 impl StatsAfterSession {
-    /// One line for a player. Silent when there was nothing to do, because
-    /// most sessions end without a finished match.
+    /// One line for a player. Silent when there was nothing to do.
     pub fn explain(&self) -> Option<String> {
         use crate::stats::Enqueued;
         match self {
-            StatsAfterSession::Failed(why) => {
-                Some(format!("Match results were not collected: {why}"))
-            }
-            StatsAfterSession::Ingested(results) if results.is_empty() => None,
-            StatsAfterSession::Ingested(results) => {
-                let queued = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Queued(_)))
-                    .count();
-                let held = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Quarantined(_)))
-                    .count();
-                let known = results
-                    .iter()
-                    .filter(|r| {
-                        matches!(
-                            r,
-                            Enqueued::AlreadyQueued(_) | Enqueued::AlreadySubmitted { .. }
-                        )
-                    })
-                    .count();
-                let unread = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::CouldNotRead { .. }))
-                    .count();
-                let mut parts = Vec::new();
-                if queued > 0 {
-                    parts.push(format!("{queued} match result(s) queued for submission"));
+            StatsAfterSession::Failed => Some(RESULTS_NOT_COLLECTED.to_string()),
+            StatsAfterSession::Ingested { enqueued, problem, sent } => {
+                let found = enqueued.iter().filter(|e| matches!(e, Enqueued::Queued(_) | Enqueued::Quarantined(_))).count();
+                let mut parts: Vec<String> = Vec::new();
+                if found > 0 {
+                    parts.push(format!("{found} result{} recorded", if found == 1 { "" } else { "s" }));
                 }
-                if held > 0 {
-                    parts.push(format!("{held} held for review"));
+                match sent {
+                    // Only when there is nothing else to explain the silence.
+                    None if found > 0 && problem.is_none() => parts.push("waiting for sign-in".to_string()),
+                    None => {}
+                    Some(r) => {
+                        let n = r.accepted.len() + r.recorded.len();
+                        if n > 0 { parts.push(format!("{n} result{} sent", if n == 1 { "" } else { "s" })); }
+                        if !r.held.is_empty() { parts.push(format!("{} held for review", r.held.len())); }
+                        if !r.rejected.is_empty() { parts.push(format!("{} refused by the server", r.rejected.len())); }
+                        if !r.deferred.is_empty() || !r.stalled.is_empty() { parts.push(format!("{} could not be delivered yet", r.deferred.len() + r.stalled.len())); }
+                        if r.waiting_for_sign_in { parts.push("waiting for sign-in".to_string()); }
+                    }
                 }
-                if known > 0 {
-                    parts.push(format!("{known} already known"));
+                // Named, without any error text: the type cannot hold one.
+                match problem {
+                    Some(StatsProblem::Collecting) => parts.push("some could not be collected this time and are being kept".to_string()),
+                    Some(StatsProblem::Sending) => parts.push("some could not be sent this time and are being kept".to_string()),
+                    None => {}
                 }
-                if unread > 0 {
-                    parts.push(format!("{unread} could not be read and were left in place"));
-                }
-                Some(format!("{}.", parts.join(", ")))
+                // Labelled rather than bare. "1 result recorded, waiting for
+                // sign-in." starts with a numeral and reads as a fragment
+                // pasted onto the account card with no idea what it is about.
+                if parts.is_empty() { None } else { Some(format!("Match results: {}.", parts.join(", "))) }
             }
         }
     }
@@ -671,8 +744,12 @@ impl Session {
             }));
         }
 
-        // The lock, before anything is written or started.
-        let Startup::Owner(supervisor) = Supervisor::acquire(platform)? else {
+        // The lock, before anything is written or started, and waited for
+        // rather than refused outright. The launcher takes this same lock for
+        // its own background work; telling a player to close a launcher that
+        // does not exist, and not starting their game, is the worse answer.
+        // See [`Supervisor::acquire_waiting`].
+        let Startup::Owner(supervisor) = Supervisor::acquire_waiting(platform)? else {
             return Ok(Launched::Refused(Refusal::AlreadyRunning));
         };
         let _ = supervisor.recover_unfinished()?;
@@ -695,23 +772,29 @@ impl Session {
             match_context: None,
         };
 
-        let record = supervisor.begin(req.build)?;
+        let record = supervisor.begin_with_intent(
+            req.build,
+            Some(crate::supervisor::SessionIntent { league_match: req.league_match }),
+        )?;
         let handle = Launcher::launch(platform, &req.runtime_exe, &config)?;
         let exit = platform.processes.wait(handle)?;
         let finished = supervisor.finish(record, &exit)?;
 
         // The match results, collected while the lock is still held and the
-        // session id is still in hand. Filed under this session so a capture
-        // can always be traced to the launch that produced it.
-        let stats = {
-            let capture_dir = crate::stats::dolphin_capture_dir(written.user_dir.path());
-            match crate::stats::StatsQueue::open(platform)
-                .and_then(|queue| queue.ingest_from(&capture_dir, Some(&finished.id)))
-            {
-                Ok(results) => StatsAfterSession::Ingested(results),
-                Err(e) => StatsAfterSession::Failed(e.to_string()),
-            }
-        };
+        // session id is still in hand. Collecting is the half that needs the
+        // lock: the queue and the session log are shared state, and a second
+        // launcher moving captures out of the same folder is the case the lock
+        // exists for.
+        let results = collect(platform, &supervisor, &finished.id, written.user_dir.path());
+
+        // The lock, back, before this returns and before anything reaches the
+        // network. The caller still holds a launch guard across this whole
+        // call, so it gives that back too and then calls
+        // `SessionResults::send`. Held across the send, the two of them made
+        // four screens say something that was not true for as long as a
+        // backlog took to deliver. Nothing is dropped by returning early: the
+        // captures are already in the queue on disk.
+        drop(supervisor);
 
         let end = finished
             .end
@@ -726,9 +809,176 @@ impl Session {
             user_dir: written.user_dir,
             mods,
             session_id: finished.id.clone(),
-            stats,
+            results,
         })
     }
+}
+
+/// The results of a finished session, collected and not yet sent.
+///
+/// # Why collecting and sending are two calls
+///
+/// Both have to happen and only one of them needs the lock. Collecting reads
+/// the emulator's folders into the queue and reads the session log, which are
+/// shared state and are exactly what the single-instance lock is for. Sending
+/// is one network round trip per queued game, each with the client's full
+/// timeout, so a backlog against a slow or unreachable backend is minutes.
+///
+/// Holding the lock and the launch guard across the send made four things the
+/// product says untrue for those minutes, with the emulator already exited:
+/// pressing Play answered "A game session is already active", the Online page
+/// answered "close the emulator first", opening the emulator from Settings was
+/// refused, and the command line retry was refused. So a caller holding them
+/// gives them back between these two calls.
+///
+/// Every path does this, the launch included. [`Session::run`] returns this
+/// value with the lock already given back, and its caller gives the launch
+/// guard back before calling [`send`](Self::send). There is deliberately no
+/// helper that does both in one call: one existed, the launch used it, and
+/// that is how the primary path kept doing this after the two secondary paths
+/// were fixed.
+///
+/// Nothing is at risk between the two calls. The captures are in the queue on
+/// disk by the end of [`collect`], and an unsent queue is picked up whole by
+/// the next send.
+#[derive(Debug)]
+pub struct SessionResults {
+    /// `None` when the queue would not open, which is the one failure that
+    /// really ends it: nowhere to collect into and nothing to send from.
+    queue: Option<crate::stats::StatsQueue>,
+    /// Read while the lock was still held, because it is the supervisor's own
+    /// log, and carried so the send needs nothing from the supervisor.
+    history: Vec<SessionRecord>,
+    enqueued: Vec<crate::stats::Enqueued>,
+    problem: Option<StatsProblem>,
+}
+
+impl SessionResults {
+    /// Send what was collected, and everything else already queued.
+    ///
+    /// Needs no lock and no guard. Never returns an error: by the time this
+    /// runs the game has been played.
+    pub fn send(self, platform: &Platform) -> StatsAfterSession {
+        let SessionResults {
+            queue,
+            history,
+            enqueued,
+            mut problem,
+        } = self;
+        let Some(queue) = queue else {
+            return StatsAfterSession::Failed;
+        };
+
+        let sent = match crate::backend::auto_submit(platform, &queue, &history) {
+            Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
+            Ok(crate::backend::SendAttempt::NotSignedIn) => None,
+            Err(e) => {
+                tracing::warn!("results could not be sent: {e}");
+                problem.get_or_insert(StatsProblem::Sending);
+                None
+            }
+        };
+
+        StatsAfterSession::Ingested {
+            enqueued,
+            problem,
+            sent,
+        }
+    }
+}
+
+/// Collect the match results a session produced, without sending them.
+///
+/// Call it with the lock still held: the queue and the session log are shared
+/// state, and a second launcher collecting the same folder at the same time is
+/// the case the lock exists for. Then give the lock back and call
+/// [`SessionResults::send`].
+pub fn collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    session_id: &str,
+    user_dir: &Path,
+) -> SessionResults {
+    let queue = match crate::stats::StatsQueue::open(platform) {
+        Ok(queue) => queue,
+        // The detail goes to the log; the value a caller shows carries none of
+        // it.
+        Err(e) => {
+            tracing::warn!("the results queue could not be opened: {e}");
+            return SessionResults {
+                queue: None,
+                history: Vec::new(),
+                enqueued: Vec::new(),
+                problem: None,
+            };
+        }
+    };
+
+    // Collecting and sending are two jobs, not one chain. Collecting used to
+    // come first with a `?` on it, so a folder it could not finish stopped the
+    // send as well, and the queue holds games from earlier sessions that were
+    // still perfectly deliverable.
+    let (enqueued, mut problem) = match queue.ingest_all(user_dir, Some(session_id)) {
+        Ok(found) => (found, None),
+        Err(e) => {
+            tracing::warn!("results could not be collected from {}: {e}", user_dir.display());
+            (Vec::new(), Some(StatsProblem::Collecting))
+        }
+    };
+
+    // The last thing that needs the lock.
+    let history = match supervisor.history() {
+        Ok(history) => history,
+        Err(e) => {
+            tracing::warn!("the session log could not be read: {e}");
+            problem.get_or_insert(StatsProblem::Sending);
+            Vec::new()
+        }
+    };
+
+    SessionResults {
+        queue: Some(queue),
+        history,
+        enqueued,
+        problem,
+    }
+}
+
+/// Close a session whose emulator has stopped, then [`collect`].
+///
+/// The send is deliberately not part of this. The caller spawned the emulator
+/// itself and is holding the launch guard and the single-instance lock, and a
+/// send is minutes against a slow backend, so it gives both back and then
+/// calls [`SessionResults::send`].
+///
+/// For a caller that spawned the emulator itself and waited for it on its own
+/// thread, rather than going through [`Session::run`]. The session id comes
+/// from the record that was written *before* the emulator started, which is
+/// the whole point: where a result goes is decided at launch and written down,
+/// never worked out from the file afterwards.
+///
+/// `exit` is `None` when the wait itself failed. The record is then left open
+/// on purpose, so the next launch recovers it as
+/// [`SessionEnd::Interrupted`](crate::supervisor::SessionEnd::Interrupted),
+/// which is the truth. Guessing a clean exit here would put a fact on the
+/// envelope that nobody observed.
+///
+/// The collection runs either way. The game was played whether or not the
+/// launcher managed to write down how it ended.
+pub fn finish_and_collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    record: SessionRecord,
+    exit: Option<&ExitKind>,
+    user_dir: &Path,
+) -> SessionResults {
+    let session_id = record.id.clone();
+    if let Some(exit) = exit {
+        // Reported through the session log on the next launch if it fails.
+        // Nothing here may stop the collection below.
+        let _ = supervisor.finish(record, exit);
+    }
+    collect(platform, supervisor, &session_id, user_dir)
 }
 
 /// Point this build at what `activation.json` says is on.
@@ -1048,7 +1298,7 @@ fn reconcile_controls(
 /// that looks completely correct in every message and matches nothing on
 /// disk, so the launcher refuses while printing the right path back:
 ///
-///   No Reborn Dolphin at "C:\\...\\Dolphin.exe". Set the runtime in Settings.
+///   No Reborn Dolphin at "C:\\...\\NFL Street Reborn Dolphin.exe". Set the runtime in Settings.
 ///
 /// That is a real refusal from a real session, and the emulator was there.
 /// The only clue was the quotes in the message, which read as punctuation.
@@ -1149,10 +1399,12 @@ impl Runtime {
 
 /// Anything that looks like a Dolphin executable in a directory.
 ///
-/// Matched by name rather than by a fixed filename, because the Reborn build
-/// ships as `NFL Street Reborn Dolphin.exe` in the 2.1 install and as
-/// `Dolphin.exe` in the launcher's own payload, and hardcoding either one makes
-/// the other invisible.
+/// Matched by name rather than by a fixed filename, because the fork is being
+/// renamed from `Dolphin.exe` to `NFL Street Reborn Dolphin.exe`, and a tree
+/// mid-update can hold both: an old copy left behind and the new one just
+/// unpacked beside it. When both are present the new name wins, because it is
+/// the one this launcher was built against; alphabetical order alone would
+/// pick the old `dolphin.exe`.
 fn dolphin_in(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut found: Vec<PathBuf> = entries
@@ -1169,8 +1421,12 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
                 && (name.ends_with(".exe") || !name.contains('.'))
         })
         .collect();
-    // Sorted so two candidates do not resolve differently between runs.
-    found.sort();
+    // The Reborn name wins over a stock name when both are present, which happens on a
+    // tree mid-update. Alphabetical order alone would pick "dolphin.exe".
+    found.sort_by_key(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+        (if name == "nfl street reborn dolphin.exe" { 0 } else { 1 }, name)
+    });
     found.into_iter().next()
 }
 
@@ -1275,6 +1531,146 @@ pub fn is_game_image(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player_sentence::assert_player_safe;
+
+    /// The launch gives the single-instance lock back before the network work.
+    ///
+    /// This is the primary path: the Play button, every time. Two secondary
+    /// ways of starting the emulator were fixed to collect, give the lock and
+    /// the guard back, and only then send. `Session::run` was left calling
+    /// `collect_and_send`, which does both under the lock it is still holding.
+    ///
+    /// A send is one request per queued game with the client's full timeout
+    /// each, so a backlog against a slow or unreachable backend is minutes.
+    /// For all of those minutes, with the emulator already exited, pressing
+    /// Play answered "A game session is already active", the Online page said
+    /// to close the emulator first, opening the emulator from Settings was
+    /// refused, and `rebornctl stats retry` was refused. Every one of those was
+    /// false.
+    ///
+    /// Collecting stays under the lock and that is not negotiable: the session
+    /// id has to be in hand and no second launcher may be moving captures into
+    /// the same queue. Only the send moves out.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The slice runs from `pub fn run(` to the doc comment that introduces
+    /// [`SessionResults`], both of which are production text roughly eight
+    /// hundred lines above this module. `find` returns the first match, so the
+    /// copies of those markers inside this test are never reached, and the
+    /// searched text ends long before them. The stop marker matters: run one
+    /// item further and the slice swallows `SessionResults::send`, whose whole
+    /// job is the network call this test forbids.
+    #[test]
+    fn the_launch_gives_the_lock_back_before_the_network_work() {
+        let src = include_str!("session.rs");
+        let from = src
+            .find("    pub fn run(platform: &Platform, req: &LaunchRequest)")
+            .expect("Session::run is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest
+            .find("\n/// The results of a finished session")
+            .expect("the SessionResults doc comment no longer follows Session::run")];
+
+        assert!(
+            !body.contains("collect_and_send"),
+            "Session::run still collects and sends in one call, with the single-instance lock \
+             held across the network work, so Play says a game session is active and the Online \
+             page says to close an emulator that has already exited"
+        );
+
+        let collect = body
+            .find("collect(platform, &supervisor")
+            .expect("Session::run no longer collects what the session produced under the lock");
+        let release = body.find("drop(supervisor)").unwrap_or_else(|| {
+            panic!(
+                "Session::run never gives the single-instance lock back before it returns, so \
+                 the caller cannot send outside it"
+            )
+        });
+        assert!(
+            collect < release,
+            "Session::run gives the lock back before the results are safely collected"
+        );
+
+        // And the send really is the caller's job now: nothing in the body
+        // reaches the backend.
+        for reaches_the_network in ["auto_submit", ".send(platform)", ".send(&p)"] {
+            assert!(
+                !body.contains(reaches_the_network),
+                "Session::run still does the network work itself, under the lock and under the \
+                 caller's launch guard"
+            );
+        }
+    }
+
+    /// The stats step has nowhere to put an error string.
+    ///
+    /// `collect_and_send` used to write `e.to_string()` into three places: the
+    /// `Failed` payload, and twice into `problem`. [`crate::Error::Io`] displays
+    /// as `io error at {path}: {source}`, so a full disk while writing the queue
+    /// put a path out of the player's roaming profile and `os error 112` into a
+    /// value the window renders. `explain()` happened to summarize those two
+    /// fields rather than repeat them, which is the only reason nobody had seen
+    /// it on screen; any caller that showed the payload, and the command line
+    /// tool is one line away from being one, would have.
+    ///
+    /// So the fix is the type and not the wording. `StatsAfterSession` now has
+    /// nowhere to put a string at all: the failure is named
+    /// ([`StatsProblem`]), the sentence is a constant, and the detail goes to
+    /// `tracing::warn!` where it is produced. This test holds both halves,
+    /// because "it happens not to be rendered today" is not a guarantee.
+    ///
+    /// `collect_and_send` itself is gone: the launch used it and that is how
+    /// the primary path kept sending under the lock. Its two halves,
+    /// `SessionResults::send` and `collect`, are what is scanned now, which is
+    /// strictly more code than the one-line wrapper ever held.
+    #[test]
+    fn a_stats_result_has_nowhere_to_put_an_error_string() {
+        let src = include_str!("session.rs");
+        // Both halves of what `collect_and_send` used to be, each bounded by
+        // the production text that follows it. All of it is hundreds of lines
+        // above this module, and `find` returns the first match, so this
+        // test's own text is never inside what is searched.
+        for (name, start, stop) in [
+            ("the send", "impl SessionResults {", "\n/// Collect the match results"),
+            ("the collection", "pub fn collect(", "\n/// Close a session"),
+        ] {
+            let from = src
+                .find(start)
+                .unwrap_or_else(|| panic!("{name} is not in this file any more"));
+            let rest = &src[from..];
+            let body = &rest[..rest
+                .find(stop)
+                .unwrap_or_else(|| panic!("{name} no longer ends where it did"))];
+            assert!(
+                !body.contains("e.to_string()"),
+                "{name} puts an error string on a value a player sees"
+            );
+        }
+
+        // Every sentence the type can produce, mechanically checked.
+        assert_player_safe(RESULTS_NOT_COLLECTED);
+        for problem in [StatsProblem::Collecting, StatsProblem::Sending] {
+            assert_player_safe(problem.message());
+        }
+        assert_player_safe(&StatsAfterSession::Failed.explain().expect("a failure says something"));
+
+        let mut report = crate::stats::SubmitReport::default();
+        report.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        report.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        report.rejected.push(crate::stats::CaptureKey::of_bytes(b"c"));
+        report.stalled.push(crate::stats::CaptureKey::of_bytes(b"d"));
+        report.waiting_for_sign_in = true;
+        for problem in [None, Some(StatsProblem::Collecting), Some(StatsProblem::Sending)] {
+            for sent in [None, Some(crate::stats::SubmitReport::default()), Some(report.clone())] {
+                let s = StatsAfterSession::Ingested { enqueued: Vec::new(), problem, sent };
+                if let Some(line) = s.explain() {
+                    assert_player_safe(&line);
+                }
+            }
+        }
+    }
 
     fn req(runtime: PathBuf, game: PathBuf) -> LaunchRequest {
         LaunchRequest {
@@ -1287,6 +1683,7 @@ mod tests {
             // Tests must never pick up whatever real install happens
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
+            league_match: false,
         }
     }
 
@@ -1464,6 +1861,62 @@ mod tests {
             found.file_name().unwrap(),
             "NFL Street Reborn Dolphin.exe"
         );
+    }
+
+    #[test]
+    fn the_new_exe_name_wins_when_both_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Dolphin.exe"), b"").unwrap();
+        std::fs::write(dir.path().join("NFL Street Reborn Dolphin.exe"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin.exe");
+    }
+
+    #[test]
+    fn explain_counts_sent_held_recorded_and_waiting() {
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        r.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(r) };
+        let text = s.explain().unwrap();
+        assert!(text.contains("1 result sent"), "{text}");
+        assert!(text.contains("1 held for review"), "{text}");
+        let mut w = crate::stats::SubmitReport::default();
+        w.waiting_for_sign_in = true;
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(w) };
+        assert!(s.explain().unwrap().contains("waiting for sign-in"));
+    }
+
+    /// Collecting and sending are two jobs. A problem in one is reported and
+    /// never stops the other, and neither is described to a player in the
+    /// words of an error: no path, no error number, no library.
+    ///
+    /// Both values used to be built from `e.to_string()`. They now cannot be:
+    /// `Failed` carries nothing and `problem` is a [`StatsProblem`]. What this
+    /// test still has to prove is the other half, that a problem in one job
+    /// never hides the other job's result.
+    #[test]
+    fn a_collection_problem_is_reported_without_showing_a_path_or_an_error_code() {
+        let s = StatsAfterSession::Failed;
+        let text = s.explain().expect("a failure has to say something");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
+        assert!(text.contains("Nothing was lost"), "{text}");
+
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        let s = StatsAfterSession::Ingested {
+            enqueued: vec![],
+            problem: Some(StatsProblem::Collecting),
+            sent: Some(r),
+        };
+        let text = s.explain().expect("a send that happened has to say so");
+        assert!(
+            text.contains("1 result sent"),
+            "the send must still have run and still be reported: {text}"
+        );
+        assert!(text.contains("being kept"), "the problem must be named: {text}");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
     }
 
     #[test]

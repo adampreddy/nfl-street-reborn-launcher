@@ -81,8 +81,7 @@ pub struct Settings {
     /// release page for this channel; see crate::update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_source: Option<String>,
-    /// Where match results are sent. Absent means the league site's ingest
-    /// endpoint; see crate::league.
+    /// Superseded by backend_origin. Kept so older settings files still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub league_ingest_url: Option<String>,
     /// Where content (textures, runtime, mods, game patches, the roster)
@@ -90,6 +89,11 @@ pub struct Settings {
     /// Set by tests and by anyone running their own origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_origin: Option<String>,
+    /// Where sign-in and match results go. Absent means the product backend;
+    /// see crate::identity::DEFAULT_ORIGIN. Set only by tests and by anyone
+    /// running their own backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_origin: Option<String>,
 
     // The three paths a person can override, kept HERE rather than in the
     // window alone. They used to live only in the interface's own storage,
@@ -171,6 +175,7 @@ impl Default for Settings {
             update_source: None,
             league_ingest_url: None,
             content_origin: None,
+            backend_origin: None,
             runtime_exe: None,
             game_path: None,
             user_dir: None,
@@ -478,5 +483,20 @@ mod tests {
         assert!(!manage_texture_folder(&path).unwrap());
         assert_eq!(set_manage_texture_folder(&path, true).unwrap(), Some(false));
         assert!(manage_texture_folder(&path).unwrap());
+    }
+
+    #[test]
+    fn backend_origin_round_trips_and_an_old_file_without_it_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"schema":"nsr.settings.v1"}"#).unwrap();
+        let mut s = Settings::load(&path).unwrap();
+        assert_eq!(s.backend_origin, None);
+        s.backend_origin = Some("https://api.test".into());
+        s.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().backend_origin.as_deref(),
+            Some("https://api.test")
+        );
     }
 }

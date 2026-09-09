@@ -54,6 +54,10 @@ param(
     # installer never can. A fresh player cannot start from it: without the
     # import bundle there is no game.
     [switch]$LauncherOnly,
+    # Stage the runtime alone, for a runtime component publish. The runtime
+    # is staged into its own folder and the script exits before textures,
+    # game images or the Inno compile. Needs only -Runtime.
+    [switch]$RuntimeOnly,
     # The Reborn Builder's console build, shipped under tools\ beside the
     # launcher so roster updates can be applied to the player's image. The
     # default is the copy the Builder keeps for its own use on this machine.
@@ -75,17 +79,26 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ($GameImages.Count -gt 0) { throw "This installer imports the player's game in onboarding. Use -GamePatch instead of -GameImages." }
+# -RuntimeOnly relaxes the other required arguments (GamePatch, Textures,
+# PromptPackages) below, but never this one: without -Runtime there is
+# nothing to stage.
+if ($RuntimeOnly -and -not $Runtime) { throw "-RuntimeOnly needs -Runtime pointing at the folder to stage. Nothing was built." }
 if ($Publisher) {
-    if ($LauncherOnly -or $GamePatch -or $Runtime -or $Textures -or $PromptPackages -or $SpanInstaller -or $Channel -ne "stable") {
-        throw "-Publisher builds the admin tool alone. Leave -LauncherOnly, -GamePatch, -Runtime, -Textures, -PromptPackages, -SpanInstaller and -Channel out."
+    if ($LauncherOnly -or $RuntimeOnly -or $GamePatch -or $Runtime -or $Textures -or $PromptPackages -or $SpanInstaller -or $Channel -ne "stable") {
+        throw "-Publisher builds the admin tool alone. Leave -LauncherOnly, -RuntimeOnly, -GamePatch, -Runtime, -Textures, -PromptPackages, -SpanInstaller and -Channel out."
     }
 } elseif ($LauncherOnly) {
     if ($GamePatch -or $Runtime -or $Textures -or $PromptPackages) { throw "-LauncherOnly ships the launcher alone. Leave -GamePatch, -Runtime, -Textures and -PromptPackages out." }
 } else {
-    foreach ($required in @("manifest.json", "reborn.xdelta", "DolphinTool.exe", "xdelta3.exe")) {
-        if (-not $GamePatch -or -not (Test-Path -LiteralPath (Join-Path $GamePatch $required) -PathType Leaf)) { throw "A complete -GamePatch bundle is required ($required)." }
+    # -RuntimeOnly needs only -Runtime, so the game-patch bundle check below
+    # is skipped for it the same way the Runtime/Textures/PromptPackages
+    # check further down is: neither is part of a runtime component publish.
+    if (-not $RuntimeOnly) {
+        foreach ($required in @("manifest.json", "reborn.xdelta", "DolphinTool.exe", "xdelta3.exe")) {
+            if (-not $GamePatch -or -not (Test-Path -LiteralPath (Join-Path $GamePatch $required) -PathType Leaf)) { throw "A complete -GamePatch bundle is required ($required)." }
+        }
     }
-    if (-not $Runtime -or -not $Textures -or -not $PromptPackages) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
+    if (-not $RuntimeOnly -and (-not $Runtime -or -not $Textures -or -not $PromptPackages)) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
 }
 if (-not $Publisher -and -not (Test-Path -LiteralPath $Builder -PathType Leaf)) { throw "No Reborn Builder console build at $Builder. Pass -Builder <path to reborn-builder-cli.exe>; roster updates need it. Nothing was built." }
 
@@ -105,8 +118,10 @@ $dist = Join-Path $root "dist"
 
 # A full build restages the import bundle from -GamePatch into the payload
 # it is about to delete. Pointed at the payload's own copy, it would delete
-# its source first and then have nothing to stage.
-if (-not $LauncherOnly -and -not $Publisher) {
+# its source first and then have nothing to stage. -RuntimeOnly carries no
+# -GamePatch at all, and -Publisher builds an entirely different program, so
+# both are out of scope the same way -LauncherOnly is.
+if (-not $LauncherOnly -and -not $RuntimeOnly -and -not $Publisher) {
     $bundleFrom = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $GamePatch).Path)
     $payloadFull = [System.IO.Path]::GetFullPath($payload)
     if ($bundleFrom.StartsWith($payloadFull, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -114,15 +129,20 @@ if (-not $LauncherOnly -and -not $Publisher) {
     }
 }
 
-Write-Host "Building release binaries"
-Push-Location $root
-if ($Publisher) {
-    cargo build --release -p reborn-publisher -p reborn-cli
-} else {
-    cargo build --release -p reborn-ui -p reborn-cli
+# -RuntimeOnly ships no launcher or Publisher binary, so building one here is
+# waste, and depending on it would couple a runtime-only publish to either
+# program compiling, which it does not need to do.
+if (-not $RuntimeOnly) {
+    Write-Host "Building release binaries"
+    Push-Location $root
+    if ($Publisher) {
+        cargo build --release -p reborn-publisher -p reborn-cli
+    } else {
+        cargo build --release -p reborn-ui -p reborn-cli
+    }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    Pop-Location
 }
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-Pop-Location
 
 $resolvedPayload = [System.IO.Path]::GetFullPath($payload)
 $expectedPayload = [System.IO.Path]::GetFullPath((Join-Path $root $payloadName))
@@ -158,8 +178,12 @@ if ($Publisher) {
     Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
     Write-Host "Build: Reborn Publisher (admin tool). No runtime, Builder, textures, channel or import bundle."
 } else {
-    Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
-    Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+    # Skipped for -RuntimeOnly along with the build above: without it these
+    # files may be absent or stale, and a runtime-only publish never ships them.
+    if (-not $RuntimeOnly) {
+        Copy-Item (Join-Path $root "target\release\reborn-launcher.exe") $payload
+        Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
+    }
 
     # The Reborn Builder's console build, where the launcher looks first
     # (<install>\tools). It links its own runtime; nothing goes beside it.
@@ -199,11 +223,12 @@ if ($Publisher) {
 #   portable.txt   makes Dolphin keep its User folder beside the exe. The
 #                  launcher passes -u on every start, so the marker is not
 #                  needed, and with it a bare double-click of the shipped
-#                  Dolphin.exe would grow a User tree inside the install root.
+#                  NFL Street Reborn Dolphin.exe would grow a User tree
+#                  inside the install root.
 #   play.txt       an empty marker from the stat capture test setup. Nothing
 #                  in the launcher reads it.
 $runtimeFiles = @(
-    "Dolphin.exe", "DolphinTool.exe", "DSPTool.exe",
+    "NFL Street Reborn Dolphin.exe", "DolphinTool.exe", "DSPTool.exe",
     "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "qt.conf",
     # ReShade and the Reborn add-on that hides play calls and splits the UI.
     "dxgi.dll", "ReShade.ini", "ReShadePreset.ini",
@@ -239,10 +264,11 @@ if ($Runtime -and (Test-Path $Runtime)) {
         }
     }
 
-    # Dolphin.exe is the runtime. Everything else can be missing on a build
-    # that does not carry it, and is reported; this one stops the build.
-    if (-not (Test-Path (Join-Path $dest "Dolphin.exe"))) {
-        throw "No Dolphin.exe in $Runtime. Nothing was built."
+    # NFL Street Reborn Dolphin.exe is the runtime. Everything else can be
+    # missing on a build that does not carry it, and is reported; this one
+    # stops the build.
+    if (-not (Test-Path (Join-Path $dest "NFL Street Reborn Dolphin.exe"))) {
+        throw "No NFL Street Reborn Dolphin.exe in $Runtime. Nothing was built."
     }
     if ($missing.Count -gt 0) {
         Write-Warning ("Not present in the runtime folder, not staged: " + ($missing -join ", "))
@@ -252,7 +278,7 @@ if ($Runtime -and (Test-Path $Runtime)) {
     # The Visual C++ runtime, beside Dolphin
     # -------------------------------------------------------------------
     #
-    # Dolphin.exe imports MSVCP140.dll and VCRUNTIME140.dll, and ReShade's
+    # NFL Street Reborn Dolphin.exe imports MSVCP140.dll and VCRUNTIME140.dll, and ReShade's
     # dxgi.dll wants the same family. None of them is part of Windows: they
     # come from the Visual C++ Redistributable, which a development machine
     # has and a clean Windows does not.
@@ -271,7 +297,7 @@ if ($Runtime -and (Test-Path $Runtime)) {
     # the copy meant for shipping. System32 is the fallback: the same files,
     # already on the build machine.
     # MSVCP140_ATOMIC_WAIT.dll is what the bundle's DolphinTool.exe imports
-    # and Dolphin.exe does not. Found 2026-09-08 in Windows Sandbox: with the
+    # and NFL Street Reborn Dolphin.exe does not. Found 2026-09-08 in Windows Sandbox: with the
     # other four beside it and this one absent, DolphinTool could not start,
     # and onboarding reported the player's disc as unreadable. The five ship
     # beside Dolphin AND beside the import tools.
@@ -326,6 +352,16 @@ if ($Runtime -and (Test-Path $Runtime)) {
     $rsize = (Get-ChildItem $dest -Recurse -File | Measure-Object Length -Sum).Sum
     Write-Host ("Runtime: {0} file(s), {1:N1} MB" -f `
         (Get-ChildItem $dest -Recurse -File).Count, ($rsize / 1MB))
+
+    if ($RuntimeOnly) {
+        # Stage the runtime alone, for a runtime component publish. Nothing else is built.
+        $only = Join-Path $PSScriptRoot "..\..\target\installer-payload-runtime"
+        if (Test-Path $only) { Remove-Item -Recurse -Force $only }
+        New-Item -ItemType Directory (Join-Path $only "runtime") -Force | Out-Null
+        Copy-Item (Join-Path $payload "runtime\*") (Join-Path $only "runtime") -Recurse -Force
+        Write-Host "Runtime staged alone at $only\runtime"
+        exit 0
+    }
 } elseif ($LauncherOnly) {
     Write-Host "No runtime staged: a launcher-only build leaves the installed one in place."
 } elseif ($Publisher) {

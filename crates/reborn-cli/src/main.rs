@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{dolphin_capture_dir, EntryState, StatsQueue};
+use reborn_core::stats::{capture_folders_on_disk, CaptureFolder, EntryState, QueueEntry, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -518,8 +518,9 @@ enum StatsCommand {
 
     /// Take the captures Dolphin wrote into the queue.
     Ingest {
-        /// The folder Dolphin wrote them to. Defaults to LeagueGameStats inside
-        /// the user folder a launch would use.
+        /// Read one folder instead of all of them. Without this, every folder a
+        /// launch reads is swept: the mode folders inside GameStats, the folder
+        /// itself, and the folder older runtimes wrote.
         #[arg(long)]
         from: Option<PathBuf>,
         /// The launcher session that accounts for these results. Without it
@@ -569,6 +570,12 @@ fn main() -> std::process::ExitCode {
         }
         default_hook(info);
     }));
+
+    // The same log the window writes, from the same place, so a person running
+    // a recovery command and a player pressing a button leave their detail in
+    // one file rather than in two or in none. It says nothing and it cannot
+    // fail a command.
+    reborn_core::logging::start(&Platform::detect());
 
     let cli = Cli::parse();
     match run(cli) {
@@ -1196,6 +1203,7 @@ fn play(
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
+        league_match: false,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same
@@ -1293,9 +1301,12 @@ fn play(
             pads_authoritative,
             user_dir,
             mods,
-            stats,
+            results,
             ..
         } => {
+            // `Session::run` gave the single-instance lock back before it
+            // returned, so the send happens out here, holding nothing.
+            let stats = results.send(platform);
             println!("{}", user_dir.explain());
             println!("{}", mods.explain());
             if let Some(line) = stats.explain() {
@@ -3630,9 +3641,29 @@ fn describe_state(state: &EntryState) -> String {
         EntryState::Held { reason } => {
             format!("sent, and a person will decide. This is a success: {reason}")
         }
-        EntryState::Rejected { reason } => format!("refused for good, kept on disk: {reason}"),
-        EntryState::Stalled { reason } => format!("too many failed attempts: {reason}"),
+        EntryState::Rejected { reason } => format!(
+            "refused by the server and kept on disk. `stats retry --apply` puts it back: {reason}"
+        ),
+        EntryState::Stalled { reason } => {
+            format!("too many failed attempts; the next send pass puts it back: {reason}")
+        }
     }
+}
+
+/// The server's own word for why it refused this result, for the person who
+/// has to decide whether to put it back.
+///
+/// `describe_state` prints the sentence a player reads, which deliberately
+/// says nothing about which refusal it was. This tool's audience is a
+/// developer or a league operator at a command line, and a rejection is
+/// permanent: `stats retry --apply` is the documented way back, and without
+/// the code the person running it cannot tell a hash mismatch from a seat
+/// conflict.
+fn refusal_code_line(entry: &QueueEntry) -> Option<String> {
+    entry
+        .refusal_code
+        .as_deref()
+        .map(|code| format!("the server refused it with: {code}"))
 }
 
 /// Short form of a content key, for a line a person reads.
@@ -3656,6 +3687,9 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 short_key(&entry.key),
                 describe_state(&entry.state)
             );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
             match &entry.summary {
                 Some(summary) => {
                     let teams = summary
@@ -3682,6 +3716,13 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 // be described is shown as one that cannot be described.
                 None => println!("      The capture could not be read, so there is no box score."),
             }
+            // What the server said about a terminal result, such as "Recorded
+            // as incomplete". Stored on the entry and shown to nobody until fix
+            // wave 2: the state alone says "sent and counted", which is true
+            // and is not the whole truth.
+            if let Some(note) = &entry.note {
+                println!("      {note}");
+            }
             if entry.attempts > 0 {
                 println!("      {} failed attempt(s)", entry.attempts);
             }
@@ -3689,6 +3730,18 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 println!("      session {session}");
             } else {
                 println!("      no session accounts for it");
+            }
+            // Named, so a naming drift between the emulator and the launcher
+            // is something a person reading this notices. "unknown" means the
+            // capture was found somewhere neither side agreed on, and the mode
+            // was recorded rather than guessed.
+            match entry.capture_folder.as_deref() {
+                Some(reborn_core::stats::UNKNOWN_MODE) => println!(
+                    "      found in a folder this launcher does not know, so its mode is \
+                     recorded as unknown rather than guessed"
+                ),
+                Some(mode) => println!("      {mode}"),
+                None => println!("      from the folder older runtimes wrote, so its mode is not known"),
             }
             if let Some(path) = &entry.source_path {
                 println!("      from {}", path.display());
@@ -3739,62 +3792,114 @@ fn stats_ingest(
     session: Option<&str>,
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
-    let dir = match from {
-        Some(p) => p,
+    let queue = StatsQueue::open(platform)?;
+
+    // With no --from, the same sweep a launch does: every folder a capture can
+    // be in. This used to default to the parent GameStats folder and call the
+    // single-folder ingest, and Dolphin writes into GameStats\Online and
+    // GameStats\Offline. The parent exists, so the command did not even report
+    // a missing folder. It found nothing, said there was nothing to do, and
+    // left the captures a person was looking for one level down.
+    let (user_dir, folders) = match &from {
+        Some(one) => (
+            None,
+            vec![CaptureFolder {
+                path: one.clone(),
+                mode: None,
+                // A person named this folder and had to add --apply, which
+                // says the source files are removed.
+                emulator_writes_here: true,
+            }],
+        ),
         None => {
             let user = resolve_user_dir(platform, None)?;
             println!("{}", user.explain());
-            dolphin_capture_dir(user.path())
+            let dirs = capture_folders_on_disk(user.path());
+            (Some(user.path().to_path_buf()), dirs)
         }
     };
-    let queue = StatsQueue::open(platform)?;
-    println!("Captures      {}", dir.display());
-    println!("Queue         {}", queue.dir().display());
 
-    if !dir.exists() {
-        println!();
-        println!("That folder does not exist, so Dolphin has not written a capture to");
-        println!("it. Nothing to do.");
-        return Ok(OK);
+    println!("Queue         {}", queue.dir().display());
+    for folder in &folders {
+        println!(
+            "Captures      {}{}{}",
+            folder.path.display(),
+            match folder.mode {
+                Some(m) => format!("  ({m})"),
+                None => String::new(),
+            },
+            // Said out loud, because "read but never emptied" is the whole
+            // difference between a folder the emulator owns and one somebody
+            // filled themselves.
+            if folder.emulator_writes_here {
+                ""
+            } else {
+                "  read only, nothing is removed from it"
+            }
+        );
     }
 
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|source| reborn_core::Error::Io {
-        path: dir.clone(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| reborn_core::Error::Io {
+    // What is there, per folder, so a person can see which folder a capture is
+    // actually sitting in rather than a single total.
+    let mut found: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    let mut missing = 0usize;
+    for folder in &folders {
+        let dir = &folder.path;
+        if !dir.exists() {
+            missing += 1;
+            continue;
+        }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|source| reborn_core::Error::Io {
             path: dir.clone(),
             source,
-        })?;
-        let path = entry.path();
-        let is_json = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("json"))
-            .unwrap_or(false);
-        if path.is_file() && is_json {
-            found.push(path);
+        })? {
+            let entry = entry.map_err(|source| reborn_core::Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+            if path.is_file() && is_json {
+                files.push(path);
+            }
+        }
+        files.sort();
+        if !files.is_empty() {
+            found.push((dir.clone(), files));
         }
     }
-    found.sort();
 
+    let total: usize = found.iter().map(|(_, f)| f.len()).sum();
     println!();
-    if found.is_empty() {
-        println!("No capture files there. Only *.json directly in that folder counts, so");
-        println!("uploaded.txt and the _previous folder are left alone by design.");
+    if total == 0 {
+        if missing == folders.len() {
+            println!("None of those folders exists, so Dolphin has not written a capture to");
+            println!("any of them. Nothing to do.");
+        } else {
+            println!("No capture files in any of those folders. Only *.json directly in a");
+            println!("folder counts, so uploaded.txt and the _previous folder are left alone");
+            println!("by design.");
+        }
         return Ok(OK);
     }
-    println!("{} capture file(s):", found.len());
-    let lines: Vec<String> = found
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.display().to_string())
-        })
-        .collect();
-    print_list("  ", &lines);
+    println!("{total} capture file(s):");
+    for (dir, files) in &found {
+        println!("  {}", dir.display());
+        let lines: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        print_list("    ", &lines);
+    }
 
     println!();
     match session {
@@ -3814,7 +3919,13 @@ fn stats_ingest(
         return Ok(OK);
     }
 
-    let results = queue.ingest_from(&dir, session)?;
+    // The same call a launch makes, so the recovery tool and the product can
+    // never disagree about which folders hold a game somebody played.
+    let results = match (&user_dir, &from) {
+        (Some(user), _) => queue.ingest_all(user, session)?,
+        (None, Some(one)) => queue.ingest_from(one, session)?,
+        (None, None) => unreachable!("one of the two is always set"),
+    };
     println!();
     let mut problem = false;
     for result in &results {
@@ -3825,7 +3936,9 @@ fn stats_ingest(
         if matches!(
             result,
             reborn_core::stats::Enqueued::CouldNotRead { .. }
+                | reborn_core::stats::Enqueued::FolderCouldNotBeRead { .. }
                 | reborn_core::stats::Enqueued::Quarantined(_)
+                | reborn_core::stats::Enqueued::SourceKept { .. }
         ) {
             problem = true;
         }
@@ -3835,33 +3948,88 @@ fn stats_ingest(
     Ok(if problem { PROBLEM } else { OK })
 }
 
+/// Put stalled AND refused results back in the queue.
+///
+/// Stalled entries are put back by every send pass on their own; this stays
+/// because it is how a person does it now rather than at the end of the next
+/// game.
+///
+/// Refused ones are the reason this command matters. A rejection writes a
+/// ledger row and nothing else in the launcher can undo it, so one server-side
+/// fault refusing a queue used to destroy every game in it permanently. This
+/// is the only way back, and it is deliberately a person typing a command:
+/// resending a considered refusal on a timer is the retry loop the whole
+/// design exists to prevent.
 fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::process::ExitCode> {
     let queue = StatsQueue::open(platform)?;
     let stalled = queue.stalled()?;
+    let refused: Vec<_> = queue
+        .entries()?
+        .into_iter()
+        .filter(|e| matches!(e.state, reborn_core::stats::EntryState::Rejected { .. }))
+        .collect();
     println!("Queue         {}", queue.dir().display());
     println!();
-    if stalled.is_empty() {
-        println!("Nothing is stalled.");
+    if stalled.is_empty() && refused.is_empty() {
+        println!("Nothing is stalled, and nothing was refused.");
         return Ok(OK);
     }
-    println!("{} stalled result(s):", stalled.len());
-    for entry in &stalled {
-        println!(
-            "  {}  {}",
-            short_key(&entry.key),
-            describe_state(&entry.state)
-        );
+    if !stalled.is_empty() {
+        println!("{} stalled result(s):", stalled.len());
+        for entry in &stalled {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+        }
+    }
+    if !refused.is_empty() {
+        if !stalled.is_empty() {
+            println!();
+        }
+        println!("{} refused result(s):", refused.len());
+        for entry in &refused {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
+        }
+        println!();
+        println!("A refusal means the server looked at the result and did not store it,");
+        println!("so putting one back cannot duplicate anything. Results the server DID");
+        println!("store are never touched by this.");
     }
     if !apply {
         println!();
         println!("Nothing was changed. Re-run with --apply to put them back in the queue.");
         return Ok(PROBLEM);
     }
+    // The lock, for the rewrite. `requeue_rejected` reads the ledger, drops
+    // the rejection rows, writes a temporary file and renames it over the
+    // original, and an append landing between the read and the rename is
+    // inside the file that gets replaced. A ledger row is the only thing
+    // standing between a crash and a result being sent twice on a real
+    // fixture, so losing one is not acceptable. The appends come from a
+    // launcher running at the same time, and this is the lock that stops one
+    // existing -- the same lock every other piece of queue work takes.
+    let Startup::Owner(_lock) = Supervisor::acquire(platform)? else {
+        println!();
+        println!("Another launcher is running and owns this install. Close it and try again;");
+        println!("nothing was changed.");
+        return Ok(PROBLEM);
+    };
     let moved = queue.retry_stalled()?;
+    let unrefused = queue.requeue_rejected()?;
     println!();
     println!(
-        "{} result(s) put back in the queue, attempt counts reset.",
-        moved.len()
+        "{} stalled and {} refused result(s) put back in the queue, attempt counts reset.",
+        moved.len(),
+        unrefused.len()
     );
     println!("Nothing expires a stalled capture on its own: the game happened, so the");
     println!("only ways out are sending it or the player deleting it.");
@@ -4888,6 +5056,183 @@ mod tests {
                 path.join(" ")
             );
         }
+    }
+
+    /// The only recovery tool this product has must look where the emulator
+    /// actually writes.
+    ///
+    /// `stats ingest` defaulted to the parent `GameStats` folder and called the
+    /// single-folder ingest. Dolphin writes into `GameStats\Online` and
+    /// `GameStats\Offline`. The parent exists, so the command did not even
+    /// report a missing folder: it found nothing, printed "Nothing to do", and
+    /// left every real capture sitting one level down. That is the command a
+    /// person reaches for when the queue is stuck, and it could not find
+    /// anything at all.
+    ///
+    /// Its help text said it defaulted to `LeagueGameStats`, which had not been
+    /// true since the mode folders arrived, so the one place a person could
+    /// check what it was about to read was wrong too.
+    ///
+    /// Checked in two places, because the defect had two halves. The help text
+    /// is read from clap, which is what a person actually sees. The default
+    /// path is read from the source of the function, because it takes a
+    /// `Platform` and a resolved user directory and cannot be called in a test
+    /// without one; what has to be true is that the no-flag path reaches
+    /// `ingest_all` and the flag path still reaches the single-folder call.
+    /// Rewriting the ledger takes the lock the rest of the queue work takes.
+    ///
+    /// `requeue_rejected` reads the ledger, drops the rejection rows, writes a
+    /// temporary file and renames it over the original. An append landing
+    /// between the read and the rename is inside the file that gets replaced,
+    /// so it is lost -- and a ledger row is the only thing standing between a
+    /// crash and a result being sent twice on a real fixture.
+    ///
+    /// Nothing here can hold that window open on its own, because the appends
+    /// come from a launcher running at the same time. The single-instance lock
+    /// is what stops that launcher existing, and it is the lock every other
+    /// piece of queue work already takes.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The function's text is cut at the next item's own first line, which is
+    /// thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn putting_results_back_takes_the_lock_the_rest_of_the_queue_work_takes() {
+        let src = include_str!("main.rs");
+        let from = src
+            .find("\nfn stats_retry(")
+            .expect("stats_retry is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\nfn stats_prune(").expect("stats_prune moved")];
+
+        let lock = body.find("Supervisor::acquire").unwrap_or_else(|| {
+            panic!(
+                "stats retry rewrites the ledger with no lock, so an append from a launcher \
+                 running at the same time is dropped on the rename"
+            )
+        });
+        // The call, not the name: the comment above the lock explains what
+        // `requeue_rejected` does, and searching for the bare name would find
+        // that comment first and always read as "the lock came too late".
+        let rewrite = body
+            .find("queue.requeue_rejected(")
+            .expect("stats retry no longer puts refused results back");
+        assert!(
+            lock < rewrite,
+            "the lock is taken after the ledger has already been rewritten"
+        );
+    }
+
+    /// The person who has to act on a refusal can see which refusal it was.
+    ///
+    /// A rejection is permanent, and `stats retry --apply` is the documented
+    /// way back. The row itself says only the sentence written for a player,
+    /// which deliberately does not name the refusal, so the operator was
+    /// retrying blind: a hash mismatch is worth investigating and a seat
+    /// conflict is worth waiting for the other player on, and they read the
+    /// same.
+    ///
+    /// This tool's audience is a developer or a league operator at a command
+    /// line, so the server's own vocabulary is exactly right here and exactly
+    /// wrong on the results screen.
+    #[test]
+    fn the_listing_shows_which_refusal_a_refused_result_got() {
+        let mut entry = QueueEntry {
+            key: reborn_core::stats::CaptureKey::of_bytes(b"a"),
+            state: EntryState::Rejected {
+                reason: "The server would not take this result.".into(),
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: Some("The server would not take this result.".into()),
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: None,
+            refusal_code: Some("hash-mismatch".into()),
+            summary: None,
+        };
+        let line = refusal_code_line(&entry)
+            .expect("a refusal that carries a code has to say which refusal it was");
+        assert!(
+            line.contains("hash-mismatch"),
+            "the operator cannot tell one refusal from another: {line}"
+        );
+        // Nothing invented for a result that carries no code.
+        entry.refusal_code = None;
+        assert!(refusal_code_line(&entry).is_none());
+    }
+
+    /// The command line tool writes to the same log the window does.
+    ///
+    /// Every failure this tool decides not to print in full goes to
+    /// `tracing::warn!` in the core, and until fix wave 4 nothing in the
+    /// workspace subscribed, so those events were dropped. A person running a
+    /// recovery command is exactly the person who needs them.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text is cut at the `fn run(` that follows it, which is
+    /// thousands of lines before this test, so the name written below is never
+    /// inside what is searched.
+    #[test]
+    fn every_run_of_the_command_line_tool_writes_to_the_launchers_log() {
+        let src = include_str!("main.rs");
+        let body = {
+            let from = src
+                .find("\nfn main() -> std::process::ExitCode {")
+                .expect("main is not in this file any more");
+            let rest = &src[from..];
+            &rest[..rest.find("\nfn run(").expect("run is not in this file any more")]
+        };
+        assert!(
+            body.contains("logging::start"),
+            "rebornctl never starts a log, so every warning the core raises while it runs \
+             is dropped and the detail is gone"
+        );
+    }
+
+    #[test]
+    fn stats_ingest_defaults_to_every_folder_the_emulator_writes_to() {
+        let root = Cli::command();
+        let cmd = find(&root, &["stats", "ingest"]);
+        let from = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "from")
+            .expect("stats ingest has no --from any more");
+        let help = from
+            .get_help()
+            .map(|h| h.to_string())
+            .unwrap_or_default();
+        assert!(
+            !help.contains("LeagueGameStats"),
+            "the help still promises a folder the emulator has not written to for two \
+             releases: {help}"
+        );
+        assert!(
+            help.contains("one folder"),
+            "the help has to say --from narrows the sweep to one folder, because the \
+             default is now every folder: {help}"
+        );
+
+        let src = include_str!("main.rs");
+        let from_fn = src
+            .find("\nfn stats_ingest(")
+            .expect("stats_ingest is not in this file any more");
+        let rest = &src[from_fn..];
+        let body = &rest[..rest.find("\n/// Put stalled").unwrap_or(rest.len())];
+        assert!(
+            body.contains("ingest_all"),
+            "with no --from, stats ingest still reads one folder the emulator never \
+             writes to, so it can never find a stuck capture"
+        );
+        assert!(
+            body.contains("ingest_from"),
+            "--from no longer narrows the sweep to the one folder it names"
+        );
     }
 
     /// Read-only subcommands must not grow an `--apply`, because a flag that

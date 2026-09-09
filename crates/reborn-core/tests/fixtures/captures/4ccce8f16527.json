@@ -1,0 +1,29 @@
+{
+  "schema": "nsr.game.v1",
+  "source": "dolphin",
+  "captured_at": "2026-07-28T00:46:32Z",
+  "teams": [{"name": "Outlaws", "score": 0}, {"name": "Street Crusade", "score": 6}],
+  "style": [53360, 0],
+  "team_totals": [
+    {"score": 0, "style": 0, "total_td": 0, "rush_td": 0, "pass_td": 0, "def_td": 0, "sacks": 0, "safeties": 0, "int": 0, "ff": 0, "first_downs": 0, "gamebreakers": 0, "gb_2pt": 0, "hot_spots": 0, "credits": 0},
+    {"score": 6, "style": 53360, "total_td": 1, "rush_td": 1, "pass_td": 0, "def_td": 0, "sacks": 0, "safeties": 0, "int": 0, "ff": 0, "first_downs": 0, "gamebreakers": 0, "gb_2pt": 0, "hot_spots": 0, "credits": 0}
+  ],
+  "sides_verified": true,
+  "per_player_matched": 14,
+  "players": [
+    {"name": "King  Arthur", "team": "Street Crusade", "side": 0, "slot": 0, "digp": 11, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Smith", "team": "Street Crusade", "side": 0, "slot": 1, "digp": 12, "stats": {"pass_td": 0, "rush_td": 1, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Tate", "team": "Street Crusade", "side": 0, "slot": 2, "digp": 15, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Hunter", "team": "Street Crusade", "side": 0, "slot": 3, "digp": 14, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Ekwonu", "team": "Street Crusade", "side": 0, "slot": 4, "digp": 17, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Gonzalez", "team": "Street Crusade", "side": 0, "slot": 5, "digp": 13, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Sir Garrett", "team": "Street Crusade", "side": 0, "slot": 6, "digp": 16, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Gabe  Itch", "team": "Outlaws", "side": 1, "slot": 0, "digp": 35, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Craven Moorehead", "team": "Outlaws", "side": 1, "slot": 1, "digp": 37, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Barry McKackiner", "team": "Outlaws", "side": 1, "slot": 2, "digp": 31, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Dixon Myaz", "team": "Outlaws", "side": 1, "slot": 3, "digp": 32, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Willie Stroker", "team": "Outlaws", "side": 1, "slot": 4, "digp": 36, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Jack Offman", "team": "Outlaws", "side": 1, "slot": 5, "digp": 34, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Mike Oxlong", "team": "Outlaws", "side": 1, "slot": 6, "digp": 33, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}}
+  ]
+}

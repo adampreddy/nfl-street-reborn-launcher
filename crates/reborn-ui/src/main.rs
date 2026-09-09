@@ -54,7 +54,7 @@ use reborn_core::onboarding::{
 use reborn_core::runtime::{GameBuild, GraphicsPreset};
 use reborn_core::session::{LaunchRequest, Launched, Session, UserDir};
 use reborn_core::stats::{Enqueued, EntryState, QueueEntry, StatsQueue};
-use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
+use reborn_core::supervisor::{SessionEnd, SessionIntent, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
 /// Where the launcher keeps things, and whether that is safe.
@@ -195,7 +195,7 @@ fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
         let scratch = p
             .paths
             .data_root()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.player_message().to_string())?
             .join(DataDir::Cache.relative());
         match reborn_core::devices::scan_via_runtime(&p, std::path::Path::new(&exe), &scratch) {
             Ok(scan) => return Ok(to_report(&scan, "runtime")),
@@ -446,6 +446,7 @@ async fn prepare_launch(
             build: GameBuild::Offline,
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
+            league_match: false,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -520,7 +521,7 @@ fn find_runtime_and_game_for(
             // Dolphin.ini's recorded default counts, so it is resolved here
             // the way a launch resolves it.
             let user = reborn_core::session::resolve_user_dir_for(platform, user_dir, Some(found.path()))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.player_message().to_string())?;
             let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
             let search = reborn_core::session::find_game_image(
                 found.path(),
@@ -587,7 +588,7 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     .ok()
                     .map(|d| d.explain()),
                 game_note: {
-                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?.game_path;
+                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
                     let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
                     if given.is_some() {
                         None
@@ -676,6 +677,7 @@ async fn launch(
     fullscreen: bool,
     user_dir: Option<String>,
     mods_disabled: bool,
+    league_match: Option<bool>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LaunchGuard::acquire()?;
@@ -697,9 +699,27 @@ async fn launch(
             build: GameBuild::Offline,
             mods_disabled,
             user_dir: chosen_user,
+            league_match: league_match.unwrap_or(false),
         };
 
-        match Session::run(&p, &req).map_err(|e| e.to_string())? {
+        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
+
+        // The guard, back, before anything reaches the network. `Session::run`
+        // has already given the single-instance lock back; this is the other
+        // half. A send is one request per queued game with the client's full
+        // timeout each, so a backlog against a slow or unreachable backend is
+        // minutes, and for all of those minutes the emulator has already
+        // exited while Play answers "A game session is already active", the
+        // Online page says to close the emulator, opening the emulator from
+        // Settings is refused and the command line retry is refused.
+        //
+        // Nothing is at risk in the gap: the captures are already in the queue
+        // on disk, and a second launch starting here would collect an empty
+        // folder and send the same queue, which is the send this one was going
+        // to do.
+        drop(_guard);
+
+        match launched {
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
                 user_dir_note: None,
@@ -720,9 +740,12 @@ async fn launch(
                 user_dir,
                 mods,
                 session_id,
-                stats,
+                results,
                 ..
             } => {
+                // With the lock and the guard both back. Never surfaced as a
+                // failure: the game was played whatever the backend answered.
+                let stats = results.send(&p);
                 let needs_recovery = end.needs_recovery();
                 let message = match &end {
                     SessionEnd::Exited { code: Some(0) } => {
@@ -1093,9 +1116,11 @@ fn read_package_library(root: &Path) -> (Vec<ModPackage>, Vec<String>) {
 async fn mod_packages() -> Result<ModLibraryView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
-        let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
-        let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.player_message().to_string())?;
+        let activation_path =
+            reborn_core::mods::activation_path(&p).map_err(|e| e.player_message().to_string())?;
+        let activation =
+            Activation::load(&activation_path).map_err(|e| e.player_message().to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
         let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
@@ -3059,6 +3084,7 @@ async fn onboarding_run_task(
                     // here is the bug that booted the game to factory defaults
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
+                    league_match: false,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -3405,6 +3431,17 @@ struct StatsEntryView {
     first_seen_ms: u64,
     last_error: Option<String>,
     session_id: Option<String>,
+    /// What the server said about a terminal result, such as "Recorded as
+    /// incomplete". Written to the entry and shown to nobody until fix wave 2:
+    /// it is the only place a player learns their game was counted with a
+    /// qualification, and the state alone says "sent and counted", which is
+    /// true and is not the whole truth.
+    note: Option<String>,
+    /// "online", "offline", "unknown", or absent for the folder older runtimes
+    /// wrote. Reported rather than kept internal: "unknown" is the launcher
+    /// saying it found a capture in a folder neither it nor the emulator agreed
+    /// on, and a naming drift between the two has to be visible somewhere.
+    capture_folder: Option<String>,
     captured_at: Option<String>,
     teams: Vec<String>,
     players: Option<usize>,
@@ -3413,12 +3450,14 @@ struct StatsEntryView {
     /// screen showing these values needs to be able to mark them suspect.
     sides_verified: Option<bool>,
     needs_review: Option<bool>,
-    flags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Default, PartialEq, Eq)]
 struct StatsQueueCounts {
-    /// What the next submission pass would actually try. Only `Queued` counts.
+    /// What the next submission pass would actually try: `Queued` and
+    /// `Stalled`. A pass puts stalled entries back before it starts, so they
+    /// are as waiting as anything else, and this is the only number the
+    /// settings panel shows.
     depth: usize,
     quarantined: usize,
     stalled: usize,
@@ -3439,6 +3478,35 @@ struct StatsQueueView {
     entries: Vec<StatsEntryView>,
 }
 
+/// One queue row, as a page reads it.
+///
+/// Its own function so it can be checked without a `Platform`, a real queue
+/// and a real disk: what a row says about a result is exactly the kind of
+/// thing that has to be testable.
+fn entry_view(e: &QueueEntry) -> StatsEntryView {
+    let (state, reason) = entry_state_label(&e.state);
+    StatsEntryView {
+        key: e.key.to_string(),
+        state,
+        reason,
+        attempts: e.attempts,
+        first_seen_ms: e.first_seen_ms,
+        last_error: e.last_error.clone(),
+        session_id: e.session_id.clone(),
+        note: e.note.clone(),
+        capture_folder: e.capture_folder.clone(),
+        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
+        teams: e
+            .summary
+            .as_ref()
+            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default(),
+        players: e.summary.as_ref().map(|s| s.players),
+        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
+        needs_review: e.summary.as_ref().map(|s| s.needs_review),
+    }
+}
+
 fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
     match state {
         EntryState::Queued => ("queued", None),
@@ -3452,11 +3520,15 @@ fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
 
 /// Count the queue by state.
 ///
-/// `depth` is the number of entries a submission pass would try, and it counts
-/// `Queued` and nothing else. `Held` means the server stored the result and a
-/// person will decide, which is a **success**: counting it as waiting is
-/// precisely the mistake that sent the uploader into a retry loop and produced
-/// a real outage on this project.
+/// `depth` is the number of entries a submission pass would try: `Queued` and
+/// `Stalled`. Stalled is in there because a pass puts stalled entries back
+/// before it starts, so they will be tried; leaving them out meant the one
+/// number a player sees read zero while real games sat undelivered.
+///
+/// `Held` is NOT in there. It means the server stored the result and a person
+/// will decide, which is a **success**: counting it as waiting is precisely
+/// the mistake that sent the uploader into a retry loop and produced a real
+/// outage on this project.
 fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
     let mut counts = StatsQueueCounts {
         total: entries.len(),
@@ -3466,7 +3538,10 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
         match entry.state {
             EntryState::Queued => counts.depth += 1,
             EntryState::Quarantined { .. } => counts.quarantined += 1,
-            EntryState::Stalled { .. } => counts.stalled += 1,
+            EntryState::Stalled { .. } => {
+                counts.stalled += 1;
+                counts.depth += 1;
+            }
             EntryState::Accepted => counts.accepted += 1,
             EntryState::Held { .. } => counts.held += 1,
             EntryState::Rejected { .. } => counts.rejected += 1,
@@ -3483,43 +3558,17 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
 async fn stats_queue() -> Result<StatsQueueView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let entries = queue.entries().map_err(|e| e.to_string())?;
-        let orphaned = queue.orphaned_payloads().map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
+        let entries = queue.entries().map_err(|e| e.player_message().to_string())?;
+        let orphaned = queue
+            .orphaned_payloads()
+            .map_err(|e| e.player_message().to_string())?;
 
         Ok(StatsQueueView {
             dir: queue.dir().display().to_string(),
             counts: queue_counts(&entries),
             orphaned_payloads: orphaned.len(),
-            entries: entries
-                .iter()
-                .map(|e| {
-                    let (state, reason) = entry_state_label(&e.state);
-                    StatsEntryView {
-                        key: e.key.to_string(),
-                        state,
-                        reason,
-                        attempts: e.attempts,
-                        first_seen_ms: e.first_seen_ms,
-                        last_error: e.last_error.clone(),
-                        session_id: e.session_id.clone(),
-                        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
-                        teams: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
-                            .unwrap_or_default(),
-                        players: e.summary.as_ref().map(|s| s.players),
-                        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
-                        needs_review: e.summary.as_ref().map(|s| s.needs_review),
-                        flags: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.flags.clone())
-                            .unwrap_or_default(),
-                    }
-                })
-                .collect(),
+            entries: entries.iter().map(entry_view).collect(),
         })
     })
     .await
@@ -3536,6 +3585,14 @@ struct StatsIngestView {
     already_submitted: usize,
     /// Files that could not be read. These were left exactly where they were.
     unreadable: usize,
+    /// Whole folders that could not be listed, so nothing in them was looked
+    /// at. Counted apart from `unreadable` because how many results are in one
+    /// is exactly what was not established.
+    unreadable_folders: usize,
+    /// Results that were saved, whose file the emulator wrote could not be
+    /// removed afterwards. Nothing was lost; the file is read again next time
+    /// and the content key makes that a no-op.
+    source_kept: usize,
     /// One sentence per capture, from the core, so nothing here paraphrases a
     /// result the player will act on.
     messages: Vec<String>,
@@ -3567,14 +3624,16 @@ async fn stats_ingest(
         let p = Platform::detect();
         let from = reborn_core::stats::dolphin_capture_dir(Path::new(&user_dir));
 
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+        let Startup::Owner(_lock) =
+            Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())?
+        else {
             return Err(already_running());
         };
 
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
         let results = queue
-            .ingest_from(&from, session_id.as_deref())
-            .map_err(|e| e.to_string())?;
+            .ingest_all(Path::new(&user_dir), session_id.as_deref())
+            .map_err(|e| e.player_message().to_string())?;
 
         let mut view = StatsIngestView {
             from: from.display().to_string(),
@@ -3583,6 +3642,8 @@ async fn stats_ingest(
             already_queued: 0,
             already_submitted: 0,
             unreadable: 0,
+            unreadable_folders: 0,
+            source_kept: 0,
             messages: results.iter().map(|r| r.message()).collect(),
         };
         for result in &results {
@@ -3592,6 +3653,8 @@ async fn stats_ingest(
                 Enqueued::AlreadyQueued(_) => view.already_queued += 1,
                 Enqueued::AlreadySubmitted { .. } => view.already_submitted += 1,
                 Enqueued::CouldNotRead { .. } => view.unreadable += 1,
+                Enqueued::FolderCouldNotBeRead { .. } => view.unreadable_folders += 1,
+                Enqueued::SourceKept { .. } => view.source_kept += 1,
             }
         }
         Ok(view)
@@ -3600,52 +3663,28 @@ async fn stats_ingest(
     .map_err(|e| e.to_string())?
 }
 
-/// Send everything queued to the league server.
-///
-/// Refuses, and names what is missing. `StatsQueue::submit_pending` takes a
-/// `Submitter`, and that trait is the whole network seam: the core holds no URL,
-/// no credential and no HTTP client, and nothing in this workspace implements
-/// it. Writing one here that always deferred would be worse than refusing,
-/// because the queue page would show a submission pass that ran and moved
-/// nothing.
+/// Send everything queued to the backend. No confirmation: sending is what the queue is for,
+/// and the server's idempotency makes a repeat harmless.
 #[tauri::command]
-async fn stats_submit(confirm: bool) -> Result<StatsSubmitView, String> {
-    confirmed(
-        confirm,
-        "stats_submit",
-        "upload every queued result, which cannot be taken back",
-    )?;
+async fn stats_submit() -> Result<StatsSubmitView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
-            return Err(already_running());
-        };
-        let token = p
-            .credentials
-            .retrieve(reborn_core::league::TOKEN_ACCOUNT)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| {
-                "No league token is stored, so nothing was sent. Enter the token on the \
-                 Settings page; the results stay queued until then."
-                    .to_string()
-            })?;
-        let url = league_url(&p)?;
-        let http = http_client();
-        let sender = reborn_core::league::LeagueSubmitter::new(&http, url.clone(), token);
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let report = queue.submit_pending(&sender, 5).map_err(|e| e.to_string())?;
-        Ok(StatsSubmitView {
-            url,
-            accepted: report.accepted.len(),
-            held: report.held.len(),
-            rejected: report.rejected.len(),
-            deferred: report.deferred.len(),
-            stalled: report.stalled.len(),
-            note: submit_note(&report),
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let url = backend_origin(&p)?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
+        // The lock is read from and given straight back: holding it across the
+        // send is what told a player pressing Play that another launcher was
+        // running, when the only thing running was this send.
+        let history = history_without_holding_the_lock(&p)?;
+        match reborn_core::backend::auto_submit(&p, &queue, &history)
+            .map_err(|e| e.player_message().to_string())?
+        {
+            reborn_core::backend::SendAttempt::NotSignedIn => Ok(StatsSubmitView { url, accepted: 0, held: 0, rejected: 0, deferred: 0, stalled: 0, note: "Sign in with Discord to send your results. They are kept until then.".to_string() }),
+            reborn_core::backend::SendAttempt::Sent(report) => Ok(StatsSubmitView {
+                url, accepted: report.accepted.len() + report.recorded.len(), held: report.held.len(), rejected: report.rejected.len(), deferred: report.deferred.len(), stalled: report.stalled.len(),
+                note: if report.waiting_for_sign_in { "The server no longer accepts this sign-in. Sign in again; nothing was lost.".to_string() } else { submit_note(&report) },
+            }),
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Serialize)]
@@ -3663,8 +3702,9 @@ struct StatsSubmitView {
 
 fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
     let mut parts = Vec::new();
-    if !r.accepted.is_empty() {
-        parts.push(format!("{} accepted", r.accepted.len()));
+    let accepted = r.accepted.len() + r.recorded.len();
+    if accepted > 0 {
+        parts.push(format!("{accepted} accepted"));
     }
     if !r.held.is_empty() {
         parts.push(format!("{} held for commissioner review", r.held.len()));
@@ -3676,23 +3716,18 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
         parts.push(format!("{} could not be delivered and stay queued", r.deferred.len()));
     }
     if !r.stalled.is_empty() {
-        parts.push(format!("{} out of attempts, still on disk", r.stalled.len()));
+        // Not "out of attempts, still on disk", which read like a dead end.
+        // The next send pass puts these back before it starts.
+        parts.push(format!(
+            "{} could not be delivered after several tries and will be tried again",
+            r.stalled.len()
+        ));
     }
     if parts.is_empty() {
         "Nothing was waiting to be sent.".to_string()
     } else {
         format!("{}.", parts.join(", "))
     }
-}
-
-/// The league endpoint: the setting, or the site's ingest endpoint.
-fn league_url(p: &Platform) -> Result<String, String> {
-    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
-    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
-    Ok(settings
-        .league_ingest_url
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| reborn_core::league::DEFAULT_INGEST_URL.to_string()))
 }
 
 fn http_client() -> reborn_core::net::UreqHttp {
@@ -3824,8 +3859,8 @@ fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<P
     if let Some(value) = hint.filter(|v| !v.trim().is_empty()) {
         return Ok(Some(reborn_core::session::user_path(value)));
     }
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?.user_dir)
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())?.user_dir)
 }
 
 #[tauri::command]
@@ -3887,45 +3922,165 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Who the player is.
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Serialize)]
-struct CredentialSetView {
-    account: &'static str,
-    stored: bool,
-    /// The token's length, never the token.
-    length: usize,
+struct IdentityView {
+    signed_in: bool,
+    display_name: Option<String>,
+    player_id: Option<String>,
+    show_offline: Option<bool>,
+}
+#[derive(Debug, Serialize)]
+struct SignInStartView {
+    device_code: String,
+    user_code: String,
+    verify_url: String,
+    interval: u64,
+    opened: bool,
+}
+#[derive(Debug, Serialize)]
+struct SignInPollView {
+    state: &'static str,
+    display_name: Option<String>,
 }
 
-/// Store the league token in the operating system's credential store.
+fn identity_view(file: Option<&reborn_core::identity::IdentityFile>) -> IdentityView {
+    match file {
+        Some(f) => IdentityView { signed_in: true, display_name: Some(f.player.display_name.clone()), player_id: Some(f.player.id.clone()), show_offline: Some(f.player.show_offline) },
+        None => IdentityView { signed_in: false, display_name: None, player_id: None, show_offline: None },
+    }
+}
+
+/// The backend: the setting, or the product origin.
 ///
-/// Never written to disk by the launcher, never logged, never echoed back:
-/// the view carries its length so a page can say something was stored.
-#[tauri::command]
-async fn stats_credential_set(token: String) -> Result<CredentialSetView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Err("the token is empty; nothing was stored".to_string());
-        }
-        let p = Platform::detect();
-        p.credentials
-            .store(reborn_core::league::TOKEN_ACCOUNT, &token)
-            .map_err(|e| e.to_string())?;
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: true, length: token.len() })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+/// The reading and the wording both live in `reborn_core::identity`, because
+/// its one failure is the launcher's own settings file refusing to open and
+/// that has to become a sentence rather than a path. This window has no
+/// logger to put the detail in; that module does.
+fn backend_origin(p: &Platform) -> Result<String, String> {
+    reborn_core::identity::origin(p).map_err(|e| e.to_string())
 }
 
-/// Remove the league token from the credential store.
+/// Read the session history, and give the launcher lock straight back.
+///
+/// # Why the lock cannot be held across a send
+///
+/// It is the single-instance lock. `Session::run` takes it and, failing, tells
+/// the player "Another launcher is already running. Close it first." Both send
+/// paths used to hold it for the whole network round trip, and a send is one
+/// request per queued game with a two minute timeout each. So a player who
+/// signed in and then pressed Play was told to close a launcher that does not
+/// exist, and their game did not start.
+///
+/// The history is what the send needs from it: a few lines off disk, read in
+/// microseconds. Two sends never overlapping is a separate promise, kept by
+/// `backend::auto_submit` itself rather than by whoever happens to hold this
+/// lock.
+fn history_without_holding_the_lock(
+    p: &Platform,
+) -> Result<Vec<reborn_core::supervisor::SessionRecord>, String> {
+    let Startup::Owner(sup) = Supervisor::acquire(p).map_err(|e| e.player_message().to_string())?
+    else {
+        return Err(already_running());
+    };
+    let history = sup.history().map_err(|e| e.player_message().to_string())?;
+    drop(sup);
+    Ok(history)
+}
+
+/// Send whatever is queued, without making anybody wait for it.
+///
+/// Its own thread on purpose. A send is one network round trip per queued
+/// game, each with the client's full timeout, so a backlog is minutes of
+/// waiting. Nothing about it belongs on the answer to a command a page is
+/// polling.
+///
+/// Nothing here is reported. The player already knows they signed in, and a
+/// send that could not happen leaves every result exactly where it was, to go
+/// out at the end of the next game or when they press Send results now.
+fn send_backlog_in_background() {
+    std::thread::spawn(|| {
+        let p = Platform::detect();
+        let Ok(queue) = StatsQueue::open(&p) else { return };
+        let Ok(history) = history_without_holding_the_lock(&p) else { return };
+        let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
+    });
+}
+
 #[tauri::command]
-async fn stats_credential_forget() -> Result<CredentialSetView, String> {
+async fn identity_status() -> Result<IdentityView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let _ = p.credentials.delete(reborn_core::league::TOKEN_ACCOUNT);
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: false, length: 0 })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Start a Discord sign-in and open the verify page in the default browser.
+#[tauri::command]
+async fn identity_sign_in_start() -> Result<SignInStartView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        let s = reborn_core::identity::start(&http, &origin, &reborn_core::identity::machine_label()).map_err(|e| e.to_string())?;
+        let opened = reborn_core::identity::open_in_browser(&p, &s.verify_url).is_ok();
+        Ok(SignInStartView { device_code: s.device_code, user_code: s.user_code, verify_url: s.verify_url, interval: s.interval.max(2), opened })
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Ask whether the browser step finished. On "done" the token is already in the vault.
+#[tauri::command]
+async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        match reborn_core::identity::poll(&http, &origin, &device_code).map_err(|e| e.to_string())? {
+            reborn_core::identity::Poll::Pending => Ok(SignInPollView { state: "pending", display_name: None }),
+            reborn_core::identity::Poll::Expired => Ok(SignInPollView { state: "expired", display_name: None }),
+            reborn_core::identity::Poll::Done { token, player } => {
+                let name = player.display_name.clone();
+                reborn_core::identity::save_signed_in(&p, &token, player, now_ms()).map_err(|e| e.to_string())?;
+                // The backlog goes out the moment a token exists, on its own
+                // thread. It used to go out here, so this command did not
+                // answer until every queued game had been posted: a network
+                // round trip each, with a two minute timeout each. The window
+                // polls on an interval, so the ticks that fired during that
+                // wait asked about a device code the server had already
+                // consumed, and the refusals they got landed on the screen
+                // beside the sign-in that had just succeeded.
+                send_backlog_in_background();
+                Ok(SignInPollView { state: "done", display_name: Some(name) })
+            }
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn identity_sign_out() -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::sign_out(&p, &http, &origin).map_err(|e| e.to_string())?;
+        Ok(identity_view(None))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn identity_set_show_offline(show: bool) -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::set_show_offline(&p, &http, &origin, show).map_err(|e| e.to_string())?;
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
 }
 
 // ---------------------------------------------------------------------------
@@ -4075,26 +4230,73 @@ struct OpenRuntimeView {
 }
 
 /// Open the emulator itself, with no game, against the user folder a launch
-/// would use. For the player who wants Dolphin's own settings. Not a
-/// session: nothing is recorded and nothing waits for it.
+/// would use. For the player who wants Dolphin's own settings.
+///
+/// It IS a session. A player who opens the emulator here and then boots a game
+/// from Dolphin's own interface has played a game, and Dolphin writes a
+/// capture for it exactly as it does for a launch. This command used to spawn
+/// and return, holding nothing and waiting for nothing, so those captures were
+/// left on disk with no session that explained them: either never delivered,
+/// or picked up by a later offline session and stamped with an id, an exit
+/// reason and a league intent belonging to a game it did not produce.
+///
+/// So the record is written before the emulator starts, the lock and the guard
+/// are held for as long as it runs, and the results are collected and sent on
+/// the way out. That the launcher now reports a session as active for the
+/// whole time Dolphin is open is the correct answer to "is a game running",
+/// and it stops a second copy being started over the same memory card.
 #[tauri::command]
 async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Result<OpenRuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = LaunchGuard::acquire()?;
+        let guard = LaunchGuard::acquire()?;
         let p = Platform::detect();
         let exe = runtime_for(&p, runtime.as_deref()).ok_or_else(|| {
             "No emulator was found. Set its path on the Settings page.".to_string()
         })?;
         let chosen = selected_user_dir(&p,user_dir.as_deref())?;
         let user = reborn_core::session::resolve_user_dir_for(&p, chosen.as_deref(), Some(&exe))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
         let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
-        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e|e.to_string())?;
-        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e|e.to_string())?;
+        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e| e.player_message().to_string())?;
+        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e| e.player_message().to_string())?;
+
+        // The lock, then anything left unfinished, then the record. The same
+        // first steps as a launch, because this ends the same way: with a
+        // capture that has to belong to something.
+        let Startup::Owner(supervisor) = Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())? else {
+            return Err(already_running());
+        };
+        let _ = supervisor.recover_unfinished().map_err(|e| e.player_message().to_string())?;
+        // Offline, and not a league match: nothing was asked, and the emulator
+        // is being opened on its own rather than pointed at a fixture. The
+        // folder Dolphin writes into still says whether the game was online.
+        let record = supervisor
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false }))
+            .map_err(|e| e.player_message().to_string())?;
+
         let env = std::collections::BTreeMap::new();
-        p.processes
+        let handle = p.processes
             .spawn(&exe, &args, exe.parent(), &env)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
+        let user_path = user.path().to_path_buf();
+        std::thread::spawn(move || {
+            // Held across the wait and across the collection, which is what
+            // the lock is for: the queue and the session log are shared state.
+            let _guard = guard;
+            let exit = p.processes.wait(handle).ok();
+            let collected = reborn_core::session::finish_and_collect(&p, &supervisor, record, exit.as_ref(), &user_path);
+            // Both given back before the network work. A send is one request
+            // per queued game with the client's full timeout each, so against
+            // a slow or unreachable backend it is minutes, and for those
+            // minutes pressing Play said a game session was already active and
+            // the Online page said to close the emulator. The emulator had
+            // already exited: both were false.
+            drop(supervisor);
+            drop(_guard);
+            // Never surfaced: the window was told the emulator started, and a
+            // game that was played is not a failure however sending it went.
+            let _ = collected.send(&p);
+        });
         Ok(OpenRuntimeView { started: true, runtime: exe.display().to_string(), user_dir_note: user.explain() })
     })
     .await
@@ -4149,6 +4351,19 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
             }
             take(user.path().join("Logs").join("dolphin.log"), "dolphin.log");
         }
+
+        // The launcher's own log, which is where every failure it decided not
+        // to show a player went. The bundle could only ever collect the
+        // emulator's, because until fix wave 4 the launcher did not have one.
+        let logs = data.join(DataDir::Logs.relative());
+        take(
+            logs.join(reborn_core::logging::LOG_FILE),
+            reborn_core::logging::LOG_FILE,
+        );
+        take(
+            logs.join(reborn_core::logging::PREVIOUS_LOG_FILE),
+            reborn_core::logging::PREVIOUS_LOG_FILE,
+        );
 
         // What the launcher itself knows, as text.
         let mut status = String::new();
@@ -4808,8 +5023,8 @@ async fn credential_stored(account: String) -> Result<CredentialView, String> {
 
 /// The paths a person set, or nothing, which means find them.
 fn saved_paths(platform: &Platform) -> Result<reborn_core::settings::Settings, String> {
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())
 }
 
 /// What the shortcuts ask for.
@@ -4871,10 +5086,20 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
+        league_match: false,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
-        Launched::Finished { minutes, .. } => Ok(format!("Session ended after {minutes:.0} minutes.")),
+        Launched::Finished { minutes, results, .. } => {
+            // The shortcut holds no launch guard and `Session::run` has given
+            // the lock back, so this is simply the send. Its report is not
+            // shown: this mode draws no window. Skipping it would leave the
+            // player's game sitting in the queue until they next opened the
+            // launcher, and the whole point of the shortcut is that they may
+            // not.
+            let _ = results.send(platform);
+            Ok(format!("Session ended after {minutes:.0} minutes."))
+        }
     }
 }
 
@@ -4983,6 +5208,27 @@ mod shortcut_tests {
 }
 
 fn main() {
+    // The log, first, before anything can produce a warning worth keeping.
+    //
+    // Every module in the core answers a failure it will not show a player by
+    // sending the detail to `tracing::warn!`. Until this call existed there
+    // was no subscriber anywhere in the workspace, and a `tracing` event with
+    // no subscriber is dropped: the detail was not moved off the screen, it
+    // was deleted. It says nothing and it cannot fail a start.
+    reborn_core::logging::start(&Platform::detect());
+
+    // A credential this product retired, taken off the machine. `nsr.league.ingest`
+    // was the bearer token Dolphin's own uploader posted with; the module that
+    // used it is gone, and this branch removed the commands that could forget
+    // it, so every installation that ever stored one would otherwise keep it in
+    // the Windows credential vault forever with no way to remove it from the
+    // product. It is a token this project has already had to rotate.
+    //
+    // Here rather than in a command, so it happens on every start including the
+    // two shortcut modes below, which return before any window exists. Best
+    // effort: it says nothing and it cannot fail a start.
+    reborn_core::identity::forget_retired_league_token(&Platform::detect());
+
     // The shortcuts, before any window exists. Both fall through to the
     // window when they cannot do their job, so a shortcut never does
     // nothing at all with nothing to show for it.
@@ -5095,6 +5341,12 @@ fn main() {
             onboarding_start_over,
             // The Xbox wizard's drive picker.
             removable_drives,
+            // Who the player is.
+            identity_status,
+            identity_sign_in_start,
+            identity_sign_in_poll,
+            identity_sign_out,
+            identity_set_show_offline,
             // Captured results.
             stats_queue,
             stats_ingest,
@@ -5102,8 +5354,6 @@ fn main() {
             settings_set_path,
             settings_paths,
             pick_path,
-            stats_credential_set,
-            stats_credential_forget,
             update_check,
             update_download,
             update_apply,
@@ -5145,6 +5395,639 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of one command, from its signature to the start of the next
+    /// `#[tauri::command]`.
+    fn command_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let from = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+        &rest[..to]
+    }
+
+    /// The text of one item, from `start` to the first following `stop`.
+    ///
+    /// Like `command_body`, but for the free functions between commands,
+    /// which have no shared marker like `#[tauri::command]` to stop at. The
+    /// caller names the next item's own text instead.
+    fn body_until<'a>(source: &'a str, start: &str, stop: &str) -> &'a str {
+        let from = source
+            .find(start)
+            .unwrap_or_else(|| panic!("{start} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest
+            .find(stop)
+            .unwrap_or_else(|| panic!("{stop} is not in this file any more, or moved before {start}"));
+        &rest[..to]
+    }
+
+    /// A `spawn_blocking` command's body, with the trailing `.await` /
+    /// `map_err` that turns a `JoinError` into a string trimmed off.
+    ///
+    /// Every command built on `spawn_blocking` ends with that pair, and it
+    /// has nothing to do with `reborn_core::Error`: it only fires if the
+    /// closure itself panicked. Left in, it would satisfy any check for "no
+    /// more turning an error into raw text" by accident, on every command in
+    /// this file, whether or not the real fix was made.
+    fn inner_body(body: &str) -> &str {
+        &body[..body.find("\n    .await").unwrap_or(body.len())]
+    }
+
+    /// Every way of starting the emulator records a session and collects what
+    /// that session produced.
+    ///
+    /// Two commands start the emulator without going through `Session::run`:
+    /// the NetPlay dialog, which is the launcher's ONLY path to a
+    /// `GameStats\Online` capture, and the button that opens Dolphin on its
+    /// own. Both used to spawn and walk away. Every online game played through
+    /// the launcher was written to disk and then either never delivered or
+    /// adopted by the next offline session, which stamped it with an id, an
+    /// exit reason and a league intent from a game it did not produce.
+    ///
+    /// This reads the source of those two commands, because that is exactly
+    /// how the defect was found and exactly how it would come back: everything
+    /// compiled, the game started perfectly, and the wiring simply was not
+    /// there. What the collection then does with a real capture cannot be
+    /// observed without a real emulator and a real game, and a test that
+    /// pretended otherwise would be asserting nothing.
+    #[test]
+    fn every_way_of_starting_the_emulator_records_a_session_and_collects_it() {
+        for (name, body) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+            ),
+        ] {
+            assert!(
+                body.contains("Supervisor::acquire"),
+                "{name} starts the emulator without taking the launcher lock"
+            );
+            assert!(
+                body.contains("begin_with_intent"),
+                "{name} starts the emulator without writing down what the session is, \
+                 so anything it captures has no session that explains it"
+            );
+            assert!(
+                body.contains("finish_and_collect"),
+                "{name} never collects the results the session produced, so they sit \
+                 in Dolphin's folder until some later session adopts them"
+            );
+            // The collection has to happen inside the waiting thread, with the
+            // guard still held, the way Session::run keeps its lock across the
+            // same work.
+            let guard = body
+                .find("let _guard")
+                .expect("the waiting thread must take the launch guard");
+            let collect = body.find("finish_and_collect").expect("checked above");
+            assert!(
+                guard < collect,
+                "{name} collects results outside the guard that keeps a second \
+                 session from starting in the middle of it"
+            );
+        }
+    }
+
+    /// A sentence the server wrote about a player's own game has to reach them.
+    ///
+    /// `QueueEntry::note` is set by exactly one answer: `Recorded`, which is
+    /// the server saying it stored the result and counted it as incomplete
+    /// because the winner did not reach 36 points. It was written to the entry
+    /// and shown to nobody, and the row it belongs to says "sent and counted",
+    /// which is true and is not the whole truth.
+    ///
+    /// Kept rather than deleted, and surfaced: it is the only place a player
+    /// learns their game was counted with a qualification, and that is a fact
+    /// about a game they played.
+    #[test]
+    fn a_result_recorded_with_a_qualification_shows_what_the_server_said() {
+        let note = "Recorded as incomplete: the winner did not reach 36 points.";
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"a"),
+            state: EntryState::Accepted,
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: None,
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: Some(note.to_string()),
+            refusal_code: None,
+            summary: None,
+        };
+        assert_eq!(
+            entry_view(&entry).note.as_deref(),
+            Some(note),
+            "the one sentence the server wrote about this player's own game is stored and \
+             shown to nobody"
+        );
+    }
+
+    /// A queue row never carries this launcher's own flag codes out to a
+    /// page.
+    ///
+    /// `entry_view` used to copy `CaptureSummary::flags` (`"wrong-schema"`,
+    /// `"no-players"`, and so on) onto the row verbatim. Nothing renders
+    /// them as a message; they are internal vocabulary a player was never
+    /// taught, whether or not a page happens to print them today. The
+    /// meaningful signal for a player, whether a result needs a person to
+    /// look at it, is already on the row as `needs_review`, so the codes are
+    /// dropped rather than translated: there is nothing left worth adding a
+    /// vocabulary for.
+    #[test]
+    fn a_queue_row_never_carries_this_launchers_internal_flag_codes() {
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"b"),
+            state: EntryState::Quarantined {
+                reason: QuarantineReason::FailedValidation {
+                    flags: vec![reborn_core::stats::codes::WRONG_SCHEMA.to_string()],
+                },
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: None,
+            last_error: None,
+            source_path: None,
+            session_id: None,
+            capture_folder: None,
+            note: None,
+            refusal_code: Some("hash-mismatch".to_string()),
+            summary: Some(reborn_core::stats::CaptureSummary {
+                captured_at: "2026-01-01T00:00:00Z".to_string(),
+                teams: Vec::new(),
+                players: 2,
+                sides_verified: false,
+                flags: vec![
+                    reborn_core::stats::codes::WRONG_SCHEMA.to_string(),
+                    reborn_core::stats::codes::NO_PLAYERS.to_string(),
+                ],
+                needs_review: true,
+            }),
+        };
+        let view = entry_view(&entry);
+        let json = serde_json::to_value(&view).expect("StatsEntryView serializes");
+        assert!(
+            json.get("flags").is_none(),
+            "a queue row still carries this launcher's own flag codes to a page: {json}"
+        );
+        assert_eq!(
+            view.needs_review,
+            Some(true),
+            "the meaningful signal a player can use has to survive removing the codes"
+        );
+        // The same rule for the server's vocabulary. `refusal_code` is kept on
+        // the entry for the person running `stats retry --apply`, at a command
+        // line; it is not a word a player was ever taught.
+        assert!(
+            !serde_json::to_string(&view).unwrap().contains("hash-mismatch"),
+            "the server's own word for a refusal reached a page: {json}"
+        );
+    }
+
+    /// A command must not declare a parameter it ignores.
+    ///
+    /// `stats_submit` took `confirm: Option<bool>` and threw it away on the
+    /// first line, while the harness row still sent `confirm: true` under a
+    /// description of behavior the command no longer had. A parameter that is
+    /// declared and ignored teaches a caller that the flag means something,
+    /// and the next person to read the page believes the description.
+    #[test]
+    fn stats_submit_declares_no_parameter_it_ignores() {
+        let body = command_body(include_str!("main.rs"), "async fn stats_submit");
+        let signature = &body[..body.find('{').unwrap_or(body.len())];
+        assert!(
+            !signature.contains("confirm"),
+            "stats_submit still takes a confirm it does not use: {signature}"
+        );
+        assert!(
+            !body.contains("let _ = confirm;"),
+            "stats_submit still throws away an argument it declared"
+        );
+    }
+
+    /// The retired league credential is actually taken off the machine.
+    ///
+    /// Naming it for removal in the core is half a fix. Something has to call
+    /// the removal, and the only thing every player runs is this window.
+    #[test]
+    fn every_start_of_the_launcher_forgets_the_retired_league_credential() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        // Bounded at the test module that follows, or this test's own text
+        // would satisfy it.
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            body.contains("forget_retired_league_token"),
+            "a token this project has already had to rotate stays in the credential vault \
+             forever, on every machine that ever stored one"
+        );
+    }
+
+    /// The lock and the guard go back before the network work, and the online
+    /// start waits for a lock that is about to be given back.
+    ///
+    /// Opening the emulator from Settings, and starting an online session,
+    /// held the launch guard and the single-instance lock across the whole
+    /// collect-and-send. A send is one request per queued game with the
+    /// client's full timeout each, so on a slow or unreachable backend that is
+    /// minutes. During it, pressing Play said a game session was already
+    /// active and the Online page said to close the emulator first. Both were
+    /// false: the emulator had already exited.
+    ///
+    /// The order that has to hold is collect, then give both back, then send.
+    /// Collecting is the part that needs the lock, because the queue and the
+    /// session log are shared state; sending needs neither.
+    ///
+    /// The second half: the online start took the plain `acquire`, so a lock
+    /// held for a moment by this launcher's own background work refused it
+    /// outright. The Play path was given the waiting acquire for exactly that
+    /// reason and this path was not.
+    ///
+    /// The third path is the one every player takes. `launch` is the Play
+    /// button. It holds the launch guard across the whole of `Session::run`,
+    /// and `Session::run` collected AND sent while still holding the
+    /// single-instance lock, so on the primary path both of those false
+    /// sentences were still being said for the length of a send. The two
+    /// commands above were the only ones fixed. Its markers differ because the
+    /// work is split across two crates: `Session::run` collects and hands the
+    /// lock back by returning, this command hands the guard back, and only
+    /// then does anything reach the network. What `Session::run` itself does
+    /// under the lock is held by
+    /// `reborn_core::session::tests::the_launch_gives_the_lock_back_before_the_network_work`.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `open_runtime` and `launch` are read with `command_body`, which stops
+    /// at the next `#[tauri::command]`, and `netplay_open` is read out of
+    /// `dolphin_settings.rs`, a different file from this one. All three slices
+    /// end thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn the_lock_and_the_guard_go_back_before_the_network_work() {
+        for (name, body, collects, releases) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+                "finish_and_collect",
+                "drop(supervisor)",
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+                "finish_and_collect",
+                "drop(supervisor)",
+            ),
+            (
+                "launch",
+                command_body(include_str!("main.rs"), "async fn launch("),
+                "Session::run",
+                "drop(_guard)",
+            ),
+        ] {
+            let collect = body
+                .find(collects)
+                .unwrap_or_else(|| panic!("{name} no longer collects what the session produced"));
+            let release = body.find(releases).unwrap_or_else(|| {
+                panic!(
+                    "{name} never gives the single-instance lock and the launch guard back, so \
+                     every other screen is told a launcher is running for as long as the send \
+                     takes"
+                )
+            });
+            let send = body.find(".send(&p)").unwrap_or_else(|| {
+                panic!("{name} no longer sends what it collected, so results sit in the queue")
+            });
+            assert!(
+                collect < release,
+                "{name} gives the lock back before the results are safely collected"
+            );
+            assert!(
+                release < send,
+                "{name} holds the lock and the guard across the network work, so Play says a \
+                 game session is active and the Online page says to close an emulator that \
+                 has already exited"
+            );
+        }
+
+        let netplay = command_body(
+            include_str!("dolphin_settings.rs"),
+            "pub async fn netplay_open",
+        );
+        assert!(
+            netplay.contains("acquire_waiting"),
+            "starting an online session is still refused outright by a lock that is about to \
+             be given back"
+        );
+    }
+
+    /// Nothing the Play page or the Settings page can reach turns a core
+    /// error into raw text either.
+    ///
+    /// `home.js` renders what `devices` and `mod_packages` reject with, and
+    /// `settings.js` renders what the send button's `stats_submit` rejects
+    /// with. All four still stringified a `reborn_core::Error`, so a
+    /// permission problem reading the mods folder put a full path on the Play
+    /// card and a locked settings file put a path and an error number under
+    /// the send button.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// Each function's text is taken between two anchors that both appear in
+    /// production code, thousands of lines before this test, and `.find`
+    /// returns the first match, so the copies of those anchors in this test's
+    /// own arguments are never reached. The check then runs only over those
+    /// slices, never over the whole file. The trailing `.await` pair every
+    /// `spawn_blocking` command ends with is removed first: it converts a
+    /// `JoinError` from a panicked closure, not a core error, and left in it
+    /// would make this impossible to pass whether or not the fix was made.
+    #[test]
+    fn nothing_the_play_and_settings_pages_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        // Each stop is the next item's own first line, not a shared marker
+        // like `#[tauri::command]`: between two commands this file keeps free
+        // functions that belong to other pages, and stopping at the marker
+        // would drag them in and make the check fail on somebody else's code.
+        let bodies = [
+            (
+                "devices",
+                body_until(src, "async fn devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "read_devices",
+                body_until(src, "fn read_devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "mod_packages",
+                body_until(src, "async fn mod_packages(", "
+struct ModPlanView {"),
+            ),
+            (
+                "stats_submit",
+                body_until(src, "async fn stats_submit(", "
+struct StatsSubmitView {"),
+            ),
+            (
+                "history_without_holding_the_lock",
+                body_until(
+                    src,
+                    "fn history_without_holding_the_lock(",
+                    "
+/// Send whatever is queued",
+                ),
+            ),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            let own = compact.replace(".await.map_err(|e|e.to_string())", "");
+            assert!(
+                !own.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text, so a \
+                 path and an operating system error number reach a page"
+            );
+            assert!(
+                own.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
+    }
+
+    /// Nothing the Online page can reach turns a core error into raw text.
+    ///
+    /// `online.js` renders what these commands reject with, verbatim. Five
+    /// call sites in `dolphin_settings.rs` stringified a
+    /// `reborn_core::Error` -- three of them added by fix wave 1 -- and the
+    /// raw `std::io::Error`s beside them did the same, so a settings file
+    /// another program had open, or a full disk, put a full path and an
+    /// operating system error number on the Online page.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// It scans `dolphin_settings.rs`, a different file from the one this test
+    /// lives in, so the patterns written below are not in what is searched at
+    /// all. That file's own inline test module is cut out as well, by the two
+    /// anchors below, so a future test added there cannot satisfy this either.
+    /// The trailing `.await` pair every `spawn_blocking` command ends with is
+    /// removed before the check: it converts a `JoinError` from a panicked
+    /// closure, which is not a core error, and left in it would make this
+    /// check impossible to pass whether or not the real fix was made.
+    #[test]
+    fn nothing_the_online_page_can_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("dolphin_settings.rs");
+        let before = &src[..src.find("\n#[cfg(test)]").expect("the inline test module moved")];
+        let after_at = src
+            .find("\n/// Start Dolphin with NetPlay configured")
+            .expect("netplay_open's doc comment moved");
+        let production = format!("{before}{}", &src[after_at..]);
+
+        let compact: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        let commands_only = compact.replace(".await.map_err(|e|e.to_string())", "");
+        assert!(
+            !commands_only.contains(".map_err(|e|e.to_string())"),
+            "the Online page still gets a core error's raw Display text, so a locked file \
+             or a full disk puts a path and an error number on the screen"
+        );
+        assert!(
+            !commands_only.contains("Err(e.to_string())"),
+            "the Online page still gets an operating system error's own wording"
+        );
+        assert!(
+            commands_only.contains("player_message"),
+            "no core error on this page is mapped to a sentence at all"
+        );
+    }
+
+    /// The launcher writes a log, and the diagnostic bundle can collect it.
+    ///
+    /// Three fix waves moved technical detail off the screens a player reads
+    /// and said it goes to the log. There was no log: 56 `tracing::warn!` call
+    /// sites and no subscriber anywhere in the workspace, and a `tracing`
+    /// event with no subscriber is dropped. So the detail was not moved, it
+    /// was deleted, and the bundle collected the emulator's log and could not
+    /// collect the launcher's, because there was not one.
+    ///
+    /// That a warning really reaches a file on disk is proved in
+    /// `reborn_core::logging`, against a real file. What is checked here is
+    /// the wiring this binary owns: the window starts the log before anything
+    /// can warn, and the bundle picks the file up.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text stops at the `#[cfg(test)]` that begins this module,
+    /// and `diagnostic_bundle`'s stops at the next `#[tauri::command]`. Both
+    /// cuts are before this test's own line, so the names written below are
+    /// never inside what is searched.
+    #[test]
+    fn the_launcher_writes_a_log_and_the_bundle_collects_it() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        let rest = &src[from..];
+        let main_body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            main_body.contains("logging::start"),
+            "the window never starts a log, so every warning the core raises is dropped \
+             and the detail three fix waves moved off the screen is simply gone"
+        );
+
+        let bundle = command_body(src, "async fn diagnostic_bundle");
+        assert!(
+            bundle.contains("logging::LOG_FILE"),
+            "the bundle collects the emulator's log and not the launcher's, which is the \
+             only place the launcher's own failures are written down"
+        );
+        assert!(
+            bundle.contains("logging::PREVIOUS_LOG_FILE"),
+            "the bundle takes the live log and not the rolled one, so anything that \
+             happened before the log filled is left behind"
+        );
+    }
+
+    /// The launcher's own background send never makes Play refuse.
+    ///
+    /// Both send paths took the single-instance lock and held it for the whole
+    /// network round trip. `Session::run` takes the same lock, and failing, it
+    /// tells the player "Another launcher is already running. Close it first."
+    /// So a player who signed in and then pressed Play was told to close a
+    /// launcher that does not exist, and the game did not start. The client's
+    /// timeout is two minutes per request and a backlog is one request per
+    /// game, so the window was minutes wide.
+    ///
+    /// The two spawn paths fix wave 1 added, `open_runtime` and `netplay_open`,
+    /// hold the same lock, and they are deliberately not in this list: they
+    /// hold it while the emulator is actually open, which is exactly what the
+    /// lock is for and exactly what the message says.
+    #[test]
+    fn a_background_send_never_makes_play_refuse() {
+        let src = include_str!("main.rs");
+        for (name, body) in [
+            ("stats_submit", command_body(src, "async fn stats_submit")),
+            ("send_backlog_in_background", command_body(src, "fn send_backlog_in_background")),
+        ] {
+            assert!(
+                !body.contains("Supervisor::acquire"),
+                "{name} takes the launcher lock itself, so it holds it across the send and \
+                 Play refuses with a launcher that does not exist"
+            );
+            assert!(
+                body.contains("history_without_holding_the_lock"),
+                "{name} no longer reads the session history the one way that gives the \
+                 lock straight back"
+            );
+            assert!(
+                body.contains("auto_submit"),
+                "{name} no longer sends anything at all"
+            );
+        }
+    }
+
+    /// Signing in answers the window before the backlog goes out.
+    ///
+    /// `identity_sign_in_poll` used to save the sign-in and then send the whole
+    /// queue before it returned: one network round trip per game, each with the
+    /// client's full two minute timeout. The window polls this command on an
+    /// interval, so every tick that fired during that wait asked about a device
+    /// code the server had already consumed, and the refusals landed on the
+    /// screen beside the sign-in that had just succeeded.
+    #[test]
+    fn signing_in_answers_the_window_before_the_backlog_is_sent() {
+        let body = command_body(include_str!("main.rs"), "async fn identity_sign_in_poll");
+        assert!(
+            !body.contains("auto_submit"),
+            "the sign-in poll still sends the backlog before it answers, so the window \
+             keeps polling with a code the server has already taken"
+        );
+        assert!(
+            body.contains("send_backlog_in_background"),
+            "signing in no longer starts the backlog send at all"
+        );
+    }
+
+    /// No core error's raw `Display` reaches a player through the launch or
+    /// open-emulator path.
+    ///
+    /// `reborn_core::Error::Io` displays as `io error at {path}: {source}`,
+    /// and every one of these functions used to hand that straight to a
+    /// caller with `.map_err(|e| e.to_string())`: a permission problem or a
+    /// full disk starting a game put a full file path and an operating
+    /// system error number on the Play page, because `home.js` renders
+    /// whatever `launch`, `launch_check` and `open_runtime` hand back with no
+    /// wording of its own. `Error::player_message` lives in `reborn-core`,
+    /// not here, because the window has no logger to put the real detail in
+    /// (see `identity::origin`'s doc comment for the same reasoning); this
+    /// checks that every command on the path actually calls it, once, at the
+    /// boundary all of them share.
+    #[test]
+    fn launch_and_open_runtime_never_turn_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        let bodies: [(&str, &str); 7] = [
+            (
+                "find_runtime_and_game",
+                body_until(src, "\nfn find_runtime_and_game(", "\nfn find_runtime_and_game_for("),
+            ),
+            (
+                "find_runtime_and_game_for",
+                body_until(src, "\nfn find_runtime_and_game_for(", "\n/// The emulator a hint resolves to"),
+            ),
+            (
+                "saved_paths",
+                body_until(src, "\nfn saved_paths(", "\n/// What the shortcuts ask for."),
+            ),
+            (
+                "selected_user_dir",
+                body_until(src, "\nfn selected_user_dir(", "\n#[tauri::command]\nasync fn settings_paths"),
+            ),
+            ("launch_check", inner_body(command_body(src, "async fn launch_check"))),
+            ("launch", inner_body(command_body(src, "async fn launch("))),
+            ("open_runtime", inner_body(command_body(src, "async fn open_runtime"))),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                !compact.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text"
+            );
+        }
+        for name in [
+            "find_runtime_and_game_for",
+            "saved_paths",
+            "selected_user_dir",
+            "launch_check",
+            "launch",
+            "open_runtime",
+        ] {
+            let (_, body) = bodies.iter().find(|(n, _)| *n == name).expect("listed above");
+            assert!(
+                body.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_view_from_a_file_and_from_nothing() {
+        let file = reborn_core::identity::IdentityFile {
+            player: reborn_core::identity::PlayerFacts { id: "p1".into(), display_name: "Adam".into(), avatar_hash: None, show_offline: true },
+            signed_in_at_ms: 1,
+        };
+        let v = identity_view(Some(&file));
+        assert!(v.signed_in);
+        assert_eq!(v.display_name.as_deref(), Some("Adam"));
+        assert_eq!(v.show_offline, Some(true));
+        let none = identity_view(None);
+        assert!(!none.signed_in && none.player_id.is_none());
+    }
 
     #[test]
     fn setup_image_rejects_missing_empty_directory_and_unreadable_content() {
@@ -5197,6 +6080,9 @@ mod tests {
             source_path: None,
             session_id: None,
             summary: None,
+            capture_folder: None,
+            note: None,
+            refusal_code: None,
         }
     }
 
@@ -5291,13 +6177,51 @@ mod tests {
                 reason: QuarantineReason::NoSession,
             }),
         ]);
-        assert_eq!(counts.depth, 2, "only Queued is what a pass would try");
+        assert_eq!(
+            counts.depth, 3,
+            "two queued and one stalled: a pass requeues a stall before it \
+             starts, so all three are what it would try"
+        );
         assert_eq!(counts.accepted, 1);
         assert_eq!(counts.held, 1);
         assert_eq!(counts.rejected, 1);
         assert_eq!(counts.stalled, 1);
         assert_eq!(counts.quarantined, 1);
         assert_eq!(counts.total, 7);
+    }
+
+    /// A stalled capture is a game that was played and has not been delivered.
+    /// The settings panel shows one number, "Waiting to send", and it read zero
+    /// while real games sat there, so nothing on any screen mentioned them.
+    #[test]
+    fn a_stalled_result_is_counted_as_waiting_because_the_next_pass_will_try_it() {
+        let counts = queue_counts(&[entry(EntryState::Stalled {
+            reason: "offline".to_string(),
+        })]);
+        assert_eq!(counts.depth, 1, "the player must be able to see it");
+        assert_eq!(counts.stalled, 1);
+    }
+
+    /// The send note said "Nothing was waiting to be sent" over a queue with
+    /// stalled games in it, which was false.
+    #[test]
+    fn the_send_note_never_says_nothing_was_waiting_when_something_was() {
+        let key = reborn_core::stats::CaptureKey::of_bytes(b"a game that was played");
+        let mut report = reborn_core::stats::SubmitReport::default();
+        report.stalled.push(key.clone());
+        let note = submit_note(&report);
+        assert!(
+            !note.contains("Nothing was waiting"),
+            "a stalled result IS waiting: {note}"
+        );
+        assert!(
+            note.contains("again"),
+            "and it must say it will be tried again: {note}"
+        );
+
+        report.stalled.clear();
+        report.deferred.push(key);
+        assert!(!submit_note(&report).contains("Nothing was waiting"));
     }
 
     /// A file the player customized must never appear in the repair set.

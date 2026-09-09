@@ -161,6 +161,7 @@ const FEATURES = [
           fullscreen: fullscreenValue,
           userDir: get("userDir"),
           modsDisabled: false,
+          leagueMatch: false,
         }),
       },
     ],
@@ -342,7 +343,7 @@ const FEATURES = [
       { cmd: "stats_queue", desc: "Captures waiting to be submitted" },
       {
         cmd: "stats_ingest",
-        desc: "Read LeagueGameStats into the queue",
+        desc: "Read every capture folder into the queue",
         write: true,
         confirm: true,
         inputs: [
@@ -360,17 +361,12 @@ const FEATURES = [
         ],
       },
       {
-        cmd: "stats_credential_set",
-        desc: "Store the league token in the OS credential store. Never shown again",
-        write: true,
-        inputs: [{ key: "token", placeholder: "bearer token" }],
-      },
-      { cmd: "stats_credential_forget", desc: "Remove the stored league token", write: true },
-      {
         cmd: "stats_submit",
-        desc: "Send the queue. Refuses unverified sides",
+        // No confirm box: the command takes no confirm, and sending is what
+        // the queue is for. The server answers a repeat as a duplicate, so a
+        // send that happens twice costs nothing.
+        desc: "Send everything queued. Results the server will not take are kept",
         write: true,
-        confirm: true,
       },
     ],
   },

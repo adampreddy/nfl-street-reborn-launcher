@@ -227,7 +227,7 @@ try {
         Check "you installed the stable launcher" (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) "nothing at $stableDir"
         if (Test-Path (Join-Path $stableDir "reborn-launcher.exe")) {
             Check "it went to Programs, not onto the 2.1 data folder" ($stableDir -like "*\Programs\*")
-            Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
+            Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\NFL Street Reborn Dolphin.exe"))
             Check "the Visual C++ runtime shipped beside Dolphin" (Test-Path (Join-Path $stableDir "runtime\VCRUNTIME140.dll"))
             Check "nothing was installed into the 2.1 folder" (-not (Test-Path (Join-Path $old "reborn-launcher.exe")))
             $s = Run-Ours (Join-Path $stableDir "rebornctl.exe") "status" "status-manual.txt"
@@ -258,7 +258,7 @@ try {
 
         $stableDir = Join-Path $env:LOCALAPPDATA "Programs\NFL Street Reborn"
         Check "stable launcher landed in Programs, not on the 2.1 data folder" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
-        Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\Dolphin.exe"))
+        Check "the runtime shipped beside it" (Test-Path (Join-Path $stableDir "runtime\NFL Street Reborn Dolphin.exe"))
         # All four, not just one. Dolphin imports MSVCP140.dll as well as
         # VCRUNTIME140.dll, and checking a single file meant three of the four
         # could go missing without any test noticing.
@@ -398,7 +398,7 @@ try {
             Check "the update installer exits 0 over the full install" ($code -eq 0)
             Check "the launcher is still in Programs after the update" (Test-Path (Join-Path $stableDir "reborn-launcher.exe"))
             $runtimeAfter = @(Get-ChildItem (Join-Path $stableDir "runtime") -Recurse -File -ErrorAction SilentlyContinue).Count
-            Check "the update kept the runtime" ((Test-Path (Join-Path $stableDir "runtime\Dolphin.exe")) -and ($runtimeAfter -eq $runtimeBefore)) "runtime files before $runtimeBefore, after $runtimeAfter"
+            Check "the update kept the runtime" ((Test-Path (Join-Path $stableDir "runtime\NFL Street Reborn Dolphin.exe")) -and ($runtimeAfter -eq $runtimeBefore)) "runtime files before $runtimeBefore, after $runtimeAfter"
             $texAfter = @(Get-ChildItem $tex -Recurse -File -ErrorAction SilentlyContinue).Count
             Check "the update kept the textures" (($texAfter -eq $texBefore) -and ($texAfter -gt 1000)) "before $texBefore, after $texAfter"
             $importAfter = @(Get-ChildItem (Join-Path $stableDir "game-import") -File -ErrorAction SilentlyContinue).Count

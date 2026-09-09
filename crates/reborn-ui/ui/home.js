@@ -10,6 +10,13 @@ let playing = false;
 let result = null;
 let problem = null;
 let externalSession = false;
+let leagueMatch = false;
+const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null, polling: false };
+
+// Shown when `identity_status` fails, whatever the reason. The same sentence
+// the core uses for the same situation, so a player never sees two wordings
+// for one state.
+const ACCOUNT_UNREADABLE = "Whether you are signed in could not be read just now. Try again in a moment.";
 
 const PRESETS = [
   ["performance", "Performance", "1080p · 3×. ReShade disabled."],
@@ -37,6 +44,7 @@ async function load() {
     home: call("home_state", { runtime: get("runtime"), legacyRoot: get("legacyRoot") }),
     progress: call("onboarding_progress", { legacyRoot: get("legacyRoot") }),
     paths: call("paths"),
+    identity: call("identity_status"),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -65,6 +73,7 @@ async function play() {
       // is what Play has always meant. Turning mods off lives on the mods page
       // and in recovery, not here.
       modsDisabled: false,
+      leagueMatch,
     });
     if (result && result.started === false) { problem = result.message || "The game could not start."; result = null; }
   } catch (e) {
@@ -72,12 +81,77 @@ async function play() {
   }
   playing = false;
   busy = false;
+  leagueMatch = false;
   await load();
   draw();
 }
 
 function ok(x) {
   return x && !x.error;
+}
+
+async function startSignIn() {
+  if (busy || signIn.active) return;
+  signIn.message = null;
+  try {
+    const s = await call("identity_sign_in_start");
+    signIn.active = true; signIn.deviceCode = s.device_code; signIn.userCode = s.user_code;
+    if (!s.opened) signIn.message = `Open ${s.verify_url} in a browser.`;
+    draw();
+    signIn.timer = setInterval(async () => {
+      // One poll at a time. The command does not answer until the sign-in is
+      // saved, and a poll that is still out is the normal case rather than a
+      // rare one. A second poll fired while the first is in flight asks about
+      // a device code the server has already consumed, so it gets a refusal,
+      // and that refusal used to land on the screen next to the sign-in that
+      // was about to succeed.
+      if (signIn.polling || !signIn.active) return;
+      signIn.polling = true;
+      try {
+        const r = await call("identity_sign_in_poll", { deviceCode: signIn.deviceCode });
+        // stopSignIn with no message clears the message, so an earlier
+        // failure cannot sit underneath "Signed in as ...".
+        if (r.state === "done") { stopSignIn(); await refresh(); }
+        else if (r.state === "expired") { stopSignIn("The sign-in code expired. Try again."); draw(); }
+      } catch (e) { stopSignIn(reason(e)); draw(); }
+      finally { signIn.polling = false; }
+    }, Math.max(2, s.interval || 3) * 1000);
+  } catch (e) { signIn.message = reason(e); draw(); }
+}
+
+function stopSignIn(message) {
+  if (signIn.timer) clearInterval(signIn.timer);
+  signIn.timer = null; signIn.active = false; signIn.deviceCode = null; signIn.userCode = null;
+  // Always assigned, never only when there is something to say. Leaving the
+  // old text in place is how a successful sign-in ended up displayed under a
+  // stale "The sign-in code expired." from a poll that raced it.
+  signIn.message = message || null;
+}
+
+function identityCard() {
+  const id = state.identity;
+  const card = el("section", { class: "block play-identity", "aria-label": "Account" });
+  if (signIn.active) {
+    card.append(el("p", { text: `Waiting for Discord. Your code is ${signIn.userCode}.` }));
+    card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
+  } else if (ok(id) && id.signed_in) {
+    card.append(el("p", { text: `Signed in as ${id.display_name}` }));
+  } else {
+    // Never `id.error`. A failed read hands back the command's own name, the
+    // credential vault's wording or a path, and none of that is something a
+    // player can act on. The one sentence covers every way the read can fail,
+    // because from where they are sitting there is no difference between them
+    // and nothing different to do about any of them.
+    card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : ACCOUNT_UNREADABLE }));
+    card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
+  }
+  // In every state, not only when signed in. The sentence written for a
+  // signed-out player -- their game was recorded and is waiting for them to
+  // sign in -- used to be drawn inside the signed-in branch, so the only
+  // person it was written for never saw it.
+  if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
+  if (signIn.message) card.append(el("p", { class: "note", text: signIn.message }));
+  return card;
 }
 
 async function openDolphin() {
@@ -228,6 +302,7 @@ function draw() {
   bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
     el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
   controls.append(bar);
+  controls.append(identityCard());
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });
   for (const [href, title, value] of [
