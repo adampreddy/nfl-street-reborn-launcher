@@ -3472,10 +3472,12 @@ async fn stats_submit(confirm: Option<bool>) -> Result<StatsSubmitView, String> 
     let _ = confirm;
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let Startup::Owner(sup) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else { return Err(already_running()); };
         let url = backend_origin(&p)?;
         let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let history = sup.history().map_err(|e| e.to_string())?;
+        // The lock is read from and given straight back: holding it across the
+        // send is what told a player pressing Play that another launcher was
+        // running, when the only thing running was this send.
+        let history = history_without_holding_the_lock(&p)?;
         match reborn_core::backend::auto_submit(&p, &queue, &history).map_err(|e| e.to_string())? {
             reborn_core::backend::SendAttempt::NotSignedIn => Ok(StatsSubmitView { url, accepted: 0, held: 0, rejected: 0, deferred: 0, stalled: 0, note: "Sign in with Discord to send your results. They are kept until then.".to_string() }),
             reborn_core::backend::SendAttempt::Sent(report) => Ok(StatsSubmitView {
@@ -3760,6 +3762,32 @@ fn backend_origin(p: &Platform) -> Result<String, String> {
     reborn_core::identity::origin(p).map_err(|e| e.to_string())
 }
 
+/// Read the session history, and give the launcher lock straight back.
+///
+/// # Why the lock cannot be held across a send
+///
+/// It is the single-instance lock. `Session::run` takes it and, failing, tells
+/// the player "Another launcher is already running. Close it first." Both send
+/// paths used to hold it for the whole network round trip, and a send is one
+/// request per queued game with a two minute timeout each. So a player who
+/// signed in and then pressed Play was told to close a launcher that does not
+/// exist, and their game did not start.
+///
+/// The history is what the send needs from it: a few lines off disk, read in
+/// microseconds. Two sends never overlapping is a separate promise, kept by
+/// `backend::auto_submit` itself rather than by whoever happens to hold this
+/// lock.
+fn history_without_holding_the_lock(
+    p: &Platform,
+) -> Result<Vec<reborn_core::supervisor::SessionRecord>, String> {
+    let Startup::Owner(sup) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
+        return Err(already_running());
+    };
+    let history = sup.history().map_err(|e| e.to_string())?;
+    drop(sup);
+    Ok(history)
+}
+
 /// Send whatever is queued, without making anybody wait for it.
 ///
 /// Its own thread on purpose. A send is one network round trip per queued
@@ -3774,14 +3802,7 @@ fn send_backlog_in_background() {
     std::thread::spawn(|| {
         let p = Platform::detect();
         let Ok(queue) = StatsQueue::open(&p) else { return };
-        // The lock is taken for the session history and given straight back.
-        // Holding it across the send is what made Play refuse to start with
-        // "Another launcher is already running", about this launcher's own
-        // background work.
-        let history = match Supervisor::acquire(&p) {
-            Ok(Startup::Owner(sup)) => sup.history().unwrap_or_default(),
-            _ => return,
-        };
+        let Ok(history) = history_without_holding_the_lock(&p) else { return };
         let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
     });
 }
@@ -5255,6 +5276,44 @@ mod tests {
                 guard < collect,
                 "{name} collects results outside the guard that keeps a second \
                  session from starting in the middle of it"
+            );
+        }
+    }
+
+    /// The launcher's own background send never makes Play refuse.
+    ///
+    /// Both send paths took the single-instance lock and held it for the whole
+    /// network round trip. `Session::run` takes the same lock, and failing, it
+    /// tells the player "Another launcher is already running. Close it first."
+    /// So a player who signed in and then pressed Play was told to close a
+    /// launcher that does not exist, and the game did not start. The client's
+    /// timeout is two minutes per request and a backlog is one request per
+    /// game, so the window was minutes wide.
+    ///
+    /// The two spawn paths fix wave 1 added, `open_runtime` and `netplay_open`,
+    /// hold the same lock, and they are deliberately not in this list: they
+    /// hold it while the emulator is actually open, which is exactly what the
+    /// lock is for and exactly what the message says.
+    #[test]
+    fn a_background_send_never_makes_play_refuse() {
+        let src = include_str!("main.rs");
+        for (name, body) in [
+            ("stats_submit", command_body(src, "async fn stats_submit")),
+            ("send_backlog_in_background", command_body(src, "fn send_backlog_in_background")),
+        ] {
+            assert!(
+                !body.contains("Supervisor::acquire"),
+                "{name} takes the launcher lock itself, so it holds it across the send and \
+                 Play refuses with a launcher that does not exist"
+            );
+            assert!(
+                body.contains("history_without_holding_the_lock"),
+                "{name} no longer reads the session history the one way that gives the \
+                 lock straight back"
+            );
+            assert!(
+                body.contains("auto_submit"),
+                "{name} no longer sends anything at all"
             );
         }
     }

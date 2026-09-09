@@ -726,8 +726,12 @@ impl Session {
             }));
         }
 
-        // The lock, before anything is written or started.
-        let Startup::Owner(supervisor) = Supervisor::acquire(platform)? else {
+        // The lock, before anything is written or started, and waited for
+        // rather than refused outright. The launcher takes this same lock for
+        // its own background work; telling a player to close a launcher that
+        // does not exist, and not starting their game, is the worse answer.
+        // See [`Supervisor::acquire_waiting`].
+        let Startup::Owner(supervisor) = Supervisor::acquire_waiting(platform)? else {
             return Ok(Launched::Refused(Refusal::AlreadyRunning));
         };
         let _ = supervisor.recover_unfinished()?;

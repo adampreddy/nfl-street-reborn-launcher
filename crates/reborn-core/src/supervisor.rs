@@ -213,6 +213,14 @@ impl SessionRecord {
 
 /// Filenames under the run directory. Named here so nothing else guesses them.
 const LOCK_FILE: &str = "launcher.lock";
+
+/// How long a launch waits for a lock before it believes the refusal.
+///
+/// Long enough to cover this launcher giving its own lock back, short enough
+/// that a person who really does have two copies open is told so while they
+/// are still looking at the button they pressed.
+const LOCK_WAIT_MS: u64 = 3_000;
+const LOCK_POLL_MS: u64 = 25;
 const CURRENT_SESSION: &str = "current-session.json";
 const SESSION_LOG: &str = "sessions.jsonl";
 
@@ -245,6 +253,48 @@ impl Supervisor {
     /// released by the operating system if this process dies.
     pub fn acquire(platform: &Platform) -> Result<Startup> {
         Self::acquire_in(platform, SystemClock)
+    }
+
+    /// As [`Supervisor::acquire`], but wait a moment for a lock that is about
+    /// to be given back.
+    ///
+    /// # Why a launch waits and nothing else does
+    ///
+    /// A lock this launcher cannot take becomes [`crate::session::Refusal::AlreadyRunning`],
+    /// which tells the player "Another launcher is already running. Close it
+    /// first." That is true when a second copy really is open. It is not true
+    /// when the thing holding the lock is this launcher's own background work,
+    /// and a player who is told to close a launcher that does not exist has
+    /// nothing they can do: the game simply does not start.
+    ///
+    /// The background work no longer holds the lock across anything slow, so
+    /// the window is milliseconds. This closes it anyway. A launch is a thing
+    /// a person just asked for, and a moment's wait is a better answer than a
+    /// refusal that is not true. Everything else still refuses immediately,
+    /// because everything else is a screen that can say "not now" without
+    /// costing anyone a game.
+    pub fn acquire_waiting(platform: &Platform) -> Result<Startup> {
+        let run_dir = platform.paths.data_root()?.join(DataDir::Cache.relative());
+        Self::acquire_waiting_at(platform, &run_dir)
+    }
+
+    /// As [`Supervisor::acquire_waiting`], rooted at an explicit directory.
+    pub fn acquire_waiting_at(platform: &Platform, run_dir: &Path) -> Result<Startup> {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(LOCK_WAIT_MS);
+        loop {
+            match Self::acquire_at(platform, run_dir, SystemClock)? {
+                Startup::Owner(owner) => return Ok(Startup::Owner(owner)),
+                // A real second launcher still gets the honest answer, a few
+                // seconds later than it used to.
+                busy @ Startup::AlreadyRunning { .. } => {
+                    if std::time::Instant::now() >= deadline {
+                        return Ok(busy);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(LOCK_POLL_MS));
+                }
+            }
+        }
     }
 
     /// As [`Supervisor::acquire`], with an injected clock.
@@ -465,6 +515,45 @@ mod tests {
         assert!(
             matches!(second, Startup::AlreadyRunning { .. }),
             "two launchers must not both own the install"
+        );
+    }
+
+    /// A lock that is about to be given back is waited for, not refused.
+    ///
+    /// `Session::run` turns a lock it cannot take into
+    /// `Refusal::AlreadyRunning`, whose message is "Another launcher is already
+    /// running. Close it first." The launcher takes the same lock for its own
+    /// background work, so a player who pressed Play at the wrong moment was
+    /// told to close a launcher that does not exist, and the game did not
+    /// start.
+    ///
+    /// The background work no longer holds the lock across anything slow, so
+    /// the remaining window is milliseconds wide. This closes it anyway: a
+    /// launch is a thing a person just asked for, and a moment's wait is a
+    /// better answer than a refusal that is not true.
+    #[test]
+    fn a_lock_that_is_about_to_be_given_back_is_waited_for_rather_than_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = platform();
+        let held = Supervisor::acquire_at(&p, dir.path(), SystemClock).unwrap();
+        assert!(matches!(held, Startup::Owner(_)));
+
+        // Without waiting, this is an immediate refusal.
+        assert!(matches!(
+            Supervisor::acquire_at(&p, dir.path(), SystemClock).unwrap(),
+            Startup::AlreadyRunning { .. }
+        ));
+
+        let run_dir = dir.path().to_path_buf();
+        let waiter = std::thread::spawn(move || {
+            let p = Platform::detect();
+            Supervisor::acquire_waiting_at(&p, &run_dir).unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(held);
+        assert!(
+            matches!(waiter.join().unwrap(), Startup::Owner(_)),
+            "a launch was refused over a lock the launcher itself was giving back"
         );
     }
 

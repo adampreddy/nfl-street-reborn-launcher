@@ -280,8 +280,29 @@ pub enum SendAttempt {
     Sent(SubmitReport),
 }
 
+/// One send at a time in this process.
+///
+/// The single-instance lock used to do this job by accident, because every
+/// caller held it across the whole send. It cannot any more: holding it across
+/// a network round trip made a player pressing Play be told that another
+/// launcher was running, when the only thing holding the lock was this
+/// launcher's own background send.
+///
+/// So the serialization is stated rather than borrowed. Two passes over the
+/// same queue at the same time would each read the same pending entries and
+/// each post them, and while the server answers a repeat as a duplicate, a
+/// game reaching it twice is not a thing to leave to the server's manners.
+static ONE_SEND_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Send everything queued, if a token is stored. Clears the token when the server refuses it.
+///
+/// Serialized against every other send in this process; see
+/// [`ONE_SEND_AT_A_TIME`]. Call it without holding the single-instance lock.
 pub fn auto_submit(platform: &Platform, queue: &StatsQueue, history: &[SessionRecord]) -> Result<SendAttempt> {
+    // A poisoned mutex means a previous send panicked. The queue is durable
+    // and every entry is still exactly where it was, so the right answer is to
+    // carry on rather than refuse every send from here on.
+    let _one_at_a_time = ONE_SEND_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let Some(token) = identity::token(platform)? else { return Ok(SendAttempt::NotSignedIn) };
     let origin = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?
         .backend_origin
