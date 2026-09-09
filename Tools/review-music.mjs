@@ -21,7 +21,7 @@ slots[20] = slot(21, { title: "Un-thinkable (I'm Ready)", artist: "Alicia Keys",
 slots[19] = slot(20, { title: "Ground Zero", artist: "Cole Brown", album: "Street's Disciple", duration_ms: 237_000, source: "pack", source_name: "friend.nsrmusic" });
 slots[2] = slot(3, { pending: { kind: "original", title: "", artist: "", album: "" } });
 const status = {
-  phase: "idle", progress: null, enabled: true, base: { kind: "original", name: null }, slots,
+  phase: process.env.PHASE || "idle", progress: null, enabled: true, base: { kind: "original", name: null }, slots,
   pending_count: 1, note: "", image_ok: true, image_note: "", limit_seconds: 380, formats: ["mp3", "m4a", "flac", "ogg", "wav", "aiff"],
 };
 const inspect = {
@@ -36,7 +36,7 @@ const inspect = {
 };
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const page = await browser.newPage({ viewport: { width: Number(process.env.W || 1280), height: Number(process.env.H || 900) } });
 await page.route("http://music.test/**", (route) => {
   const url = new URL(route.request().url());
   const rel = decodeURIComponent(url.pathname === "/" ? "/music.html" : url.pathname);
@@ -63,6 +63,20 @@ await page.addInitScript(({ status, inspect }) => {
 await page.goto("http://music.test/music.html");
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${OUT}/music-grid.png`, fullPage: true });
+console.log("screen:", await page.evaluate(() => { const s = getComputedStyle(document.getElementById("screen")); const m = getComputedStyle(document.querySelector("main")); return { screenDisplay: s.display, screenCols: s.gridTemplateColumns, screenFlex: s.flexDirection, screenWrap: s.flexWrap, mainDisplay: m.display, mainCols: m.gridTemplateColumns, mainFlex: m.flexDirection, mainWrap: m.flexWrap, screenWidth: document.getElementById("screen").clientWidth }; }));
+if (process.env.RULES) {
+  console.log("rules:", await page.evaluate(() => {
+    const el = document.getElementById("screen");
+    const out = [];
+    for (const ss of document.styleSheets) {
+      let rules = [];
+      try { rules = [...ss.cssRules]; } catch (_) { continue; }
+      const walk = (list, media) => { for (const r of list) { if (r.cssRules && r.media) walk([...r.cssRules], r.media.mediaText); else if (r.selectorText && r.style && (r.style.display || r.style.gridTemplateColumns)) { try { if (el.matches(r.selectorText)) out.push(`${ss.href?.split("/").pop()} ${media ? "@" + media + " " : ""}${r.selectorText} {display:${r.style.display}; cols:${r.style.gridTemplateColumns}}`); } catch (_) {} } } };
+      walk(rules, "");
+    }
+    return out;
+  }));
+}
 await page.getByRole("button", { name: "Add a song", exact: true }).click();
 await page.waitForTimeout(200);
 await page.getByRole("button", { name: "Choose a file" }).click();

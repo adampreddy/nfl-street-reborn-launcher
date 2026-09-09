@@ -937,6 +937,64 @@ fn package_kind(dir: &Path) -> Option<String> {
     v.get("kind").and_then(|k| k.as_str()).map(str::to_string)
 }
 
+/// Soundtrack packages under `mods/packages`: schema `nsr.soundtrack-mod.v1`,
+/// one `.nsrmusic` (or an empty pack.json for the original soundtrack) instead
+/// of textures. The composition loader refuses them by design, so they are
+/// read raw here, listed beside the texture packages, and switched through
+/// the soundtrack record rather than activation.json. Returns the entries and
+/// the `unreadable` list with their loader complaints removed.
+fn read_soundtrack_packages(root: &Path, unreadable: Vec<String>, data_root: &Path) -> (Vec<PackageEntryView>, Vec<String>) {
+    use reborn_core::soundtrack::state::{Base, Soundtrack};
+    let record = Soundtrack::load(data_root).ok();
+    let mut found = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let Ok(ids) = std::fs::read_dir(root) else { return (found, unreadable) };
+    for id_entry in ids.flatten() {
+        let Ok(versions) = std::fs::read_dir(id_entry.path()) else { continue };
+        for version_entry in versions.flatten() {
+            let dir = version_entry.path();
+            let Ok(raw) = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)) else { continue };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else { continue };
+            if v.get("schema").and_then(|x| x.as_str()) != Some("nsr.soundtrack-mod.v1") {
+                continue;
+            }
+            let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let (id, version) = (get("id"), get("version"));
+            if id.is_empty() || version.is_empty() {
+                continue;
+            }
+            let files = v.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+            let bytes: u64 = files.iter().filter_map(|f| f.get("bytes").and_then(|b| b.as_u64())).sum();
+            let has_songs = files.iter().any(|f| f.get("path").and_then(|p| p.as_str()).map(|p| p.ends_with(".nsrmusic")).unwrap_or(false));
+            // Active means "this is the soundtrack base": the package with a
+            // pack when the record names it, the original when the base is stock.
+            let active = match record.as_ref().map(|r| &r.base) {
+                Some(Base::Package { id: bid, version: bver, .. }) => *bid == id && *bver == version,
+                Some(Base::Stock) => !has_songs,
+                None => !has_songs,
+            };
+            found.push(PackageEntryView {
+                id,
+                version,
+                name: get("name"),
+                targets: Vec::new(),
+                conflict_group: Some("soundtrack".to_string()),
+                files: files.len(),
+                bytes,
+                active,
+                kind: Some("soundtrack".to_string()),
+            });
+            dirs.push(dir);
+        }
+    }
+    found.sort_by(|a, b| (a.id.as_str(), a.version.as_str()).cmp(&(b.id.as_str(), b.version.as_str())));
+    let unreadable = unreadable
+        .into_iter()
+        .filter(|line| !dirs.iter().any(|d| line.starts_with(&d.display().to_string())))
+        .collect();
+    (found, unreadable)
+}
+
 /// A soundtrack package switched on or off: set the soundtrack base and
 /// rebuild the disc now, under the launch guard. Returns the sentence to show.
 ///
@@ -1038,6 +1096,8 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
         let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
+        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+        let (soundtracks, unreadable) = read_soundtrack_packages(&root, unreadable, &data_root);
 
         // Per game, because exclusivity is a fact about a composed tree and two
         // packages that collide on one build may not both target another. Every
@@ -1051,6 +1111,13 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
             }
         }
         let mut exclusive: Vec<ExclusiveGroupView> = Vec::new();
+        if soundtracks.len() > 1 {
+            exclusive.push(ExclusiveGroupView {
+                members: soundtracks.iter().map(|s| s.id.clone()).collect(),
+                example_path: None,
+                computed: false,
+            });
+        }
         for game in &builds {
             for group in reborn_core::mods::exclusive_groups(&packages, game) {
                 let members: Vec<String> = group.members.iter().map(|m| m.to_string()).collect();
@@ -1097,6 +1164,7 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
                         .any(|a| a.id == pkg.id && a.version == pkg.version),
                     kind: package_kind(&root.join(pkg.id.as_str()).join(pkg.version.as_str())),
                 })
+                .chain(soundtracks)
                 .collect(),
             unreadable,
             activation: activation
@@ -1377,8 +1445,35 @@ async fn mods_toggle(
         let p = Platform::detect();
         let id = ModId::parse(&id).map_err(|e| e.to_string())?;
         let version = PackageVersion::parse(&version).map_err(|e| e.to_string())?;
-        let (id_text, version_text) = (id.as_str().to_string(), version.as_str().to_string());
         let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+
+        // A soundtrack package changes the disc, not the texture tree, and is
+        // never listed in activation.json: the soundtrack record is its state.
+        let dir = root.join(id.as_str()).join(version.as_str());
+        if package_kind(&dir).as_deref() == Some("soundtrack") {
+            if !dir.join(reborn_core::mods::PACKAGE_MANIFEST).is_file() {
+                return Err(format!("{} is not an installed package, so it cannot be switched.", dir.display()));
+            }
+            let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+            let note = soundtrack_switch(&data_root, &dir, id.as_str(), version.as_str(), on)?;
+            return Ok(ModSyncView {
+                game: GameBuild::Offline.game_id().to_string(),
+                synced: true,
+                refusal: None,
+                note: note.clone(),
+                active: Vec::new(),
+                missing: Vec::new(),
+                tree: None,
+                entries: 0,
+                overlaid: 0,
+                link: None,
+                link_at: None,
+                moved_aside: None,
+                composed_root: None,
+                soundtrack_note: Some(note),
+            });
+        }
+
         let activation_path =
             reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
         let mut activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
@@ -1413,15 +1508,7 @@ async fn mods_toggle(
         }
         activation.save(&activation_path).map_err(|e| e.to_string())?;
 
-        let mut view = sync_active_now(&p, runtime.as_deref())?;
-        // A soundtrack package changes the disc, not the texture tree.
-        let dir = root.join(&id_text).join(&version_text);
-        if package_kind(&dir).as_deref() == Some("soundtrack") {
-            let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
-            let note = soundtrack_switch(&data_root, &dir, &id_text, &version_text, on)?;
-            view.soundtrack_note = Some(note);
-        }
-        Ok(view)
+        sync_active_now(&p, runtime.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?

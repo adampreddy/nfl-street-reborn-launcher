@@ -1,5 +1,10 @@
 /* The Music page: built on the store's cards, tabs and dialog (finish.css).
    Only what the page adds lives here. */
+/* launcher.css lays every non-home #screen out as a grid (body.shell:not(.page-home)
+   #screen); at the launcher's width that becomes two columns. This page is one
+   column of blocks at every width, at the same specificity, later in the cascade. */
+body.shell.page-music #screen{display:flex;flex-direction:column;gap:20px;grid-template-columns:none}
+body.shell.page-music #screen>*{width:100%;box-sizing:border-box}
 .music-head .music-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .music-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .music-row input[type=search]{flex:1;min-width:180px}

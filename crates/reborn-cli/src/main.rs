@@ -5287,6 +5287,30 @@ enum MusicCommand {
         #[arg(long)]
         data_root: Option<PathBuf>,
     },
+    /// Build the NFL Street 1 soundtrack pack from the extracted disc files
+    /// (DolphinTool extract of the NFL Street (USA) image).
+    PackFromStreet1 {
+        /// The extracted disc's `files` directory (femusic.dat, template.dat).
+        #[arg(long)]
+        disc_files: PathBuf,
+        /// The pristine NFL Street 2 image; its pathfind.dat supplies the PT
+        /// headers each slot is encoded with.
+        #[arg(long)]
+        pristine_iso: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Write the two soundtrack mod packages (original, NFL Street 1) as a
+    /// mods/packages tree ready to publish.
+    SoundtrackPackages {
+        /// The .nsrmusic built by pack-from-street1.
+        #[arg(long)]
+        pack: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+    },
     /// Write the staged slots into a dev root tree (pathfind.dat, template.dat)
     /// and stop, so tools/build_iso_fields.py stays the disc builder there.
     WriteTree {
@@ -5524,6 +5548,29 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
                 },
             )?;
             println!("Staged into slot {slot}: {} , {} ({}). Run: rebornctl music apply", entry.title, entry.artist, entry.duration_ms.map(|d| format!("{}:{:02}", d / 60_000, (d / 1000) % 60)).unwrap_or_default());
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::PackFromStreet1 { disc_files, pristine_iso, out } => {
+            use reborn_core::soundtrack::{gcm, street1};
+            let disc = gcm::Disc::open(&pristine_iso)?;
+            let pf = disc.read_file("pathfind.dat")?;
+            let report = street1::build_pack(&disc_files, &pf, &out, &mut |k, n| println!("Encoding song {} of {n}", k + 1))?;
+            println!();
+            for (slot, title, artist, ms) in &report.songs {
+                println!("  slot {slot:>2}: {title} , {artist}  {}:{:02}", ms / 60_000, (ms / 1000) % 60);
+            }
+            for (slot, title, why) in &report.skipped {
+                println!("  slot {slot:>2}: {title} SKIPPED: {why}");
+            }
+            println!("Wrote {} ({} songs, {} bytes)", out.display(), report.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            Ok(if report.songs.is_empty() { PROBLEM } else { std::process::ExitCode::SUCCESS })
+        }
+        MusicCommand::SoundtrackPackages { pack, out_dir, version } => {
+            reborn_core::soundtrack::street1::write_packages(&pack, &out_dir, &version)?;
+            for id in ["reborn.soundtrack.original", "reborn.soundtrack.nfl-street-1"] {
+                let dir = out_dir.join(id).join(&version);
+                println!("{}: {}", id, if dir.join("package.json").is_file() { "written" } else { "MISSING" });
+            }
             Ok(std::process::ExitCode::SUCCESS)
         }
         MusicCommand::WriteTree { tree, data_root } => {
