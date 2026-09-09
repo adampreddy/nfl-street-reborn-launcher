@@ -176,14 +176,62 @@ pub enum PublishCommand {
         #[arg(long)]
         apply: bool,
     },
-    /// Keep the site's API token in the platform credential vault, so
-    /// `publish roster` can fetch a login-only export without the token ever
-    /// appearing on a command line or in a file the repository could see.
+    /// Upload the origin's plan to the bucket: every blob, then every
+    /// component manifest, then the two release files, in that order, and
+    /// read back what the public host serves once it is all up.
+    Upload {
+        /// The origin directory to upload.
+        #[arg(long)]
+        origin: PathBuf,
+        /// Overrides the production R2 endpoint. For pointing this run at a
+        /// stand-in instead of the real bucket.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Overrides the production bucket name. For pointing this run at a
+        /// stand-in instead of the real bucket.
+        #[arg(long)]
+        bucket: Option<String>,
+        /// The public host the read-back reads from after the upload.
+        /// Defaults to the production CDN.
+        #[arg(long)]
+        public_base: Option<String>,
+        /// Write. Without this, every object the plan would send is listed
+        /// and its size is given, and nothing is uploaded.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// What the bucket serves, what this local origin holds, what the
+    /// launcher's own update channel serves, and the gap between the first
+    /// two.
+    Status {
+        /// The local origin to read. Defaults to `C:\Reborn Origin`.
+        #[arg(long)]
+        origin: Option<PathBuf>,
+        /// The bucket's public host. Defaults to the production CDN.
+        #[arg(long)]
+        origin_base: Option<String>,
+        /// The launcher's own update manifest. Defaults to the production one.
+        #[arg(long)]
+        launcher: Option<String>,
+    },
+    /// Keep the site's API token and the bucket's R2 write credentials in
+    /// the platform credential vault, so `publish roster` and `publish
+    /// upload` never need a secret typed on a command line or sitting in a
+    /// file the repository could see.
     Token {
-        /// A file holding the token. Read once; delete it afterwards.
+        /// A file holding the site's API token. Read once; delete it
+        /// afterwards.
         #[arg(long)]
         from_file: Option<PathBuf>,
-        /// Remove the stored token.
+        /// A file holding the R2 access key id. Read once; delete it
+        /// afterwards.
+        #[arg(long)]
+        r2_access_from_file: Option<PathBuf>,
+        /// A file holding the R2 secret access key. Read once; delete it
+        /// afterwards.
+        #[arg(long)]
+        r2_secret_from_file: Option<PathBuf>,
+        /// Remove the stored site token. Does not touch the R2 credentials.
         #[arg(long)]
         forget: bool,
     },
@@ -195,8 +243,21 @@ use reborn_core::publish::game_patch::{publish_game_patch, GamePatchRequest};
 use reborn_core::publish::keys::keygen;
 use reborn_core::publish::release::{release, Pin, ReleaseRequest};
 use reborn_core::publish::roster::{publish_roster, RosterRequest};
-use reborn_core::publish::vault::{forget_site_token, site_token, store_site_token, SITE_TOKEN_ACCOUNT};
-use reborn_core::publish::{Channel, Event, Outcome};
+use reborn_core::publish::status::{read_status, PendingReason, Status};
+use reborn_core::publish::upload::{
+    object_path, plan_origin, sign, upload as run_upload, Body, Transport, UploadRequest, UreqTransport,
+    DEFAULT_ATTEMPTS, DEFAULT_MULTIPART_THRESHOLD, DEFAULT_PART_SIZE, UNSIGNED_PAYLOAD,
+};
+use reborn_core::publish::vault::{
+    bucket as vault_bucket, forget_site_token, r2_access, r2_secret, site_token, store_r2_access, store_r2_secret,
+    store_site_token, R2_ACCESS_ACCOUNT, R2_SECRET_ACCOUNT, SITE_TOKEN_ACCOUNT,
+};
+use reborn_core::publish::{Channel, Event, Outcome, Sink};
+use reborn_core::signing::Ed25519Verifier;
+
+/// The local origin `publish status` reads when `--origin` is not given:
+/// where every publish from this machine has actually landed.
+const DEFAULT_LOCAL_ORIGIN: &str = r"C:\Reborn Origin";
 
 use super::{misuse, ScanLog, OK, PROBLEM};
 
@@ -349,37 +410,236 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             let log = ScanLog::new();
             Ok(exit_of(&publish_game_patch(&platform, &req, &log as &dyn ScanObserver, &mut sink)?))
         }
-        PublishCommand::Token { from_file, forget } => token_command(from_file.as_deref(), forget),
+        PublishCommand::Upload {
+            origin,
+            endpoint,
+            bucket,
+            public_base,
+            apply,
+        } => upload_command(&origin, endpoint.as_deref(), bucket.as_deref(), public_base.as_deref(), apply, &mut sink),
+        PublishCommand::Status { origin, origin_base, launcher } => {
+            status_command(origin.as_deref(), origin_base.as_deref(), launcher.as_deref())
+        }
+        PublishCommand::Token {
+            from_file,
+            r2_access_from_file,
+            r2_secret_from_file,
+            forget,
+        } => token_command(from_file.as_deref(), r2_access_from_file.as_deref(), r2_secret_from_file.as_deref(), forget),
     }
 }
 
-/// Store or forget the site's API token in the platform vault.
-fn token_command(from_file: Option<&Path>, forget: bool) -> reborn_core::Result<std::process::ExitCode> {
+/// Build the bucket to upload to (the vault's credentials, with `--endpoint`
+/// and `--bucket` overriding its address), plan the origin against what the
+/// bucket already holds, and upload it.
+fn upload_command(
+    origin: &Path,
+    endpoint: Option<&str>,
+    bucket_name: Option<&str>,
+    public_base: Option<&str>,
+    apply: bool,
+    sink: Sink<'_>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    let platform = reborn_core::Platform::detect();
+    let Some(mut bucket) = vault_bucket(&platform)? else {
+        eprintln!("R2 credentials are not stored in the vault ({R2_ACCESS_ACCOUNT}, {R2_SECRET_ACCOUNT}).");
+        eprintln!("Run these first; neither value is ever typed on this command line:");
+        eprintln!("  rebornctl publish token --r2-access-from-file <file>");
+        eprintln!("  rebornctl publish token --r2-secret-from-file <file>");
+        return Ok(misuse());
+    };
+    if let Some(e) = endpoint {
+        bucket.endpoint = e.to_string();
+    }
+    if let Some(b) = bucket_name {
+        bucket.bucket = b.to_string();
+    }
+
+    let transport = UreqTransport::new();
+    let already = |key: &str| -> Option<u64> { head_length(&transport, &bucket, key) };
+    let plan = plan_origin(origin, &already)?;
+
+    let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
+    let public_base = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
+    let req = UploadRequest {
+        bucket: &bucket,
+        plan: &plan,
+        multipart_threshold: DEFAULT_MULTIPART_THRESHOLD,
+        part_size: DEFAULT_PART_SIZE,
+        attempts: DEFAULT_ATTEMPTS,
+        public_base: Some(&public_base),
+        apply,
+    };
+    Ok(exit_of(&run_upload(&transport, &http, &req, sink)?))
+}
+
+/// Whether `key` is already on the bucket, and at what length, checked with
+/// a signed `HEAD` -- the same request an unmodified S3-compatible server
+/// answers for any object it holds, whether or not it was ever downloaded.
+/// A transport failure or a non-2xx reply is `None`, which only ever costs a
+/// redundant (and harmless: every upload here is content-addressed or an
+/// always-resent release file) re-upload of something already present, never
+/// a wrong answer that skips something the bucket does not actually have.
+fn head_length(transport: &dyn Transport, bucket: &reborn_core::publish::upload::Bucket, key: &str) -> Option<u64> {
+    let now = std::time::SystemTime::now();
+    let path = object_path(bucket, key);
+    let req = sign(bucket, "HEAD", &path, &[], &[], UNSIGNED_PAYLOAD, now);
+    let reply = transport.send(&req, Body::Empty).ok()?;
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    reply
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse::<u64>().ok())
+}
+
+/// Read the bucket, the local origin and the launcher channel, print the
+/// picture, and exit non-zero only when something could not be read or
+/// verified. `pending` work is informational, not a problem: it is exactly
+/// what this command exists to surface.
+fn status_command(origin: Option<&Path>, origin_base: Option<&str>, launcher: Option<&str>) -> reborn_core::Result<std::process::ExitCode> {
+    let origin = origin.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(DEFAULT_LOCAL_ORIGIN));
+    let origin_base = origin_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
+    let launcher = launcher.map(str::to_string).unwrap_or_else(|| reborn_core::update::DEFAULT_SOURCE.to_string());
+
+    let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
+    let verifier = Ed25519Verifier::embedded();
+    let status = read_status(&http, &origin, &origin_base, &launcher, &verifier);
+    print_status(&status);
+    Ok(if status.problems.is_empty() { OK } else { PROBLEM })
+}
+
+fn print_status(status: &Status) {
+    match &status.local {
+        Some(local) => {
+            println!("Local origin    {} sequence {}", local.version, local.sequence);
+            for (id, version) in &local.pins {
+                println!("                pin   {:<14} {version}", id.as_str());
+            }
+            for (id, version, sequence) in &local.components_on_disk {
+                if !local.pins.iter().any(|(pid, pv)| pid == id && pv == version) {
+                    println!("                on disk, unpinned  {:<14} {version} (sequence {sequence})", id.as_str());
+                }
+            }
+        }
+        None => println!("Local origin    could not be read; see problems below"),
+    }
+    println!();
+    match &status.hosted {
+        Some(hosted) => {
+            println!(
+                "Hosted release  {} sequence {} ({})",
+                hosted.version,
+                hosted.sequence,
+                if hosted.verified { "signature verified" } else { "SIGNATURE NOT VERIFIED" }
+            );
+            for (id, version) in &hosted.pins {
+                println!("                pin   {:<14} {version}", id.as_str());
+            }
+        }
+        None => println!("Hosted release  could not be read; see problems below"),
+    }
+    println!();
+    match &status.launcher {
+        Some(launcher) => println!(
+            "Launcher        {} ({}, {} byte(s))",
+            launcher.version, launcher.file_name, launcher.bytes
+        ),
+        None => println!("Launcher        could not be read; see problems below"),
+    }
+    println!();
+    if status.pending.is_empty() {
+        println!("Pending         nothing; the bucket serves every pin this local origin has signed.");
+    } else {
+        println!("Pending         {} component(s):", status.pending.len());
+        for p in &status.pending {
+            let reason = match p.reason {
+                PendingReason::NotServed => "the bucket does not serve it at all",
+                PendingReason::OlderOnBucket => "the bucket serves an older version, with no newer local sequence to explain it",
+                PendingReason::LocalReleaseNewer => "a newer local release has not been uploaded yet",
+            };
+            println!(
+                "                {:<14} local {}  hosted {}  ({reason})",
+                p.component.as_str(),
+                p.local,
+                p.hosted.as_deref().unwrap_or("(none)")
+            );
+        }
+    }
+    if !status.problems.is_empty() {
+        println!();
+        println!("Problems:");
+        for line in &status.problems {
+            println!("  {line}");
+        }
+    }
+}
+
+/// Store or forget the site token, and store the two R2 credential halves,
+/// in the platform vault. With no flag at all, report each of the three as
+/// "stored" or "missing" and nothing else: never a length, never a value.
+fn token_command(
+    from_file: Option<&Path>,
+    r2_access_from_file: Option<&Path>,
+    r2_secret_from_file: Option<&Path>,
+    forget: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
     let platform = reborn_core::Platform::detect();
     if forget {
         forget_site_token(&platform)?;
         println!("Forgot the site token ({SITE_TOKEN_ACCOUNT}).");
         return Ok(OK);
     }
-    let Some(path) = from_file else {
-        let present = site_token(&platform)?.is_some();
-        println!(
-            "Site token ({SITE_TOKEN_ACCOUNT}): {}. Pass --from-file <file> to set it, --forget to remove it.",
-            if present { "stored" } else { "not stored" }
-        );
-        return Ok(OK);
+
+    let mut stored_anything = false;
+    let mut bad_file = false;
+
+    let mut try_store = |path: Option<&Path>, label: &str, account: &str, store: &dyn Fn(&str) -> reborn_core::Result<()>| -> reborn_core::Result<()> {
+        let Some(path) = path else { return Ok(()) };
+        if store_one_line_secret(path, store)? {
+            println!("{label} ({account}): stored.");
+            stored_anything = true;
+        } else {
+            println!("{} does not hold one value on one line. Nothing was stored.", path.display());
+            bad_file = true;
+        }
+        Ok(())
     };
-    let text = std::fs::read_to_string(path).map_err(|e| reborn_core::Error::Io { path: path.to_path_buf(), source: e })?;
-    let token = text.trim();
-    if token.is_empty() || token.chars().any(char::is_whitespace) {
-        println!("{} does not hold one token on one line. Nothing was stored.", path.display());
+    try_store(from_file, "Site token", SITE_TOKEN_ACCOUNT, &|v| store_site_token(&platform, v))?;
+    try_store(r2_access_from_file, "R2 access key id", R2_ACCESS_ACCOUNT, &|v| store_r2_access(&platform, v))?;
+    try_store(r2_secret_from_file, "R2 secret access key", R2_SECRET_ACCOUNT, &|v| store_r2_secret(&platform, v))?;
+
+    if bad_file {
         return Ok(PROBLEM);
     }
-    store_site_token(&platform, token)?;
-    println!(
-        "Stored the site token ({SITE_TOKEN_ACCOUNT}), {} characters. Delete {} now; the vault is its home.",
-        token.len(),
-        path.display()
-    );
+    if stored_anything {
+        return Ok(OK);
+    }
+
+    let site = site_token(&platform)?.is_some();
+    let access = r2_access(&platform)?.is_some();
+    let secret = r2_secret(&platform)?.is_some();
+    println!("Site token           ({SITE_TOKEN_ACCOUNT}): {}", if site { "stored" } else { "missing" });
+    println!("R2 access key id     ({R2_ACCESS_ACCOUNT}): {}", if access { "stored" } else { "missing" });
+    println!("R2 secret access key ({R2_SECRET_ACCOUNT}): {}", if secret { "stored" } else { "missing" });
+    println!();
+    println!("Pass --from-file, --r2-access-from-file, or --r2-secret-from-file <file> to set one,");
+    println!("--forget to remove the site token.");
     Ok(OK)
+}
+
+/// Read `path`, require it to hold exactly one non-empty line with no
+/// whitespace in it, and hand that line to `store`. `false` means the file
+/// did not hold one clean line and nothing was stored; the caller names the
+/// file when reporting that. Never logs the line itself.
+fn store_one_line_secret(path: &Path, store: impl FnOnce(&str) -> reborn_core::Result<()>) -> reborn_core::Result<bool> {
+    let text = std::fs::read_to_string(path).map_err(|e| reborn_core::Error::Io { path: path.to_path_buf(), source: e })?;
+    let value = text.trim();
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return Ok(false);
+    }
+    store(value)?;
+    Ok(true)
 }

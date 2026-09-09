@@ -47,9 +47,17 @@ ureq = { version = "2", features = ["json"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 getrandom = { version = "0.2", optional = true }
 
+# SigV4 request signing for the R2 (S3-compatible) upload, behind `publish`
+# for the same reason as `getrandom` above: a player's launcher never links a
+# signer it has no use for. hmac pairs with the workspace's sha2 (0.10, so
+# digest 0.10) rather than a newer major that would drag in a second sha2.
+hmac = { version = "0.12", optional = true }
+base64 = { version = "0.22", optional = true }
+percent-encoding = { version = "2", optional = true }
+
 [features]
 # The publisher's half: key generation and signing. Enabled by reborn-cli only.
-publish = ["dep:getrandom"]
+publish = ["dep:getrandom", "dep:hmac", "dep:base64", "dep:percent-encoding"]
 
 [target.'cfg(windows)'.dependencies]
 rusty-xinput = "1.3"
