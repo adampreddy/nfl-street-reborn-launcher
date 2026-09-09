@@ -194,7 +194,7 @@ fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
         let scratch = p
             .paths
             .data_root()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.player_message().to_string())?
             .join(DataDir::Cache.relative());
         match reborn_core::devices::scan_via_runtime(&p, std::path::Path::new(&exe), &scratch) {
             Ok(scan) => return Ok(to_report(&scan, "runtime")),
@@ -986,9 +986,11 @@ fn read_package_library(root: &Path) -> (Vec<ModPackage>, Vec<String>) {
 async fn mod_packages() -> Result<ModLibraryView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
-        let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
-        let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.player_message().to_string())?;
+        let activation_path =
+            reborn_core::mods::activation_path(&p).map_err(|e| e.player_message().to_string())?;
+        let activation =
+            Activation::load(&activation_path).map_err(|e| e.player_message().to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
 
@@ -3381,9 +3383,11 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
 async fn stats_queue() -> Result<StatsQueueView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let entries = queue.entries().map_err(|e| e.to_string())?;
-        let orphaned = queue.orphaned_payloads().map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
+        let entries = queue.entries().map_err(|e| e.player_message().to_string())?;
+        let orphaned = queue
+            .orphaned_payloads()
+            .map_err(|e| e.player_message().to_string())?;
 
         Ok(StatsQueueView {
             dir: queue.dir().display().to_string(),
@@ -3441,14 +3445,16 @@ async fn stats_ingest(
         let p = Platform::detect();
         let from = reborn_core::stats::dolphin_capture_dir(Path::new(&user_dir));
 
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+        let Startup::Owner(_lock) =
+            Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())?
+        else {
             return Err(already_running());
         };
 
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
         let results = queue
             .ingest_all(Path::new(&user_dir), session_id.as_deref())
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
 
         let mut view = StatsIngestView {
             from: from.display().to_string(),
@@ -3483,12 +3489,14 @@ async fn stats_submit() -> Result<StatsSubmitView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let url = backend_origin(&p)?;
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
         // The lock is read from and given straight back: holding it across the
         // send is what told a player pressing Play that another launcher was
         // running, when the only thing running was this send.
         let history = history_without_holding_the_lock(&p)?;
-        match reborn_core::backend::auto_submit(&p, &queue, &history).map_err(|e| e.to_string())? {
+        match reborn_core::backend::auto_submit(&p, &queue, &history)
+            .map_err(|e| e.player_message().to_string())?
+        {
             reborn_core::backend::SendAttempt::NotSignedIn => Ok(StatsSubmitView { url, accepted: 0, held: 0, rejected: 0, deferred: 0, stalled: 0, note: "Sign in with Discord to send your results. They are kept until then.".to_string() }),
             reborn_core::backend::SendAttempt::Sent(report) => Ok(StatsSubmitView {
                 url, accepted: report.accepted.len() + report.recorded.len(), held: report.held.len(), rejected: report.rejected.len(), deferred: report.deferred.len(), stalled: report.stalled.len(),
@@ -3790,10 +3798,11 @@ fn backend_origin(p: &Platform) -> Result<String, String> {
 fn history_without_holding_the_lock(
     p: &Platform,
 ) -> Result<Vec<reborn_core::supervisor::SessionRecord>, String> {
-    let Startup::Owner(sup) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
+    let Startup::Owner(sup) = Supervisor::acquire(p).map_err(|e| e.player_message().to_string())?
+    else {
         return Err(already_running());
     };
-    let history = sup.history().map_err(|e| e.to_string())?;
+    let history = sup.history().map_err(|e| e.player_message().to_string())?;
     drop(sup);
     Ok(history)
 }
@@ -5489,6 +5498,81 @@ mod tests {
             "a token this project has already had to rotate stays in the credential vault \
              forever, on every machine that ever stored one"
         );
+    }
+
+    /// Nothing the Play page or the Settings page can reach turns a core
+    /// error into raw text either.
+    ///
+    /// `home.js` renders what `devices` and `mod_packages` reject with, and
+    /// `settings.js` renders what the send button's `stats_submit` rejects
+    /// with. All four still stringified a `reborn_core::Error`, so a
+    /// permission problem reading the mods folder put a full path on the Play
+    /// card and a locked settings file put a path and an error number under
+    /// the send button.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// Each function's text is taken between two anchors that both appear in
+    /// production code, thousands of lines before this test, and `.find`
+    /// returns the first match, so the copies of those anchors in this test's
+    /// own arguments are never reached. The check then runs only over those
+    /// slices, never over the whole file. The trailing `.await` pair every
+    /// `spawn_blocking` command ends with is removed first: it converts a
+    /// `JoinError` from a panicked closure, not a core error, and left in it
+    /// would make this impossible to pass whether or not the fix was made.
+    #[test]
+    fn nothing_the_play_and_settings_pages_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        // Each stop is the next item's own first line, not a shared marker
+        // like `#[tauri::command]`: between two commands this file keeps free
+        // functions that belong to other pages, and stopping at the marker
+        // would drag them in and make the check fail on somebody else's code.
+        let bodies = [
+            (
+                "devices",
+                body_until(src, "async fn devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "read_devices",
+                body_until(src, "fn read_devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "mod_packages",
+                body_until(src, "async fn mod_packages(", "
+struct ModPlanView {"),
+            ),
+            (
+                "stats_submit",
+                body_until(src, "async fn stats_submit(", "
+struct StatsSubmitView {"),
+            ),
+            (
+                "history_without_holding_the_lock",
+                body_until(
+                    src,
+                    "fn history_without_holding_the_lock(",
+                    "
+/// Send whatever is queued",
+                ),
+            ),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            let own = compact.replace(".await.map_err(|e|e.to_string())", "");
+            assert!(
+                !own.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text, so a \
+                 path and an operating system error number reach a page"
+            );
+            assert!(
+                own.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
     }
 
     /// Nothing the Online page can reach turns a core error into raw text.
