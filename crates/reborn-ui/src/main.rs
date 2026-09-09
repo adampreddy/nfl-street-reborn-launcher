@@ -3751,10 +3751,13 @@ fn identity_view(file: Option<&reborn_core::identity::IdentityFile>) -> Identity
 }
 
 /// The backend: the setting, or the product origin.
+///
+/// The reading and the wording both live in `reborn_core::identity`, because
+/// its one failure is the launcher's own settings file refusing to open and
+/// that has to become a sentence rather than a path. This window has no
+/// logger to put the detail in; that module does.
 fn backend_origin(p: &Platform) -> Result<String, String> {
-    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
-    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
-    Ok(settings.backend_origin.filter(|u| !u.trim().is_empty()).unwrap_or_else(|| reborn_core::identity::DEFAULT_ORIGIN.to_string()))
+    reborn_core::identity::origin(p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

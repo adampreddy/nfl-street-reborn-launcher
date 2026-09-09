@@ -1282,16 +1282,26 @@ pub enum QuarantineReason {
 
 impl QuarantineReason {
     /// A sentence for the player.
+    ///
+    /// The `detail` on [`QuarantineReason::Unreadable`] is a parser's own
+    /// wording ("expected value at line 1 column 1") and the `flags` on
+    /// [`QuarantineReason::FailedValidation`] are this launcher's internal
+    /// codes. Neither is something a player can act on, and both used to be
+    /// printed here. They are still recorded on the entry, where a person
+    /// looking into it can read them, and they are logged where they are
+    /// produced; they are no longer put on a screen.
     pub fn message(&self) -> String {
         match self {
-            QuarantineReason::Unreadable { detail } => {
-                format!("This result could not be read: {detail} It is being kept, not deleted.")
+            QuarantineReason::Unreadable { .. } => {
+                "This result could not be read, so it is being kept rather than deleted. \
+                 Report it if it keeps happening."
+                    .to_string()
             }
-            QuarantineReason::FailedValidation { flags } => format!(
-                "This result is incomplete ({}) and cannot be sent. It is being kept so \
-                 it can be reported.",
-                flags.join(", ")
-            ),
+            QuarantineReason::FailedValidation { .. } => {
+                "This result is incomplete, so it cannot be sent. It is being kept so it \
+                 can be reported."
+                    .to_string()
+            }
             QuarantineReason::NoSession => "This result was found on disk but no game this \
                  launcher started explains it, so there is nowhere it can safely be sent. \
                  It is being kept."
@@ -1473,10 +1483,16 @@ impl Enqueued {
             Enqueued::AlreadySubmitted { .. } => {
                 "This result has already been sent, so it was not saved again.".to_string()
             }
-            Enqueued::CouldNotRead { path, detail } => format!(
-                "Could not read {}: {detail} The file was left alone.",
-                path.display()
-            ),
+            // The path names a folder inside the player's roaming profile and
+            // the detail is the operating system's own wording. Neither is
+            // something a player can act on, and both used to be printed here.
+            // They are still on the value for a log and for the command line
+            // tool's own diagnosis; they are no longer put on a screen.
+            Enqueued::CouldNotRead { .. } => {
+                "A result file could not be read this time, so it was left exactly where \
+                 it is. Nothing was lost, and it will be read again after your next game."
+                    .to_string()
+            }
             Enqueued::SourceKept { .. } => {
                 "Saved this result, and the file the game wrote could not be tidied \
                  away afterwards. Nothing was lost, and it will be tidied next time."
@@ -1659,14 +1675,18 @@ impl StatsQueue {
         })?;
 
         let (summary, state) = match &parsed {
-            Err(e) => (
-                None,
-                EntryState::Quarantined {
-                    reason: QuarantineReason::Unreadable {
-                        detail: e.to_string(),
+            Err(e) => {
+                // The parser's own wording, to the log rather than to a screen.
+                tracing::warn!("a capture could not be read as nsr.game.v1: {e}");
+                (
+                    None,
+                    EntryState::Quarantined {
+                        reason: QuarantineReason::Unreadable {
+                            detail: e.to_string(),
+                        },
                     },
-                },
-            ),
+                )
+            }
             Ok(capture) => {
                 let validation = capture.validate(Some(bytes.len()));
                 let summary = CaptureSummary {
@@ -1678,14 +1698,15 @@ impl StatsQueue {
                     needs_review: validation.needs_review(),
                 };
                 let state = if !validation.is_well_formed() {
+                    let flags: Vec<String> = validation
+                        .blocking()
+                        .iter()
+                        .map(|f| f.code.to_string())
+                        .collect();
+                    // Our own flag codes, to the log rather than to a screen.
+                    tracing::warn!("a capture is not a well formed nsr.game.v1: {}", flags.join(", "));
                     EntryState::Quarantined {
-                        reason: QuarantineReason::FailedValidation {
-                            flags: validation
-                                .blocking()
-                                .iter()
-                                .map(|f| f.code.to_string())
-                                .collect(),
-                        },
+                        reason: QuarantineReason::FailedValidation { flags },
                     }
                 } else if session_id.is_none() {
                     EntryState::Quarantined {
@@ -1773,6 +1794,8 @@ impl StatsQueue {
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
                 Err(e) => {
+                    // The path and the operating system's wording, to the log.
+                    tracing::warn!("a capture could not be read off disk at {}: {e}", path.display());
                     out.push(Enqueued::CouldNotRead {
                         path: path.clone(),
                         detail: e.to_string(),
@@ -1790,6 +1813,7 @@ impl StatsQueue {
                 // open is not a reason to abandon the rest of the folder, the
                 // folders after it, or the send that follows.
                 if let Err(source) = std::fs::remove_file(&path) {
+                    tracing::warn!("a capture was saved and its file could not be removed at {}: {source}", path.display());
                     out.push(Enqueued::SourceKept {
                         path: path.clone(),
                         detail: source.to_string(),
@@ -1812,10 +1836,13 @@ impl StatsQueue {
         for (dir, folder) in dolphin_capture_dirs(user_dir) {
             match self.ingest_from_folder(&dir, session_id, folder) {
                 Ok(found) => out.extend(found),
-                Err(e) => out.push(Enqueued::CouldNotRead {
-                    path: dir,
-                    detail: e.to_string(),
-                }),
+                Err(e) => {
+                    tracing::warn!("a capture folder could not be listed at {}: {e}", dir.display());
+                    out.push(Enqueued::CouldNotRead {
+                        path: dir,
+                        detail: e.to_string(),
+                    });
+                }
             }
         }
         Ok(out)
@@ -2313,7 +2340,76 @@ impl StatsQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player_sentence::assert_player_safe;
     use crate::supervisor::FixedClock;
+
+    /// NO ERRORS EVER, at the boundary where a collection outcome becomes
+    /// words a player reads.
+    ///
+    /// Every sentence checked here is on a screen. `Enqueued::message` is what
+    /// `stats_ingest` puts in `StatsIngestView::messages` and what
+    /// `rebornctl stats ingest` prints; `QuarantineReason::message` is the
+    /// `reason` on every quarantined row of the results list.
+    ///
+    /// Two of them used to say the quiet part out loud. `CouldNotRead` printed
+    /// the full path of a file inside the player's roaming profile followed by
+    /// the operating system's own wording, so a locked capture put
+    /// `C:\Users\...\GameStats\Online\g.json` and `os error 32` on the screen.
+    /// `Unreadable` printed a serde parse error, and `FailedValidation`
+    /// printed our own flag codes. None of those is a thing a player can act
+    /// on, and all three now go to `tracing::warn!` where they are produced.
+    ///
+    /// Checked mechanically against [`crate::player_sentence`] rather than
+    /// against a list of expected strings, so a future edit cannot slip a bad
+    /// message past by not being on the list.
+    #[test]
+    fn nothing_a_collection_says_to_a_player_is_technical_text() {
+        let stuck = PathBuf::from(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn\User\GameStats\Online\g.json");
+        let os = "The process cannot access the file because it is being used by another process. (os error 32)";
+
+        assert_player_safe(&Enqueued::CouldNotRead { path: stuck.clone(), detail: os.to_string() }.message());
+        assert_player_safe(&Enqueued::SourceKept { path: stuck.clone(), detail: os.to_string() }.message());
+
+        assert_player_safe(
+            &QuarantineReason::Unreadable {
+                detail: "expected value at line 1 column 1".to_string(),
+            }
+            .message(),
+        );
+        assert_player_safe(
+            &QuarantineReason::FailedValidation {
+                flags: vec![codes::WRONG_SCHEMA.to_string(), codes::NO_PLAYERS.to_string()],
+            }
+            .message(),
+        );
+        assert_player_safe(&QuarantineReason::NoSession.message());
+
+        // The three outcomes that carry an entry rather than a path. The entry
+        // itself is never read by `message`, so a default one is enough.
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"a"),
+            state: EntryState::Queued,
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: None,
+            last_error: None,
+            source_path: Some(stuck),
+            session_id: None,
+            capture_folder: None,
+            note: None,
+            summary: None,
+        };
+        assert_player_safe(&Enqueued::Queued(entry.clone()).message());
+        assert_player_safe(&Enqueued::AlreadyQueued(entry.clone()).message());
+        assert_player_safe(
+            &Enqueued::AlreadySubmitted { key: entry.key.clone(), state: TerminalState::Accepted }
+                .message(),
+        );
+        let mut quarantined = entry;
+        quarantined.state = EntryState::Quarantined { reason: QuarantineReason::NoSession };
+        assert_player_safe(&Enqueued::Quarantined(quarantined).message());
+    }
 
     /// A real capture, verbatim, from
     /// `User\LeagueGameStats\Falcons_vs_Chargers_001.json`, dated August 5

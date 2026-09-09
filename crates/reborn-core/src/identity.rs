@@ -131,6 +131,25 @@ const PAGE_NOT_OPENED: &str = "That page could not be opened automatically. Plea
 /// what happened and what to do next.
 const SESSION_EXPIRED: &str = "Signed out. Sign in again.";
 
+/// Shown when the launcher cannot tell whether anybody is signed in: the facts file will not
+/// read, or the credential vault refused. The Play page renders this in the account card, and
+/// it used to render the raw error there instead, so a locked Windows credential store put
+/// the vault's own wording on the Play screen.
+const SIGN_IN_STATE_UNREADABLE: &str =
+    "Whether you are signed in could not be read just now. Try again in a moment.";
+
+/// Shown when the launcher cannot work out where the sign-in service is, because its own
+/// settings file will not read. Nothing about that is the player's doing and nothing about it
+/// is theirs to fix, so the message says what they can see (sign-in is not working) and what
+/// to do (wait a moment).
+pub const SIGN_IN_UNAVAILABLE: &str = "Sign-in is not available right now. Try again in a moment.";
+
+/// Shown when the browser step finished and the result could not be written to this PC. The
+/// token is already dropped by [`save_signed_in`] in that case, so signing in again is
+/// genuinely the right instruction rather than a hopeful one.
+const SIGN_IN_NOT_SAVED: &str =
+    "You were signed in, but it could not be saved on this PC. Try signing in again.";
+
 pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> {
     let body = serde_json::json!({ "label": label });
     let url = origin_url(origin, "/v1/auth/device");
@@ -197,9 +216,40 @@ fn read_identity(path: &Path) -> Result<Option<IdentityFile>> {
 }
 
 /// Signed in means BOTH halves exist: the facts file and a token in the vault.
+///
+/// Neither half's failure is described to the player in its own words. A vault that refuses
+/// and a facts file that will not read are the same thing from where they are sitting -- the
+/// launcher cannot tell -- and there is nothing different to do about either.
 pub fn status(platform: &Platform) -> Result<Option<IdentityFile>> {
+    read_status(platform).map_err(|e| {
+        tracing::warn!("the sign-in state could not be read: {e}");
+        plain(SIGN_IN_STATE_UNREADABLE.to_string())
+    })
+}
+
+fn read_status(platform: &Platform) -> Result<Option<IdentityFile>> {
     let Some(file) = read_identity(&identity_path(platform)?)? else { return Ok(None) };
     Ok(token(platform)?.map(|_| file))
+}
+
+/// Where the backend is: the setting, or the product origin.
+///
+/// Lives here rather than in the window because its one failure -- the launcher's own settings
+/// file will not read -- has to become a sentence, and the window has no logger to put the
+/// detail in.
+pub fn origin(platform: &Platform) -> Result<String> {
+    let read = || -> Result<String> {
+        let file = crate::settings::settings_path(platform)?;
+        let settings = crate::settings::Settings::load(&file)?;
+        Ok(settings
+            .backend_origin
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ORIGIN.to_string()))
+    };
+    read().map_err(|e| {
+        tracing::warn!("the backend origin could not be read from settings: {e}");
+        plain(SIGN_IN_UNAVAILABLE.to_string())
+    })
 }
 
 pub fn token(platform: &Platform) -> Result<Option<String>> {
@@ -207,8 +257,14 @@ pub fn token(platform: &Platform) -> Result<Option<String>> {
 }
 
 pub fn save_signed_in(platform: &Platform, token: &str, player: PlayerFacts, now_ms: u64) -> Result<()> {
-    platform.credentials.store(TOKEN_ACCOUNT, token)?;
-    let path = identity_path(platform)?;
+    platform.credentials.store(TOKEN_ACCOUNT, token).map_err(|e| {
+        tracing::warn!("the sign-in could not be stored in the credential vault: {e}");
+        plain(SIGN_IN_NOT_SAVED.to_string())
+    })?;
+    let path = identity_path(platform).map_err(|e| {
+        tracing::warn!("the identity file path could not be resolved: {e}");
+        plain(SIGN_IN_NOT_SAVED.to_string())
+    })?;
     let file = IdentityFile { player, signed_in_at_ms: now_ms };
     let bytes = serde_json::to_vec_pretty(&file).expect("a serializable identity file");
     if let Err(source) = std::fs::write(&path, bytes) {
@@ -216,7 +272,10 @@ pub fn save_signed_in(platform: &Platform, token: &str, player: PlayerFacts, now
         // never lands would give the player a working token while every page reads them
         // as signed out, with no way back in through the UI.
         let _ = platform.credentials.delete(TOKEN_ACCOUNT);
-        return Err(Error::Io { path, source });
+        // The path is inside the launcher's own config folder and the wording is the
+        // operating system's. Neither belongs on the sign-in card.
+        tracing::warn!("the identity file could not be written at {}: {source}", path.display());
+        return Err(plain(SIGN_IN_NOT_SAVED.to_string()));
     }
     Ok(())
 }
@@ -228,14 +287,24 @@ pub fn clear_token(platform: &Platform) -> Result<()> {
     // Re-read the vault and only report success once it is actually gone; a token that
     // silently survives a "successful" sign-out is the worst outcome this function could
     // produce.
-    if platform.credentials.retrieve(TOKEN_ACCOUNT)?.is_some() {
+    let still_there = platform.credentials.retrieve(TOKEN_ACCOUNT).map_err(|e| {
+        tracing::warn!("the credential vault could not be re-read after a sign-out: {e}");
+        plain(SIGN_OUT_FAILED.to_string())
+    })?;
+    if still_there.is_some() {
         return Err(plain(SIGN_OUT_FAILED.to_string()));
     }
-    let path = identity_path(platform)?;
+    let path = identity_path(platform).map_err(|e| {
+        tracing::warn!("the identity file path could not be resolved: {e}");
+        plain(SIGN_OUT_FAILED.to_string())
+    })?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io { path, source }),
+        Err(source) => {
+            tracing::warn!("the identity file could not be removed at {}: {source}", path.display());
+            Err(plain(SIGN_OUT_FAILED.to_string()))
+        }
     }
 }
 
@@ -277,13 +346,24 @@ fn parse_show_offline_reply(r: &crate::net::HttpResponse, url: &str) -> Result<P
 }
 
 pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show: bool) -> Result<PlayerFacts> {
-    let tok = token(platform)?.ok_or_else(|| plain(MUST_BE_SIGNED_IN.to_string()))?;
+    let vault = token(platform).map_err(|e| {
+        tracing::warn!("the credential vault could not be read: {e}");
+        plain(SAVE_UNAVAILABLE.to_string())
+    })?;
+    let tok = vault.ok_or_else(|| plain(MUST_BE_SIGNED_IN.to_string()))?;
     let url = origin_url(origin, "/v1/me/show_offline");
     let r = post_show_offline(http, &url, &tok, show)?;
     if r.status == 401 { clear_token(platform)?; return Err(plain(SESSION_EXPIRED.to_string())); }
     let player = parse_show_offline_reply(&r, &url)?;
-    let path = identity_path(platform)?;
-    let file = match read_identity(&path)? {
+    let path = identity_path(platform).map_err(|e| {
+        tracing::warn!("the identity file path could not be resolved: {e}");
+        plain(SAVE_UNAVAILABLE.to_string())
+    })?;
+    let existing = read_identity(&path).map_err(|e| {
+        tracing::warn!("the identity file could not be read at {}: {e}", path.display());
+        plain(SAVE_UNAVAILABLE.to_string())
+    })?;
+    let file = match existing {
         Some(mut existing) => { existing.player = player.clone(); existing }
         None => {
             // No facts file to update -- either this is the first write, or the existing one
@@ -296,7 +376,10 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
             IdentityFile { player: player.clone(), signed_in_at_ms: now_ms }
         }
     };
-    std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("a serializable identity file")).map_err(|source| Error::Io { path, source })?;
+    std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("a serializable identity file")).map_err(|source| {
+        tracing::warn!("the identity file could not be written at {}: {source}", path.display());
+        plain(SAVE_UNAVAILABLE.to_string())
+    })?;
     Ok(player)
 }
 
@@ -389,40 +472,11 @@ mod tests {
     ///   fragments and were rewritten rather than the check being loosened to let them through)
     #[test]
     fn every_identity_error_reads_as_a_plain_sentence() {
-        fn has_run_of_three_or_more_digits(s: &str) -> bool {
-            let mut run = 0;
-            for c in s.chars() {
-                if c.is_ascii_digit() {
-                    run += 1;
-                    if run >= 3 {
-                        return true;
-                    }
-                } else {
-                    run = 0;
-                }
-            }
-            false
-        }
-
-        fn assert_player_safe(msg: &str) {
-            let lower = msg.to_ascii_lowercase();
-            assert!(!lower.contains("http"), "message leaked transport jargon: {msg}");
-            assert!(!msg.contains("://"), "message leaked a URL: {msg}");
-            assert!(
-                !has_run_of_three_or_more_digits(msg),
-                "message leaked a status code: {msg}"
-            );
-            let first = msg.chars().next().expect("a non-empty message");
-            assert!(
-                first.is_ascii_uppercase(),
-                "message is a fragment, not a sentence (no capital letter to start): {msg}"
-            );
-            let last = msg.chars().last().expect("a non-empty message");
-            assert!(
-                matches!(last, '.' | '?' | '!'),
-                "message is a fragment, not a sentence (no closing punctuation): {msg}"
-            );
-        }
+        // The five rules moved to `crate::player_sentence` in fix wave 2, when three more
+        // modules needed exactly the same check. A sixth rule came with them: no `\` and no
+        // `/`, because the leaks found in `stats.rs` and here were file paths rather than
+        // status codes.
+        use crate::player_sentence::assert_player_safe;
 
         // start: the server cannot be reached at all (no canned reply -> a transport failure).
         let start_unreachable = FakeHttp::default();
@@ -484,6 +538,18 @@ mod tests {
         assert_player_safe(SIGN_OUT_FAILED);
         assert_player_safe(MUST_BE_SIGNED_IN);
         assert_player_safe(SESSION_EXPIRED);
+
+        // Fix wave 2. Four more paths a window command can reach, all of which used to hand
+        // the player the raw error: `status` (the account card's own read, which rendered a
+        // locked credential vault's wording on the Play screen), `origin` (the launcher's own
+        // settings file), `save_signed_in` (the config folder) and the vault re-read in
+        // `clear_token`. None of the four is reachable with a fake vault -- this crate has no
+        // in-memory `CredentialVault`, and using the real one under the real `TOKEN_ACCOUNT`
+        // would risk clobbering a signed-in session on whatever machine runs this test -- so
+        // their wording is locked down directly, exactly as the three above are.
+        assert_player_safe(SIGN_IN_STATE_UNREADABLE);
+        assert_player_safe(SIGN_IN_UNAVAILABLE);
+        assert_player_safe(SIGN_IN_NOT_SAVED);
     }
 
     #[test]

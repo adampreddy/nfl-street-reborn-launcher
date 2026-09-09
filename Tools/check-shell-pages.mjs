@@ -134,6 +134,17 @@ for (const [file, name] of PAGES) {
   // player could tick that then does nothing is worse than no toggle at all.
   check("Play does not offer the league toggle", !t.includes("This is a league match"));
 }
+// Play: a read that fails must never put the command's own name on the account
+// card. In reject mode every call throws an Error whose message is the command
+// name, which is the exact shape of the real leak: the card rendered
+// `id.error` verbatim, so a locked Windows credential vault put the vault's own
+// wording on the Play screen.
+{
+  const { screen } = await loadPage("crates/reborn-ui/ui/home.js", FULL, "reject");
+  const t = text(screen);
+  check("Play never names a command on the account card", !t.includes("identity_status"), t.slice(0, 300));
+  check("Play says what to do when the account cannot be read", t.includes("Try again in a moment"), t.slice(0, 300));
+}
 // Recovery: three bad endings put mods-disabled first, in words.
 {
   const { screen } = await loadPage("crates/reborn-ui/ui/recovery.js", FULL, "full");

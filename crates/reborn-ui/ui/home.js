@@ -13,6 +13,11 @@ let externalSession = false;
 let leagueMatch = false;
 const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null };
 
+// Shown when `identity_status` fails, whatever the reason. The same sentence
+// the core uses for the same situation, so a player never sees two wordings
+// for one state.
+const ACCOUNT_UNREADABLE = "Whether you are signed in could not be read just now. Try again in a moment.";
+
 const PRESETS = [
   ["performance", "Performance", "1080p · 3×. ReShade disabled."],
   ["balanced", "Balanced", "1080p · 3×. ReShade with lighter effects."],
@@ -119,7 +124,12 @@ function identityCard() {
     card.append(el("p", { text: `Signed in as ${id.display_name}` }));
     if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
   } else {
-    card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : (id && id.error) || "Sign-in state could not be read." }));
+    // Never `id.error`. A failed read hands back the command's own name, the
+    // credential vault's wording or a path, and none of that is something a
+    // player can act on. The one sentence covers every way the read can fail,
+    // because from where they are sitting there is no difference between them
+    // and nothing different to do about any of them.
+    card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : ACCOUNT_UNREADABLE }));
     card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
   }
   if (signIn.message) card.append(el("p", { class: "note", text: signIn.message }));

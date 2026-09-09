@@ -179,26 +179,66 @@ pub enum StatsAfterSession {
         /// undeletable file stopped everything being sent, on that session and
         /// on every session after it, and the queue holds games from earlier
         /// sessions that are still perfectly deliverable.
-        problem: Option<String>,
+        ///
+        /// A named failure and not a string: see [`StatsProblem`].
+        problem: Option<StatsProblem>,
         sent: Option<crate::stats::SubmitReport>,
     },
     /// The queue itself could not be opened, so there was nowhere to collect
     /// into and nothing to send from.
-    Failed(String),
+    ///
+    /// It carries nothing. It used to carry `e.to_string()`, and
+    /// [`crate::Error::Io`] displays as `io error at {path}: {source}`, so a
+    /// full disk while writing the queue put a path out of the player's
+    /// roaming profile and `os error 112` into a value the window renders.
+    Failed,
 }
+
+/// Which half of the results step had a problem.
+///
+/// A named failure rather than a message, because the alternative was an
+/// `Option<String>` filled in with `e.to_string()` at the two places it is
+/// set. Every error type in this workspace formats itself for a developer --
+/// paths, error numbers, library wording -- and none of that may reach a
+/// player. Making the type unable to hold a string is a stronger guarantee
+/// than remembering not to put one in it, and the detail is not lost: it goes
+/// to `tracing::warn!` where the failure happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsProblem {
+    /// A capture folder could not be read, or a file could not be moved.
+    Collecting,
+    /// The results could not be sent this time.
+    Sending,
+}
+
+impl StatsProblem {
+    /// A sentence for a player.
+    pub fn message(self) -> &'static str {
+        match self {
+            StatsProblem::Collecting => {
+                "Some results could not be collected this time, so they are being kept where \
+                 they are. Nothing was lost, and the next game will pick them up."
+            }
+            StatsProblem::Sending => {
+                "Some results could not be sent this time, so they are being kept. Nothing was \
+                 lost, and they will be sent again."
+            }
+        }
+    }
+}
+
+/// Shown when the queue itself could not be opened: there was nowhere to
+/// collect into and nothing to send from. Nothing about the failure is in it,
+/// because nothing about the failure is a thing a player can act on.
+const RESULTS_NOT_COLLECTED: &str = "Match results could not be collected this time. Nothing was \
+     lost: they are still on disk and the next game will pick them up.";
 
 impl StatsAfterSession {
     /// One line for a player. Silent when there was nothing to do.
     pub fn explain(&self) -> Option<String> {
         use crate::stats::Enqueued;
         match self {
-            // Deliberately not the error text. This line is shown to a player,
-            // and the error carries paths and library wording.
-            StatsAfterSession::Failed(_) => Some(
-                "Match results could not be collected this time. Nothing was lost: they \
-                 are still on disk and the next game will pick them up."
-                    .to_string(),
-            ),
+            StatsAfterSession::Failed => Some(RESULTS_NOT_COLLECTED.to_string()),
             StatsAfterSession::Ingested { enqueued, problem, sent } => {
                 let found = enqueued.iter().filter(|e| matches!(e, Enqueued::Queued(_) | Enqueued::Quarantined(_))).count();
                 let mut parts: Vec<String> = Vec::new();
@@ -218,10 +258,16 @@ impl StatsAfterSession {
                         if r.waiting_for_sign_in { parts.push("waiting for sign-in".to_string()); }
                     }
                 }
-                // Named, without the error text: the player is told something
-                // is being kept, not shown a path or a library's wording.
-                if problem.is_some() { parts.push("some could not be collected or sent this time and are being kept".to_string()); }
-                if parts.is_empty() { None } else { Some(format!("{}.", parts.join(", "))) }
+                // Named, without any error text: the type cannot hold one.
+                match problem {
+                    Some(StatsProblem::Collecting) => parts.push("some could not be collected this time and are being kept".to_string()),
+                    Some(StatsProblem::Sending) => parts.push("some could not be sent this time and are being kept".to_string()),
+                    None => {}
+                }
+                // Labelled rather than bare. "1 result recorded, waiting for
+                // sign-in." starts with a numeral and reads as a fragment
+                // pasted onto the account card with no idea what it is about.
+                if parts.is_empty() { None } else { Some(format!("Match results: {}.", parts.join(", "))) }
             }
         }
     }
@@ -769,8 +815,12 @@ pub fn collect_and_send(
     let queue = match crate::stats::StatsQueue::open(platform) {
         Ok(queue) => queue,
         // The only failure that really ends it: nowhere to collect into, and
-        // nothing to send from.
-        Err(e) => return StatsAfterSession::Failed(e.to_string()),
+        // nothing to send from. The detail goes to the log; the value a caller
+        // shows carries none of it.
+        Err(e) => {
+            tracing::warn!("the results queue could not be opened: {e}");
+            return StatsAfterSession::Failed;
+        }
     };
 
     // Collecting and sending are two jobs, not one chain. Collecting used to
@@ -779,7 +829,10 @@ pub fn collect_and_send(
     // still perfectly deliverable.
     let (enqueued, mut problem) = match queue.ingest_all(user_dir, Some(session_id)) {
         Ok(found) => (found, None),
-        Err(e) => (Vec::new(), Some(e.to_string())),
+        Err(e) => {
+            tracing::warn!("results could not be collected from {}: {e}", user_dir.display());
+            (Vec::new(), Some(StatsProblem::Collecting))
+        }
     };
 
     let sent = match supervisor
@@ -789,7 +842,8 @@ pub fn collect_and_send(
         Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
         Ok(crate::backend::SendAttempt::NotSignedIn) => None,
         Err(e) => {
-            problem.get_or_insert(e.to_string());
+            tracing::warn!("results could not be sent: {e}");
+            problem.get_or_insert(StatsProblem::Sending);
             None
         }
     };
@@ -1383,6 +1437,59 @@ pub fn is_game_image(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player_sentence::assert_player_safe;
+
+    /// The stats step has nowhere to put an error string.
+    ///
+    /// `collect_and_send` used to write `e.to_string()` into three places: the
+    /// `Failed` payload, and twice into `problem`. [`crate::Error::Io`] displays
+    /// as `io error at {path}: {source}`, so a full disk while writing the queue
+    /// put a path out of the player's roaming profile and `os error 112` into a
+    /// value the window renders. `explain()` happened to summarize those two
+    /// fields rather than repeat them, which is the only reason nobody had seen
+    /// it on screen; any caller that showed the payload, and the command line
+    /// tool is one line away from being one, would have.
+    ///
+    /// So the fix is the type and not the wording. `StatsAfterSession` now has
+    /// nowhere to put a string at all: the failure is named
+    /// ([`StatsProblem`]), the sentence is a constant, and the detail goes to
+    /// `tracing::warn!` where it is produced. This test holds both halves,
+    /// because "it happens not to be rendered today" is not a guarantee.
+    #[test]
+    fn a_stats_result_has_nowhere_to_put_an_error_string() {
+        let src = include_str!("session.rs");
+        let from = src
+            .find("pub fn collect_and_send")
+            .expect("collect_and_send is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\n/// Close a session").unwrap_or(rest.len())];
+        assert!(
+            !body.contains("e.to_string()"),
+            "collect_and_send puts an error string on a value a player sees"
+        );
+
+        // Every sentence the type can produce, mechanically checked.
+        assert_player_safe(RESULTS_NOT_COLLECTED);
+        for problem in [StatsProblem::Collecting, StatsProblem::Sending] {
+            assert_player_safe(problem.message());
+        }
+        assert_player_safe(&StatsAfterSession::Failed.explain().expect("a failure says something"));
+
+        let mut report = crate::stats::SubmitReport::default();
+        report.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        report.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        report.rejected.push(crate::stats::CaptureKey::of_bytes(b"c"));
+        report.stalled.push(crate::stats::CaptureKey::of_bytes(b"d"));
+        report.waiting_for_sign_in = true;
+        for problem in [None, Some(StatsProblem::Collecting), Some(StatsProblem::Sending)] {
+            for sent in [None, Some(crate::stats::SubmitReport::default()), Some(report.clone())] {
+                let s = StatsAfterSession::Ingested { enqueued: Vec::new(), problem, sent };
+                if let Some(line) = s.explain() {
+                    assert_player_safe(&line);
+                }
+            }
+        }
+    }
 
     fn req(runtime: PathBuf, game: PathBuf) -> LaunchRequest {
         LaunchRequest {
@@ -1601,11 +1708,14 @@ mod tests {
     /// Collecting and sending are two jobs. A problem in one is reported and
     /// never stops the other, and neither is described to a player in the
     /// words of an error: no path, no error number, no library.
+    ///
+    /// Both values used to be built from `e.to_string()`. They now cannot be:
+    /// `Failed` carries nothing and `problem` is a [`StatsProblem`]. What this
+    /// test still has to prove is the other half, that a problem in one job
+    /// never hides the other job's result.
     #[test]
     fn a_collection_problem_is_reported_without_showing_a_path_or_an_error_code() {
-        let s = StatsAfterSession::Failed(
-            r"C:\Users\Adam\AppData\Roaming\queue: Access is denied. (os error 5)".to_string(),
-        );
+        let s = StatsAfterSession::Failed;
         let text = s.explain().expect("a failure has to say something");
         assert!(!text.contains("os error"), "{text}");
         assert!(!text.contains(r"C:\"), "{text}");
@@ -1615,7 +1725,7 @@ mod tests {
         r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
         let s = StatsAfterSession::Ingested {
             enqueued: vec![],
-            problem: Some(r"C:\User\GameStats\Online\g.json (os error 32)".to_string()),
+            problem: Some(StatsProblem::Collecting),
             sent: Some(r),
         };
         let text = s.explain().expect("a send that happened has to say so");

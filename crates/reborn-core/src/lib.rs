@@ -76,6 +76,67 @@ pub use platform::{
     CredentialVault, DataDir, Error, ExitKind, FileOps, Paths, Platform, ProcessHost,
     RemovableDrive, RemovableDrives, Result, CURRENT_PLATFORM, Channel, ChannelSource};
 
+/// The mechanical "no errors ever" check, shared by every module that produces
+/// a sentence a player reads.
+///
+/// Task 10b established this in [`identity`]: named constants for the wording,
+/// the technical detail to `tracing::warn!`, and a test that asserts the
+/// wording mechanically rather than against a hand-maintained list of expected
+/// strings, so a future edit cannot slip a bad message past it just by not
+/// being on the list. It lives here now because four modules need exactly the
+/// same rules: [`identity`], [`stats`], [`backend`] and [`session`].
+///
+/// The rules, and what each one is really guarding against:
+///
+/// - no `http`, and no `://`: a URL or a scheme word is our vocabulary, and a
+///   verify link can carry the player's own sign-in code
+/// - no run of three or more digits: a status code, or an operating system
+///   error number
+/// - no `\` and no `/`: a file path, which names a folder the player cannot
+///   see and can do nothing about
+/// - starts with a capital letter and ends with `.`, `?` or `!`: a sentence
+///   rather than a fragment. Task 10b round 3 added this after two fragments
+///   reached the test and were rewritten rather than the check being loosened
+#[cfg(test)]
+pub(crate) mod player_sentence {
+    pub fn has_run_of_three_or_more_digits(s: &str) -> bool {
+        let mut run = 0;
+        for c in s.chars() {
+            if c.is_ascii_digit() {
+                run += 1;
+                if run >= 3 {
+                    return true;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        false
+    }
+
+    pub fn assert_player_safe(msg: &str) {
+        let lower = msg.to_ascii_lowercase();
+        assert!(!lower.contains("http"), "message leaked transport jargon: {msg}");
+        assert!(!msg.contains("://"), "message leaked a URL: {msg}");
+        assert!(
+            !has_run_of_three_or_more_digits(msg),
+            "message leaked a status code or an error number: {msg}"
+        );
+        assert!(!msg.contains('\\'), "message leaked a file path: {msg}");
+        assert!(!msg.contains('/'), "message leaked a file path: {msg}");
+        let first = msg.chars().next().expect("a non-empty message");
+        assert!(
+            first.is_ascii_uppercase(),
+            "message is a fragment, not a sentence (no capital letter to start): {msg}"
+        );
+        let last = msg.chars().last().expect("a non-empty message");
+        assert!(
+            matches!(last, '.' | '?' | '!'),
+            "message is a fragment, not a sentence (no closing punctuation): {msg}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

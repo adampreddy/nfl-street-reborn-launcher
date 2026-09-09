@@ -79,6 +79,80 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
 /// and shown on the results screen.
 const COULD_NOT_DELIVER: &str = "The server could not take this result just now. It is being kept and will be sent again.";
 
+/// The refusal the server states, in words a player can act on.
+///
+/// # Why the server's own words are not shown
+///
+/// The backend answers a refusal with a code out of its own vocabulary:
+/// `hash-mismatch`, `seat-conflict`, `below-target-score`. Those went straight
+/// into [`SubmitOutcome::Rejected`], onto the entry as its reason, and out
+/// through `StatsEntryView::reason` onto the results list. A player reading
+/// "hash-mismatch" learns nothing and can do nothing.
+///
+/// They are also not text this product controls. The backend ships from a
+/// different plan, its results endpoint is not built yet, and there is no
+/// agreed list of codes anywhere in `docs/architecture`. Passing whatever
+/// arrives straight through to a player is a promise this launcher cannot
+/// keep, in a product whose rule is that no raw technical text ever reaches a
+/// screen.
+///
+/// # What happens to the code instead
+///
+/// It is not discarded. Every code the launcher knows is mapped to a sentence
+/// that says what it means and what happens next; anything else gets
+/// [`REFUSED_UNKNOWN`], which is honest about the refusal without inventing a
+/// cause. Either way the code itself goes to `tracing::warn!`, so the one
+/// person who can act on `hash-mismatch` -- whoever is looking at the queue
+/// with a log open -- still has it.
+fn refusal_sentence(code: &str) -> String {
+    let normalized = code.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+    let sentence = match normalized.as_str() {
+        "hash-mismatch" => REFUSED_CHANGED,
+        "seat-conflict" => REFUSED_SEAT,
+        "no-such-fixture" | "unknown-fixture" => REFUSED_NO_FIXTURE,
+        "below-target-score" | "incomplete-game" => REFUSED_INCOMPLETE,
+        _ => REFUSED_UNKNOWN,
+    };
+    tracing::warn!("the server refused a result and gave the reason {code:?}");
+    sentence.to_string()
+}
+
+/// The capture and the server disagree about what was played.
+const REFUSED_CHANGED: &str =
+    "The server would not take this result because it does not match the game that was played. \
+     It is kept on this PC, and it can be sent again once that is sorted out.";
+
+/// Two seats in the same match disagree, or the seat is already taken.
+const REFUSED_SEAT: &str =
+    "The server would not take this result because it disagrees with the other player's copy of \
+     the same game. It is kept on this PC while that is sorted out.";
+
+/// The server has no fixture this result belongs to.
+const REFUSED_NO_FIXTURE: &str =
+    "The server would not take this result because it has no record of this game. It is kept on \
+     this PC, and it can be sent again once that is sorted out.";
+
+/// The game did not reach the finish the league counts.
+const REFUSED_INCOMPLETE: &str =
+    "The server would not take this result because the game did not finish. It is kept on this PC.";
+
+/// A refusal in words this launcher does not know. It still says the true and
+/// useful things: refused, kept, and can be sent again.
+const REFUSED_UNKNOWN: &str =
+    "The server would not take this result. It is kept on this PC, and it can be sent again later.";
+
+/// A success: stored, and a person will decide. The wording says so plainly,
+/// because a player who reads "held" as a failure is the mistake that produced
+/// a real outage on this project.
+const HELD_FOR_REVIEW: &str =
+    "This result reached the server, and a league moderator will look at it before it counts. \
+     Nothing more is needed from you.";
+
+/// The queue quarantines anything that is not a capture before it ever gets
+/// here, so this is a should-never-happen. It is still a sentence.
+const NOT_A_CAPTURE: &str =
+    "This result could not be sent because the file the game wrote cannot be read. It is being kept.";
+
 /// What the backend's answer means for the queue.
 ///
 /// # Only a refusal the launcher can read is permanent
@@ -107,12 +181,23 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
         200..=299 => match parsed {
             Some(r) if r.ok => match r.status.as_str() {
                 "accepted" | "duplicate" => SubmitOutcome::Accepted,
-                "held" => SubmitOutcome::Held { reason: r.reason.unwrap_or_else(|| "held for review".to_string()) },
+                "held" => {
+                    if let Some(why) = r.reason.as_deref() {
+                        tracing::warn!("the server held a result and gave the reason {why:?}");
+                    }
+                    SubmitOutcome::Held { reason: HELD_FOR_REVIEW.to_string() }
+                }
                 "incomplete" => SubmitOutcome::Recorded { note: "Recorded as incomplete: the winner did not reach 36 points.".to_string() },
-                other => SubmitOutcome::Held { reason: format!("server status {other:?}") },
+                // A status this launcher does not know. Kept and never resent,
+                // which is the safe side, and described as what it is: with the
+                // server, waiting on a person.
+                other => {
+                    tracing::warn!("the server answered with the status {other:?}, which this launcher does not know");
+                    SubmitOutcome::Held { reason: HELD_FOR_REVIEW.to_string() }
+                }
             },
             // ok: false in the server's own format IS a considered refusal.
-            Some(r) => SubmitOutcome::Rejected { reason: stated(r).unwrap_or_else(|| "the server said ok: false".to_string()) },
+            Some(r) => SubmitOutcome::Rejected { reason: refusal_sentence(&stated(r).unwrap_or_default()) },
             // A 2xx carrying something that is not the reply format is most
             // likely a proxy's page over a request that worked. Sending it
             // again is safe, because the server answers a repeat as a
@@ -121,7 +206,7 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
         },
         429 | 500..=599 => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         _ => match parsed.and_then(stated) {
-            Some(reason) => SubmitOutcome::Rejected { reason },
+            Some(code) => SubmitOutcome::Rejected { reason: refusal_sentence(&code) },
             None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         },
     }
@@ -176,7 +261,8 @@ impl Submitter for BackendSubmitter<'_> {
     fn submit(&self, entry: &QueueEntry, capture: &[u8]) -> SubmitOutcome {
         let facts = entry.session_id.as_deref().and_then(|id| self.sessions.get(id));
         let Some(env) = envelope(entry, capture, facts, &self.launcher_version, &now_iso()) else {
-            return SubmitOutcome::Rejected { reason: "the capture is not a JSON object".to_string() };
+            tracing::warn!("a queued capture is not a JSON object, so no envelope could be built for it");
+            return SubmitOutcome::Rejected { reason: NOT_A_CAPTURE.to_string() };
         };
         let url = format!("{}/v1/results", self.origin.trim_end_matches('/'));
         match self.http.post_json(&url, &serde_json::to_vec(&env).unwrap_or_default(), Some(&self.token)) {
@@ -252,10 +338,13 @@ mod tests {
     fn classify_maps_every_reply() {
         assert_eq!(classify(200, r#"{"ok":true,"status":"accepted","game_id":"g"}"#), SubmitOutcome::Accepted);
         assert_eq!(classify(200, r#"{"ok":true,"status":"duplicate","game_id":"g"}"#), SubmitOutcome::Accepted);
-        assert!(matches!(classify(200, r#"{"ok":true,"status":"held","reason":"seat-conflict"}"#), SubmitOutcome::Held { reason } if reason.contains("seat-conflict")));
+        // The server's own `reason` is no longer repeated back: it is its
+        // vocabulary, not a player's. See
+        // `every_reason_this_module_produces_is_a_sentence_a_player_can_act_on`.
+        assert!(matches!(classify(200, r#"{"ok":true,"status":"held","reason":"seat-conflict"}"#), SubmitOutcome::Held { reason } if reason == HELD_FOR_REVIEW));
         assert!(matches!(classify(200, r#"{"ok":true,"status":"incomplete","reason":"below-target-score"}"#), SubmitOutcome::Recorded { .. }));
         assert_eq!(classify(401, "x"), SubmitOutcome::Unauthorized);
-        assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason } if reason == "hash-mismatch"));
+        assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason } if reason == REFUSED_CHANGED));
         assert!(matches!(classify(429, ""), SubmitOutcome::Deferred { .. }));
         assert!(matches!(classify(503, ""), SubmitOutcome::Deferred { .. }));
     }
@@ -291,17 +380,30 @@ mod tests {
     /// refused and why, IS terminal: that is the server's considered answer
     /// and resending it forever would be the retry loop this design exists to
     /// prevent.
+    ///
+    /// It used to assert that the reason was the server's own code, verbatim.
+    /// That assertion **was** the leak: `hash-mismatch` is the backend's
+    /// vocabulary and it went straight to the results list. What has to be
+    /// true instead is that the refusal is still terminal, that the launcher
+    /// still tells the three refusals it knows apart rather than flattening
+    /// them into one, and that each one reads as a sentence.
     #[test]
-    fn a_structured_refusal_is_still_terminal_and_carries_its_reason() {
+    fn a_structured_refusal_is_still_terminal_and_says_which_refusal_it_was() {
         for (status, body, want) in [
-            (400, r#"{"ok":false,"error":"hash-mismatch"}"#, "hash-mismatch"),
-            (422, r#"{"ok":false,"reason":"no such fixture"}"#, "no such fixture"),
-            (409, r#"{"ok":false,"error":"seat-conflict"}"#, "seat-conflict"),
+            (400, r#"{"ok":false,"error":"hash-mismatch"}"#, REFUSED_CHANGED),
+            (422, r#"{"ok":false,"reason":"no such fixture"}"#, REFUSED_NO_FIXTURE),
+            (409, r#"{"ok":false,"error":"seat-conflict"}"#, REFUSED_SEAT),
         ] {
             assert!(
                 matches!(classify(status, body), SubmitOutcome::Rejected { reason } if reason == want),
-                "{status} with {body} should be a refusal saying {want}"
+                "{status} with {body} should be a refusal saying {want:?}"
             );
+        }
+        // Three different refusals, three different sentences: mapping them is
+        // not the same as discarding them.
+        let mut seen = std::collections::BTreeSet::new();
+        for code in [REFUSED_CHANGED, REFUSED_NO_FIXTURE, REFUSED_SEAT, REFUSED_INCOMPLETE, REFUSED_UNKNOWN] {
+            assert!(seen.insert(code), "two refusals share one sentence: {code}");
         }
     }
 
@@ -330,6 +432,51 @@ mod tests {
                 "the raw body reached the player: {reason}"
             );
         }
+    }
+
+    /// The server's own words for a refusal are not player-facing text.
+    ///
+    /// `hash-mismatch`, `seat-conflict`, `below-target-score`: those are the
+    /// backend's internal vocabulary, and they land verbatim in
+    /// `EntryState::Rejected { reason }` and `Held { reason }`, out through
+    /// `StatsEntryView::reason`, and onto the results list. A player reading
+    /// "hash-mismatch" learns nothing and can do nothing.
+    ///
+    /// So every reason this module produces is a sentence, whether the launcher
+    /// recognized the code or not. The code itself is not discarded: it goes to
+    /// `tracing::warn!` at the point it is read.
+    #[test]
+    fn every_reason_this_module_produces_is_a_sentence_a_player_can_act_on() {
+        use crate::player_sentence::assert_player_safe;
+        let reason_of = |status, body: &str| match classify(status, body) {
+            SubmitOutcome::Deferred { reason }
+            | SubmitOutcome::Rejected { reason }
+            | SubmitOutcome::Held { reason } => reason,
+            SubmitOutcome::Recorded { note } => note,
+            other => panic!("{status} produced {other:?}, which carries no reason"),
+        };
+        for (status, body, code) in [
+            (400, r#"{"ok":false,"error":"hash-mismatch"}"#, "hash-mismatch"),
+            (409, r#"{"ok":false,"error":"seat-conflict"}"#, "seat-conflict"),
+            (422, r#"{"ok":false,"reason":"no such fixture"}"#, "fixture"),
+            (400, r#"{"ok":false,"error":"WHAT-EVEN-IS-THIS"}"#, "WHAT-EVEN-IS-THIS"),
+            (200, r#"{"ok":false,"error":"seat-conflict"}"#, "seat-conflict"),
+            (200, r#"{"ok":true,"status":"held","reason":"seat-conflict"}"#, "seat-conflict"),
+            (200, r#"{"ok":true,"status":"parked-pending-audit"}"#, "parked-pending-audit"),
+            (200, r#"{"ok":true,"status":"incomplete","reason":"below-target-score"}"#, "below-target"),
+        ] {
+            let reason = reason_of(status, body);
+            assert_player_safe(&reason);
+            assert!(
+                !reason.contains(code),
+                "the server's own vocabulary reached the player: {reason}"
+            );
+        }
+        // The transport and the catch-all, already sentences, kept under the
+        // same mechanical rules so a reword cannot break them.
+        assert_player_safe(&reason_of(503, ""));
+        assert_player_safe(&reason_of(404, "<html><h1>404 Not Found</h1></html>"));
+        assert_player_safe(COULD_NOT_DELIVER);
     }
 
     #[test]
