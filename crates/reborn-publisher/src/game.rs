@@ -64,20 +64,35 @@
 //! manifest, `chain.json`, and each roughly-a-megabyte delta, never a full
 //! image) and catches the failure mode a manifest-based check can: bytes
 //! that changed or went missing under the origin since they were published.
+//!
+//! A local store that checks out is not proof a player can fetch any of
+//! it: once every blob agrees with the manifest, `game_patch_verify` also
+//! reads the hosted release back over HTTPS (the same read `content.rs`'s
+//! `content_verify` and `roster.rs`'s `roster_verify` each do) and refuses
+//! unless it pins this exact `game-patch` version with a signature that
+//! verifies. Without that second read, a patch published locally but never
+//! uploaded, or uploaded and then rolled back, would still read as
+//! "verified".
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
 use reborn_core::game_patch::{Chain, CHAIN_FILE};
 use reborn_core::inventory::{ComponentId, RunToCompletion};
 use reborn_core::library::hash_file;
-use reborn_core::manifest::Component;
+use reborn_core::manifest::{Component, Sha256Hex};
+use reborn_core::net::{Http, UreqHttp};
 use reborn_core::origin::blob_path;
 use reborn_core::publish::game_patch::{publish_game_patch, GamePatchRequest};
 use reborn_core::publish::roster::Push;
+use reborn_core::publish::status::read_status;
+use reborn_core::publish::upload::{self, Bucket, UploadRequest, Uploaded, UreqTransport};
+use reborn_core::publish::vault::{r2_access, r2_secret};
 use reborn_core::publish::{out, refuse, Outcome, Sink, COMPONENTS_DIR};
+use reborn_core::signing::{Ed25519Verifier, TRUSTED_KEYS};
 use reborn_core::{Error, ExitKind, Platform};
 
 use crate::settings::{settings_path, Settings};
@@ -180,6 +195,56 @@ impl Drop for ScratchGuard {
 
 fn scratch_iso_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join("reborn-publish").join(format!("game-build-{tag}-{}.iso", std::process::id()))
+}
+
+fn non_empty(s: &Option<String>) -> Option<String> {
+    s.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn user_agent() -> String {
+    concat!("reborn-publisher/", env!("CARGO_PKG_VERSION")).to_string()
+}
+
+/// The R2 bucket this app uploads to, from settings plus the vault. See
+/// `roster.rs`'s own copy of this helper for why credentials are read here
+/// rather than passed in as a command argument: a `#[tauri::command]`
+/// argument is exactly what a browser devtools console in front of this
+/// window could set to anything.
+fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {
+    let endpoint =
+        non_empty(&settings.bucket_endpoint).ok_or_else(|| "No bucket endpoint is configured. Set one in Settings before publishing.".to_string())?;
+    let bucket_name =
+        non_empty(&settings.bucket_name).ok_or_else(|| "No bucket name is configured. Set one in Settings before publishing.".to_string())?;
+    let access_key_id = r2_access(platform)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No R2 access key is stored in the vault. Store one on the Keys page before publishing.".to_string())?;
+    let secret_access_key = r2_secret(platform)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No R2 secret key is stored in the vault. Store one on the Keys page before publishing.".to_string())?;
+    Ok(Bucket { endpoint, bucket: bucket_name, region: "auto".to_string(), access_key_id, secret_access_key })
+}
+
+/// The length the bucket already serves `key` at, or `None` when it does
+/// not have it. A signed HEAD, the same request shape `roster.rs`'s own
+/// copy of this helper and plan 2's `upload.rs` both use for the same
+/// `already` callback.
+fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
+    let empty_sha = Sha256Hex::from_bytes(&[]);
+    let path = upload::object_path(bucket, key);
+    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
+    let reply = transport.send(&req, upload::Body::Empty).ok()?;
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
+}
+
+/// Whether `pins` (a hosted release's own list, or a local one) names `id`
+/// at exactly `version`. Pulled out of [`game_patch_verify_body`] so the
+/// exact-match rule (not "any version", not "any component whose name
+/// matches") has its own name and its own tests.
+fn release_pins_version(pins: &[(ComponentId, String)], id: ComponentId, version: &str) -> bool {
+    pins.iter().any(|(cid, v)| *cid == id && v == version)
 }
 
 // ---------------------------------------------------------------------------
@@ -640,9 +705,21 @@ fn game_patch_plan_body(to: &str, sink: Sink<'_>) -> reborn_core::Result<Outcome
 /// Game patch, run: encode, decode-verify, publish, re-sign, upload.
 #[tauri::command]
 pub fn game_patch_run(to: String, version: String, dry_run: bool) -> Result<Value, String> {
+    let platform = Platform::detect();
+    let settings_file = settings_path(&platform)?;
+    let settings = Settings::load(&settings_file)?;
+
+    // Resolved up front, before anything is encoded: a patch that hashes,
+    // deltas and chains for real (several minutes of work) and only then
+    // discovers there is no bucket configured would leave the origin's
+    // chain ahead of what the bucket actually serves, with no way to catch
+    // up from here. Same reasoning `roster.rs`'s own `roster_run` uses.
+    let bucket = if dry_run { None } else { Some(bucket_from(&platform, &settings)?) };
+    let public_base = settings.public_base.clone();
+
     let inputs = json!({"to": to, "version": version, "dry_run": dry_run});
     crate::ops::run_operation("game_patch:run", dry_run, inputs, move |sink| {
-        game_patch_run_body(&to, &version, dry_run, sink)
+        game_patch_run_body(&to, &version, dry_run, sink, settings_file, settings, bucket, &public_base)
     })?;
     Ok(json!({"accepted": true}))
 }
@@ -670,9 +747,17 @@ fn push_to_json(push: &Push) -> Value {
     })
 }
 
-fn game_patch_run_body(to: &str, version: &str, dry_run: bool, sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
+fn game_patch_run_body(
+    to: &str,
+    version: &str,
+    dry_run: bool,
+    sink: Sink<'_>,
+    settings_file: PathBuf,
+    mut settings: Settings,
+    bucket: Option<Bucket>,
+    public_base: &str,
+) -> reborn_core::Result<Outcome<Value>> {
     let platform = Platform::detect();
-    let (settings_file, mut settings) = load_settings_with_path(&platform)?;
     let from_path = match resolve_current_build(&settings) {
         Ok(p) => p,
         Err(e) => return Ok(refuse(sink, &[e])),
@@ -742,20 +827,85 @@ fn game_patch_run_body(to: &str, version: &str, dry_run: bool, sink: Sink<'_>) -
                 // write succeeds.
                 let _ = settings.save(&settings_file);
             }
-            let mut value = push_to_json(&push);
-            let sequence = push.release.as_ref().map(|s| s.sequence);
-            value["summary"] = json!(match sequence {
-                Some(seq) => format!("Published game patch {version} at release sequence {seq}."),
-                None => format!("Published game patch {version} (component only; no key to sign a release)."),
-            });
-            value["dry_run"] = json!(dry_run);
-            value["hashes"] = json!([["to", to_sha.as_str()]]);
-            if let Some(seq) = sequence {
-                value["sequence"] = json!(seq);
-            }
-            Ok(Outcome::Done(value))
+
+            let transport = UreqTransport::new();
+            let http2 = UreqHttp::new(&user_agent());
+            finish_game_patch_run(&transport, &http2, push, &to_sha, version, dry_run, &origin, bucket.as_ref(), public_base, sink)
         }
     }
+}
+
+/// The upload half of Run, once `publish_game_patch` has already published
+/// the component and re-signed the release: with no bucket, say so and stop
+/// (a dry run, the only time `bucket` is `None`); otherwise plan and upload
+/// exactly what `roster.rs`'s own `roster_run` does, folding the result into
+/// the same JSON shape `push_to_json` builds. Split out of
+/// [`game_patch_run_body`] so a test can hand it a fake [`upload::Transport`]
+/// and [`Http`] instead of a real socket -- both traits exist for exactly
+/// this (see `upload.rs`'s own doc comment on [`upload::Transport`]).
+#[allow(clippy::too_many_arguments)]
+fn finish_game_patch_run(
+    transport: &dyn upload::Transport,
+    http: &dyn Http,
+    push: Push,
+    to_sha: &Sha256Hex,
+    version: &str,
+    dry_run: bool,
+    origin: &Path,
+    bucket: Option<&Bucket>,
+    public_base: &str,
+    sink: Sink<'_>,
+) -> reborn_core::Result<Outcome<Value>> {
+    // `req.apply` was `!dry_run`, and `publish_game_patch` only returns
+    // `Outcome::Done` when `apply` was true, so in `game_patch_run_body`'s
+    // own caller `dry_run` is always false here and `bucket` (resolved the
+    // same way, in `game_patch_run`) is always `Some`. Handled explicitly
+    // anyway rather than indexed into blindly: see this crate's "never
+    // panic" rule, and this file's own tests exercise this branch directly.
+    let Some(bucket) = bucket else {
+        let mut value = push_to_json(&push);
+        value["summary"] = json!(format!("Published game patch {version} locally. Not uploaded: this was a dry run."));
+        value["dry_run"] = json!(dry_run);
+        value["hashes"] = json!([["to", to_sha.as_str()]]);
+        return Ok(Outcome::Done(value));
+    };
+
+    let plan = upload::plan_origin(origin, &|key| head_len(transport, bucket, key))?;
+    let upload_req = UploadRequest {
+        bucket,
+        plan: &plan,
+        multipart_threshold: upload::DEFAULT_MULTIPART_THRESHOLD,
+        part_size: upload::DEFAULT_PART_SIZE,
+        attempts: upload::DEFAULT_ATTEMPTS,
+        public_base: Some(public_base),
+        apply: true,
+    };
+    let uploaded = match upload::upload(transport, http, &upload_req, sink)? {
+        Outcome::Refused(r) => return Ok(Outcome::Refused(r)),
+        Outcome::Described => Uploaded::default(),
+        Outcome::Done(u) => u,
+    };
+
+    let mut value = push_to_json(&push);
+    let sequence = push.release.as_ref().map(|s| s.sequence);
+    value["summary"] = json!(match sequence {
+        Some(seq) => format!(
+            "Published game patch {version} at release sequence {seq}: {} object(s), {} byte(s) uploaded.",
+            uploaded.objects, uploaded.bytes
+        ),
+        None => format!(
+            "Published game patch {version} (component only; no key to sign a release): {} object(s), {} byte(s) uploaded.",
+            uploaded.objects, uploaded.bytes
+        ),
+    });
+    value["dry_run"] = json!(dry_run);
+    value["hashes"] = json!([["to", to_sha.as_str()]]);
+    if let Some(seq) = sequence {
+        value["sequence"] = json!(seq);
+    }
+    value["uploaded"] = json!(plan.items().map(|i| i.key.clone()).collect::<Vec<_>>());
+    value["verified"] = json!(uploaded.verified.first().cloned());
+    Ok(Outcome::Done(value))
 }
 
 // ---------------------------------------------------------------------------
@@ -803,6 +953,8 @@ fn latest_game_patch_manifest(origin: &Path) -> reborn_core::Result<Option<(Path
 fn game_patch_verify_body(sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>> {
     let settings = load_settings(&Platform::detect())?;
     let origin = PathBuf::from(&settings.origin);
+    let public_base = settings.public_base.clone();
+    let launcher_manifest = settings.launcher_manifest.clone();
 
     let Some((manifest_path, component)) = latest_game_patch_manifest(&origin)? else {
         return Ok(refuse(sink, &["No game-patch component has been published to this origin yet. Nothing to verify.".to_string()]));
@@ -852,14 +1004,50 @@ fn game_patch_verify_body(sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>>
         return Ok(refuse(sink, &lines));
     }
 
+    // The local store checking out is not proof a player can fetch any of
+    // it: read the hosted release back over HTTPS, the same read
+    // `content_verify` and `roster_verify` each do, and refuse unless it
+    // pins this exact game-patch version with a signature that verifies.
+    // See this file's module doc.
+    out!(sink, "Checking      {public_base} pins game-patch at {}", component.version);
+    let http = UreqHttp::new(&user_agent());
+    let verifier = Ed25519Verifier::with_keys(TRUSTED_KEYS)?;
+    let status = read_status(&http, &origin, &public_base, &launcher_manifest, &verifier);
+    let problem_text = || {
+        if status.problems.is_empty() {
+            "no reason was given".to_string()
+        } else {
+            status.problems.join("; ")
+        }
+    };
+    let Some(hosted) = &status.hosted else {
+        return Ok(refuse(sink, &[format!("The hosted release could not be read: {}", problem_text())]));
+    };
+    if !hosted.verified {
+        return Ok(refuse(sink, &[format!("The hosted release at sequence {} did not verify: {}", hosted.sequence, problem_text())]));
+    }
+    if !release_pins_version(&hosted.pins, ComponentId::GamePatch, &component.version) {
+        return Ok(refuse(sink, &[format!(
+            "{public_base} does not pin game-patch at {}. The upload may not have completed; \
+             re-run Run (Run always encodes, publishes and uploads together).",
+            component.version
+        )]));
+    }
+
     let summary = match &chain_report {
         Some((steps, base, head)) => format!(
-            "{} file(s) verified. Chain has {steps} step(s), base {}\u{2026}, head {}\u{2026}.",
+            "{} file(s) verified. Chain has {steps} step(s), base {}\u{2026}, head {}\u{2026}. {public_base} \
+             serves {} with a verified signature.",
             component.files.len(),
             &base[..12.min(base.len())],
-            &head[..12.min(head.len())]
+            &head[..12.min(head.len())],
+            component.version
         ),
-        None => format!("{} file(s) verified.", component.files.len()),
+        None => format!(
+            "{} file(s) verified. {public_base} serves {} with a verified signature.",
+            component.files.len(),
+            component.version
+        ),
     };
     out!(sink, "{summary}");
     Ok(Outcome::Done(json!({
@@ -867,9 +1055,264 @@ fn game_patch_verify_body(sink: Sink<'_>) -> reborn_core::Result<Outcome<Value>>
         "verified": summary,
         "version": component.version,
         "sequence": component.sequence,
+        "release_sequence": hosted.sequence,
         "files_checked": component.files.len(),
         "chain_steps": chain_report.as_ref().map(|(s, _, _)| *s),
         "chain_base": chain_report.as_ref().map(|(_, b, _)| b.clone()),
         "chain_head": chain_report.as_ref().map(|(_, _, h)| h.clone()),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Two things here are genuinely new logic this task adds, not glue
+    //! over an already-tested `reborn_core` function, so they are what
+    //! this module's own tests target (the same policy `set.rs`'s own
+    //! test module states): [`release_pins_version`], the exact-match rule
+    //! Verify's new hosted-pin check turns on, and [`finish_game_patch_run`],
+    //! the upload half of Run that used to not exist at all. Both are
+    //! exercised without a real socket: [`upload::Transport`] and
+    //! [`Http`] are narrow traits for exactly this (see `upload.rs`'s own
+    //! doc comment on [`upload::Transport`]), so a `FakeTransport` and a
+    //! `FakeHttp` stand in for the bucket and the public CDN the way
+    //! `set.rs`'s own tests stand a fake script in for `build.ps1`.
+
+    use super::*;
+    use reborn_core::manifest::{ManifestFile, COMPONENT_SCHEMA};
+    use reborn_core::origin::{RELEASE_FILE, SIGNATURE_FILE};
+    use reborn_core::publish::component::Published;
+    use reborn_core::publish::Event;
+
+    // -- release_pins_version ------------------------------------------
+
+    #[test]
+    fn release_pins_version_true_only_for_an_exact_component_and_version_match() {
+        let pins = vec![(ComponentId::GamePatch, "2026.09.09".to_string()), (ComponentId::Roster, "2026.09.01".to_string())];
+        assert!(release_pins_version(&pins, ComponentId::GamePatch, "2026.09.09"));
+        // Same component, a different version: not a match. This is the
+        // exact failure mode a rolled-back or not-yet-uploaded patch takes.
+        assert!(!release_pins_version(&pins, ComponentId::GamePatch, "2026.09.08"));
+        // A component the release does not pin at all.
+        assert!(!release_pins_version(&pins, ComponentId::Launcher, "1.0.0"));
+    }
+
+    #[test]
+    fn release_pins_version_false_against_an_empty_release() {
+        assert!(!release_pins_version(&[], ComponentId::GamePatch, "2026.09.09"));
+    }
+
+    // -- finish_game_patch_run, against fakes rather than a real socket --
+
+    #[derive(Debug, Default)]
+    struct FakeTransport;
+
+    impl upload::Transport for FakeTransport {
+        fn send(&self, _req: &upload::SignedRequest, _body: upload::Body<'_>) -> reborn_core::Result<upload::Reply> {
+            // Every HEAD (the "already" check) and every PUT this test's
+            // small files ever trigger is answered the same plain way a
+            // fresh bucket that has nothing yet would: a bare 200, no
+            // headers. `head_len` reads that as "not already there" (no
+            // content-length to report), so the plan always includes
+            // everything this test seeds, and `put_single` reads any 2xx
+            // as success. Real signature validation is the server's job,
+            // not this fake's.
+            Ok(upload::Reply { status: 200, headers: Vec::new(), body: Vec::new() })
+        }
+    }
+
+    /// Answers every read-back GET with the same bytes, so
+    /// `upload::upload`'s own read-back check (which compares the reply
+    /// byte for byte against `release.json` on disk) matches without this
+    /// test needing to fake a real edge.
+    struct FakeHttp {
+        body: String,
+    }
+
+    impl Http for FakeHttp {
+        fn get_text(&self, _url: &str) -> reborn_core::Result<reborn_core::net::HttpResponse> {
+            Ok(reborn_core::net::HttpResponse { status: 200, body: self.body.clone() })
+        }
+        fn get_to_file(&self, url: &str, _to: &Path) -> reborn_core::Result<u64> {
+            Err(str_err(format!("{url}: this test's FakeHttp never downloads a whole file")))
+        }
+        fn post_json(&self, url: &str, _body: &[u8], _bearer: Option<&str>) -> reborn_core::Result<reborn_core::net::HttpResponse> {
+            Err(str_err(format!("{url}: this test's FakeHttp never posts")))
+        }
+    }
+
+    fn test_bucket() -> Bucket {
+        Bucket {
+            endpoint: "https://example-bucket.invalid".to_string(),
+            bucket: "example".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_access_key: "example-secret".to_string(),
+        }
+    }
+
+    /// A local origin holding exactly what a real `publish_game_patch`
+    /// would have just written: one blob, one component manifest, and a
+    /// signed release -- the shape `upload::plan_origin` (which
+    /// `finish_game_patch_run` calls) scans for. Returns the release
+    /// bytes too, since the fake HTTP read-back needs to answer with them.
+    fn seed_published_origin(origin: &Path, version: &str) -> (Vec<u8>, u64) {
+        let blob_bytes = b"a tiny fake game-patch delta, standing in for a real xdelta3 step";
+        let blob_sha = Sha256Hex::from_bytes(blob_bytes);
+        let blob_full = origin.join(blob_path(&blob_sha));
+        std::fs::create_dir_all(blob_full.parent().unwrap()).unwrap();
+        std::fs::write(&blob_full, blob_bytes).unwrap();
+
+        std::fs::create_dir_all(origin.join(COMPONENTS_DIR)).unwrap();
+        let component = Component {
+            schema: COMPONENT_SCHEMA.to_string(),
+            component: ComponentId::GamePatch.as_str().to_string(),
+            version: version.to_string(),
+            sequence: 1,
+            install_root: ComponentId::GamePatch.install_root().unwrap().to_string(),
+            customizable: false,
+            files: vec![ManifestFile { path: CHAIN_FILE.to_string(), bytes: blob_bytes.len() as u64, sha256: blob_sha }],
+        };
+        let manifest_bytes = serde_json::to_vec(&component).unwrap();
+        std::fs::write(origin.join(COMPONENTS_DIR).join(format!("game-patch-{version}.json")), &manifest_bytes).unwrap();
+
+        let release_bytes = format!(r#"{{"schema":"nsr.release.v1","version":"{version}","sequence":1}}"#).into_bytes();
+        std::fs::write(origin.join(RELEASE_FILE), &release_bytes).unwrap();
+        std::fs::write(origin.join(SIGNATURE_FILE), b"not-a-real-signature-this-is-a-test").unwrap();
+
+        // blob + manifest + release.json + release.json.sig
+        let total_objects = 4;
+        (release_bytes, total_objects)
+    }
+
+    fn fake_push(version: &str) -> Push {
+        Push {
+            component: Published {
+                manifest_path: PathBuf::from(format!("game-patch-{version}.json")),
+                sha256: Sha256Hex::from_bytes(b"fake component manifest bytes"),
+                files: 1,
+                bytes: 66,
+                new_blobs: 1,
+                new_bytes: 66,
+                shared_blobs: 0,
+                shared_bytes: 0,
+            },
+            release: None,
+        }
+    }
+
+    #[test]
+    fn finish_game_patch_run_with_no_bucket_reports_a_dry_run_and_uploads_nothing() {
+        let push = fake_push("2026.09.09");
+        let to_sha = Sha256Hex::from_bytes(b"the new build's bytes");
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        let transport = FakeTransport;
+        let http = FakeHttp { body: String::new() };
+        let mut lines = Vec::new();
+        let mut sink = |e: Event| lines.push(e.line);
+
+        let outcome =
+            finish_game_patch_run(&transport, &http, push, &to_sha, "2026.09.09", true, &origin, None, "https://files.example.invalid", &mut sink)
+                .unwrap();
+
+        let value = match outcome {
+            Outcome::Done(v) => v,
+            other => panic!("expected Done, got {other:?}"),
+        };
+        assert!(value["summary"].as_str().unwrap().contains("Not uploaded: this was a dry run."), "{value}");
+        assert!(value["dry_run"].as_bool().unwrap());
+        // No HTTP or transport call was made at all: had one been, the
+        // fake's own answers would have let it through silently, so the
+        // real proof is that nothing in `origin` (which does not even
+        // exist on disk here) was ever needed.
+        assert!(!origin.exists());
+    }
+
+    #[test]
+    fn finish_game_patch_run_with_a_bucket_uploads_the_whole_plan_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        let version = "2026.09.09";
+        let (release_bytes, total_objects) = seed_published_origin(&origin, version);
+
+        let push = fake_push(version);
+        let to_sha = Sha256Hex::from_bytes(b"the new build's bytes");
+        let bucket = test_bucket();
+        let transport = FakeTransport;
+        let http = FakeHttp { body: String::from_utf8(release_bytes).unwrap() };
+        let mut lines = Vec::new();
+        let mut sink = |e: Event| lines.push(e.line);
+
+        let outcome = finish_game_patch_run(
+            &transport,
+            &http,
+            push,
+            &to_sha,
+            version,
+            false,
+            &origin,
+            Some(&bucket),
+            "https://files.example.invalid",
+            &mut sink,
+        )
+        .unwrap();
+
+        let value = match outcome {
+            Outcome::Done(v) => v,
+            other => panic!("expected Done, got {other:?}"),
+        };
+        let summary = value["summary"].as_str().unwrap();
+        assert!(summary.contains(&format!("{total_objects} object(s)")), "{summary}");
+        assert!(summary.contains("no key to sign a release"), "{summary}");
+        let uploaded = value["uploaded"].as_array().unwrap();
+        assert_eq!(uploaded.len() as u64, total_objects, "{uploaded:?}");
+        assert!(uploaded.iter().any(|k| k.as_str() == Some(RELEASE_FILE)), "{uploaded:?}");
+        assert!(uploaded.iter().any(|k| k.as_str() == Some(SIGNATURE_FILE)), "{uploaded:?}");
+        // The read-back matched byte for byte, so `verified` names it.
+        assert!(value["verified"].as_str().unwrap().contains(RELEASE_FILE), "{value}");
+        assert!(!value["dry_run"].as_bool().unwrap());
+        // No release was signed in this test's `Push`, so there is nothing
+        // for the journal to key a release sequence on.
+        assert!(value.get("sequence").is_none());
+    }
+
+    // -- latest_game_patch_manifest --------------------------------------
+
+    fn write_manifest(origin: &Path, version: &str, sequence: u64) {
+        std::fs::create_dir_all(origin.join(COMPONENTS_DIR)).unwrap();
+        let component = Component {
+            schema: COMPONENT_SCHEMA.to_string(),
+            component: ComponentId::GamePatch.as_str().to_string(),
+            version: version.to_string(),
+            sequence,
+            install_root: ComponentId::GamePatch.install_root().unwrap().to_string(),
+            customizable: false,
+            files: Vec::new(),
+        };
+        std::fs::write(
+            origin.join(COMPONENTS_DIR).join(format!("game-patch-{version}.json")),
+            serde_json::to_vec(&component).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn latest_game_patch_manifest_picks_the_highest_sequence_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin");
+        write_manifest(&origin, "2026.09.01", 1);
+        write_manifest(&origin, "2026.09.09", 3);
+        write_manifest(&origin, "2026.09.05", 2);
+
+        let (_, component) = latest_game_patch_manifest(&origin).unwrap().unwrap();
+        assert_eq!(component.version, "2026.09.09");
+        assert_eq!(component.sequence, 3);
+    }
+
+    #[test]
+    fn latest_game_patch_manifest_is_none_before_anything_is_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin-does-not-exist");
+        assert!(latest_game_patch_manifest(&origin).unwrap().is_none());
+    }
 }
