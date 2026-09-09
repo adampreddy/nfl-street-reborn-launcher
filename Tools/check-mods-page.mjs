@@ -40,6 +40,9 @@ function fakeEl(tag) {
     setAttribute(k, v) {
       this.attrs[k] = v;
     },
+    querySelectorAll() {
+      return [];
+    },
   };
 }
 const byId = {};
