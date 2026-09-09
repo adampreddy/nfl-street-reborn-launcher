@@ -83,15 +83,36 @@ fn origin_url(origin: &str, path: &str) -> String {
     format!("{}{}", origin.trim_end_matches('/'), path)
 }
 
+/// Shown to the player when the sign-in service could not be reached at all: no route, DNS
+/// failure, timeout, connection refused. The one thing a player can do about any of those is
+/// check their own connection and try again, so that is the whole message.
+const SIGNIN_UNREACHABLE: &str =
+    "The sign-in service could not be reached. Check your internet connection and try again.";
+
+/// Shown to the player when the sign-in service answered but did not behave: a failure status,
+/// a reply that could not be parsed, or a reply missing what it needed. A player cannot tell
+/// these apart and there is nothing different for them to do about any of them, so they all
+/// collapse to this one sentence. The technical detail that would distinguish them goes to
+/// `tracing::warn!` instead, the same seam `mods.rs` and `content.rs` already use for detail
+/// that is useful to a developer but not to a player.
+const SIGNIN_UNAVAILABLE: &str = "The sign-in service is not responding properly right now. Try again in a moment.";
+
 pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> {
     let body = serde_json::json!({ "label": label });
     let url = origin_url(origin, "/v1/auth/device");
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
-    let r = http.post_json(&url, &bytes, None)?;
+    let r = http.post_json(&url, &bytes, None).map_err(|e| {
+        tracing::warn!("sign-in: could not reach {url}: {e}");
+        plain(SIGNIN_UNREACHABLE.to_string())
+    })?;
     if !r.is_success() {
-        return Err(plain(format!("{url} answered {}", r.status)));
+        tracing::warn!("sign-in: {url} answered {}", r.status);
+        return Err(plain(SIGNIN_UNAVAILABLE.to_string()));
     }
-    serde_json::from_str(&r.body).map_err(|e| plain(format!("the sign-in reply was not understood: {e}")))
+    serde_json::from_str(&r.body).map_err(|e| {
+        tracing::warn!("sign-in: the device-start reply was not understood: {e}");
+        plain(SIGNIN_UNAVAILABLE.to_string())
+    })
 }
 
 pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
@@ -100,20 +121,32 @@ pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
     let body = serde_json::json!({ "device_code": device_code });
     let url = origin_url(origin, "/v1/auth/device/poll");
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
-    let r = http.post_json(&url, &bytes, None)?;
+    let r = http.post_json(&url, &bytes, None).map_err(|e| {
+        tracing::warn!("sign-in: could not reach {url}: {e}");
+        plain(SIGNIN_UNREACHABLE.to_string())
+    })?;
     match r.status {
         428 => Ok(Poll::Pending),
         // 410 alone means the code expired. A 404 means the origin or path is wrong; mapping
         // it to Expired would send the player round a device-code loop that can never succeed.
         410 => Ok(Poll::Expired),
         s if (200..300).contains(&s) => {
-            let reply: Reply = serde_json::from_str(&r.body).map_err(|e| plain(format!("the poll reply was not understood: {e}")))?;
+            let reply: Reply = serde_json::from_str(&r.body).map_err(|e| {
+                tracing::warn!("sign-in: the poll reply was not understood: {e}");
+                plain(SIGNIN_UNAVAILABLE.to_string())
+            })?;
             match (reply.token, reply.player) {
                 (Some(token), Some(player)) => Ok(Poll::Done { token, player }),
-                _ => Err(plain("the poll reply had no token".to_string())),
+                _ => {
+                    tracing::warn!("sign-in: the poll reply had no token or player");
+                    Err(plain(SIGNIN_UNAVAILABLE.to_string()))
+                }
             }
         }
-        s => Err(plain(format!("{url} answered {s}"))),
+        s => {
+            tracing::warn!("sign-in: {url} answered {s}");
+            Err(plain(SIGNIN_UNAVAILABLE.to_string()))
+        }
     }
 }
 
@@ -268,8 +301,76 @@ mod tests {
     #[test]
     fn poll_maps_404_to_an_error_not_expired() {
         let wrong_path = FakeHttp::default().reply("https://b/v1/auth/device/poll", 404, "");
-        let err = poll(&wrong_path, "https://b", "dc").unwrap_err();
-        assert!(format!("{err}").contains("404"));
+        // A 404 must show up as an error, never as Expired -- Expired would send the player
+        // round a device-code loop that can never succeed. (Message wording is covered by
+        // `every_sign_in_error_reads_as_a_plain_sentence` below.)
+        assert!(poll(&wrong_path, "https://b", "dc").is_err());
+    }
+
+    /// A player can see the message from every failing path through `start` and `poll`. None
+    /// of them may carry raw technical text: no scheme word, no URL, no three-digit status
+    /// code. This is mechanical -- a run of 3+ ASCII digits, or the substring "http" -- rather
+    /// than a list of expected sentences, so a future edit that slips a URL or a status code
+    /// back into a message fails this test even if nobody updates the list by hand.
+    #[test]
+    fn every_sign_in_error_reads_as_a_plain_sentence() {
+        fn has_run_of_three_or_more_digits(s: &str) -> bool {
+            let mut run = 0;
+            for c in s.chars() {
+                if c.is_ascii_digit() {
+                    run += 1;
+                    if run >= 3 {
+                        return true;
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            false
+        }
+
+        fn assert_player_safe(err: &Error) {
+            let msg = format!("{err}");
+            let lower = msg.to_ascii_lowercase();
+            assert!(!lower.contains("http"), "message leaked transport jargon: {msg}");
+            assert!(!msg.contains("://"), "message leaked a URL: {msg}");
+            assert!(
+                !has_run_of_three_or_more_digits(&msg),
+                "message leaked a status code: {msg}"
+            );
+        }
+
+        // start: the server cannot be reached at all (no canned reply -> a transport failure).
+        let start_unreachable = FakeHttp::default();
+        assert_player_safe(&start(&start_unreachable, "https://b", "ADAM-PC").unwrap_err());
+
+        // start: the server answers, but with a failure status.
+        let start_failure = FakeHttp::default().reply("https://b/v1/auth/device", 500, "internal error");
+        assert_player_safe(&start(&start_failure, "https://b", "ADAM-PC").unwrap_err());
+
+        // start: a 200 whose body is not the expected shape.
+        let start_garbage = FakeHttp::default().reply("https://b/v1/auth/device", 200, "not json");
+        assert_player_safe(&start(&start_garbage, "https://b", "ADAM-PC").unwrap_err());
+
+        // poll: the server cannot be reached at all.
+        let poll_unreachable = FakeHttp::default();
+        assert_player_safe(&poll(&poll_unreachable, "https://b", "dc").unwrap_err());
+
+        // poll: a failure status that is neither 428 pending nor 410 expired.
+        let poll_failure = FakeHttp::default().reply("https://b/v1/auth/device/poll", 500, "internal error");
+        assert_player_safe(&poll(&poll_failure, "https://b", "dc").unwrap_err());
+
+        // poll: a 200 whose body is not the expected shape.
+        let poll_garbage = FakeHttp::default().reply("https://b/v1/auth/device/poll", 200, "not json");
+        assert_player_safe(&poll(&poll_garbage, "https://b", "dc").unwrap_err());
+
+        // poll: a 200 with valid JSON that is missing the token and player.
+        let poll_incomplete = FakeHttp::default().reply("https://b/v1/auth/device/poll", 200, r#"{"ok":true}"#);
+        assert_player_safe(&poll(&poll_incomplete, "https://b", "dc").unwrap_err());
+
+        // poll: the 404-is-not-Expired case must also read as a plain sentence.
+        let poll_wrong_path = FakeHttp::default().reply("https://b/v1/auth/device/poll", 404, "");
+        assert_player_safe(&poll(&poll_wrong_path, "https://b", "dc").unwrap_err());
     }
 
     #[test]
