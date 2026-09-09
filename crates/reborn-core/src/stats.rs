@@ -1881,11 +1881,28 @@ impl StatsQueue {
     ///
     /// `max_attempts` is how many failed attempts an entry tolerates before it
     /// is stalled. Nothing is deleted at any point in here.
+    ///
+    /// # Stalled entries are put back first
+    ///
+    /// A stall is not a property of the capture. It means the last few
+    /// attempts did not get through, which is a fact about the connection or
+    /// the server, and both of those change on their own. So every pass starts
+    /// by clearing them, and `max_attempts` goes back to being what it is for:
+    /// bounding how many times ONE pass hammers a dead endpoint, and deciding
+    /// what the player is told afterwards.
+    ///
+    /// Without this a stalled game could never be sent again from inside the
+    /// product. [`retry_stalled`](Self::retry_stalled) was the only way back
+    /// and its only caller in the workspace is `rebornctl stats retry`. Signed
+    /// in, through a three hour outage, five games played: the first one burns
+    /// an attempt per session, reaches the limit, and is still sitting there
+    /// after the other four have gone out.
     pub fn submit_pending(
         &self,
         submitter: &dyn Submitter,
         max_attempts: u32,
     ) -> Result<SubmitReport> {
+        self.retry_stalled()?;
         let ledger = self.terminal_states()?;
         let mut raw = self.read_all_raw()?;
         raw.sort_by(|a, b| {
@@ -1996,6 +2013,10 @@ impl StatsQueue {
     ///
     /// Nothing expires a stalled capture on its own. The game happened, so the
     /// only two ways out are sending it or the player deleting it.
+    ///
+    /// Called at the top of every [`submit_pending`](Self::submit_pending), and
+    /// still callable on its own by `rebornctl stats retry` for a person who
+    /// wants it to happen now rather than at the end of the next game.
     pub fn retry_stalled(&self) -> Result<Vec<CaptureKey>> {
         let mut moved = Vec::new();
         for mut entry in self.entries()? {
@@ -3126,11 +3147,19 @@ mod tests {
         assert_eq!(q.submit_pending(&good, 3).unwrap().accepted.len(), 1);
     }
 
-    /// Attempts are bounded so a dead endpoint does not spin, and a stalled
-    /// capture is kept rather than expired. The game happened; nobody else has a
-    /// copy.
+    /// Attempts are bounded so one pass cannot spin on a dead endpoint, and a
+    /// stalled capture is kept rather than expired. The game happened; nobody
+    /// else has a copy.
+    ///
+    /// This test used to assert that a stalled entry was never tried again by
+    /// anything. That assertion was the defect, not a guarantee: it meant a
+    /// game that had hit the limit could never be sent again from inside the
+    /// product, and the settings panel did not count it either, so it was
+    /// invisible as well as undeliverable. See
+    /// `a_stalled_capture_is_picked_up_again_by_the_next_send_pass`. What is
+    /// bounded is calls per pass, and that is what is measured here.
     #[test]
-    fn a_stalled_capture_is_kept_and_can_be_put_back_in_the_queue() {
+    fn a_stalled_capture_is_kept_and_is_never_called_more_than_once_a_pass() {
         let dir = tempfile::tempdir().unwrap();
         let q = queue(dir.path(), 1_000);
         q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
@@ -3142,24 +3171,73 @@ mod tests {
         for _ in 0..2 {
             q.submit_pending(&dead, 2).unwrap();
         }
-        assert_eq!(dead.count(), 2, "the endpoint must stop being called");
+        assert_eq!(dead.count(), 2, "one call per pass and no more");
         let stalled = q.stalled().unwrap();
         assert_eq!(stalled.len(), 1);
-        assert!(q.pending().unwrap().is_empty());
+        assert!(
+            q.pending().unwrap().is_empty(),
+            "stalled until a pass puts it back"
+        );
 
         q.submit_pending(&dead, 2).unwrap();
         assert_eq!(
             dead.count(),
-            2,
-            "a stalled entry must not keep being retried"
+            3,
+            "the next pass puts it back and tries it exactly once"
         );
         assert!(
             q.capture_bytes(&stalled[0].key).unwrap().is_some(),
             "a stalled capture must never be deleted"
         );
 
+        // And a person can still do it now rather than at the end of the next
+        // game, which is what `rebornctl stats retry` is for.
+        q.submit_pending(&dead, 2).unwrap();
+        assert_eq!(q.stalled().unwrap().len(), 1);
         assert_eq!(q.retry_stalled().unwrap().len(), 1);
         assert_eq!(q.pending().unwrap()[0].attempts, 0);
+    }
+
+    /// A stall is a fact about the connection, never about the capture, and
+    /// the connection changes on its own. So the next send pass picks it up
+    /// without anybody being told to run anything.
+    ///
+    /// What this replaces was reachable without the player doing anything
+    /// unusual. Signed in, the backend has a three hour outage, they play five
+    /// games. Every session end runs a send pass, so the first game burns one
+    /// attempt per session and reaches the limit. The outage ends, games two
+    /// to five go out, and game one never does, because the only caller of
+    /// `retry_stalled` in the whole workspace is `rebornctl stats retry`.
+    /// Pressing the send button five times on a bad connection does it in
+    /// about ten seconds.
+    #[test]
+    fn a_stalled_capture_is_picked_up_again_by_the_next_send_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap();
+
+        let dead = Recorder::new(SubmitOutcome::Deferred {
+            reason: "no connection".into(),
+        });
+        for _ in 0..2 {
+            q.submit_pending(&dead, 2).unwrap();
+        }
+        assert_eq!(
+            q.stalled().unwrap().len(),
+            1,
+            "two failures against a limit of two is a stall"
+        );
+
+        // The outage ends. Nobody opened a terminal.
+        let good = Recorder::new(SubmitOutcome::Accepted);
+        let report = q.submit_pending(&good, 2).unwrap();
+        assert_eq!(
+            report.accepted.len(),
+            1,
+            "a stalled game must not be unsendable from inside the product"
+        );
+        assert!(q.stalled().unwrap().is_empty());
     }
 
     /// Pruning is for results the server already has. Anything else is the only

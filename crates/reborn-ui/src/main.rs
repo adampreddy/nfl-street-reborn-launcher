@@ -3267,7 +3267,10 @@ struct StatsEntryView {
 
 #[derive(Debug, Serialize, Default, PartialEq, Eq)]
 struct StatsQueueCounts {
-    /// What the next submission pass would actually try. Only `Queued` counts.
+    /// What the next submission pass would actually try: `Queued` and
+    /// `Stalled`. A pass puts stalled entries back before it starts, so they
+    /// are as waiting as anything else, and this is the only number the
+    /// settings panel shows.
     depth: usize,
     quarantined: usize,
     stalled: usize,
@@ -3301,11 +3304,15 @@ fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
 
 /// Count the queue by state.
 ///
-/// `depth` is the number of entries a submission pass would try, and it counts
-/// `Queued` and nothing else. `Held` means the server stored the result and a
-/// person will decide, which is a **success**: counting it as waiting is
-/// precisely the mistake that sent the uploader into a retry loop and produced
-/// a real outage on this project.
+/// `depth` is the number of entries a submission pass would try: `Queued` and
+/// `Stalled`. Stalled is in there because a pass puts stalled entries back
+/// before it starts, so they will be tried; leaving them out meant the one
+/// number a player sees read zero while real games sat undelivered.
+///
+/// `Held` is NOT in there. It means the server stored the result and a person
+/// will decide, which is a **success**: counting it as waiting is precisely
+/// the mistake that sent the uploader into a retry loop and produced a real
+/// outage on this project.
 fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
     let mut counts = StatsQueueCounts {
         total: entries.len(),
@@ -3315,7 +3322,10 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
         match entry.state {
             EntryState::Queued => counts.depth += 1,
             EntryState::Quarantined { .. } => counts.quarantined += 1,
-            EntryState::Stalled { .. } => counts.stalled += 1,
+            EntryState::Stalled { .. } => {
+                counts.stalled += 1;
+                counts.depth += 1;
+            }
             EntryState::Accepted => counts.accepted += 1,
             EntryState::Held { .. } => counts.held += 1,
             EntryState::Rejected { .. } => counts.rejected += 1,
@@ -3499,7 +3509,12 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
         parts.push(format!("{} could not be delivered and stay queued", r.deferred.len()));
     }
     if !r.stalled.is_empty() {
-        parts.push(format!("{} out of attempts, still on disk", r.stalled.len()));
+        // Not "out of attempts, still on disk", which read like a dead end.
+        // The next send pass puts these back before it starts.
+        parts.push(format!(
+            "{} could not be delivered after several tries and will be tried again",
+            r.stalled.len()
+        ));
     }
     if parts.is_empty() {
         "Nothing was waiting to be sent.".to_string()
@@ -5368,13 +5383,51 @@ mod tests {
                 reason: QuarantineReason::NoSession,
             }),
         ]);
-        assert_eq!(counts.depth, 2, "only Queued is what a pass would try");
+        assert_eq!(
+            counts.depth, 3,
+            "two queued and one stalled: a pass requeues a stall before it \
+             starts, so all three are what it would try"
+        );
         assert_eq!(counts.accepted, 1);
         assert_eq!(counts.held, 1);
         assert_eq!(counts.rejected, 1);
         assert_eq!(counts.stalled, 1);
         assert_eq!(counts.quarantined, 1);
         assert_eq!(counts.total, 7);
+    }
+
+    /// A stalled capture is a game that was played and has not been delivered.
+    /// The settings panel shows one number, "Waiting to send", and it read zero
+    /// while real games sat there, so nothing on any screen mentioned them.
+    #[test]
+    fn a_stalled_result_is_counted_as_waiting_because_the_next_pass_will_try_it() {
+        let counts = queue_counts(&[entry(EntryState::Stalled {
+            reason: "offline".to_string(),
+        })]);
+        assert_eq!(counts.depth, 1, "the player must be able to see it");
+        assert_eq!(counts.stalled, 1);
+    }
+
+    /// The send note said "Nothing was waiting to be sent" over a queue with
+    /// stalled games in it, which was false.
+    #[test]
+    fn the_send_note_never_says_nothing_was_waiting_when_something_was() {
+        let key = reborn_core::stats::CaptureKey::of_bytes(b"a game that was played");
+        let mut report = reborn_core::stats::SubmitReport::default();
+        report.stalled.push(key.clone());
+        let note = submit_note(&report);
+        assert!(
+            !note.contains("Nothing was waiting"),
+            "a stalled result IS waiting: {note}"
+        );
+        assert!(
+            note.contains("again"),
+            "and it must say it will be tried again: {note}"
+        );
+
+        report.stalled.clear();
+        report.deferred.push(key);
+        assert!(!submit_note(&report).contains("Nothing was waiting"));
     }
 
     /// A file the player customized must never appear in the repair set.

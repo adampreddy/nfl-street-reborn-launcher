@@ -3614,8 +3614,12 @@ fn describe_state(state: &EntryState) -> String {
         EntryState::Held { reason } => {
             format!("sent, and a person will decide. This is a success: {reason}")
         }
-        EntryState::Rejected { reason } => format!("refused for good, kept on disk: {reason}"),
-        EntryState::Stalled { reason } => format!("too many failed attempts: {reason}"),
+        EntryState::Rejected { reason } => format!(
+            "refused by the server and kept on disk. `stats retry --apply` puts it back: {reason}"
+        ),
+        EntryState::Stalled { reason } => {
+            format!("too many failed attempts; the next send pass puts it back: {reason}")
+        }
     }
 }
 
