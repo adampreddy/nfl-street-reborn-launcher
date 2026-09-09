@@ -27,10 +27,12 @@
 //!
 //! # What is never written
 //!
-//! No token, no device code and no credential. That is not left to care at the
-//! call sites: [`tests::no_warning_in_this_crate_interpolates_a_secret`] reads
-//! every `tracing` call in this crate and fails if one of them interpolates a
-//! value whose name says it is a secret.
+//! No token, no device code and no credential, and no whole reply body or
+//! submission envelope either, because that is what one really arrives inside.
+//! That is not left to care at the call sites:
+//! [`tests::no_warning_in_this_workspace_interpolates_a_secret`] reads every
+//! `tracing` call in all three crates and fails if one of them would write a
+//! value whose name says it is a credential or carries one.
 //!
 //! # The bound
 //!
@@ -401,7 +403,7 @@ mod tests {
         assert!(written.contains("third"), "got {written:?}");
     }
 
-    /// Nothing this crate logs interpolates a secret.
+    /// Nothing anywhere in this workspace logs a secret.
     ///
     /// The moment a subscriber exists, every `tracing` call becomes a line in
     /// a file on a player's disk. A bearer token or a device code in one of
@@ -410,48 +412,31 @@ mod tests {
     ///
     /// # How this is bounded so it cannot find itself
     ///
-    /// It reads every `.rs` file under this crate's `src`, and cuts each one
-    /// at its first `#[cfg(test)]` before looking at it. This test is inside
-    /// `logging.rs`'s own test module, which is after that cut, so the
-    /// patterns written below are never part of what is searched. It also
-    /// asserts it found call sites at all, so a change that makes the scan
-    /// match nothing fails instead of passing silently.
+    /// Every file is read through [`crate::source_scan::production_only`],
+    /// which blanks every `#[cfg(test)]` module. This test and its cases are
+    /// inside such a module, in a file the scan reads, so the shapes written
+    /// below are never part of what is searched. It also asserts it found call
+    /// sites at all, and in every crate, so a change that makes the scan match
+    /// nothing fails instead of passing silently.
     #[test]
-    fn no_warning_in_this_crate_interpolates_a_secret() {
-        let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
-        let mut files = Vec::new();
-        collect_rust_files(src, &mut files);
+    fn no_warning_in_this_workspace_interpolates_a_secret() {
+        let files = crate::source_scan::workspace_rust_files();
         assert!(
             files.len() > 20,
             "the source tree was not found, so this test checked nothing"
         );
 
-        // Interpolated into the message, or handed over as a trailing
-        // argument. Prose is deliberately not matched: "the poll reply had no
-        // token or player" is a sentence about a token, not a token.
-        let interpolated = [
-            "{token", "{secret", "{password", "{device_code", "{bearer", "{api_key",
-        ];
-        let arguments = [
-            ", token", ", secret", ", password", ", device_code", ", bearer", ", api_key",
-            ", self.token", ", &token", ", &self.token",
-        ];
-
         let mut checked = 0usize;
         for file in &files {
             let text = std::fs::read_to_string(file).unwrap();
-            let production = &text[..text.find("#[cfg(test)]").unwrap_or(text.len())];
-            for call in tracing_calls(production) {
-                checked += 1;
-                let lower = call.to_ascii_lowercase();
-                for needle in interpolated.iter().chain(arguments.iter()) {
-                    assert!(
-                        !lower.contains(needle),
-                        "a log line would write a secret to a file on disk, in {}: {call}",
-                        file.display()
-                    );
-                }
-            }
+            let (found, leak) = secret_a_log_call_would_write(&text);
+            checked += found;
+            assert!(
+                leak.is_none(),
+                "a log line would write a secret to a file on disk, in {}: {}",
+                file.display(),
+                leak.unwrap_or_default()
+            );
         }
         assert!(
             checked > 40,
@@ -460,51 +445,206 @@ mod tests {
         );
     }
 
-    fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(listing) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for item in listing.flatten() {
-            let path = item.path();
-            if path.is_dir() {
-                collect_rust_files(&path, out);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                out.push(path);
-            }
+    /// The scan reads all three crates, not only the one the logging lives in.
+    ///
+    /// This is the fifth shape that used to slip past, and the only one that
+    /// is about which files are read rather than about what a call looks like.
+    /// `reborn-ui` and `reborn-cli` have no `tracing` calls today, and nothing
+    /// stopped one being added: the scan simply did not look at them.
+    #[test]
+    fn the_secret_scan_reads_every_crate_in_this_workspace() {
+        let files = crate::source_scan::workspace_rust_files();
+        for crate_name in ["reborn-core", "reborn-ui", "reborn-cli"] {
+            let marker = std::path::Path::new(crate_name).join("src");
+            let marker = marker.to_string_lossy().into_owned();
+            assert!(
+                files.iter().any(|f| f.to_string_lossy().contains(&marker)),
+                "the scan reads no file under {crate_name}, so a logging call added there \
+                 would be checked by nothing"
+            );
         }
     }
 
-    /// Every `tracing::<level>!(...)` invocation in `text`, as source slices.
-    fn tracing_calls(text: &str) -> Vec<String> {
-        let mut calls = Vec::new();
-        let mut rest = text;
-        while let Some(at) = rest.find("tracing::") {
-            let tail = &rest[at..];
-            let Some(open) = tail.find('(') else { break };
-            // A macro, not a path such as `tracing::warn` in a doc comment:
-            // the character before the paren has to be `!`.
-            if tail.as_bytes().get(open.wrapping_sub(1)) == Some(&b'!') {
-                let mut depth = 0usize;
-                let mut end = None;
-                for (i, c) in tail[open..].char_indices() {
-                    match c {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = Some(open + i);
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some(end) = end {
-                    calls.push(tail[..=end].to_string());
+    /// The shapes of careless logging call this scan used to let past.
+    ///
+    /// Each case is source text handed straight to the scan, not a real
+    /// `tracing` call written into this file: a real one would be a credential
+    /// on a player's disk if the scan ever stopped catching it, which is the
+    /// opposite of what a test for this may risk.
+    ///
+    /// # How these are bounded so the workspace scan cannot find them
+    ///
+    /// They are inside a `#[cfg(test)]` module, and the scan blanks every
+    /// `#[cfg(test)]` module in every file before it reads anything. So these
+    /// strings are invisible to the run over the real source, and the scan
+    /// cannot pass or fail because of its own test data.
+    #[test]
+    fn the_secret_scan_catches_the_shapes_it_used_to_miss() {
+        let cases = [
+            (
+                "a credential word that is not at the start of the placeholder",
+                "fn f() { tracing::warn!(\"sign-in failed: {access_token}\"); }",
+            ),
+            (
+                "a whole reply body, which is the carrier the token arrives in",
+                "fn f() { tracing::warn!(\"the poll was rejected: {body:?}\"); }",
+            ),
+            (
+                "a submission envelope handed over as a trailing argument",
+                "fn f() { tracing::warn!(\"could not send {}\", envelope); }",
+            ),
+            (
+                "production code that comes after an inline test module",
+                "#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n\
+                 fn after() { tracing::warn!(\"could not sign in: {device_code}\"); }",
+            ),
+            (
+                "an argument hidden behind an unbalanced bracket in the message",
+                "fn f() { tracing::warn!(\"the reply said: no)\", token); }",
+            ),
+        ];
+
+        // Every miss is reported, not just the first: these are separate holes
+        // and seeing one at a time hides the rest.
+        let mut missed = Vec::new();
+        for (shape, source) in cases {
+            let (_, leak) = secret_a_log_call_would_write(source);
+            if leak.is_none() {
+                missed.push(format!("  {shape}\n    {source}"));
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "the scan does not catch these shapes, so a call of any of them would write a \
+             credential to a file on a player's disk:\n{}",
+            missed.join("\n")
+        );
+    }
+
+    /// A name whose presence says the value is a credential, or the carrier a
+    /// credential arrives inside.
+    ///
+    /// The carriers are the half that was missing and the half that matters
+    /// most. Nobody writes `{token}`. What gets written is the whole thing the
+    /// token came in: the sign-in poll's reply body holds the token, and the
+    /// results submission's envelope is built around one, and either is one
+    /// edit from being logged whole while somebody is debugging.
+    ///
+    /// `access_token`, `refresh_token` and `auth_token` need no entries of
+    /// their own: each contains `token`, and the match is anywhere in the name
+    /// rather than at the start of it.
+    const CREDENTIAL_WORDS: [&str; 17] = [
+        "token",
+        "secret",
+        "password",
+        "passphrase",
+        "credential",
+        "authorization",
+        "bearer",
+        "api_key",
+        "apikey",
+        "device_code",
+        "private_key",
+        "session_key",
+        "body",
+        "envelope",
+        "payload",
+        "reply",
+        "response",
+    ];
+
+    /// How many `tracing` calls `text` holds, and the first one of them that
+    /// would write a credential to the log.
+    ///
+    /// Prose is deliberately still not matched: "the poll reply had no token
+    /// or player" is a sentence about a token, not a token. Only two things
+    /// are read, and both are values rather than words: what a `{}`
+    /// placeholder names, and what is handed over as an argument or a field,
+    /// which is the call with every literal blanked.
+    fn secret_a_log_call_would_write(text: &str) -> (usize, Option<String>) {
+        let production = crate::source_scan::production_only(text);
+        let code = crate::source_scan::code_only(&production);
+
+        let mut checked = 0usize;
+        for (start, end) in tracing_call_spans(&code) {
+            checked += 1;
+            let call = &production[start..=end];
+            // What the message interpolates.
+            for placeholder in placeholders(call) {
+                if names_a_credential(&placeholder) {
+                    return (checked, Some(call.to_string()));
                 }
             }
-            rest = &tail[open.max(1)..];
+            // What is handed over beside the message. Blanking every literal
+            // first is what keeps prose out of this half.
+            let arguments = crate::source_scan::code_only(call);
+            if names_a_credential(&arguments) {
+                return (checked, Some(call.to_string()));
+            }
         }
-        calls
+        (checked, None)
+    }
+
+    fn names_a_credential(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        CREDENTIAL_WORDS.iter().any(|word| lower.contains(word))
+    }
+
+    /// What every `{...}` in `text` holds, `{{` escapes excluded.
+    fn placeholders(text: &str) -> Vec<String> {
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'{' {
+                if bytes.get(i + 1) == Some(&b'{') {
+                    i += 2;
+                    continue;
+                }
+                if let Some(close) = text[i..].find('}').map(|n| i + n) {
+                    out.push(text[i + 1..close].to_string());
+                    i = close + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// The start and end offset of every `tracing::<level>!(...)` invocation.
+    ///
+    /// `code` must be [`crate::source_scan::code_only`] output, which is the
+    /// whole point: the previous parser counted brackets inside string
+    /// literals, so `tracing::warn!("the reply said: no)", token)` ended, as
+    /// far as it was concerned, at the bracket inside the message. Everything
+    /// after that bracket, the token included, was never looked at.
+    ///
+    /// The offsets index the original text as well, because the blanked view
+    /// is the same length.
+    fn tracing_call_spans(code: &str) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut from = 0usize;
+        while let Some(found) = code[from..].find("tracing::") {
+            let at = from + found;
+            from = at + "tracing::".len();
+            // `tracing::` then a macro name then `!(`, and nothing else. A
+            // `use tracing::warn;` has no `!`, and an unbounded search for the
+            // next `(` would run off into unrelated code.
+            let name_end = code[from..]
+                .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+                .map(|n| from + n);
+            let Some(name_end) = name_end else { continue };
+            if name_end == from || !code[name_end..].starts_with("!(") {
+                continue;
+            }
+            let open = name_end + 1;
+            let Some(close) = crate::source_scan::closing_bracket(code, open) else {
+                continue;
+            };
+            spans.push((at, close));
+            from = close + 1;
+        }
+        spans
     }
 }

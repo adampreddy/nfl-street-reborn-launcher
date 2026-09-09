@@ -534,6 +534,78 @@ mod tests {
         );
     }
 
+    /// The reading every source-scanning test on this branch is built on.
+    ///
+    /// Two rules that matter for whether a credential reaches a player's disk
+    /// now depend on this parser, so it is held to its own cases rather than
+    /// trusted. Each half is one of the ways an earlier scan was wrong.
+    #[test]
+    fn the_source_scan_reads_code_and_not_what_only_looks_like_code() {
+        use super::source_scan::{closing_bracket, code_only, production_only};
+
+        // A bracket inside a message is not a bracket. Counting them was how
+        // one scan decided a call ended in the middle of its own message and
+        // never looked at the argument after it.
+        let call = "f(\"a stray ) in a sentence\", token)";
+        let code = code_only(call);
+        assert_eq!(code.len(), call.len(), "the blanked view has to line up with the text");
+        assert_eq!(
+            closing_bracket(&code, 1),
+            Some(call.len() - 1),
+            "a bracket inside a string literal was counted as code"
+        );
+        assert!(
+            !code.contains("stray"),
+            "a string literal's contents were left in the blanked view"
+        );
+
+        // A keyword inside a comment or a literal is not a keyword either.
+        let quoted = "let a = \"#[cfg(test)]\"; // #[cfg(test)]\nfn real() {}";
+        assert!(
+            production_only(quoted).contains("fn real"),
+            "an #[cfg(test)] written inside a string or a comment was taken for a test module"
+        );
+
+        // Every test module, not the text from the first one onwards.
+        let two = "fn a() {}\n#[cfg(test)]\nmod t1 { fn x() { let s = \"}\"; } }\n\
+                   fn between() {}\n#[cfg(test)]\nmod t2 { }\nfn after() {}";
+        let production = production_only(two);
+        for kept in ["fn a", "fn between", "fn after"] {
+            assert!(
+                production.contains(kept),
+                "{kept} was blanked with the test modules, so production code went unscanned"
+            );
+        }
+        for dropped in ["mod t1", "mod t2"] {
+            assert!(
+                !production.contains(dropped),
+                "{dropped} survived, so a test's own words are part of what every scan reads"
+            );
+        }
+
+        // And on the real file that has the most of them: `main.rs` closes its
+        // first test module and then declares `fn main`, which the cut-at-the-
+        // first-one reading never saw.
+        let main_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("crates/")
+                .join("reborn-ui")
+                .join("src")
+                .join("main.rs"),
+        )
+        .expect("the window crate's main.rs");
+        let production = production_only(&main_rs);
+        assert!(
+            production.contains("\nfn main() {"),
+            "the window's own entry point sits after an inline test module and was not read"
+        );
+        assert!(
+            !production.contains("mod shortcut_tests"),
+            "an inline test module was left in what every scan reads"
+        );
+    }
+
     #[test]
     fn every_data_dir_has_a_distinct_relative_path() {
         let mut seen = std::collections::HashSet::new();
