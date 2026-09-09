@@ -236,7 +236,7 @@ fn snapshot_of(check: &ContentCheck) -> Snapshot {
 
 /// Where content comes from: the setting when a person set one, else the
 /// product's origin.
-fn origin_url(settings: &reborn_core::settings::Settings) -> String {
+pub(crate) fn origin_url(settings: &reborn_core::settings::Settings) -> String {
     settings
         .content_origin
         .as_deref()
@@ -246,12 +246,12 @@ fn origin_url(settings: &reborn_core::settings::Settings) -> String {
         .to_string()
 }
 
-fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
+pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
     let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
     reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
 }
 
-fn verifier() -> Result<Ed25519Verifier, String> {
+pub(crate) fn verifier() -> Result<Ed25519Verifier, String> {
     let v = Ed25519Verifier::embedded();
     if !v.has_trust_anchor() {
         return Err(
@@ -263,7 +263,7 @@ fn verifier() -> Result<Ed25519Verifier, String> {
 }
 
 /// The tools the image is rebuilt with, and where portraits go.
-fn image_hook(p: &Platform, settings: &reborn_core::settings::Settings) -> ImageHook {
+pub(crate) fn image_hook(p: &Platform, settings: &reborn_core::settings::Settings) -> ImageHook {
     let mut extra_dirs: Vec<PathBuf> = Vec::new();
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
         extra_dirs.push(exe_dir.join(reborn_core::game_patch::BUNDLE_DIR));
@@ -518,6 +518,23 @@ fn summarize(outcome: PromoteOutcome) -> InstalledSummary {
                         RosterResult::NothingToApply => m,
                         _ => m,
                     });
+                }
+                // The custom soundtrack, replayed onto the rebuilt image so an
+                // update never silently drops the player's songs.
+                if let Some(st) = soundtrack {
+                    use reborn_core::content::pipeline::SoundtrackResult;
+                    match st {
+                        SoundtrackResult::Replayed { slots, skipped } => {
+                            let mut line = format!("Your custom soundtrack is back on the disc ({} song(s)).", slots.len());
+                            if !skipped.is_empty() {
+                                line.push_str(&format!(" {} slot(s) went back to the original song because their audio was missing.", skipped.len()));
+                                problems.push(line.clone());
+                            }
+                            components.push(line);
+                        }
+                        SoundtrackResult::Unchanged => {}
+                        SoundtrackResult::Refused(why) => problems.push(format!("Your custom soundtrack was not put back: {why}")),
+                    }
                 }
             }
             PromoteState::Refused(r) => problems.push(format!("{}: {}", c.component.as_str(), r.message())),

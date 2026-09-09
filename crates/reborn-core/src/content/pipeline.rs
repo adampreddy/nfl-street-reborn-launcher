@@ -422,6 +422,9 @@ impl RosterResult {
 }
 
 /// What a promotion did for one component.
+// The applied arm carries the receipt and three results; a Box would only
+// move the size onto the heap for a value built once per promotion.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum PromoteState {
     Applied {

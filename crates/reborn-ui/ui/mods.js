@@ -83,6 +83,7 @@ async function act(cmd, args) {
     } else {
       lastSync = r;
       if(r?.synced===false)notice=r.note||"Your selection is saved, but the mod files could not be applied yet.";
+      if(r?.soundtrack_note)notice=r.soundtrack_note;
     }
     await load();
   } catch (e) {
@@ -179,14 +180,14 @@ function unreadableSection() {
 }
 
 let query = '', category = 'Footballs', selectedMod = null;
-const categoryOf = p => /football/i.test(p.name+' '+p.id)?'Footballs':/soundtrack|music|audio/i.test(p.name+' '+p.id)?'Soundtrack':null;
+const categoryOf = p => p.kind==='soundtrack'?'Soundtrack':/football/i.test(p.name+' '+p.id)?'Footballs':/soundtrack|music|audio/i.test(p.name+' '+p.id)?'Soundtrack':null;
 const colors = ['#514941','#3f4c49','#484357','#49505b','#59464a','#514f3e'];
 function storeCard(p, index) {
   const card=el('article',{class:'store-card'});
   const open=el('button',{type:'button',class:'store-open','aria-label':p.name||p.id,onclick:()=>showMod(p)});
   const art=el('span',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[index%colors.length];
   open.append(art,el('span',{class:'store-card-body'},el('strong',{text:p.name||p.id}),el('small',{text:categoryOf(p)+' · '+(p.version?'Version '+p.version:'Installed')})));
-  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()})})));
+  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>{if(p.kind==='soundtrack'){notice='Rebuilding your game disc with this soundtrack…';draw();}act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}})));
   return card;
 }
 function showMod(p) {
@@ -204,7 +205,7 @@ function draw() {
   const all=packages().filter(p=>!managed(p.id));
   const toolbar=el('div',{class:'store-toolbar'}),search=el('input',{type:'search',placeholder:'Search your mods','aria-label':'Search mods',value:query});
   const results=el('section',{class:'store-grid','aria-label':'Mods'}),count=el('p',{class:'store-count',role:'status'});
-  const renderResults=()=>{const list=all.filter(p=>categoryOf(p)===category&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
+  const renderResults=()=>{const list=all.filter(p=>categoryOf(p)===category&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:category==='Soundtrack'&&!list.length&&all.length?'No soundtrack mods yet':all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:category==='Soundtrack'&&all.length?'Soundtrack mods such as the NFL Street 1 soundtrack arrive with game content updates. Your own songs live on the Music page.':all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
   search.addEventListener('input',()=>{query=search.value;renderResults();});
   toolbar.append(search,el('a',{href:'onboarding.html',class:'button',text:'Import mods'}),el('button',{type:'button',text:'Refresh',disabled:busy,onclick:refresh}));parts.push(toolbar);
   const tabs=el('div',{class:'section-tabs','aria-label':'Mod categories'});for(const name of ['Footballs','Soundtrack'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===category),onclick:()=>{category=name;tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent===category)));renderResults();}}));parts.push(tabs);

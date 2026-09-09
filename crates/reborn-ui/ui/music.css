@@ -1,0 +1,22 @@
+/* The Music page: built on the store's cards, tabs and dialog (finish.css).
+   Only what the page adds lives here. */
+.music-head .music-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.music-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.music-row input[type=search]{flex:1;min-width:180px}
+.music-card .store-art{display:flex;align-items:center;justify-content:center;font:600 28px/1 Inter,Segoe UI,sans-serif;color:#0006;letter-spacing:-.04em}
+.music-card .store-card-body small.music-staged{display:block;margin-top:4px;color:#e8ecdc}
+.music-apply{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;border:1px solid #575d4a;border-radius:10px;background:#31342a;font-size:13px}
+.music-apply span{margin-right:auto}
+.music-done{display:flex;gap:14px;align-items:center;padding:12px 16px;border:1px solid #4a5a3f;border-radius:10px;background:#2c3526;font-size:13px}
+.music-done span{margin-right:auto}
+.music-progress{font-size:13px}
+.music-dialog .music-field{display:flex;flex-direction:column;gap:4px;margin:10px 0;font-size:12px;color:#c9ccbd}
+.music-dialog .music-field input,.music-dialog .music-field select{font-size:14px}
+.music-dialog .music-file{word-break:break-all;margin:0;font-size:12px}
+.music-candidates{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
+.music-candidate{width:100%;text-align:left;font-size:13px;padding:8px 10px}
+.music-preview{margin:12px 0;padding-left:18px;font-size:13px;line-height:1.7}
+.music-share-list{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto;margin:12px 0;padding:4px 0}
+.music-share-row{display:flex;gap:10px;align-items:center;font-size:13px}
+@media (max-width:900px){.music-grid.store-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:600px){.music-grid.store-grid{grid-template-columns:1fr}}
