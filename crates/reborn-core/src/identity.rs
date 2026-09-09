@@ -14,6 +14,31 @@ use crate::net::Http;
 use crate::platform::{DataDir, Error, Platform, Result};
 
 pub const TOKEN_ACCOUNT: &str = "nsr.reborn.player";
+
+/// The credential vault account a retired uploader stored its bearer token under.
+///
+/// `league.rs` was the launcher-side port of Dolphin's `NflsStatUpload`, posting the raw
+/// capture to `ingest.php` with this token. `backend.rs` replaced it and the module is gone,
+/// but a token nothing reads is still a token sitting in the Windows credential vault, and
+/// this is one this project has already had to rotate. Named here so [`forget_retired_league_token`]
+/// can take it off the machine.
+pub const RETIRED_LEAGUE_TOKEN_ACCOUNT: &str = "nsr.league.ingest";
+
+/// Take the retired league credential off this machine.
+///
+/// Best effort by design, and that is why it returns nothing. There is no version of this a
+/// player should ever be told about: they do not know the credential exists, they did not put
+/// it there, and there is nothing for them to do about it either way. A vault that refuses is
+/// logged for a developer and otherwise ignored; the next start tries again.
+///
+/// Called at every start of the launcher, not once behind a flag. An installation that was
+/// never opened after the change would otherwise keep the credential forever, and "we removed
+/// it, unless they had already upgraded" is not removal.
+pub fn forget_retired_league_token(platform: &Platform) {
+    if let Err(e) = platform.credentials.delete(RETIRED_LEAGUE_TOKEN_ACCOUNT) {
+        tracing::warn!("the retired league credential could not be removed: {e}");
+    }
+}
 pub const DEFAULT_ORIGIN: &str = "https://api.nflstreetreborn.com";
 const IDENTITY_FILE: &str = "identity.json";
 

@@ -5064,6 +5064,18 @@ mod shortcut_tests {
 }
 
 fn main() {
+    // A credential this product retired, taken off the machine. `nsr.league.ingest`
+    // was the bearer token Dolphin's own uploader posted with; the module that
+    // used it is gone, and this branch removed the commands that could forget
+    // it, so every installation that ever stored one would otherwise keep it in
+    // the Windows credential vault forever with no way to remove it from the
+    // product. It is a token this project has already had to rotate.
+    //
+    // Here rather than in a command, so it happens on every start including the
+    // two shortcut modes below, which return before any window exists. Best
+    // effort: it says nothing and it cannot fail a start.
+    reborn_core::identity::forget_retired_league_token(&Platform::detect());
+
     // The shortcuts, before any window exists. Both fall through to the
     // window when they cannot do their job, so a shortcut never does
     // nothing at all with nothing to show for it.
@@ -5284,6 +5296,25 @@ mod tests {
                  session from starting in the middle of it"
             );
         }
+    }
+
+    /// The retired league credential is actually taken off the machine.
+    ///
+    /// Naming it for removal in the core is half a fix. Something has to call
+    /// the removal, and the only thing every player runs is this window.
+    #[test]
+    fn every_start_of_the_launcher_forgets_the_retired_league_credential() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        // Bounded at the test module that follows, or this test's own text
+        // would satisfy it.
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            body.contains("forget_retired_league_token"),
+            "a token this project has already had to rotate stays in the credential vault \
+             forever, on every machine that ever stored one"
+        );
     }
 
     /// The launcher's own background send never makes Play refuse.

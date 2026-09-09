@@ -51,7 +51,6 @@ pub mod identity;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
-pub mod league;
 pub mod library;
 pub mod manifest;
 pub mod migration;
@@ -140,6 +139,42 @@ pub(crate) mod player_sentence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The retired league uploader is gone, and so is its credential.
+    ///
+    /// `league.rs` was the launcher-side port of Dolphin's `NflsStatUpload`,
+    /// posting to `ingest.php` with a bearer token. `backend.rs` replaced it,
+    /// and by the end of this branch nothing called anything in it: it was
+    /// reachable only from its own `pub mod` line. Dead code that still
+    /// compiles is dead code somebody will one day call.
+    ///
+    /// The credential is the part that mattered. This branch removed the
+    /// commands that could forget the old league token, so any installation
+    /// that ever stored one would keep it in the Windows credential vault
+    /// forever with no way to remove it from the product. That is a token this
+    /// project has already had to rotate.
+    #[test]
+    fn the_retired_league_uploader_is_gone_and_its_credential_is_named_for_removal() {
+        // The declarations only. This test's own text mentions the line it is
+        // looking for, so reading the whole file would find itself.
+        let lib = include_str!("lib.rs");
+        let declarations = &lib[..lib.find("#[cfg(test)]").unwrap_or(lib.len())];
+        assert!(
+            !declarations.contains("pub mod league;"),
+            "the retired league uploader is still declared"
+        );
+        let file = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/league.rs"));
+        assert!(
+            !file.exists(),
+            "src/league.rs is still on disk, so it is still one line from being called again"
+        );
+        assert_eq!(
+            identity::RETIRED_LEAGUE_TOKEN_ACCOUNT,
+            "nsr.league.ingest",
+            "the account the retired token was stored under has to keep its exact name, \
+             or the cleanup deletes nothing"
+        );
+    }
 
     #[test]
     fn every_data_dir_has_a_distinct_relative_path() {
