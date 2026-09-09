@@ -1,0 +1,39 @@
+[package]
+name = "reborn-publisher"
+description = "The Reborn Publisher window: plan, run, verify, over reborn_core::publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "reborn-publisher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `publish` is the publisher's half of the core: key generation, signing,
+# the journal, upload. A player's launcher never links any of it; this is
+# the one window that does.
+reborn-core = { path = "../reborn-core", features = ["publish"] }
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+rfd = "0.15"
+
+[dev-dependencies]
+# `ops.rs`'s tests run every operation against a fresh tempdir rather than
+# this machine's real publishing origin. Same version reborn-core already
+# pins for the same reason.
+tempfile = "3"
+
+# `roster.rs`'s own tests build a real zip (a proper central directory, not
+# just local headers) to prove the delegation to
+# `reborn_core::publish::roster::read_counts` end to end. Only reborn-core
+# links this for real (behind its own `publish` feature, which pulls it in
+# transitively already); this is a dev-only, test-only use of the same
+# crate reborn-core already resolved, same minimal features.
+zip = { version = "5", default-features = false, features = ["deflate-flate2"] }

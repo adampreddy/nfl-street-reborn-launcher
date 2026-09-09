@@ -104,7 +104,7 @@ if ($Browser) {
     $browserSuite = Join-Path $PSScriptRoot "run-browser-tests.mjs"
     $browserOutput = & node $browserSuite
     Record "browser" "interaction and responsive layout checks" ($LASTEXITCODE -eq 0) ($browserOutput | Select-Object -Last 1)
-    foreach ($suite in @("review-onboarding.mjs", "check-update-notice.mjs")) {
+    foreach ($suite in @("review-onboarding.mjs", "check-update-notice.mjs", "review-publisher.mjs")) {
         $suiteOutput = & node (Join-Path $PSScriptRoot $suite)
         Record "browser" $suite ($LASTEXITCODE -eq 0) ($suiteOutput | Select-Object -Last 1)
     }
@@ -144,8 +144,15 @@ Write-Host ""
 # -----------------------------------------------------------------------------
 Write-Host "-- Built artifacts ----------------------------------------------" -ForegroundColor DarkGray
 $dist = Join-Path $root "dist"
+#
+# NOT "Reborn Publisher Setup <version>.exe": it matches "*Setup*.exe" too,
+# it is never the newer of the two once someone builds the admin tool after
+# the launcher, and Select-Object -Last 1 by write time would then have this
+# check quietly grading the wrong program. It is excluded by name here, the
+# same way a beta build already is.
 $setup = Get-ChildItem $dist -Filter "*Setup*.exe" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notlike "*Beta*" } | Sort-Object LastWriteTime | Select-Object -Last 1
+    Where-Object { $_.Name -notlike "*Beta*" -and $_.Name -notlike "Reborn Publisher Setup*" } |
+    Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $setup) {
     Record "dist" "a stable installer exists" $false "none in $dist"
 } else {
@@ -203,6 +210,34 @@ if ($update) {
         Record "dist" "latest.json pins the update installer by hash, size and name" $pinned `
             ("version {0}, sha256 {1}..., {2}" -f $m.version, $hash.Substring(0, 12), $m.windows.url)
     }
+}
+
+# The Publisher installer: Adam's admin tool, never shipped to a player and
+# never on the bucket, so it is checked only when one happens to be in dist.
+# Two things matter: it is one file (no zip, no slices: build.ps1 -Publisher
+# never spans, and throws if a slice ever turned up beside it), and it
+# carries both binaries the Publisher needs, itself and rebornctl, which it
+# shells out to for the actual publish operations.
+#
+# Inno's compiled format has no plain "list the files inside" this script can
+# read without running or unpacking the installer, and this suite must not
+# install anything. So the binaries check reads the exact folder build.ps1
+# -Publisher staged and fed to ISCC: reborn-publisher.iss compiles it with
+# "Source: {#Payload}\*", verbatim, so what is in that folder is what is in
+# the installer.
+$publisherSetup = Get-ChildItem $dist -Filter "Reborn Publisher Setup *.exe" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime | Select-Object -Last 1
+if ($publisherSetup) {
+    $pstray = @(Get-ChildItem $dist -Filter ($publisherSetup.BaseName + "-*.bin") -ErrorAction SilentlyContinue)
+    Record "dist" "the Publisher installer is one file" ($pstray.Count -eq 0) `
+        ("{0}, {1:N1} MB" -f $publisherSetup.Name, ($publisherSetup.Length / 1MB))
+
+    $publisherPayload = Join-Path $root "target\installer-payload-publisher"
+    $publisherBinaries = @("reborn-publisher.exe", "rebornctl.exe")
+    $missingBinaries = @($publisherBinaries | Where-Object { -not (Test-Path (Join-Path $publisherPayload $_) -PathType Leaf) })
+    Record "dist" "the Publisher installer carries both binaries" ($missingBinaries.Count -eq 0) `
+        $(if ($missingBinaries.Count -eq 0) { "reborn-publisher.exe and rebornctl.exe staged in $publisherPayload" }
+          else { "missing from the staged payload: " + ($missingBinaries -join ", ") })
 }
 Write-Host ""
 
