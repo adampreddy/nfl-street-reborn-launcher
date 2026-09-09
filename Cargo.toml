@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/reborn-core", "crates/reborn-cli", "crates/reborn-ui"]
 
 [workspace.package]
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "GPL-2.0-or-later"
