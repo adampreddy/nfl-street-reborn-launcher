@@ -99,7 +99,12 @@ pub enum Error {
     ///
     /// Put the wording in a named constant beside the code that refuses, and
     /// hold it to the same rules as every other player-facing sentence: no
-    /// path, no status code, no internal name.
+    /// path, no status code, no internal name. That is not left to whoever
+    /// reads this: [`Error::player`] takes only a `&'static str`, so a
+    /// `format!` cannot reach it at all, and
+    /// `every_player_message_is_a_named_constant_that_reads_as_a_sentence`
+    /// reads every construction in the workspace and holds each constant to
+    /// the six sentence rules.
     #[error("{0}")]
     PlayerMessage(String),
 }
@@ -128,8 +133,28 @@ impl Error {
     /// See [`Error::PlayerMessage`] for when this is the right constructor and
     /// when it is not. In short: an instruction somebody wrote for a player,
     /// never an operating system message and never a formatted fault.
-    pub fn player(message: impl Into<String>) -> Self {
-        Error::PlayerMessage(message.into())
+    ///
+    /// # Why this takes `&'static str` and not `impl Into<String>`
+    ///
+    /// Because what it is handed goes to a screen unchanged. It used to take
+    /// anything a `String` could be made from, so `Error::player(format!("could
+    /// not write {}: {e}", path.display()))` compiled, said nothing, and put a
+    /// path and an operating system error number in front of a player. Nothing
+    /// stopped it but a doc comment asking for a named constant, and a hundred
+    /// and ninety more sites are queued to be routed through this.
+    ///
+    /// A `&'static str` is a constant or a literal and cannot be a `format!`,
+    /// so the compiler now answers that at every call site. The scan named on
+    /// [`Error::PlayerMessage`] closes the rest of the gap: it rejects a
+    /// literal written at the call site as well, and holds each constant's
+    /// wording to the six sentence rules.
+    ///
+    /// A sentence that genuinely has to name something the player chose is not
+    /// what this is for. Give it its own variant, so the thing it interpolates
+    /// is typed and can be checked, rather than widening this back to any
+    /// string at all.
+    pub fn player(message: &'static str) -> Self {
+        Error::PlayerMessage(message.to_string())
     }
 
     /// A sentence a player can read, in place of this error's own `Display`.
@@ -248,6 +273,113 @@ mod tests {
             source: std::io::Error::from_raw_os_error(32),
         };
         assert_eq!(locked.player_message(), FILE_UNREACHABLE);
+    }
+
+    /// Every player sentence carried by [`Error::PlayerMessage`] is a named
+    /// constant, and every one of those constants reads as a plain sentence.
+    ///
+    /// [`Error::player`] hands its argument straight to a screen, unchanged
+    /// and unsummarized. That is the point of it, and it is also the hazard:
+    /// one `format!` in one careless call puts a path or an operating system
+    /// error number in front of a player, and nothing stopped it. The doc
+    /// comment asked for a named constant, which is a convention somebody has
+    /// to remember, and a convention is exactly what this variant was chosen
+    /// over a list of strings to avoid. There is recorded follow-up work
+    /// covering a hundred and ninety similar sites in other modules; that is
+    /// where the careless call gets written.
+    ///
+    /// So the rule is mechanical, in two halves:
+    ///
+    /// - nothing outside this file may name the variant, so the constructor is
+    ///   the only way to build one
+    /// - every argument to the constructor is a bare named constant: never a
+    ///   `format!`, never a `to_string()`, never a string literal written at
+    ///   the call site, never any other expression
+    ///
+    /// Then, because "it is a constant" says nothing about what the constant
+    /// says, each one is resolved to its text and held to the same six rules
+    /// every other player sentence is held to. That is thirteen constants
+    /// rather than the two an earlier test named by hand.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// Every file is read through [`crate::source_scan::production_only`],
+    /// which blanks EVERY `#[cfg(test)]` module rather than cutting at the
+    /// first one. This test is inside such a module, so the constructor calls
+    /// written in it, and the words `format!` and `to_string` above, are not
+    /// in what is searched. The scan also asserts it found constructions at
+    /// all, so a rename that makes it match nothing fails rather than passing
+    /// silently.
+    #[test]
+    fn every_player_message_is_a_named_constant_that_reads_as_a_sentence() {
+        use crate::source_scan::{closing_bracket, code_matches, code_only, const_str_value,
+            production_only, workspace_rust_files};
+
+        let files = workspace_rust_files();
+        assert!(
+            files.len() > 20,
+            "only {} source files were found, so this scan checked almost nothing",
+            files.len()
+        );
+
+        let mut constructions = 0usize;
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("a source file this test just listed");
+            let production = production_only(&text);
+            let code = code_only(&production);
+            let here = file.ends_with("platform/mod.rs") || file.ends_with("platform\\mod.rs");
+
+            if !here {
+                assert!(
+                    code_matches(&code, "PlayerMessage").is_empty(),
+                    "{} names the player-message variant directly, so it can build one without \
+                     going through the constructor that is checked below",
+                    file.display()
+                );
+            }
+
+            for at in code_matches(&code, "Error::player(") {
+                let open = at + "Error::player".len();
+                let close = closing_bracket(&code, open).unwrap_or_else(|| {
+                    panic!("an unclosed Error::player call in {}", file.display())
+                });
+                let argument = production[open + 1..close].trim();
+                constructions += 1;
+                let last = argument.rsplit("::").next().unwrap_or(argument);
+                let named_constant = !last.is_empty()
+                    && last
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && argument
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
+                assert!(
+                    named_constant,
+                    "a sentence a player reads is built out of an expression rather than a named \
+                     constant, in {}: Error::player({argument}). Anything but a constant can \
+                     carry a path or an operating system error number straight to a screen",
+                    file.display()
+                );
+                let value = const_str_value(last).unwrap_or_else(|| {
+                    panic!(
+                        "{} builds a player message from {last}, and no `const {last}: &str` \
+                         declaring its wording could be found to check",
+                        file.display()
+                    )
+                });
+                crate::player_sentence::assert_player_safe(&value);
+            }
+        }
+
+        // Twenty eight today, across three modules. The floor is well under
+        // that so a module legitimately dropping a refusal does not fail this,
+        // and well over zero so a rename that makes the scan match nothing
+        // does.
+        assert!(
+            constructions >= 10,
+            "only {constructions} player-message constructions were found, so this scan is not \
+             reading what it thinks it is reading"
+        );
     }
 
     /// A file or folder problem and an unexpected one read as two different

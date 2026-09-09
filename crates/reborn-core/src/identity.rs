@@ -100,18 +100,22 @@ impl std::fmt::Debug for Poll {
     }
 }
 
-/// Every refusal in this module is a finished sentence for the player, so all
-/// of them are carried as [`Error::player`].
-///
-/// They used to be `Error::PlainIo`, which is transparent over an operating
-/// system error and therefore indistinguishable from one. Anything routing an
-/// identity failure through [`Error::player_message`] would have replaced
-/// "The sign-in service could not be reached. Check your internet connection
-/// and try again." with "Something unexpected happened. Try again.", which
-/// says less and is not true.
-fn plain(msg: String) -> Error {
-    Error::player(msg)
-}
+// Every refusal in this module is a finished sentence for the player, so all
+// of them are built with `Error::player` and one of the named constants below.
+//
+// They used to be `Error::PlainIo`, which is transparent over an operating
+// system error and therefore indistinguishable from one. Anything routing an
+// identity failure through `Error::player_message` would have replaced "The
+// sign-in service could not be reached. Check your internet connection and try
+// again." with "Something unexpected happened. Try again.", which says less
+// and is not true.
+//
+// There was a `plain(msg: String)` helper here that wrapped the constructor.
+// It took any string at all and handed it to a screen unchanged, so one
+// `format!` written into one of these call sites would have put a path or an
+// operating system error number in front of a player with nothing to stop it.
+// Every caller passed a constant, which is why nothing was broken and why it
+// was worth removing before something was.
 
 fn origin_url(origin: &str, path: &str) -> String {
     format!("{}{}", origin.trim_end_matches('/'), path)
@@ -196,15 +200,15 @@ pub fn start(http: &dyn Http, origin: &str, label: &str) -> Result<DeviceStart> 
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
     let r = http.post_json(&url, &bytes, None).map_err(|e| {
         tracing::warn!("sign-in: could not reach {url}: {e}");
-        plain(SIGN_IN_SERVICE_UNREACHABLE.to_string())
+        Error::player(SIGN_IN_SERVICE_UNREACHABLE)
     })?;
     if !r.is_success() {
         tracing::warn!("sign-in: {url} answered {}", r.status);
-        return Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()));
+        return Err(Error::player(SIGN_IN_SERVICE_MISBEHAVED));
     }
     serde_json::from_str(&r.body).map_err(|e| {
         tracing::warn!("sign-in: the device-start reply was not understood: {e}");
-        plain(SIGN_IN_SERVICE_MISBEHAVED.to_string())
+        Error::player(SIGN_IN_SERVICE_MISBEHAVED)
     })
 }
 
@@ -216,7 +220,7 @@ pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
     let bytes = serde_json::to_vec(&body).expect("a serializable request body");
     let r = http.post_json(&url, &bytes, None).map_err(|e| {
         tracing::warn!("sign-in: could not reach {url}: {e}");
-        plain(SIGN_IN_SERVICE_UNREACHABLE.to_string())
+        Error::player(SIGN_IN_SERVICE_UNREACHABLE)
     })?;
     match r.status {
         428 => Ok(Poll::Pending),
@@ -226,19 +230,19 @@ pub fn poll(http: &dyn Http, origin: &str, device_code: &str) -> Result<Poll> {
         s if (200..300).contains(&s) => {
             let reply: Reply = serde_json::from_str(&r.body).map_err(|e| {
                 tracing::warn!("sign-in: the poll reply was not understood: {e}");
-                plain(SIGN_IN_SERVICE_MISBEHAVED.to_string())
+                Error::player(SIGN_IN_SERVICE_MISBEHAVED)
             })?;
             match (reply.token, reply.player) {
                 (Some(token), Some(player)) => Ok(Poll::Done { token, player }),
                 _ => {
                     tracing::warn!("sign-in: the poll reply had no token or player");
-                    Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()))
+                    Err(Error::player(SIGN_IN_SERVICE_MISBEHAVED))
                 }
             }
         }
         s => {
             tracing::warn!("sign-in: {url} answered {s}");
-            Err(plain(SIGN_IN_SERVICE_MISBEHAVED.to_string()))
+            Err(Error::player(SIGN_IN_SERVICE_MISBEHAVED))
         }
     }
 }
@@ -263,7 +267,7 @@ fn read_identity(path: &Path) -> Result<Option<IdentityFile>> {
 pub fn status(platform: &Platform) -> Result<Option<IdentityFile>> {
     read_status(platform).map_err(|e| {
         tracing::warn!("the sign-in state could not be read: {e}");
-        plain(SIGN_IN_STATE_UNREADABLE.to_string())
+        Error::player(SIGN_IN_STATE_UNREADABLE)
     })
 }
 
@@ -288,7 +292,7 @@ pub fn origin(platform: &Platform) -> Result<String> {
     };
     read().map_err(|e| {
         tracing::warn!("the backend origin could not be read from settings: {e}");
-        plain(SIGN_IN_SERVICE_NOT_LOCATED.to_string())
+        Error::player(SIGN_IN_SERVICE_NOT_LOCATED)
     })
 }
 
@@ -299,11 +303,11 @@ pub fn token(platform: &Platform) -> Result<Option<String>> {
 pub fn save_signed_in(platform: &Platform, token: &str, player: PlayerFacts, now_ms: u64) -> Result<()> {
     platform.credentials.store(TOKEN_ACCOUNT, token).map_err(|e| {
         tracing::warn!("the sign-in could not be stored in the credential vault: {e}");
-        plain(SIGN_IN_NOT_SAVED.to_string())
+        Error::player(SIGN_IN_NOT_SAVED)
     })?;
     let path = identity_path(platform).map_err(|e| {
         tracing::warn!("the identity file path could not be resolved: {e}");
-        plain(SIGN_IN_NOT_SAVED.to_string())
+        Error::player(SIGN_IN_NOT_SAVED)
     })?;
     let file = IdentityFile { player, signed_in_at_ms: now_ms };
     let bytes = serde_json::to_vec_pretty(&file).expect("a serializable identity file");
@@ -315,7 +319,7 @@ pub fn save_signed_in(platform: &Platform, token: &str, player: PlayerFacts, now
         // The path is inside the launcher's own config folder and the wording is the
         // operating system's. Neither belongs on the sign-in card.
         tracing::warn!("the identity file could not be written at {}: {source}", path.display());
-        return Err(plain(SIGN_IN_NOT_SAVED.to_string()));
+        return Err(Error::player(SIGN_IN_NOT_SAVED));
     }
     Ok(())
 }
@@ -329,21 +333,21 @@ pub fn clear_token(platform: &Platform) -> Result<()> {
     // produce.
     let still_there = platform.credentials.retrieve(TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!("the credential vault could not be re-read after a sign-out: {e}");
-        plain(SIGN_OUT_FAILED.to_string())
+        Error::player(SIGN_OUT_FAILED)
     })?;
     if still_there.is_some() {
-        return Err(plain(SIGN_OUT_FAILED.to_string()));
+        return Err(Error::player(SIGN_OUT_FAILED));
     }
     let path = identity_path(platform).map_err(|e| {
         tracing::warn!("the identity file path could not be resolved: {e}");
-        plain(SIGN_OUT_FAILED.to_string())
+        Error::player(SIGN_OUT_FAILED)
     })?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => {
             tracing::warn!("the identity file could not be removed at {}: {source}", path.display());
-            Err(plain(SIGN_OUT_FAILED.to_string()))
+            Err(Error::player(SIGN_OUT_FAILED))
         }
     }
 }
@@ -365,7 +369,7 @@ fn post_show_offline(http: &dyn Http, url: &str, tok: &str, show: bool) -> Resul
     let body = serde_json::to_vec(&serde_json::json!({ "show_offline": show })).expect("a serializable request body");
     http.post_json(url, &body, Some(tok)).map_err(|e| {
         tracing::warn!("show-offline: could not reach {url}: {e}");
-        plain(SAVE_UNREACHABLE.to_string())
+        Error::player(SAVE_UNREACHABLE)
     })
 }
 
@@ -376,11 +380,11 @@ fn parse_show_offline_reply(r: &crate::net::HttpResponse, url: &str) -> Result<P
     struct Reply { player: PlayerFacts }
     if !r.is_success() {
         tracing::warn!("show-offline: {url} answered {}", r.status);
-        return Err(plain(SAVE_UNAVAILABLE.to_string()));
+        return Err(Error::player(SAVE_UNAVAILABLE));
     }
     let reply: Reply = serde_json::from_str(&r.body).map_err(|e| {
         tracing::warn!("show-offline: the reply was not understood: {e}");
-        plain(SAVE_UNAVAILABLE.to_string())
+        Error::player(SAVE_UNAVAILABLE)
     })?;
     Ok(reply.player)
 }
@@ -388,20 +392,20 @@ fn parse_show_offline_reply(r: &crate::net::HttpResponse, url: &str) -> Result<P
 pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show: bool) -> Result<PlayerFacts> {
     let vault = token(platform).map_err(|e| {
         tracing::warn!("the credential vault could not be read: {e}");
-        plain(SAVE_UNAVAILABLE.to_string())
+        Error::player(SAVE_UNAVAILABLE)
     })?;
-    let tok = vault.ok_or_else(|| plain(MUST_BE_SIGNED_IN.to_string()))?;
+    let tok = vault.ok_or_else(|| Error::player(MUST_BE_SIGNED_IN))?;
     let url = origin_url(origin, "/v1/me/show_offline");
     let r = post_show_offline(http, &url, &tok, show)?;
-    if r.status == 401 { clear_token(platform)?; return Err(plain(SESSION_EXPIRED.to_string())); }
+    if r.status == 401 { clear_token(platform)?; return Err(Error::player(SESSION_EXPIRED)); }
     let player = parse_show_offline_reply(&r, &url)?;
     let path = identity_path(platform).map_err(|e| {
         tracing::warn!("the identity file path could not be resolved: {e}");
-        plain(SAVE_UNAVAILABLE.to_string())
+        Error::player(SAVE_UNAVAILABLE)
     })?;
     let existing = read_identity(&path).map_err(|e| {
         tracing::warn!("the identity file could not be read at {}: {e}", path.display());
-        plain(SAVE_UNAVAILABLE.to_string())
+        Error::player(SAVE_UNAVAILABLE)
     })?;
     let file = match existing {
         Some(mut existing) => { existing.player = player.clone(); existing }
@@ -418,7 +422,7 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
     };
     std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("a serializable identity file")).map_err(|source| {
         tracing::warn!("the identity file could not be written at {}: {source}", path.display());
-        plain(SAVE_UNAVAILABLE.to_string())
+        Error::player(SAVE_UNAVAILABLE)
     })?;
     Ok(player)
 }
@@ -435,7 +439,7 @@ pub fn open_in_browser(platform: &Platform, url: &str) -> Result<()> {
         // carry the player's own sign-in code, and a hostile origin could put anything in it --
         // the same reason `DeviceStart`'s Debug impl excludes verify_url.
         tracing::warn!("refused to open a link that was not http or https");
-        return Err(plain(PAGE_NOT_OPENED.to_string()));
+        return Err(Error::player(PAGE_NOT_OPENED));
     }
     let program: &str = if cfg!(windows) { "explorer.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let args = vec![std::ffi::OsString::from(url)];
