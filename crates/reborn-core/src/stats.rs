@@ -92,6 +92,28 @@ pub const CAPTURE_FOLDERS: [&str; 2] = ["Online", "Offline"];
 /// The folder older runtimes wrote. Still read, so nothing left behind is lost.
 pub const LEGACY_CAPTURE_DIR: &str = "LeagueGameStats";
 
+/// The mode stamped on a capture found somewhere the launcher does not
+/// recognize: the `GameStats` folder itself, or a subfolder of it that is not
+/// one of [`CAPTURE_FOLDERS`].
+///
+/// Recorded rather than guessed. An offline game, a league game and a ranked
+/// game make byte identical captures, so stamping a drifted folder "offline"
+/// is how an offline game lands on a real league fixture. `unknown` is the
+/// truth, it reaches the backend as the truth, and it is visible on the
+/// results list, which turns a naming drift between the emulator and the
+/// launcher into something somebody notices instead of a silent pile of real
+/// games nobody knows about.
+pub const UNKNOWN_MODE: &str = "unknown";
+
+/// Folders inside `GameStats` that are somebody else's, by convention.
+///
+/// The manual test procedure keeps its archive in `_previous`. Sweeping it
+/// would move kept copies into the queue and delete them from where a person
+/// deliberately put them.
+fn is_someone_elses_folder(name: &str) -> bool {
+    name.starts_with('_') || name.starts_with('.')
+}
+
 /// Where Dolphin will have written this launch's captures.
 pub fn dolphin_capture_dir(user_dir: &Path) -> PathBuf {
     user_dir.join(DOLPHIN_CAPTURE_DIR)
@@ -114,6 +136,55 @@ pub fn dolphin_capture_dirs(user_dir: &Path) -> Vec<(PathBuf, Option<&'static st
         })
         .collect();
     dirs.push((user_dir.join(LEGACY_CAPTURE_DIR), None));
+    dirs
+}
+
+/// Every folder a capture can be in, including the ones nobody agreed on.
+///
+/// [`dolphin_capture_dirs`] names the folders the launcher and the emulator
+/// agreed on, and that list was the whole sweep. Anything the emulator wrote
+/// into `GameStats` itself, or into a third subfolder, was never read, never
+/// queued and never mentioned. The two ship from different plans, so a naming
+/// drift is a live possibility and the failure mode is the worst one this
+/// system has: a pile of games somebody played that nothing knows about.
+///
+/// So this reads the disk as well as the list. The `GameStats` folder itself
+/// and every direct subfolder of it that is not a known mode are swept too,
+/// stamped [`UNKNOWN_MODE`], which is the truth rather than a guess.
+/// Subfolders named by [`is_someone_elses_folder`] are still left alone.
+///
+/// Only `*.json` directly in a folder is ever read, so sweeping the parent
+/// does not re-read what the mode folders already yielded.
+pub fn capture_folders_on_disk(user_dir: &Path) -> Vec<(PathBuf, Option<&'static str>)> {
+    let mut dirs = dolphin_capture_dirs(user_dir);
+    let parent = user_dir.join(DOLPHIN_CAPTURE_DIR);
+
+    let mut unknown: Vec<PathBuf> = Vec::new();
+    if let Ok(listing) = std::fs::read_dir(&parent) {
+        for item in listing.flatten() {
+            let path = item.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if CAPTURE_FOLDERS.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            if is_someone_elses_folder(name) {
+                continue;
+            }
+            unknown.push(path);
+        }
+    }
+    unknown.sort();
+
+    // The parent last of the known ones and before the drifted subfolders, so
+    // the order a person reads is: the modes we agreed on, then everything
+    // else.
+    dirs.push((parent, Some(UNKNOWN_MODE)));
+    dirs.extend(unknown.into_iter().map(|p| (p, Some(UNKNOWN_MODE))));
     dirs
 }
 
@@ -1825,15 +1896,19 @@ impl StatsQueue {
         Ok(out)
     }
 
-    /// Everything Dolphin wrote, from both mode folders and the legacy folder.
+    /// Everything Dolphin wrote, from every folder a capture can be in.
     ///
     /// One folder that cannot be listed does not stop the others. They hold
     /// games somebody played, and the online folder is scanned first, so
     /// propagating from there used to mean the offline and legacy folders were
     /// never looked at.
+    ///
+    /// The folders come from [`capture_folders_on_disk`], not from the agreed
+    /// list alone: a capture in a folder nobody agreed on is still a game
+    /// somebody played, and it is stamped [`UNKNOWN_MODE`] rather than guessed.
     pub fn ingest_all(&self, user_dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
         let mut out = Vec::new();
-        for (dir, folder) in dolphin_capture_dirs(user_dir) {
+        for (dir, folder) in capture_folders_on_disk(user_dir) {
             match self.ingest_from_folder(&dir, session_id, folder) {
                 Ok(found) => out.extend(found),
                 Err(e) => {
@@ -3909,6 +3984,76 @@ mod tests {
             !user.join("GameStats/Online/g.json").exists(),
             "ingested files are removed"
         );
+    }
+
+    /// A capture the launcher does not recognize the folder of is still a game
+    /// somebody played.
+    ///
+    /// Collection swept exactly `GameStats\Online`, `GameStats\Offline` and the
+    /// legacy folder. Anything the emulator wrote into `GameStats` itself, or
+    /// into a third subfolder, was never read, never queued and never
+    /// mentioned. The emulator and the launcher ship from different plans, so a
+    /// naming drift between them is a live possibility, and the failure mode
+    /// was a silent pile of real games nobody knew about.
+    ///
+    /// Now they are swept too, with the mode recorded as `unknown` rather than
+    /// guessed. Guessing is the one thing that must not happen: an offline
+    /// game, a league game and a ranked game make byte identical captures, and
+    /// stamping a drifted folder as "offline" is how one lands on a real league
+    /// fixture.
+    ///
+    /// A folder whose name begins with `_` or `.` is still left alone. The
+    /// manual test procedure keeps its archive in `_previous`, and sweeping it
+    /// would move somebody's kept copies into the queue and delete them from
+    /// where they put them.
+    #[test]
+    fn a_capture_in_a_folder_the_launcher_does_not_know_is_collected_and_marked_unknown() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("User");
+        for (dir, body) in [
+            ("GameStats/Online", sample_capture_with_style([10, 20])),
+            // The emulator writing straight into the parent.
+            ("GameStats", sample_capture_with_style([30, 40])),
+            // A third mode folder nobody told the launcher about.
+            ("GameStats/Ranked", sample_capture_with_style([50, 60])),
+            // Somebody else's folder, left alone.
+            ("GameStats/_previous", sample_capture_with_style([70, 80])),
+        ] {
+            std::fs::create_dir_all(user.join(dir)).unwrap();
+            std::fs::write(user.join(dir).join("g.json"), body).unwrap();
+        }
+
+        let q = StatsQueue::open_at(&root.path().join("q"), FixedClock::new(1)).unwrap();
+        let got = q.ingest_all(&user, Some("s1")).unwrap();
+        assert_eq!(
+            got.len(),
+            3,
+            "a capture outside the two known mode folders was not collected at all"
+        );
+
+        let folders: Vec<Option<String>> = q
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.capture_folder)
+            .collect();
+        assert!(folders.contains(&Some("online".into())));
+        assert_eq!(
+            folders.iter().filter(|f| f.as_deref() == Some(UNKNOWN_MODE)).count(),
+            2,
+            "the mode of a drifted folder must be recorded as unknown, never guessed: {folders:?}"
+        );
+        assert!(
+            !folders.contains(&Some("offline".into())),
+            "a folder the launcher does not know was guessed as offline: {folders:?}"
+        );
+
+        assert!(
+            user.join("GameStats/_previous/g.json").exists(),
+            "the manual test procedure's archive was swept into the queue and deleted"
+        );
+        assert!(!user.join("GameStats/g.json").exists());
+        assert!(!user.join("GameStats/Ranked/g.json").exists());
     }
 
     /// A capture file that cannot be deleted while this is alive, the way one

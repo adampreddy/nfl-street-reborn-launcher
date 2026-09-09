@@ -3254,6 +3254,11 @@ struct StatsEntryView {
     first_seen_ms: u64,
     last_error: Option<String>,
     session_id: Option<String>,
+    /// "online", "offline", "unknown", or absent for the folder older runtimes
+    /// wrote. Reported rather than kept internal: "unknown" is the launcher
+    /// saying it found a capture in a folder neither it nor the emulator agreed
+    /// on, and a naming drift between the two has to be visible somewhere.
+    capture_folder: Option<String>,
     captured_at: Option<String>,
     teams: Vec<String>,
     players: Option<usize>,
@@ -3362,6 +3367,7 @@ async fn stats_queue() -> Result<StatsQueueView, String> {
                         first_seen_ms: e.first_seen_ms,
                         last_error: e.last_error.clone(),
                         session_id: e.session_id.clone(),
+                        capture_folder: e.capture_folder.clone(),
                         captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
                         teams: e
                             .summary

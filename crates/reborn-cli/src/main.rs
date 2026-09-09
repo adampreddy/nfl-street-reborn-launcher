@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{dolphin_capture_dirs, EntryState, StatsQueue};
+use reborn_core::stats::{capture_folders_on_disk, EntryState, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -3679,6 +3679,18 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
             } else {
                 println!("      no session accounts for it");
             }
+            // Named, so a naming drift between the emulator and the launcher
+            // is something a person reading this notices. "unknown" means the
+            // capture was found somewhere neither side agreed on, and the mode
+            // was recorded rather than guessed.
+            match entry.capture_folder.as_deref() {
+                Some(reborn_core::stats::UNKNOWN_MODE) => println!(
+                    "      found in a folder this launcher does not know, so its mode is \
+                     recorded as unknown rather than guessed"
+                ),
+                Some(mode) => println!("      {mode}"),
+                None => println!("      from the folder older runtimes wrote, so its mode is not known"),
+            }
             if let Some(path) = &entry.source_path {
                 println!("      from {}", path.display());
             }
@@ -3741,7 +3753,7 @@ fn stats_ingest(
         None => {
             let user = resolve_user_dir(platform, None)?;
             println!("{}", user.explain());
-            let dirs = dolphin_capture_dirs(user.path());
+            let dirs = capture_folders_on_disk(user.path());
             (Some(user.path().to_path_buf()), dirs)
         }
     };
