@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{capture_folders_on_disk, EntryState, QueueEntry, StatsQueue};
+use reborn_core::stats::{capture_folders_on_disk, CaptureFolder, EntryState, QueueEntry, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -3781,7 +3781,16 @@ fn stats_ingest(
     // a missing folder. It found nothing, said there was nothing to do, and
     // left the captures a person was looking for one level down.
     let (user_dir, folders) = match &from {
-        Some(one) => (None, vec![(one.clone(), None)]),
+        Some(one) => (
+            None,
+            vec![CaptureFolder {
+                path: one.clone(),
+                mode: None,
+                // A person named this folder and had to add --apply, which
+                // says the source files are removed.
+                emulator_writes_here: true,
+            }],
+        ),
         None => {
             let user = resolve_user_dir(platform, None)?;
             println!("{}", user.explain());
@@ -3791,13 +3800,21 @@ fn stats_ingest(
     };
 
     println!("Queue         {}", queue.dir().display());
-    for (dir, mode) in &folders {
+    for folder in &folders {
         println!(
-            "Captures      {}{}",
-            dir.display(),
-            match mode {
+            "Captures      {}{}{}",
+            folder.path.display(),
+            match folder.mode {
                 Some(m) => format!("  ({m})"),
                 None => String::new(),
+            },
+            // Said out loud, because "read but never emptied" is the whole
+            // difference between a folder the emulator owns and one somebody
+            // filled themselves.
+            if folder.emulator_writes_here {
+                ""
+            } else {
+                "  read only, nothing is removed from it"
             }
         );
     }
@@ -3806,7 +3823,8 @@ fn stats_ingest(
     // actually sitting in rather than a single total.
     let mut found: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
     let mut missing = 0usize;
-    for (dir, _) in &folders {
+    for folder in &folders {
+        let dir = &folder.path;
         if !dir.exists() {
             missing += 1;
             continue;

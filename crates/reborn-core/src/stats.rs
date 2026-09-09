@@ -155,8 +155,17 @@ pub fn dolphin_capture_dirs(user_dir: &Path) -> Vec<(PathBuf, Option<&'static st
 ///
 /// Only `*.json` directly in a folder is ever read, so sweeping the parent
 /// does not re-read what the mode folders already yielded.
-pub fn capture_folders_on_disk(user_dir: &Path) -> Vec<(PathBuf, Option<&'static str>)> {
-    let mut dirs = dolphin_capture_dirs(user_dir);
+pub fn capture_folders_on_disk(user_dir: &Path) -> Vec<CaptureFolder> {
+    let mut dirs: Vec<CaptureFolder> = dolphin_capture_dirs(user_dir)
+        .into_iter()
+        .map(|(path, mode)| CaptureFolder {
+            path,
+            mode,
+            // The two mode folders and the folder older runtimes wrote. These
+            // are the ones a launch empties.
+            emulator_writes_here: true,
+        })
+        .collect();
     let parent = user_dir.join(DOLPHIN_CAPTURE_DIR);
 
     let mut unknown: Vec<PathBuf> = Vec::new();
@@ -183,9 +192,53 @@ pub fn capture_folders_on_disk(user_dir: &Path) -> Vec<(PathBuf, Option<&'static
     // The parent last of the known ones and before the drifted subfolders, so
     // the order a person reads is: the modes we agreed on, then everything
     // else.
-    dirs.push((parent, Some(UNKNOWN_MODE)));
-    dirs.extend(unknown.into_iter().map(|p| (p, Some(UNKNOWN_MODE))));
+    dirs.push(CaptureFolder {
+        path: parent,
+        mode: Some(UNKNOWN_MODE),
+        emulator_writes_here: false,
+    });
+    dirs.extend(unknown.into_iter().map(|path| CaptureFolder {
+        path,
+        mode: Some(UNKNOWN_MODE),
+        emulator_writes_here: false,
+    }));
     dirs
+}
+
+/// One folder a capture can be in, and what a launch may do with it.
+///
+/// The flag is the whole reason this is a struct rather than a pair. A launch
+/// used to delete every source file it had accounted for, from every folder it
+/// swept, and "accounted for" includes a capture the queue already had, which
+/// writes nothing. So a player who copied their captures into a folder for
+/// safekeeping lost them on the next launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureFolder {
+    pub path: PathBuf,
+    /// "online", "offline" or [`UNKNOWN_MODE`]. `None` for the legacy folder,
+    /// whose mode nobody recorded.
+    pub mode: Option<&'static str>,
+    /// Whether this is a folder the emulator writes into.
+    ///
+    /// True for the two mode folders and for the folder older runtimes wrote:
+    /// those are emptied as they are read, so the same games are not
+    /// re-examined after every launch. False for everything found by looking
+    /// at the disk, which is somebody else's folder until proven otherwise.
+    /// Reading one costs nothing to repeat, because the content key makes a
+    /// second read a no-op.
+    pub emulator_writes_here: bool,
+}
+
+/// What a launch does with a source file once its capture is in the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterReading {
+    /// Remove it. Only for the folders the emulator writes into: leaving them
+    /// full means every launch re-reads every game ever played.
+    RemoveTheSourceFile,
+    /// Leave it exactly where it is. For every folder the launcher found by
+    /// looking rather than by agreement, because it may be somebody's own copy
+    /// of games nobody else has.
+    LeaveEverythingWhereItIs,
 }
 
 // ---------------------------------------------------------------------------
@@ -1859,6 +1912,7 @@ impl StatsQueue {
         dir: &Path,
         session_id: Option<&str>,
         folder: Option<&str>,
+        after: AfterReading,
     ) -> Result<Vec<Enqueued>> {
         if !dir.exists() {
             return Ok(Vec::new());
@@ -1905,9 +1959,13 @@ impl StatsQueue {
             };
             let result = self.enqueue(&bytes, Some(&path), session_id, folder)?;
             // Every one of these means the capture is accounted for, so the
-            // source can go. Leaving it would mean the folder never empties and
-            // the same games are re-examined after every launch.
-            if !matches!(result, Enqueued::CouldNotRead { .. }) {
+            // source can go -- but only from a folder the emulator writes to.
+            // "Accounted for" includes a capture the queue already had, which
+            // writes nothing, so in a folder the player filled themselves this
+            // deleted their own copies of games the launcher had anyway.
+            if after == AfterReading::RemoveTheSourceFile
+                && !matches!(result, Enqueued::CouldNotRead { .. })
+            {
                 // Reported, never propagated. The capture is already durable by
                 // the time this runs, so a file antivirus or a sync client has
                 // open is not a reason to abandon the rest of the folder, the
@@ -1937,13 +1995,21 @@ impl StatsQueue {
     /// somebody played, and it is stamped [`UNKNOWN_MODE`] rather than guessed.
     pub fn ingest_all(&self, user_dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
         let mut out = Vec::new();
-        for (dir, folder) in capture_folders_on_disk(user_dir) {
-            match self.ingest_from_folder(&dir, session_id, folder) {
+        for folder in capture_folders_on_disk(user_dir) {
+            let after = if folder.emulator_writes_here {
+                AfterReading::RemoveTheSourceFile
+            } else {
+                AfterReading::LeaveEverythingWhereItIs
+            };
+            match self.ingest_from_folder(&folder.path, session_id, folder.mode, after) {
                 Ok(found) => out.extend(found),
                 Err(e) => {
-                    tracing::warn!("a capture folder could not be listed at {}: {e}", dir.display());
+                    tracing::warn!(
+                        "a capture folder could not be listed at {}: {e}",
+                        folder.path.display()
+                    );
                     out.push(Enqueued::CouldNotRead {
-                        path: dir,
+                        path: folder.path,
                         detail: e.to_string(),
                     });
                 }
@@ -1953,8 +2019,12 @@ impl StatsQueue {
     }
 
     /// Legacy entry point: one folder, no mode.
+    ///
+    /// Still empties the folder. Its one caller is `rebornctl stats ingest
+    /// --from`, where a person named the folder themselves and had to add
+    /// `--apply`, which the help says deletes the source files.
     pub fn ingest_from(&self, dir: &Path, session_id: Option<&str>) -> Result<Vec<Enqueued>> {
-        self.ingest_from_folder(dir, session_id, None)
+        self.ingest_from_folder(dir, session_id, None, AfterReading::RemoveTheSourceFile)
     }
 
     /// Every entry, with the ledger applied over it.
@@ -4129,6 +4199,84 @@ mod tests {
         );
     }
 
+    /// A folder the emulator does not write to is read and never emptied.
+    ///
+    /// The sweep reads every direct subfolder of `GameStats` that is not a
+    /// known mode and does not begin with `_` or `.`, and it removed each
+    /// source file once the capture was accounted for. Being accounted for
+    /// includes `AlreadyQueued` and `AlreadySubmitted`, neither of which
+    /// writes anything: the file was deleted for being a copy of something the
+    /// launcher already had.
+    ///
+    /// So a player who copies their captures into a backup folder before
+    /// reinstalling lost that backup on the next launch. The `_` convention
+    /// that would have saved them is one this launcher invented and never told
+    /// anybody about, and it protects the folder the manual test procedure
+    /// happens to use rather than anything a player would create.
+    ///
+    /// Reading is what finds a game nobody knows about, and reading costs
+    /// nothing to repeat: the content key makes a second read a no-op. So
+    /// unknown folders are read and never written to, and only the folders the
+    /// emulator actually writes are emptied.
+    #[test]
+    fn a_folder_the_emulator_does_not_write_to_is_read_and_never_emptied() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("User");
+
+        let played = sample_capture_with_style([10, 20]);
+        let only_in_the_backup = sample_capture_with_style([30, 40]);
+        for (dir, name, body) in [
+            // What the emulator wrote this session.
+            ("GameStats/Online", "played.json", played.clone()),
+            // What the player copied somewhere safe before reinstalling: one
+            // copy of the game above, and one game they have nowhere else.
+            ("GameStats/Backup", "played.json", played.clone()),
+            ("GameStats/Backup", "older.json", only_in_the_backup.clone()),
+        ] {
+            std::fs::create_dir_all(user.join(dir)).unwrap();
+            std::fs::write(user.join(dir).join(name), body).unwrap();
+        }
+
+        let q = StatsQueue::open_at(&root.path().join("q"), FixedClock::new(1)).unwrap();
+        q.ingest_all(&user, Some("s1")).unwrap();
+
+        assert!(
+            !user.join("GameStats/Online/played.json").exists(),
+            "the folder the emulator writes to has to be emptied, or the same games are \
+             re-examined after every launch"
+        );
+        assert!(
+            user.join("GameStats/Backup/played.json").exists(),
+            "the player's own copy of a game the launcher already had was deleted out of \
+             the folder they put it in"
+        );
+        assert!(
+            user.join("GameStats/Backup/older.json").exists(),
+            "the player's backup was emptied by a launch"
+        );
+
+        // Read, though. Both games are accounted for, including the one that
+        // exists nowhere but the backup.
+        let keys: Vec<String> = q
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.key.as_str().to_string())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            2,
+            "a game that exists only in a folder nobody agreed on is still a game somebody \
+             played: {keys:?}"
+        );
+
+        // And a second launch changes nothing, in either direction.
+        q.ingest_all(&user, Some("s2")).unwrap();
+        assert_eq!(q.entries().unwrap().len(), 2, "a repeat read duplicated a game");
+        assert!(user.join("GameStats/Backup/played.json").exists());
+        assert!(user.join("GameStats/Backup/older.json").exists());
+    }
+
     /// A capture the launcher does not recognize the folder of is still a game
     /// somebody played.
     ///
@@ -4195,8 +4343,23 @@ mod tests {
             user.join("GameStats/_previous/g.json").exists(),
             "the manual test procedure's archive was swept into the queue and deleted"
         );
-        assert!(!user.join("GameStats/g.json").exists());
-        assert!(!user.join("GameStats/Ranked/g.json").exists());
+        // Read, and left exactly where they are. These two assertions were the
+        // other way round, which was the defect: "accounted for" includes a
+        // capture the queue already had, which writes nothing, so a folder a
+        // player filled themselves was emptied by the next launch. Reading is
+        // what finds a game nobody knows about; deleting is only ever right in
+        // a folder the emulator writes to, or it never empties.
+        assert!(
+            user.join("GameStats/g.json").exists(),
+            "a file in a folder the emulator does not write to was deleted"
+        );
+        assert!(
+            user.join("GameStats/Ranked/g.json").exists(),
+            "a file in a folder nobody agreed on was deleted"
+        );
+        // The one the emulator did write, though, is gone: leaving it means
+        // every launch re-reads every game ever played.
+        assert!(!user.join("GameStats/Online/g.json").exists());
     }
 
     /// A capture file that cannot be deleted while this is alive, the way one
