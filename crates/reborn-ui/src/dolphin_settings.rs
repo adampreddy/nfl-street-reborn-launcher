@@ -74,6 +74,29 @@ mod tests {
     #[test]fn editing_one_setting_preserves_saves_and_unknown_keys(){let mut doc=IniDocument::parse("[Core]\nMemcardAPath = C:/Saves/My.raw\nSyncGPU = True\n[Custom]\nKeep = original\n[DSP]\nVolume = 100\n");let mut overlay=Overlay::new();overlay.entry("DSP".into()).or_default().insert("Volume".into(),"65".into());doc.merge(&overlay);assert_eq!(doc.get("Core","MemcardAPath"),Some("C:/Saves/My.raw"));assert_eq!(doc.get("Core","SyncGPU"),Some("True"));assert_eq!(doc.get("Custom","Keep"),Some("original"));assert_eq!(doc.get("DSP","Volume"),Some("65"));}
 }
 
+/// Start Dolphin with NetPlay configured, and record the session.
+///
+/// The session record is written before the emulator starts and finished when
+/// it stops, for the same reason a launch does it: NetPlay is the one path
+/// that produces `GameStats\Online` captures, and where a result goes is
+/// decided at launch and written down, never worked out from the file
+/// afterwards. This command used to spawn the emulator with no record and no
+/// collection at all, so every online game a player played through the
+/// launcher was captured to disk and then either never delivered or adopted by
+/// the next offline session and stamped with that session's id and exit.
+///
+/// `build` stays [`GameBuild::Offline`] deliberately. That field names which
+/// game image is booting, not how the two players reach each other: NetPlay
+/// runs the customizable offline disc, and its game id decides which
+/// `GameSettings` file is written and which mod library is composed. Whether
+/// the game was online is carried by the folder Dolphin writes into, which the
+/// queue records and the envelope sends.
+///
+/// `league_match` is false because this dialog never asks. Recording "not a
+/// league fixture" is the only honest answer to a question the player was not
+/// put, and asserting a fixture nobody claimed is the one direction that
+/// corrupts league standings. The result still reaches the server, marked
+/// online.
 #[tauri::command]
 pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16)->Result<serde_json::Value,String>{
  tauri::async_runtime::spawn_blocking(move||{
@@ -85,6 +108,10 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
   let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false};
+  // The lock, before anything is written or started, and anything left
+  // unfinished recovered. The same first two steps as a launch.
+  let Startup::Owner(supervisor)=Supervisor::acquire(&p).map_err(|e|e.to_string())? else { return Err(already_running()); };
+  let _=supervisor.recover_unfinished().map_err(|e|e.to_string())?;
   let prepared=Session::prepare(&p,&req).map_err(|e|e.to_string())?;
   let user=prepared.user_dir.path();let file=user.join("Config/Dolphin.ini");let mut doc=read_ini(&file)?;let mut overlay=netplay_sync_overlay();let net=overlay.entry("NetPlay".into()).or_default();
   net.insert("Nickname".into(),nickname.into());net.insert("TraversalChoice".into(),connection.clone());net.insert("ConnectPort".into(),port.to_string());net.insert("HostPort".into(),port.to_string());
@@ -93,8 +120,24 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let count=doc.get("General","ISOPaths").and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(10000);
   if let Some(parent)=game_path.parent(){let path=parent.display().to_string();if !(0..count).any(|i|doc.get("General",&format!("ISOPath{i}"))==Some(path.as_str())){let general=overlay.entry("General".into()).or_default();general.insert(format!("ISOPath{count}"),path);general.insert("ISOPaths".into(),(count+1).to_string());}}
   doc.merge(&overlay);std::fs::write(&file,doc.render()).map_err(|e|e.to_string())?;
-  let args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string()];let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(|e|e.to_string())?;
-  std::thread::spawn(move||{let _guard=guard;let _=p.processes.wait(handle);});
+  let args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string()];
+  let user_dir=user.to_path_buf();
+  // Written before the emulator, so the id every capture from this session is
+  // filed under exists before there is anything to file.
+  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(|e|e.to_string())?;
+  let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(|e|e.to_string())?;
+  std::thread::spawn(move||{
+   // The lock and the guard are held across the wait AND across the collection
+   // and the send, the way Session::run holds them: the queue and the session
+   // log are shared state, and nothing may start a second session in the middle
+   // of filing this one's results.
+   let _guard=guard;
+   let exit=p.processes.wait(handle).ok();
+   // Reported through the session record, never to a screen. The window has
+   // already been told the game started, and a game that was played is not a
+   // failure however collecting or sending it went.
+   let _=reborn_core::session::finish_and_collect(&p,&supervisor,record,exit.as_ref(),&user_dir);
+  });
   Ok(serde_json::json!({"started":true,"mode":mode,"game":game_path.file_name().unwrap_or_default().to_string_lossy()}))
  }).await.map_err(|e|e.to_string())?
 }

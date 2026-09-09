@@ -33,11 +33,11 @@ use std::path::{Path, PathBuf};
 use crate::controller::{ControllerProfile, GcPadConfig};
 use crate::devices::{DeviceScanner, Enumeration};
 use crate::ini::IniDocument;
-use crate::platform::{DataDir, Error, Platform, Result};
+use crate::platform::{DataDir, Error, ExitKind, Platform, Result};
 use crate::runtime::{
     ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, SessionOutcome,
 };
-use crate::supervisor::{SessionEnd, Startup, Supervisor};
+use crate::supervisor::{SessionEnd, SessionRecord, Startup, Supervisor};
 
 /// What the caller asks for.
 #[derive(Debug, Clone)]
@@ -694,21 +694,7 @@ impl Session {
 
         // The match results, collected while the lock is still held and the
         // session id is still in hand, then sent if the player is signed in.
-        let stats = {
-            let attempt = crate::stats::StatsQueue::open(platform).and_then(|queue| {
-                let enqueued = queue.ingest_all(written.user_dir.path(), Some(&finished.id))?;
-                let history = supervisor.history()?;
-                let sent = match crate::backend::auto_submit(platform, &queue, &history)? {
-                    crate::backend::SendAttempt::Sent(report) => Some(report),
-                    crate::backend::SendAttempt::NotSignedIn => None,
-                };
-                Ok((enqueued, sent))
-            });
-            match attempt {
-                Ok((enqueued, sent)) => StatsAfterSession::Ingested { enqueued, sent },
-                Err(e) => StatsAfterSession::Failed(e.to_string()),
-            }
-        };
+        let stats = collect_and_send(platform, &supervisor, &finished.id, written.user_dir.path());
 
         let end = finished
             .end
@@ -726,6 +712,85 @@ impl Session {
             stats,
         })
     }
+}
+
+/// Collect the match results a session produced, and send them.
+///
+/// # Why this is not private to [`Session::run`]
+///
+/// It used to be, written inline in the middle of the launch sequence. That
+/// made it unreachable from anywhere else, and two front end commands start
+/// the emulator without going through `Session::run`: the NetPlay dialog and
+/// the "open the emulator on its own" button. Neither recorded a session and
+/// neither collected anything, so an online game was written to
+/// `GameStats\Online` and left there. If the player never launched an offline
+/// game afterwards it was never delivered at all, and if they did, that
+/// session's collection pass adopted it and stamped it with an id, an exit
+/// reason and a league intent belonging to a game it did not produce.
+///
+/// So the order lives here, once, and every way of starting the emulator ends
+/// in the same call.
+///
+/// # It never returns an error
+///
+/// By the time this runs the game has been played. A queue that will not open
+/// or a server that will not answer is reported through [`StatsAfterSession`]
+/// and never turned into a failed launch of a game that already happened.
+///
+/// Call it with the lock still held: the queue and the session log are shared
+/// state, and a second launcher collecting the same folder at the same time is
+/// the case the lock exists for.
+pub fn collect_and_send(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    session_id: &str,
+    user_dir: &Path,
+) -> StatsAfterSession {
+    let attempt = crate::stats::StatsQueue::open(platform).and_then(|queue| {
+        let enqueued = queue.ingest_all(user_dir, Some(session_id))?;
+        let history = supervisor.history()?;
+        let sent = match crate::backend::auto_submit(platform, &queue, &history)? {
+            crate::backend::SendAttempt::Sent(report) => Some(report),
+            crate::backend::SendAttempt::NotSignedIn => None,
+        };
+        Ok((enqueued, sent))
+    });
+    match attempt {
+        Ok((enqueued, sent)) => StatsAfterSession::Ingested { enqueued, sent },
+        Err(e) => StatsAfterSession::Failed(e.to_string()),
+    }
+}
+
+/// Close a session whose emulator has stopped, then [`collect_and_send`].
+///
+/// For a caller that spawned the emulator itself and waited for it on its own
+/// thread, rather than going through [`Session::run`]. The session id comes
+/// from the record that was written *before* the emulator started, which is
+/// the whole point: where a result goes is decided at launch and written down,
+/// never worked out from the file afterwards.
+///
+/// `exit` is `None` when the wait itself failed. The record is then left open
+/// on purpose, so the next launch recovers it as
+/// [`SessionEnd::Interrupted`](crate::supervisor::SessionEnd::Interrupted),
+/// which is the truth. Guessing a clean exit here would put a fact on the
+/// envelope that nobody observed.
+///
+/// The collection runs either way. The game was played whether or not the
+/// launcher managed to write down how it ended.
+pub fn finish_and_collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    record: SessionRecord,
+    exit: Option<&ExitKind>,
+    user_dir: &Path,
+) -> StatsAfterSession {
+    let session_id = record.id.clone();
+    if let Some(exit) = exit {
+        // Reported through the session log on the next launch if it fails.
+        // Nothing here may stop the collection below.
+        let _ = supervisor.finish(record, exit);
+    }
+    collect_and_send(platform, supervisor, &session_id, user_dir)
 }
 
 /// Point this build at what `activation.json` says is on.

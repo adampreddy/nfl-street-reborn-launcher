@@ -53,7 +53,7 @@ use reborn_core::onboarding::{
 use reborn_core::runtime::{GameBuild, GraphicsPreset};
 use reborn_core::session::{LaunchRequest, Launched, Session, UserDir};
 use reborn_core::stats::{Enqueued, EntryState, QueueEntry, StatsQueue};
-use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
+use reborn_core::supervisor::{SessionEnd, SessionIntent, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
 /// Where the launcher keeps things, and whether that is safe.
@@ -3954,12 +3954,25 @@ struct OpenRuntimeView {
 }
 
 /// Open the emulator itself, with no game, against the user folder a launch
-/// would use. For the player who wants Dolphin's own settings. Not a
-/// session: nothing is recorded and nothing waits for it.
+/// would use. For the player who wants Dolphin's own settings.
+///
+/// It IS a session. A player who opens the emulator here and then boots a game
+/// from Dolphin's own interface has played a game, and Dolphin writes a
+/// capture for it exactly as it does for a launch. This command used to spawn
+/// and return, holding nothing and waiting for nothing, so those captures were
+/// left on disk with no session that explained them: either never delivered,
+/// or picked up by a later offline session and stamped with an id, an exit
+/// reason and a league intent belonging to a game it did not produce.
+///
+/// So the record is written before the emulator starts, the lock and the guard
+/// are held for as long as it runs, and the results are collected and sent on
+/// the way out. That the launcher now reports a session as active for the
+/// whole time Dolphin is open is the correct answer to "is a game running",
+/// and it stops a second copy being started over the same memory card.
 #[tauri::command]
 async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Result<OpenRuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = LaunchGuard::acquire()?;
+        let guard = LaunchGuard::acquire()?;
         let p = Platform::detect();
         let exe = runtime_for(&p, runtime.as_deref()).ok_or_else(|| {
             "No emulator was found. Set its path on the Settings page.".to_string()
@@ -3970,10 +3983,35 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
         let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
         reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e|e.to_string())?;
         reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e|e.to_string())?;
+
+        // The lock, then anything left unfinished, then the record. The same
+        // first steps as a launch, because this ends the same way: with a
+        // capture that has to belong to something.
+        let Startup::Owner(supervisor) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+            return Err(already_running());
+        };
+        let _ = supervisor.recover_unfinished().map_err(|e| e.to_string())?;
+        // Offline, and not a league match: nothing was asked, and the emulator
+        // is being opened on its own rather than pointed at a fixture. The
+        // folder Dolphin writes into still says whether the game was online.
+        let record = supervisor
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false }))
+            .map_err(|e| e.to_string())?;
+
         let env = std::collections::BTreeMap::new();
-        p.processes
+        let handle = p.processes
             .spawn(&exe, &args, exe.parent(), &env)
             .map_err(|e| e.to_string())?;
+        let user_path = user.path().to_path_buf();
+        std::thread::spawn(move || {
+            // Held across the wait AND across the collection and the send, the
+            // way Session::run holds them.
+            let _guard = guard;
+            let exit = p.processes.wait(handle).ok();
+            // Never surfaced: the window was told the emulator started, and a
+            // game that was played is not a failure however collecting it went.
+            let _ = reborn_core::session::finish_and_collect(&p, &supervisor, record, exit.as_ref(), &user_path);
+        });
         Ok(OpenRuntimeView { started: true, runtime: exe.display().to_string(), user_dir_note: user.explain() })
     })
     .await
@@ -5099,6 +5137,75 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of one command, from its signature to the start of the next
+    /// `#[tauri::command]`.
+    fn command_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let from = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+        &rest[..to]
+    }
+
+    /// Every way of starting the emulator records a session and collects what
+    /// that session produced.
+    ///
+    /// Two commands start the emulator without going through `Session::run`:
+    /// the NetPlay dialog, which is the launcher's ONLY path to a
+    /// `GameStats\Online` capture, and the button that opens Dolphin on its
+    /// own. Both used to spawn and walk away. Every online game played through
+    /// the launcher was written to disk and then either never delivered or
+    /// adopted by the next offline session, which stamped it with an id, an
+    /// exit reason and a league intent from a game it did not produce.
+    ///
+    /// This reads the source of those two commands, because that is exactly
+    /// how the defect was found and exactly how it would come back: everything
+    /// compiled, the game started perfectly, and the wiring simply was not
+    /// there. What the collection then does with a real capture cannot be
+    /// observed without a real emulator and a real game, and a test that
+    /// pretended otherwise would be asserting nothing.
+    #[test]
+    fn every_way_of_starting_the_emulator_records_a_session_and_collects_it() {
+        for (name, body) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+            ),
+        ] {
+            assert!(
+                body.contains("Supervisor::acquire"),
+                "{name} starts the emulator without taking the launcher lock"
+            );
+            assert!(
+                body.contains("begin_with_intent"),
+                "{name} starts the emulator without writing down what the session is, \
+                 so anything it captures has no session that explains it"
+            );
+            assert!(
+                body.contains("finish_and_collect"),
+                "{name} never collects the results the session produced, so they sit \
+                 in Dolphin's folder until some later session adopts them"
+            );
+            // The collection has to happen inside the waiting thread, with the
+            // guard still held, the way Session::run keeps its lock across the
+            // same work.
+            let guard = body
+                .find("let _guard")
+                .expect("the waiting thread must take the launch guard");
+            let collect = body.find("finish_and_collect").expect("checked above");
+            assert!(
+                guard < collect,
+                "{name} collects results outside the guard that keeps a second \
+                 session from starting in the middle of it"
+            );
+        }
+    }
 
     #[test]
     fn identity_view_from_a_file_and_from_nothing() {
