@@ -62,6 +62,9 @@ pub struct LaunchRequest {
     /// `GameSettings`, and none of the 27,025 files of their texture pack. The
     /// game booted to factory defaults with no save data visible.
     pub user_dir: Option<PathBuf>,
+    /// The player said this is a league match. Recorded in the session before Dolphin
+    /// starts; the backend forwards the game to the league site only when it is true.
+    pub league_match: bool,
 }
 
 /// Why a launch could not even be attempted.
@@ -98,7 +101,10 @@ impl Refusal {
 }
 
 /// What happened.
-#[derive(Debug, Clone)]
+// Not Clone: StatsAfterSession is not, and nothing in the workspace clones a
+// Launched value. A caller that needs to keep what happened should hold the
+// explained string, not the value itself.
+#[derive(Debug)]
 pub enum Launched {
     /// The game ran and stopped.
     Finished {
@@ -160,59 +166,42 @@ impl ModsAtLaunch {
 ///
 /// Its own type for the same reason as [`ModsAtLaunch`]: a failure here is
 /// reported, never turned into a failed launch of a game that already ran.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StatsAfterSession {
-    /// One entry per capture file found, including the ones refused.
-    Ingested(Vec<crate::stats::Enqueued>),
+    /// One entry per capture file found, including the ones refused, and what sending did.
+    /// `sent` is None when nobody is signed in, so the entries wait.
+    Ingested {
+        enqueued: Vec<crate::stats::Enqueued>,
+        sent: Option<crate::stats::SubmitReport>,
+    },
     Failed(String),
 }
 
 impl StatsAfterSession {
-    /// One line for a player. Silent when there was nothing to do, because
-    /// most sessions end without a finished match.
+    /// One line for a player. Silent when there was nothing to do.
     pub fn explain(&self) -> Option<String> {
         use crate::stats::Enqueued;
         match self {
-            StatsAfterSession::Failed(why) => {
-                Some(format!("Match results were not collected: {why}"))
-            }
-            StatsAfterSession::Ingested(results) if results.is_empty() => None,
-            StatsAfterSession::Ingested(results) => {
-                let queued = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Queued(_)))
-                    .count();
-                let held = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Quarantined(_)))
-                    .count();
-                let known = results
-                    .iter()
-                    .filter(|r| {
-                        matches!(
-                            r,
-                            Enqueued::AlreadyQueued(_) | Enqueued::AlreadySubmitted { .. }
-                        )
-                    })
-                    .count();
-                let unread = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::CouldNotRead { .. }))
-                    .count();
-                let mut parts = Vec::new();
-                if queued > 0 {
-                    parts.push(format!("{queued} match result(s) queued for submission"));
+            StatsAfterSession::Failed(why) => Some(format!("Match results could not be collected: {why}")),
+            StatsAfterSession::Ingested { enqueued, sent } => {
+                let found = enqueued.iter().filter(|e| matches!(e, Enqueued::Queued(_) | Enqueued::Quarantined(_))).count();
+                let mut parts: Vec<String> = Vec::new();
+                if found > 0 {
+                    parts.push(format!("{found} result{} recorded", if found == 1 { "" } else { "s" }));
                 }
-                if held > 0 {
-                    parts.push(format!("{held} held for review"));
+                match sent {
+                    None if found > 0 => parts.push("waiting for sign-in".to_string()),
+                    None => {}
+                    Some(r) => {
+                        let n = r.accepted.len() + r.recorded.len();
+                        if n > 0 { parts.push(format!("{n} result{} sent", if n == 1 { "" } else { "s" })); }
+                        if !r.held.is_empty() { parts.push(format!("{} held for review", r.held.len())); }
+                        if !r.rejected.is_empty() { parts.push(format!("{} refused by the server", r.rejected.len())); }
+                        if !r.deferred.is_empty() || !r.stalled.is_empty() { parts.push(format!("{} could not be delivered yet", r.deferred.len() + r.stalled.len())); }
+                        if r.waiting_for_sign_in { parts.push("waiting for sign-in".to_string()); }
+                    }
                 }
-                if known > 0 {
-                    parts.push(format!("{known} already known"));
-                }
-                if unread > 0 {
-                    parts.push(format!("{unread} could not be read and were left in place"));
-                }
-                Some(format!("{}.", parts.join(", ")))
+                if parts.is_empty() { None } else { Some(format!("{}.", parts.join(", "))) }
             }
         }
     }
@@ -695,20 +684,28 @@ impl Session {
             match_context: None,
         };
 
-        let record = supervisor.begin(req.build)?;
+        let record = supervisor.begin_with_intent(
+            req.build,
+            Some(crate::supervisor::SessionIntent { league_match: req.league_match }),
+        )?;
         let handle = Launcher::launch(platform, &req.runtime_exe, &config)?;
         let exit = platform.processes.wait(handle)?;
         let finished = supervisor.finish(record, &exit)?;
 
         // The match results, collected while the lock is still held and the
-        // session id is still in hand. Filed under this session so a capture
-        // can always be traced to the launch that produced it.
+        // session id is still in hand, then sent if the player is signed in.
         let stats = {
-            let capture_dir = crate::stats::dolphin_capture_dir(written.user_dir.path());
-            match crate::stats::StatsQueue::open(platform)
-                .and_then(|queue| queue.ingest_from(&capture_dir, Some(&finished.id)))
-            {
-                Ok(results) => StatsAfterSession::Ingested(results),
+            let attempt = crate::stats::StatsQueue::open(platform).and_then(|queue| {
+                let enqueued = queue.ingest_all(written.user_dir.path(), Some(&finished.id))?;
+                let history = supervisor.history()?;
+                let sent = match crate::backend::auto_submit(platform, &queue, &history)? {
+                    crate::backend::SendAttempt::Sent(report) => Some(report),
+                    crate::backend::SendAttempt::NotSignedIn => None,
+                };
+                Ok((enqueued, sent))
+            });
+            match attempt {
+                Ok((enqueued, sent)) => StatsAfterSession::Ingested { enqueued, sent },
                 Err(e) => StatsAfterSession::Failed(e.to_string()),
             }
         };
@@ -1048,7 +1045,7 @@ fn reconcile_controls(
 /// that looks completely correct in every message and matches nothing on
 /// disk, so the launcher refuses while printing the right path back:
 ///
-///   No Reborn Dolphin at "C:\\...\\Dolphin.exe". Set the runtime in Settings.
+///   No Reborn Dolphin at "C:\\...\\NFL Street Reborn Dolphin.exe". Set the runtime in Settings.
 ///
 /// That is a real refusal from a real session, and the emulator was there.
 /// The only clue was the quotes in the message, which read as punctuation.
@@ -1149,10 +1146,12 @@ impl Runtime {
 
 /// Anything that looks like a Dolphin executable in a directory.
 ///
-/// Matched by name rather than by a fixed filename, because the Reborn build
-/// ships as `NFL Street Reborn Dolphin.exe` in the 2.1 install and as
-/// `Dolphin.exe` in the launcher's own payload, and hardcoding either one makes
-/// the other invisible.
+/// Matched by name rather than by a fixed filename, because the fork is being
+/// renamed from `Dolphin.exe` to `NFL Street Reborn Dolphin.exe`, and a tree
+/// mid-update can hold both: an old copy left behind and the new one just
+/// unpacked beside it. When both are present the new name wins, because it is
+/// the one this launcher was built against; alphabetical order alone would
+/// pick the old `dolphin.exe`.
 fn dolphin_in(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut found: Vec<PathBuf> = entries
@@ -1169,8 +1168,12 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
                 && (name.ends_with(".exe") || !name.contains('.'))
         })
         .collect();
-    // Sorted so two candidates do not resolve differently between runs.
-    found.sort();
+    // The Reborn name wins over a stock name when both are present, which happens on a
+    // tree mid-update. Alphabetical order alone would pick "dolphin.exe".
+    found.sort_by_key(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+        (if name == "nfl street reborn dolphin.exe" { 0 } else { 1 }, name)
+    });
     found.into_iter().next()
 }
 
@@ -1287,6 +1290,7 @@ mod tests {
             // Tests must never pick up whatever real install happens
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
+            league_match: false,
         }
     }
 
@@ -1464,6 +1468,29 @@ mod tests {
             found.file_name().unwrap(),
             "NFL Street Reborn Dolphin.exe"
         );
+    }
+
+    #[test]
+    fn the_new_exe_name_wins_when_both_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Dolphin.exe"), b"").unwrap();
+        std::fs::write(dir.path().join("NFL Street Reborn Dolphin.exe"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin.exe");
+    }
+
+    #[test]
+    fn explain_counts_sent_held_recorded_and_waiting() {
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        r.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        let s = StatsAfterSession::Ingested { enqueued: vec![], sent: Some(r) };
+        let text = s.explain().unwrap();
+        assert!(text.contains("1 result sent"), "{text}");
+        assert!(text.contains("1 held for review"), "{text}");
+        let mut w = crate::stats::SubmitReport::default();
+        w.waiting_for_sign_in = true;
+        let s = StatsAfterSession::Ingested { enqueued: vec![], sent: Some(w) };
+        assert!(s.explain().unwrap().contains("waiting for sign-in"));
     }
 
     #[test]

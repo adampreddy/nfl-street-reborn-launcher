@@ -71,6 +71,7 @@ fn main() {
         // Let resolution run, so this also proves which folder the real
         // machine would boot against.
         user_dir: None,
+        league_match: false,
     };
 
     // First prove the preparation half on its own, so a failure here is not
