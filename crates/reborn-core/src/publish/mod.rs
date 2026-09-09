@@ -23,6 +23,8 @@ pub mod release;
 pub mod vault;
 pub mod roster;
 pub mod game_patch;
+pub mod upload;
+pub mod journal;
 
 /// Where component manifests live under the origin.
 pub const COMPONENTS_DIR: &str = "components";
