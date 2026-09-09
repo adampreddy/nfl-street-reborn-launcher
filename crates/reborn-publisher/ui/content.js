@@ -28,6 +28,19 @@ markCurrent();
 
 const screen = document.getElementById("screen");
 
+/// A Browse button beside a folder `input`: opens the native picker for
+/// a folder and drops the chosen path straight into the field, exactly as
+/// if it had been typed. A cancelled dialog leaves the field alone.
+function browseFolderButton(input) {
+  return el("button", {
+    text: "Browse",
+    onclick: async () => {
+      const answer = await call("pick_folder", {});
+      if (answer.ok && answer.value) input.value = answer.value;
+    },
+  });
+}
+
 // The three components this page publishes. Roster, the launcher and the
 // game patch each have their own page.
 const COMPONENTS = [
@@ -212,6 +225,7 @@ screen.append(
       { class: "row" },
       el("label", { class: "inline" }, "Component", componentSelect),
       el("label", { class: "inline" }, "Folder", folderInput),
+      browseFolderButton(folderInput),
       el("label", { class: "inline" }, "Version", versionInput),
       gameIdLabel
     ),
