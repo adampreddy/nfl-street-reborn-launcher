@@ -5378,6 +5378,7 @@ mod tests {
             session_id: Some("s1".into()),
             capture_folder: Some("offline".into()),
             note: Some(note.to_string()),
+            refusal_code: None,
             summary: None,
         };
         assert_eq!(
@@ -5417,6 +5418,7 @@ mod tests {
             session_id: None,
             capture_folder: None,
             note: None,
+            refusal_code: Some("hash-mismatch".to_string()),
             summary: Some(reborn_core::stats::CaptureSummary {
                 captured_at: "2026-01-01T00:00:00Z".to_string(),
                 teams: Vec::new(),
@@ -5439,6 +5441,13 @@ mod tests {
             view.needs_review,
             Some(true),
             "the meaningful signal a player can use has to survive removing the codes"
+        );
+        // The same rule for the server's vocabulary. `refusal_code` is kept on
+        // the entry for the person running `stats retry --apply`, at a command
+        // line; it is not a word a player was ever taught.
+        assert!(
+            !serde_json::to_string(&view).unwrap().contains("hash-mismatch"),
+            "the server's own word for a refusal reached a page: {json}"
         );
     }
 
@@ -5715,6 +5724,7 @@ mod tests {
             summary: None,
             capture_folder: None,
             note: None,
+            refusal_code: None,
         }
     }
 

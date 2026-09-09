@@ -1486,6 +1486,18 @@ pub struct QueueEntry {
     /// A sentence from the server about a terminal result, such as "Recorded as incomplete".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The server's own word for why it refused this result, as received.
+    ///
+    /// Never displayed. [`EntryState::Rejected`]'s `reason` is the sentence a
+    /// player reads, and it deliberately says nothing about which refusal it
+    /// was in the server's vocabulary. That vocabulary is exactly what the one
+    /// person who can do something about it needs: a rejection is permanent,
+    /// the documented way back is a person running
+    /// `rebornctl stats retry --apply`, and without this they are retrying
+    /// blind. A log line is not enough, because this is a fact about one
+    /// specific game that has to outlive log rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_code: Option<String>,
     /// Absent when the capture could not be parsed. Not filled in with
     /// placeholder team names: a row that cannot be described is shown as one
     /// that cannot be described.
@@ -1587,7 +1599,17 @@ pub enum SubmitOutcome {
     Held { reason: String },
     /// Refused for good, for example a schema the server will not take. Never
     /// send again, and do not delete it either.
-    Rejected { reason: String },
+    ///
+    /// `reason` is the sentence a player reads. `code` is the server's own
+    /// word for the refusal, carried separately and never shown: a refusal is
+    /// permanent and the documented way back is a person running
+    /// `rebornctl stats retry --apply`, and that person cannot tell a hash
+    /// mismatch from a seat conflict by reading a sentence written for a
+    /// player.
+    Rejected {
+        reason: String,
+        code: Option<String>,
+    },
     /// Could not be delivered this time. Try later.
     Deferred { reason: String },
     /// The server stored it as a completed record that does not count as a win or loss,
@@ -1654,6 +1676,12 @@ struct LedgerRow {
     at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// The server's own word for a refusal. Here as well as on the entry
+    /// because the ledger row is written first: a process that dies between
+    /// the two would otherwise leave a permanent refusal with no way to tell
+    /// which refusal it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
 }
 
 /// The durable queue of captured results.
@@ -1732,7 +1760,7 @@ impl StatsQueue {
             Err(_) => CaptureKey::of_bytes(bytes),
         };
 
-        if let Some((state, _)) = self.terminal_states()?.get(&key) {
+        if let Some((state, _, _)) = self.terminal_states()?.get(&key) {
             return Ok(Enqueued::AlreadySubmitted { key, state: *state });
         }
         if let Some(existing) = self.read_entry(&key)? {
@@ -1802,6 +1830,7 @@ impl StatsQueue {
             session_id: session_id.map(|s| s.to_string()),
             capture_folder: folder.map(str::to_string),
             note: None,
+            refusal_code: None,
             summary,
         };
         self.write_entry(&entry)?;
@@ -1942,9 +1971,13 @@ impl StatsQueue {
         let ledger = self.terminal_states()?;
         let mut entries = self.read_all_raw()?;
         for entry in &mut entries {
-            if let Some((state, reason)) = ledger.get(&entry.key) {
+            if let Some((state, reason, code)) = ledger.get(&entry.key) {
                 if !entry.state.is_terminal() {
                     entry.state = state.to_entry_state(reason.clone());
+                    // The ledger is written before the entry, so this is the
+                    // crash window. Without the code the refusal would come
+                    // back permanent and unidentifiable.
+                    entry.refusal_code = entry.refusal_code.take().or_else(|| code.clone());
                 }
             }
         }
@@ -1994,7 +2027,7 @@ impl StatsQueue {
 
     /// Whether this game already reached the server.
     pub fn terminal_state(&self, key: &CaptureKey) -> Result<Option<TerminalState>> {
-        Ok(self.terminal_states()?.get(key).map(|(s, _)| *s))
+        Ok(self.terminal_states()?.get(key).map(|(s, _, _)| *s))
     }
 
     /// Payload files with no record beside them.
@@ -2048,9 +2081,10 @@ impl StatsQueue {
 
         let mut report = SubmitReport::default();
         for mut entry in raw {
-            if let Some((state, reason)) = ledger.get(&entry.key) {
+            if let Some((state, reason, code)) = ledger.get(&entry.key) {
                 if !entry.state.is_terminal() {
                     entry.state = state.to_entry_state(reason.clone());
+                    entry.refusal_code = entry.refusal_code.take().or_else(|| code.clone());
                     entry.finished_ms = entry.finished_ms.or(Some(self.clock.now_ms()));
                     self.write_entry(&entry)?;
                     report.repaired_from_ledger.push(entry.key.clone());
@@ -2081,7 +2115,7 @@ impl StatsQueue {
 
             match outcome {
                 SubmitOutcome::Accepted => {
-                    self.record_terminal(&entry.key, TerminalState::Accepted, None)?;
+                    self.record_terminal(&entry.key, TerminalState::Accepted, None, None)?;
                     entry.state = EntryState::Accepted;
                     entry.finished_ms = Some(now);
                     entry.last_error = None;
@@ -2089,7 +2123,7 @@ impl StatsQueue {
                     report.accepted.push(entry.key.clone());
                 }
                 SubmitOutcome::Held { reason } => {
-                    self.record_terminal(&entry.key, TerminalState::Held, Some(&reason))?;
+                    self.record_terminal(&entry.key, TerminalState::Held, Some(&reason), None)?;
                     entry.state = EntryState::Held {
                         reason: reason.clone(),
                     };
@@ -2098,13 +2132,19 @@ impl StatsQueue {
                     self.write_entry(&entry)?;
                     report.held.push(entry.key.clone());
                 }
-                SubmitOutcome::Rejected { reason } => {
-                    self.record_terminal(&entry.key, TerminalState::Rejected, Some(&reason))?;
+                SubmitOutcome::Rejected { reason, code } => {
+                    self.record_terminal(
+                        &entry.key,
+                        TerminalState::Rejected,
+                        Some(&reason),
+                        code.as_deref(),
+                    )?;
                     entry.state = EntryState::Rejected {
                         reason: reason.clone(),
                     };
                     entry.finished_ms = Some(now);
                     entry.last_error = Some(reason);
+                    entry.refusal_code = code;
                     self.write_entry(&entry)?;
                     report.rejected.push(entry.key.clone());
                 }
@@ -2121,7 +2161,7 @@ impl StatsQueue {
                     }
                 }
                 SubmitOutcome::Recorded { note } => {
-                    self.record_terminal(&entry.key, TerminalState::Accepted, None)?;
+                    self.record_terminal(&entry.key, TerminalState::Accepted, None, None)?;
                     entry.state = EntryState::Accepted;
                     entry.finished_ms = Some(now);
                     entry.last_error = None;
@@ -2238,6 +2278,10 @@ impl StatsQueue {
             entry.attempts = 0;
             entry.finished_ms = None;
             entry.last_error = None;
+            // The refusal has been undone, so the word for it would be a
+            // description of a state this entry is no longer in. The next
+            // refusal writes its own.
+            entry.refusal_code = None;
             self.write_entry(&entry)?;
             moved.push(entry.key);
         }
@@ -2352,7 +2396,10 @@ impl StatsQueue {
         Ok(out)
     }
 
-    fn terminal_states(&self) -> Result<BTreeMap<CaptureKey, (TerminalState, Option<String>)>> {
+    #[allow(clippy::type_complexity)]
+    fn terminal_states(
+        &self,
+    ) -> Result<BTreeMap<CaptureKey, (TerminalState, Option<String>, Option<String>)>> {
         let path = self.ledger_path();
         let raw = match std::fs::read_to_string(&path) {
             Ok(r) => r,
@@ -2364,7 +2411,7 @@ impl StatsQueue {
             // A half written final line is skipped, not fatal. The rest of the
             // ledger is still the only record of what has been sent.
             if let Ok(row) = serde_json::from_str::<LedgerRow>(line) {
-                out.insert(row.key, (row.state, row.reason));
+                out.insert(row.key, (row.state, row.reason, row.code));
             }
         }
         Ok(out)
@@ -2380,6 +2427,7 @@ impl StatsQueue {
         key: &CaptureKey,
         state: TerminalState,
         reason: Option<&str>,
+        code: Option<&str>,
     ) -> Result<()> {
         use std::io::Write;
         let path = self.ledger_path();
@@ -2388,6 +2436,7 @@ impl StatsQueue {
             state,
             at_ms: self.clock.now_ms(),
             reason: reason.map(|r| r.to_string()),
+            code: code.map(|c| c.to_string()),
         };
         let line = serde_json::to_string(&row).map_err(|e| {
             Error::PlainIo(std::io::Error::other(format!(
@@ -2473,6 +2522,7 @@ mod tests {
             session_id: None,
             capture_folder: None,
             note: None,
+            refusal_code: None,
             summary: None,
         };
         assert_player_safe(&Enqueued::Queued(entry.clone()).message());
@@ -3823,6 +3873,96 @@ mod tests {
         assert!(q.capture_bytes(&entry.key).unwrap().is_some());
     }
 
+    /// A refusal keeps the server's own word for it, on the entry, forever.
+    ///
+    /// `EntryState::Rejected`'s reason is the sentence a player reads and says
+    /// nothing about which refusal it was. The code went to `tracing::warn!`
+    /// and nowhere else, so the person the refusal is actually addressed to --
+    /// whoever runs `rebornctl stats retry --apply` -- had no way to tell a
+    /// hash mismatch from a seat conflict. A log line is not enough for a fact
+    /// about one specific game: it has to outlive log rotation, so it lives on
+    /// the entry.
+    #[test]
+    fn a_refusal_keeps_the_code_the_server_gave_for_the_person_who_has_to_act_on_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        q.enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap();
+
+        let sentence = "The server would not take this result because it does not match the                         game that was played. It is kept on this PC.";
+        let refuse = Recorder::new(SubmitOutcome::Rejected {
+            reason: sentence.to_string(),
+            code: Some("hash-mismatch".to_string()),
+        });
+        assert_eq!(q.submit_pending(&refuse, 3).unwrap().rejected.len(), 1);
+
+        let entry = &q.entries().unwrap()[0];
+        assert_eq!(
+            entry.refusal_code.as_deref(),
+            Some("hash-mismatch"),
+            "the server's own word for the refusal was not kept, so the person retrying it              is retrying blind"
+        );
+        // And it is not in anything a player reads.
+        assert!(
+            !entry.last_error.as_deref().unwrap_or_default().contains("hash-mismatch"),
+            "the code reached the sentence a player reads"
+        );
+
+        // It survives being read back off disk rather than living only in the
+        // value the send returned.
+        let reopened = queue(dir.path(), 2_000);
+        assert_eq!(
+            reopened.entries().unwrap()[0].refusal_code.as_deref(),
+            Some("hash-mismatch"),
+            "the code was not written down, so it is gone on the next start"
+        );
+    }
+
+    /// The crash window between the ledger append and the entry write does not
+    /// lose the code either.
+    ///
+    /// `record_terminal` is called first, deliberately, so a process that dies
+    /// between the two records the game as sent rather than sending it twice.
+    /// The repair pass then rebuilds the entry's state from the ledger row, and
+    /// a row that did not carry the code would rebuild a permanent refusal
+    /// nobody can identify.
+    #[test]
+    fn the_ledger_carries_the_refusal_code_through_the_crash_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        let Enqueued::Queued(entry) = q
+            .enqueue(REAL_FALCONS.as_bytes(), None, Some("s1"), None)
+            .unwrap()
+        else {
+            panic!("a good capture must be queued");
+        };
+
+        let refuse = Recorder::new(SubmitOutcome::Rejected {
+            reason: "It is kept on this PC.".to_string(),
+            code: Some("seat-conflict".to_string()),
+        });
+        q.submit_pending(&refuse, 3).unwrap();
+
+        // The crash: the ledger row stands, the entry record is put back to
+        // what it looked like before the send finished.
+        let mut before = entry.clone();
+        before.state = EntryState::Queued;
+        before.refusal_code = None;
+        q.write_entry(&before).unwrap();
+
+        let repaired = &q.entries().unwrap()[0];
+        assert!(
+            matches!(repaired.state, EntryState::Rejected { .. }),
+            "the ledger has to win: {:?}",
+            repaired.state
+        );
+        assert_eq!(
+            repaired.refusal_code.as_deref(),
+            Some("seat-conflict"),
+            "the refusal came back permanent with no way to tell which refusal it was"
+        );
+    }
+
     /// A rejected result is not retried and is not thrown away. The player has
     /// to be able to report it, and the ledger has to remember it so a
     /// re-ingested folder does not send it again.
@@ -3835,6 +3975,7 @@ mod tests {
 
         let submitter = Recorder::new(SubmitOutcome::Rejected {
             reason: "no such fixture".into(),
+            code: None,
         });
         let report = q.submit_pending(&submitter, 3).unwrap();
         assert_eq!(report.rejected.len(), 1);
@@ -3877,6 +4018,7 @@ mod tests {
 
         let refuse = Recorder::new(SubmitOutcome::Rejected {
             reason: "hash-mismatch".into(),
+            code: None,
         });
         assert_eq!(q.submit_pending(&refuse, 3).unwrap().rejected.len(), 2);
 
@@ -3922,6 +4064,7 @@ mod tests {
         q.submit_pending(
             &Recorder::new(SubmitOutcome::Rejected {
                 reason: "hash-mismatch".into(),
+                code: None,
             }),
             3,
         )

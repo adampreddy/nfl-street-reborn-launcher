@@ -112,6 +112,18 @@ const COULD_NOT_DELIVER: &str = "The server could not take this result just now.
 /// cause. Either way the code itself goes to `tracing::warn!`, so the one
 /// person who can act on `hash-mismatch` -- whoever is looking at the queue
 /// with a log open -- still has it.
+fn refused(stated: Option<String>) -> SubmitOutcome {
+    let code = stated.filter(|s| !s.is_empty());
+    SubmitOutcome::Rejected {
+        reason: refusal_sentence(code.as_deref().unwrap_or_default()),
+        // The server's own word, as received, beside the sentence rather than
+        // inside it. A rejection is permanent and the way back is a person
+        // running a command; from the sentence alone that person cannot tell a
+        // hash mismatch from a seat conflict.
+        code,
+    }
+}
+
 fn refusal_sentence(code: &str) -> String {
     let normalized = code.trim().to_ascii_lowercase().replace([' ', '_'], "-");
     let sentence = match normalized.as_str() {
@@ -205,7 +217,7 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
                 }
             },
             // ok: false in the server's own format IS a considered refusal.
-            Some(r) => SubmitOutcome::Rejected { reason: refusal_sentence(&stated(r).unwrap_or_default()) },
+            Some(r) => refused(stated(r)),
             // A 2xx carrying something that is not the reply format is most
             // likely a proxy's page over a request that worked. Sending it
             // again is safe, because the server answers a repeat as a
@@ -214,7 +226,7 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
         },
         429 | 500..=599 => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         _ => match parsed.and_then(stated) {
-            Some(code) => SubmitOutcome::Rejected { reason: refusal_sentence(&code) },
+            Some(code) => refused(Some(code)),
             None => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
         },
     }
@@ -258,7 +270,7 @@ impl Submitter for BackendSubmitter<'_> {
         let facts = entry.session_id.as_deref().and_then(|id| self.sessions.get(id));
         let Some(env) = envelope(entry, capture, facts, &self.launcher_version, &now_iso()) else {
             tracing::warn!("a queued capture is not a JSON object, so no envelope could be built for it");
-            return SubmitOutcome::Rejected { reason: NOT_A_CAPTURE.to_string() };
+            return SubmitOutcome::Rejected { reason: NOT_A_CAPTURE.to_string(), code: None };
         };
         let url = format!("{}/v1/results", self.origin.trim_end_matches('/'));
         match self.http.post_json(&url, &serde_json::to_vec(&env).unwrap_or_default(), Some(&self.token)) {
@@ -382,7 +394,7 @@ mod tests {
         assert!(matches!(classify(200, r#"{"ok":true,"status":"held","reason":"seat-conflict"}"#), SubmitOutcome::Held { reason } if reason == HELD_FOR_REVIEW));
         assert!(matches!(classify(200, r#"{"ok":true,"status":"incomplete","reason":"below-target-score"}"#), SubmitOutcome::Recorded { .. }));
         assert_eq!(classify(401, "x"), SubmitOutcome::Unauthorized);
-        assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason } if reason == REFUSED_CHANGED));
+        assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason, .. } if reason == REFUSED_CHANGED));
         assert!(matches!(classify(429, ""), SubmitOutcome::Deferred { .. }));
         assert!(matches!(classify(503, ""), SubmitOutcome::Deferred { .. }));
     }
@@ -433,7 +445,7 @@ mod tests {
             (409, r#"{"ok":false,"error":"seat-conflict"}"#, REFUSED_SEAT),
         ] {
             assert!(
-                matches!(classify(status, body), SubmitOutcome::Rejected { reason } if reason == want),
+                matches!(classify(status, body), SubmitOutcome::Rejected { reason, .. } if reason == want),
                 "{status} with {body} should be a refusal saying {want:?}"
             );
         }
@@ -442,6 +454,40 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for code in [REFUSED_CHANGED, REFUSED_NO_FIXTURE, REFUSED_SEAT, REFUSED_INCOMPLETE, REFUSED_UNKNOWN] {
             assert!(seen.insert(code), "two refusals share one sentence: {code}");
+        }
+    }
+
+    /// The server's own word for a refusal is carried out of here, beside the
+    /// sentence rather than inside it.
+    ///
+    /// A rejection is permanent, and the documented way back is a person
+    /// running `rebornctl stats retry --apply`. Mapping the code to a sentence
+    /// is right for the player and leaves that person retrying blind: from
+    /// "The server would not take this result..." nobody can tell a hash
+    /// mismatch from a seat conflict. The code went to `tracing::warn!` and
+    /// nowhere else, which is not enough for a fact about one specific game
+    /// that has to outlive log rotation.
+    #[test]
+    fn a_refusal_carries_the_servers_own_code_beside_the_sentence() {
+        for (status, body, want_sentence, want_code) in [
+            (400, r#"{"ok":false,"error":"hash-mismatch"}"#, REFUSED_CHANGED, "hash-mismatch"),
+            (409, r#"{"ok":false,"error":"seat-conflict"}"#, REFUSED_SEAT, "seat-conflict"),
+            // A code this launcher has no sentence for still reaches the
+            // operator as itself. That is the case the field matters most for.
+            (400, r#"{"ok":false,"error":"roster-drift"}"#, REFUSED_UNKNOWN, "roster-drift"),
+            (200, r#"{"ok":false,"reason":"seat-conflict"}"#, REFUSED_SEAT, "seat-conflict"),
+        ] {
+            match classify(status, body) {
+                SubmitOutcome::Rejected { reason, code } => {
+                    assert_eq!(reason, want_sentence, "{status} with {body}");
+                    assert_eq!(
+                        code.as_deref(),
+                        Some(want_code),
+                        "the server's own word for the refusal was thrown away, so the                          person who has to retry it cannot tell which refusal it was"
+                    );
+                }
+                other => panic!("{status} with {body} should be a refusal, got {other:?}"),
+            }
         }
     }
 
@@ -457,7 +503,7 @@ mod tests {
         ] {
             let reason = match classify(status, body) {
                 SubmitOutcome::Deferred { reason }
-                | SubmitOutcome::Rejected { reason }
+                | SubmitOutcome::Rejected { reason, .. }
                 | SubmitOutcome::Held { reason } => reason,
                 other => panic!("{status} produced {other:?}, which carries no reason"),
             };
@@ -488,7 +534,7 @@ mod tests {
         use crate::player_sentence::assert_player_safe;
         let reason_of = |status, body: &str| match classify(status, body) {
             SubmitOutcome::Deferred { reason }
-            | SubmitOutcome::Rejected { reason }
+            | SubmitOutcome::Rejected { reason, .. }
             | SubmitOutcome::Held { reason } => reason,
             SubmitOutcome::Recorded { note } => note,
             other => panic!("{status} produced {other:?}, which carries no reason"),

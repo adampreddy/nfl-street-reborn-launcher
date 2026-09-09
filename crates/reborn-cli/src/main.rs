@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{capture_folders_on_disk, EntryState, StatsQueue};
+use reborn_core::stats::{capture_folders_on_disk, EntryState, QueueEntry, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -3630,6 +3630,22 @@ fn describe_state(state: &EntryState) -> String {
     }
 }
 
+/// The server's own word for why it refused this result, for the person who
+/// has to decide whether to put it back.
+///
+/// `describe_state` prints the sentence a player reads, which deliberately
+/// says nothing about which refusal it was. This tool's audience is a
+/// developer or a league operator at a command line, and a rejection is
+/// permanent: `stats retry --apply` is the documented way back, and without
+/// the code the person running it cannot tell a hash mismatch from a seat
+/// conflict.
+fn refusal_code_line(entry: &QueueEntry) -> Option<String> {
+    entry
+        .refusal_code
+        .as_deref()
+        .map(|code| format!("the server refused it with: {code}"))
+}
+
 /// Short form of a content key, for a line a person reads.
 fn short_key(key: &reborn_core::stats::CaptureKey) -> String {
     key.as_str().chars().take(12).collect()
@@ -3651,6 +3667,9 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 short_key(&entry.key),
                 describe_state(&entry.state)
             );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
             match &entry.summary {
                 Some(summary) => {
                     let teams = summary
@@ -3937,6 +3956,9 @@ fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::pro
                 short_key(&entry.key),
                 describe_state(&entry.state)
             );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
         }
         println!();
         println!("A refusal means the server looked at the result and did not store it,");
@@ -5098,6 +5120,48 @@ mod tests {
     /// `Platform` and a resolved user directory and cannot be called in a test
     /// without one; what has to be true is that the no-flag path reaches
     /// `ingest_all` and the flag path still reaches the single-folder call.
+    /// The person who has to act on a refusal can see which refusal it was.
+    ///
+    /// A rejection is permanent, and `stats retry --apply` is the documented
+    /// way back. The row itself says only the sentence written for a player,
+    /// which deliberately does not name the refusal, so the operator was
+    /// retrying blind: a hash mismatch is worth investigating and a seat
+    /// conflict is worth waiting for the other player on, and they read the
+    /// same.
+    ///
+    /// This tool's audience is a developer or a league operator at a command
+    /// line, so the server's own vocabulary is exactly right here and exactly
+    /// wrong on the results screen.
+    #[test]
+    fn the_listing_shows_which_refusal_a_refused_result_got() {
+        let mut entry = QueueEntry {
+            key: reborn_core::stats::CaptureKey::of_bytes(b"a"),
+            state: EntryState::Rejected {
+                reason: "The server would not take this result.".into(),
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: Some("The server would not take this result.".into()),
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: None,
+            refusal_code: Some("hash-mismatch".into()),
+            summary: None,
+        };
+        let line = refusal_code_line(&entry)
+            .expect("a refusal that carries a code has to say which refusal it was");
+        assert!(
+            line.contains("hash-mismatch"),
+            "the operator cannot tell one refusal from another: {line}"
+        );
+        // Nothing invented for a result that carries no code.
+        entry.refusal_code = None;
+        assert!(refusal_code_line(&entry).is_none());
+    }
+
     /// The command line tool writes to the same log the window does.
     ///
     /// Every failure this tool decides not to print in full goes to
