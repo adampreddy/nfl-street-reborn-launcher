@@ -55,7 +55,7 @@ const FULL = {
   paths: { install_root: "i", data_root: "d", saves_survive_uninstall: true, directories: [{ relative: "mods", exists: true, class: "managed" }], channel: "stable", channel_note: "stable channel." },
   credential_stored: { account: "nsr.league.ingest", stored: true },
   identity_status: { signed_in: true, display_name: "Adam", player_id: "p1", show_offline: false },
-  stats_queue: { dir: "q", queued: 2, orphaned_payloads: 0, entries: [] },
+  stats_queue: { dir: "q", depth: 2, quarantined: 0, stalled: 0, accepted: 0, held: 0, rejected: 0, total: 2, orphaned_payloads: 0, entries: [] },
   content_status: { phase: "available", origin: "https://files.test/", release: "3.0.0 sequence 3", components: [{ component: "textures", state: "available", installed: "1.0.0", offered: "1.0.1", files: 3, bytes: 4194304, repair: false, message: null }], download_bytes: 4194304, download_files: 3, repair_only: false, note: "Update available: 4 MB across 3 file(s).", installed: null },
   sessions: [{ id: "s1", build: "offline", minutes: 3.2, ended: "Crashed", needs_recovery: true }, { id: "s2", build: "offline", minutes: 1, ended: "Exited", needs_recovery: true }, { id: "s3", build: "offline", minutes: 1, ended: "Terminated", needs_recovery: true }],
 };
@@ -130,7 +130,9 @@ for (const [file, name] of PAGES) {
   check("Play names the user folder", t.includes("beside the emulator"));
   check("Play says a pad list may be incomplete when it is", t.includes("Not every backend"));
   check("Play shows who is signed in", t.includes("Signed in as Adam"));
-  check("Play offers the league toggle", t.includes("This is a league match"));
+  // The league site is parked and its results endpoint is unbuilt; a toggle a
+  // player could tick that then does nothing is worse than no toggle at all.
+  check("Play does not offer the league toggle", !t.includes("This is a league match"));
 }
 // Recovery: three bad endings put mods-disabled first, in words.
 {

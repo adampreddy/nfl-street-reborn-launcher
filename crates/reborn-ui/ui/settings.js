@@ -243,7 +243,7 @@ function accountBlock() {
   const q = state.queue;
   const rows = [];
   rows.push(fact("Discord", ok(id) ? (id.signed_in ? `Signed in as ${id.display_name}` : "not signed in") : null));
-  rows.push(fact("Waiting to send", ok(q) ? String((q.counts && q.counts.queued) ?? q.queued ?? 0) : null));
+  rows.push(fact("Waiting to send", ok(q) ? String(q.depth ?? 0) : null));
   sec.append(facts(rows));
   const buttons = el("div", { class: "mod" });
   if (ok(id) && id.signed_in) {

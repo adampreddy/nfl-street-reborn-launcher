@@ -117,9 +117,6 @@ function identityCard() {
     card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
   } else if (ok(id) && id.signed_in) {
     card.append(el("p", { text: `Signed in as ${id.display_name}` }));
-    const box = el("input", { type: "checkbox", id: "league-match", onchange: (e) => { leagueMatch = !!e.target.checked; } });
-    box.checked = leagueMatch;
-    card.append(el("label", { for: "league-match", class: "name" }, box, el("span", { text: " This is a league match" })));
     if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
   } else {
     card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : (id && id.error) || "Sign-in state could not be read." }));
