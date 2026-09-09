@@ -1,7 +1,7 @@
 //! Fetch the roster the site published and push it: the component, then a
 //! release that carries every other pinned component forward.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::inventory::{ComponentId, ComponentSpec, ScanObserver};
 use crate::net::Http;
@@ -36,6 +36,20 @@ pub struct Push {
     pub release: Option<Signed>,
 }
 
+/// Removes the staging directory when it drops, on every path out of
+/// [`publish_roster`]: the early refusals, the `?` propagations, and the
+/// final success. A directory unique to one call must not outlive that
+/// call, or a long-lived host publishing roster after roster leaves one
+/// orphan behind per call, forever. Errors removing it are not fatal: the
+/// publish already succeeded or was refused on its own terms.
+struct StageGuard(PathBuf);
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Fetch a roster and push it as the `roster` component, then re-sign a
 /// release that pins it beside everything already served. Without
 /// `req.apply` the component is described and the release step is described
@@ -53,10 +67,13 @@ pub fn publish_roster(http: &dyn Http, req: &RosterRequest<'_>, observer: &dyn S
         .join("reborn-publish")
         .join("roster")
         .join(format!("{}-{}-{call}", req.version, std::process::id()));
-    if stage.exists() {
-        std::fs::remove_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
-    }
     std::fs::create_dir_all(&stage).map_err(|e| io_err(&stage, e))?;
+    // Cleared on every return below, including a `?` propagation. Made only
+    // after the directory exists, so nothing above ever has to clean up a
+    // directory that was never created; kept alive until publish_component
+    // (which reads from `stage`) has already run to completion on every
+    // path that reaches it.
+    let _stage_guard = StageGuard(stage.clone());
     let staged = stage.join(ROSTER_FILE);
 
     if req.from.starts_with("http://") || req.from.starts_with("https://") {
@@ -170,7 +187,6 @@ mod tests {
     use crate::publish::{Event, Outcome};
     use crate::Error;
     use std::io::Write;
-    use std::path::PathBuf;
 
     /// A site that serves one file at one URL, and remembers the bearer it saw.
     #[derive(Debug)]
@@ -317,5 +333,50 @@ mod tests {
         let outcome = publish_roster(&Locked, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         assert!(outcome.refused().is_some());
         assert!(lines.iter().any(|l| l.contains("answered 401")), "{lines:?}");
+    }
+
+    /// The names directly under `temp_dir()/reborn-publish/roster`, so a test
+    /// can check whether one call's staging directory is still there without
+    /// being thrown off by other tests' entries under the same shared root.
+    fn stage_entries() -> Vec<String> {
+        let root = std::env::temp_dir().join("reborn-publish").join("roster");
+        std::fs::read_dir(&root)
+            .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_staging_directory_does_not_survive_a_successful_or_a_refused_call() {
+        let (_dir, origin, key) = origin_with_runtime_and_keys();
+
+        // A version used by no other test in this module, so a leftover
+        // directory can only be this call's.
+        let ok_version = "2026.10.01-stageguard-ok";
+        let site = FakeSite { url: "https://site.test/export".into(), body: roster_zip(), seen_bearer: Default::default() };
+        let req = RosterRequest {
+            from: "https://site.test/export", origin: &origin, version: ok_version, sequence: Some(1),
+            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+        };
+        let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |_| {}).unwrap();
+        assert!(outcome.is_done(), "{outcome:?}");
+        let leftover = stage_entries();
+        assert!(
+            leftover.iter().all(|n| !n.starts_with(&format!("{ok_version}-"))),
+            "a staging directory for {ok_version} outlived a successful call: {leftover:?}"
+        );
+
+        let refused_version = "2026.10.02-stageguard-refused";
+        let junk_site = FakeSite { url: "https://site.test/export".into(), body: b"<html>404</html>".to_vec(), seen_bearer: Default::default() };
+        let req = RosterRequest {
+            from: "https://site.test/export", origin: &origin, version: refused_version, sequence: Some(2),
+            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+        };
+        let outcome = publish_roster(&junk_site, &req, &RunToCompletion, &mut |_| {}).unwrap();
+        assert!(outcome.refused().is_some());
+        let leftover = stage_entries();
+        assert!(
+            leftover.iter().all(|n| !n.starts_with(&format!("{refused_version}-"))),
+            "a staging directory for {refused_version} outlived a refused call: {leftover:?}"
+        );
     }
 }
