@@ -331,8 +331,15 @@ function draw() {
 
 async function refresh() {
   try {
+    // Setup first, before anything else can fail or take its time: an
+    // unfinished first run belongs in the wizard, whatever else this page
+    // cannot load. The check after load() stays as the fallback.
+    if (bridge && !/(^|[?&])setup(=|&|$)/.test(location.search || "")) {
+      const progress = await call("onboarding_progress", { legacyRoot: null }).catch(() => null);
+      if (progress?.complete === false) { location.replace('onboarding.html'); return; }
+    }
     await load();
-    if (state.progress?.complete === false && !new URL(location.href).searchParams.has('setup')) { location.replace('onboarding.html'); return; }
+    if (state.progress?.complete === false && !/(^|[?&])setup(=|&|$)/.test(location.search || "")) { location.replace('onboarding.html'); return; }
   } catch (e) {
     problem = reason(e);
   }

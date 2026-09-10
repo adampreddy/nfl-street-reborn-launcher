@@ -6,6 +6,8 @@ const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 // A harness fakes document without querySelectorAll; the nav is not its concern.
 for (const a of typeof document.querySelectorAll === "function" ? document.querySelectorAll(".shell-nav a") : []) {
   if ((a.getAttribute("href") || "").toLowerCase() === "onboarding.html") a.classList.add("current");
+  // The keyboard reaches a link that pointer-events cannot stop.
+  if (a.classList.contains("setup-exit")) a.addEventListener("click", (e) => { if (moving) e.preventDefault(); });
 }
 
 function legacyRoot() {
@@ -711,6 +713,12 @@ function updateNav() {
   next.disabled = moving || !current || !current.ready();
   next.textContent = moving ? "Please wait…" : reviewReturn ? "Save and return" : (current && current.nextLabel) || "Continue";
   hint.textContent = (current && current.hint) || "";
+
+  // Finish later waits too. Leaving mid-operation strands the work: the copy
+  // keeps running with no page listening, and the re-shown step is refused
+  // because a session is already active.
+  const exit = typeof document.querySelector === "function" ? document.querySelector(".setup-exit") : null;
+  if (exit) { exit.classList.toggle("disabled", moving); exit.setAttribute("aria-disabled", String(moving)); exit.tabIndex = moving ? -1 : 0; }
 
   // Back is asked, never assumed: the previous stage may be irreversible, in
   // which case there is no way back and the button should say so by being off.

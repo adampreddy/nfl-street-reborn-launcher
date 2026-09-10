@@ -99,6 +99,7 @@ body.shell.page-setup{grid-template-columns:minmax(0,1fr);grid-template-rows:68p
 body.shell.page-setup .shell-nav{grid-area:nav;flex-direction:row;align-items:center;justify-content:space-between;padding:0 30px;border:0;background:transparent;overflow:visible}
 .page-setup .shell-nav .brand{height:60px;padding:0;width:84px}.page-setup .brand img{width:80px;height:60px}
 .page-setup .shell-nav a.setup-exit{font:500 12px Inter,sans-serif;text-transform:none;letter-spacing:0;color:#a8aab2;min-height:36px;padding:8px 12px}
+.page-setup .shell-nav a.setup-exit.disabled{opacity:.45;pointer-events:none}
 body.shell.page-setup main{width:100%;max-width:690px;justify-self:center;padding:24px 36px 0;background:transparent;scrollbar-gutter:stable}
 .page-setup #steps{justify-content:center;gap:7px;margin:0 0 26px}.page-setup #steps span{width:7px;height:7px;padding:0;border:0;border-radius:50%;background:#36383e}.page-setup #steps span.now{background:#ee6268;width:22px;border-radius:5px}.page-setup #steps span.done{background:#a8abb4}
 body.shell.page-setup #screen{padding:0;border:0;min-height:0;display:block}
