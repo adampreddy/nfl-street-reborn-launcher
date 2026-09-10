@@ -39,14 +39,27 @@ await page.locator("input[name=install][value=fresh]").check();
 await clickNext();
 check(await untilStage("game_verification", 20000), "reached game verification");
 
-// 2. The shipped game is prepared by itself; no disc is asked for.
-// The backend reaches the stage a beat before the page draws it, so wait for
-// the drawn step before reading its copy.
-await page.waitForFunction(() => /NFL Street Reborn is ready/.test(document.body.textContent), null, { timeout: 180000 }).catch(() => {});
-const intro = await page.locator("main").innerText();
-check(/included with this install/i.test(intro || ""), "game step says the game is included", intro.slice(0, 160));
+// 2. The game step. No game ships in the installer any more, so this points
+// the import at a disc the way the Browse button would (the native picker
+// cannot be driven): an old install's NSR.iso by default, which the shipped
+// chain must move to the newest build during the import. Then the page is
+// reloaded so it picks the imported game up the way it does after a restart.
+const info = await invoke("setup_install_info");
+if (info?.shipped_game) {
+  await page.waitForFunction(() => /NFL Street Reborn is ready/.test(document.body.textContent), null, { timeout: 180000 }).catch(() => {});
+  check(/NFL Street Reborn is ready/.test(await page.locator(".import-status").first().textContent().catch(() => "")), "shipped game imported without browsing");
+} else {
+  const disc = process.env.REBORN_WALK_DISC || "C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\Games\\NSR.iso";
+  console.log(stamp(), "importing", disc, "(copy, then the shipped patch chain; a minute or two)");
+  const imported = await invoke("setup_import_game", { image: disc }).catch((e) => ({ error: String(e.message || e) }));
+  console.log(stamp(), "import result:", JSON.stringify(imported).slice(0, 200));
+  check(imported && !imported.error && imported.patched === true, "the disc was patched to the newest build during import", JSON.stringify(imported).slice(0, 160));
+  check(/98bfe6bfce1a/.test(String(imported?.pristine || "")), "the pristine image is NSRV3 (98bfe6bf…)", String(imported?.pristine));
+  await page.reload();
+  await page.waitForFunction(() => /Game File (Imported|Patched)/.test(document.body.textContent), null, { timeout: 60000 }).catch(() => {});
+}
 const status = await page.locator(".import-status").first().textContent().catch(() => "");
-check(/NFL Street Reborn is ready/.test(status || ""), "shipped game imported without browsing", status);
+check(/ready|Imported|Patched/.test(status || ""), "game step shows the game as ready", status);
 await shot("2-game");
 await clickNext();
 check(await untilStage("controller_setup", 20000), "reached the controller step");
@@ -96,8 +109,10 @@ try {
 
 // 5. The new page and the fuller library.
 await page.goto(`${base.origin}/stats.html`);
-await page.waitForFunction(() => /Game results/.test(document.body.textContent), null, { timeout: 20000 }).catch(() => {});
-check(/Account/.test(await page.locator("main").innerText()) && /Send results now/.test(await page.locator("main").innerText()), "Stats page draws account and results");
+await page.waitForFunction(() => /Sending results/.test(document.body.textContent), null, { timeout: 20000 }).catch(() => {});
+const statsText = await page.locator("main").innerText();
+check(/Account/.test(statsText) && /Send results now/.test(statsText), "Stats page draws account and results");
+check(/Your Reborn, so far/.test(statsText) && /(Play a game and it shows up here|Games recorded)/.test(statsText), "Stats page draws the summary (empty or filled)");
 check((await page.locator(".shell-nav a[href='stats.html']").count()) === 1, "sidebar has a Stats entry");
 await shot("7-stats");
 await page.goto(`${base.origin}/mods.html`);

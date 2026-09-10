@@ -108,7 +108,9 @@ async function prefetch(slug) {
   if(slug==='updates' && typeof summary.automatic_updates==='boolean') pending.automatic ??= summary.automatic_updates?'yes':'no';
   if (slug === "controller_setup" && !pending.pads) { await scanPads(); if(pending.pads?.list?.length===1) pending.port="0"; if(summary.controller){const i=pending.pads?.list?.findIndex(p=>p.device_string===summary.controller);if(i>=0)pending.port=String(i);}else if(summary.no_controller_because)pending.port="none"; }
   // Migration boots the game the installer carries when there is one, never the old disc.
-  if(slug==='game_verification'&&!pending.image)pending.image=installInfo?.mode==='fresh'?(/[\\/]library[\\/]imported[\\/]/.test(installation?.game||'')?installation.game:null):(installInfo?.shipped_game||installInfo?.games?.[0]||null);
+  // A game already imported (the booted copy lives under library\offline, the
+  // pristine under library\imported) survives a restart of the wizard.
+  if(slug==='game_verification'&&!pending.image)pending.image=installInfo?.mode==='fresh'?(/[\\/]library[\\/](imported|offline)[\\/]/.test(installation?.game||'')?installation.game:null):(installInfo?.shipped_game||installInfo?.games?.[0]||null);
   if(slug==='game_verification')pending.installRoot ??= installInfo?.root;
   if (slug === "controls_profile" && !pending.controls) {
     try {

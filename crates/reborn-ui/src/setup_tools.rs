@@ -161,7 +161,9 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
         saved.save(&settings).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
-        Ok(serde_json::json!({"path":booted,"pristine":output,"patched":patched}))
+        // The pristine after the chain ran, not the one the import landed.
+        let pristine=reborn_core::game_image::find_pristine(&data).map(|p|p.path).unwrap_or(output);
+        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched}))
     }).await.map_err(|e|e.to_string())?
 }
 
