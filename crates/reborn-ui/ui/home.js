@@ -11,7 +11,7 @@ let result = null;
 let problem = null;
 let externalSession = false;
 let leagueMatch = false;
-const signIn = { active: false, deviceCode: null, userCode: null, timer: null, message: null, polling: false };
+const signIn = { active: false, deviceCode: null, userCode: null, verifyUrl: null, timer: null, message: null, polling: false };
 
 // Shown when `identity_status` fails, whatever the reason. The same sentence
 // the core uses for the same situation, so a player never sees two wordings
@@ -96,7 +96,12 @@ async function startSignIn() {
   try {
     const s = await call("identity_sign_in_start");
     signIn.active = true; signIn.deviceCode = s.device_code; signIn.userCode = s.user_code;
-    if (!s.opened) signIn.message = `Open ${s.verify_url} in a browser.`;
+    // Kept whether or not a browser opened, and drawn by identityCard in both
+    // cases. It used to be shown only when opening failed, which meant it was
+    // never shown at all: the old opener ran a file manager, and a file manager
+    // always starts, so `opened` was true even the time it put Adam's Documents
+    // folder on screen instead of the sign-in page.
+    signIn.verifyUrl = s.verify_url;
     draw();
     signIn.timer = setInterval(async () => {
       // One poll at a time. The command does not answer until the sign-in is
@@ -121,7 +126,7 @@ async function startSignIn() {
 
 function stopSignIn(message) {
   if (signIn.timer) clearInterval(signIn.timer);
-  signIn.timer = null; signIn.active = false; signIn.deviceCode = null; signIn.userCode = null;
+  signIn.timer = null; signIn.active = false; signIn.deviceCode = null; signIn.userCode = null; signIn.verifyUrl = null;
   // Always assigned, never only when there is something to say. Leaving the
   // old text in place is how a successful sign-in ended up displayed under a
   // stale "The sign-in code expired." from a poll that raced it.
@@ -133,6 +138,15 @@ function identityCard() {
   const card = el("section", { class: "block play-identity", "aria-label": "Account" });
   if (signIn.active) {
     card.append(el("p", { text: `Waiting for Discord. Your code is ${signIn.userCode}.` }));
+    // The address, in every case, not only when the browser did not open. A
+    // browser can open on another monitor, behind this window, or in a profile
+    // that is not signed into Discord, and the launcher counts all three as
+    // success. A player holding a code with nowhere to type it has no way
+    // forward, and this is the only thing on the card they can act on alone.
+    // One sentence for both cases, because "where to go" is the same sentence
+    // whether or not something already went there. The address is not a secret
+    // from the person whose code it is.
+    if (signIn.verifyUrl) card.append(el("p", { class: "note", text: `Go to ${signIn.verifyUrl} to approve it.` }));
     card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
   } else if (ok(id) && id.signed_in) {
     card.append(el("p", { text: `Signed in as ${id.display_name}` }));
