@@ -26,6 +26,10 @@ param(
     # Every mod pack, as content\mods\packages\<id>\<version>, so the Mods
     # library is full on first run instead of empty.
     [string]$ModPackages = "",
+    # The game patch chain (chain.json + patches\), as content\game-patch, so
+    # setup moves an old install's disc to the newest build offline. This is
+    # what ships in place of the game itself.
+    [string]$GamePatchChain = "",
     # Verified patch bundle; the player's original disc is supplied in onboarding.
     [string]$GamePatch = "",
     [string]$PromptPackages = "",
@@ -439,6 +443,16 @@ if ($GameImage) {
     Write-Host ("Game image: NSR.iso {0:N0} bytes, sha256 {1}..." -f (Get-Item -LiteralPath $GameImage).Length, $gameHash.Substring(0, 12))
 } elseif (-not $LauncherOnly -and -not $RuntimeOnly -and -not $Publisher) {
     Write-Warning "No -GameImage given. Setup will ask every player for a disc."
+}
+if ($GamePatchChain) {
+    if (-not (Test-Path (Join-Path $GamePatchChain "chain.json") -PathType Leaf)) {
+        throw "No chain.json in $GamePatchChain. Nothing was built."
+    }
+    Copy-Item -LiteralPath $GamePatchChain -Destination (Join-Path $payload "content\game-patch") -Recurse
+    $chainFiles = @(Get-ChildItem (Join-Path $payload "content\game-patch") -Recurse -File)
+    Write-Host ("Game patch chain: {0} file(s), {1:N0} MB" -f $chainFiles.Count, (($chainFiles | Measure-Object Length -Sum).Sum / 1MB))
+} elseif (-not $LauncherOnly -and -not $RuntimeOnly -and -not $Publisher) {
+    Write-Warning "No -GamePatchChain given. An old install's disc will only be updated by a download after setup."
 }
 if ($ModPackages) {
     if (-not (Test-Path $ModPackages -PathType Container)) {

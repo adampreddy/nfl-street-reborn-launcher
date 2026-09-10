@@ -1980,6 +1980,11 @@ impl StatsQueue {
                 }
             };
             let result = self.enqueue(&bytes, Some(&path), session_id, folder)?;
+            // The queue is transport and forgets a capture once it is sent;
+            // the archive beside it is what the Stats page shows for good.
+            if Capture::parse(&bytes).is_ok() {
+                self.archive(&bytes)?;
+            }
             // Every one of these means the capture is accounted for, so the
             // source can go -- but only from a folder the emulator writes to.
             // "Accounted for" includes a capture the queue already had, which
@@ -2059,6 +2064,48 @@ impl StatsQueue {
     /// Unreadable records are skipped rather than failing the whole listing. A
     /// half written file from a power cut should not make the results screen
     /// refuse to open.
+    /// Where every recorded game is kept for the player to look at, beside
+    /// the queue: `stats/games/<key>.json`. The queue removes a payload once
+    /// the site has it; this folder never removes anything.
+    pub fn games_dir(&self) -> PathBuf {
+        match self.dir.parent() {
+            Some(parent) => parent.join("games"),
+            None => self.dir.join("games"),
+        }
+    }
+
+    /// Keep a capture for the Stats page. Idempotent: the key is the hash of
+    /// the bytes, so the same game archived twice is one file.
+    pub fn archive(&self, bytes: &[u8]) -> Result<PathBuf> {
+        let dir = self.games_dir();
+        std::fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
+        let path = dir.join(format!("{}.json", CaptureKey::of_bytes(bytes).as_str()));
+        if !path.exists() {
+            std::fs::write(&path, bytes).map_err(|source| Error::Io { path: path.clone(), source })?;
+        }
+        Ok(path)
+    }
+
+    /// Every archived game, as (key, bytes), in no particular order.
+    pub fn archived(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let dir = self.games_dir();
+        let Ok(listing) = std::fs::read_dir(&dir) else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for item in listing.flatten() {
+            let path = item.path();
+            let is_json = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            if !path.is_file() || !is_json {
+                continue;
+            }
+            let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            match std::fs::read(&path) {
+                Ok(bytes) => out.push((key, bytes)),
+                Err(e) => tracing::warn!("an archived game could not be read at {}: {e}", path.display()),
+            }
+        }
+        Ok(out)
+    }
+
     pub fn entries(&self) -> Result<Vec<QueueEntry>> {
         let ledger = self.terminal_states()?;
         let mut entries = self.read_all_raw()?;
@@ -3659,6 +3706,26 @@ mod tests {
             q.capture_bytes(&entry.key).unwrap().is_some(),
             "quarantine keeps the file, it does not discard it"
         );
+    }
+
+    /// The archive beside the queue keeps a game for the Stats page after the
+    /// queue has sent it and forgotten it. The same game twice is one file.
+    #[test]
+    fn an_ingested_game_is_archived_for_the_stats_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = queue(dir.path(), 1_000);
+        let captures = dir.path().join("GameStats").join("Online");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::write(captures.join("Falcons_vs_Chargers_001.json"), REAL_FALCONS).unwrap();
+        q.ingest_from_folder(&captures, Some("s1"), Some("Online"), AfterReading::RemoveTheSourceFile).unwrap();
+        let archived = q.archived().unwrap();
+        assert_eq!(archived.len(), 1, "one game, one archive file");
+        assert_eq!(archived[0].0, CaptureKey::of_bytes(REAL_FALCONS.as_bytes()).as_str());
+        assert!(Capture::parse(&archived[0].1).is_ok());
+
+        std::fs::write(captures.join("again.json"), REAL_FALCONS).unwrap();
+        q.ingest_from_folder(&captures, Some("s1"), Some("Online"), AfterReading::RemoveTheSourceFile).unwrap();
+        assert_eq!(q.archived().unwrap().len(), 1, "the same game again adds nothing");
     }
 
     /// An unreadable capture is still the only record of a game somebody played.

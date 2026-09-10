@@ -28,8 +28,12 @@ if(window.__TAURI__)(async()=>{
   // The bar and the percentage: what a person waiting on a gigabyte wants
   // to see. Polled every second and a half while the fetch runs.
   const bar=document.createElement('progress');bar.className='notice-bar';bar.max=100;bar.hidden=true;bar.setAttribute('aria-label','Download progress');
-  const show=s=>{if(s.phase==='fetching'&&s.download_bytes){const pct=Math.min(99,Math.floor((s.fetched_bytes||0)*100/s.download_bytes));bar.hidden=false;bar.value=pct;text.textContent=`Game content update: ${mb(s.download_bytes)} MB · ${pct}% downloaded`;}else if(s.phase==='installing'){bar.hidden=false;bar.removeAttribute('value');text.textContent='Installing game content…';}};
-  notice.append(text,button,bar);main.append(notice);
+  // While something is on its way the notice becomes a panel, not a line: a
+  // headline, the size, the percentage and a thick bar. Adam: "the indicator
+  // that something is downloading needs to be way more prominent".
+  const headline=document.createElement('strong');headline.className='notice-headline';headline.hidden=true;
+  const show=s=>{if(s.phase==='fetching'&&s.download_bytes){const pct=Math.min(99,Math.floor((s.fetched_bytes||0)*100/s.download_bytes));notice.classList.add('downloading');headline.hidden=false;headline.textContent='Downloading game content';bar.hidden=false;bar.value=pct;text.textContent=`${mb(s.fetched_bytes||0)} of ${mb(s.download_bytes)} MB · ${pct}%`;}else if(s.phase==='installing'){notice.classList.add('downloading');headline.hidden=false;headline.textContent='Installing game content';bar.hidden=false;bar.removeAttribute('value');text.textContent='Almost there. Keep the launcher open.';}else{notice.classList.remove('downloading');headline.hidden=true;}};
+  notice.append(headline,text,button,bar);main.append(notice);
   if(!policy.automatic)return;
   if(status.phase==='available')status=await invoke('content_fetch');
   show(status);

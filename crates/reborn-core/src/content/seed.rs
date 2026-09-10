@@ -92,6 +92,13 @@ fn pairs(install_root: &Path, data_root: &Path, game_id: &str) -> Vec<(Component
             install_root.join(SHIPPED_CONTENT_DIR).join("mods").join("packages"),
             data(DataDir::ModsPackages),
         ),
+        // The game patch chain, so a disc imported during setup is moved to
+        // the newest build offline and the first check has nothing to fetch.
+        (
+            ComponentId::GamePatch,
+            install_root.join(SHIPPED_CONTENT_DIR).join("game-patch"),
+            data(DataDir::LibraryGamePatch),
+        ),
     ]
 }
 
@@ -205,6 +212,7 @@ mod tests {
         put(install, "content/textures/GN7E69/a.png", b"a");
         put(install, "content/textures/GN7E69/sub/b.png", b"b");
         put(install, "content/mods/packages/jsgme.aqua-football/1.0.0/package.json", b"{}");
+        put(install, "content/game-patch/chain.json", b"{}");
     }
 
     #[test]
@@ -216,8 +224,9 @@ mod tests {
         install_with_both(&install);
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.len(), 3, "{r:?}");
-        assert_eq!(r.files(), 5);
+        assert_eq!(r.seeded.len(), 4, "{r:?}");
+        assert_eq!(r.files(), 6);
+        assert_eq!(std::fs::read(data.join("library/game-patch/chain.json")).unwrap(), b"{}");
         assert_eq!(std::fs::read(data.join("runtime/Sys/GC/font.bin")).unwrap(), b"font");
         assert_eq!(std::fs::read(data.join("library/textures/GN7E69/sub/b.png")).unwrap(), b"b");
         assert_eq!(std::fs::read(data.join("mods/packages/jsgme.aqua-football/1.0.0/package.json")).unwrap(), b"{}");
@@ -239,7 +248,7 @@ mod tests {
         put(&data, "library/textures/GN7E69/mine.png", b"mine");
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods]);
+        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods, ComponentId::GamePatch]);
         assert!(!data.join("library/textures/GN7E69/a.png").exists(), "the player's tree was left alone");
         assert!(data.join("library/textures/GN7E69/mine.png").exists());
     }

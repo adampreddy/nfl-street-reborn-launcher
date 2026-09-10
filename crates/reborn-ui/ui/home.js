@@ -37,6 +37,7 @@ async function load() {
   const reads = {
     active: call("session_active"),
     graphicsOptions: call("setup_graphics_options"),
+    dolphin: call("dolphin_preferences", { runtime: get("runtime") }),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
     devices: call("devices", { runtime: get("runtime") }),
     mods: call("mod_packages"),
@@ -335,6 +336,18 @@ function draw() {
     ["controls.html", "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"],
     ["settings.html#graphics", "Graphics", graphicsLabel()],
   ]) overview.append(el("a", { href }, el("span", { text: title }), el("strong", { text: value }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
+  // Windowed or fullscreen, right here: the same Dolphin setting the Display
+  // tab has, one click away from Play. Adam: "the option to check if the game
+  // opens in window mode vs full screen".
+  const dolphin = ok(state.dolphin) ? state.dolphin : null;
+  const fullscreen = dolphin ? String(dolphin.values?.fullscreen ?? "True").toLowerCase() === "true" : null;
+  overview.append(el("button", { type: "button", class: "play-overview-toggle", disabled: busy || inSession || !dolphin || dolphin.editable === false, title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async () => {
+    if (busy) return;
+    busy = true; draw();
+    try { await call("dolphin_preference_set", { runtime: get("runtime"), key: "fullscreen", value: String(!fullscreen) }); }
+    catch (e) { problem = reason(e); }
+    busy = false; await refresh();
+  } }, el("span", { text: "Display" }), el("strong", { text: fullscreen === null ? "Unknown" : fullscreen ? "Fullscreen" : "Windowed" }), el("span", { class: "play-overview-arrow", text: "\u21c4", "aria-hidden": "true" })));
   const dialog = detailsDialog();
   screen.replaceChildren(scene, controls, overview, dialog);
   if (wasOpen) { dialog.showModal(); if (filesOpen) dialog.querySelector("details").open = true; }

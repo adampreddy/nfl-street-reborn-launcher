@@ -79,11 +79,43 @@ pub fn seed_prompt_packages(p:&Platform)->Result<(),String> {
 }
 
 /// The game the installer carries, if this one does: `content\games\NSR.iso`
-/// beside the launcher. Setup imports it so no player needs a disc, and an
-/// old install's disc is never the one that gets booted.
+/// beside the launcher. Not shipped since 2026-09-10 (Adam: "NSR being
+/// included within this install is not allowed"); the code stays inert
+/// without the file, and setup patches the player's own disc instead.
 pub fn shipped_game()->Option<PathBuf> {
     let path=std::env::current_exe().ok()?.parent()?.join("content/games/NSR.iso");
     path.is_file().then_some(path)
+}
+
+/// The game patch chain the installer carries (`content\game-patch`), copied
+/// beside the library so setup can move an imported disc to the newest build
+/// with no download. Never over a chain an update delivered.
+pub fn seed_game_patch(p:&Platform)->Result<(),String> {
+    let shipped=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("content/game-patch");
+    if !shipped.join("chain.json").is_file(){return Ok(());}
+    let target=reborn_core::game_patch::component_root(&p.paths.data_root().map_err(|e|e.to_string())?);
+    reborn_core::migration::copy_tree_no_clobber(&shipped,&target).map(|_|()).map_err(|e|e.to_string())
+}
+
+/// Move the disc setup just imported to the newest build, with the shipped
+/// chain, before the player goes any further: an old install's disc becomes
+/// the current one here rather than in a download after setup. A disc the
+/// chain does not know is left as imported. Returns the build's label when
+/// a patch was applied.
+fn patch_to_newest(p:&Platform,report:&dyn Fn(&str))->Result<Option<String>,String> {
+    use reborn_core::game_patch::{apply,find_xdelta,xdelta_dirs,ApplyRequest,Outcome,Xdelta3,BUNDLE_DIR};
+    seed_game_patch(p)?;
+    let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
+    let dirs=xdelta_dirs(p,&[exe_dir.join(BUNDLE_DIR)]);
+    let Some(xdelta)=find_xdelta(p,&dirs) else {return Ok(None)};
+    let data=p.paths.data_root().map_err(|e|e.to_string())?;
+    let patcher=Xdelta3::new(p,xdelta);
+    report("Updating your game to the newest build…");
+    match apply(p,&ApplyRequest{data_root:&data,patcher:&patcher}).map_err(|e|e.to_string())? {
+        Outcome::Applied(r)=>Ok(r.steps.last().cloned()),
+        Outcome::UpToDate{..}=>Ok(None),
+        Outcome::Refused(r)=>{eprintln!("game not patched during setup: {}",r.message());Ok(None)}
+    }
 }
 
 #[tauri::command]
@@ -121,6 +153,10 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":"Setting up your game…","percent":99}));
         let booted=establish_booted(&p,&data,&output)?;
+        // A disc the bundle could not patch (an old NSR.iso, say) may still be
+        // one the shipped chain knows. Either way the player ends on the
+        // newest build here, or on their own disc if nothing knows it.
+        let patched=patched||patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?.is_some();
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
         saved.save(&settings).map_err(|e|e.to_string())?;
@@ -349,6 +385,7 @@ fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,Strin
 pub async fn setup_import_existing_game(image:String)->Result<String,String>{
     tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let pristine=import_existing(&p,&reborn_core::session::user_path(&image))?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;let game=establish_booted(&p,&data,&pristine)?;
+        patch_to_newest(&p,&|_|{})?;
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
@@ -382,6 +419,10 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         let pristine=import_existing_progress(&p,&source,&report)?;
         report("Setting up your game…",Some(96),copied);
         let game=establish_booted(&p,&data,&pristine)?;
+        // The old install's disc becomes the newest build now, offline, with
+        // the shipped chain: "I already have Reborn" changes the disc rather
+        // than copying the old one over.
+        patch_to_newest(&p,&|stage|report(stage,None,copied))?;
         let pad_ini=std::fs::read_to_string(user.join("Config/GCPadNew.ini")).unwrap_or_default();
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-controller.ini"),&pad_ini).map_err(|e|e.to_string())?;
