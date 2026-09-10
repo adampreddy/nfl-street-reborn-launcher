@@ -350,8 +350,10 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         for name in ["Dolphin.exe","NFL Street Reborn Dolphin.exe","runtime/Dolphin.exe"]{
             reborn_core::runtime::ensure_runtime_idle(&root.join(name)).map_err(|e|e.to_string())?;
         }
-        let runtime=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("runtime/Dolphin.exe");
-        if !runtime.is_file(){return Err("The new launcher runtime is missing. Reinstall the complete package.".into());}
+        // The bundled runtime by whichever name this build gave the emulator.
+        // 3.1.0 renamed Dolphin.exe to NFL Street Reborn Dolphin.exe, and a
+        // fixed file name here refused every import against that runtime.
+        let runtime=match reborn_core::session::resolve_runtime(&p,None,None){Ok(reborn_core::session::Runtime::Bundled(path))=>path,_=>return Err("The new launcher runtime is missing. Reinstall the complete package.".into())};
         let source=reborn_core::session::user_path(&image);check_reborn_id(&source)?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;
         let folder=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
@@ -386,7 +388,10 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
             // Managed button art starts from the release's GameCube baseline,
             // so selecting GameCube can also undo an old Xbox/PS texture pack.
             let shipped=runtime.parent().unwrap().parent().unwrap().join("content");
-            let prompts=shipped.join("prompt-packages/jsgme.xbox-controls/1.0.0/files/GN7E69");
+            // Whichever version of the Xbox pack shipped. Named 1.0.0 here while
+            // 1.1.0 shipped, this reset silently did nothing.
+            let packs=shipped.join("prompt-packages/jsgme.xbox-controls");
+            let prompts=std::fs::read_dir(&packs).ok().and_then(|d|d.flatten().map(|e|e.path()).filter(|v|v.is_dir()).max()).map(|v|v.join("files/GN7E69")).unwrap_or_else(||packs.join("1.0.0/files/GN7E69"));
             if let Ok(entries)=std::fs::read_dir(prompts){for entry in entries.flatten(){
                 if !entry.path().is_file(){continue;}
                 let original=shipped.join("textures/GN7E69").join(entry.file_name());

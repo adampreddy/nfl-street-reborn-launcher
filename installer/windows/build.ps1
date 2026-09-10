@@ -493,7 +493,7 @@ if ($Publisher) {
         throw "The installer is missing the icon it shows the player: $publisherIcon"
     }
 } else {
-    foreach ($a in "art\NSR.ico", "art\welcome.bmp", "art\corner.bmp",
+    foreach ($a in "art\NSR.ico", "art\launcher.bmp", "art\corner.bmp",
                    "text\README.txt", "text\READMEAFTER.txt") {
         $p = Join-Path $PSScriptRoot $a
         if (-not (Test-Path $p)) {
