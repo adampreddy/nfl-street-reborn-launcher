@@ -284,6 +284,110 @@ impl ProcessHost for RealProcessHost {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Opening a link in the player's browser
+// ---------------------------------------------------------------------------
+
+/// Hand `url` to the operating system so it opens in the player's default
+/// browser.
+///
+/// # Why this is not `ProcessHost::spawn`
+///
+/// It was. On Windows it ran `explorer.exe <url>`, and Explorer does not use
+/// the argument it is given: it re-parses its own command line and reads the
+/// `?` that starts a query string as a path wildcard. Handed
+/// `https://host/link?code=ABCD-EFGH` it therefore decides it has no url at
+/// all and falls back to opening the default folder, which is Documents. That
+/// is not a theory: `explorer.exe https://example.com/` opens the browser and
+/// `explorer.exe https://example.com/?probe=1` opens a Documents window, on
+/// the same machine, seconds apart. Every sign-in link carries a query string,
+/// so the browser step could never have worked.
+///
+/// `ShellExecuteW` takes the url as one string and never builds or parses a
+/// command line, so there is nothing left to misread. It is also the shell's
+/// own entry point rather than a program that happens to host it, and it is
+/// not a console application, so no window flashes up. A command interpreter
+/// (`cmd /c start`) would have done the job too and is what most code reaches
+/// for, but it flashes a console, so it is not an option here.
+///
+/// # What it never does
+///
+/// The url is not logged, not returned, and not put in an error, here or in
+/// the caller. A sign-in link carries the player's own code.
+#[cfg(windows)]
+pub fn open_url(_platform: &Platform, url: &str) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    // Wide and nul terminated, which is what the api reads. `url` is checked
+    // to be http or https before it gets here, so it holds no interior nul.
+    let mut file: Vec<u16> = std::ffi::OsStr::new(url).encode_wide().collect();
+    if file.contains(&0) {
+        return Err(Error::PlainIo(std::io::Error::other(
+            "the link could not be handed to the shell",
+        )));
+    }
+    file.push(0);
+    // "open", wide and nul terminated. Passing a null verb would pick the
+    // default one, which is the same thing for a url, but naming it means a
+    // machine with an odd association cannot pick something else.
+    let verb: [u16; 5] = [b'o' as u16, b'p' as u16, b'e' as u16, b'n' as u16, 0];
+
+    // SAFETY: every pointer is either null, which this api documents as "no
+    // window" / "no argument" / "no working directory", or the start of a
+    // local nul terminated buffer that outlives the call. Nothing is written
+    // through any of them, and the call returns before either buffer is
+    // dropped. The return value is a status disguised as a handle and is only
+    // ever compared, never dereferenced.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    // Success is documented as a value greater than 32; anything at or below
+    // that is an error code. The code is deliberately not reported: the caller
+    // turns any failure here into one plain sentence, and a number on a
+    // player's screen is the thing this project does not do.
+    if result as isize > 32 {
+        Ok(())
+    } else {
+        Err(Error::PlainIo(std::io::Error::other(
+            "the shell would not open the link",
+        )))
+    }
+}
+
+/// Hand `url` to the operating system so it opens in the player's default
+/// browser. See the Windows version for why that one does not go through
+/// [`ProcessHost::spawn`]; these two do, unchanged, because `open` and
+/// `xdg-open` take their argument as an argument.
+#[cfg(not(windows))]
+pub fn open_url(platform: &Platform, url: &str) -> Result<()> {
+    let program: &str = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let args = vec![OsString::from(url)];
+    platform
+        .processes
+        .spawn(
+            Path::new(program),
+            &args,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
+        .map(|_| ())
+}
+
 /// Turn an exit status into something the user can be told.
 ///
 /// This is the part that genuinely differs. Unix reports a crash as a signal

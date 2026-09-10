@@ -427,9 +427,17 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
     Ok(player)
 }
 
-/// Open a URL in the player's default browser through the platform process host.
-/// On Windows `explorer.exe <url>` opens the default browser; it exits non-zero even on success,
-/// so the handle is dropped, exactly as the folder button does.
+/// Open a URL in the player's default browser, through the operating system's own shell.
+///
+/// This used to run `explorer.exe <url>`, and it never worked for a sign-in link. Explorer
+/// re-parses its own command line rather than using the argument it was handed, and reads the
+/// `?` that begins a query string as a path wildcard, so it decides there is no url and opens
+/// the default folder instead: Documents. Every verify_url carries `?code=`, so pressing
+/// "Sign in with Discord" opened a Documents window. [`crate::platform::imp::open_url`] asks
+/// the shell directly, which takes the url as one string and has no command line to misread.
+///
+/// A failure is one plain sentence. The url is never logged, never returned, and never put in
+/// an error: a verify_url carries the player's own sign-in code.
 pub fn open_in_browser(platform: &Platform, url: &str) -> Result<()> {
     // Lowercase a copy before comparing so "HTTPS://..." is accepted rather than refused by
     // accident; the original-case url is still what gets opened.
@@ -441,9 +449,13 @@ pub fn open_in_browser(platform: &Platform, url: &str) -> Result<()> {
         tracing::warn!("refused to open a link that was not http or https");
         return Err(Error::player(PAGE_NOT_OPENED));
     }
-    let program: &str = if cfg!(windows) { "explorer.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let args = vec![std::ffi::OsString::from(url)];
-    platform.processes.spawn(Path::new(program), &args, None, &std::collections::BTreeMap::new()).map(|_| ())
+    crate::platform::imp::open_url(platform, url).map_err(|source| {
+        // `source` names the shell, or the program that was to be started, and never the url:
+        // `ProcessHost::spawn` puts the *program* path in its error, and the Windows arm builds
+        // its own fixed sentence. So this line stays inside the rule stated above.
+        tracing::warn!("the operating system would not open a link: {source}");
+        Error::player(PAGE_NOT_OPENED)
+    })
 }
 
 /// The device label shown on the backend: the machine name, or "this PC".
@@ -676,5 +688,56 @@ mod tests {
         assert!(open_in_browser(&platform, "file:///C:/secrets.txt").is_err());
         assert!(open_in_browser(&platform, "javascript:alert(1)").is_err());
         assert!(open_in_browser(&platform, "not-a-url").is_err());
+
+        // Added with the shell fix, because the shell will open far more than a browser will.
+        // A bare path and a UNC share are folders, and a folder is exactly what the broken
+        // version used to open; `data:` and `vbscript:` are the other two schemes that run
+        // code; an empty string is what an origin that answered without a verify_url leaves;
+        // and a leading space is the one way a url that starts with "https://" once it is
+        // trimmed can still reach here untrimmed.
+        assert!(open_in_browser(&platform, "").is_err());
+        assert!(open_in_browser(&platform, r"C:\Users\Adam\Documents").is_err());
+        assert!(open_in_browser(&platform, r"\\server\share").is_err());
+        assert!(open_in_browser(&platform, "data:text/html,<script>alert(1)</script>").is_err());
+        assert!(open_in_browser(&platform, "vbscript:msgbox(1)").is_err());
+        assert!(open_in_browser(&platform, " https://example.com/").is_err());
+        assert!(open_in_browser(&platform, "ftp://example.com/").is_err());
+
+        // Every refusal is the same sentence and says nothing about the link, whatever the
+        // link was. `every_identity_error_reads_as_a_plain_sentence` holds the wording itself
+        // to the six rules; this holds the refusal to that one wording.
+        for bad in [
+            "file:///C:/secrets.txt",
+            "data:text/html,x",
+            r"C:\Users\Adam\Documents",
+            "vbscript:msgbox(1)",
+        ] {
+            let message = open_in_browser(&platform, bad).unwrap_err().to_string();
+            assert_eq!(message, PAGE_NOT_OPENED);
+            assert!(!message.contains("secrets"));
+            assert!(!message.contains("Documents"));
+        }
+    }
+
+    /// The one thing a passing `Result` cannot tell you.
+    ///
+    /// Not run by `cargo test`: it opens a real browser window, which no automated run should
+    /// do. Run it by hand, watch the screen, and close what it opens:
+    ///
+    /// ```text
+    /// cargo test -p reborn-core --lib -- --ignored --nocapture the_shell_really_opens
+    /// ```
+    ///
+    /// The url has a query string on purpose. That is the whole bug: `explorer.exe` handed
+    /// `https://example.com/?probe=1` opened a Documents window and returned success, so a
+    /// test that asserted only `is_ok()` passed while the feature was broken in front of a
+    /// player. `is_ok()` here still is not the proof. A browser on screen, and no file
+    /// manager, is.
+    #[test]
+    #[ignore = "opens a real browser window; run it by hand and watch the screen"]
+    fn the_shell_really_opens_a_link_with_a_query_string() {
+        let platform = crate::platform::imp::platform();
+        open_in_browser(&platform, "https://example.com/?probe=1")
+            .expect("the shell accepted the link");
     }
 }
