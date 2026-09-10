@@ -152,6 +152,7 @@ const PAGES = [
   ["crates/reborn-ui/ui/home.js", "Play"],
   ["crates/reborn-ui/ui/controls.js", "Controls"],
   ["crates/reborn-ui/ui/settings.js", "Settings"],
+  ["crates/reborn-ui/ui/stats.js", "Stats"],
   ["crates/reborn-ui/ui/recovery.js", "Recovery"],
 ];
 
@@ -206,7 +207,15 @@ for (const [file, name] of PAGES) {
 {
  const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",FULL,"full");const t=text(screen);
  check("Settings exposes Dolphin and grouped preferences",t.includes("Open Dolphin")&&t.includes("Audio")&&t.includes("Saves"));
- check("Settings has the account block", t.includes("Signed in as Adam") && t.includes("Sign out"));
+ // Patch notes and uninstall live on the Updates tab, which this harness
+ // cannot select; the real window covers those.
+ check("Settings no longer carries the account block", !t.includes("Sign out"));
+}
+// The account and results moved to their own page on 2026-09-10.
+{
+ const {screen}=await loadPage("crates/reborn-ui/ui/stats.js",FULL,"full");const t=text(screen);
+ check("Stats has the account block", t.includes("Signed in as Adam") && t.includes("Sign out"));
+ check("Stats offers to send results", t.includes("Send results now"));
 }
 {
  const message='Could not check whether Dolphin is open. Try again.';

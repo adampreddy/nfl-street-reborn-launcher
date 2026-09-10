@@ -285,6 +285,9 @@ Name: "{group}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
 Name: "{group}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--folder"; Comment: "Open the folder the game is installed in"
 Name: "{group}\{cm:UninstallProgram,{#AppName} Launcher}"; Filename: "{uninstallexe}"
+; And one in the install folder itself, so a player who goes looking for
+; the program finds the way out beside it. Settings has a button for it too.
+Name: "{app}\Uninstall {#AppName} Launcher"; Filename: "{uninstallexe}"
 
 Name: "{userdesktop}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"; \
   Tasks: desktopicon

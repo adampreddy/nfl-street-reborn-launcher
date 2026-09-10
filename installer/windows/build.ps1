@@ -19,6 +19,13 @@ param(
     # Game images. However many are given, all install. There is no fixed list
     # and no cap.
     [string[]]$GameImages = @(),
+    # The game itself, shipped as content\games\NSR.iso. Setup imports it, so a
+    # player needs no disc, and "I already have Reborn" boots it instead of the
+    # old one. Adam's call on 2026-09-10: "start with NSRV3, not have to update".
+    [string]$GameImage = "",
+    # Every mod pack, as content\mods\packages\<id>\<version>, so the Mods
+    # library is full on first run instead of empty.
+    [string]$ModPackages = "",
     # Verified patch bundle; the player's original disc is supplied in onboarding.
     [string]$GamePatch = "",
     [string]$PromptPackages = "",
@@ -263,6 +270,21 @@ if ($Runtime -and (Test-Path $Runtime)) {
             $missing += "$d\"
         }
     }
+    # The baseline for a new Dolphin user folder: User\Config\*.ini and
+    # User\GameSettings\*.ini, made from the Dolphin Adam tuned, and nothing
+    # else from User. A runtime the launcher has run in also has Dump, Logs
+    # and a Load tree under User; none of that ships. The launcher seeds each
+    # new user folder from these (reborn_core::runtime::seed_user_from_template).
+    foreach ($d in "User\Config", "User\GameSettings") {
+        $src = Join-Path $Runtime $d
+        if (Test-Path $src -PathType Container) {
+            $target = Join-Path $dest $d
+            New-Item -ItemType Directory -Force $target | Out-Null
+            Get-ChildItem $src -Filter *.ini -File | Copy-Item -Destination $target
+        } else {
+            $missing += "$d\"
+        }
+    }
 
     # NFL Street Reborn Dolphin.exe is the runtime. Everything else can be
     # missing on a build that does not carry it, and is reported; this one
@@ -342,7 +364,7 @@ if ($Runtime -and (Test-Path $Runtime)) {
 
     # What was left behind, so a review can see the allowlist did its job.
     $skipped = Get-ChildItem $Runtime | Where-Object {
-        ($_.PSIsContainer -and $runtimeDirs -notcontains $_.Name) -or
+        ($_.PSIsContainer -and $runtimeDirs -notcontains $_.Name -and $_.Name -ne "User") -or
         (-not $_.PSIsContainer -and $runtimeFiles -notcontains $_.Name)
     }
     if ($skipped) {
@@ -400,17 +422,34 @@ if ($Textures) {
 # Game images
 # -----------------------------------------------------------------------------
 
-if ($GameImages.Count -gt 0) {
-    $games = Join-Path $payload "Games"
-    New-Item -ItemType Directory -Force $games | Out-Null
-    foreach ($g in $GameImages) {
-        if (Test-Path $g) {
-            Copy-Item $g $games
-            Write-Host "Staged game image: $(Split-Path $g -Leaf)"
-        } else {
-            Write-Warning "Game image not found, skipped: $g"
-        }
+if (($LauncherOnly -or $RuntimeOnly -or $Publisher) -and ($GameImage -or $ModPackages)) {
+    throw "-GameImage and -ModPackages belong to a complete build only. Nothing was built."
+}
+if ($GameImage) {
+    if (-not (Test-Path $GameImage -PathType Leaf)) {
+        throw "No game image at $GameImage. Nothing was built."
     }
+    # Always NSR.iso inside, whatever the source is called: the launcher's
+    # library names the pristine image that way, and setup shows the name.
+    $games = Join-Path $payload "content\games"
+    New-Item -ItemType Directory -Force $games | Out-Null
+    Copy-Item -LiteralPath $GameImage -Destination (Join-Path $games "NSR.iso")
+    $gameHash = (Get-FileHash -LiteralPath (Join-Path $games "NSR.iso") -Algorithm SHA256).Hash.ToLower()
+    Set-Content (Join-Path $games "NSR.iso.sha256") $gameHash -Encoding ASCII -NoNewline
+    Write-Host ("Game image: NSR.iso {0:N0} bytes, sha256 {1}..." -f (Get-Item -LiteralPath $GameImage).Length, $gameHash.Substring(0, 12))
+} elseif (-not $LauncherOnly -and -not $RuntimeOnly -and -not $Publisher) {
+    Write-Warning "No -GameImage given. Setup will ask every player for a disc."
+}
+if ($ModPackages) {
+    if (-not (Test-Path $ModPackages -PathType Container)) {
+        throw "No mod packages folder at $ModPackages. Nothing was built."
+    }
+    $packs = @(Get-ChildItem $ModPackages -Directory | Where-Object { Test-Path (Join-Path $_.FullName "*\package.json") })
+    if ($packs.Count -eq 0) { throw "$ModPackages holds no <id>\<version>\package.json. Nothing was built." }
+    $packDest = Join-Path $payload "content\mods\packages"
+    New-Item -ItemType Directory -Force $packDest | Out-Null
+    foreach ($pack in $packs) { Copy-Item -LiteralPath $pack.FullName -Destination (Join-Path $packDest $pack.Name) -Recurse }
+    Write-Host ("Mod packages: {0} ({1})" -f $packs.Count, (($packs | ForEach-Object { $_.Name }) -join ", "))
 }
 
 if (-not $LauncherOnly -and -not $Publisher) {

@@ -85,6 +85,13 @@ fn pairs(install_root: &Path, data_root: &Path, game_id: &str) -> Vec<(Component
             install_root.join(SHIPPED_CONTENT_DIR).join("textures").join(game_id),
             data(DataDir::LibraryTextures).join(game_id),
         ),
+        // The mod packs the installer carries, so the library is full on first
+        // run and the first check adopts them instead of fetching them.
+        (
+            ComponentId::Mods,
+            install_root.join(SHIPPED_CONTENT_DIR).join("mods").join("packages"),
+            data(DataDir::ModsPackages),
+        ),
     ]
 }
 
@@ -197,6 +204,7 @@ mod tests {
         put(install, "runtime/Sys/GC/font.bin", b"font");
         put(install, "content/textures/GN7E69/a.png", b"a");
         put(install, "content/textures/GN7E69/sub/b.png", b"b");
+        put(install, "content/mods/packages/jsgme.aqua-football/1.0.0/package.json", b"{}");
     }
 
     #[test]
@@ -208,10 +216,11 @@ mod tests {
         install_with_both(&install);
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.len(), 2, "{r:?}");
-        assert_eq!(r.files(), 4);
+        assert_eq!(r.seeded.len(), 3, "{r:?}");
+        assert_eq!(r.files(), 5);
         assert_eq!(std::fs::read(data.join("runtime/Sys/GC/font.bin")).unwrap(), b"font");
         assert_eq!(std::fs::read(data.join("library/textures/GN7E69/sub/b.png")).unwrap(), b"b");
+        assert_eq!(std::fs::read(data.join("mods/packages/jsgme.aqua-football/1.0.0/package.json")).unwrap(), b"{}");
         assert!(r.seeded.iter().all(|s| s.how == SeedHow::Linked), "same volume, so links: {r:?}");
 
         let again = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
@@ -230,7 +239,7 @@ mod tests {
         put(&data, "library/textures/GN7E69/mine.png", b"mine");
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime]);
+        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods]);
         assert!(!data.join("library/textures/GN7E69/a.png").exists(), "the player's tree was left alone");
         assert!(data.join("library/textures/GN7E69/mine.png").exists());
     }

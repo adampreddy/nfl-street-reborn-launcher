@@ -88,10 +88,34 @@ pub struct ContentStatusView {
     pub release: Option<String>,
     pub components: Vec<ComponentView>,
     pub download_bytes: u64,
+    /// Bytes on disk in staging while a fetch runs, so the page can show a
+    /// percentage. Zero outside a fetch.
+    pub fetched_bytes: u64,
     pub download_files: u64,
     pub repair_only: bool,
     pub note: String,
     pub installed: Option<InstalledSummary>,
+}
+
+/// What a running fetch has landed so far: the size of the staging tree.
+/// Measured rather than counted, so nothing in the pipeline has to report
+/// progress and a fetch that resumed still reads right. Capped at the plan.
+fn staged_bytes(cap: u64) -> u64 {
+    let Ok(root) = reborn_core::Platform::detect().paths.data_root() else { return 0 };
+    let mut total = 0u64;
+    let mut stack = vec![root.join(reborn_core::DataDir::Staging.relative())];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total.min(cap)
 }
 
 /// What a check found, kept in a shape the page can be shown while the
@@ -143,6 +167,8 @@ fn mb(bytes: u64) -> u64 {
 
 fn view(h: &Held) -> ContentStatusView {
     let s = &h.snapshot;
+    let fetched_bytes = if matches!(h.phase, Phase::Fetching) { staged_bytes(s.download_bytes) } else { 0 };
+    let percent = if s.download_bytes > 0 { (fetched_bytes * 100 / s.download_bytes).min(99) } else { 0 };
     let note = match &h.phase {
         Phase::Idle => "Not checked yet.".to_string(),
         Phase::Checking => {
@@ -165,7 +191,7 @@ fn view(h: &Held) -> ContentStatusView {
                 None => what,
             }
         }
-        Phase::Fetching => format!("Downloading {} MB…", mb(s.download_bytes)),
+        Phase::Fetching => format!("Downloading {} MB… {percent}%", mb(s.download_bytes)),
         Phase::Staged => {
             if crate::session_active() {
                 format!("Update ready. {} MB. Installs the next time you close the game.", mb(s.download_bytes))
@@ -183,6 +209,7 @@ fn view(h: &Held) -> ContentStatusView {
         release: s.release.clone(),
         components: s.components.clone(),
         download_bytes: s.download_bytes,
+        fetched_bytes,
         download_files: s.download_files,
         repair_only: s.repair_only,
         note,

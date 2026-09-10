@@ -559,6 +559,12 @@ impl Session {
         }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics})?;}
         let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
+        // A folder the setup just created starts from the runtime's baseline,
+        // the Dolphin Adam tuned; one a player has run in keeps every edit.
+        // Before the portable-path rewrite, so the baseline's relative paths
+        // are resolved like any other, and before the overlays, so the
+        // launcher's required keys still win.
+        let seeded = crate::runtime::seed_user_from_template(&req.runtime_exe, &user_dir)?;
         crate::dolphin_preferences::resolve_portable_paths(&user_dir)?;
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
@@ -577,6 +583,7 @@ impl Session {
 
         let mut written = WrittenConfig {
             user_dir: user.clone(),
+            files: seeded,
             ..Default::default()
         };
 

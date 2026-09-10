@@ -17,7 +17,12 @@ if(window.__TAURI__&&!sessionStorage.getItem('updates:checked'))(async()=>{
   const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html#updates';notice.append(text,button);(document.getElementById('play-notices')||document.getElementById('main')).append(notice);
   if(!policy.automatic)return;
   try{
-   const result=await invoke('update_download',{source:null});
+   // The percentage while the installer downloads: the size of the partial
+   // file on disk against the size the check reported, once a second.
+   const bar=document.createElement('progress');bar.className='notice-bar';bar.max=100;bar.setAttribute('aria-label','Download progress');notice.append(bar);
+   const ticker=setInterval(async()=>{try{const got=await invoke('update_progress');if(check.bytes){const pct=Math.min(99,Math.floor(got*100/check.bytes));bar.value=pct;text.textContent=`Downloading Reborn ${check.latest}… ${pct}%`;}}catch(_){}},1000);
+   let result;
+   try{result=await invoke('update_download',{source:null});}finally{clearInterval(ticker);bar.remove();}
    if(!result.path){text.textContent=result.check.note;button.textContent='View updates';button.disabled=false;return;}
    let installing=false;
    const install=async()=>{

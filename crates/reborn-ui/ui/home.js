@@ -156,7 +156,7 @@ function identityCard() {
     // player can act on. The one sentence covers every way the read can fail,
     // because from where they are sitting there is no difference between them
     // and nothing different to do about any of them.
-    card.append(el("p", { text: ok(id) ? "Sign in with Discord to record your games." : ACCOUNT_UNREADABLE }));
+    card.append(el("p", { text: ok(id) ? "Sign in with Discord to track your stats from your games." : ACCOUNT_UNREADABLE }));
     card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
   }
   // In every state, not only when signed in. The sentence written for a
@@ -276,7 +276,19 @@ function detailsDialog() {
   ]) links.append(el("a", { href }, el("span", { text: title }), el("span", { class: "play-detail-value", text: value }), el("span", { text: "›", "aria-hidden": "true" })));
   dialog.append(links);
   const message = problem || state.check?.error || state.check?.problem || result?.message;
-  if (message) dialog.append(el("p", { class: "play-detail-message", text: message }));
+  if (message) {
+    // The message plus the launch details, for pasting into a forum post or
+    // a Discord message, whole, however narrow the window is.
+    const copy = el("button", { type: "button", class: "play-copy", text: "Copy error", onclick: async () => {
+      const report = [message, factsBlock().textContent.trim()].filter(Boolean).join("\n\n");
+      try { await navigator.clipboard.writeText(report); copy.textContent = "Copied"; }
+      catch (_) {
+        const box = el("textarea", { class: "play-copy-box" }); box.value = report; document.body.append(box); box.select();
+        copy.textContent = document.execCommand("copy") ? "Copied" : "Select and copy"; box.remove();
+      }
+    } });
+    dialog.append(el("p", { class: "play-detail-message", text: message }), copy);
+  }
   if (problem || state.check?.error || state.check?.problem || result?.needs_recovery) dialog.append(el("a", { class: "play-help", href: "recovery.html", text: "Troubleshoot this session" }));
   const files = el("details", { class: "play-files" }, el("summary", { text: "Files & launch details" }), factsBlock());
   dialog.append(files, el("div", { class: "play-dialog-actions" },
@@ -309,7 +321,7 @@ function draw() {
     el("span", { class: "play-glyph", text: inSession ? "" : "▶", "aria-hidden": "true" }),
     el("span", { text: inSession ? "Session active" : busy ? "Opening…" : "Play now" })));
   else bar.append(el("a", { href: "onboarding.html", class: "button primary play", "data-primary": "true", text: "Set up your game" }));
-  const history = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "NFL Street 2 · GameCube";
+  const history = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "Ready to play";
   bar.append(el("div", { class: "play-state" + (error || result?.needs_recovery ? " has-error" : ""), role: error || result?.needs_recovery ? "alert" : "status" },
     el("span", { class: "play-state-title", text: inSession ? "Enjoy the game" : error ? "Your game could not start" : result?.needs_recovery ? "Game closed unexpectedly" : ready ? "Ready to play" : "Setup required" }),
     el("span", { class: "play-history", text: inSession ? "Settings apply to your next session" : error || (result?.needs_recovery ? result.message : null) || history })));
@@ -338,6 +350,8 @@ async function refresh() {
       const progress = await call("onboarding_progress", { legacyRoot: null }).catch(() => null);
       if (progress?.complete === false) { location.replace('onboarding.html'); return; }
     }
+    // Setup held the window at one size; the launcher proper is resizable.
+    if (bridge) call("setup_window_lock", { locked: false }).catch(() => {});
     await load();
     if (state.progress?.complete === false && !/(^|[?&])setup(=|&|$)/.test(location.search || "")) { location.replace('onboarding.html'); return; }
   } catch (e) {

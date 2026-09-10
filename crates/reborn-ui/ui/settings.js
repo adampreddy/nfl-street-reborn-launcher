@@ -3,6 +3,8 @@
 import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
 
 const state = {};
+// What changed in each release, on the site. Opened in the browser.
+const PATCH_NOTES_URL = "https://nflstreetreborn.com/blog";
 const tabForHash = () => ({graphics:"Graphics",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1)] || "General";
 let settingsTab=tabForHash();
 window.addEventListener?.("hashchange", () => { if (!busy) { settingsTab=tabForHash(); draw(); } });
@@ -177,7 +179,7 @@ function contentBlock() {
   else if(c.phase==='installed')actions.append(el('button',{type:'button',text:'Dismiss summary',disabled:busy,onclick:()=>act('Dismiss','content_dismiss',{},()=>{})}));
   else actions.append(el('button',{type:'button',text:working?'Working…':'Check game content',disabled:busy||working,onclick:()=>act('Check content','content_check',{depth:null},()=>{})}));
   sec.append(preferenceRow(labels[c.phase]||'Game content updates',c.note||'Keep your textures, game patches, roster, and Dolphin up to date.',actions));
-  if(working)sec.append(el('progress',{class:'settings-progress','aria-label':labels[c.phase]}));
+  if(working)sec.append(el('progress',{class:'settings-progress','aria-label':labels[c.phase],...(c.phase==='fetching'&&c.download_bytes?{value:String(Math.min(c.fetched_bytes||0,c.download_bytes)),max:String(c.download_bytes)}:{})}));
   const details=(c.components||[]).filter(x=>x&&['available','refused','problem'].includes(x.state));
   if(details.length){
     const list=el('ul',{class:'settings-update-details'});
@@ -206,7 +208,11 @@ function updatesBlock() {
   if(downloaded?.path)actions.append(el('button',{type:'button',class:'primary',text:'Install and restart',disabled:busy,onclick:()=>act('Install update','update_apply',{path:downloaded.path,confirm:true},r=>{update={...update,note:r.note};})}));
   else if(update?.state==='available')actions.append(el('button',{type:'button',class:'primary',text:`Download ${update.latest}`,disabled:busy,onclick:()=>act('Download update','update_download',{source:null},r=>{downloaded=r;if(r.check)update=r.check;})}));
   launcher.append(preferenceRow(downloaded?.path?'Ready to install':update?.state==='available'?`Version ${update.latest} available`:'Launcher updates',downloaded?.path?`Downloaded and verified · ${mb(downloaded.bytes)} MB. Restart the launcher to install.`:update?.note||'Check for a new launcher version. Your games and saves are preserved.',actions));
-  if(update?.notes)launcher.append(el('p',{class:'settings-release-notes',text:update.notes}));
+  // What changed lives on the site, not in a paragraph here.
+  actions.append(el('button',{type:'button',text:'Patch notes',onclick:()=>call('open_website',{url:PATCH_NOTES_URL}).catch(()=>{})}));
+  const install=el('div',{class:'settings-actions'});
+  install.append(el('button',{type:'button',text:'Uninstall NFL Street Reborn…',disabled:busy,onclick:()=>act('Uninstall','uninstall_launcher',{confirm:true},()=>{})}));
+  launcher.append(el('p',{class:'note',text:'Uninstalling removes the launcher and the game. Your saves stay on this PC.'}),install);
   wrap.append(preferences,launcher,contentBlock());
   return wrap;
 }
@@ -237,28 +243,6 @@ function graphicsBlock(){
   return wrap;
 }
 
-function accountBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "Account and match results" }));
-  const id = state.identity;
-  const q = state.queue;
-  const rows = [];
-  rows.push(fact("Discord", ok(id) ? (id.signed_in ? `Signed in as ${id.display_name}` : "not signed in") : null));
-  rows.push(fact("Waiting to send", ok(q) ? String(q.depth ?? 0) : null));
-  sec.append(facts(rows));
-  const buttons = el("div", { class: "mod" });
-  if (ok(id) && id.signed_in) {
-    const box = el("input", { type: "checkbox", id: "show-offline", onchange: (e) => act("Offline visibility", "identity_set_show_offline", { show: !!e.target.checked }, () => { leagueSaid = "Saved."; }) });
-    box.checked = !!id.show_offline;
-    sec.append(el("label", { for: "show-offline", class: "name" }, box, el("span", { text: " Show my offline games on my profile" })));
-    buttons.append(el("button", { type: "button", text: "Sign out", disabled: busy, onclick: () => act("Sign out", "identity_sign_out", {}, () => { leagueSaid = "Signed out."; }) }));
-  } else {
-    sec.append(el("p", { class: "note", text: "Sign in from the Play page to send results." }));
-  }
-  buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy, onclick: () => act("Send", "stats_submit", {}, (r) => { leagueSaid = r.note; }) }));
-  sec.append(buttons);
-  if (leagueSaid) sec.append(el("div", { class: "said" }, el("p", { text: leagueSaid })));
-  return sec;
-}
 
 const preferenceGroups={
  General:[['confirm_stop','Confirm before stopping','Ask before closing a game.','bool'],['pause_unfocused','Pause when unfocused','Pause local play when you switch to another app.','bool'],['osd_messages','Game notifications','Show Dolphin messages over the game.','bool']],
@@ -298,7 +282,7 @@ function draw() {
  const status=el('p',{class:'settings-status',role:'status'});
  parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened. Close it before changing settings here.';state.dolphin&&(state.dolphin.editable=false);screen.querySelectorAll(".settings-content input,.settings-content select,.settings-content button").forEach(n=>n.disabled=true);}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
- if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock(),accountBlock());
+ if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
  parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);
 }
 

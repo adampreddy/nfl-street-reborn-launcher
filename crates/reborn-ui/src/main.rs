@@ -25,6 +25,7 @@
 mod content_updates;
 mod music_page;
 mod setup_tools;
+mod shell_tools;
 mod dolphin_settings;
 
 use std::path::{Path, PathBuf};
@@ -5278,6 +5279,10 @@ fn main() {
             dolphin_settings::dolphin_saves_folder,
             setup_tools::setup_install_choice,
             setup_tools::setup_install_info,
+            shell_tools::setup_window_lock,
+            shell_tools::open_website,
+            shell_tools::uninstall_launcher,
+            shell_tools::update_progress,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,
             setup_tools::setup_graphics_options,

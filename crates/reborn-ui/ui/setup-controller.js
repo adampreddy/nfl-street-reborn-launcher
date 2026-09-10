@@ -75,7 +75,7 @@
    if(b>=0||a>=0){const row=capture.row;capture=null;save(row,b>=0?buttonNames[b]:axes[a][pad.axes[a]>0?1:0]);}
   }
   setMode('test');load();frame=requestAnimationFrame(poll);
-  root.dispose=()=>{disposed=true;cancelAnimationFrame(frame);document.removeEventListener('keydown',escape,true);if(document.body.dataset.controllerTesting==='setup')delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));};
+  root.dispose=()=>{onBusy(false);disposed=true;cancelAnimationFrame(frame);document.removeEventListener('keydown',escape,true);if(document.body.dataset.controllerTesting==='setup')delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));};
   return root;
  };
 })();

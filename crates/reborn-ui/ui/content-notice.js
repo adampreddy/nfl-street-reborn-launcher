@@ -25,10 +25,16 @@ if(window.__TAURI__)(async()=>{
   const notice=document.createElement('aside');notice.className='update-notice';notice.setAttribute('role','status');
   const text=document.createElement('span');text.textContent=`Game content update: ${mb(status.download_bytes)} MB.`;
   const button=document.createElement('button');button.type='button';button.textContent=policy.automatic?'Downloading…':'View update';button.disabled=!!policy.automatic;button.onclick=()=>location.href='settings.html#updates';
-  notice.append(text,button);main.append(notice);
+  // The bar and the percentage: what a person waiting on a gigabyte wants
+  // to see. Polled every second and a half while the fetch runs.
+  const bar=document.createElement('progress');bar.className='notice-bar';bar.max=100;bar.hidden=true;bar.setAttribute('aria-label','Download progress');
+  const show=s=>{if(s.phase==='fetching'&&s.download_bytes){const pct=Math.min(99,Math.floor((s.fetched_bytes||0)*100/s.download_bytes));bar.hidden=false;bar.value=pct;text.textContent=`Game content update: ${mb(s.download_bytes)} MB · ${pct}% downloaded`;}else if(s.phase==='installing'){bar.hidden=false;bar.removeAttribute('value');text.textContent='Installing game content…';}};
+  notice.append(text,button,bar);main.append(notice);
   if(!policy.automatic)return;
   if(status.phase==='available')status=await invoke('content_fetch');
-  while(status.phase==='fetching'||status.phase==='installing'){await new Promise(r=>setTimeout(r,5000));status=await invoke('content_status');}
+  show(status);
+  while(status.phase==='fetching'||status.phase==='installing'){await new Promise(r=>setTimeout(r,1500));status=await invoke('content_status');show(status);}
+  bar.hidden=true;
   if(status.phase!=='staged'){text.textContent=status.note;button.textContent='View updates';button.disabled=false;return;}
   let installing=false;
   const install=async()=>{

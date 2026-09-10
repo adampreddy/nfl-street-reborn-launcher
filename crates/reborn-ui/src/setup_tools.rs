@@ -56,17 +56,34 @@ pub async fn setup_install_info() -> Result<serde_json::Value,String> {
             }
         }
     }
-    Ok(serde_json::json!({"mode":if fresh(&p){"fresh"}else{"migrate"},"root":root,"memory_cards":cards,"installed_release":root.as_ref().and_then(|r|installed_release(r)),"settings_found":root.as_ref().is_some_and(|r|r.join("User/Config/GFX.ini").is_file()||r.join("User/Config/Dolphin.ini").is_file()),"games":root.as_ref().map(|r|legacy_games(r)).unwrap_or_default()}))
+    Ok(serde_json::json!({"mode":if fresh(&p){"fresh"}else{"migrate"},"root":root,"memory_cards":cards,"shipped_game":shipped_game(),"installed_release":root.as_ref().and_then(|r|installed_release(r)),"settings_found":root.as_ref().is_some_and(|r|r.join("User/Config/GFX.ini").is_file()||r.join("User/Config/Dolphin.ini").is_file()),"games":root.as_ref().map(|r|legacy_games(r)).unwrap_or_default()}))
 }
 
 pub fn seed_prompt_packages(p:&Platform)->Result<(),String> {
-    let shipped=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("content/prompt-packages");
+    let install=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
     let target=reborn_core::mods::packages_root(p).map_err(|e|e.to_string())?;
+    let shipped=install.join("content/prompt-packages");
     for id in ["jsgme.xbox-controls","jsgme.ps-controls"] {
         let source=shipped.join(id);
         if source.is_dir() {reborn_core::migration::copy_tree_no_clobber(&source,&target.join(id)).map_err(|e|e.to_string())?;}
     }
+    // Every pack the installer carries, so the Mods library is full on first
+    // run. Never over a pack that is already there: a player's own copy wins.
+    if let Ok(entries)=std::fs::read_dir(install.join("content/mods/packages")) {
+        for entry in entries.flatten() {
+            let source=entry.path();
+            if source.is_dir() {reborn_core::migration::copy_tree_no_clobber(&source,&target.join(entry.file_name())).map_err(|e|e.to_string())?;}
+        }
+    }
     Ok(())
+}
+
+/// The game the installer carries, if this one does: `content\games\NSR.iso`
+/// beside the launcher. Setup imports it so no player needs a disc, and an
+/// old install's disc is never the one that gets booted.
+pub fn shipped_game()->Option<PathBuf> {
+    let path=std::env::current_exe().ok()?.parent()?.join("content/games/NSR.iso");
+    path.is_file().then_some(path)
 }
 
 #[tauri::command]
