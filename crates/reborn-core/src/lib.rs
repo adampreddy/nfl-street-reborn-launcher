@@ -35,7 +35,18 @@
 //! Not written yet: SDL device enumeration, mods,
 //! music, online, and the Xbox wizard.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`. This crate contains exactly one `unsafe` block: the
+// `ShellExecuteW` call in [`platform::imp::open_url`], which is how a link
+// reaches the player's browser. `forbid` cannot be lifted for one call, and
+// nothing in the standard library does that job -- handing the url to
+// `explorer.exe` as an argument, which is what this used to do, opens the
+// player's Documents folder instead of a browser as soon as the url has a
+// query string. `deny` still turns every other `unsafe` in this crate into a
+// compile error, so the guarantee the rest of the crate leans on (see
+// `platform::imp`, which chooses `keyring` and `sysinfo` over Win32 for exactly
+// that reason) is unchanged, and a second block would have to argue for itself
+// the same way this one does.
+#![deny(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
 pub mod backend;

@@ -3939,6 +3939,12 @@ struct SignInStartView {
     user_code: String,
     verify_url: String,
     interval: u64,
+    /// Whether the shell took the link. `home.js` no longer draws anything
+    /// different either way, because it now shows the address in both cases,
+    /// so nothing on screen depends on this. It is still answered, and still
+    /// honest for the first time: the opener it replaced ran a file manager,
+    /// which always starts, so this used to be `true` even when what opened
+    /// was the player's Documents folder.
     opened: bool,
 }
 #[derive(Debug, Serialize)]
