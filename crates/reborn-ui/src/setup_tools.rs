@@ -261,7 +261,7 @@ pub async fn setup_graphics_options() -> Result<serde_json::Value,String> {
 }
 #[tauri::command]
 pub async fn setup_save_graphics_options(mode:String,resolution:u32,msaa:u32,ssaa:bool)->Result<(),String>{
-    if !["preset","previous"].contains(&mode.as_str()) || resolution!=3 || msaa!=1 || ssaa{return Err("Reborn requires 3× resolution and anti-aliasing off.".into());}
+    if !["preset","previous"].contains(&mode.as_str()) || resolution!=3 || ssaa{return Err("Reborn requires 3× resolution and SSAA off.".into());}
     let p=Platform::detect();let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
     let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
     saved.graphics_override=match mode.as_str(){
@@ -269,7 +269,7 @@ pub async fn setup_save_graphics_options(mode:String,resolution:u32,msaa:u32,ssa
         "previous"=>Some(serde_json::from_slice(&std::fs::read(p.paths.data_root().map_err(|e|e.to_string())?.join("config/migrated-graphics.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?),
         _=>Some(reborn_core::settings::GraphicsOverride{label:"Custom".into(),resolution,msaa,ssaa,legacy_gfx:None,legacy_reshade:None})
     };
-    if let Some(options)=saved.graphics_override.as_mut(){options.resolution=3;options.msaa=1;options.ssaa=false;}
+    if let Some(options)=saved.graphics_override.as_mut(){options.resolution=3;options.ssaa=false;}
     saved.save(&file).map_err(|e|e.to_string())
 }
 

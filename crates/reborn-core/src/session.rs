@@ -615,8 +615,9 @@ impl Session {
                     for (section,keys) in overlay{retained.entry(section).or_default().extend(keys);}overlay=retained;
                 }
                 let section=overlay.entry("Settings".into()).or_default();
+                // MSAA is deliberately not here: the runtime's baseline sets
+                // 4x and the Anti-aliasing preference lets the player change it.
                 section.insert("InternalResolution".into(),"3".into());
-                section.insert("MSAA".into(),"1".into());
                 section.insert("SSAA".into(),"False".into());
             }
             for (section, keys) in crate::dolphin_preferences::overlay(&name,&preferences.emulator_preferences) { overlay.entry(section).or_default().extend(keys); }

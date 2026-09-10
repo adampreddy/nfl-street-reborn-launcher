@@ -11,6 +11,8 @@ pub const FIELDS: &[Field] = &[
     Field{id:"always_on_top",file:"Dolphin.ini",section:"Display",key:"KeepWindowOnTop",default:"False",kind:"bool"},
     Field{id:"vsync",file:"GFX.ini",section:"Hardware",key:"VSync",default:"False",kind:"bool"},
     Field{id:"show_fps",file:"GFX.ini",section:"Settings",key:"ShowFPS",default:"False",kind:"bool"},
+    // Anti-aliasing is the player's: 4x is the Reborn baseline (Adam, 2026-09-10), lower if the game stutters.
+    Field{id:"msaa",file:"GFX.ini",section:"Settings",key:"MSAA",default:"0x00000004",kind:"msaa"},
     Field{id:"show_ping",file:"GFX.ini",section:"Settings",key:"ShowNetPlayPing",default:"False",kind:"bool"},
     Field{id:"borderless",file:"GFX.ini",section:"Settings",key:"BorderlessFullscreen",default:"False",kind:"bool"},
     Field{id:"confirm_stop",file:"Dolphin.ini",section:"Interface",key:"ConfirmStop",default:"True",kind:"bool"},
