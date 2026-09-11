@@ -23,7 +23,7 @@ const screen = document.getElementById("screen");
 // submitted yet.
 let genDir = "";
 const vaultDrafts = { site_token: "", r2_access_key: "", r2_secret: "" };
-const settingsDrafts = { bucket_endpoint: "", bucket_name: "", public_base: "", launcher_manifest: "" };
+const settingsDrafts = { bucket_endpoint: "", bucket_name: "", public_base: "", launcher_manifest: "", drop_root: "" };
 let settingsDraftsSeeded = false;
 
 // One-shot feedback from the last action in each block, shown until the
@@ -336,6 +336,7 @@ function settingsBlock(answer) {
     settingsDrafts.bucket_name = s.bucket_name || "";
     settingsDrafts.public_base = s.public_base || "";
     settingsDrafts.launcher_manifest = s.launcher_manifest || "";
+    settingsDrafts.drop_root = s.drop_root || "";
     settingsDraftsSeeded = true;
   }
 
@@ -354,7 +355,8 @@ function settingsBlock(answer) {
     textRow("Server endpoint", "bucket_endpoint", "the R2 endpoint URL, not a secret"),
     textRow("Server bucket name", "bucket_name"),
     textRow("Public base URL", "public_base"),
-    textRow("Launcher manifest URL", "launcher_manifest")
+    textRow("Launcher manifest URL", "launcher_manifest"),
+    textRow("Drop folders", "drop_root", "one subfolder per thing: textures\\GN7E69, runtime, mods\\packages, roster, game")
   );
 
   return el("section", { class: "block" }, ...children);

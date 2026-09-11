@@ -60,6 +60,14 @@ pub struct Settings {
     pub public_base: String,
     #[serde(default = "default_launcher_manifest")]
     pub launcher_manifest: String,
+    /// The drop folders: one subfolder per thing players get
+    /// (`textures\GN7E69`, `runtime`, `mods\packages`, `roster`, `game`,
+    /// `patch-chain`). Pages propose paths under it when nothing is
+    /// remembered, so publishing is "put the files there, press the button".
+    /// Adam, 2026-09-11: "setup directories for me to upload the files that
+    /// need to go in certain places".
+    #[serde(default)]
+    pub drop_root: Option<String>,
     /// The last inputs a person gave each operation, keyed by an operation
     /// name a page chooses (for example `"roster"` or `"launcher"`), so a
     /// page opened a week later starts from what was typed last instead of
@@ -180,11 +188,17 @@ pub fn publisher_set_setting(key: String, value: serde_json::Value) -> Result<Se
                 settings.launcher_manifest =
                     as_string(&value).ok_or("launcher_manifest must be a string")?
             }
+            "drop_root" => {
+                settings.drop_root = as_opt_string(&value)
+                    .ok_or("drop_root must be a string or null")?
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            }
             other => {
                 return Err(format!(
                     "{other:?} is not a setting this app knows. Use one of origin, \
                      publisher_key, builder, xdelta, bucket_endpoint, bucket_name, \
-                     public_base, launcher_manifest, or remembered.<operation>."
+                     public_base, launcher_manifest, drop_root, or remembered.<operation>."
                 ));
             }
         }

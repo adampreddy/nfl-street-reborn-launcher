@@ -86,10 +86,34 @@ function selection() {
   };
 }
 
+// One remembered folder PER thing, so switching from Textures to Runtime
+// does not carry the texture folder along. With drop folders set up
+// (Settings: Drop folders), a thing nothing was remembered for proposes
+// its own subfolder there: put the files in, press the button.
+const rememberedFolders = {};
+let dropRoot = "";
+
+function dropDefault(component) {
+  if (!dropRoot) return "";
+  const root = dropRoot.replace(/[\\/]+$/, "");
+  switch (component) {
+    case "textures": return `${root}\\textures\\${gameIdSelect.value || "GN7E69"}`;
+    case "runtime": return `${root}\\runtime`;
+    case "mods": return `${root}\\mods\\packages`;
+    default: return "";
+  }
+}
+
+function folderFor(component) {
+  return rememberedFolders[component] || dropDefault(component);
+}
+
 function remember() {
+  const folder = folderInput.value.trim();
+  if (folder) rememberedFolders[componentSelect.value] = folder;
   call("publisher_set_setting", {
     key: "remembered.content",
-    value: { component: componentSelect.value, folder: folderInput.value.trim(), game_id: gameIdSelect.value },
+    value: { component: componentSelect.value, folder, folders: { ...rememberedFolders }, game_id: gameIdSelect.value },
   });
 }
 
@@ -120,6 +144,7 @@ async function loadVersionInfo() {
 componentSelect.addEventListener("change", () => {
   versionInput.value = "";
   lintResult = null;
+  folderInput.value = folderFor(componentSelect.value);
   renderLint();
   loadVersionInfo();
   remember();
@@ -245,12 +270,20 @@ screen.append(
 
 async function loadRemembered() {
   const answer = await call("publisher_settings");
-  if (!answer.ok || !answer.value || !answer.value.remembered) return;
-  const saved = answer.value.remembered.content;
-  if (!saved || typeof saved !== "object") return;
-  if (typeof saved.component === "string" && COMPONENTS.some(([value]) => value === saved.component)) componentSelect.value = saved.component;
-  if (typeof saved.folder === "string") folderInput.value = saved.folder;
-  if (typeof saved.game_id === "string") gameIdSelect.value = saved.game_id;
+  if (!answer.ok || !answer.value) return;
+  if (typeof answer.value.drop_root === "string") dropRoot = answer.value.drop_root;
+  const saved = answer.value.remembered && answer.value.remembered.content;
+  if (saved && typeof saved === "object") {
+    if (typeof saved.component === "string" && COMPONENTS.some(([value]) => value === saved.component)) componentSelect.value = saved.component;
+    if (typeof saved.game_id === "string") gameIdSelect.value = saved.game_id;
+    if (saved.folders && typeof saved.folders === "object") {
+      for (const [value] of COMPONENTS) if (typeof saved.folders[value] === "string" && saved.folders[value]) rememberedFolders[value] = saved.folders[value];
+    }
+    // The single remembered folder from before per-thing memory counts for
+    // the thing it was remembered with.
+    if (typeof saved.folder === "string" && saved.folder && !rememberedFolders[componentSelect.value]) rememberedFolders[componentSelect.value] = saved.folder;
+  }
+  folderInput.value = folderFor(componentSelect.value);
 }
 
 async function init() {
