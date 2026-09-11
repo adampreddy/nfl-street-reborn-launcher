@@ -311,13 +311,32 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
     // which is what keeps {app} off the 2.1 data folder, and it also means
     // a silent upgrade lands in the DEFAULT folder rather than the one this
     // launcher runs from. A player who chose D:\Games would get a second
-    // copy there and a relaunch of the wrong one.
+    // copy there and a relaunch of the wrong one. The one root NOT restated
+    // is the retired default under %LOCALAPPDATA%\Programs: a launcher still
+    // running from there (beta.8 sent its own update there on 2026-09-11)
+    // lets the installer's default move it into the data root's `app`
+    // folder, where the installer also removes the Programs copy.
+    let local_programs = std::env::var_os("LOCALAPPDATA").map(|v| PathBuf::from(v).join("Programs"));
     if let Ok(root) = platform.paths.install_root() {
-        args.push(format!("/DIR={}", root.display()).into());
+        if let Some(switch) = dir_switch(&root, local_programs.as_deref()) {
+            args.push(switch);
+        }
     }
     let env = std::collections::BTreeMap::new();
     platform.processes.spawn(installer, &args, installer.parent(), &env)?;
     Ok(())
+}
+
+/// `/DIR=<root>` for the installer, or `None` when `root` sits under the
+/// retired `%LOCALAPPDATA%\Programs` default and the installer's own default
+/// should decide instead.
+pub fn dir_switch(root: &Path, local_programs: Option<&Path>) -> Option<std::ffi::OsString> {
+    if let Some(programs) = local_programs {
+        if root.starts_with(programs) {
+            return None;
+        }
+    }
+    Some(format!("/DIR={}", root.display()).into())
 }
 
 /// The switches [`apply`] passes, for the installer smoke test to mirror.
@@ -327,6 +346,21 @@ pub const APPLY_SWITCHES: [&str; 3] = ["/SILENT", "/NORESTART", "/RELAUNCH=1"];
 mod tests {
     use super::*;
     use crate::net::fake::FakeHttp;
+
+    #[test]
+    fn the_installer_is_told_the_folder_except_the_retired_programs_default() {
+        let programs = Path::new(r"C:\Users\Adam\AppData\Local\Programs");
+        let app = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher Beta\app");
+        let custom = Path::new(r"D:\Games\Reborn");
+        let old = Path::new(r"C:\Users\Adam\AppData\Local\Programs\NFL Street Reborn Beta");
+        assert_eq!(dir_switch(app, Some(programs)).unwrap().to_string_lossy(), format!("/DIR={}", app.display()));
+        assert_eq!(dir_switch(custom, Some(programs)).unwrap().to_string_lossy(), format!("/DIR={}", custom.display()));
+        // A launcher still running from the retired default says nothing, so
+        // the installer's own default moves it into `app` and cleans up.
+        assert!(dir_switch(old, Some(programs)).is_none());
+        // Without a known Programs folder the root is always restated.
+        assert!(dir_switch(old, None).is_some());
+    }
 
     fn manifest(version: &str, sha: &str) -> String {
         format!(
