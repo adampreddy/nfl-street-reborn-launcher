@@ -3,28 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Status | Reborn Publisher</title>
+  <title>Home | Reborn Publisher</title>
   <link rel="stylesheet" href="publisher.css">
 </head>
 <body>
   <header class="pub-header"><span class="brand">Reborn Publisher</span></header>
   <nav class="pub-nav" aria-label="Main navigation">
-    <a href="index.html">Status<small>Live, local, this machine</small></a>
+    <a href="index.html">Home<small>What players get right now</small></a>
+    <a href="content.html">Textures, runtime, mods<small>Publish a folder</small></a>
+    <a href="launcher.html">Launcher update<small>Build and publish</small></a>
     <a href="roster.html">Roster<small>Publish the site's export</small></a>
-    <a href="launcher.html">Launcher<small>Build and publish an update</small></a>
-    <a href="game.html">Game<small>The Builder, and the patch</small></a>
-    <a href="content.html">Content<small>Textures, runtime, mods</small></a>
-    <a href="set.html">Set<small>The full first-run installer</small></a>
-    <a href="history.html">History<small>The journal, and rollback</small></a>
-    <a href="keys.html">Keys<small>Signing keys and the vault</small></a>
+    <a href="history.html">Roll back<small>History, and undo</small></a>
+    <span class="nav-heading">Advanced</span>
+    <a href="game.html">Build an ISO<small>The Builder and the game patch</small></a>
+    <a href="set.html">Full installer set<small>What new players download</small></a>
+    <a href="keys.html">Keys and settings<small>Signing keys, vault, paths</small></a>
   </nav>
   <main id="main">
     <div class="page-heading">
-      <h1>Status</h1>
-      <p class="purpose">
-        What the bucket serves, what sits in the local origin, and what this machine
-        has ready to publish with.
-      </p>
+      <h1>Home</h1>
+      <p class="purpose">What players get right now, and anything this computer has not sent to the server yet.</p>
+      <details class="how"><summary>How this works</summary><p>The launcher on every player's PC reads a signed release file from the server and downloads whatever it names. This page reads the same file back, checks its signature, and compares it with what this computer has published. Upload now sends anything the server is missing, then reads the release back to confirm it.</p></details>
     </div>
     <section id="screen"></section>
   </main>
