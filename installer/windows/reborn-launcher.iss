@@ -419,6 +419,17 @@ begin
     Log('The previous uninstaller could not be started; continuing.')
   else
     Log('The previous uninstaller finished with code ' + IntToStr(Code));
+  // What the launcher itself wrote beside the program (ReShade logs under
+  // runtime, for one) is not in the uninstall log, so the folder survives
+  // with a handful of files. It is our own old program folder under
+  // Programs, never a data root, so finish the job.
+  if DirExists(ExtractFileDir(Uninstaller)) then
+  begin
+    if DelTree(ExtractFileDir(Uninstaller), True, True, True) then
+      Log('Removed the leftover program folder ' + ExtractFileDir(Uninstaller))
+    else
+      Log('Could not remove everything under ' + ExtractFileDir(Uninstaller) + '; continuing.');
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
