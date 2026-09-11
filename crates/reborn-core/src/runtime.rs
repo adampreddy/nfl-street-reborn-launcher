@@ -227,7 +227,10 @@ impl ConfigGenerator {
         for (section,key,value) in [
             ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
             ("Video_Settings","InternalResolution","3"),("Video_Settings","SSAA","False"),
-            ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","True"),
+            // CacheHiresTextures = prefetch the whole HD pack decoded into RAM at boot. Measured 2026-09-11 on the
+            // 24 GB dev box: 12 GB private bytes, 384 MB free, 28 GB pagefile in use, and the game "running slow".
+            // The pack is BC7 DDS now (sub-millisecond loads), so on-demand is the requirement.
+            ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","False"),
             ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
             ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True"),
             ("Video_Settings","DumpTextures","False"),("Video_Settings","DumpBaseTextures","False"),("Video_Settings","DumpMipTextures","False"),
@@ -507,6 +510,36 @@ mod tests {
         }
     }
 
+    /// The two settings a live 0-FPS freeze on 2026-09-11 turned on.
+    ///
+    /// `CacheHiresTextures` prefetches the whole HD texture pack decoded into
+    /// RAM at boot. On a 24 GB machine that measured 12 GB of private bytes,
+    /// 384 MB of free RAM and a 28 GB pagefile in use, which is the "running
+    /// slow" the player reported. The pack is BC7 DDS now, so on-demand loads
+    /// are sub-millisecond and prefetch buys nothing. It must stay `False`, and
+    /// because the launcher merges these on every session prep, a stray edit
+    /// back to `True` re-arms the regression on every player's machine. This
+    /// test is the tripwire.
+    ///
+    /// `CPUThread` must NOT be forced here. Single core is the freeze
+    /// workaround (it removes the GPU→CPU interrupt hand-off Dolphin loses), but
+    /// it costs performance and is a per-machine call, so it is left to the
+    /// user's own `GameSettings` and must survive a launcher session untouched.
+    #[test]
+    fn the_texture_prefetch_stays_off_and_single_core_is_left_to_the_user() {
+        use super::*;
+        let required = ConfigGenerator::required_game_settings();
+        assert_eq!(
+            required.get("Video_Settings").and_then(|s| s.get("CacheHiresTextures")),
+            Some(&"False".to_string()),
+            "CacheHiresTextures must stay False: True prefetches the HD pack to ~12 GB RAM (the slowness)",
+        );
+        assert!(
+            required.get("Core").map_or(true, |s| !s.contains_key("CPUThread")),
+            "the launcher must not force CPUThread: single core is the user's per-machine freeze workaround",
+        );
+    }
+
     use super::*;
 
     fn config() -> LaunchConfig {
@@ -602,7 +635,9 @@ mod tests {
         assert_eq!(o["Logger.ini"]["Options"]["Verbosity"], "1");
         let g = ConfigGenerator::required_game_settings();
         assert_eq!(g["Core"]["SyncGPU"], "True");
-        assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "True");
+        // Must stay False. True prefetches the whole 9,115-file HD pack decoded into RAM (~12 GB
+        // measured 09-11) and starves the machine; that was the 3.0.0 "runs slow everywhere" report.
+        assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "False");
         assert_eq!(g["Video_Settings"]["DumpTextures"], "False");
         assert_eq!(g["Video_Enhancements"]["ArbitraryMipmapDetection"], "False");
     }
