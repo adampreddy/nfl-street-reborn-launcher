@@ -89,6 +89,16 @@ on branch `publisher-redesign` in its own worktree, merged into
 - Not yet shipped in any beta: e030ce3 (the /DIR rule) and 6803747 is in
   beta.9. Saturday's stable build carries everything on `integration`.
 
+## After the ship-blocking work (02:00 onwards)
+
+- Drop folders `C:\Reborn Publisher\` (README, one subfolder per thing,
+  hardlinked to what release 10 pins); Publisher `drop_root` setting and
+  per-thing remembered folders (be08eca, 218d08e); proven on the installed
+  Publisher (Textures/Runtime/Mods propose their folders; settings field).
+- B and X for returning players (4b301ea): migrated swap undone + one-time
+  notice; Swap X and B button; press-first assign; first run folds the
+  grid. beta.10 launcher-only publish carries it.
+
 ## Track A: launcher (this worktree)
 
 1. Version: `build.ps1 -Version` reaches the exe (`REBORN_BUILD_VERSION`
