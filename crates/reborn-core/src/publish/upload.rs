@@ -39,7 +39,7 @@ use crate::manifest::Sha256Hex;
 use crate::net::Http;
 use crate::origin::{blob_path, BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
 use crate::publish::journal::JOURNAL_FILE;
-use crate::publish::{err, io_err, out, refuse, thousands, Outcome, Sink, COMPONENTS_DIR};
+use crate::publish::{err, io_err, out, refuse, thousands, Event, Outcome, Sink, COMPONENTS_DIR};
 use crate::{Error, Result};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -873,7 +873,7 @@ fn complete_body(parts: &[(u32, String)]) -> String {
 /// discipline of remembering to check every early return by hand: nothing
 /// between "the upload id exists" and "the match below runs" can leave this
 /// function without going through the closure boundary first.
-fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, part_size: u64, attempts: u32, sink: Sink<'_>) -> Result<PutOutcome> {
+fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, part_size: u64, attempts: u32, done_before: u64, total: u64, sink: Sink<'_>) -> Result<PutOutcome> {
     let ranges = part_ranges(item.bytes, part_size);
 
     let now = now_for_signing()?;
@@ -916,7 +916,12 @@ fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, 
                     item.key, bucket.bucket
                 )]));
             };
-            err!(sink, "    part {part_number} of {} uploaded, {} byte(s)", ranges.len(), thousands(*len));
+            // `done_before` + this object's bytes so far: the bar keeps
+            // moving through a large object instead of jumping at its end.
+            sink(
+                Event::err(format!("    part {part_number} of {} uploaded, {} byte(s)", ranges.len(), thousands(*len)))
+                    .with_progress(done_before + offset + len, total, format!("Uploading part {part_number} of {}", ranges.len())),
+            );
             parts.push((part_number, etag.to_string()));
         }
 
@@ -1077,19 +1082,26 @@ pub fn upload(transport: &dyn Transport, http: &dyn Http, req: &UploadRequest<'_
         return Ok(Outcome::Described);
     }
 
+    let total = plan.total_bytes();
     let mut uploaded_objects = 0u64;
     let mut uploaded_bytes = 0u64;
+    // The bar starts at zero before the first byte moves, so a window shows
+    // "0 of N" at once instead of nothing until the first object lands.
+    sink(Event::out(format!("Uploading     {} byte(s) in {} object(s)", thousands(total), thousands(plan.len() as u64))).with_progress(0, total, "Uploading"));
     for item in plan.items() {
         let outcome = if item.bytes < req.multipart_threshold {
             put_single(transport, req.bucket, item, req.attempts, sink)?
         } else {
-            put_multipart(transport, req.bucket, item, req.part_size, req.attempts, sink)?
+            put_multipart(transport, req.bucket, item, req.part_size, req.attempts, uploaded_bytes, total, sink)?
         };
         match outcome {
             PutOutcome::Done => {
                 uploaded_objects += 1;
                 uploaded_bytes += item.bytes;
-                out!(sink, "  {}  ({} byte(s))", item.key, thousands(item.bytes));
+                sink(
+                    Event::out(format!("  {}  ({} byte(s))", item.key, thousands(item.bytes)))
+                        .with_progress(uploaded_bytes, total, "Uploading"),
+                );
             }
             PutOutcome::Refused(lines) => return Ok(refuse(sink, &lines)),
         }
@@ -1934,6 +1946,42 @@ mod tests {
         assert_eq!(last.method, "DELETE", "the last call must be AbortMultipartUpload: {calls:?}");
         assert_eq!(query_param(&last.url, "uploadId").as_deref(), Some("test-upload-id"));
         assert!(!calls.iter().any(|c| c.method == "POST" && query_param(&c.url, "uploadId").is_some()), "CompleteMultipartUpload must never be sent: {calls:?}");
+    }
+
+    #[test]
+    fn progress_rides_on_the_lines_from_zero_to_the_total_through_every_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_size = 10u64;
+        let big = vec![7u8; (part_size * 2) as usize];
+        let big_from = dir.path().join("big.bin");
+        std::fs::write(&big_from, &big).unwrap();
+        let small_from = dir.path().join("small.bin");
+        std::fs::write(&small_from, b"one").unwrap();
+        let mut plan = UploadPlan::new();
+        plan.blob("blobs/by-hash/aa/big".to_string(), big_from, big.len() as u64, Sha256Hex::from_bytes(&big));
+        plan.blob("blobs/by-hash/bb/small".to_string(), small_from, 3, Sha256Hex::from_bytes(b"one"));
+        let total = plan.total_bytes();
+        assert_eq!(total, 23);
+
+        let bucket = test_upload_bucket();
+        let req = UploadRequest { multipart_threshold: 5, part_size, attempts: 1, ..default_request(&bucket, &plan) };
+        let transport = FakeTransport::new();
+        let http = FakeHttp::default();
+        let mut events = Vec::new();
+
+        let outcome = upload(&transport, &http, &req, &mut |e| events.push(e)).unwrap();
+
+        assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+        let progress: Vec<(u64, u64, String)> =
+            events.iter().filter_map(|e| e.progress.as_ref().map(|p| (p.done, p.total, p.label.clone()))).collect();
+        assert_eq!(progress.first().map(|p| (p.0, p.1)), Some((0, total)), "the bar starts at zero: {progress:?}");
+        assert!(progress.iter().all(|p| p.1 == total), "every report carries the same total: {progress:?}");
+        assert!(progress.contains(&(10, total, "Uploading part 1 of 2".to_string())), "{progress:?}");
+        assert!(progress.contains(&(20, total, "Uploading part 2 of 2".to_string())), "{progress:?}");
+        assert_eq!(progress.last().map(|p| p.0), Some(total), "the last report is the whole total: {progress:?}");
+        assert!(progress.windows(2).all(|w| w[0].0 <= w[1].0), "done never goes backwards: {progress:?}");
+        // Every progress report is also an ordinary line a console prints.
+        assert!(events.iter().filter(|e| e.progress.is_some()).all(|e| !e.line.is_empty()));
     }
 
     #[test]

@@ -116,7 +116,7 @@ use serde_json::Value;
 
 use reborn_core::inventory::CancelSignal;
 use reborn_core::publish::journal::{self, Record, JOURNAL_SCHEMA};
-use reborn_core::publish::{Channel, Event, Outcome, Sink};
+use reborn_core::publish::{Channel, Event, Outcome, Progress, Sink};
 use reborn_core::Platform;
 
 use crate::settings;
@@ -164,6 +164,11 @@ pub struct OpState {
     /// finished with nothing to say.
     pub plan: Option<Value>,
     pub dry_run: bool,
+    /// How far the current step's transfer has come, from the last `Event`
+    /// that carried a `Progress`. Cleared when a step starts, kept once it
+    /// settles (a finished run reads as done of done). `None` for a step
+    /// that never reported bytes.
+    pub progress: Option<Progress>,
 }
 
 impl OpState {
@@ -175,6 +180,7 @@ impl OpState {
             summary: String::new(),
             plan: None,
             dry_run: false,
+            progress: None,
         }
     }
 }
@@ -314,6 +320,7 @@ fn run_operation_with_origin(
         state.lines.clear();
         state.summary.clear();
         state.dry_run = dry_run;
+        state.progress = None;
         // `plan` is deliberately left alone: see the module doc.
     }
     // A fresh operation starts with no registered cancel signal, so a
@@ -327,7 +334,11 @@ fn run_operation_with_origin(
                 Channel::Out => event.line,
                 Channel::Err => format!("ERROR: {}", event.line),
             };
-            shared().state.lock().expect("op state lock").lines.push(line);
+            let mut state = shared().state.lock().expect("op state lock");
+            state.lines.push(line);
+            if event.progress.is_some() {
+                state.progress = event.progress;
+            }
         };
         let result = body(&mut sink);
         finish(&op_owned, step, dry_run, inputs, origin, result);
@@ -640,6 +651,33 @@ mod tests {
         assert_eq!(state.phase, Phase::Done);
         // The run step must not have touched what the plan step found.
         assert_eq!(state.plan, Some(serde_json::json!({"found": 3})));
+
+        reset();
+    }
+
+    #[test]
+    fn a_progress_event_lands_in_op_status_and_the_next_step_clears_it() {
+        let _guard = exclusive();
+        reset();
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "upload:run", false, Value::Null, |sink| {
+            sink(Event::out("Uploading").with_progress(0, 100, "Uploading"));
+            sink(Event::out("half"));
+            sink(Event::out("  a.bin").with_progress(60, 100, "Uploading"));
+            Ok(Outcome::Done(serde_json::json!({"summary": "Uploaded 1 object(s)."})))
+        })
+        .unwrap();
+        wait_until_settled();
+        let state = op_status();
+        assert_eq!(state.phase, Phase::Done);
+        let p = state.progress.expect("the last progress report is kept once the step settles");
+        assert_eq!((p.done, p.total, p.label.as_str()), (60, 100, "Uploading"));
+        // A line without progress leaves the last report in place.
+        assert_eq!(state.lines, vec!["Uploading", "half", "  a.bin"]);
+
+        run(dir.path(), "upload:verify", false, Value::Null, |_sink| Ok(Outcome::Described)).unwrap();
+        wait_until_settled();
+        assert!(op_status().progress.is_none(), "a new step starts with no bar");
 
         reset();
     }
