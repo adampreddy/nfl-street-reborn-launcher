@@ -56,3 +56,5 @@ body.shell.page-home #play-notices .update-notice.downloading{flex-wrap:wrap;ali
 
 body.shell.page-home .play-dialog button,body.shell.page-home .play-details-button{background-color:var(--control-bg);border-color:var(--control-border);color:#e3e5db}
 body.shell.page-home .play-dialog button:hover:not(:disabled){background-color:#3b3e35;border-color:#777b6b}
+
+.play-overview a.is-locked{opacity:.5;cursor:default}.play-overview a.is-locked:hover strong{color:inherit}

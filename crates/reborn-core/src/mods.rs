@@ -963,10 +963,15 @@ fn same_place(a: &Path, b: &Path) -> bool {
 /// needs no privilege there.
 #[cfg(windows)]
 fn make_junction(at: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: this runs at every Play, and without it a console
+    // flashed on the player's screen each time (Adam: "terminal windows
+    // randomly pop up", 2026-09-11).
     let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
         .arg(at)
         .arg(to)
+        .creation_flags(0x0800_0000)
         .output()
         .map_err(|source| Error::Io {
             path: at.to_path_buf(),

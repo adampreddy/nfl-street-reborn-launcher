@@ -24,8 +24,9 @@
   // grid of bindings hides behind one line until someone asks for it.
   // Adam, 2026-09-11: "The initial controller remapping sucks and is a PIA."
   const custom=make('details','customize-controls');const customSummary=make('summary',null,'Customize controls');customSummary.title='The standard layout fits most controllers: A, B, X and Y as printed on your pad. Change any button here, or later under Controllers.';
-  if(layout==='players'){right.append(title,message,tabs,grid,editor,swap,reset);}
-  else{custom.append(customSummary,tabs,grid,editor,swap,reset);right.append(title,message,custom);}
+  const buttons=make('div','mapping-buttons');buttons.append(swap,reset);
+  if(layout==='players'){right.append(title,message,tabs,grid,editor,buttons);}
+  else{custom.append(customSummary,tabs,grid,editor,buttons);right.append(title,message,custom);}
   const setMode=value=>{mode=value;if(value==='test')document.body.dataset.controllerTesting='setup';else delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));root.dataset.testing=String(value==='test');toggle.textContent=value==='test'?(layout==='players'?'Finish test':'Use controller to navigate'):'Test controller';toggle.setAttribute('aria-pressed',String(value==='test'));hint.textContent=layout==='players'?(value==='test'?'Navigation is paused. Click Finish test or press Esc.':'Select a control to change its binding.'):value==='test'?'Live test is on. Esc or View + Menu switches to navigation.':'Controller navigation is on. Use the D-pad or left stick to move, A / Cross to select, and B / Circle to go back.';};
   toggle.onclick=()=>{if(saving)return;cancelCapture();setMode(mode==='test'?'navigate':'test');};
   const finishCapture=()=>{capture=null;editor.hidden=true;onBusy(false);setMode(mode);renderRows();};

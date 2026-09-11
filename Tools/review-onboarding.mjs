@@ -145,6 +145,16 @@ await page.getByRole('button',{name:'Buttons',exact:true}).click();
 // The small-window measurement is of what a first-run player sees: the
 // standard layout with the bindings folded away, not the opened grid.
 await page.getByText('Customize controls',{exact:true}).click();
+// The size first run actually runs at (setup_window_lock holds 1280x800):
+// no scrollbar on the controller step, folded or opened.
+await page.setViewportSize({width:1280,height:800});await page.waitForTimeout(200);
+const lockedSize=await page.evaluate(()=>{const main=document.querySelector('main');const parts=el=>Array.from(el.children).map(c=>`${c.tagName.toLowerCase()}${c.id?'#'+c.id:''}${c.className?'.'+String(c.className).split(' ')[0]:''}=${c.offsetHeight}`);return {scroll:main.scrollHeight,height:main.clientHeight,screenParts:parts(document.getElementById('screen'))};});
+console.log('controller layout at 1280x800 (folded)',JSON.stringify(lockedSize));assert.ok(lockedSize.scroll<=lockedSize.height,'the controller step must not scroll at 1280x800');
+await page.getByText('Customize controls',{exact:true}).click();await page.waitForTimeout(200);
+const openedSize=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight}));
+console.log('controller layout at 1280x800 (opened)',openedSize);assert.ok(openedSize.scroll<=openedSize.height,'the controller step must not scroll at 1280x800 with the bindings open');
+await shot('onboarding-controller-1280');
+await page.getByText('Customize controls',{exact:true}).click();
 await page.setViewportSize({width:800,height:600});await shot('onboarding-controller-800');
 const layout=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight,width:document.documentElement.scrollWidth,inner:innerWidth}));
 console.log('controller layout',layout);assert.ok(layout.width<=layout.inner);

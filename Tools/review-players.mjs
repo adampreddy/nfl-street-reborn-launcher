@@ -130,6 +130,8 @@ try {
  assert.equal(await page.evaluate(()=>window.__calls.find(c=>c.cmd==='setup_save_mapping').args.device),'XInput/2/Gamepad');
  await page.evaluate(()=>window.__pads.forEach(p=>p.buttons.forEach(b=>{b.pressed=false;b.value=0;})));
  await page.getByRole('button',{name:'Assign Left stick up',exact:true}).click();
+ // Typing a Dolphin input name is folded away behind one line; open it.
+ await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
  await page.getByRole('textbox',{name:'Left stick up binding'}).fill('`Left Y+`');
  await page.getByRole('button',{name:'Use binding',exact:true}).click();
  assert.match(await page.getByRole('button',{name:'Assign Left stick up',exact:true}).innerText(),/Left Y\+/);

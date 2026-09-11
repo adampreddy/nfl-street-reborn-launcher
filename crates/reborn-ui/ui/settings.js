@@ -210,9 +210,10 @@ function updatesBlock() {
   launcher.append(preferenceRow(downloaded?.path?'Ready to install':update?.state==='available'?`Version ${update.latest} available`:'Launcher updates',downloaded?.path?`Downloaded and verified · ${mb(downloaded.bytes)} MB. Restart the launcher to install.`:update?.note||'Check for a new launcher version. Your games and saves are preserved.',actions));
   // What changed lives on the site, not in a paragraph here.
   actions.append(el('button',{type:'button',text:'Patch notes',onclick:()=>call('open_website',{url:PATCH_NOTES_URL}).catch(()=>{})}));
-  const install=el('div',{class:'settings-actions'});
-  install.append(el('button',{type:'button',text:'Uninstall NFL Street Reborn…',disabled:busy,onclick:()=>act('Uninstall','uninstall_launcher',{confirm:true},()=>{})}));
-  launcher.append(el('p',{class:'note',text:'Uninstalling removes the launcher and the game. Your saves stay on this PC.'}),install);
+  // The same row shape as "Launcher updates" above it, so it belongs to the
+  // page instead of floating under a note (Adam, 2026-09-11).
+  const uninstall=el('button',{type:'button',text:'Uninstall…',disabled:busy,onclick:()=>act('Uninstall','uninstall_launcher',{confirm:true},()=>{})});
+  launcher.append(preferenceRow('Remove NFL Street Reborn','Removes the launcher and the game from this PC. Your saves stay.',uninstall));
   wrap.append(preferences,launcher,contentBlock());
   return wrap;
 }

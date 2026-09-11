@@ -346,13 +346,18 @@ function draw() {
   // opens in window mode vs full screen".
   const dolphin = ok(state.dolphin) ? state.dolphin : null;
   const fullscreen = dolphin ? String(dolphin.values?.fullscreen ?? "True").toLowerCase() === "true" : null;
-  overview.append(el("button", { type: "button", class: "play-overview-toggle", disabled: busy || inSession || !dolphin || dolphin.editable === false, title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async () => {
-    if (busy) return;
+  // Drawn exactly like its two neighbours (same element, same classes, same
+  // chevron), so it reads as one strip of three; only the click differs.
+  // Adam: "Display fullscreen vs windowed isn't blending in with the rest".
+  const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
+  overview.append(el("a", { href: "#", role: "button", class: displayLocked ? "is-locked" : "", "aria-disabled": String(displayLocked), title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async (event) => {
+    event.preventDefault();
+    if (displayLocked || busy) return;
     busy = true; draw();
     try { await call("dolphin_preference_set", { runtime: get("runtime"), key: "fullscreen", value: String(!fullscreen) }); }
     catch (e) { problem = reason(e); }
     busy = false; await refresh();
-  } }, el("span", { text: "Display" }), el("strong", { text: fullscreen === null ? "Unknown" : fullscreen ? "Fullscreen" : "Windowed" }), el("span", { class: "play-overview-arrow", text: "\u21c4", "aria-hidden": "true" })));
+  } }, el("span", { text: "Display" }), el("strong", { text: fullscreen === null ? "Unknown" : fullscreen ? "Fullscreen" : "Windowed" }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
   const dialog = detailsDialog();
   screen.replaceChildren(scene, controls, overview, dialog);
   if (wasOpen) { dialog.showModal(); if (filesOpen) dialog.querySelector("details").open = true; }

@@ -27,3 +27,9 @@ body.shell.page-controls .player-feedback{color:#8f9aaa;line-height:1.7}
 body.shell.page-controls .controller-stage .note{margin:8px 0 0!important;width:100%;max-width:240px;text-align:center;line-height:1.65}
 body.shell.page-controls .controller-live{width:100%;margin:12px 0!important;text-align:center}
 body.shell.page-controls .player-workspace[data-testing=true] .test-toggle{border-color:#82958c!important;background:#27332e!important;color:#dce9e1}
+
+/* Controllers sits on the same margins as every other page (Adam, 2026-09-11: "none of the UI positionings are the same"). */
+body.shell.page-controls main{padding:32px 36px 40px}
+.mapping-buttons{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.player-workspace .mapping-buttons{grid-column:1 / -1}
+body.shell.page-controls main{padding:32px 36px 24px}.player-workspace{padding:16px}

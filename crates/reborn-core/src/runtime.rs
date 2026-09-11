@@ -827,7 +827,7 @@ pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
             let target=exe.to_string_lossy().replace('/',"\\");
             let canonical=std::fs::canonicalize(exe)?.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
             let script="$ErrorActionPreference='Stop'; $running=@(Get-Process -Name $env:REBORN_PROCESS_NAME -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $env:REBORN_PROCESS_PATH -or $_.Path -eq $env:REBORN_PROCESS_CANONICAL}); if($running.Count -gt 0){'running'}";
-            let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
+            let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).creation_flags(0x08000000).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
             if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(crate::Error::player(CLOSE_EMULATOR_FIRST));}
         }
     }

@@ -287,6 +287,14 @@ impl ProcessHost for RealProcessHost {
         if let Some(dir) = program.parent() {
             cmd.current_dir(dir);
         }
+        // Everything run this way is a console tool (xdelta3, DolphinTool,
+        // the Builder) whose output is captured here; without this flag each
+        // one flashed a console window on the player's screen.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
         let output = cmd.output().map_err(|source| Error::Io {
             path: program.to_path_buf(),
             source,

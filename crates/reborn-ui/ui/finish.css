@@ -92,3 +92,6 @@ body.shell.page-online .netplay-room-heading h2{font-family:Inter,Segoe UI,sans-
 body.shell .section-tabs button[aria-pressed=true]{color:var(--focus)!important;box-shadow:inset 0 -2px var(--accent)}
 body.shell :focus-visible,body.shell.gamepad-input .pad-focus{outline-color:var(--focus)!important}
 body.shell input[type=checkbox],body.shell input[type=radio],body.shell input[type=range],body.shell progress{accent-color:var(--accent)}
+
+/* The logo sat flush against the top of the setup window; it now sits lower, in line with the page heading (Adam, 2026-09-11). */
+body.shell.page-setup .shell-nav .brand{margin-top:26px}
