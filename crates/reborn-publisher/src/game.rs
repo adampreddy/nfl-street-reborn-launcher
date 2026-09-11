@@ -76,7 +76,6 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
@@ -224,20 +223,6 @@ fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, Strin
     Ok(Bucket { endpoint, bucket: bucket_name, region: "auto".to_string(), access_key_id, secret_access_key })
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it. A signed HEAD, the same request shape `roster.rs`'s own
-/// copy of this helper and plan 2's `upload.rs` both use for the same
-/// `already` callback.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 /// Whether `pins` (a hosted release's own list, or a local one) names `id`
 /// at exactly `version`. Pulled out of [`game_patch_verify_body`] so the
@@ -870,7 +855,8 @@ fn finish_game_patch_run(
         return Ok(Outcome::Done(value));
     };
 
-    let plan = upload::plan_origin(origin, &|key| head_len(transport, bucket, key))?;
+    let (already, _how) = upload::already_on_bucket(transport, bucket)?;
+    let plan = upload::plan_origin(origin, &*already)?;
     let upload_req = UploadRequest {
         bucket,
         plan: &plan,

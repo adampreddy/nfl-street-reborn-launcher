@@ -2033,3 +2033,192 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// What the bucket already holds, in one pass.
+//
+// Every planner used to ask HEAD once per object to learn what was already
+// on the bucket. The origin holds sixteen thousand blobs, so a publish spent
+// ten minutes asking before it sent a byte, with nothing on screen: the
+// Publisher looked hung, twice on 2026-09-10. ListObjectsV2 answers a
+// thousand keys a page, so the same question is seventeen requests.
+
+/// Every key on the bucket under `prefix`, with its size. `None` when the
+/// bucket will not list (a token scoped to objects alone, a stand-in without
+/// the call), so the caller can fall back to asking per key.
+pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Result<Option<std::collections::HashMap<String, u64>>> {
+    let mut found = std::collections::HashMap::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut query: Vec<(&str, &str)> = vec![("list-type", "2"), ("max-keys", "1000"), ("prefix", prefix)];
+        if let Some(t) = token.as_deref() {
+            query.push(("continuation-token", t));
+        }
+        let path = format!("/{}/", bucket.bucket);
+        let req = sign(bucket, "GET", &path, &query, &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
+        let reply = transport.send(&req, Body::Empty)?;
+        if !(200..300).contains(&reply.status) {
+            return Ok(None);
+        }
+        let xml = String::from_utf8_lossy(&reply.body);
+        for (key, size) in listed_objects(&xml) {
+            found.insert(key, size);
+        }
+        match continuation_token(&xml) {
+            Some(t) => token = Some(t),
+            None => return Ok(Some(found)),
+        }
+    }
+}
+
+/// The size of one object on the bucket, by HEAD, or `None` when it is not
+/// there. The slow way; [`already_on_bucket`] uses it only as a fallback.
+pub fn head_length(transport: &dyn Transport, bucket: &Bucket, key: &str) -> Option<u64> {
+    let path = object_path(bucket, key);
+    let req = sign(bucket, "HEAD", &path, &[], &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
+    let reply = transport.send(&req, Body::Empty).ok()?;
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    reply
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse::<u64>().ok())
+}
+
+/// "Is this key on the bucket, and how long is it?" for the planners: one
+/// listing up front when the bucket allows it, a HEAD per key when it does
+/// not. The note says which, because the difference is ten minutes.
+#[allow(clippy::type_complexity)]
+pub fn already_on_bucket<'a>(
+    transport: &'a dyn Transport,
+    bucket: &'a Bucket,
+) -> Result<(Box<dyn Fn(&str) -> Option<u64> + 'a>, String)> {
+    match list_keys(transport, bucket, "")? {
+        Some(found) => {
+            let note = format!("Listed        {} object(s) already on the bucket, in one pass.", thousands(found.len() as u64));
+            Ok((Box::new(move |key: &str| found.get(key).copied()), note))
+        }
+        None => Ok((
+            Box::new(move |key: &str| head_length(transport, bucket, key)),
+            "The bucket would not list its objects; asking about each one (slow).".to_string(),
+        )),
+    }
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+fn xml_text<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&close)? + start;
+    Some(&block[start..end])
+}
+
+/// `(key, size)` for every `<Contents>` entry of a ListObjectsV2 page.
+fn listed_objects(xml: &str) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Contents>") {
+        let after = &rest[start + "<Contents>".len()..];
+        let Some(end) = after.find("</Contents>") else { break };
+        let block = &after[..end];
+        if let (Some(key), Some(size)) = (xml_text(block, "Key"), xml_text(block, "Size").and_then(|s| s.trim().parse::<u64>().ok())) {
+            out.push((xml_unescape(key), size));
+        }
+        rest = &after[end + "</Contents>".len()..];
+    }
+    out
+}
+
+/// The token for the next page, when the page says there is one.
+fn continuation_token(xml: &str) -> Option<String> {
+    if xml_text(xml, "IsTruncated")?.trim() != "true" {
+        return None;
+    }
+    xml_text(xml, "NextContinuationToken").map(xml_unescape)
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A transport that answers each call from a script and records the URLs.
+    #[derive(Debug)]
+    struct Scripted {
+        replies: Mutex<Vec<Reply>>,
+        urls: Mutex<Vec<String>>,
+    }
+    impl Transport for Scripted {
+        fn send(&self, req: &SignedRequest, _body: Body<'_>) -> Result<Reply> {
+            self.urls.lock().unwrap().push(req.url.clone());
+            Ok(self.replies.lock().unwrap().remove(0))
+        }
+    }
+    fn bucket() -> Bucket {
+        Bucket {
+            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
+            bucket: "reborn-content".into(),
+            region: "auto".into(),
+            access_key_id: "AKIA".into(),
+            secret_access_key: "secret".into(),
+        }
+    }
+    fn page(entries: &[(&str, u64)], next: Option<&str>) -> Reply {
+        let mut xml = String::from("<?xml version=\"1.0\"?><ListBucketResult><Name>reborn-content</Name>");
+        for (k, n) in entries {
+            xml.push_str(&format!("<Contents><Key>{k}</Key><LastModified>x</LastModified><ETag>e</ETag><Size>{n}</Size></Contents>"));
+        }
+        match next {
+            Some(t) => xml.push_str(&format!("<IsTruncated>true</IsTruncated><NextContinuationToken>{t}</NextContinuationToken>")),
+            None => xml.push_str("<IsTruncated>false</IsTruncated>"),
+        }
+        xml.push_str("</ListBucketResult>");
+        Reply { status: 200, headers: vec![], body: xml.into_bytes() }
+    }
+
+    #[test]
+    fn a_listing_walks_every_page_and_reports_each_key_with_its_size() {
+        let t = Scripted {
+            replies: Mutex::new(vec![page(&[("blobs/by-hash/ab/abcd", 10), ("components/runtime-1.0.0.json", 20)], Some("tok&en=1")), page(&[("release.json", 30)], None)]),
+            urls: Mutex::new(vec![]),
+        };
+        let found = list_keys(&t, &bucket(), "").unwrap().expect("the bucket listed");
+        assert_eq!(found.len(), 3);
+        assert_eq!(found.get("blobs/by-hash/ab/abcd"), Some(&10));
+        assert_eq!(found.get("release.json"), Some(&30));
+        let urls = t.urls.lock().unwrap();
+        assert_eq!(urls.len(), 2, "one request per page");
+        assert!(urls[0].contains("/reborn-content/?") && urls[0].contains("list-type=2"), "{}", urls[0]);
+        assert!(urls[1].contains("continuation-token=tok%26en%3D1"), "the token travels back encoded: {}", urls[1]);
+    }
+
+    #[test]
+    fn a_bucket_that_refuses_to_list_yields_none_so_the_caller_falls_back() {
+        let t = Scripted { replies: Mutex::new(vec![Reply { status: 403, headers: vec![], body: b"AccessDenied".to_vec() }]), urls: Mutex::new(vec![]) };
+        assert!(list_keys(&t, &bucket(), "").unwrap().is_none());
+    }
+
+    #[test]
+    fn keys_with_xml_escapes_come_back_as_written() {
+        let objects = listed_objects("<Contents><Key>a &amp; b</Key><Size>1</Size></Contents>");
+        assert_eq!(objects, vec![("a & b".to_string(), 1)]);
+        assert_eq!(continuation_token("<IsTruncated>false</IsTruncated>"), None);
+    }
+
+    #[test]
+    fn already_on_bucket_answers_from_the_listing_and_says_so() {
+        let t = Scripted { replies: Mutex::new(vec![page(&[("release.json", 30)], None)]), urls: Mutex::new(vec![]) };
+        let b = bucket();
+        let (already, note) = already_on_bucket(&t, &b).unwrap();
+        assert!(note.starts_with("Listed        1 object(s)"), "{note}");
+        assert_eq!(already("release.json"), Some(30));
+        assert_eq!(already("missing"), None);
+        assert_eq!(t.urls.lock().unwrap().len(), 1, "no HEAD followed the listing");
+    }
+}

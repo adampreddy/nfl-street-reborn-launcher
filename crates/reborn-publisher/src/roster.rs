@@ -79,14 +79,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
 use reborn_core::content::pipeline::{CheckRequest, ComponentState, Depth, Updater, UPDATABLE};
 use reborn_core::content::{ContentService, InstalledVersion, Pointer, POINTER_SCHEMA};
 use reborn_core::inventory::{CancelSignal, ComponentId, ScanObserver};
-use reborn_core::manifest::{Component, Release, Sha256Hex};
+use reborn_core::manifest::{Component, Release};
 use reborn_core::net::{Http, UreqHttp};
 use reborn_core::origin::{Origin, RELEASE_FILE};
 use reborn_core::publish::roster::{publish_roster, read_counts, RosterRequest};
@@ -297,7 +296,8 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
         };
 
         let transport = UreqTransport::new();
-        let plan = upload::plan_origin(&origin, &|key| head_len(&transport, bucket, key))?;
+        let (already, _how) = upload::already_on_bucket(&transport, bucket)?;
+        let plan = upload::plan_origin(&origin, &*already)?;
         let http2 = UreqHttp::new(&user_agent());
         let upload_req = UploadRequest {
             bucket,
@@ -636,20 +636,6 @@ fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, Strin
     Ok(Bucket { endpoint, bucket: bucket_name, region: "auto".to_string(), access_key_id, secret_access_key })
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it. A signed HEAD, the same request shape `history.rs`'s own
-/// rollback upload and plan 2's `upload.rs` both use for the same
-/// `already` callback.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 fn plain_err(message: impl Into<String>) -> reborn_core::Error {
     reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, message.into()))

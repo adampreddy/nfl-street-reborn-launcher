@@ -794,14 +794,16 @@ fn build_upload_plan(
     let component = Component::parse(&manifest_bytes)
         .map_err(|e| plain_err(format!("{} does not parse as a component manifest: {e}", manifest_local.display())))?;
 
+    // One listing, not one HEAD per file: a texture set is eight thousand.
+    let (already, _how) = upload::already_on_bucket(transport, bucket)?;
     let manifest_key = manifest_url(id, version);
-    if head_len(transport, bucket, &manifest_key) != Some(manifest_bytes.len() as u64) {
+    if already(&manifest_key) != Some(manifest_bytes.len() as u64) {
         let sha = Sha256Hex::from_bytes(&manifest_bytes);
         plan.manifest(manifest_key, manifest_local, manifest_bytes.len() as u64, sha);
     }
     for file in &component.files {
         let key = blob_path(&file.sha256);
-        if head_len(transport, bucket, &key) != Some(file.bytes) {
+        if already(&key) != Some(file.bytes) {
             let local = origin.join(&key);
             plan.blob(key, local, file.bytes, file.sha256.clone());
         }
@@ -818,19 +820,6 @@ fn build_upload_plan(
     Ok(plan)
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it (or answered anything other than 2xx). A signed HEAD, the
-/// same request shape `history.rs`'s own rollback upload uses.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), std::time::SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 fn plain_err(message: impl Into<String>) -> reborn_core::Error {
     reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, message.into()))

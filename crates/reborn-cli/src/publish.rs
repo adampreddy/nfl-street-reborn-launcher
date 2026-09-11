@@ -245,8 +245,8 @@ use reborn_core::publish::release::{release, Pin, ReleaseRequest};
 use reborn_core::publish::roster::{publish_roster, RosterRequest};
 use reborn_core::publish::status::{read_status, PendingReason, Status};
 use reborn_core::publish::upload::{
-    object_path, plan_origin, sign, upload as run_upload, Body, Transport, UploadRequest, UreqTransport,
-    DEFAULT_ATTEMPTS, DEFAULT_MULTIPART_THRESHOLD, DEFAULT_PART_SIZE, UNSIGNED_PAYLOAD,
+    plan_origin, upload as run_upload, UploadRequest, UreqTransport,
+    DEFAULT_ATTEMPTS, DEFAULT_MULTIPART_THRESHOLD, DEFAULT_PART_SIZE,
 };
 use reborn_core::publish::vault::{
     bucket as vault_bucket, forget_site_token, r2_access, r2_secret, site_token, store_r2_access, store_r2_secret,
@@ -456,8 +456,9 @@ fn upload_command(
     }
 
     let transport = UreqTransport::new();
-    let already = |key: &str| -> Option<u64> { head_length(&transport, &bucket, key) };
-    let plan = plan_origin(origin, &already)?;
+    let (already, how) = reborn_core::publish::upload::already_on_bucket(&transport, &bucket)?;
+    sink(Event::out(how));
+    let plan = plan_origin(origin, &*already)?;
 
     let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
     let public_base = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
@@ -473,27 +474,6 @@ fn upload_command(
     Ok(exit_of(&run_upload(&transport, &http, &req, sink)?))
 }
 
-/// Whether `key` is already on the bucket, and at what length, checked with
-/// a signed `HEAD` -- the same request an unmodified S3-compatible server
-/// answers for any object it holds, whether or not it was ever downloaded.
-/// A transport failure or a non-2xx reply is `None`, which only ever costs a
-/// redundant (and harmless: every upload here is content-addressed or an
-/// always-resent release file) re-upload of something already present, never
-/// a wrong answer that skips something the bucket does not actually have.
-fn head_length(transport: &dyn Transport, bucket: &reborn_core::publish::upload::Bucket, key: &str) -> Option<u64> {
-    let now = std::time::SystemTime::now();
-    let path = object_path(bucket, key);
-    let req = sign(bucket, "HEAD", &path, &[], &[], UNSIGNED_PAYLOAD, now);
-    let reply = transport.send(&req, Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.parse::<u64>().ok())
-}
 
 /// Read the bucket, the local origin and the launcher channel, print the
 /// picture, and exit non-zero only when something could not be read or
