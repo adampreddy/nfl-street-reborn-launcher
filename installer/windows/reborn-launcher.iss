@@ -380,13 +380,16 @@ end;
 // it. The data root itself, or any other folder inside it, stays refused.
 function InstallDirIsSafe(Dir: String): Boolean;
 var
-  Normalized, Old, Own: String;
+  Normalized, Old, Own, Current, Beta: String;
 begin
   Normalized := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
   Old := Lowercase(RemoveBackslashUnlessRoot(OldDataRoot()));
+  Current := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
+  Beta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
   // This channel's own program folder, and only this channel's: a beta
   // pointed at the stable folder would overwrite it and leave two uninstall
-  // entries on one folder.
+  // entries on one folder. Anywhere else inside either data root is still
+  // refused below.
   Own := Lowercase(ExpandConstant('{userappdata}\{#DataDir}\app'));
   if Normalized = Own then
   begin
