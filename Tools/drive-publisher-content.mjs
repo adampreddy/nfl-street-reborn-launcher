@@ -29,6 +29,10 @@ const status = () => page.evaluate(async () => { const m = await import("./shell
 await page.goto(`${base.origin}/content.html`);
 await page.waitForSelector("#ct-component", { timeout: 20000 });
 await page.selectOption("#ct-component", "textures");
+// The page proposes a version on its own a moment after the component
+// changes; typing into the box before that lands appends to it (seen:
+// "1.2.11.2.1"). Wait for the proposal, then replace it.
+await page.getByText("Next:", { exact: false }).waitFor({ timeout: 20000 });
 await page.fill("#ct-folder", folder);
 await page.fill("#ct-version", version);
 await page.locator("#ct-version").dispatchEvent("input");

@@ -467,7 +467,26 @@ export function job(host, config) {
     }
     applyState(mine(state) ? { ...state, operation: "" } : state);
     draw();
+    if (otherBusy) watchOther();
   })();
+
+  // Another page's operation was running when this page opened: keep
+  // looking until it settles, so the button comes back on its own instead
+  // of staying disabled until a reload. (Seen on the Launcher page after a
+  // Textures check finished: "is publishing" stayed on screen for good.)
+  function watchOther() {
+    if (pollHandle) return;
+    pollHandle = setInterval(async () => {
+      const answer = await call("op_status");
+      if (!answer.ok) return;
+      const busyNow = JOB_BUSY.has(answer.value.phase) && !mine(answer.value);
+      if (!busyNow) {
+        stopPolling();
+        otherBusy = null;
+        draw();
+      }
+    }, 1000);
+  }
 
   draw();
 
