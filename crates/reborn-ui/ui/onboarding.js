@@ -165,6 +165,34 @@ function fail(e) {
 // Drawing
 // ---------------------------------------------------------------------------
 
+// One-time notices the launcher owes a returning player, drawn on the
+// controller step. The backend decides what is pending and what it says
+// (notices_pending / notice_dismiss, the same two commands Controllers
+// uses); this only draws it and reports "Got it". `onShown` gets true when
+// a notice is on screen and false again once the last one is dismissed.
+async function mountSetupNotices(host, onShown) {
+  if (!bridge) return;
+  let list = [];
+  try { list = await bridge.invoke("notices_pending"); } catch (_) { return; }
+  if (!Array.isArray(list) || !list.length) return;
+  for (const notice of list) {
+    if (!notice || typeof notice.id !== "string") continue;
+    const box = el("section", "notice migration");
+    box.setAttribute("role", "status");
+    box.dataset.notice = notice.id;
+    const got = el("button", "notice-dismiss", "Got it");
+    got.type = "button";
+    got.onclick = async () => {
+      try { await bridge.invoke("notice_dismiss", { id: notice.id }); } catch (_) {}
+      box.remove();
+      if (!host.childElementCount && onShown) onShown(false);
+    };
+    box.append(el("strong", null, notice.title || ""), el("p", null, notice.text || ""), got);
+    host.append(box);
+  }
+  if (host.childElementCount && onShown) onShown(true);
+}
+
 function el(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -482,7 +510,14 @@ const SCREENS = {
   },
 
   controller_setup: () => {
-    const nodes=[el('p',null,'Test your inputs. Your controller can navigate the entire launcher once paired.')];
+    // A returning player's notice (the 2.1 B/X swap the launcher removed
+    // from their mapping) takes the intro line's slot, so the step keeps its
+    // height and no scrollbar appears. Adam, 2026-09-11: on onboarding and
+    // Controllers only.
+    const notices=el('div','notices setup-notices');
+    const intro=el('p',null,'Test your inputs. Your controller can navigate the entire launcher once paired.');
+    const nodes=[notices,intro];
+    mountSetupNotices(notices,shown=>{intro.hidden=shown;});
     const toolbar=el('div','controller-picker');const select=el('select');select.setAttribute('aria-label','Your controller');
     const pads=pending.pads?.list||[];
     const placeholder=el('option',null,'Choose a controller');placeholder.value='';select.append(placeholder);

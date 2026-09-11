@@ -43,9 +43,8 @@ pub fn text(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
         BX_SWAP_UNDONE => Some((
             "X and B are back to normal",
-            "NFL Street Reborn now swaps X and B inside the game, so the controller swap from 2.1 is no \
-             longer needed. It has been removed from your mapping: button B is B and button X is X. \
-             Anything else can be changed under Controllers.",
+            "NFL Street Reborn swaps X and B inside the game now, so the 2.1 controller swap is no \
+             longer needed and has been removed from your mapping: B is B and X is X.",
         )),
         _ => None,
     }

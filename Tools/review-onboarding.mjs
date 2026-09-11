@@ -17,6 +17,10 @@ Object.assign(fixture, {
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
+ // A returning player: the launcher removed the 2.1 B/X swap and says so
+ // once, on the controller step (and on Controllers), nowhere else.
+ notices_pending: [{id:'bx-swap-undone',title:'X and B are back to normal',text:'NFL Street Reborn swaps X and B inside the game now, so the 2.1 controller swap is no longer needed and has been removed from your mapping: B is B and X is X.'}],
+ notice_dismiss: null,
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
 fixture.controls_options=[{slug:'xbox',label:'Xbox',suggested:true,describes:'A, B, X and Y prompts.',pack:'Xbox Controls'},{slug:'playstation',label:'PlayStation',suggested:false,describes:'Cross, circle, square and triangle prompts.',pack:'PS Controls'},{slug:'gamecube',label:'GameCube',describes:'Original game prompts.',pack:null}];
@@ -53,6 +57,7 @@ await context.addInitScript(data=>{
    localStorage.setItem('qa:settings',JSON.stringify(prefs));return {which:args.which,value:args.value};
   }
   if(cmd==='pick_path') return 'C:\\Games\\Reborn\\NSR.iso';
+  if(cmd==='notice_dismiss') {data.notices_pending=(data.notices_pending||[]).filter(n=>n.id!==args.id);return null;}
   if(cmd==='launch') return new Promise(resolve=>{data.session_active=true;window.__finishLaunch=r=>{data.session_active=false;resolve(r);};});
   if(cmd==='controls_set') {data.controls_current={profile:args.profile,label:args.profile,source:'settings'};return {label:args.profile,synced:{note:'Button prompts updated.'}};}
   if(cmd==='mods_toggle') {data.mod_packages.packages.forEach(p=>{if(p.id===args.id)p.active=args.on;else if(args.on&&p.id.startsWith('football'))p.active=false;});return {synced:true,note:'Mods updated.'};}
@@ -160,7 +165,16 @@ const opened=await page.evaluate(()=>{const stage=document.querySelector('.setup
 console.log('opened bindings',opened);
 assert.ok(opened.foldBottom<=opened.stageBottom+1,'the opened fold must end inside the stage');
 assert.ok(opened.buttonsBottom<=opened.stageBottom+1||(opened.foldScrolls&&['auto','scroll'].includes(opened.foldOverflow)),'Swap and Restore must be inside the stage or inside a fold that scrolls');
+// The returning player's B/X notice sits in the intro line's slot on this
+// step: visible, the intro hidden, and the two size checks above already
+// ran with it on screen. Got it removes it and the intro comes back.
+const noticeBox=await page.evaluate(()=>{const n=document.querySelector('.setup-notices .notice.migration');const intro=n?.parentElement?.nextElementSibling;return n?{height:n.getBoundingClientRect().height,title:n.querySelector('strong')?.textContent,introHidden:intro?.hidden===true}:null;});
+console.log('controller step notice',noticeBox);assert.ok(noticeBox,'the B/X notice must be drawn on the controller step');assert.equal(noticeBox.title,'X and B are back to normal');assert.ok(noticeBox.introHidden,'the intro line gives its slot to the notice');
 await shot('onboarding-controller-1280');
+await page.getByRole('button',{name:'Got it',exact:true}).click();await page.waitForTimeout(100);
+assert.equal(await page.locator('.setup-notices .notice.migration').count(),0,'Got it removes the notice');
+assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.cmd==='notice_dismiss').at(-1)?.args?.id),'bx-swap-undone');
+assert.ok(await page.getByText('Test your inputs. Your controller can navigate the entire launcher once paired.',{exact:true}).isVisible(),'the intro line is back once the notice is gone');
 await page.getByText('Customize controls',{exact:true}).click();
 await page.setViewportSize({width:800,height:600});await shot('onboarding-controller-800');
 const layout=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight,width:document.documentElement.scrollWidth,inner:innerWidth}));
