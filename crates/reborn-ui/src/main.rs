@@ -421,6 +421,10 @@ struct LaunchResult {
     /// What happened to the match results Dolphin wrote. Absent when nothing
     /// started or when there were none, which is most sessions.
     stats_note: Option<String>,
+    /// What the memory cards said around the game: gear rows brought up to
+    /// date before it, in-game edits kept after it, or why a card was left
+    /// as it was. Absent when nothing started or when it was quiet.
+    cards_note: Option<String>,
 }
 
 fn preset_from(name: &str) -> GraphicsPreset {
@@ -746,6 +750,7 @@ async fn launch(
                 mods_note: None,
                 session_id: None,
                 stats_note: None,
+                cards_note: None,
             }),
             Launched::Finished {
                 end,
@@ -756,6 +761,7 @@ async fn launch(
                 mods,
                 session_id,
                 results,
+                cards,
                 ..
             } => {
                 // With the lock and the guard both back. Never surfaced as a
@@ -794,6 +800,7 @@ async fn launch(
                     mods_note: Some(mods.explain()),
                     session_id: Some(session_id),
                     stats_note: stats.explain(),
+                    cards_note: cards.explain(),
                 })
             }
         }

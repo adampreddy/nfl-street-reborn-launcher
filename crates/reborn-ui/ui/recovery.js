@@ -61,7 +61,7 @@ function launchArgs(extra) {
 }
 
 function launchSaid(r) {
-  return [r.message, r.mods_note, r.stats_note].filter(Boolean).join(" ");
+  return [r.message, r.mods_note, r.stats_note, r.cards_note].filter(Boolean).join(" ");
 }
 
 function lastSessionBlock() {

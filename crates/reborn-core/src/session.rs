@@ -144,6 +144,10 @@ pub enum Launched {
         /// Nothing is at risk in between: the captures are already in the
         /// queue on disk, and an unsent queue is picked up by the next send.
         results: SessionResults,
+        /// What the memory cards said around the game: the full gear sync
+        /// before it opened them and the harvest of in-game edits after it
+        /// closed. Never a failed launch; see [`crate::cards::CardsAtSession`].
+        cards: crate::cards::CardsAtSession,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
@@ -770,6 +774,12 @@ impl Session {
         // correctly and the game never saw it.
         let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled);
 
+        // The memory cards, brought up to date with the installed roster
+        // before the game opens them, under the lock and with the game not
+        // yet started. Free when nothing changed since the last full run.
+        // Never a reason not to start the game: a failure is a sentence.
+        let cards_before = crate::cards::before_session(platform, written.user_dir.path());
+
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
@@ -795,6 +805,11 @@ impl Session {
         // exists for.
         let results = collect(platform, &supervisor, &finished.id, written.user_dir.path());
 
+        // The member's in-game gear edits, harvested off the memory cards
+        // while the lock is still held and the game is known to be closed.
+        // Nothing is written to a card here; the next full sync does that.
+        let cards_after = crate::cards::after_session(platform, written.user_dir.path());
+
         // The lock, back, before this returns and before anything reaches the
         // network. The caller still holds a launch guard across this whole
         // call, so it gives that back too and then calls
@@ -818,6 +833,7 @@ impl Session {
             mods,
             session_id: finished.id.clone(),
             results,
+            cards: crate::cards::CardsAtSession { before: cards_before, after: Some(cards_after) },
         })
     }
 }

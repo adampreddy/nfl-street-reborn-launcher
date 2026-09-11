@@ -296,6 +296,9 @@ function detailsDialog() {
     } });
     dialog.append(el("p", { class: "play-detail-message", text: message }), copy);
   }
+  // What the memory cards said around the game (gear rows brought up to
+  // date, in-game edits kept, or a card left as it was). Quiet most sessions.
+  if (result?.cards_note) dialog.append(el("p", { class: "play-detail-message", text: result.cards_note }));
   if (problem || state.check?.error || state.check?.problem || result?.needs_recovery) dialog.append(el("a", { class: "play-help", href: "recovery.html", text: "Troubleshoot this session" }));
   const files = el("details", { class: "play-files" }, el("summary", { text: "Files & launch details" }), factsBlock());
   dialog.append(files, el("div", { class: "play-dialog-actions" },

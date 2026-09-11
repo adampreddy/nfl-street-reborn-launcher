@@ -305,6 +305,43 @@ pub enum SyncOutcome {
     Refused(SyncRefusal),
 }
 
+impl CardResult {
+    /// One sentence for a person, or nothing when the card was synced and
+    /// nothing was written or harvested, which is most sessions.
+    pub fn sentence(&self) -> Option<String> {
+        match self {
+            CardResult::Refused(r) => Some(r.message()),
+            CardResult::UpToDate { path } => {
+                Some(format!("Memory card {} is up to date with the installed roster.", file_name(path)))
+            }
+            CardResult::Synced(rep) => {
+                let updated = rep.updated();
+                let harvested = rep.harvested();
+                let skipped: Vec<&str> = rep
+                    .profiles
+                    .iter()
+                    .filter(|p| p.skipped_reason.is_some())
+                    .map(|p| p.profile.as_str())
+                    .collect();
+                if updated == 0 && harvested == 0 && skipped.is_empty() {
+                    return None;
+                }
+                let mut s = format!("Memory card {}: ", file_name(&rep.card));
+                match &rep.written {
+                    Written::Wrote { .. } => s.push_str(&format!("{updated} gear row(s) brought up to date, ")),
+                    Written::WouldWrite { .. } => s.push_str(&format!("{updated} gear row(s) would change, ")),
+                    Written::Unchanged | Written::Unknown => {}
+                }
+                s.push_str(&format!("{harvested} in-game edit(s) kept."));
+                if !skipped.is_empty() {
+                    s.push_str(&format!(" Profile(s) left as they were: {}.", skipped.join(", ")));
+                }
+                Some(s)
+            }
+        }
+    }
+}
+
 impl SyncOutcome {
     /// One sentence per card for a person. Empty when every card was synced
     /// and nothing was written or harvested, which is most sessions. A card
@@ -312,38 +349,25 @@ impl SyncOutcome {
     pub fn explain(&self) -> Vec<String> {
         match self {
             SyncOutcome::Refused(r) => vec![r.message()],
+            SyncOutcome::Done(cards) => cards.iter().filter_map(CardResult::sentence).collect(),
+        }
+    }
+
+    /// [`SyncOutcome::explain`] for a place that should stay quiet when there
+    /// is nothing to act on: a launch, a page, the end of first run. A card
+    /// that was simply up to date says nothing, and so does an install with
+    /// no roster or a user folder with no card. A missing Builder still
+    /// speaks: it means edits are not being kept, and someone should know.
+    pub fn facts(&self) -> Vec<String> {
+        match self {
+            SyncOutcome::Refused(SyncRefusal::NoRoster { .. }) | SyncOutcome::Refused(SyncRefusal::NoCards { .. }) => {
+                Vec::new()
+            }
+            SyncOutcome::Refused(r) => vec![r.message()],
             SyncOutcome::Done(cards) => cards
                 .iter()
-                .filter_map(|c| match c {
-                    CardResult::Refused(r) => Some(r.message()),
-                    CardResult::UpToDate { path } => {
-                        Some(format!("Memory card {} is up to date with the installed roster.", file_name(path)))
-                    }
-                    CardResult::Synced(rep) => {
-                        let updated = rep.updated();
-                        let harvested = rep.harvested();
-                        let skipped: Vec<&str> = rep
-                            .profiles
-                            .iter()
-                            .filter(|p| p.skipped_reason.is_some())
-                            .map(|p| p.profile.as_str())
-                            .collect();
-                        if updated == 0 && harvested == 0 && skipped.is_empty() {
-                            return None;
-                        }
-                        let mut s = format!("Memory card {}: ", file_name(&rep.card));
-                        match &rep.written {
-                            Written::Wrote { .. } => s.push_str(&format!("{updated} gear row(s) brought up to date, ")),
-                            Written::WouldWrite { .. } => s.push_str(&format!("{updated} gear row(s) would change, ")),
-                            Written::Unchanged | Written::Unknown => {}
-                        }
-                        s.push_str(&format!("{harvested} in-game edit(s) kept."));
-                        if !skipped.is_empty() {
-                            s.push_str(&format!(" Profile(s) left as they were: {}.", skipped.join(", ")));
-                        }
-                        Some(s)
-                    }
-                })
+                .filter(|c| !matches!(c, CardResult::UpToDate { .. }))
+                .filter_map(CardResult::sentence)
                 .collect(),
         }
     }
@@ -520,6 +544,59 @@ pub fn after_session(platform: &Platform, user_dir: &Path) -> CardsAfterSession 
     match sync(platform, &req) {
         Ok(o) => CardsAfterSession::Synced(o),
         Err(e) => CardsAfterSession::Failed(e.to_string()),
+    }
+}
+
+/// The sentence for a full sync that could not even be attempted before a
+/// game. A constant, never an error's text: the detail goes to the log where
+/// it happens, for the same reason `session::RESULTS_NOT_COLLECTED` is one.
+pub const NOT_SYNCED_BEFORE: &str =
+    "The memory cards could not be brought up to date before the game, so their gear is as it was.";
+
+/// Before a game: the full sync, so the cards the game is about to open
+/// carry the installed roster's gear. Free when nothing changed since the
+/// last full run. Never a reason not to start the game: what comes back is
+/// the facts worth a line, and nothing when it was quiet.
+pub fn before_session(platform: &Platform, user_dir: &Path) -> Vec<String> {
+    let data_root = match platform.paths.data_root() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("the memory cards were not synced before the game: {e}");
+            return vec![NOT_SYNCED_BEFORE.to_string()];
+        }
+    };
+    match after_apply(platform, &data_root, user_dir, &[]) {
+        Ok(outcome) => outcome.facts(),
+        Err(e) => {
+            tracing::warn!("the memory cards were not synced before the game: {e}");
+            vec![NOT_SYNCED_BEFORE.to_string()]
+        }
+    }
+}
+
+/// What the memory cards said around one game: the full sync before it and
+/// the harvest after it. One field on the launch result, one line for a
+/// player, never a failed launch.
+#[derive(Debug, Clone, Default)]
+pub struct CardsAtSession {
+    /// The facts of the full sync before the game; empty when it was quiet.
+    pub before: Vec<String>,
+    /// The harvest after the game. `None` when the game never ran.
+    pub after: Option<CardsAfterSession>,
+}
+
+impl CardsAtSession {
+    /// One line for a player, or nothing when there was nothing to say.
+    pub fn explain(&self) -> Option<String> {
+        let mut parts = self.before.clone();
+        if let Some(line) = self.after.as_ref().and_then(CardsAfterSession::explain) {
+            parts.push(line);
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
     }
 }
 
@@ -883,5 +960,38 @@ mod tests {
         assert!(CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoCards { dir: "d".into() })).explain().is_none());
         assert!(CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoBuilder { looked: vec![] })).explain().is_some());
         assert!(CardsAfterSession::Failed("boom".into()).explain().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn facts_stay_quiet_for_an_up_to_date_card_a_missing_roster_or_no_card_but_not_a_missing_builder() {
+        let up = SyncOutcome::Done(vec![CardResult::UpToDate { path: PathBuf::from("C:/u/GC/MemoryCardB.USA.raw") }]);
+        assert_eq!(up.explain().len(), 1, "the verb still says so");
+        assert!(up.facts().is_empty(), "a page or a launch stays quiet");
+        assert!(SyncOutcome::Refused(SyncRefusal::NoRoster { path: PathBuf::from("r") }).facts().is_empty());
+        assert!(SyncOutcome::Refused(SyncRefusal::NoCards { dir: PathBuf::from("d") }).facts().is_empty());
+        assert_eq!(SyncOutcome::Refused(SyncRefusal::NoBuilder { looked: vec![] }).facts().len(), 1);
+        let wrote = SyncOutcome::Done(vec![CardResult::Synced(parse_report(
+            Path::new("C:/u/GC/MemoryCardB.USA.raw"),
+            "profile A: synced, updated 3, harvested 0, carried 0, skipped 0\nwrote x: 60 byte(s) changed\n",
+        ))]);
+        assert_eq!(
+            wrote.facts(),
+            vec!["Memory card MemoryCardB.USA.raw: 3 gear row(s) brought up to date, 0 in-game edit(s) kept.".to_string()]
+        );
+        assert_eq!(wrote.facts(), wrote.explain());
+    }
+
+    #[test]
+    fn cards_at_session_says_one_line_for_before_and_after_and_nothing_when_both_were_quiet() {
+        assert_eq!(CardsAtSession::default().explain(), None);
+        let quiet_after = CardsAfterSession::Synced(SyncOutcome::Done(vec![]));
+        let s = CardsAtSession { before: vec!["Before.".into()], after: Some(quiet_after) };
+        assert_eq!(s.explain().as_deref(), Some("Before."));
+        let no_builder = || CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoBuilder { looked: vec![] }));
+        let s = CardsAtSession { before: vec![], after: Some(no_builder()) };
+        assert!(s.explain().unwrap().starts_with("No Reborn Builder console build was found"));
+        let s = CardsAtSession { before: vec!["Before.".into()], after: Some(no_builder()) };
+        assert!(s.explain().unwrap().starts_with("Before. No Reborn Builder"));
+        crate::player_sentence::assert_player_safe(NOT_SYNCED_BEFORE);
     }
 }

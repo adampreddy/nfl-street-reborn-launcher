@@ -1302,6 +1302,7 @@ fn play(
             user_dir,
             mods,
             results,
+            cards,
             ..
         } => {
             // `Session::run` gave the single-instance lock back before it
@@ -1310,6 +1311,9 @@ fn play(
             println!("{}", user_dir.explain());
             println!("{}", mods.explain());
             if let Some(line) = stats.explain() {
+                println!("{line}");
+            }
+            if let Some(line) = cards.explain() {
                 println!("{line}");
             }
             for (port, device) in &pads {
