@@ -84,8 +84,23 @@ pub fn read_records(template: &[u8]) -> Result<Vec<Record>> {
     read_records_count(template, usize::from(SONG_SLOTS))
 }
 
+/// The fields are Latin-1. Typographic punctuation a tag carries (the
+/// curly apostrophe in "Let’s Do It", an en dash, an ellipsis) is written
+/// as its plain form rather than a question mark; anything else outside
+/// Latin-1 is still a question mark.
 fn encode(field: &'static str, s: &str) -> Result<Vec<u8>> {
-    let bytes: Vec<u8> = s.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }).collect();
+    let mut bytes = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{2032}' => bytes.push(b'\''),
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{2033}' => bytes.push(b'"'),
+            '\u{2013}' | '\u{2014}' | '\u{2212}' => bytes.push(b'-'),
+            '\u{2026}' => bytes.extend_from_slice(b"..."),
+            '\u{00A0}' => bytes.push(b' '),
+            c if (c as u32) < 256 => bytes.push(c as u8),
+            _ => bytes.push(b'?'),
+        }
+    }
     if bytes.len() > MAX_TEXT {
         return Err(Refusal::TooLongText { field, len: bytes.len() }.into());
     }
@@ -114,6 +129,21 @@ pub fn write_record(template: &mut [u8], slot: Slot, record: &Record) -> Result<
 mod tests {
     use super::*;
     use crate::soundtrack::testing::synthetic_template;
+
+    #[test]
+    fn typographic_punctuation_is_written_plain_not_as_question_marks() {
+        let mut t = synthetic_template();
+        write_record(
+            &mut t,
+            Slot::new(7).unwrap(),
+            &Record { title: "Let\u{2019}s Do It \u{2013} now\u{2026}".into(), album: "\u{201C}Quoted\u{201D}".into(), artist: "Caf\u{e9} \u{4e16}".into() },
+        )
+        .unwrap();
+        let rec = &read_records(&t).unwrap()[6];
+        assert_eq!(rec.title, "Let's Do It - now...");
+        assert_eq!(rec.album, "\"Quoted\"");
+        assert_eq!(rec.artist, "Caf\u{e9} ?", "Latin-1 stays, anything else is still a question mark");
+    }
 
     #[test]
     fn locates_reads_and_writes_records() {
