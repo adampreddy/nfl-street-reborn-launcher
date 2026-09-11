@@ -108,6 +108,40 @@ mod tests {
     use crate::soundtrack::testing::{write_wav_24k, SYN_PT};
     use std::path::{Path, PathBuf};
 
+    /// Run by hand against the real disc: are the 40 PT headers of every
+    /// slot the same apart from the sample count? If they are, a blob
+    /// encoded for one slot plays in any other, and a song can move between
+    /// slots without being encoded again.
+    ///
+    ///   NSR_PRISTINE_ISO=<path> cargo test -p reborn-core --lib -- --ignored pt_headers_are_the_same_in_every_slot --nocapture
+    #[test]
+    #[ignore]
+    fn pt_headers_are_the_same_in_every_slot() {
+        let Ok(iso) = std::env::var("NSR_PRISTINE_ISO") else {
+            return;
+        };
+        let disc = crate::soundtrack::gcm::Disc::open(Path::new(&iso)).unwrap();
+        let pf = disc.read_file("pathfind.dat").unwrap();
+        let a = crate::soundtrack::pathfind::asf(&pf);
+        let mut first: Option<Vec<Vec<u8>>> = None;
+        let mut differing = Vec::new();
+        for slot in Slot::all() {
+            let pts: Vec<Vec<u8>> = stock_pt_headers(a, slot).unwrap().iter().map(|pt| asf::patch_pt_tag(pt, 0x85, 1).unwrap()).collect();
+            let lens: std::collections::BTreeSet<usize> = pts.iter().map(|p| p.len()).collect();
+            let distinct: std::collections::BTreeSet<&Vec<u8>> = pts.iter().collect();
+            eprintln!("slot {:>2}: {} distinct header(s) among 40 streams, lengths {:?}, first {}", slot.get(), distinct.len(), lens, hex::encode(&pts[0]));
+            match &first {
+                None => first = Some(pts),
+                Some(f) => {
+                    if *f != pts {
+                        differing.push(slot.get());
+                    }
+                }
+            }
+        }
+        eprintln!("slots whose headers differ from slot 1 (sample count aside): {differing:?}");
+    }
+
     fn test_signal(seconds: usize) -> (Vec<i16>, Vec<i16>) {
         let n = seconds * SAMPLE_RATE as usize;
         let mut left = Vec::with_capacity(n);

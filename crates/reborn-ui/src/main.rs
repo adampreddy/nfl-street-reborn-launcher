@@ -3920,6 +3920,18 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
     Ok(picked.map(|f| f.path().display().to_string()))
 }
 
+/// Several files at once, for adding a batch of songs to the soundtrack.
+/// Empty when the dialog was closed without a choice.
+#[tauri::command]
+async fn pick_paths(kind: String) -> Result<Vec<String>, String> {
+    let dialog = rfd::AsyncFileDialog::new();
+    let picked = match kind.as_str() {
+        "audio" => dialog.set_title("Choose songs").add_filter("Audio", reborn_core::soundtrack::decode::EXTENSIONS).pick_files().await,
+        _ => return Err("Unknown file type".into()),
+    };
+    Ok(picked.unwrap_or_default().iter().map(|f| f.path().display().to_string()).collect())
+}
+
 #[derive(Debug, Serialize)]
 struct PathSetView {
     which: String,
@@ -5498,6 +5510,7 @@ fn main() {
             settings_set_path,
             settings_paths,
             pick_path,
+            pick_paths,
             update_check,
             update_download,
             update_apply,
@@ -5508,6 +5521,8 @@ fn main() {
             music_page::music_inspect,
             music_page::music_lookup,
             music_page::music_stage_file,
+            music_page::music_stage_files,
+            music_page::music_move,
             music_page::music_stage_stock,
             music_page::music_stage_details,
             music_page::music_unstage,

@@ -28,7 +28,9 @@ use crate::LaunchGuard;
 #[derive(Debug)]
 enum Phase {
     Idle,
-    Encoding { slot: u8, done: usize, total: usize },
+    /// One song being encoded; `file` of `files` when several were added
+    /// at once, and the file's name for the progress line.
+    Encoding { slot: u8, done: usize, total: usize, file: usize, files: usize, name: String },
     Building { done: u64, total: u64 },
     Done,
     Problem,
@@ -203,7 +205,7 @@ fn candidate(c: &reborn_core::soundtrack::lookup::Candidate) -> CandidateView {
 
 fn slot_phrase(eff: &Effective) -> String {
     match eff {
-        Effective::Stock => "the original song".to_string(),
+        Effective::Stock { .. } => "the original song".to_string(),
         Effective::Blob { title, artist, .. } if artist.is_empty() => title.clone(),
         Effective::Blob { title, artist, .. } => format!("{title} by {artist}"),
     }
@@ -223,9 +225,13 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
         let n = slot.get();
         let original = stock.as_ref().and_then(|s| s.get(slot.index())).map(|o| OriginalView { title: o.title.clone(), artist: o.artist.clone(), album: o.album.clone(), duration_ms: o.duration_ms });
         let (title, artist, album, duration_ms, source, source_name) = match &applied[&slot] {
-            Effective::Stock => match &original {
-                Some(o) => (o.title.clone(), o.artist.clone(), o.album.clone(), Some(o.duration_ms), "original", None),
-                None => (String::new(), String::new(), String::new(), None, "original", None),
+            // The disc's own song, shown under the player's name when they
+            // renamed it: the audio is the disc's, the banner is theirs.
+            Effective::Stock { text } => match (&original, text) {
+                (Some(o), Some(t)) => (t.title.clone(), t.artist.clone(), t.album.clone(), Some(o.duration_ms), "original", None),
+                (Some(o), None) => (o.title.clone(), o.artist.clone(), o.album.clone(), Some(o.duration_ms), "original", None),
+                (None, Some(t)) => (t.title.clone(), t.artist.clone(), t.album.clone(), None, "original", None),
+                (None, None) => (String::new(), String::new(), String::new(), None, "original", None),
             },
             Effective::Blob { title, artist, album, origin, .. } => {
                 let entry = st.slots.get(&n);
@@ -234,6 +240,8 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
                     SlotOrigin::UserFile => ("your_file", entry.and_then(|e| match &e.source { Source::UserFile { file, .. } => Path::new(file).file_name().map(|f| f.to_string_lossy().into_owned()), _ => None })),
                     SlotOrigin::Pack => ("pack", entry.and_then(|e| match &e.source { Source::PackStream { pack, .. } => Path::new(pack).file_name().map(|f| f.to_string_lossy().into_owned()), _ => None })),
                     SlotOrigin::BasePackage => ("soundtrack_mod", base.name.clone()),
+                    // The disc's own song, moved here from another slot.
+                    SlotOrigin::Original => ("original_moved", None),
                 };
                 (title.clone(), artist.clone(), album.clone(), duration, source, name)
             }
@@ -243,6 +251,7 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
                 Source::Stock => "original",
                 Source::UserFile { .. } => "your_file",
                 Source::PackStream { .. } => "pack",
+                Source::StockFrom { .. } => "original_moved",
             },
             title: e.title.clone(),
             artist: e.artist.clone(),
@@ -256,7 +265,11 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
     };
     let h = held();
     let progress = match &h.phase {
-        Phase::Encoding { slot, done, total } => Some(ProgressView { label: format!("Encoding slot {slot}"), done: *done as u64, total: *total as u64 }),
+        Phase::Encoding { slot, done, total, file, files, name } => Some(ProgressView {
+            label: if *files > 1 { format!("Adding song {file} of {files}: {name}") } else { format!("Encoding slot {slot}") },
+            done: *done as u64,
+            total: *total as u64,
+        }),
         Phase::Building { done, total } => Some(ProgressView { label: "Building your game disc".to_string(), done: *done, total: *total }),
         _ => None,
     };
@@ -353,9 +366,10 @@ pub async fn music_stage_file(path: String, slot: u8, title: String, artist: Str
     refuse_if_busy()?;
     let slot = slot_of(slot)?;
     let root = data_root()?;
+    let name = file_name(&path);
     {
         let mut h = held();
-        h.phase = Phase::Encoding { slot: slot.get(), done: 0, total: 40 };
+        h.phase = Phase::Encoding { slot: slot.get(), done: 0, total: 40, file: 1, files: 1, name: name.clone() };
         h.note = String::new();
     }
     let root2 = root.clone();
@@ -365,7 +379,7 @@ pub async fn music_stage_file(path: String, slot: u8, title: String, artist: Str
             let req = apply::FileRequest { data_root: &root2, pristine_pathfind: &pf, path: Path::new(&path), slot, title: &title, artist: &artist, album: &album };
             let entry = apply::stage_file(&req, &mut |k, n| {
                 let mut h = held();
-                h.phase = Phase::Encoding { slot: slot.get(), done: k, total: n };
+                h.phase = Phase::Encoding { slot: slot.get(), done: k, total: n, file: 1, files: 1, name: name.clone() };
             })
             .map_err(|e| e.to_string())?;
             Ok(format!("{} is staged for slot {slot}. Apply changes to put it on the disc.", if entry.title.is_empty() { "The song".to_string() } else { entry.title.clone() }))
@@ -383,6 +397,124 @@ pub async fn music_stage_file(path: String, slot: u8, title: String, artist: Str
         }
     });
     view(&root)
+}
+
+/// The last path component, for progress lines and notes.
+fn file_name(path: &str) -> String {
+    Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
+}
+
+/// Several songs at once. Each is read (its tags, then the online lookup
+/// for whatever the tags lack), then encoded into the next slot from
+/// `start_slot` on, in the order given. A song that cannot be added is
+/// skipped and named in the note; the rest still go in. Songs past slot 21
+/// are counted and left out. The page polls `music_status` for the
+/// per-song progress ("Adding song 2 of 5: name").
+#[tauri::command]
+pub async fn music_stage_files(paths: Vec<String>, start_slot: u8) -> Result<MusicStatusView, String> {
+    refuse_if_busy()?;
+    let first = slot_of(start_slot)?;
+    if paths.is_empty() {
+        return Err("Choose at least one song.".to_string());
+    }
+    let root = data_root()?;
+    let files = paths.len();
+    {
+        let mut h = held();
+        h.phase = Phase::Encoding { slot: first.get(), done: 0, total: 40, file: 1, files, name: file_name(&paths[0]) };
+        h.note = String::new();
+    }
+    let root2 = root.clone();
+    std::thread::spawn(move || {
+        let pf = match pristine_files(&root2) {
+            Ok((pf, _)) => pf,
+            Err(e) => {
+                let mut h = held();
+                h.phase = Phase::Problem;
+                h.note = e;
+                return;
+            }
+        };
+        let http = http();
+        let mut added: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut left_out = 0usize;
+        let mut last_slot = first.get();
+        for (k, path) in paths.iter().enumerate() {
+            let name = file_name(path);
+            let n = usize::from(first.get()) + k;
+            let Some(slot) = u8::try_from(n).ok().and_then(|n| Slot::new(n).ok()) else {
+                left_out += 1;
+                continue;
+            };
+            {
+                let mut h = held();
+                h.phase = Phase::Encoding { slot: slot.get(), done: 0, total: 40, file: k + 1, files, name: name.clone() };
+            }
+            let progress_name = name.clone();
+            let outcome = (|| -> Result<String, String> {
+                let p = Path::new(path);
+                let looked = apply::inspect(Some(&http), p).map_err(|e| e.to_string())?;
+                if looked.too_long {
+                    return Err(format!("longer than {} seconds", segments::slot_limit_hint()));
+                }
+                let (title, artist, album) = looked.suggested();
+                let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let title = if title.is_empty() { stem } else { title };
+                let req = apply::FileRequest { data_root: &root2, pristine_pathfind: &pf, path: p, slot, title: &title, artist: &artist, album: &album };
+                let entry = apply::stage_file(&req, &mut |done, total| {
+                    let mut h = held();
+                    h.phase = Phase::Encoding { slot: slot.get(), done, total, file: k + 1, files, name: progress_name.clone() };
+                })
+                .map_err(|e| e.to_string())?;
+                Ok(if entry.title.is_empty() { name.clone() } else { entry.title })
+            })();
+            match outcome {
+                Ok(title) => {
+                    added.push(title);
+                    last_slot = slot.get();
+                }
+                Err(e) => skipped.push(format!("{name} ({e})")),
+            }
+        }
+        let mut parts = Vec::new();
+        match added.len() {
+            0 => {}
+            1 => parts.push(format!("Added {} to slot {}.", added[0], first.get())),
+            n => parts.push(format!("Added {n} songs to slots {} to {last_slot}, in the order you chose them.", first.get())),
+        }
+        if !skipped.is_empty() {
+            parts.push(format!("Not added: {}.", skipped.join(", ")));
+        }
+        if left_out > 0 {
+            parts.push(format!("{left_out} did not fit: the soundtrack has 21 slots."));
+        }
+        if !added.is_empty() {
+            parts.push("Check the names, then apply your changes to put them on the disc.".to_string());
+        }
+        let mut h = held();
+        h.phase = if added.is_empty() { Phase::Problem } else { Phase::Done };
+        h.note = parts.join(" ");
+    });
+    view(&root)
+}
+
+/// Move the song in `from` to `to` the way a list reorders; the songs
+/// between shift by one. Every slot whose song changes is staged.
+#[tauri::command]
+pub async fn music_move(from: u8, to: u8) -> Result<MusicStatusView, String> {
+    refuse_if_busy()?;
+    let from = slot_of(from)?;
+    let to = slot_of(to)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = data_root()?;
+        let stock = stock_songs(&root).unwrap_or_default();
+        let changed = apply::move_slot(&root, from, to, &stock).map_err(|e| e.to_string())?;
+        held().note = if changed.is_empty() { String::new() } else { format!("Song {from} is now song {to}. Apply changes to put the new order on the disc.") };
+        view(&root)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -449,7 +581,7 @@ pub async fn music_pack_preview(path: String) -> Result<PackPreviewView, String>
             .filter_map(|(n, s)| {
                 let slot = Slot::new(*n).ok()?;
                 let replaces = match (&applied[&slot], stock.as_ref().and_then(|v| v.get(slot.index()))) {
-                    (Effective::Stock, Some(o)) if !o.title.is_empty() => format!("the original song ({} by {})", o.title, o.artist),
+                    (Effective::Stock { .. }, Some(o)) if !o.title.is_empty() => format!("the original song ({} by {})", o.title, o.artist),
                     (eff, _) => slot_phrase(eff),
                 };
                 Some(PackSongView {

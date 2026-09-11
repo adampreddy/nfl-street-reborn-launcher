@@ -5945,18 +5945,21 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
             let applied = st.effective(&root, base_pack.as_ref(), false);
             for slot in Slot::all() {
                 let line = match &applied[&slot] {
-                    Effective::Stock => "original song".to_string(),
+                    Effective::Stock { text: None } => "original song".to_string(),
+                    Effective::Stock { text: Some(t) } => format!("original song, shown as {} , {}", t.title, t.artist),
                     Effective::Blob { title, artist, origin, .. } => format!(
                         "{title} , {artist}  [{}]",
                         match origin {
                             SlotOrigin::UserFile => "your file",
                             SlotOrigin::Pack => "pack",
                             SlotOrigin::BasePackage => "soundtrack mod",
+                            SlotOrigin::Original => "original song, moved",
                         }
                     ),
                 };
                 let pending = st.pending.get(&slot.get()).map(|e| match &e.source {
-                    reborn_core::soundtrack::state::Source::Stock => "staged: original song".to_string(),
+                    reborn_core::soundtrack::state::Source::Stock if e.title.is_empty() => "staged: original song".to_string(),
+                    reborn_core::soundtrack::state::Source::StockFrom { slot: s } => format!("staged: the original song from slot {s} ({} , {})", e.title, e.artist),
                     _ => format!("staged: {} , {}", e.title, e.artist),
                 });
                 match pending {

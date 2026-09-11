@@ -18,6 +18,8 @@ let candidates = [];
 let lookupNote = "";
 let searchText = "";
 let targetSlot = null;
+// The slot being dragged to a new place in the list, while a drag is on.
+let dragFrom = null;
 
 // ---------------------------------------------------------------------------
 // Talking to the core
@@ -142,6 +144,7 @@ function locked() {
 
 const SOURCE_LABEL = {
   original: "original song",
+  original_moved: "original song, moved",
   your_file: "your song",
   pack: "from a pack",
   soundtrack_mod: "soundtrack mod",
@@ -293,13 +296,14 @@ async function addToQueue(){
 function discNow(){
   const toggle=el('input',{type:'checkbox',role:'switch','aria-label':'Custom soundtrack',checked:!!status?.enabled,disabled:locked()||!status?.image_ok,onchange:ev=>act('music_set_enabled',{on:ev.target.checked})});
   const nothingCustom=!slots().some(s=>s.source!=='original'||s.pending)&&status?.base?.kind!=='package';
-  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',class:'music-quiet',text:'Reset soundtrack',disabled:locked()||!status?.image_ok||nothingCustom,onclick:resetDialog}),el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
+  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',class:'music-quiet',text:'Reset soundtrack',disabled:locked()||!status?.image_ok||nothingCustom,onclick:resetDialog}),el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',text:'Add songs…',disabled:locked()||!status?.image_ok,onclick:bulkDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
   return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Original songs play. Your custom songs are kept.'}))),buttons);
 }
 function statusLine(){
   if(working()){
     const p=status.progress||{},pct=p.total?Math.min(100,Math.max(0,Math.round((p.done||0)/p.total*100))):null;
-    const label=status.phase==='encoding'?'Preparing your song':'Applying your soundtrack';
+    // Several songs at once say which one: "Adding song 2 of 5: name".
+    const label=status.phase==='encoding'?(/^Adding song /.test(status.progress?.label||'')?status.progress.label:'Preparing your song'):'Applying your soundtrack';
     return el('div',{class:'music-progress',role:'status'},el('div',{},el('strong',{text:label}),el('span',{text:pct===null?'Please wait…':`${pct}%`})),el('progress',{max:'100',value:pct,'aria-label':label}),el('p',{class:'note',text:status.phase==='encoding'?'Your song will appear in the list when it is ready.':'Keep the launcher open until this finishes.'}));
   }
   if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
@@ -319,17 +323,35 @@ function discList(){
   const table=el('table',{class:'mz-table','aria-label':'Soundtrack songs'});
   table.append(el('thead',{},el('tr',{},el('th',{scope:'col',class:'mz-col-n',text:'#'}),el('th',{scope:'col',text:'Song'}),el('th',{scope:'col',class:'mz-col-time',text:'Length'}),el('th',{scope:'col',class:'mz-col-actions',text:'Actions'}))));
   const body=el('tbody');
+  const last=list.length?list[list.length-1].slot:0;
   for(const song of list){
     const pending=song.pending,original=pending?pending.kind==='original':song.source==='original';
     const o=song.original;
-    const title=original?(o?.title||slotTitle({...song,title:'',original:null,source:'original'})):(pending?.title||song.title||'Untitled');
-    const artist=original?(o?.artist||'On your disc'):(pending?.artist??song.artist)||'Unknown artist';
+    // An original song the player renamed keeps its audio and shows their
+    // name: the backend puts that name in song.title, so it wins over the
+    // disc's own text. "Restore original" (a pending reset) shows the disc's.
+    const renamed=!pending&&song.source==='original'&&!!o&&(song.title!==o.title||song.artist!==o.artist||song.album!==o.album);
+    const title=original?((pending?'':song.title)||o?.title||slotTitle({...song,title:'',original:null,source:'original'})):(pending?.title||song.title||'Untitled');
+    const artist=original?((pending?'':song.artist)||o?.artist||'On your disc'):(pending?.artist??song.artist)||'Unknown artist';
     const actions=el('td',{class:'mz-col-actions'},el('button',{type:'button',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
     if(pending)actions.append(el('button',{type:'button',class:'music-quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
-    else if(song.source!=='original')actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
+    else if(song.source!=='original'||renamed)actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
     const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),el('small',{text:artist}));
     if(pending)name.append(el('span',{class:'music-pending',text:original?'Restore original':'Pending'}));
-    body.append(el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)},el('td',{class:'mz-col-n',text:String(song.slot).padStart(2,'0')}),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions));
+    // The order is the player's to change: drag a row onto another (the
+    // songs between shift by one), or use the arrows, which a pad or the
+    // keyboard can reach. Both go through music_move.
+    const arrows=el('span',{class:'mz-move'},
+      el('button',{type:'button',text:'▲','aria-label':`Move song ${song.slot} up`,disabled:locked()||song.slot<=1,onclick:()=>act('music_move',{from:song.slot,to:song.slot-1})}),
+      el('button',{type:'button',text:'▼','aria-label':`Move song ${song.slot} down`,disabled:locked()||song.slot>=last,onclick:()=>act('music_move',{from:song.slot,to:song.slot+1})}));
+    const row=el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot),draggable:'true'});
+    row.addEventListener('dragstart',ev=>{if(locked()){ev.preventDefault();return;}dragFrom=song.slot;ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',String(song.slot));row.classList.add('dragging');});
+    row.addEventListener('dragover',ev=>{if(dragFrom===null||dragFrom===song.slot)return;ev.preventDefault();ev.dataTransfer.dropEffect='move';row.classList.add('drop-target');});
+    row.addEventListener('dragleave',()=>row.classList.remove('drop-target'));
+    row.addEventListener('drop',ev=>{ev.preventDefault();const from=dragFrom;dragFrom=null;row.classList.remove('drop-target');if(from&&from!==song.slot)act('music_move',{from,to:song.slot});});
+    row.addEventListener('dragend',()=>{dragFrom=null;body.querySelectorAll('.dragging,.drop-target').forEach(n=>n.classList.remove('dragging','drop-target'));});
+    row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')}),arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
+    body.append(row);
   }
   table.append(body);sec.append(table);return sec;
 }
@@ -407,6 +429,55 @@ async function packDialog() {
     el("div", { class: "store-dialog-actions" },
       el("button", { type: "button", text: "Cancel", onclick: () => dialog.close() }),
       el("button", { type: "button", class: "primary", text: "Import songs", disabled: locked(), onclick: async () => { dialog.close(); await act("music_stage_pack", { path }); } }),
+    ),
+  );
+  dialog.append(body);
+  showDialog(dialog);
+}
+
+// Several songs at once: pick the files, choose where they start, and the
+// core adds them in file order, one slot each, with names from their tags
+// (and the online lookup for what the tags lack). Each can be edited
+// afterwards like any other song.
+async function bulkDialog() {
+  if (locked()) return;
+  let paths = [];
+  try {
+    paths = await call("pick_paths", { kind: "audio" });
+  } catch (e) {
+    problem = reason(e);
+    draw();
+    return;
+  }
+  if (!Array.isArray(paths) || !paths.length) return;
+  // Numbered files ("01 ...", "02 ...") land in their numbered order.
+  paths = [...paths].sort((a, b) => a.split(/[\\/]/).pop().localeCompare(b.split(/[\\/]/).pop(), undefined, { numeric: true, sensitivity: "base" }));
+  const count = paths.length;
+  const dialog = openDialog("Add songs");
+  const body = el("div", { class: "mod-dialog-body" });
+  const list = el("ol", { class: "mz-preview" });
+  for (const p of paths) list.append(el("li", { text: p.split(/[\\/]/).pop() }));
+  const start = el("select", { id: "music-start-slot", "aria-label": "Start at song" });
+  const first = firstFreeSlot();
+  for (const s of slots()) start.append(el("option", { value: String(s.slot), text: `${String(s.slot).padStart(2, "0")} · ${s.pending ? pendingWhat(s.pending, s) : slotTitle(s)}`, selected: s.slot === first }));
+  const note = el("p", { class: "note", role: "status" });
+  const update = () => {
+    const from = Number(start.value), room = Math.max(0, slots().length - from + 1);
+    note.textContent = count > room
+      ? `${room} of these fit from song ${from} on; the last ${count - room} would be left out. Start lower to fit more.`
+      : `They take songs ${from} to ${from + count - 1}, in this order, replacing what is there. Names come from the files and can be edited afterwards.`;
+  };
+  start.addEventListener("change", update);
+  update();
+  body.append(
+    el("span", { class: "store-kicker", text: "Add songs" }),
+    el("h2", { text: `${count} song${count === 1 ? "" : "s"}` }),
+    list,
+    el("label", { class: "mz-field" }, el("span", { text: "Start at song" }), start),
+    note,
+    el("div", { class: "store-dialog-actions" },
+      el("button", { type: "button", text: "Cancel", onclick: () => dialog.close() }),
+      el("button", { type: "button", class: "primary", text: `Add ${count} song${count === 1 ? "" : "s"}`, disabled: locked(), onclick: async () => { dialog.close(); await act("music_stage_files", { paths, startSlot: Number(start.value) }); } }),
     ),
   );
   dialog.append(body);

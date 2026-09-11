@@ -68,6 +68,10 @@ pub enum Source {
     UserFile { track: String, file: String },
     /// A song inside a pack; `pack` is relative to the data root.
     PackStream { pack: String, slot: u8 },
+    /// The disc's own song from another slot, moved here by a reorder. The
+    /// audio is read from the pristine image's slot `slot`; the entry's
+    /// text is that song's banner unless the player renamed it.
+    StockFrom { slot: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,7 +187,17 @@ impl Soundtrack {
             let entry = if include_pending { self.pending.get(&n) } else { None }.or_else(|| self.slots.get(&n));
             let eff = match entry {
                 Some(e) => match &e.source {
-                    Source::Stock => Effective::Stock,
+                    // The disc's own song, with the player's banner text
+                    // when they renamed it (an edit of an original song
+                    // keeps its audio and changes only what the game shows).
+                    Source::Stock => Effective::Stock { text: e.text() },
+                    Source::StockFrom { slot: s } => Effective::Blob {
+                        blob: BlobRef::Stock(Slot::new(*s).unwrap_or(slot)),
+                        title: e.title.clone(),
+                        artist: e.artist.clone(),
+                        album: e.album.clone(),
+                        origin: Origin::Original,
+                    },
                     Source::UserFile { track, .. } => Effective::Blob {
                         blob: BlobRef::Encoded(encoded_blob_path(root, track, slot)),
                         title: e.title.clone(),
@@ -208,9 +222,9 @@ impl Soundtrack {
                             album: song.album.clone(),
                             origin: Origin::BasePackage,
                         },
-                        None => Effective::Stock,
+                        None => Effective::Stock { text: None },
                     },
-                    _ => Effective::Stock,
+                    _ => Effective::Stock { text: None },
                 },
             };
             out.insert(slot, eff);
@@ -218,11 +232,82 @@ impl Soundtrack {
         out
     }
 
-    /// Whether the effective order is the disc's own soundtrack.
+    /// Whether the effective order is the disc's own soundtrack, banners
+    /// included: a renamed original song still needs a rebuild.
     pub fn is_all_stock(effective: &BTreeMap<Slot, Effective>) -> bool {
-        effective.values().all(|e| matches!(e, Effective::Stock))
+        effective.values().all(|e| matches!(e, Effective::Stock { text: None }))
     }
 
+    /// The song each slot plays, as an entry that can be put in another
+    /// slot: pending (when included) > applied > the base package's song >
+    /// the disc's own. Every slot 1..21 is present.
+    pub fn portable(&self, base_pack: Option<&pack::Pack>, include_pending: bool) -> BTreeMap<u8, Entry> {
+        let mut out = BTreeMap::new();
+        for slot in Slot::all() {
+            let n = slot.get();
+            let entry = if include_pending { self.pending.get(&n) } else { None }.or_else(|| self.slots.get(&n)).cloned();
+            let entry = entry.unwrap_or_else(|| match (&self.base, base_pack) {
+                (Base::Package { pack: rel, .. }, Some(p)) => match p.manifest.songs.get(&n) {
+                    Some(song) => Entry {
+                        source: Source::PackStream { pack: rel.clone(), slot: n },
+                        title: song.title.clone(),
+                        artist: song.artist.clone(),
+                        album: song.album.clone(),
+                        duration_ms: song.duration_ms,
+                    },
+                    None => Entry::stock(),
+                },
+                _ => Entry::stock(),
+            });
+            out.insert(n, entry);
+        }
+        out
+    }
+}
+
+/// `from` moved to `to` the way a list reorders: the songs between them
+/// shift by one, nothing is lost. Returns (the slot each song came from,
+/// the song) in the new order, position k being slot k+1.
+pub fn reordered(entries: &BTreeMap<u8, Entry>, from: Slot, to: Slot) -> Vec<(u8, Entry)> {
+    let mut list: Vec<(u8, Entry)> = entries.iter().map(|(n, e)| (*n, e.clone())).collect();
+    if from == to {
+        return list;
+    }
+    let Some(i) = list.iter().position(|(n, _)| *n == from.get()) else {
+        return list;
+    };
+    let moved = list.remove(i);
+    let j = match list.iter().position(|(n, _)| *n == to.get()) {
+        Some(j) if to.get() > from.get() => j + 1,
+        Some(j) => j,
+        None => list.len(),
+    };
+    list.insert(j.min(list.len()), moved);
+    list
+}
+
+/// Banner text a player gave a slot: what the game shows for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotText {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
+impl Entry {
+    /// The entry's banner text, or `None` when every field is empty (the
+    /// disc's own text applies then).
+    pub fn text(&self) -> Option<SlotText> {
+        if self.title.is_empty() && self.artist.is_empty() && self.album.is_empty() {
+            None
+        } else {
+            Some(SlotText { title: self.title.clone(), artist: self.artist.clone(), album: self.album.clone() })
+        }
+    }
+
+}
+
+impl Soundtrack {
     /// The base pack, when the base is a package. `None` for stock, and an
     /// error when the package's pack file is gone.
     pub fn base_pack(&self, root: &Path) -> Result<Option<pack::Pack>> {
@@ -239,17 +324,22 @@ pub enum Origin {
     UserFile,
     Pack,
     BasePackage,
+    /// The disc's own song, moved here from another slot.
+    Original,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobRef {
     Encoded(PathBuf),
     Pack { pack: PathBuf, slot: Slot },
+    /// The pristine image's own streams for this slot.
+    Stock(Slot),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effective {
-    Stock,
+    /// The disc's own song in its own slot; `text` when the player renamed it.
+    Stock { text: Option<SlotText> },
     Blob { blob: BlobRef, title: String, artist: String, album: String, origin: Origin },
 }
 
@@ -331,14 +421,14 @@ mod tests {
             Effective::Blob { origin: Origin::BasePackage, title, .. } => assert_eq!(title, "One"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(eff[&Slot::new(2).unwrap()], Effective::Stock);
+        assert_eq!(eff[&Slot::new(2).unwrap()], Effective::Stock { text: None });
         match &eff[&Slot::new(3).unwrap()] {
             Effective::Blob { blob: BlobRef::Encoded(p), origin: Origin::UserFile, .. } => {
                 assert_eq!(p, &encoded_blob_path(root, "bbb", Slot::new(3).unwrap()))
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(eff[&Slot::new(4).unwrap()], Effective::Stock);
+        assert_eq!(eff[&Slot::new(4).unwrap()], Effective::Stock { text: None });
         // without pending, slot 3 is the applied one
         let eff = s.effective(root, base.as_ref(), false);
         match &eff[&Slot::new(3).unwrap()] {
@@ -350,6 +440,37 @@ mod tests {
         assert!(!s.has_pending());
         assert_eq!(s.slots[&3], user("bbb"));
         assert!(Soundtrack::is_all_stock(&Soundtrack::default().effective(root, None, true)));
+    }
+
+    #[test]
+    fn a_renamed_original_song_keeps_its_audio_and_carries_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Soundtrack::default();
+        s.stage(Slot::new(5).unwrap(), Entry { title: "My name".into(), ..Entry::stock() });
+        let eff = s.effective(dir.path(), None, true);
+        assert_eq!(
+            eff[&Slot::new(5).unwrap()],
+            Effective::Stock { text: Some(SlotText { title: "My name".into(), artist: String::new(), album: String::new() }) }
+        );
+        assert!(!Soundtrack::is_all_stock(&eff), "a renamed banner needs a rebuild");
+        s.stage(Slot::new(5).unwrap(), Entry::stock());
+        assert!(Soundtrack::is_all_stock(&s.effective(dir.path(), None, true)));
+    }
+
+    #[test]
+    fn reordering_moves_one_song_and_shifts_the_ones_between() {
+        let s = Soundtrack::default();
+        let portable = s.portable(None, true);
+        assert_eq!(portable.len(), 21);
+        let order = reordered(&portable, Slot::new(5).unwrap(), Slot::new(2).unwrap());
+        let origins: Vec<u8> = order.iter().map(|(n, _)| *n).collect();
+        assert_eq!(&origins[..6], &[1, 5, 2, 3, 4, 6], "5 lands on 2, 2..4 move down one");
+        let order = reordered(&portable, Slot::new(2).unwrap(), Slot::new(5).unwrap());
+        let origins: Vec<u8> = order.iter().map(|(n, _)| *n).collect();
+        assert_eq!(&origins[..6], &[1, 3, 4, 5, 2, 6], "2 lands on 5, 3..5 move up one");
+        assert_eq!(origins.len(), 21);
+        let same = reordered(&portable, Slot::new(7).unwrap(), Slot::new(7).unwrap());
+        assert_eq!(same.iter().map(|(n, _)| *n).collect::<Vec<_>>(), (1..=21).collect::<Vec<u8>>());
     }
 
     #[test]

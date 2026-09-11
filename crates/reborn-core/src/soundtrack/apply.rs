@@ -107,14 +107,15 @@ pub fn build_files(
     let mut template = booted_template.to_vec();
     let mut changed = Vec::new();
     let mut skipped = Vec::new();
+    let pristine_asf = pathfind::asf(pristine_pathfind);
     for (slot, eff) in effective {
         match eff {
-            Effective::Stock => {
-                eatx::write_record(&mut template, *slot, &stock_records[slot.index()])?;
+            Effective::Stock { text } => {
+                eatx::write_record(&mut template, *slot, &stock_or_text(&stock_records, *slot, text))?;
             }
             Effective::Blob { blob, title, artist, album, .. } => {
                 on(Progress::Splicing { slot: slot.get() });
-                let bytes = match read_blob(blob) {
+                let bytes = match read_blob(blob, pristine_asf) {
                     Ok(b) => b,
                     Err(reason) => {
                         skipped.push((slot.get(), reason));
@@ -143,7 +144,9 @@ pub struct BuiltFiles {
     pub skipped: Vec<(u8, String)>,
 }
 
-fn read_blob(blob: &BlobRef) -> std::result::Result<Vec<u8>, String> {
+/// `pristine_asf` is the untouched ASF of the pristine image: a moved
+/// original song is read from there, never from the ASF being spliced.
+fn read_blob(blob: &BlobRef, pristine_asf: &[u8]) -> std::result::Result<Vec<u8>, String> {
     match blob {
         BlobRef::Encoded(p) => {
             let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -154,6 +157,16 @@ fn read_blob(blob: &BlobRef) -> std::result::Result<Vec<u8>, String> {
             let pack = pack::read_pack(path).map_err(|e| e.to_string())?;
             pack::read_blob(&pack, *slot).map_err(|e| e.to_string())
         }
+        BlobRef::Stock(slot) => asf::slot_blob(pristine_asf, *slot).map_err(|e| format!("the disc's own song {slot}: {e}")),
+    }
+}
+
+/// The banner a slot shows: the player's text when they gave one, else the
+/// disc's own record for that slot.
+fn stock_or_text(stock_records: &[eatx::Record], slot: Slot, text: &Option<state::SlotText>) -> eatx::Record {
+    match text {
+        Some(t) => eatx::Record { title: t.title.clone(), album: t.album.clone(), artist: t.artist.clone() },
+        None => stock_records[slot.index()].clone(),
     }
 }
 
@@ -365,6 +378,90 @@ pub fn stage_details(data_root: &Path, slot: Slot, title: Option<&str>, artist: 
     st.save(data_root)
 }
 
+/// Move the song in `from` to `to` the way a list reorders (the songs
+/// between shift by one), staging every slot whose song changes. Nothing
+/// is encoded again: the disc's 21 slots share one stream header (proved
+/// on the real image, `segments::tests::pt_headers_are_the_same_in_every_slot`),
+/// so a blob encoded for one slot plays in any other. A user file's blob is
+/// hardlinked (or copied) under its new slot's name; a pack song keeps its
+/// pack reference; the disc's own song becomes `StockFrom` its old slot,
+/// carrying that slot's banner text unless it was renamed. `stock` is the
+/// disc's 21 songs for that text. Returns the slots whose staging changed.
+pub fn move_slot(data_root: &Path, from: Slot, to: Slot, stock: &[StockSong]) -> Result<Vec<u8>> {
+    if from == to {
+        return Ok(Vec::new());
+    }
+    let mut st = Soundtrack::load(data_root)?;
+    let base_pack = st.base_pack(data_root)?;
+    let shown = st.portable(base_pack.as_ref(), true);
+    let applied = st.portable(base_pack.as_ref(), false);
+    let stock_text = |n: u8| stock.get(usize::from(n) - 1).map(|o| (o.title.clone(), o.artist.clone(), o.album.clone(), o.duration_ms));
+    let mut changed = Vec::new();
+    for (position, (origin, mut placed)) in state::reordered(&shown, from, to).into_iter().enumerate() {
+        let n = position as u8 + 1;
+        let slot = Slot::new(n)?;
+        placed.source = match placed.source {
+            Source::Stock if origin != n => Source::StockFrom { slot: origin },
+            Source::StockFrom { slot: s } if s == n => Source::Stock,
+            other => other,
+        };
+        match &placed.source {
+            // Back in its own slot with its own text: plain stock again.
+            Source::Stock => {
+                if let Some((t, a, l, _)) = stock_text(n) {
+                    if placed.title == t && placed.artist == a && placed.album == l {
+                        placed = Entry::stock();
+                    }
+                }
+            }
+            // Moved: the banner travels with the song unless it was renamed.
+            Source::StockFrom { slot: s } => {
+                if placed.text().is_none() {
+                    if let Some((t, a, l, d)) = stock_text(*s) {
+                        placed.title = t;
+                        placed.artist = a;
+                        placed.album = l;
+                        placed.duration_ms = Some(d);
+                    }
+                }
+            }
+            Source::UserFile { track, .. } if origin != n => {
+                link_blob(data_root, track, Slot::new(origin)?, slot)?;
+            }
+            _ => {}
+        }
+        if applied.get(&n) == Some(&placed) {
+            if st.pending.remove(&n).is_some() {
+                changed.push(n);
+            }
+        } else if st.pending.get(&n) != Some(&placed) {
+            st.pending.insert(n, placed);
+            changed.push(n);
+        }
+    }
+    st.save(data_root)?;
+    Ok(changed)
+}
+
+/// A user file's encoded blob under another slot's name: a hardlink when
+/// the filesystem allows one, a copy otherwise. Nothing to do when the
+/// blob is already there, and a missing origin is left for the build to
+/// report as a skipped slot.
+fn link_blob(data_root: &Path, track: &str, from: Slot, to: Slot) -> Result<()> {
+    let src = state::encoded_blob_path(data_root, track, from);
+    let dst = state::encoded_blob_path(data_root, track, to);
+    if dst.is_file() || !src.is_file() {
+        return Ok(());
+    }
+    if std::fs::hard_link(&src, &dst).is_ok() {
+        return Ok(());
+    }
+    let tmp = dst.with_extension("asf.tmp");
+    std::fs::copy(&src, &tmp).map_err(|e| io(&tmp, e))?;
+    std::fs::rename(&tmp, &dst).map_err(|e| io(&dst, e))?;
+    Ok(())
+}
+
 pub fn unstage(data_root: &Path, slot: Slot) -> Result<bool> {
     let mut st = Soundtrack::load(data_root)?;
     let was = st.unstage(slot).is_some();
@@ -431,12 +528,12 @@ pub fn export(req: &ExportRequest<'_>) -> Result<pack::Manifest> {
     let mut songs = Vec::with_capacity(slots.len());
     for slot in slots {
         let (blob, title, artist, album) = match &effective[slot] {
-            Effective::Stock => {
-                let r = &stock_records[slot.index()];
-                (asf::slot_blob(stock_asf, *slot)?, r.title.clone(), r.artist.clone(), r.album.clone())
+            Effective::Stock { text } => {
+                let r = stock_or_text(&stock_records, *slot, text);
+                (asf::slot_blob(stock_asf, *slot)?, r.title, r.artist, r.album)
             }
             Effective::Blob { blob, title, artist, album, .. } => {
-                let bytes = read_blob(blob).map_err(|what| Refusal::SourceMissing { slot: slot.get(), what })?;
+                let bytes = read_blob(blob, stock_asf).map_err(|what| Refusal::SourceMissing { slot: slot.get(), what })?;
                 (bytes, title.clone(), artist.clone(), album.clone())
             }
         };
@@ -721,7 +818,7 @@ mod tests {
         let b = blob(4800);
         let blob_path = dir.path().join("x.asf");
         std::fs::write(&blob_path, &b).unwrap();
-        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock)).collect();
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
         eff.insert(
             Slot::new(9).unwrap(),
             Effective::Blob { blob: BlobRef::Encoded(blob_path), title: "New".into(), artist: "Me".into(), album: String::new(), origin: Origin::UserFile },
@@ -751,7 +848,7 @@ mod tests {
         // wrote custom text into slot 2
         booted_tpl[0x100] = 0x77;
         eatx::write_record(&mut booted_tpl, Slot::new(2).unwrap(), &eatx::Record { title: "Old custom".into(), album: String::new(), artist: String::new() }).unwrap();
-        let eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock)).collect();
+        let eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
         let built = build_files(&pf, &pristine_tpl, &booted_tpl, &eff, &mut |_| {}).unwrap();
         assert_eq!(built.template[0x100], 0x77, "roster bytes kept");
         assert_eq!(eatx::read_records(&built.template).unwrap()[1].title, "Song 2", "stock text restored");
@@ -759,10 +856,107 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_original_song_is_written_with_its_own_audio() {
+        let pf = synthetic_pathfind(256);
+        let tpl = synthetic_template();
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
+        eff.insert(
+            Slot::new(4).unwrap(),
+            Effective::Stock { text: Some(state::SlotText { title: "Renamed".into(), artist: "Me".into(), album: String::new() }) },
+        );
+        let built = build_files(&pf, &tpl, &tpl, &eff, &mut |_| {}).unwrap();
+        assert!(built.changed.is_empty(), "the audio is untouched");
+        let recs = eatx::read_records(&built.template).unwrap();
+        assert_eq!(recs[3].title, "Renamed");
+        assert_eq!(recs[3].artist, "Me");
+        assert_eq!(recs[4].title, "Song 5", "the others keep the disc's text");
+        assert_eq!(
+            asf::slot_blob(pathfind::asf(&built.pathfind), Slot::new(4).unwrap()).unwrap(),
+            asf::slot_blob(pathfind::asf(&pf), Slot::new(4).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_moved_original_song_is_spliced_from_the_pristine_image() {
+        let pf = synthetic_pathfind(256);
+        let tpl = synthetic_template();
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
+        // slot 2 plays what the disc had in slot 9, shown with slot 9's text
+        eff.insert(
+            Slot::new(2).unwrap(),
+            Effective::Blob {
+                blob: BlobRef::Stock(Slot::new(9).unwrap()),
+                title: "Song 9".into(),
+                artist: "Artist 9".into(),
+                album: String::new(),
+                origin: Origin::Original,
+            },
+        );
+        let built = build_files(&pf, &tpl, &tpl, &eff, &mut |_| {}).unwrap();
+        assert_eq!(built.changed, vec![2]);
+        assert!(built.skipped.is_empty());
+        let a = pathfind::asf(&built.pathfind);
+        assert_eq!(asf::slot_blob(a, Slot::new(2).unwrap()).unwrap(), asf::slot_blob(pathfind::asf(&pf), Slot::new(9).unwrap()).unwrap());
+        let recs = eatx::read_records(&built.template).unwrap();
+        assert_eq!(recs[1].title, "Song 9");
+        assert_eq!(recs[1].artist, "Artist 9");
+    }
+
+    #[test]
+    fn moving_a_song_reorders_the_list_and_links_its_blob_to_the_new_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let track = "abcdef0123456789";
+        std::fs::create_dir_all(state::encoded_dir(root)).unwrap();
+        std::fs::write(state::encoded_blob_path(root, track, Slot::new(3).unwrap()), b"blob").unwrap();
+        let mine = Entry {
+            source: Source::UserFile { track: track.into(), file: format!("music/sources/{track}.mp3") },
+            title: "Mine".into(),
+            artist: "Me".into(),
+            album: String::new(),
+            duration_ms: Some(1000),
+        };
+        let mut st = Soundtrack::default();
+        st.slots.insert(3, mine.clone());
+        st.save(root).unwrap();
+        let stock: Vec<StockSong> = (1..=21u64)
+            .map(|n| StockSong { title: format!("Song {n}"), artist: format!("Artist {n}"), album: String::new(), duration_ms: 1000 * n })
+            .collect();
+
+        // 3 dragged onto 1: 1 and 2 move down, the disc's own songs travel
+        let changed = move_slot(root, Slot::new(3).unwrap(), Slot::new(1).unwrap(), &stock).unwrap();
+        assert_eq!(changed, vec![1, 2, 3]);
+        let st = Soundtrack::load(root).unwrap();
+        assert_eq!(st.pending[&1], mine, "the file itself, unchanged");
+        assert!(state::encoded_blob_path(root, track, Slot::new(1).unwrap()).is_file(), "its blob under the new slot's name");
+        assert_eq!(st.pending[&2].source, Source::StockFrom { slot: 1 });
+        assert_eq!((st.pending[&2].title.as_str(), st.pending[&2].artist.as_str()), ("Song 1", "Artist 1"));
+        assert_eq!(st.pending[&3].source, Source::StockFrom { slot: 2 });
+        assert_eq!(st.pending[&3].title, "Song 2");
+        assert!(!st.pending.contains_key(&4), "nothing past the moved range changes");
+
+        // and back again: every slot is as applied, so nothing is pending
+        let changed = move_slot(root, Slot::new(1).unwrap(), Slot::new(3).unwrap(), &stock).unwrap();
+        assert_eq!(changed, vec![1, 2, 3]);
+        let st = Soundtrack::load(root).unwrap();
+        assert!(st.pending.is_empty(), "{:?}", st.pending);
+
+        // a renamed original keeps its name when it moves
+        stage_details(root, Slot::new(5).unwrap(), Some("Five renamed"), None, None).unwrap();
+        move_slot(root, Slot::new(5).unwrap(), Slot::new(6).unwrap(), &stock).unwrap();
+        let st = Soundtrack::load(root).unwrap();
+        assert_eq!(st.pending[&6].source, Source::StockFrom { slot: 5 });
+        assert_eq!(st.pending[&6].title, "Five renamed");
+        assert_eq!(st.pending[&5].source, Source::StockFrom { slot: 6 });
+        assert_eq!(st.pending[&5].title, "Song 6");
+        assert!(move_slot(root, Slot::new(8).unwrap(), Slot::new(8).unwrap(), &stock).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_missing_blob_is_skipped_not_fatal() {
         let pf = synthetic_pathfind(256);
         let tpl = synthetic_template();
-        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock)).collect();
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
         eff.insert(
             Slot::new(5).unwrap(),
             Effective::Blob { blob: BlobRef::Encoded(PathBuf::from("Z:/nowhere/gone.asf")), title: "X".into(), artist: String::new(), album: String::new(), origin: Origin::UserFile },
@@ -994,7 +1188,7 @@ mod tests {
         let py_pf = std::fs::read(out.join("pathfind.dat")).unwrap();
         let py_tpl = std::fs::read(out.join("template.dat")).unwrap();
         // Rust
-        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock)).collect();
+        let mut eff: BTreeMap<Slot, Effective> = Slot::all().map(|s| (s, Effective::Stock { text: None })).collect();
         eff.insert(
             Slot::new(21).unwrap(),
             Effective::Blob {

@@ -14,6 +14,10 @@ const slots = Array.from({ length: 21 }, (_, i) => slot(i + 1));
 slots[20] = slot(21, { title: "Un-thinkable (I'm Ready)", artist: "Alicia Keys", album: "The Element of Freedom", duration_ms: 286_000, source: "your_file", source_name: "a1b2c3.mp3" });
 slots[19] = slot(20, { title: "Ground Zero", artist: "Cole Brown", album: "Street's Disciple", duration_ms: 237_000, source: "pack", source_name: "friend.nsrmusic" });
 slots[2] = slot(3, { pending: { kind: "original", title: "", artist: "", album: "" } });
+// An original song the player renamed: the disc's audio, their banner text.
+slots[4] = slot(5, { title: "My name for song 5", artist: "Still the disc", album: "", duration_ms: 200_000, source: "original", original: { title: "Song 5", artist: "Artist 5", album: "", duration_ms: 200_000 } });
+// The disc's own song moved here from slot 8 by a reorder.
+slots[5] = slot(6, { title: "Song 8", artist: "Artist 8", album: "", duration_ms: 180_000, source: "original_moved" });
 const status = {
   phase: process.env.PHASE || "idle", progress: null, enabled: true, base: { kind: "original", name: null }, slots,
   pending_count: 1, note: "", image_ok: true, image_note: "", limit_seconds: 380, formats: ["mp3", "m4a", "flac", "ogg", "wav", "aiff"],
@@ -58,6 +62,14 @@ await page.addInitScript(({ status, inspect }) => {
           case "music_export":return 'C:/Music/My Mix.nsrmusic';
           case "music_status": return status;
           case "pick_path": return args?.kind === "audio" ? inspect.path : args?.kind === "pack" ? "C:/Music/Mix.nsrmusic" : "C:/Music/My Mix.nsrmusic";
+          case "pick_paths": return window.__musicPickMany||["C:\\Music\\02 Second.mp3","C:\\Music\\01 First.flac","C:\\Music\\10 Tenth.m4a"];
+          case "music_stage_files": status.phase='encoding';status.progress={label:`Adding song 1 of ${args.paths.length}: ${args.paths[0].split(/[\\/]/).pop()}`,done:3,total:40};return status;
+          case "music_move": {
+            // the same list move the core does: from lands on to, the ones between shift
+            const list=status.slots.map(s=>({...s}));const i=list.findIndex(s=>s.slot===args.from);const [moved]=list.splice(i,1);let j=list.findIndex(s=>s.slot===args.to);if(args.to>args.from)j+=1;list.splice(j,0,moved);
+            list.forEach((s,k)=>{const n=k+1;if(s.slot!==n){status.slots[k]={...s,slot:n,pending:{kind:s.source==='original'?'original_moved':s.source==='pack'?'pack':'your_file',title:s.title||`Song ${s.slot}`,artist:s.artist,album:s.album}};}else status.slots[k]=s;});
+            status.pending_count=status.slots.filter(s=>s.pending).length;return status;
+          }
           case "music_inspect": return window.__musicInspect;
           case "music_lookup": return inspect.candidates;
           default: return status;
@@ -107,6 +119,38 @@ try {
  await page.getByRole('button',{name:'Undo changes to song 21',exact:true}).click();
  await page.getByRole('button',{name:'Restore original song 21',exact:true}).click();
  assert.match(await page.locator('[data-slot="21"]').innerText(),/Restore original/);
+ // A renamed original shows the player's name and offers Reset; a moved
+ // original shows its own name with no "original" treatment.
+ assert.match(await page.locator('[data-slot="5"]').innerText(),/My name for song 5/);
+ assert.equal(await page.getByRole('button',{name:'Restore original song 5',exact:true}).count(),1);
+ assert.match(await page.locator('[data-slot="6"]').innerText(),/Song 8/);
+ // Reorder with the arrows: song 6 moves up onto 5.
+ await page.getByRole('button',{name:'Move song 6 up',exact:true}).click();
+ let move=await page.evaluate(()=>window.__musicCalls.filter(c=>c.cmd==='music_move').at(-1).args);
+ assert.deepEqual(move,{from:6,to:5});
+ assert.match(await page.locator('[data-slot="5"]').innerText(),/Song 8/,'the moved song is drawn in its new slot');
+ assert.equal(await page.getByRole('button',{name:'Move song 1 up',exact:true}).isDisabled(),true,'the first song cannot move up');
+ assert.equal(await page.getByRole('button',{name:'Move song 21 down',exact:true}).isDisabled(),true,'the last song cannot move down');
+ // Reorder by dragging: row 9 dropped onto row 7.
+ await page.locator('[data-slot="9"]').dragTo(page.locator('[data-slot="7"]'));
+ move=await page.evaluate(()=>window.__musicCalls.filter(c=>c.cmd==='music_move').at(-1).args);
+ assert.deepEqual(move,{from:9,to:7});
+ // Several songs at once: sorted by file name, from the chosen slot on.
+ await page.getByRole('button',{name:'Add songs…',exact:true}).click();
+ const bulk=page.getByRole('dialog',{name:'Add songs',exact:true});
+ await bulk.getByRole('heading',{name:'3 songs',exact:true}).waitFor();
+ assert.deepEqual(await bulk.locator('ol li').allInnerTexts(),['01 First.flac','02 Second.mp3','10 Tenth.m4a']);
+ await bulk.getByLabel('Start at song',{exact:true}).selectOption('20');
+ assert.match(await bulk.getByRole('status').innerText(),/2 of these fit from song 20 on/);
+ await bulk.getByLabel('Start at song',{exact:true}).selectOption('4');
+ assert.match(await bulk.getByRole('status').innerText(),/songs 4 to 6/);
+ await bulk.getByRole('button',{name:'Add 3 songs',exact:true}).click();
+ await bulk.waitFor({state:'detached'});
+ const batch=await page.evaluate(()=>window.__musicCalls.find(c=>c.cmd==='music_stage_files').args);
+ assert.equal(batch.startSlot,4);assert.deepEqual(batch.paths.map(p=>p.split(/[\\/]/).pop()),['01 First.flac','02 Second.mp3','10 Tenth.m4a']);
+ await page.locator('.music-progress strong',{hasText:'Adding song 1 of 3: 01 First.flac'}).waitFor();
+ await page.evaluate(()=>{window.__musicStatus.phase='idle';window.__musicStatus.progress=null;});
+ await page.getByRole('button',{name:'Import pack',exact:true}).waitFor({timeout:4000});
  await page.getByRole('button',{name:'Import pack',exact:true}).click();
  await page.getByRole('dialog',{name:'Import a pack'}).getByRole('button',{name:'Import songs'}).click();
  assert.match(await page.locator('[data-slot="2"]').innerText(),/Track two/);
