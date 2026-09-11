@@ -89,6 +89,7 @@ impl Default for Settings {
             bucket_name: None,
             public_base: default_public_base(),
             launcher_manifest: default_launcher_manifest(),
+            drop_root: None,
             remembered: BTreeMap::new(),
         }
     }
