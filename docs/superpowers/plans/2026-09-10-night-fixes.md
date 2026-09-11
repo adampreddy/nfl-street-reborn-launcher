@@ -70,6 +70,25 @@ on branch `publisher-redesign` in its own worktree, merged into
   (some files failed to move; the leftovers were removed). Their game,
   library, mods, users and config are present; the beta root is test data.
 
+## Status (01:05): DONE
+
+- beta.9 (7d256ee) full set + self-update LIVE; beta.6/7/8 removed from the bucket.
+- Self-update PROVEN on Adam's PC: beta.8 saw beta.9, downloaded 64,471,089 B
+  during startup, exited at 4 s to apply, came back as 3.0.1-beta.9 up to
+  date, and fetched game-patch 2026.09.11 in the same start. Wart: it landed
+  in the retired Programs folder because beta.8's `update::apply` restated
+  its (old) install root as /DIR; fixed (e030ce3): a root under Programs is
+  not restated. The beta.9 full Setup run here moved this PC into `app` and
+  removed the Programs copy.
+- Seeding PROVEN on the installed beta.9 against a fresh scratch root: first
+  check adopts runtime 1.1.2, textures 1.2.0 (8,317 files, hardlinked),
+  mods 1.0.0, game-patch 2026.09.11 with 0 bytes to download; only the
+  roster (32 MB, not shipped) is fetched.
+- Publisher redesign merged (b05e4d9) and installed at
+  `%APPDATA%\NFL Street Reborn Launcher\publisher\app`.
+- Not yet shipped in any beta: e030ce3 (the /DIR rule) and 6803747 is in
+  beta.9. Saturday's stable build carries everything on `integration`.
+
 ## Track A: launcher (this worktree)
 
 1. Version: `build.ps1 -Version` reaches the exe (`REBORN_BUILD_VERSION`
