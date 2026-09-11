@@ -170,27 +170,34 @@ export function panel(host, config) {
     summaryLine.className = "panel-summary refusal";
   }
 
+  // Polling starts AFTER the request is accepted, never before. Started
+  // before, the first poll read the previous operation's finished state (or
+  // "idle" on a fresh app), decided nothing was running, and stopped; the
+  // plan then ran to the end in the backend with nobody listening, and the
+  // page sat on "Planning" with an empty log. Seen on Adam's PC on the first
+  // Textures plan, 2026-09-10. The buttons go busy at once by hand, so a
+  // slow request cannot be clicked twice.
   async function onPlan() {
-    startPolling();
+    setBusy(true);
     const answer = await plan();
     planHasReturned = true;
     showImmediateError(answer);
-    await poll();
+    startPolling();
   }
 
   async function onRun() {
-    startPolling();
+    setBusy(true);
     const answer = await run(dryRunCheckbox.checked);
     runHasReturned = true;
     showImmediateError(answer);
-    await poll();
+    startPolling();
   }
 
   async function onVerify() {
-    startPolling();
+    setBusy(true);
     const answer = await verify();
     showImmediateError(answer);
-    await poll();
+    startPolling();
   }
 
   async function onCancel() {
