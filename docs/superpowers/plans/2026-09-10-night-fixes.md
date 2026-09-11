@@ -99,6 +99,18 @@ on branch `publisher-redesign` in its own worktree, merged into
   notice; Swap X and B button; press-first assign; first run folds the
   grid. beta.10 launcher-only publish carries it.
 
+## Morning batch (05:30 to 06:00)
+
+- beta.12: migrated Dolphin.ini absolute paths rebased onto the user folder
+  (textures from the old 2.1 folder); content re-check every 5 min.
+- beta.13: installer icon restored; CREATE_NO_WINDOW everywhere a console
+  tool runs; Display item on Play matches its neighbours; Uninstall row;
+  Controllers on shared margins; setup logo lower; controller step fits
+  1280x800 folded and opened (review asserts it).
+- beta.14: netplay runs the texture sync before launch ("no textures on
+  launch"); invite links (`nflstreetreborn://join/<code>`, installer
+  registry, pending-join file, Online prefill, Copy invite).
+
 ## Track A: launcher (this worktree)
 
 1. Version: `build.ps1 -Version` reaches the exe (`REBORN_BUILD_VERSION`
