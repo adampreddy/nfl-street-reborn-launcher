@@ -38,7 +38,9 @@ function drawRoom(snapshot){
   // The code, and an invite a friend can paste anywhere: the code in words
   // plus a link that opens their launcher on this room (the installer
   // registers nflstreetreborn:// for it). Adam: "copy invite would be cool".
-  const invite=`Join my NFL Street Reborn game! Room code: ${snapshot.code}\nnflstreetreborn://join/${snapshot.code}`;
+  // A web link, because chat apps only make http links clickable; the page
+  // hands the visitor on to the launcher (Adam: "There's no actual link?").
+  const invite=`Join my NFL Street Reborn game! Room code: ${snapshot.code}\nhttps://nflstreetreborn.com/join.php?c=${encodeURIComponent(snapshot.code)}`;
   const copyTo=(text,label)=>async event=>{try{await navigator.clipboard.writeText(text);event.target.textContent='Copied';}catch{event.target.textContent=label;}};
   code.append(el('span',{text:'Host code'}),el('strong',{text:snapshot.code}),el('button',{type:'button','data-room-focus':'copy',text:'Copy',onclick:copyTo(snapshot.code,'Select code to copy')}),el('button',{type:'button','data-room-focus':'invite',text:'Copy invite',onclick:copyTo(invite,'Could not copy')}));
  }
