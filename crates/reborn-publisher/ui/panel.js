@@ -121,8 +121,16 @@ export function panel(host, config) {
     const lines = Array.isArray(state && state.lines) ? state.lines : [];
     log.textContent = lines.join("\n");
 
-    summaryLine.textContent = (state && state.summary) || "";
-    summaryLine.className = phase === "refused" || phase === "failed" ? "panel-summary refusal" : "panel-summary";
+    // An error the request itself returned (a refusal up front, a bad
+    // argument) stays on screen until the next click. Rendering the polled
+    // state over it hid every such error inside 400 ms: Run "did nothing".
+    if (immediateError) {
+      summaryLine.textContent = immediateError;
+      summaryLine.className = "panel-summary refusal";
+    } else {
+      summaryLine.textContent = (state && state.summary) || "";
+      summaryLine.className = phase === "refused" || phase === "failed" ? "panel-summary refusal" : "panel-summary";
+    }
 
     const hasPlan = state && Object.prototype.hasOwnProperty.call(state, "plan") && state.plan !== null && state.plan !== undefined;
     planSummary.hidden = !hasPlan;
@@ -164,7 +172,9 @@ export function panel(host, config) {
     }
   }
 
+  let immediateError = null;
   function showImmediateError(answer) {
+    immediateError = answer.ok ? null : answer.error;
     if (answer.ok) return;
     summaryLine.textContent = answer.error;
     summaryLine.className = "panel-summary refusal";
@@ -178,6 +188,7 @@ export function panel(host, config) {
   // Textures plan, 2026-09-10. The buttons go busy at once by hand, so a
   // slow request cannot be clicked twice.
   async function onPlan() {
+    immediateError = null;
     setBusy(true);
     const answer = await plan();
     planHasReturned = true;
@@ -186,6 +197,7 @@ export function panel(host, config) {
   }
 
   async function onRun() {
+    immediateError = null;
     setBusy(true);
     const answer = await run(dryRunCheckbox.checked);
     runHasReturned = true;
@@ -194,6 +206,7 @@ export function panel(host, config) {
   }
 
   async function onVerify() {
+    immediateError = null;
     setBusy(true);
     const answer = await verify();
     showImmediateError(answer);

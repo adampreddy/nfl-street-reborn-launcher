@@ -19,7 +19,7 @@
 //! Read from the vault with `reborn_core::publish::vault::{r2_access,
 //! r2_secret}`, the same two accessors `history.rs`'s rollback upload
 //! already uses. Neither command below takes a credential as an argument:
-//! a `#[tauri::command]`'s arguments are exactly what a browser devtools
+//! a `#[tauri::command(rename_all = "snake_case")]`'s arguments are exactly what a browser devtools
 //! console sitting in front of this window could set to anything, and a
 //! secret has no business being something a page can pass in.
 //!
@@ -51,7 +51,7 @@ use crate::settings::Settings;
 
 /// Plan: what [`upload::plan_origin`] finds pending against the real
 /// bucket, right now. Writes nothing and sends nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn upload_plan() -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -96,7 +96,7 @@ pub fn upload_plan() -> Result<Value, String> {
 /// Run: upload everything [`upload_plan`] would find pending. `dry_run`
 /// describes the plan and sends nothing, the same rule every other page's
 /// Run step follows.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn upload_run(dry_run: bool) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);

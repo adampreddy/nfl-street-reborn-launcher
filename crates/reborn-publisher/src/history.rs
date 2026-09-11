@@ -94,7 +94,7 @@ use crate::settings::Settings;
 /// The last `limit` journal records, newest first, plus how many lines of
 /// the journal could not be parsed. A journal with unreadable lines means
 /// history is incomplete; `skipped` is how the page knows to say so.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn history_list(limit: usize) -> Result<serde_json::Value, String> {
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -118,7 +118,7 @@ pub fn history_list(limit: usize) -> Result<serde_json::Value, String> {
 /// Every version of one component the origin still holds a manifest for,
 /// newest first, with which one (if any) the currently-signed release
 /// pins.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn history_versions(component: String) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -187,7 +187,7 @@ pub fn history_versions(component: String) -> Result<serde_json::Value, String> 
 /// Plan: the current pins against the proposed pins, and the bytes a player
 /// would fetch. Writes nothing; see the module doc for why this still
 /// calls `release` at `apply: false`.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_plan(component: String, version: String) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -258,7 +258,7 @@ pub fn rollback_plan(component: String, version: String) -> Result<serde_json::V
 /// Run: sign a release at the next sequence pinning the earlier version,
 /// and upload it. `dry_run` skips both the write and the upload; see the
 /// module doc's "Upload: scoped to what this rollback actually changes".
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (platform, settings) = settings_and_platform()?;
@@ -346,7 +346,7 @@ pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result
 /// Verify: fetch the actual hosted release fresh over HTTPS, check its
 /// signature, and confirm it pins the component and version the last
 /// rollback in this origin's journal signed, at the sequence it signed.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_verify() -> Result<serde_json::Value, String> {
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);

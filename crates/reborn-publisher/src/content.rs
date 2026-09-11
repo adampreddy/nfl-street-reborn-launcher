@@ -126,7 +126,7 @@ const ONLINE_GAME_ID: &str = "FR4N31";
 /// Plan: hash `folder`, and show the file count and total size, the
 /// release sequence before and after, and what a player already on the
 /// previous version of this component would fetch. Writes nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_plan(
     component: String,
     folder: String,
@@ -311,7 +311,7 @@ pub fn content_plan(
 /// unless `dry_run`), re-sign the release carrying every other pin
 /// forward, and upload. `dry_run` skips the component write, the release
 /// write, and the upload; it never reaches the network.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_run(
     component: String,
     folder: String,
@@ -477,7 +477,7 @@ pub fn content_run(
 /// Verify: read the bucket back fresh over HTTPS, and confirm it pins the
 /// version this page's last real (non-dry-run) publish of `component`
 /// signed, at the sequence it signed, with a signature that verifies.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_verify(component: String) -> Result<Value, String> {
     let id = parse_content_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -557,7 +557,7 @@ pub fn content_verify(component: String) -> Result<Value, String> {
 /// offered. [`content_plan`] and [`content_run`] run the exact same check
 /// (through [`lint_gate`]) before writing anything; this command exists so
 /// the page does not have to run a whole Plan just to ask the question.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_lint_runtime(folder: String) -> Result<Value, String> {
     let dir = PathBuf::from(folder.trim());
     if dir.as_os_str().is_empty() {
@@ -902,7 +902,7 @@ fn key_path(settings: &Settings) -> Result<PathBuf, String> {
 
 /// The R2 bucket this app uploads to, from settings plus the vault. See
 /// `history.rs`'s own copy of this helper for why credentials are read
-/// here rather than passed in as a command argument: a `#[tauri::command]`
+/// here rather than passed in as a command argument: a `#[tauri::command(rename_all = "snake_case")]`
 /// argument is exactly what a browser devtools console in front of this
 /// window could set to anything.
 fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {

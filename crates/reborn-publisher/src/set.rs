@@ -384,7 +384,7 @@ impl Inputs {
 /// points at (warning if `version` would replace it under the exact same
 /// label), and list exactly what a zip for `version` would be packed from.
 /// Writes nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_plan(bundle: String, runtime: String, textures: String, prompt_packages: String, version: String) -> Result<Value, String> {
     let inputs = parse_inputs(&bundle, &runtime, &textures, &prompt_packages, &version)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -563,7 +563,7 @@ fn hosted_version_warning(version: &str, hosted: &DownloadPointer) -> Option<Str
 /// expected file set, upload the zip, then write and upload
 /// `launcher/download.json` -- always after the zip, never before. See the
 /// module doc's "Upload order".
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_run(bundle: String, runtime: String, textures: String, prompt_packages: String, version: String, dry_run: bool) -> Result<Value, String> {
     let inputs = parse_inputs(&bundle, &runtime, &textures, &prompt_packages, &version)?;
     let (platform, settings) = settings_and_platform()?;
@@ -783,7 +783,7 @@ fn display_args(args: &[OsString]) -> String {
 /// Verify: read `download.json` back over the public host, HEAD the zip it
 /// names (headers only -- see the module doc), and compare both against
 /// the local zip this page's last real run left in `dist`.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_verify() -> Result<Value, String> {
     let (_platform, settings) = settings_and_platform()?;
     let public_base = settings.public_base.clone();

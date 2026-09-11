@@ -45,7 +45,7 @@ fn filtered(kind: &str, dialog: rfd::FileDialog) -> Result<rfd::FileDialog, Stri
 /// Open a native "choose an existing file" dialog filtered for `kind`.
 /// `Ok(None)` when the dialog was cancelled: the field is left as it was,
 /// which is success, not a refusal.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pick_file(kind: String) -> Result<Option<String>, String> {
     let dialog = filtered(&kind, rfd::FileDialog::new().set_title("Reborn Publisher"))?;
     Ok(dialog.pick_file().map(|p| p.display().to_string()))
@@ -55,7 +55,7 @@ pub fn pick_file(kind: String) -> Result<Option<String>, String> {
 /// names where something will be written rather than something already on
 /// disk (a build's output ISO, a dump's output `.rebornroster`). Unlike
 /// [`pick_file`], the chosen path is not required to exist yet.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pick_save_file(kind: String) -> Result<Option<String>, String> {
     let dialog = filtered(&kind, rfd::FileDialog::new().set_title("Reborn Publisher"))?;
     Ok(dialog.save_file().map(|p| p.display().to_string()))
@@ -63,7 +63,7 @@ pub fn pick_save_file(kind: String) -> Result<Option<String>, String> {
 
 /// Open a native "choose a folder" dialog. No filter to choose: a folder
 /// either is or is not the one wanted.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn pick_folder() -> Result<Option<String>, String> {
     let picked: Option<PathBuf> = rfd::FileDialog::new().set_title("Reborn Publisher").pick_folder();
     Ok(picked.map(|p| p.display().to_string()))

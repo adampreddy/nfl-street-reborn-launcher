@@ -110,7 +110,7 @@ impl Settings {
 }
 
 /// The settings this machine holds, for a page to draw.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn publisher_settings() -> Result<Settings, String> {
     let platform = Platform::detect();
     let path = settings_path(&platform)?;
@@ -128,7 +128,7 @@ pub fn publisher_settings() -> Result<Settings, String> {
 /// An unknown key is refused, naming the ones this understands, rather than
 /// silently doing nothing: a settings write that appears to succeed and
 /// changes nothing is worse than one that says why.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn publisher_set_setting(key: String, value: serde_json::Value) -> Result<Settings, String> {
     let platform = Platform::detect();
     let path = settings_path(&platform)?;

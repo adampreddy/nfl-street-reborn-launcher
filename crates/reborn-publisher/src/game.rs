@@ -207,7 +207,7 @@ fn user_agent() -> String {
 
 /// The R2 bucket this app uploads to, from settings plus the vault. See
 /// `roster.rs`'s own copy of this helper for why credentials are read here
-/// rather than passed in as a command argument: a `#[tauri::command]`
+/// rather than passed in as a command argument: a `#[tauri::command(rename_all = "snake_case")]`
 /// argument is exactly what a browser devtools console in front of this
 /// window could set to anything.
 fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {
@@ -317,7 +317,7 @@ fn parse_flagged_stderr(stderr: &str) -> Vec<String> {
 
 /// Build ISO, plan: what the Builder would do with this base image, roster
 /// and output path, and its warnings.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_build_plan(base: String, roster: String, out: String) -> Result<Value, String> {
     let inputs = json!({"base": base, "roster": roster, "out": out});
     crate::ops::run_operation("game_build:plan", false, inputs, move |sink| game_build_plan_body(&base, &roster, &out, sink))?;
@@ -428,7 +428,7 @@ fn game_build_plan_body(base: &str, roster: &str, out: &str, sink: Sink<'_>) -> 
 
 /// Build ISO, run: build it for real (or, with `dry_run`, into a scratch
 /// copy again), and hash the result ourselves.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_build_run(base: String, roster: String, out: String, dry_run: bool) -> Result<Value, String> {
     let inputs = json!({"base": base, "roster": roster, "out": out, "dry_run": dry_run});
     crate::ops::run_operation("game_build:run", dry_run, inputs, move |sink| {
@@ -549,7 +549,7 @@ fn game_build_run_body(base: &str, roster: &str, out: &str, dry_run: bool, sink:
 
 /// Dump an ISO's current roster through the Builder, for inspection.
 /// Read-only on the ISO; writes only the new `.rebornroster` at `out`.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_dump(iso: String, out: String) -> Result<Value, String> {
     let platform = Platform::detect();
     let settings = Settings::load(&settings_path(&platform)?)?;
@@ -597,7 +597,7 @@ pub fn game_dump(iso: String, out: String) -> Result<Value, String> {
 /// Sync a memory card's gear and faces into a roster file through the
 /// Builder, keeping in-game edits. `--state` is derived beside the card
 /// image; see this file's module doc. Defaults to a dry run.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_cardsync(card: String, roster: String, dry_run: bool) -> Result<Value, String> {
     let platform = Platform::detect();
     let settings = Settings::load(&settings_path(&platform)?)?;
@@ -648,7 +648,7 @@ pub fn game_cardsync(card: String, roster: String, dry_run: bool) -> Result<Valu
 /// entirely to `publish_game_patch` with `apply: false`, which already does
 /// exactly this and nothing more (see this file's module doc); no chain
 /// rule is re-implemented here.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_patch_plan(to: String) -> Result<Value, String> {
     let inputs = json!({"to": to});
     crate::ops::run_operation("game_patch:plan", false, inputs, move |sink| game_patch_plan_body(&to, sink))?;
@@ -703,7 +703,7 @@ fn game_patch_plan_body(to: &str, sink: Sink<'_>) -> reborn_core::Result<Outcome
 // ---------------------------------------------------------------------------
 
 /// Game patch, run: encode, decode-verify, publish, re-sign, upload.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_patch_run(to: String, version: String, dry_run: bool) -> Result<Value, String> {
     let platform = Platform::detect();
     let settings_file = settings_path(&platform)?;
@@ -915,7 +915,7 @@ fn finish_game_patch_run(
 /// Game patch, verify: re-hash every blob the newest published `game-patch`
 /// component manifest claims, against the origin's own store. See this
 /// file's module doc for why this does not re-decode the images.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn game_patch_verify() -> Result<Value, String> {
     crate::ops::run_operation("game_patch:verify", false, json!({}), move |sink| game_patch_verify_body(sink))?;
     Ok(json!({"accepted": true}))

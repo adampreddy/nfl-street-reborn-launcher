@@ -90,7 +90,7 @@ use crate::settings::{self, Settings};
 // ---------------------------------------------------------------------------
 
 /// `reborn_core::publish::status::read_status`, serialized.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn publisher_status() -> Value {
     let platform = Platform::detect();
     let mut settings_problems = Vec::new();
@@ -235,7 +235,7 @@ struct EnvItem {
 }
 
 /// Every tool and input this app needs: found or missing, with the path.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn publisher_environment() -> Value {
     let platform = Platform::detect();
     let mut problems = Vec::new();
@@ -489,7 +489,7 @@ fn site_token_item(platform: &Platform) -> EnvItem {
 /// `read_last` itself returns the last `n` records oldest-first (see its
 /// own doc comment); this page wants newest first, so the reversal happens
 /// once, here, rather than asking `status.js` to know which end is which.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn publisher_recent(n: usize) -> Value {
     let platform = Platform::detect();
     let mut problems = Vec::new();

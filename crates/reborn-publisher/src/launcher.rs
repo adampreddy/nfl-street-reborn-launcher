@@ -112,7 +112,7 @@ use crate::settings::{self, Settings};
 /// it), the commit and Builder this build would use, and a warning when the
 /// proposed version would not be newer than what is already hosted. Writes
 /// nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn launcher_plan(version: String) -> Result<Value, String> {
     let version = version.trim().to_string();
     if version.is_empty() {
@@ -207,7 +207,7 @@ pub fn launcher_plan(version: String) -> Result<Value, String> {
 /// not a dry run, the R2 credentials are resolved before this call even
 /// starts the operation, so a doomed run fails fast rather than after a
 /// long compile.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn launcher_run(version: String, dry_run: bool) -> Result<Value, String> {
     let version = version.trim().to_string();
     if version.is_empty() {
@@ -469,7 +469,7 @@ pub fn launcher_run(version: String, dry_run: bool) -> Result<Value, String> {
 /// replaced), confirm it names `version`, then download the installer it
 /// names (`update::download`, the exact function a real launcher's
 /// self-update calls) and confirm that matches too.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn launcher_verify(version: String) -> Result<Value, String> {
     let version = version.trim().to_string();
     if version.is_empty() {

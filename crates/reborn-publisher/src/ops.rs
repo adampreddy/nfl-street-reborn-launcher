@@ -250,7 +250,7 @@ fn page_name(op: &str) -> &str {
 /// polling `op_status` sees them live.
 ///
 /// Returns immediately, before `body` finishes: the caller (a
-/// `#[tauri::command]` function) is meant to return right after this call,
+/// `#[tauri::command(rename_all = "snake_case")]` function) is meant to return right after this call,
 /// and let the page poll `op_status` for progress. The only way this
 /// returns an `Err` is the concurrency refusal: an operation is already
 /// busy, named in the message.
@@ -477,7 +477,7 @@ fn parse_hashes(value: &Value) -> Vec<(String, String)> {
 }
 
 /// Where the current, or most recently finished, operation stands.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_status() -> OpState {
     shared().state.lock().expect("op state lock").clone()
 }
@@ -487,7 +487,7 @@ pub fn op_status() -> OpState {
 /// Refuses when nothing is running, and refuses, separately, when
 /// something is running but has not registered a cancel signal (see the
 /// module doc): either way nothing happens silently.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_cancel() -> Result<(), String> {
     let s = shared();
     let busy = s.state.lock().expect("op state lock").phase.is_busy();
@@ -505,7 +505,7 @@ pub fn op_cancel() -> Result<(), String> {
 
 /// Reset to `Idle`. Refuses while an operation is still busy, naming it,
 /// rather than clearing the state out from under a still-running body.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_clear() -> Result<(), String> {
     let mut state = shared().state.lock().expect("op state lock");
     if state.phase.is_busy() {

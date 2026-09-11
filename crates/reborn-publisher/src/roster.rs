@@ -111,7 +111,7 @@ const SITE_EXPORT_URL: &str = "https://nflstreetreborn.com/rdatabase/api/downloa
 /// and after, and one sentence on what a player will see. Writes nothing;
 /// `resolve_source` may still fetch the site's export for real, since
 /// there is no way to know the counts without reading the bytes.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_plan(source: Value, version: String) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -220,7 +220,7 @@ pub fn roster_plan(source: Value, version: String) -> Result<Value, String> {
 /// pin forward, then upload through plan 2's whole-origin uploader.
 /// `dry_run` still fetches and checks (there is no way to publish a file
 /// that was never read), but writes nothing and sends nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -337,7 +337,7 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
 /// every other component at zero fetches. See this module's doc for how
 /// the seeding works. The scratch root lives under this machine's temp
 /// directory and is removed on every path out of this function.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_verify() -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let public_base = settings.public_base.clone();
