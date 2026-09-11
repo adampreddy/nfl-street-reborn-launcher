@@ -108,6 +108,12 @@ enum Command {
         what: RosterCommand,
     },
 
+    /// Bring the memory cards' gear up to date with the installed roster, keeping in-game edits.
+    Cards {
+        #[command(subcommand)]
+        what: CardsCommand,
+    },
+
     /// The game update chain: apply what is installed to the pristine image.
     GamePatch {
         #[command(subcommand)]
@@ -392,6 +398,31 @@ enum RosterCommand {
         /// Build even if the site flagged problems. They are printed either way.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CardsCommand {
+    /// Run the Reborn Builder's card-sync over every memory card in the Dolphin user folder.
+    Sync {
+        /// The .rebornroster. Defaults to the one the roster component installed.
+        #[arg(long)]
+        roster: Option<PathBuf>,
+        /// The Builder's console build. Found automatically when absent.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+        /// Use this data root instead of the real one. For tests.
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// The Dolphin user folder. Defaults to the one a launch would use.
+        #[arg(long)]
+        user_dir: Option<PathBuf>,
+        /// Record in-game edits only; write nothing to any card.
+        #[arg(long)]
+        harvest_only: bool,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -760,6 +791,24 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 data_root.as_deref(),
                 textures.as_deref(),
                 yes,
+            ),
+        },
+        Command::Cards { what } => match what {
+            CardsCommand::Sync {
+                roster,
+                builder,
+                data_root,
+                user_dir,
+                harvest_only,
+                dry_run,
+            } => cards_sync(
+                &platform,
+                roster.as_deref(),
+                builder.as_deref(),
+                data_root.as_deref(),
+                user_dir.as_deref(),
+                harvest_only,
+                dry_run,
             ),
         },
     }
@@ -4846,6 +4895,7 @@ fn roster_apply(
                 }
             }
             println!("Recorded as a rebuilt image, so verification keeps it rather than re-downloading it.");
+            cards_after_roster_apply(platform, &root, data_root.is_some());
             Ok(OK)
         }
         ApplyOutcome::Unchanged { image, report, .. } => {
@@ -4856,12 +4906,124 @@ fn roster_apply(
                 thousands(report.players),
                 thousands(report.teams)
             );
+            cards_after_roster_apply(platform, &root, data_root.is_some());
             Ok(OK)
         }
         ApplyOutcome::Refused(r) => {
             println!();
             println!("Refused: {}", r.message());
             Ok(PROBLEM)
+        }
+    }
+}
+
+/// After `roster apply` on the real data root: the memory cards, brought up
+/// to date with the roster that is now in the image. Harmless when nothing
+/// changed: the Builder reports "unchanged". Not on a test root
+/// (`--data-root`): the cards a launch would use are the real ones, and a
+/// test roster must never be written into them.
+fn cards_after_roster_apply(platform: &Platform, root: &Path, test_root: bool) {
+    println!();
+    if test_root {
+        println!("Memory cards   not touched from a test data root.");
+        return;
+    }
+    let user = match resolve_user_dir(platform, None) {
+        Ok(u) => u,
+        Err(e) => {
+            println!("Memory cards   left as they were: no Dolphin user folder could be resolved ({e}).");
+            return;
+        }
+    };
+    match reborn_core::cards::after_apply(platform, root, user.path(), &tool_dirs()) {
+        Ok(outcome) => {
+            let lines = outcome.explain();
+            if lines.is_empty() {
+                println!("Memory cards   every card is up to date, and no new gear edits were found.");
+            }
+            for line in lines {
+                println!("Memory cards   {line}");
+            }
+        }
+        Err(e) => println!("Memory cards   could not be checked ({e}); they are as they were."),
+    }
+}
+
+/// Sync every memory card with the Builder's card-sync verb.
+fn cards_sync(
+    platform: &Platform,
+    roster: Option<&Path>,
+    builder: Option<&Path>,
+    data_root: Option<&Path>,
+    user_dir: Option<&Path>,
+    harvest_only: bool,
+    dry_run: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::cards::{self, SyncOutcome, SyncRequest};
+    use reborn_core::roster::{self, ROSTER_FILE};
+
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    let roster_path = match roster {
+        Some(p) => p.to_path_buf(),
+        None => root.join(DataDir::LibraryRoster.relative()).join(ROSTER_FILE),
+    };
+    let builder_path = match builder {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let dirs = roster::builder_dirs(platform, &tool_dirs());
+            match roster::find_builder(platform, &dirs) {
+                Some(p) => p,
+                None => {
+                    println!("{}", cards::SyncRefusal::NoBuilder { looked: dirs }.message());
+                    return Ok(PROBLEM);
+                }
+            }
+        }
+    };
+    let user = match user_dir {
+        Some(p) => p.to_path_buf(),
+        None => resolve_user_dir(platform, None)?.path().to_path_buf(),
+    };
+    println!("Data root     {}", root.display());
+    println!("Roster        {}", roster_path.display());
+    println!("Builder       {}", builder_path.display());
+    println!("User folder   {}", user.display());
+    println!(
+        "Mode          {}",
+        if dry_run {
+            "dry run, nothing written"
+        } else if harvest_only {
+            "harvest only, cards not written"
+        } else {
+            "full sync"
+        }
+    );
+    println!();
+    let req = SyncRequest {
+        data_root: &root,
+        roster: &roster_path,
+        builder: &builder_path,
+        user_dir: &user,
+        harvest_only,
+        dry_run,
+    };
+    match cards::sync(platform, &req)? {
+        SyncOutcome::Refused(r) => {
+            println!("{}", r.message());
+            Ok(PROBLEM)
+        }
+        outcome => {
+            let lines = outcome.explain();
+            if lines.is_empty() {
+                println!("Every memory card is up to date, and no new gear edits were found.");
+            }
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(OK)
         }
     }
 }

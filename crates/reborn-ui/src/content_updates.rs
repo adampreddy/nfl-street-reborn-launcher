@@ -10,7 +10,7 @@
 //! started while files are being swapped, and it refuses to start while a
 //! game is running, which is the one rule the pipeline leaves to its caller.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -76,6 +76,10 @@ pub struct InstalledSummary {
     pub game_patch: Option<String>,
     pub roster: Option<String>,
     pub problems: Vec<String>,
+    /// What the memory cards said once a new roster or build was in the
+    /// image: gear rows brought up to date, in-game edits kept, or why a
+    /// card was left as it was. Empty when nothing changed or it was quiet.
+    pub cards: Vec<String>,
     pub note: String,
 }
 
@@ -374,6 +378,16 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
                 .fetch(&adopt)
                 .and_then(|_| updater.promote(&adopt, &hook))
                 .map_err(|e| e.to_string());
+            // Adopting a shipped roster can rebuild the image; the memory
+            // cards follow, under the same guard. Said on the log only: this
+            // path draws nothing.
+            if let Ok(po) = &adopted {
+                if image_changed(po) {
+                    for line in sync_cards(&p, &settings, &data_root) {
+                        eprintln!("memory cards after adoption: {line}");
+                    }
+                }
+            }
             drop(guard);
             match adopted {
                 Ok(po) if po.all_applied() => {}
@@ -515,7 +529,35 @@ pub async fn content_fetch() -> Result<ContentStatusView, String> {
     .map_err(|e| e.to_string())?
 }
 
-fn summarize(outcome: PromoteOutcome) -> InstalledSummary {
+/// Whether a promote put a new roster or a new build into the image, which
+/// is when the memory cards' gear rows can be stale.
+fn image_changed(outcome: &PromoteOutcome) -> bool {
+    outcome.components.iter().any(|c| match &c.state {
+        PromoteState::Applied { game_patch, roster, .. } => {
+            matches!(roster, Some(RosterResult::Applied(_))) || matches!(game_patch, Some(GamePatchResult::Applied(_)))
+        }
+        _ => false,
+    })
+}
+
+/// The memory cards, brought up to date with the roster that is now in the
+/// image. Called with the launch guard held, so the game is closed. Every
+/// bad state is a sentence; nothing here fails an update that already landed.
+fn sync_cards(p: &Platform, settings: &reborn_core::settings::Settings, data_root: &Path) -> Vec<String> {
+    let user = match reborn_core::session::resolve_user_dir(p, settings.user_dir.as_deref()) {
+        Ok(u) => u,
+        Err(e) => return vec![format!("The memory cards were left as they were: {}", e.player_message())],
+    };
+    match reborn_core::cards::after_apply(p, data_root, user.path(), &image_hook(p, settings).extra_dirs) {
+        Ok(outcome) => outcome.facts(),
+        Err(e) => {
+            eprintln!("memory cards after the update: {e}");
+            vec![reborn_core::cards::NOT_SYNCED.to_string()]
+        }
+    }
+}
+
+fn summarize(outcome: PromoteOutcome, cards: Vec<String>) -> InstalledSummary {
     let mut components = Vec::new();
     let mut problems = Vec::new();
     let mut game_patch = None;
@@ -592,11 +634,16 @@ fn summarize(outcome: PromoteOutcome) -> InstalledSummary {
         note.push(' ');
         note.push_str(&problems.join(" "));
     }
+    if !cards.is_empty() {
+        note.push(' ');
+        note.push_str(&cards.join(" "));
+    }
     InstalledSummary {
         components,
         game_patch,
         roster,
         problems,
+        cards,
         note,
     }
 }
@@ -635,13 +682,18 @@ pub async fn content_promote(confirm: bool) -> Result<ContentStatusView, String>
             let origin = Origin::new(&url);
             let updater = Updater::new(&p, &data_root, &origin, &verifier);
             let hook = image_hook(&p, &settings);
-            updater.promote(&check, &hook).map_err(|e| e.to_string())
+            let po = updater.promote(&check, &hook).map_err(|e| e.to_string())?;
+            // The memory cards, while the guard is still held and the game is
+            // closed: a new roster or build in the image means their gear
+            // rows may be stale. Quiet when nothing changed.
+            let cards = if image_changed(&po) { sync_cards(&p, &settings, &data_root) } else { Vec::new() };
+            Ok((po, cards))
         })();
         drop(guard);
         let mut h = held();
         match outcome {
-            Ok(po) => {
-                h.phase = Phase::Installed(summarize(po));
+            Ok((po, cards)) => {
+                h.phase = Phase::Installed(summarize(po, cards));
                 h.check = None;
             }
             Err(e) => {
@@ -680,9 +732,23 @@ mod tests {
 
     #[test]
     fn a_summary_names_what_landed_and_keeps_problems_visible() {
-        let s = summarize(PromoteOutcome::default());
+        let s = summarize(PromoteOutcome::default(), Vec::new());
         assert_eq!(s.note, "Nothing was installed.");
         assert!(s.problems.is_empty());
+        assert!(s.cards.is_empty());
+    }
+
+    #[test]
+    fn what_the_memory_cards_said_rides_in_the_note_the_page_shows() {
+        let line = "Memory card MemoryCardB.USA.raw: 12 gear row(s) brought up to date, 1 in-game edit(s) kept.".to_string();
+        let s = summarize(PromoteOutcome::default(), vec![line.clone()]);
+        assert_eq!(s.cards, vec![line.clone()]);
+        assert_eq!(s.note, format!("Nothing was installed. {line}"));
+    }
+
+    #[test]
+    fn an_empty_promote_did_not_change_the_image() {
+        assert!(!image_changed(&PromoteOutcome::default()));
     }
 
     #[test]

@@ -547,11 +547,11 @@ pub fn after_session(platform: &Platform, user_dir: &Path) -> CardsAfterSession 
     }
 }
 
-/// The sentence for a full sync that could not even be attempted before a
-/// game. A constant, never an error's text: the detail goes to the log where
-/// it happens, for the same reason `session::RESULTS_NOT_COLLECTED` is one.
-pub const NOT_SYNCED_BEFORE: &str =
-    "The memory cards could not be brought up to date before the game, so their gear is as it was.";
+/// The sentence for a full sync that could not even be attempted (before a
+/// game, after an update). A constant, never an error's text: the detail goes
+/// to the log where it happens, for the same reason
+/// `session::RESULTS_NOT_COLLECTED` is one.
+pub const NOT_SYNCED: &str = "The memory cards could not be brought up to date, so their gear is as it was.";
 
 /// Before a game: the full sync, so the cards the game is about to open
 /// carry the installed roster's gear. Free when nothing changed since the
@@ -562,14 +562,14 @@ pub fn before_session(platform: &Platform, user_dir: &Path) -> Vec<String> {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("the memory cards were not synced before the game: {e}");
-            return vec![NOT_SYNCED_BEFORE.to_string()];
+            return vec![NOT_SYNCED.to_string()];
         }
     };
     match after_apply(platform, &data_root, user_dir, &[]) {
         Ok(outcome) => outcome.facts(),
         Err(e) => {
             tracing::warn!("the memory cards were not synced before the game: {e}");
-            vec![NOT_SYNCED_BEFORE.to_string()]
+            vec![NOT_SYNCED.to_string()]
         }
     }
 }
@@ -992,6 +992,6 @@ mod tests {
         assert!(s.explain().unwrap().starts_with("No Reborn Builder console build was found"));
         let s = CardsAtSession { before: vec!["Before.".into()], after: Some(no_builder()) };
         assert!(s.explain().unwrap().starts_with("Before. No Reborn Builder"));
-        crate::player_sentence::assert_player_safe(NOT_SYNCED_BEFORE);
+        crate::player_sentence::assert_player_safe(NOT_SYNCED);
     }
 }
