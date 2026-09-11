@@ -599,6 +599,25 @@ impl Session {
             std::fs::write(&game_settings,doc.render())?;written.keys_set+=report.updated.len()+report.added.len();written.files.push(game_settings);
         }else{written.unchanged.push(game_settings);}
 
+        // Pre-boot config check. A 0-FPS freeze on 2026-09-11 was caused by the
+        // HD texture prefetch being on (12 GB RAM, the "running slow" report),
+        // and by a run being dual core. Log the three settings that decide both
+        // so a bad state is visible in the launcher log the moment it happens,
+        // not weeks later from a probe. `CacheHiresTextures` back on is a
+        // warning; the core mode is informational (single core is the user's
+        // per-machine choice and is not forced here).
+        let prefetch = doc.get("Video_Settings", "CacheHiresTextures").unwrap_or("<unset>");
+        let cpu_thread = doc.get("Core", "CPUThread").unwrap_or("<default:True>");
+        let sync_gpu = doc.get("Core", "SyncGPU").unwrap_or("<unset>");
+        if prefetch != "False" {
+            tracing::warn!(
+                "{game_id}: CacheHiresTextures = {prefetch} (expected False); the HD pack will prefetch to ~12 GB of RAM and the game will run slow"
+            );
+        }
+        tracing::info!(
+            "{game_id} pre-boot: CacheHiresTextures={prefetch} CPUThread={cpu_thread} SyncGPU={sync_gpu}"
+        );
+
         }
         // Ask the runtime that is about to be launched. The built in scan sees
         // XInput only, which on a real machine misses an entire backend.
