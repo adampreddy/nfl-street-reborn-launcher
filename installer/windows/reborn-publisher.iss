@@ -61,7 +61,11 @@ AppUpdatesURL={#AppURL}
 
 ; Program files, under the same Programs root the launcher uses, but its own
 ; folder: the two installers never share a directory.
-DefaultDirName={localappdata}\Programs\{#DirName}
+; One folder in Roaming, beside the launcher's own data, the way Adam
+; asked for on 2026-09-10: the program sits in its own `app` subfolder so
+; an uninstall (which removes only what it installed) cannot reach the
+; publisher's settings or journal beside it.
+DefaultDirName={userappdata}\NFL Street Reborn Launcher\publisher\app
 DefaultGroupName={#AppName}
 
 UsePreviousAppDir=no
