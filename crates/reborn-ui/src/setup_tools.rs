@@ -423,7 +423,7 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
 }
 #[tauri::command]
 pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String)->Result<serde_json::Value,String>{
-    tauri::async_runtime::spawn_blocking(move||->Result<(),String>{
+    let cards=tauri::async_runtime::spawn_blocking(move||->Result<Vec<String>,String>{
         use tauri::Emitter;
         let last=std::cell::Cell::new(std::time::Instant::now()-std::time::Duration::from_secs(1));
         let report=|stage:&str,percent:Option<u8>,bytes:u64|{if last.get().elapsed().as_millis()>=100 || percent==Some(100){last.set(std::time::Instant::now());let _=app.emit("install-import-progress",serde_json::json!({"stage":stage,"percent":percent,"bytes":bytes}));}};
@@ -453,6 +453,13 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         // the shipped chain: "I already have Reborn" changes the disc rather
         // than copying the old one over.
         patch_to_newest(&p,&|stage|report(stage,None,copied))?;
+        // The copied memory cards, brought up to date with the installed
+        // roster while the game is known to be closed. Facts for the page,
+        // never an error: the import itself has already succeeded, and a
+        // roster that is not installed yet simply says nothing (the first
+        // content update and every launch run the same sync).
+        report("Bringing your saves up to date…",None,copied);
+        let cards=match reborn_core::cards::after_apply(&p,&data,&user,&[]){Ok(outcome)=>outcome.facts(),Err(e)=>{eprintln!("memory cards after the import: {e}");vec![reborn_core::cards::NOT_SYNCED.to_string()]}};
         let pad_ini=std::fs::read_to_string(user.join("Config/GCPadNew.ini")).unwrap_or_default();
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-controller.ini"),&pad_ini).map_err(|e|e.to_string())?;
@@ -497,9 +504,9 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
             if let Advance::Refused(why)=flow.satisfy(stage,answer).map_err(|e|e.to_string())?{return Err(why.message());}
         }
         report("Import complete. Continue to your controller.",Some(100),copied);
-        Ok(())
+        Ok(cards)
     }).await.map_err(|e|e.to_string())??;
-    Ok(serde_json::json!({"imported":true}))
+    Ok(serde_json::json!({"imported":true,"cards":cards}))
 }
 
 fn migrate_effects(root:&Path,destination:&Path)->Result<Option<String>,String>{
