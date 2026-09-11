@@ -82,6 +82,7 @@ const theJob = job(jobHost, {
     return `Done. Players on ${serverVersion || "the previous version"} are now offered launcher ${plan.proposed_version || version()}.`;
   },
   confirmLabel: "Yes, build and publish",
+  emptyLabel: "Type a version first",
   onSettled: () => proposeVersion(),
 });
 

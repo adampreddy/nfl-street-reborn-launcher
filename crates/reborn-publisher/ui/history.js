@@ -118,6 +118,7 @@ const theJob = job(jobHost, {
     return `Done. Players now get ${thingWord(plan.component || s.component)} ${plan.target_version || s.version}.`;
   },
   confirmLabel: "Yes, roll back",
+  emptyLabel: "Nothing to roll back to",
   onSettled: () => {
     loadJournal();
     loadVersions();

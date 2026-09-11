@@ -107,6 +107,7 @@ const theJob = job(jobHost, {
     return `Done. New players now download installer ${plan.version || versionInput.value.trim()}.`;
   },
   confirmLabel: "Yes, build and publish",
+  emptyLabel: "Type a version first",
 });
 
 // -- startup ------------------------------------------------------------------

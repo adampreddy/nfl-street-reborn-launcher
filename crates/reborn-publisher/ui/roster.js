@@ -130,6 +130,7 @@ const theJob = job(jobHost, {
     return `Done. Players now get roster ${plan.version || versionInput.value.trim()}.`;
   },
   confirmLabel: "Yes, publish",
+  emptyLabel: "Type a version first",
 });
 
 versionInput.addEventListener("input", () => theJob.refresh());

@@ -215,6 +215,7 @@ const theJob = job(jobHost, {
     return `Done. Players now get ${thingWord(plan.component || s.component)} ${plan.version || s.version}.`;
   },
   confirmLabel: "Yes, publish",
+  emptyLabel: "Choose a folder and a version first",
   onSettled: () => loadVersionInfo(),
 });
 

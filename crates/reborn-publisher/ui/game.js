@@ -110,6 +110,7 @@ const buildJob = job(buildJobHost, {
   },
   describeDone: () => `Done. The disc is at ${outInput.value.trim()}. Read it back below if you want to be sure.`,
   confirmLabel: () => (warningCount > 0 ? "Build anyway" : "Yes, build"),
+  emptyLabel: "Choose the base image, the roster and the output first",
   onSettled: (state) => {
     if (state && state.phase === "planned" && state.plan && typeof state.plan === "object") renderBuildWarnings(state.plan.warnings);
   },
@@ -215,6 +216,7 @@ const patchJob = job(patchJobHost, {
   },
   describeDone: () => `Done. Players now get game patch ${versionInput.value.trim()}.`,
   confirmLabel: "Yes, publish",
+  emptyLabel: "Choose the new build and a label first",
   onSettled: (state) => {
     const plan = state && state.plan;
     if (state && state.phase === "planned" && plan && plan.from) {

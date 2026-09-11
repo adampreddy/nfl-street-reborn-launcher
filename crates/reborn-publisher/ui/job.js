@@ -52,7 +52,9 @@
 //   describeVerified?(value, state): string
 //     For a plain-read verify: the sentence from its value. An operation
 //     verify uses the backend's own summary.
-//   confirmLabel?: string      default "Yes, publish"
+//   confirmLabel?: string | (state) => string     default "Yes, publish"
+//   emptyLabel?: string        the button's text while `verb()` is "", in
+//                              the form of what to do first ("Choose a folder")
 //   onSettled?(state)          called whenever this job's operation settles
 //                              (the page may want to refresh a list).
 //
@@ -154,7 +156,7 @@ export function job(host, config) {
 
   function draw() {
     const text = typeof verb === "function" ? verb() : String(verb || "");
-    primary.textContent = text || "Nothing to publish";
+    primary.textContent = text || config.emptyLabel || "Nothing to publish yet";
     primary.disabled = busy() || !!otherBusy || !text;
     primary.hidden = phase === "proposed";
     cancelBtn.hidden = !busy();
