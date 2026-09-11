@@ -2043,10 +2043,11 @@ mod tests {
 // Publisher looked hung, twice on 2026-09-10. ListObjectsV2 answers a
 // thousand keys a page, so the same question is seventeen requests.
 
-/// Every key on the bucket under `prefix`, with its size. `None` when the
-/// bucket will not list (a token scoped to objects alone, a stand-in without
-/// the call), so the caller can fall back to asking per key.
-pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Result<Option<std::collections::HashMap<String, u64>>> {
+/// Every key on the bucket under `prefix`, with its size. The inner `Err`
+/// says why the bucket would not list (the HTTP status and what it said:
+/// a token scoped to objects alone, a stand-in without the call), so the
+/// caller can fall back to asking per key and say why it is slow.
+pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Result<std::result::Result<std::collections::HashMap<String, u64>, String>> {
     let mut found = std::collections::HashMap::new();
     let mut token: Option<String> = None;
     loop {
@@ -2058,7 +2059,8 @@ pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Re
         let req = sign(bucket, "GET", &path, &query, &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
         let reply = transport.send(&req, Body::Empty)?;
         if !(200..300).contains(&reply.status) {
-            return Ok(None);
+            let said: String = String::from_utf8_lossy(&reply.body).chars().filter(|c| !c.is_control()).take(160).collect();
+            return Ok(Err(format!("HTTP {} {}", reply.status, said.trim())));
         }
         let xml = String::from_utf8_lossy(&reply.body);
         for (key, size) in listed_objects(&xml) {
@@ -2066,7 +2068,7 @@ pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Re
         }
         match continuation_token(&xml) {
             Some(t) => token = Some(t),
-            None => return Ok(Some(found)),
+            None => return Ok(Ok(found)),
         }
     }
 }
@@ -2096,13 +2098,13 @@ pub fn already_on_bucket<'a>(
     bucket: &'a Bucket,
 ) -> Result<(Box<dyn Fn(&str) -> Option<u64> + 'a>, String)> {
     match list_keys(transport, bucket, "")? {
-        Some(found) => {
+        Ok(found) => {
             let note = format!("Listed        {} object(s) already on the bucket, in one pass.", thousands(found.len() as u64));
             Ok((Box::new(move |key: &str| found.get(key).copied()), note))
         }
-        None => Ok((
+        Err(why) => Ok((
             Box::new(move |key: &str| head_length(transport, bucket, key)),
-            "The bucket would not list its objects; asking about each one (slow).".to_string(),
+            format!("The bucket would not list its objects ({why}); asking about each one (slow)."),
         )),
     }
 }
@@ -2201,7 +2203,7 @@ mod listing_tests {
     #[test]
     fn a_bucket_that_refuses_to_list_yields_none_so_the_caller_falls_back() {
         let t = Scripted { replies: Mutex::new(vec![Reply { status: 403, headers: vec![], body: b"AccessDenied".to_vec() }]), urls: Mutex::new(vec![]) };
-        assert!(list_keys(&t, &bucket(), "").unwrap().is_none());
+        assert!(list_keys(&t, &bucket(), "").unwrap().is_err());
     }
 
     #[test]
