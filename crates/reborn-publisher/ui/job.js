@@ -389,9 +389,14 @@ export function job(host, config) {
       return;
     }
     // Two kinds of verify: an operation (op_status turns to "verifying"
-    // for this job) or a plain read whose answer IS the result.
+    // for this job, or has already settled on a new summary) or a plain
+    // read whose answer IS the result.
     const peek = await call("op_status");
-    const isOp = peek.ok && mine(peek.value) && (JOB_BUSY.has(peek.value.phase) || peek.value.phase === "done" || peek.value.phase === "refused" || peek.value.phase === "failed") && peek.value !== last && peek.value.summary !== (last && last.summary);
+    const runSummary = last && last.summary;
+    const isOp =
+      peek.ok &&
+      mine(peek.value) &&
+      (peek.value.phase === "verifying" || (["done", "refused", "failed"].includes(peek.value.phase) && peek.value.summary !== runSummary));
     if (isOp && peek.value.phase === "verifying") {
       const settled = await follow("verifying");
       if (settled) {
