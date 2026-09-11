@@ -161,6 +161,12 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if mode=="join"&&(address.is_empty()||address.len()>253||!address.chars().all(|c|c.is_ascii_alphanumeric()||".:-_".contains(c))){return Err("Enter a valid host code or address.".into());}
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
+  // The same texture sync Play runs: compose the active tree and point the
+  // Dolphin user folder at it. Netplay skipped it, so a player whose first
+  // launch was an online game got no textures at all (Adam, 2026-09-11:
+  // "No textures on launch"). A sync problem is logged, not fatal: the room
+  // still opens and Play's own note explains the textures.
+  if let Err(e)=crate::sync_active_now(&p,runtime.as_deref()) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
   // netplay boots: reborn_core::online_image keeps a copy that is the

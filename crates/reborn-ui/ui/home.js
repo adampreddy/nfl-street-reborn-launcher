@@ -4,6 +4,11 @@
 import { bridge, call, el, fact, facts, get, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
 import { mountNotices } from "./notices.js";
 
+// Opened from a friend's invite link: straight on to Online, which fills in
+// the room. Play is the window's first page, so this is where the hand-off
+// lives; the code stays put until Online has used it.
+if (bridge) call("netplay_pending_join").then((pending) => { if (pending && pending.code) location.replace("online.html"); }).catch(() => {});
+
 // Each read settles on its own: a failed pad scan must not blank the page.
 const state = {};
 let busy = false;

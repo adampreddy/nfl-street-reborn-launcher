@@ -34,7 +34,14 @@ function drawRoom(snapshot){
  const heading=el('div',{class:'netplay-room-heading'},el('div',{},el('span',{class:'netplay-kicker',text:running?'IN GAME':host?'YOUR ROOM':'NETPLAY'}),el('h2',{text:running?'Game in progress':snapshot.phase==='connecting'?'Connecting…':host?'Ready when you are.':'You’re in.'})),el('span',{class:'netplay-safe',text:'Personal saves protected'}));
  const info=el('p',{class:'note',text:running?'The game is open in its own window. Your room stays here.':host?(snapshot.connection==='direct'?'Share your address and port, assign players, then start the game.':'Share your host code, assign players, then start the game.'):'The host will start the game when everyone is ready.'});
  const code=el('div',{class:'netplay-code'});
- if(host&&snapshot.code){code.append(el('span',{text:'Host code'}),el('strong',{text:snapshot.code}),el('button',{type:'button','data-room-focus':'copy',text:'Copy',onclick:async event=>{try{await navigator.clipboard.writeText(snapshot.code);event.target.textContent='Copied';}catch{event.target.textContent='Select code to copy';}}}));}
+ if(host&&snapshot.code){
+  // The code, and an invite a friend can paste anywhere: the code in words
+  // plus a link that opens their launcher on this room (the installer
+  // registers nflstreetreborn:// for it). Adam: "copy invite would be cool".
+  const invite=`Join my NFL Street Reborn game! Room code: ${snapshot.code}\nnflstreetreborn://join/${snapshot.code}`;
+  const copyTo=(text,label)=>async event=>{try{await navigator.clipboard.writeText(text);event.target.textContent='Copied';}catch{event.target.textContent=label;}};
+  code.append(el('span',{text:'Host code'}),el('strong',{text:snapshot.code}),el('button',{type:'button','data-room-focus':'copy',text:'Copy',onclick:copyTo(snapshot.code,'Select code to copy')}),el('button',{type:'button','data-room-focus':'invite',text:'Copy invite',onclick:copyTo(invite,'Could not copy')}));
+ }
  else if(host&&snapshot.connection==='traversal')code.append(el('span',{text:'Getting your host code…'}));
  else if(host)code.append(el('span',{text:'Direct connection'}),el('strong',{text:`Port ${snapshot.port||port.value}`}),el('span',{class:'note',text:'Share your IP address with your friends.'}));
  const players=el('div',{class:'netplay-players'});
@@ -60,6 +67,21 @@ form.addEventListener('submit',async event=>{
  catch(e){status.textContent=reason(e);}finally{busy=false;updateAvailability();await poll();}
 });
 document.addEventListener('session-state',event=>{sessionActive=!!event.detail;updateAvailability();});
-if(bridge){call('session_active').then(active=>{sessionActive=!!active;updateAvailability();}).catch(()=>{});poll();}else status.textContent='Open this page in the launcher to start Netplay.';
+// An invite link (nflstreetreborn://join/<code>) left its room code behind
+// when the launcher started: fill the form the way a friend would have read
+// it out, then forget the code so a later visit starts clean.
+async function takePendingInvite(){
+ try{
+  const pending=await call('netplay_pending_join');
+  if(!pending||typeof pending.code!=='string'||!pending.code)return;
+  mode='join';tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent==='Join a game')));
+  connection.value='traversal';connection.dispatchEvent(new Event('change'));
+  address.value=pending.code;
+  status.textContent=`Invite received: room ${pending.code}. Enter your player name and press Join game.`;
+  await call('netplay_pending_join_clear').catch(()=>{});
+  updateAvailability();(nickname.value?submit:nickname).focus({preventScroll:true});
+ }catch(_){}
+}
+if(bridge){call('session_active').then(active=>{sessionActive=!!active;updateAvailability();}).catch(()=>{});poll();takePendingInvite();}else status.textContent='Open this page in the launcher to start Netplay.';
 const timer=setInterval(poll,750);window.addEventListener('pagehide',()=>{disposed=true;clearInterval(timer);});
 updateAvailability();markCurrent();wireCoreFold();

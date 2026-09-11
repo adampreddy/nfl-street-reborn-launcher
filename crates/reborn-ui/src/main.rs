@@ -1440,7 +1440,7 @@ fn now_ms() -> u64 {
 /// The same call a launch makes, against the same user directory a launch
 /// would resolve, so what the Mods page shows as applied is what the next
 /// launch loads and not a parallel notion of it.
-fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
+pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
@@ -5061,6 +5061,9 @@ enum Mode {
     Play,
     /// Open the folder holding the player's saves and textures.
     Folder,
+    /// An invite link a friend sent (`nflstreetreborn://join/<code>`): remember
+    /// the room code, then open the window on the Online page.
+    Join(String),
 }
 
 fn mode_from(args: impl Iterator<Item = String>) -> Mode {
@@ -5068,10 +5071,74 @@ fn mode_from(args: impl Iterator<Item = String>) -> Mode {
         match a.as_str() {
             "--play" => return Mode::Play,
             "--folder" => return Mode::Folder,
-            _ => {}
+            other => {
+                if let Some(code) = join_code_from(other) {
+                    return Mode::Join(code);
+                }
+            }
         }
     }
     Mode::Window
+}
+
+/// The room code inside an invite link, `nflstreetreborn://join/<code>`,
+/// as Windows hands it to the launcher when a friend's link is opened. The
+/// scheme is matched without regard to case; the code keeps its own. Only
+/// letters, digits and dashes count, so a link cannot smuggle anything else
+/// onto the Online page.
+fn join_code_from(arg: &str) -> Option<String> {
+    let arg = arg.trim().trim_matches('"');
+    let lower = arg.to_ascii_lowercase();
+    let rest = lower.strip_prefix("nflstreetreborn://join/")?;
+    let code: String = arg[arg.len() - rest.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    (!code.is_empty() && code.len() <= 64).then_some(code)
+}
+
+/// Where an invite's room code waits for the Online page: a small file in
+/// the data root, read and cleared by the page, so the window can open on
+/// Play as usual and still land the player in the right room.
+fn pending_join_path(platform: &Platform) -> Result<PathBuf, String> {
+    Ok(platform
+        .paths
+        .data_root()
+        .map_err(|e| e.to_string())?
+        .join(reborn_core::DataDir::Config.relative())
+        .join("pending-join.json"))
+}
+
+fn remember_pending_join(platform: &Platform, code: &str) -> Result<(), String> {
+    let path = pending_join_path(platform)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::json!({"code": code, "at": reborn_core::utc_now_iso()});
+    std::fs::write(&path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// The room code an invite link left behind, if any. Not cleared here: the
+/// Online page clears it once it has filled the form, so a page that only
+/// glanced (Play, deciding whether to redirect) does not lose it.
+#[tauri::command]
+async fn netplay_pending_join() -> Result<Option<serde_json::Value>, String> {
+    let path = pending_join_path(&Platform::detect())?;
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn netplay_pending_join_clear() -> Result<(), String> {
+    let path = pending_join_path(&Platform::detect())?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The launch a Play shortcut makes.
@@ -5254,6 +5321,14 @@ fn main() {
     // window when they cannot do their job, so a shortcut never does
     // nothing at all with nothing to show for it.
     match mode_from(std::env::args()) {
+        Mode::Join(code) => {
+            // Remembered, then the window opens as usual; Play sends the
+            // player straight on to Online, which fills in the room.
+            let p = Platform::detect();
+            if let Err(why) = remember_pending_join(&p, &code) {
+                eprintln!("Could not keep the invite's room code: {why}");
+            }
+        }
         Mode::Play => {
             let p = Platform::detect();
             match play_now(&p) {
@@ -5299,6 +5374,8 @@ fn main() {
             shell_tools::update_progress,
             shell_tools::notices_pending,
             shell_tools::notice_dismiss,
+            netplay_pending_join,
+            netplay_pending_join_clear,
             stats_view::stats_games,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,
@@ -6041,6 +6118,19 @@ struct StatsSubmitView {"),
                 "{name} no longer maps a core error to a sentence at all"
             );
         }
+    }
+
+    #[test]
+    fn an_invite_link_argument_yields_its_room_code_and_nothing_else() {
+        assert_eq!(join_code_from("nflstreetreborn://join/AB12CD"), Some("AB12CD".into()));
+        assert_eq!(join_code_from("NFLSTREETREBORN://join/ab-12"), Some("ab-12".into()));
+        assert_eq!(join_code_from("\"nflstreetreborn://join/AB12CD\""), Some("AB12CD".into()), "quoted, as Windows may pass it");
+        assert_eq!(join_code_from("nflstreetreborn://join/AB12CD/../x?y"), Some("AB12CD".into()), "only the code survives");
+        assert_eq!(join_code_from("nflstreetreborn://join/"), None);
+        assert_eq!(join_code_from("nflstreetreborn://host/AB12CD"), None);
+        assert_eq!(join_code_from("--play"), None);
+        assert!(matches!(mode_from(["x.exe".to_string(), "nflstreetreborn://join/Q1".to_string()].into_iter()), Mode::Join(c) if c == "Q1"));
+        assert!(matches!(mode_from(["x.exe".to_string()].into_iter()), Mode::Window));
     }
 
     #[test]

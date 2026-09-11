@@ -315,6 +315,17 @@ Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
 ; at install time, because which folder that is depends on the emulator in
 ; use and on whether a 2.1 install is present.
 
+[Registry]
+; The invite link a host copies from the Online page:
+; nflstreetreborn://join/<code>. Opening one starts this launcher with the
+; link as its argument; it remembers the room code and lands the player on
+; Online with the room filled in. Per user (HKCU), the way everything else
+; here is, so no elevation. Removed with the uninstall.
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: ""; ValueData: "URL:NFL Street Reborn invite"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"",0"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"" ""%1"""; Flags: uninsdeletekey
+
 [Run]
 ; Named in full on the Finish page: what is about to open is the launcher,
 ; not the game, and a player who ticks this should know which one they get.
