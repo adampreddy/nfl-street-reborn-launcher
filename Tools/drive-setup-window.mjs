@@ -55,6 +55,13 @@ if (info?.shipped_game) {
   console.log(stamp(), "import result:", JSON.stringify(imported).slice(0, 200));
   check(imported && !imported.error && imported.patched === true, "the disc was patched to the newest build during import", JSON.stringify(imported).slice(0, 160));
   check(/98bfe6bfce1a/.test(String(imported?.pristine || "")), "the pristine image is NSRV3 (98bfe6bf…)", String(imported?.pristine));
+  // What the wizard will say happened to the disc: "bundle" for an original
+  // NFL Street 2 disc patched by the shipped bundle, "patched" for an older
+  // Reborn disc moved forward by the chain, "newest" for a disc that already
+  // is NSRV3. REBORN_WALK_EXPECT_OUTCOME pins the one this walk's disc must
+  // produce.
+  console.log("import outcome:", JSON.stringify({ outcome: imported?.outcome, label: imported?.label, note: imported?.note, patched: imported?.patched }));
+  if (process.env.REBORN_WALK_EXPECT_OUTCOME) check(imported?.outcome === process.env.REBORN_WALK_EXPECT_OUTCOME, `the import outcome is "${process.env.REBORN_WALK_EXPECT_OUTCOME}"`, String(imported?.outcome));
   await page.reload();
   await page.waitForFunction(() => /Game File (Imported|Patched)/.test(document.body.textContent), null, { timeout: 60000 }).catch(() => {});
 }
