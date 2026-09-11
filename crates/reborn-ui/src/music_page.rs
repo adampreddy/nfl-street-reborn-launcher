@@ -194,7 +194,7 @@ fn data_root() -> Result<PathBuf, String> {
 }
 
 fn http() -> reborn_core::net::UreqHttp {
-    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")))
+    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", crate::launcher_version()))
 }
 
 fn candidate(c: &reborn_core::soundtrack::lookup::Candidate) -> CandidateView {

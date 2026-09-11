@@ -199,12 +199,35 @@ pub fn newer(candidate: &str, current: &str) -> bool {
     if a_n != b_n {
         return a_n > b_n;
     }
-    // Same numbers: a release beats a pre-release; two pre-releases compare as text.
+    // Same numbers: a release beats a pre-release; two pre-releases compare
+    // piece by piece, numerically where both pieces are numbers, so that
+    // beta.10 follows beta.9 instead of sorting before beta.2 as text.
     match (a_pre, b_pre) {
         (None, Some(_)) => true,
         (Some(_), None) => false,
         (None, None) => false,
-        (Some(x), Some(y)) => x > y,
+        (Some(x), Some(y)) => prerelease_newer(&x, &y),
+    }
+}
+
+fn prerelease_newer(candidate: &str, current: &str) -> bool {
+    let mut a = candidate.split('.');
+    let mut b = current.split('.');
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return false,
+            (Some(_), None) => return true,
+            (None, Some(_)) => return false,
+            (Some(x), Some(y)) => {
+                if x == y {
+                    continue;
+                }
+                return match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(xn), Ok(yn)) => xn > yn,
+                    _ => x > y,
+                };
+            }
+        }
     }
 }
 
@@ -317,6 +340,15 @@ mod tests {
         assert!(newer("3.10.0", "3.9.9"), "10 is more than 9, not less as text");
         assert!(newer("3.0.0", "3.0.0-beta.1"));
         assert!(newer("3.0.0-beta.2", "3.0.0-beta.1"));
+        // Pre-release pieces compare as numbers, not text: beta.10 > beta.9.
+        assert!(newer("3.0.1-beta.10", "3.0.1-beta.9"));
+        assert!(!newer("3.0.1-beta.9", "3.0.1-beta.10"));
+        assert!(!newer("3.0.1-beta.8", "3.0.1-beta.8"));
+        // The bug this guards against: a launcher whose crate says 3.1.0 must
+        // not be handed a build stamped 3.0.1-beta.8, and one stamped
+        // 3.0.1-beta.7 must be.
+        assert!(!newer("3.0.1-beta.8", "3.1.0"));
+        assert!(newer("3.0.1-beta.8", "3.0.1-beta.7"));
         assert!(!newer("3.0.0-beta.1", "3.0.0"));
         assert!(!newer("3.0.0", "3.0.0"));
         assert!(!newer("2.9.9", "3.0.0"));

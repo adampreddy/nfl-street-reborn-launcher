@@ -144,8 +144,13 @@ if (-not $LauncherOnly -and -not $RuntimeOnly -and -not $Publisher) {
 # waste, and depending on it would couple a runtime-only publish to either
 # program compiling, which it does not need to do.
 if (-not $RuntimeOnly) {
-    Write-Host "Building release binaries"
+    Write-Host "Building release binaries (stamped $Version)"
     Push-Location $root
+    # The version the binaries believe they are. Read at compile time by
+    # reborn-ui's launcher_version(); without it the launcher reports the
+    # crate version (3.1.0) and decides every 3.0.x update is older than
+    # itself. Cargo tracks the variable and rebuilds when it changes.
+    $env:REBORN_BUILD_VERSION = $Version
     if ($Publisher) {
         cargo build --release -p reborn-publisher -p reborn-cli
     } else {

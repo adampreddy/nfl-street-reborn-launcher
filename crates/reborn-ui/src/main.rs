@@ -31,6 +31,19 @@ mod dolphin_settings;
 
 use std::path::{Path, PathBuf};
 
+/// The version this launcher believes it is: the one `build.ps1 -Version`
+/// stamped on the build, falling back to the crate version for a plain
+/// `cargo build`. Every version comparison and every user agent reads this,
+/// never `CARGO_PKG_VERSION` directly. The crate said 3.1.0 while every
+/// beta was stamped 3.0.1-beta.N, so `update_check` called each newer beta
+/// "up to date" and no launcher built after 2026-09-09 ever updated itself.
+pub fn launcher_version() -> &'static str {
+    match option_env!("REBORN_BUILD_VERSION") {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 use reborn_core::content::ContentService;
@@ -3733,7 +3746,7 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
 }
 
 fn http_client() -> reborn_core::net::UreqHttp {
-    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")))
+    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", crate::launcher_version()))
 }
 
 /// Record whether the launcher may update on its own.
@@ -4124,7 +4137,7 @@ fn update_source_for(p: &Platform, given: Option<&str>) -> Result<String, String
 
 fn update_view(source: &str, check: &reborn_core::update::UpdateCheck) -> UpdateView {
     use reborn_core::update::UpdateCheck as C;
-    let current = env!("CARGO_PKG_VERSION").to_string();
+    let current = crate::launcher_version().to_string();
     let (state, latest, bytes, notes) = match check {
         C::UpToDate { latest, .. } => ("up_to_date", Some(latest.clone()), None, None),
         C::Available { latest, asset, notes, .. } => ("available", Some(latest.clone()), Some(asset.bytes), notes.clone()),
@@ -4141,7 +4154,7 @@ async fn update_check(source: Option<String>) -> Result<UpdateView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let source = update_source_for(&p, source.as_deref())?;
-        let check = reborn_core::update::check(&http_client(), &source, env!("CARGO_PKG_VERSION"));
+        let check = reborn_core::update::check(&http_client(), &source, crate::launcher_version());
         Ok(update_view(&source, &check))
     })
     .await
@@ -4166,7 +4179,7 @@ async fn update_download(source: Option<String>) -> Result<UpdateDownloadView, S
         let p = Platform::detect();
         let source = update_source_for(&p, source.as_deref())?;
         let http = http_client();
-        let check = reborn_core::update::check(&http, &source, env!("CARGO_PKG_VERSION"));
+        let check = reborn_core::update::check(&http, &source, crate::launcher_version());
         let view = update_view(&source, &check);
         let reborn_core::update::UpdateCheck::Available { asset, .. } = &check else {
             return Ok(UpdateDownloadView { check: view, path: None, bytes: 0, sha256: None });
@@ -4375,7 +4388,7 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
 
         // What the launcher itself knows, as text.
         let mut status = String::new();
-        status.push_str(&format!("launcher {}\n", env!("CARGO_PKG_VERSION")));
+        status.push_str(&format!("launcher {}\n", crate::launcher_version()));
         status.push_str(&format!("channel {}\n", reborn_core::Channel::detect().explain()));
         status.push_str(&format!("data root {}\n", data.display()));
         if let Some(exe) = &exe {
