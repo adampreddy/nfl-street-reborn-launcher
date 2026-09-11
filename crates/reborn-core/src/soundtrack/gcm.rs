@@ -165,6 +165,24 @@ pub fn repack(
 /// Write `out`: verbatim head through the DOL, a regenerated FST, every file
 /// in FST order (replacements substituted), zero padding to `disc_size`.
 /// Returns the SHA-256 of what was written.
+/// How many bytes past `disc_size` the disc would end with `replacements`
+/// in place of the files of the same names: zero when it fits. The same
+/// layout arithmetic as [`repack_with_size`], so a soundtrack that is too
+/// big is refused with a number before any image is written.
+pub fn overflow_with(disc: &Disc, replacements: &BTreeMap<String, Vec<u8>>, disc_size: u64) -> u64 {
+    let fst_off = align(disc.dol_offset + disc.dol_len);
+    let total = disc.files.len() as u32 + 1;
+    let strtab_len: u64 = disc.files.iter().map(|f| f.name.len() as u64 + 1).sum();
+    let fst_size = 12 * u64::from(total) + strtab_len;
+    let floor = disc.files.iter().map(|f| f.offset).min().unwrap_or(FILES_START);
+    let mut cur = floor.max(align(fst_off + fst_size));
+    for f in &disc.files {
+        let size = replacements.get(&f.name).map(|d| d.len() as u64).unwrap_or(f.size);
+        cur = align(cur) + size;
+    }
+    cur.saturating_sub(disc_size)
+}
+
 pub fn repack_with_size(
     disc: &Disc,
     replacements: &BTreeMap<String, Vec<u8>>,

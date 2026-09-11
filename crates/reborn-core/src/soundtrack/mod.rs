@@ -97,6 +97,9 @@ pub enum Refusal {
     OnlineBuild,
     NothingStaged,
     Disabled,
+    /// The staged soundtrack does not fit the disc: the rebuilt image would
+    /// be `over_bytes` past the disc's size.
+    DiscFull { over_bytes: u64 },
 }
 
 impl Refusal {
@@ -142,6 +145,10 @@ impl Refusal {
             Refusal::Disabled => {
                 "The custom soundtrack is switched off. Turn it on to apply songs.".to_string()
             }
+            Refusal::DiscFull { over_bytes } => format!(
+                "Your soundtrack is about {:.1} MB too big for the disc. Replace a long song with a shorter one, or put an original song back, then apply again.",
+                (*over_bytes as f64 / 1_048_576.0).max(0.1)
+            ),
         }
     }
 }

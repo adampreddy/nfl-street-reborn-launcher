@@ -77,12 +77,15 @@ pub fn encode_slot(left: &[i16], right: &[i16], pt_headers: &[Vec<u8>], on: &mut
     };
 
     // Every segment encodes to the same size (fixed-rate frames, equal
-    // sample counts); the first one sizes the allotment. The allotment is
-    // rounded up to a 0x800 multiple with room to spare, and the rest of
-    // it past SCEl is zeros, never audio.
+    // sample counts); the first one sizes the allotment: the smallest
+    // 0x800 multiple that holds the stream, the rest of it past SCEl
+    // zeros, never audio. The extra 0x800 per segment the silent-block
+    // padding used to want is gone: 80 KB a song, 1.7 MB across 21, and
+    // that is the difference between a full soundtrack fitting the disc
+    // or not (Adam's 21 songs overflowed by 1 MB with it).
     let trial = ea_xa::encode_stereo_stream(&left[..seg_samples], &right[..seg_samples], &pt_headers[0], None);
     let raw = trial.len();
-    let target = raw.div_ceil(0x800) * 0x800 + 0x800;
+    let target = raw.div_ceil(0x800) * 0x800;
     if target >= SEGMENT_CEILING {
         return Err(Refusal::SongTooLong {
             seconds: (total as u64) / u64::from(SAMPLE_RATE),

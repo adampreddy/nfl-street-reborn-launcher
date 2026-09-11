@@ -224,6 +224,13 @@ pub fn apply_with_size(
     replacements.insert("pathfind.dat".to_string(), built.pathfind.clone());
     replacements.insert("template.dat".to_string(), built.template.clone());
     let size = disc_size.unwrap_or(gcm::DISC_SIZE);
+    // A disc image has one size. A soundtrack of 21 long songs can outgrow
+    // it, and that is a sentence with a number for the player, not an io
+    // error from the middle of a rebuild.
+    let over_bytes = gcm::overflow_with(&source, &replacements, size);
+    if over_bytes > 0 {
+        return Ok(Outcome::Refused(Refusal::DiscFull { over_bytes }));
+    }
     let after = gcm::repack_with_size(&source, &replacements, &part, size, &mut |done, total| on(Progress::Building { done, total }))?;
 
     // Read-back gate: the new disc must open and carry the files just built.
@@ -987,6 +994,31 @@ mod tests {
         std::fs::copy(&pristine, &booted).unwrap();
         let size = std::fs::metadata(&pristine).unwrap().len();
         (dir, pristine, booted, size)
+    }
+
+    /// A soundtrack that outgrows the disc is refused with the overflow in
+    /// bytes before anything is written, never an io error mid-rebuild.
+    #[test]
+    fn a_soundtrack_too_big_for_the_disc_is_refused_with_the_overflow() {
+        let (dir, _pristine, booted, size) = scratch_root();
+        let root = dir.path();
+        let platform = Platform::detect();
+        let pack_path = root.join("big.nsrmusic");
+        pack::write_pack(&pack_path, "Big", "", "", &[pack::SongInput { slot: Slot::new(3).unwrap(), blob: blob(48_000), title: "Long".into(), artist: String::new(), album: String::new() }]).unwrap();
+        stage_pack(root, &pack_path).unwrap();
+        let before = hash_file(&booted).unwrap();
+        // the disc as it is has no room for a bigger pathfind.dat
+        match apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
+            Outcome::Refused(Refusal::DiscFull { over_bytes }) => {
+                assert!(over_bytes > 0);
+                assert!(Refusal::DiscFull { over_bytes }.message().contains("too big for the disc"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(hash_file(&booted).unwrap(), before, "nothing was written");
+        assert!(Soundtrack::load(root).unwrap().has_pending(), "the staging is kept for the player to trim");
+        // with room to spare the same staging applies
+        assert!(matches!(apply_with_size(&platform, root, Some(size + 0x400000), &mut |_| {}).unwrap(), Outcome::Applied(_)));
     }
 
     #[test]
