@@ -131,10 +131,33 @@ try {
  assert.match(await page.locator('[data-slot="5"]').innerText(),/Song 8/,'the moved song is drawn in its new slot');
  assert.equal(await page.getByRole('button',{name:'Move song 1 up',exact:true}).isDisabled(),true,'the first song cannot move up');
  assert.equal(await page.getByRole('button',{name:'Move song 21 down',exact:true}).isDisabled(),true,'the last song cannot move down');
- // Reorder by dragging: row 9 dropped onto row 7.
- await page.locator('[data-slot="9"]').dragTo(page.locator('[data-slot="7"]'));
+ // Reorder by dragging with the mouse (pointer events, not HTML5 drag and
+ // drop, which the launcher's window never delivers): row 9 lifted and let
+ // go on the upper half of row 7 lands above 7, so it becomes song 7.
+ const rowBox=async n=>await page.locator(`[data-slot="${n}"]`).boundingBox();
+ let b9=await rowBox(9),b7=await rowBox(7);
+ await page.mouse.move(b9.x+b9.width/2,b9.y+b9.height/2);await page.mouse.down();
+ await page.mouse.move(b9.x+b9.width/2,b9.y+b9.height/2+12,{steps:3});
+ assert.ok(await page.locator('.mz-ghost').count()===1,'a ghost row follows the pointer once lifted');
+ await page.mouse.move(b7.x+b7.width/2,b7.y+4,{steps:6});
+ assert.equal(await page.locator('[data-slot="7"].drop-above').count(),1,'the landing line shows above row 7');
+ await page.mouse.up();
  move=await page.evaluate(()=>window.__musicCalls.filter(c=>c.cmd==='music_move').at(-1).args);
  assert.deepEqual(move,{from:9,to:7});
+ assert.equal(await page.locator('.mz-ghost').count(),0,'the ghost is gone after the drop');
+ // Dragging down onto the lower half of a row lands below it (rows 2 and
+ // 6 are both inside the 900 px viewport; further rows need the scroll
+ // the real drag does near the window's edge).
+ const b2=await rowBox(2),b6=await rowBox(6);
+ await page.mouse.move(b2.x+b2.width/2,b2.y+b2.height/2);await page.mouse.down();await page.mouse.move(b2.x+b2.width/2,b2.y+b2.height/2+10,{steps:3});
+ await page.mouse.move(b6.x+b6.width/2,b6.y+b6.height-4,{steps:6});
+ assert.equal(await page.locator('[data-slot="6"].drop-below').count(),1,'the landing line shows below row 6');
+ await page.mouse.up();
+ move=await page.evaluate(()=>window.__musicCalls.filter(c=>c.cmd==='music_move').at(-1).args);
+ assert.deepEqual(move,{from:2,to:6});
+ // A press without movement is a click, not a drag: nothing moves.
+ const b4=await rowBox(4);await page.mouse.move(b4.x+b4.width/2,b4.y+b4.height/2);await page.mouse.down();await page.mouse.up();
+ assert.equal(await page.evaluate(()=>window.__musicCalls.filter(c=>c.cmd==='music_move').length),3,'no move from a plain click');
  // Several songs at once: sorted by file name, from the chosen slot on.
  await page.getByRole('button',{name:'Add songs…',exact:true}).click();
  const bulk=page.getByRole('dialog',{name:'Add songs',exact:true});

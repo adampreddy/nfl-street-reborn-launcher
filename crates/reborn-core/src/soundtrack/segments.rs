@@ -59,11 +59,28 @@ pub fn encode_slot(left: &[i16], right: &[i16], pt_headers: &[Vec<u8>], on: &mut
     if total == 0 {
         return Err(invalid("the song has no samples".into()));
     }
+    // Every segment carries the same number of samples, the way the disc's
+    // own do (slot 4 on the real image: 40 x 117,920). The song's tail is
+    // padded with silence up to the next multiple of 40 samples, at most 39
+    // of them, so no segment is shorter than the rest and the game's
+    // per-segment timing holds to the end.
     let seg_samples = total.div_ceil(SEGMENTS_PER_SONG);
+    let padded = seg_samples * SEGMENTS_PER_SONG;
+    let (left, right): (std::borrow::Cow<'_, [i16]>, std::borrow::Cow<'_, [i16]>) = if padded > total {
+        let mut l = left.to_vec();
+        let mut r = right.to_vec();
+        l.resize(padded, 0);
+        r.resize(padded, 0);
+        (l.into(), r.into())
+    } else {
+        (left.into(), right.into())
+    };
 
-    // Trial-encode the first segment unpadded to size every segment.
-    let trial_end = seg_samples.min(total);
-    let trial = ea_xa::encode_stereo_stream(&left[..trial_end], &right[..trial_end], &pt_headers[0], None);
+    // Every segment encodes to the same size (fixed-rate frames, equal
+    // sample counts); the first one sizes the allotment. The allotment is
+    // rounded up to a 0x800 multiple with room to spare, and the rest of
+    // it past SCEl is zeros, never audio.
+    let trial = ea_xa::encode_stereo_stream(&left[..seg_samples], &right[..seg_samples], &pt_headers[0], None);
     let raw = trial.len();
     let target = raw.div_ceil(0x800) * 0x800 + 0x800;
     if target >= SEGMENT_CEILING {
@@ -75,18 +92,13 @@ pub fn encode_slot(left: &[i16], right: &[i16], pt_headers: &[Vec<u8>], on: &mut
     }
 
     let mut blob = Vec::with_capacity(target * SEGMENTS_PER_SONG);
-    let silence = vec![0i16; seg_samples];
     for (k, pt_header) in pt_headers.iter().enumerate() {
         on(k, SEGMENTS_PER_SONG);
         let a = k * seg_samples;
-        let b = ((k + 1) * seg_samples).min(total);
-        let nsamp = b.saturating_sub(a);
-        let pt = asf::patch_pt_tag(pt_header, 0x85, if nsamp > 0 { nsamp as u64 } else { 1 }).map_err(invalid)?;
-        let mut st = if nsamp > 0 {
-            ea_xa::encode_stereo_stream(&left[a..b], &right[a..b], &pt, Some(target))
-        } else {
-            ea_xa::encode_stereo_stream(&silence, &silence, &pt, Some(target))
-        };
+        let b = (k + 1) * seg_samples;
+        let nsamp = seg_samples;
+        let pt = asf::patch_pt_tag(pt_header, 0x85, nsamp as u64).map_err(invalid)?;
+        let mut st = ea_xa::encode_stereo_stream(&left[a..b], &right[a..b], &pt, Some(target));
         if st.len() != target {
             return Err(invalid(format!("segment {k}: {} bytes, target {target}", st.len())));
         }
@@ -107,6 +119,69 @@ mod tests {
     use super::*;
     use crate::soundtrack::testing::{write_wav_24k, SYN_PT};
     use std::path::{Path, PathBuf};
+
+    /// Run by hand against the real disc: how are the disc's own segments
+    /// laid out? Per stream of one slot: the bytes from SCHl to the end of
+    /// SCEl, the bytes to the next stream, PT 0x85 against the SCDl sample
+    /// sum, and how many silent frames end the last block. This is what an
+    /// encoded segment has to look like to play without a gap.
+    ///
+    ///   NSR_PRISTINE_ISO=<path> NSR_SLOT=1 cargo test -p reborn-core --lib -- --ignored stock_segment_layout --nocapture
+    #[test]
+    #[ignore]
+    fn stock_segment_layout() {
+        let Ok(iso) = std::env::var("NSR_PRISTINE_ISO") else {
+            return;
+        };
+        let slot = std::env::var("NSR_SLOT").ok().and_then(|s| s.parse().ok()).and_then(|n| Slot::new(n).ok()).unwrap_or(Slot::new(1).unwrap());
+        let disc = crate::soundtrack::gcm::Disc::open(Path::new(&iso)).unwrap();
+        let pf = disc.read_file("pathfind.dat").unwrap();
+        let a = crate::soundtrack::pathfind::asf(&pf);
+        let pos = asf::scan_schl(a);
+        let first = slot_first_stream(slot);
+        let mut total_declared = 0u64;
+        let mut total_bytes = 0usize;
+        for k in 0..SEGMENTS_PER_SONG {
+            let p = pos[first + k];
+            let next = pos.get(first + k + 1).copied().unwrap_or(a.len());
+            let st = &a[p..];
+            let len = asf::stream_len(st, 0).unwrap_or(0);
+            let pt85 = asf::pt_tag(asf::pt_bytes(st), 0x85).unwrap_or(0);
+            let sum = asf::scdl_sample_sum(&st[..len]);
+            // the last SCDl: how many of its per-channel frames are the silence frame
+            let mut q = 8 + asf::le32(st, 4).unwrap_or(8) as usize;
+            let mut last_block: Option<(usize, usize)> = None;
+            let mut blocks = 0usize;
+            while q + 8 <= len {
+                let tag = &st[q..q + 4];
+                let size = asf::le32(st, q + 4).unwrap_or(8) as usize;
+                if tag == b"SCDl" {
+                    last_block = Some((q, size));
+                    blocks += 1;
+                }
+                if tag == b"SCEl" || size < 8 {
+                    break;
+                }
+                q += size;
+            }
+            let silent_tail = last_block
+                .map(|(q, size)| {
+                    let per_ch = u32::from_be_bytes(st[q + 16..q + 20].try_into().unwrap()) as usize;
+                    let data = &st[q + 20..q + 20 + per_ch.min(size.saturating_sub(20))];
+                    data.chunks(15).rev().take_while(|f| f.len() == 15 && *f == crate::soundtrack::ea_xa::SILENCE_FRAME).count()
+                })
+                .unwrap_or(0);
+            let tail_zero = a[p + len..next].iter().all(|b| *b == 0);
+            eprintln!(
+                "stream {k:>2}: {len:>7} bytes to SCEl, {:>7} to next (gap {:>5}, zeros {tail_zero}), blocks {blocks}, PT85 {pt85} vs SCDl {sum}, silent frames ending the last block: {silent_tail}",
+                next - p,
+                next - p - len
+            );
+            total_declared += pt85;
+            total_bytes += next - p;
+        }
+        eprintln!("slot {}: {} declared samples = {:.1} s, {total_bytes} bytes over 40 streams", slot.get(), total_declared, total_declared as f64 / 24_000.0);
+    }
 
     /// Run by hand against the real disc: are the 40 PT headers of every
     /// slot the same apart from the sample count? If they are, a blob
@@ -178,8 +253,26 @@ mod tests {
             total += sum;
         }
         assert!(total as usize >= left.len());
+        // Up to 39 samples of tail padding, and each segment's last frame
+        // rounded up to 28 samples: about a millisecond per segment, never
+        // the silent block per segment that used to be the pause between
+        // them.
+        assert!(total as usize - left.len() < SEGMENTS_PER_SONG * 28, "{} extra samples", total as usize - left.len());
         let d = ea_xa::decode_streams(&blob).unwrap();
         assert_eq!(d.left.len() as u64, total);
+        // Every stream ends at its SCEl and the rest of its allotment is
+        // zeros, like the disc's own, and every segment carries the same
+        // samples.
+        let seg = left.len().div_ceil(SEGMENTS_PER_SONG) as u64;
+        for &p in &pos {
+            let st = &blob[p..];
+            let len = asf::stream_len(st, 0).unwrap();
+            assert!(len <= target);
+            assert!(blob[p + len..p + target].iter().all(|b| *b == 0), "zeros after SCEl");
+            let sum = asf::scdl_sample_sum(&st[..len]);
+            assert!(sum >= seg && sum < seg + 28, "segment declares {sum} for {seg} samples");
+            assert_eq!(sum, asf::scdl_sample_sum(&blob[pos[0]..pos[0] + asf::stream_len(&blob[pos[0]..], 0).unwrap()]), "all segments alike");
+        }
     }
 
     #[test]
@@ -195,7 +288,10 @@ mod tests {
         assert!(m.contains("7:00") && m.contains("6:20"), "{m}");
     }
 
-    /// Oracle 3: the Rust blob equals extend_slot_40big.py's, byte for byte.
+    /// Oracle 3: the Rust blob carries the same audio as extend_slot_40big.py's.
+    /// The bytes differ on purpose since 2026-09-11: the Python pads each
+    /// segment with silent audio blocks (a pause the game plays), this
+    /// encoder pads the allotment with zeros after SCEl, like the disc.
     #[test]
     fn oracle_encode_slot_matches_extend_slot_40big() {
         let Some(clean) = std::env::var_os("NSR_CLEAN") else {
@@ -240,16 +336,14 @@ mod tests {
         let rs_secs = rs_start.elapsed().as_secs_f64();
         eprintln!("oracle: python {py_secs:.1}s, rust {rs_secs:.2}s, {} bytes", got.len());
 
-        if got != expected {
-            let first = got.iter().zip(&expected).position(|(a, b)| a != b).unwrap_or(got.len().min(expected.len()));
-            let seg = expected.len() / 40;
-            let segment = first.checked_div(seg).unwrap_or(0);
-            let within = first.checked_rem(seg).unwrap_or(first);
-            panic!(
-                "blob differs: rust {} bytes, python {} bytes, first difference at 0x{first:X} (segment {segment}, offset 0x{within:X} in segment)",
-                got.len(), expected.len()
-            );
-        }
+        assert_eq!(got.len(), expected.len(), "the same allotment per segment");
+        let ours = ea_xa::decode_streams(&got).unwrap();
+        let theirs = ea_xa::decode_streams(&expected).unwrap();
+        let n = left.len();
+        assert!(ours.left.len() >= n && theirs.left.len() >= n);
+        assert_eq!(ours.left[..n], theirs.left[..n], "the song's own samples decode the same");
+        assert_eq!(ours.right[..n], theirs.right[..n]);
+        assert!(ours.left.len() < theirs.left.len(), "the Python declares its silent padding as audio; this encoder does not");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

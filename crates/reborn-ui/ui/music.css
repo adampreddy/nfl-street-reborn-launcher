@@ -19,8 +19,12 @@ body.shell.page-music .music-list-heading h2{font:550 16px/1.4 Inter,Segoe UI,sa
 .mz-table td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:middle;overflow-wrap:anywhere}
 .mz-table tr:last-child td{border-bottom:0}.mz-table tbody tr:hover{background:#ffffff03}.mz-table tr.staged{background:#ce414a0c}
 .mz-table .mz-col-n{width:70px;padding-left:22px;padding-right:0;color:#898d81;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
-/* Reordering: drag a row onto another, or the arrows beside its number. */
-.mz-table tr[draggable=true]{cursor:grab}.mz-table tr.dragging{opacity:.45}.mz-table tr.drop-target td{box-shadow:inset 0 2px 0 var(--accent)}
+/* Reordering: drag a row with the mouse (a ghost follows, a line marks where it lands), or the arrows beside its number. */
+.mz-table tbody tr.mz-track{cursor:grab}.mz-table tr.dragging{opacity:.4}
+.mz-table tr.drop-above td{box-shadow:inset 0 3px 0 var(--accent)}.mz-table tr.drop-below td{box-shadow:inset 0 -3px 0 var(--accent)}
+body.mz-dragging{cursor:grabbing;user-select:none}body.mz-dragging .mz-table tbody tr.mz-track{cursor:grabbing}
+.mz-ghost{position:fixed;left:0;top:0;z-index:20;pointer-events:none;display:flex;align-items:center;gap:14px;padding:10px 14px;background:#2a2f3a;border:1px solid var(--accent);border-radius:8px;box-shadow:0 10px 28px #00000080;font-size:12px;opacity:.95}
+.mz-ghost td{display:inline;padding:0;border:0}.mz-ghost .mz-move,.mz-ghost .mz-col-actions,.mz-ghost .mz-col-time,.mz-ghost .music-pending{display:none}.mz-ghost .music-song-name{background:transparent;border:0;padding:0;color:var(--fg);font-weight:550}.mz-ghost small{margin-left:8px;color:var(--muted)}
 .mz-move{display:inline-flex;flex-direction:column;vertical-align:middle;margin-left:8px;gap:1px}
 .mz-table .mz-move button{padding:0 5px!important;min-height:0!important;height:11px;line-height:11px;font-size:7px;border:0;background:transparent!important;color:#898d81;border-radius:3px}
 .mz-table .mz-move button:hover:not(:disabled){color:var(--fg)}.mz-table .mz-move button:disabled{opacity:.25}.mz-table .mz-move button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}

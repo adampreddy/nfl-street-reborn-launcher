@@ -314,6 +314,53 @@ function queue(){
   if(!count)return null;
   return el('section',{class:'music-apply', 'aria-label':'Pending changes'},el('div',{},el('strong',{text:`${count} pending change${count===1?'':'s'}`}),el('p',{text:'Apply once when you are finished editing.'})),el('div',{class:'mz-row'},el('button',{type:'button',text:'Discard changes',disabled:locked(),onclick:()=>act('music_unstage',{slot:null})}),el('button',{type:'button',class:'primary',text:'Apply changes',disabled:locked()||!status?.image_ok,onclick:()=>act('music_apply',{confirm:true})})));
 }
+// A row dragged by the mouse: after a few pixels of movement the row is
+// lifted (a ghost follows the pointer, the row itself dims), the row under
+// the pointer shows a line above or below it for where the song will land,
+// the list scrolls when the pointer nears the top or bottom of the window,
+// and letting go sends one music_move. Escape drops the drag.
+function beginRowDrag(ev,row,from){
+  const startX=ev.clientX,startY=ev.clientY;let lifted=false,ghost=null,target=null,scrollTimer=null;
+  const rows=()=>Array.from(document.querySelectorAll('.mz-table tbody tr.mz-track'));
+  const clearMarks=()=>{for(const r of rows())r.classList.remove('drop-above','drop-below');};
+  const place=(x,y)=>{
+    clearMarks();target=null;
+    const under=document.elementFromPoint(x,y)?.closest?.('tr.mz-track');
+    const list=rows();if(!list.length)return;
+    let tr=under;
+    if(!tr){const first=list[0].getBoundingClientRect(),lastRect=list[list.length-1].getBoundingClientRect();if(y<first.top)tr=list[0];else if(y>lastRect.bottom)tr=list[list.length-1];else return;}
+    const slot=Number(tr.dataset.slot);const rect=tr.getBoundingClientRect();const below=y>rect.top+rect.height/2;
+    // The list move: the song lands ON the marked slot (the ones between shift).
+    let to=slot;
+    if(from<slot&&!below)to=slot-1;
+    if(from>slot&&below)to=slot+1;
+    if(to===from||slot===from)return;
+    target=to;tr.classList.add(below?'drop-below':'drop-above');
+  };
+  const autoScroll=y=>{
+    const edge=48,h=innerHeight;let dy=0;
+    if(y<edge)dy=-Math.ceil((edge-y)/4);else if(y>h-edge)dy=Math.ceil((y-(h-edge))/4);
+    if(dy&&!scrollTimer)scrollTimer=setInterval(()=>{(document.scrollingElement||document.documentElement).scrollBy(0,dy*6);},16);
+    if(!dy&&scrollTimer){clearInterval(scrollTimer);scrollTimer=null;}
+  };
+  const finish=commit=>{
+    document.removeEventListener('pointermove',onMove);document.removeEventListener('pointerup',onUp);document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey);
+    if(scrollTimer){clearInterval(scrollTimer);scrollTimer=null;}
+    ghost?.remove();row.classList.remove('dragging');clearMarks();document.body.classList.remove('mz-dragging');dragFrom=null;
+    if(commit&&target!==null&&target!==from)act('music_move',{from,to:target});
+  };
+  const onMove=e=>{
+    if(!lifted){if(Math.abs(e.clientX-startX)+Math.abs(e.clientY-startY)<5)return;lifted=true;dragFrom=from;row.classList.add('dragging');document.body.classList.add('mz-dragging');
+      ghost=row.cloneNode(true);ghost.className='mz-ghost';const r=row.getBoundingClientRect();ghost.style.width=r.width+'px';document.body.append(ghost);}
+    ghost.style.transform=`translate(${e.clientX+12}px,${e.clientY-14}px)`;
+    place(e.clientX,e.clientY);autoScroll(e.clientY);
+  };
+  const onUp=()=>finish(lifted);
+  const onCancel=()=>finish(false);
+  const onKey=e=>{if(e.key==='Escape')finish(false);};
+  document.addEventListener('pointermove',onMove);document.addEventListener('pointerup',onUp);document.addEventListener('pointercancel',onCancel);document.addEventListener('keydown',onKey);
+}
+
 function discList(){
   const list=slots();
   const sec=el('section',{class:'mz-disc',id:'disc'});
@@ -344,12 +391,12 @@ function discList(){
     const arrows=el('span',{class:'mz-move'},
       el('button',{type:'button',text:'▲','aria-label':`Move song ${song.slot} up`,disabled:locked()||song.slot<=1,onclick:()=>act('music_move',{from:song.slot,to:song.slot-1})}),
       el('button',{type:'button',text:'▼','aria-label':`Move song ${song.slot} down`,disabled:locked()||song.slot>=last,onclick:()=>act('music_move',{from:song.slot,to:song.slot+1})}));
-    const row=el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot),draggable:'true'});
-    row.addEventListener('dragstart',ev=>{if(locked()){ev.preventDefault();return;}dragFrom=song.slot;ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',String(song.slot));row.classList.add('dragging');});
-    row.addEventListener('dragover',ev=>{if(dragFrom===null||dragFrom===song.slot)return;ev.preventDefault();ev.dataTransfer.dropEffect='move';row.classList.add('drop-target');});
-    row.addEventListener('dragleave',()=>row.classList.remove('drop-target'));
-    row.addEventListener('drop',ev=>{ev.preventDefault();const from=dragFrom;dragFrom=null;row.classList.remove('drop-target');if(from&&from!==song.slot)act('music_move',{from,to:song.slot});});
-    row.addEventListener('dragend',()=>{dragFrom=null;body.querySelectorAll('.dragging,.drop-target').forEach(n=>n.classList.remove('dragging','drop-target'));});
+    const row=el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)});
+    // Plain pointer events, not HTML5 drag and drop: the launcher's window
+    // never delivers dragstart (Tauri owns OS drag and drop on Windows), so
+    // the row follows the mouse itself. Press anywhere on the row that is
+    // not a control, move, and let go over the place it should take.
+    row.addEventListener('pointerdown',ev=>{if(ev.button!==0||locked()||ev.target.closest('button,select,input,a'))return;beginRowDrag(ev,row,song.slot);});
     row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')}),arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
     body.append(row);
   }

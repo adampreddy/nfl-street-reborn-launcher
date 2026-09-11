@@ -24,7 +24,7 @@ pub const COEF1: [i32; 4] = [0, 240, 460, 392];
 pub const COEF2: [i32; 4] = [0, 0, -208, -220];
 
 /// Silence: coef 0, shift 12, all zero nibbles.
-const SILENCE_FRAME: [u8; 15] = [0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub(crate) const SILENCE_FRAME: [u8; 15] = [0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 fn invalid(msg: String) -> Error {
     Error::PlainIo(std::io::Error::new(std::io::ErrorKind::InvalidData, msg))
@@ -205,8 +205,13 @@ pub fn encode_channel_blocks(samples: &[i16]) -> Vec<(Vec<u8>, u32)> {
 }
 
 /// One stereo stream: SCHl + PT, SCCl, SCDl blocks of [L frames][R frames],
-/// SCEl. With `target_size`, silent blocks pad the stream to exactly that
-/// many bytes, the way the disc's own slots are filled.
+/// SCEl. With `target_size`, zero bytes after SCEl pad the stream to
+/// exactly that many bytes, the way the disc's own slots are filled: on
+/// the real image every stream ends at its SCEl and the rest of its
+/// allotment is zeros (slot 4: 128,400 bytes to SCEl, 128,512 to the next
+/// stream). Silent audio blocks were used here before, and the game plays
+/// declared samples, so every segment ended in a short pause (Adam,
+/// 2026-09-11: "I can hear the 5 second intervals").
 pub fn encode_stereo_stream(left: &[i16], right: &[i16], pt: &[u8], target_size: Option<usize>) -> Vec<u8> {
     let mut l_blocks = encode_channel_blocks(left);
     let mut r_blocks = encode_channel_blocks(right);
@@ -229,52 +234,10 @@ pub fn encode_stereo_stream(left: &[i16], right: &[i16], pt: &[u8], target_size:
 
     let overhead = 8 + pt.len() + 12 + 8;
 
-    let mut stereo_blocks: Vec<(Vec<u8>, Vec<u8>, u32)> = Vec::with_capacity(max_blocks + 8);
+    let mut stereo_blocks: Vec<(Vec<u8>, Vec<u8>, u32)> = Vec::with_capacity(max_blocks);
     for (l, r) in l_blocks.into_iter().zip(r_blocks) {
         let samples = l.1;
         stereo_blocks.push((l.0, r.0, samples));
-    }
-
-    if let Some(target) = target_size {
-        let mut current_size = overhead;
-        for (l, r, _) in &stereo_blocks {
-            current_size += 8 + 12 + l.len() + r.len();
-        }
-        let mut block_idx = max_blocks;
-        while current_size < target {
-            let cycle_pos: i64 = if block_idx > 0 { ((block_idx - 1) % 7) as i64 } else { -1 };
-            let (sil_data, sil_samples): (Vec<u8>, u32) = if block_idx == 0 || cycle_pos == 6 {
-                let mut d = Vec::with_capacity(870);
-                for _ in 0..58 {
-                    d.extend_from_slice(&SILENCE_FRAME);
-                }
-                (d, 1624)
-            } else {
-                pad_block()
-            };
-            let block_cost = 8 + 12 + sil_data.len() * 2;
-            if current_size + block_cost > target {
-                let remaining = target as i64 - current_size as i64 - 8 - 12;
-                if remaining >= 30 {
-                    let per_ch = (remaining / 2) as usize;
-                    let num_frames = per_ch / 15;
-                    let leftover = per_ch - num_frames * 15;
-                    let mut last = Vec::with_capacity(per_ch);
-                    for _ in 0..num_frames {
-                        last.extend_from_slice(&SILENCE_FRAME);
-                    }
-                    last.extend(std::iter::repeat_n(0u8, leftover));
-                    // The Python also bumps current_size here; nothing reads
-                    // it after the break, so the bump is left out.
-                    stereo_blocks.push((last.clone(), last, (num_frames * 28) as u32));
-                }
-                break;
-            } else {
-                stereo_blocks.push((sil_data.clone(), sil_data, sil_samples));
-                current_size += block_cost;
-                block_idx += 1;
-            }
-        }
     }
 
     let mut stream = Vec::with_capacity(target_size.unwrap_or(overhead + stereo_blocks.len() * 1800));
@@ -297,6 +260,13 @@ pub fn encode_stereo_stream(left: &[i16], right: &[i16], pt: &[u8], target_size:
     }
     stream.extend_from_slice(b"SCEl");
     stream.extend_from_slice(&8u32.to_le_bytes());
+    // The allotment past SCEl is zeros, never audio: a reader stops at
+    // SCEl, so nothing here is played.
+    if let Some(target) = target_size {
+        if stream.len() < target {
+            stream.resize(target, 0);
+        }
+    }
     stream
 }
 
@@ -500,9 +470,16 @@ mod tests {
     fn padded_stream_hits_the_target_exactly() {
         let st = encode_stereo_stream(&[100; 3000], &[100; 3000], SYN_PT, Some(0x4000));
         assert_eq!(st.len(), 0x4000);
-        assert!(st.ends_with(b"SCEl\x08\x00\x00\x00"));
+        // The stream proper ends at SCEl; the rest of the allotment is
+        // zeros, not audio, so nothing past the song is ever played.
+        let len = asf::stream_len(&st, 0).unwrap();
+        assert!(st[..len].ends_with(b"SCEl\x08\x00\x00\x00"));
+        assert!(st[len..].iter().all(|b| *b == 0));
         let d = decode_stream(&st).unwrap();
         assert_eq!(d.left.len() as u64, asf::scdl_sample_sum(&st));
+        // 3000 samples is 107 frames and a bit: whole frames are declared,
+        // never a silent block on top of them.
+        assert!(d.left.len() >= 3000 && d.left.len() < 3000 + 28, "{}", d.left.len());
     }
 
     #[test]
