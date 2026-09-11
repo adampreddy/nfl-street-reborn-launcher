@@ -681,7 +681,19 @@ impl<'a> Updater<'a> {
                     };
                     let image_changed = matches!(roster, Some(RosterResult::Applied(_)))
                         || matches!(game_patch, Some(GamePatchResult::Applied(_)));
-                    let soundtrack = if image_changed { self.apply_current_soundtrack()? } else { None };
+                    // The component is already live and its receipt written
+                    // by now; a soundtrack that cannot be put back is a
+                    // problem to report, not a reason to call the whole
+                    // promotion failed and never record it as installed.
+                    let soundtrack = if image_changed {
+                        match self.apply_current_soundtrack() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!("the custom soundtrack was not put back after the update: {e}");
+                                Some(SoundtrackResult::Refused("Your custom soundtrack could not be put back after this update. Open Music and apply it again.".to_string()))
+                            }
+                        }
+                    } else { None };
                     PromoteState::Applied {
                         receipt,
                         game_patch,

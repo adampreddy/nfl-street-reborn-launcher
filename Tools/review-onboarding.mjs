@@ -153,6 +153,13 @@ console.log('controller layout at 1280x800 (folded)',JSON.stringify(lockedSize))
 await page.getByText('Customize controls',{exact:true}).click();await page.waitForTimeout(200);
 const openedSize=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight}));
 console.log('controller layout at 1280x800 (opened)',openedSize);assert.ok(openedSize.scroll<=openedSize.height,'the controller step must not scroll at 1280x800 with the bindings open');
+// The stage clips its overflow, so "no page scroll" is not enough: the Swap
+// and Restore buttons under the opened grid must be reachable, inside the
+// stage's box or inside a fold that scrolls on its own.
+const opened=await page.evaluate(()=>{const stage=document.querySelector('.setup-controller').getBoundingClientRect();const fold=document.querySelector('.customize-controls');const f=fold.getBoundingClientRect();const buttons=document.querySelector('.customize-controls .mapping-buttons').getBoundingClientRect();return {stageBottom:stage.bottom,foldBottom:f.bottom,buttonsBottom:buttons.bottom,foldScrolls:fold.scrollHeight>fold.clientHeight+1,foldOverflow:getComputedStyle(fold).overflowY};});
+console.log('opened bindings',opened);
+assert.ok(opened.foldBottom<=opened.stageBottom+1,'the opened fold must end inside the stage');
+assert.ok(opened.buttonsBottom<=opened.stageBottom+1||(opened.foldScrolls&&['auto','scroll'].includes(opened.foldOverflow)),'Swap and Restore must be inside the stage or inside a fold that scrolls');
 await shot('onboarding-controller-1280');
 await page.getByText('Customize controls',{exact:true}).click();
 await page.setViewportSize({width:800,height:600});await shot('onboarding-controller-800');

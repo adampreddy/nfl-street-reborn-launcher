@@ -356,7 +356,7 @@ function settingsBlock(answer) {
     textRow("Server bucket name", "bucket_name"),
     textRow("Public base URL", "public_base"),
     textRow("Launcher manifest URL", "launcher_manifest"),
-    textRow("Drop folders", "drop_root", "one subfolder per thing: textures\\GN7E69, runtime, mods\\packages, roster, game")
+    textRow("Drop folders", "drop_root", "one subfolder per thing: textures\\GN7E69, runtime, mods\\packages")
   );
 
   return el("section", { class: "block" }, ...children);

@@ -46,7 +46,7 @@ syncInputMode();
 
 function visible(n) {
   const modal=document.querySelector('dialog[open]');
-  return (!modal||modal.contains(n)) && n?.isConnected && !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
+  return (!modal||modal.contains(n)) && n?.isConnected && !n.disabled && n.getAttribute('aria-disabled') !== 'true' && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
     !n.closest('[hidden],[inert]') && getComputedStyle(n).visibility !== 'hidden' &&
     !n.classList.contains('skip-link') && !n.closest('details.core:not([open])');
 }

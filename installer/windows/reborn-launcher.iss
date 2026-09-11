@@ -320,11 +320,20 @@ Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
 ; nflstreetreborn://join/<code>. Opening one starts this launcher with the
 ; link as its argument; it remembers the room code and lands the player on
 ; Online with the room filled in. Per user (HKCU), the way everything else
-; here is, so no elevation. Removed with the uninstall.
+; here is, so no elevation. One key for both channels: the last install
+; wins it, and only the stable uninstall removes it, so removing a beta
+; that sat beside the stable launcher never breaks the stable one's links.
+#if Channel == "stable"
 Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: ""; ValueData: "URL:NFL Street Reborn invite"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"",0"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"" ""%1"""; Flags: uninsdeletekey
+#else
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: ""; ValueData: "URL:NFL Street Reborn invite"
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"",0"
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"" ""%1"""
+#endif
 
 [Run]
 ; Named in full on the Finish page: what is about to open is the launcher,
@@ -371,13 +380,15 @@ end;
 // it. The data root itself, or any other folder inside it, stays refused.
 function InstallDirIsSafe(Dir: String): Boolean;
 var
-  Normalized, Old, Current, Beta: String;
+  Normalized, Old, Own: String;
 begin
   Normalized := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
   Old := Lowercase(RemoveBackslashUnlessRoot(OldDataRoot()));
-  Current := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
-  Beta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
-  if (Normalized = Current + '\app') or (Normalized = Beta + '\app') then
+  // This channel's own program folder, and only this channel's: a beta
+  // pointed at the stable folder would overwrite it and leave two uninstall
+  // entries on one folder.
+  Own := Lowercase(ExpandConstant('{userappdata}\{#DataDir}\app'));
+  if Normalized = Own then
   begin
     Result := True;
     exit;
@@ -413,7 +424,13 @@ begin
     exit;
   Value := RemoveQuotes(Trim(Value));
   Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
-  if (Pos(Programs, Lowercase(Value)) = 1) and FileExists(Value) then
+  // Our own program folder only: below Programs (never Programs itself)
+  // and holding the launcher, so the DelTree that follows the uninstall can
+  // never reach anything else that lives under Programs.
+  if (Pos(Programs, Lowercase(Value)) = 1)
+     and (Lowercase(ExtractFileDir(Value)) + '\' <> Programs)
+     and FileExists(Value)
+     and FileExists(ExtractFileDir(Value) + '\{#LauncherExe}') then
     Result := Value;
 end;
 

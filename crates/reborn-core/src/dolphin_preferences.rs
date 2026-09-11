@@ -76,7 +76,16 @@ fn portable_path_overlay(doc:&crate::ini::IniDocument,user:&std::path::Path)->cr
    let tail:Option<&[&str]>=if !normalized.starts_with('/')&&all.first().is_some_and(|p|p.eq_ignore_ascii_case("User")){
     Some(&all[1..])
    } else if is_absolute(&normalized)&&!under(&normalized,user){
-    all.iter().rposition(|p|p.eq_ignore_ascii_case("User")).map(|i|&all[i+1..])
+    // Only a path that really points into another Dolphin user folder: the
+    // "User" component must not be a Windows account folder
+    // (C:/Users/User/Documents/...) and what follows must be one of Dolphin's
+    // own subfolders, so a memory card kept somewhere unusual is left alone.
+    all.iter().rposition(|p|p.eq_ignore_ascii_case("User")).and_then(|i|{
+     let before_is_users_root=i>0&&all[i-1].eq_ignore_ascii_case("Users");
+     let tail=&all[i+1..];
+     let dolphin_folder=tail.first().is_some_and(|f|["Load","Dump","ResourcePacks","GC","Wii","StateSaves","Config","GameSettings","Logs","GBA"].iter().any(|k|k.eq_ignore_ascii_case(f)));
+     (!before_is_users_root&&dolphin_folder).then_some(tail)
+    })
    } else {None};
    let Some(tail)=tail else{continue};
    let mut resolved=user.to_path_buf();
@@ -115,6 +124,10 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
   // Already this user folder: nothing to change.
   let own=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn Launcher/dolphin-users/migrated/Load\n");
   assert!(portable_path_overlay(&own,user).is_empty());
+  // A Windows account called User, and a card kept somewhere of the player's
+  // own choosing: neither is a Dolphin user folder, so both stay as they are.
+  let account=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/User/Documents/Dolphin Emulator/Load\n[Core]\nMemcardAPath = C:/Users/User/Documents/Dolphin Emulator/GC/MemoryCardA.USA.raw\nMemcardBPath = D:/Backups/User/Cards/MemoryCardB.USA.raw\n");
+  assert!(portable_path_overlay(&account,user).is_empty(),"{:?}",portable_path_overlay(&account,user));
  }
  #[test] fn selected_profile_owns_legacy_paths_without_replacing_external_choices(){
   let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = User/Load///\nDumpPath = .\\User\\Dump\\\nResourcePackPath = D:/Packs\nWiiSDCardPath = None\n[Core]\nMemcardBPath = User/GC/Card.raw\nSlotA = 255\n[DSP]\nVolume = 0\n");

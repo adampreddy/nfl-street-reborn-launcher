@@ -99,6 +99,17 @@ pub use platform::{
 /// [`backend`] stamps every envelope with it, and [`logging`] stamps every
 /// line. No dependency: civil time from seconds is Howard Hinnant's algorithm,
 /// which is a dozen lines and has no calendar to get out of date.
+/// The version this build was published as: `REBORN_BUILD_VERSION`, which
+/// `installer/windows/build.ps1 -Version` exports for the whole build, else
+/// the crate version. One place, so the update check, the user agent the
+/// server logs and the version a page shows all agree.
+pub fn build_version() -> &'static str {
+    match option_env!("REBORN_BUILD_VERSION") {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 pub fn utc_now_iso() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

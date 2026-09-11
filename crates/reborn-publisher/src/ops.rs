@@ -330,8 +330,11 @@ fn run_operation_with_origin(
     let op_owned = op.to_string();
     thread::spawn(move || {
         let mut sink = move |event: Event| {
+            // A progress line is a status whichever channel it rides on: the
+            // per-part upload line, for one, is not an error.
             let line = match event.channel {
                 Channel::Out => event.line,
+                Channel::Err if event.progress.is_some() => event.line,
                 Channel::Err => format!("ERROR: {}", event.line),
             };
             let mut state = shared().state.lock().expect("op state lock");
@@ -340,7 +343,19 @@ fn run_operation_with_origin(
                 state.progress = event.progress;
             }
         };
-        let result = body(&mut sink);
+        // A panic inside a step must still settle the operation, or every
+        // page says "X is publishing" until the app is restarted.
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut sink))) {
+            Ok(result) => result,
+            Err(payload) => {
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "no detail".to_string());
+                Err(reborn_core::Error::PlainIo(std::io::Error::other(format!("the step stopped unexpectedly: {detail}"))))
+            }
+        };
         finish(&op_owned, step, dry_run, inputs, origin, result);
     });
 
@@ -387,21 +402,24 @@ fn finish(
             Err(e) => (Phase::Failed, "failed", e.to_string(), None),
         };
 
+    if summary.is_empty() {
+        let state = shared().state.lock().expect("op state lock");
+        summary = state.lines.last().cloned().unwrap_or_default();
+    }
+    // The journal first, then the phase: a page verifies the moment it sees
+    // Done, and Verify reads "the last done run" from the journal, so the
+    // record has to be there before the flip, not after it.
+    write_journal(page, dry_run, inputs, origin, journal_outcome, summary.clone(), value.clone());
     {
         let mut state = shared().state.lock().expect("op state lock");
-        if summary.is_empty() {
-            summary = state.lines.last().cloned().unwrap_or_default();
-        }
         state.phase = phase;
-        state.summary = summary.clone();
+        state.summary = summary;
         if step == Step::Plan {
-            state.plan = Some(value.clone().unwrap_or(Value::Null));
+            state.plan = Some(value.unwrap_or(Value::Null));
         }
     }
     // The operation has settled; nothing left to cancel.
     *shared().cancel.lock().expect("cancel lock") = None;
-
-    write_journal(page, dry_run, inputs, origin, journal_outcome, summary, value);
 }
 
 /// Pull `hashes`, `uploaded`, `verified` and `sequence` out of `value` by
@@ -510,7 +528,7 @@ pub fn op_cancel() -> Result<(), String> {
             signal.cancel();
             Ok(())
         }
-        None => Err("This step has not reached a point that can be cancelled yet.".to_string()),
+        None => Err("This step has not reached a point that can be canceled yet.".to_string()),
     }
 }
 

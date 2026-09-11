@@ -124,6 +124,16 @@ fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
     match ensure(p, &data_root, None, &dirs).map_err(player)? {
         Outcome::Current { path } | Outcome::Built { path, .. } => Ok(Some(path)),
         Outcome::Refused(Refusal::NoPristine) => Ok(None),
+        // Player-facing words only: the folders that were searched and the
+        // image's path belong in the log, not on the Online page.
+        Outcome::Refused(r @ Refusal::NoBuilder { .. }) => {
+            eprintln!("netplay copy not built: {}", r.message());
+            Err("The Reborn Builder that applies your roster is missing from this install, so the online copy of your game could not be prepared. Reinstall the launcher to put it back.".to_string())
+        }
+        Outcome::Refused(r @ Refusal::InUse { .. }) => {
+            eprintln!("netplay copy not rebuilt: {}", r.message());
+            Err("The online copy of your game is open in another program, so it could not be refreshed. Close the game and try again.".to_string())
+        }
         Outcome::Refused(r) => Err(r.message()),
     }
 }

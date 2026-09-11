@@ -212,7 +212,14 @@ function updatesBlock() {
   actions.append(el('button',{type:'button',text:'Patch notes',onclick:()=>call('open_website',{url:PATCH_NOTES_URL}).catch(()=>{})}));
   // The same row shape as "Launcher updates" above it, so it belongs to the
   // page instead of floating under a note (Adam, 2026-09-11).
-  const uninstall=el('button',{type:'button',text:'Uninstall…',disabled:busy,onclick:()=>act('Uninstall','uninstall_launcher',{confirm:true},()=>{})});
+  // Two presses, on purpose: one press on a pad, or a stray Enter, must not
+  // remove the launcher. The first arms the button for a few seconds and
+  // says so; the second does it.
+  const uninstall=el('button',{type:'button',text:'Uninstall…',disabled:busy,onclick:()=>{
+    if(uninstall.dataset.armed){act('Uninstall','uninstall_launcher',{confirm:true},()=>{});return;}
+    uninstall.dataset.armed='true';uninstall.textContent='Press again to remove';
+    setTimeout(()=>{if(!uninstall.isConnected)return;delete uninstall.dataset.armed;uninstall.textContent='Uninstall…';},8000);
+  }});
   launcher.append(preferenceRow('Remove NFL Street Reborn','Removes the launcher and the game from this PC. Your saves stay.',uninstall));
   wrap.append(preferences,launcher,contentBlock());
   return wrap;

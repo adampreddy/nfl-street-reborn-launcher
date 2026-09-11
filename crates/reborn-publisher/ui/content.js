@@ -104,13 +104,22 @@ function dropDefault(component) {
   }
 }
 
+// Textures are remembered per game id: the GN7E69 tree must never be
+// proposed for another game.
+function memoryKey(component) {
+  return component === "textures" ? `textures:${gameIdSelect.value || "GN7E69"}` : component;
+}
+
 function folderFor(component) {
-  return rememberedFolders[component] || dropDefault(component);
+  return rememberedFolders[memoryKey(component)] || dropDefault(component);
 }
 
 function remember() {
   const folder = folderInput.value.trim();
-  if (folder) rememberedFolders[componentSelect.value] = folder;
+  // Only a folder someone chose is remembered; a proposed drop folder is
+  // proposed again next time, so a later change to Drop folders reaches it.
+  if (folder && folder !== dropDefault(componentSelect.value)) rememberedFolders[memoryKey(componentSelect.value)] = folder;
+  else delete rememberedFolders[memoryKey(componentSelect.value)];
   call("publisher_set_setting", {
     key: "remembered.content",
     value: { component: componentSelect.value, folder, folders: { ...rememberedFolders }, game_id: gameIdSelect.value },
@@ -153,7 +162,11 @@ folderInput.addEventListener("change", () => {
   remember();
   renderLint();
 });
-gameIdSelect.addEventListener("change", remember);
+gameIdSelect.addEventListener("change", () => {
+  folderInput.value = folderFor("textures");
+  renderLint();
+  remember();
+});
 versionInput.addEventListener("change", loadVersionInfo);
 versionInput.addEventListener("input", () => theJob.refresh());
 
@@ -277,11 +290,17 @@ async function loadRemembered() {
     if (typeof saved.component === "string" && COMPONENTS.some(([value]) => value === saved.component)) componentSelect.value = saved.component;
     if (typeof saved.game_id === "string") gameIdSelect.value = saved.game_id;
     if (saved.folders && typeof saved.folders === "object") {
-      for (const [value] of COMPONENTS) if (typeof saved.folders[value] === "string" && saved.folders[value]) rememberedFolders[value] = saved.folders[value];
+      // Keys are things (`runtime`, `mods`) or a thing and a game id
+      // (`textures:GN7E69`); a plain `textures` from before the game id
+      // was part of the key counts for the game id remembered with it.
+      for (const [key, folder] of Object.entries(saved.folders)) {
+        if (typeof folder !== "string" || !folder) continue;
+        rememberedFolders[key === "textures" ? memoryKey("textures") : key] = folder;
+      }
     }
     // The single remembered folder from before per-thing memory counts for
     // the thing it was remembered with.
-    if (typeof saved.folder === "string" && saved.folder && !rememberedFolders[componentSelect.value]) rememberedFolders[componentSelect.value] = saved.folder;
+    if (typeof saved.folder === "string" && saved.folder && !rememberedFolders[memoryKey(componentSelect.value)]) rememberedFolders[memoryKey(componentSelect.value)] = saved.folder;
   }
   folderInput.value = folderFor(componentSelect.value);
 }

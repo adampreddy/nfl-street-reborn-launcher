@@ -30,7 +30,7 @@ function draw(){
  const panel=el('section',{id:'player-panel',class:'player-panel',role:'tabpanel','aria-labelledby':`player-tab-${active}`});
  const select=el('select',{id:'player-device','aria-label':`Controller for Player ${active+1}`});select.append(el('option',{value:'',text:'No controller'}));
  for(const pad of state.pads){const other=state.slots.indexOf(pad.device_string);select.append(el('option',{value:pad.device_string,text:friendly(pad.device_string)+(other>=0&&other!==active?` (Player ${other+1})`: '')}));}
- const device=state.slots[active];if(device&&!connected(device))select.append(el('option',{value:device,text:friendly(device)+' — disconnected'}));select.value=device||'';
+ const device=state.slots[active];if(device&&!connected(device))select.append(el('option',{value:device,text:friendly(device)+' (disconnected)'}));select.value=device||'';
  const feedback=el('p',{class:'player-feedback',role:'status',text:problem||'Assignments and mappings are saved automatically. Changes apply when you next start the game.'});
  select.addEventListener('change',async()=>{if(busy)return;lock(true);try{const result=await call('controller_assign_player',{player:active+1,device:select.value||null,runtime:state.runtime});state.slots=result.slots;problem='';}catch(e){problem=reason(e);}finally{busy=false;draw();}});
  const scan=el('button',{type:'button',id:'scan-pads',text:'Scan again',onclick:refresh});

@@ -8,11 +8,14 @@ if(window.__TAURI__)(async()=>{
  try{
   const progress=await invoke('onboarding_progress',{legacyRoot:null});if(!progress.complete)return;
   // A launcher left open still notices what was published after it started:
-  // every 30 minutes, and again when its window comes back into view after a
+  // every 5 minutes, and again when its window comes back into view after a
   // while, whenever nothing is in flight. Adam published textures while his
   // launcher sat open and had to press Check for updates by hand (2026-09-11).
+  // Never while a game runs, a dialog is open or the page is busy: a reload
+  // then would throw away the launch result or a sign-in in progress.
   const RECHECK_MS=5*60*1000,STALE_MS=2*60*1000;let lastCheck=Date.now();
-  const recheck=async()=>{try{const s=await invoke('content_status');if(!['idle','up_to_date','problem'].includes(s.phase))return;lastCheck=Date.now();const r=await invoke('content_check',{depth:null});if(['available','fetching','staged','installing'].includes(r.phase))location.reload();}catch(_){}};
+  const pageBusy=async()=>!!document.querySelector('dialog[open]')||document.getElementById('screen')?.getAttribute('aria-busy')==='true'||await invoke('session_active');
+  const recheck=async()=>{try{if(await pageBusy())return;const s=await invoke('content_status');if(!['idle','up_to_date','problem'].includes(s.phase))return;lastCheck=Date.now();const r=await invoke('content_check',{depth:null});if(['available','fetching','staged','installing'].includes(r.phase)&&!await pageBusy())location.reload();}catch(_){}};
   setInterval(recheck,RECHECK_MS);
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&Date.now()-lastCheck>STALE_MS)recheck();});
   let status=await invoke('content_status');

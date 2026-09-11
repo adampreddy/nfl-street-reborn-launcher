@@ -27,7 +27,9 @@ pub fn save(file: &Path, profile: ControllerProfile) -> Result<()> {
 /// launcher mappings always win, including the user's explicit reset to defaults.
 pub fn adopt_migrated(platform: &Platform, scan: &crate::devices::Enumeration) -> Result<()> {
     // Profiles adopted by an earlier build may still carry the 2.1 swap.
-    normalize_saved(platform)?;
+    // Once per data root, not on every launch: a player who deliberately
+    // swaps B and X afterwards must keep that choice.
+    normalize_saved_once(platform)?;
     let file=path(platform)?;
     let legacy=file.with_file_name("migrated-controller.ini");
     let Ok(text)=std::fs::read_to_string(&legacy) else {return Ok(())};
@@ -63,6 +65,17 @@ pub fn undo_legacy_bx_swap(profile: &mut ControllerProfile) -> bool {
     if !swapped { return false; }
     profile.reset(&[ButtonB, ButtonX]);
     true
+}
+
+/// [`normalize_saved`], once: a marker beside the profiles records that it
+/// ran, so a later deliberate swap is never undone by the next launch.
+pub fn normalize_saved_once(platform: &Platform) -> Result<usize> {
+    let marker=path(platform)?.with_file_name("bx-swap-normalized");
+    if marker.is_file() { return Ok(0); }
+    let changed=normalize_saved(platform)?;
+    if let Some(parent)=marker.parent() { std::fs::create_dir_all(parent)?; }
+    std::fs::write(&marker, b"done")?;
+    Ok(changed)
 }
 
 /// Every saved profile, unswapped. Returns how many changed; a change also

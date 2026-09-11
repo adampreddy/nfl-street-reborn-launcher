@@ -2105,7 +2105,27 @@ pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Re
         }
         let path = format!("/{}/", bucket.bucket);
         let req = sign(bucket, "GET", &path, &query, &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
-        let reply = transport.send(&req, Body::Empty)?;
+        // One request per thousand keys, asked for again on a 429, a 5xx or
+        // a dropped connection before the listing is given up on, the way
+        // every upload request is. A listing that fails after the component
+        // was written would otherwise fail the whole publish for one reset.
+        let reply = {
+            let mut attempt = 1u32;
+            loop {
+                match transport.send(&req, Body::Empty) {
+                    Ok(r) if (r.status == 429 || (500..600).contains(&r.status)) && attempt < 3 => {
+                        backoff(attempt);
+                        attempt += 1;
+                    }
+                    Ok(r) => break r,
+                    Err(_) if attempt < 3 => {
+                        backoff(attempt);
+                        attempt += 1;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
         if !(200..300).contains(&reply.status) {
             let said: String = String::from_utf8_lossy(&reply.body).chars().filter(|c| !c.is_control()).take(160).collect();
             return Ok(Err(format!("HTTP {} {}", reply.status, said.trim())));

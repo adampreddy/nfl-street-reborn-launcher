@@ -296,7 +296,10 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
         };
 
         let transport = UreqTransport::new();
-        let (already, _how) = upload::already_on_bucket(&transport, bucket)?;
+        let (already, how) = upload::already_on_bucket(&transport, bucket)?;
+        // Said out loud: a bucket that would not list falls back to one
+        // request per key, and that is slow enough to look hung.
+        sink(Event::out(how));
         let plan = upload::plan_origin(&origin, &*already)?;
         let http2 = UreqHttp::new(&user_agent());
         let upload_req = UploadRequest {

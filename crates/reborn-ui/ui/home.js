@@ -7,7 +7,22 @@ import { mountNotices } from "./notices.js";
 // Opened from a friend's invite link: straight on to Online, which fills in
 // the room. Play is the window's first page, so this is where the hand-off
 // lives; the code stays put until Online has used it.
-if (bridge) call("netplay_pending_join").then((pending) => { if (pending && pending.code) location.replace("online.html"); }).catch(() => {});
+async function handOffInvite() {
+  try {
+    const pending = await call("netplay_pending_join");
+    if (!pending || !pending.code) return;
+    // Not before setup: Online needs a game to join with. The code stays
+    // put, and this runs again once Play comes back after setup.
+    const progress = await call("onboarding_progress", { legacyRoot: null });
+    if (progress && progress.complete) location.replace("online.html");
+  } catch (_) { /* Online is one click away either way */ }
+}
+if (bridge) {
+  handOffInvite();
+  // An invite clicked while this launcher was already open: the second
+  // launcher hands the code over and brings this window forward.
+  window.addEventListener("focus", handOffInvite);
+}
 
 // Each read settles on its own: a failed pad scan must not blank the page.
 const state = {};
@@ -17,7 +32,7 @@ let result = null;
 let problem = null;
 let externalSession = false;
 let leagueMatch = false;
-const signIn = { active: false, deviceCode: null, userCode: null, verifyUrl: null, timer: null, message: null, polling: false };
+const signIn = { active: false, starting: false, deviceCode: null, userCode: null, verifyUrl: null, timer: null, message: null, polling: false };
 
 // Shown when `identity_status` fails, whatever the reason. The same sentence
 // the core uses for the same situation, so a player never sees two wordings
@@ -98,7 +113,10 @@ function ok(x) {
 }
 
 async function startSignIn() {
-  if (busy || signIn.active) return;
+  // Two quick presses must not start two device-code flows: the second
+  // would overwrite the first's timer and leave it polling forever.
+  if (busy || signIn.active || signIn.starting) return;
+  signIn.starting = true;
   signIn.message = null;
   try {
     const s = await call("identity_sign_in_start");
@@ -129,6 +147,7 @@ async function startSignIn() {
       finally { signIn.polling = false; }
     }, Math.max(2, s.interval || 3) * 1000);
   } catch (e) { signIn.message = reason(e); draw(); }
+  finally { signIn.starting = false; }
 }
 
 function stopSignIn(message) {
@@ -358,7 +377,7 @@ function draw() {
   // chevron), so it reads as one strip of three; only the click differs.
   // Adam: "Display fullscreen vs windowed isn't blending in with the rest".
   const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
-  overview.append(el("a", { href: "#", role: "button", class: displayLocked ? "is-locked" : "", "aria-disabled": String(displayLocked), title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async (event) => {
+  overview.append(el("a", { href: "#", role: "button", class: displayLocked ? "is-locked" : "", "aria-disabled": String(displayLocked), tabindex: displayLocked ? "-1" : "0", title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async (event) => {
     event.preventDefault();
     if (displayLocked || busy) return;
     busy = true; draw();

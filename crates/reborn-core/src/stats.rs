@@ -1652,8 +1652,8 @@ impl Enqueued {
                     .to_string()
             }
             Enqueued::SourceKept { .. } => {
-                "Saved this result, and the file the game wrote could not be tidied \
-                 away afterwards. Nothing was lost, and it will be tidied next time."
+                "Saved this result, and the file the game wrote could not be removed \
+                 afterwards. Nothing was lost, and it will be removed next time."
                     .to_string()
             }
         }
@@ -1983,7 +1983,12 @@ impl StatsQueue {
             // The queue is transport and forgets a capture once it is sent;
             // the archive beside it is what the Stats page shows for good.
             if Capture::parse(&bytes).is_ok() {
-                self.archive(&bytes)?;
+                // The archive is for the Stats page; a failure to write it
+                // must not stop this capture, or the rest of the folder,
+                // from being queued and sent.
+                if let Err(e) = self.archive(&bytes) {
+                    tracing::warn!("a game could not be archived for the Stats page: {e}");
+                }
             }
             // Every one of these means the capture is accounted for, so the
             // source can go -- but only from a folder the emulator writes to.
@@ -2081,7 +2086,11 @@ impl StatsQueue {
         std::fs::create_dir_all(&dir).map_err(|source| Error::Io { path: dir.clone(), source })?;
         let path = dir.join(format!("{}.json", CaptureKey::of_bytes(bytes).as_str()));
         if !path.exists() {
-            std::fs::write(&path, bytes).map_err(|source| Error::Io { path: path.clone(), source })?;
+            // Written whole or not at all: a crash mid-write would otherwise
+            // leave a truncated file the Stats page silently skips forever.
+            let temporary = path.with_extension("json.tmp");
+            std::fs::write(&temporary, bytes).map_err(|source| Error::Io { path: temporary.clone(), source })?;
+            std::fs::rename(&temporary, &path).map_err(|source| Error::Io { path: path.clone(), source })?;
         }
         Ok(path)
     }
@@ -3713,7 +3722,11 @@ mod tests {
     #[test]
     fn an_ingested_game_is_archived_for_the_stats_page() {
         let dir = tempfile::tempdir().unwrap();
-        let q = queue(dir.path(), 1_000);
+        // The archive lives BESIDE the queue (`<parent>/games`), so the
+        // queue sits one level down: a queue at the temp folder itself would
+        // archive into `%TEMP%\games`, which the supervisor tests then take
+        // for a 2.1 install (9 of them failed that way on 2026-09-11).
+        let q = queue(&dir.path().join("stats").join("queue"), 1_000);
         let captures = dir.path().join("GameStats").join("Online");
         std::fs::create_dir_all(&captures).unwrap();
         std::fs::write(captures.join("Falcons_vs_Chargers_001.json"), REAL_FALCONS).unwrap();

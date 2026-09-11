@@ -25,7 +25,7 @@ async function action(value,ports){
 }
 function drawRoom(snapshot){
  if(!snapshot||typeof snapshot!=='object')return;const previous=room;room=snapshot;const active=!!snapshot.active;if(active&&snapshot.phase!=='running')document.body.dataset.netplayLobby='true';else delete document.body.dataset.netplayLobby;form.hidden=active;lobby.hidden=!active;
- if(!active){if(snapshot.phase==='closed'&&(previous?.active||previous?.phase!=='closed'))status.textContent='You left the room. Your offline save settings are unchanged.';else if(snapshot.error)status.textContent=snapshot.error;if(status.parentNode!==form)form.append(status);if(snapshot.phase!=='idle')sessionActive=false;updateAvailability();return;}
+ if(!active){if(snapshot.phase==='closed'&&(previous?.active||previous?.phase!=='closed'))status.textContent='You left the room. Your offline save settings are unchanged.';else if(snapshot.error)status.textContent=snapshot.error;if(status.parentNode!==form)form.append(status);updateAvailability();return;}
  if(snapshot.phase==='closed'){lobby.replaceChildren(el('h2',{text:'Closing session…'}));return;}
  const signature=JSON.stringify({...snapshot,players:snapshot.players?.map(({ping,...player})=>player)});if(signature===lastSnapshot||busy)return;lastSnapshot=signature;
  // Preserve keyboard/controller focus across server updates.
@@ -84,6 +84,10 @@ async function takePendingInvite(){
   updateAvailability();(nickname.value?submit:nickname).focus({preventScroll:true});
  }catch(_){}
 }
-if(bridge){call('session_active').then(active=>{sessionActive=!!active;updateAvailability();}).catch(()=>{});poll();takePendingInvite();}else status.textContent='Open this page in the launcher to start Netplay.';
+if(bridge){call('session_active').then(active=>{sessionActive=!!active;updateAvailability();}).catch(()=>{});poll();takePendingInvite();
+ // An invite clicked while the launcher sat on this page: the second
+ // launcher hands the code over and brings this window forward.
+ window.addEventListener('focus',()=>{if(!busy&&!room?.active)takePendingInvite();});
+}else status.textContent='Open this page in the launcher to start Netplay.';
 const timer=setInterval(poll,750);window.addEventListener('pagehide',()=>{disposed=true;clearInterval(timer);});
 updateAvailability();markCurrent();wireCoreFold();

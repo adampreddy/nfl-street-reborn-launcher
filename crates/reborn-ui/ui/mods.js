@@ -73,7 +73,9 @@ async function act(cmd, args) {
   if (busy) return;
   busy = true;
   problem = null;
-  notice = null;
+  // A package toggle sets its own line just before this (the soundtrack's
+  // "rebuilding" notice), so that one is kept.
+  if (cmd !== 'mods_toggle') notice = null;
   if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
   try {
     const r = await call(cmd, args);
@@ -187,7 +189,7 @@ function storeCard(p, index) {
   const open=el('button',{type:'button',class:'store-open','aria-label':p.name||p.id,onclick:()=>showMod(p)});
   const art=el('span',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[index%colors.length];
   open.append(art,el('span',{class:'store-card-body'},el('strong',{text:p.name||p.id}),el('small',{text:categoryOf(p)+' · '+(p.version?'Version '+p.version:'Installed')})));
-  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>{if(p.kind==='soundtrack'){notice='Rebuilding your game disc with this soundtrack…';draw();}return act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}})));
+  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>{if(p.kind==='soundtrack'){notice='Rebuilding your game disc with this soundtrack…';draw();}else notice=null;return act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}})));
   return card;
 }
 function showMod(p) {

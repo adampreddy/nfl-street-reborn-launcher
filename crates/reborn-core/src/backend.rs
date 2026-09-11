@@ -216,7 +216,13 @@ pub fn classify(status: u16, body: &str) -> SubmitOutcome {
     // The server's own words for why it refused, or nothing.
     let stated = |r: Reply| r.error.or(r.reason).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     match status {
-        401 => SubmitOutcome::Unauthorized,
+        // Only our server, saying so in its own format, retires the token.
+        // A 401 from something in front of it (a gateway asking for its own
+        // sign-in, a proxy) is a delivery failure, not a revoked token.
+        401 => match parsed {
+            Some(r) if r.ok == Some(false) => SubmitOutcome::Unauthorized,
+            _ => SubmitOutcome::Deferred { reason: COULD_NOT_DELIVER.to_string() },
+        },
         200..=299 => match parsed {
             Some(r) if r.ok == Some(true) => match r.status.as_str() {
                 "accepted" | "duplicate" => SubmitOutcome::Accepted,
@@ -337,8 +343,8 @@ pub fn auto_submit(platform: &Platform, queue: &StatsQueue, history: &[SessionRe
         .backend_origin
         .filter(|o| !o.trim().is_empty())
         .unwrap_or_else(|| identity::DEFAULT_ORIGIN.to_string());
-    let http = crate::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")));
-    let sender = BackendSubmitter::new(&http, origin, token, session_facts(history), env!("CARGO_PKG_VERSION"));
+    let http = crate::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", crate::build_version()));
+    let sender = BackendSubmitter::new(&http, origin, token, session_facts(history), crate::build_version());
     let report = queue.submit_pending(&sender, 5)?;
     if report.waiting_for_sign_in {
         identity::clear_token(platform)?;
@@ -414,7 +420,11 @@ mod tests {
         // `every_reason_this_module_produces_is_a_sentence_a_player_can_act_on`.
         assert!(matches!(classify(200, r#"{"ok":true,"status":"held","reason":"seat-conflict"}"#), SubmitOutcome::Held { reason } if reason == HELD_FOR_REVIEW));
         assert!(matches!(classify(200, r#"{"ok":true,"status":"incomplete","reason":"below-target-score"}"#), SubmitOutcome::Recorded { .. }));
-        assert_eq!(classify(401, "x"), SubmitOutcome::Unauthorized);
+        assert_eq!(classify(401, r#"{"ok":false,"error":"token revoked"}"#), SubmitOutcome::Unauthorized);
+        // A 401 that is not in the server's own words came from something in
+        // front of it; the token is kept and the game sent again later.
+        assert!(matches!(classify(401, "x"), SubmitOutcome::Deferred { .. }));
+        assert!(matches!(classify(401, r#"{"error":"login required"}"#), SubmitOutcome::Deferred { .. }));
         assert!(matches!(classify(400, r#"{"ok":false,"error":"hash-mismatch"}"#), SubmitOutcome::Rejected { reason, .. } if reason == REFUSED_CHANGED));
         assert!(matches!(classify(429, ""), SubmitOutcome::Deferred { .. }));
         assert!(matches!(classify(503, ""), SubmitOutcome::Deferred { .. }));

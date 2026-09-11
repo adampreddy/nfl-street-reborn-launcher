@@ -60,10 +60,11 @@ pub struct Settings {
     pub public_base: String,
     #[serde(default = "default_launcher_manifest")]
     pub launcher_manifest: String,
-    /// The drop folders: one subfolder per thing players get
-    /// (`textures\GN7E69`, `runtime`, `mods\packages`, `roster`, `game`,
-    /// `patch-chain`). Pages propose paths under it when nothing is
+    /// The drop folders: one subfolder per thing the Textures, runtime,
+    /// mods page publishes (`textures\<game id>`, `runtime`,
+    /// `mods\packages`). That page proposes paths under it when nothing is
     /// remembered, so publishing is "put the files there, press the button".
+    /// The roster and game pages take a file each and do not read this.
     /// Adam, 2026-09-11: "setup directories for me to upload the files that
     /// need to go in certain places".
     #[serde(default)]

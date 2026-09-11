@@ -38,10 +38,7 @@ use std::path::{Path, PathBuf};
 /// beta was stamped 3.0.1-beta.N, so `update_check` called each newer beta
 /// "up to date" and no launcher built after 2026-09-09 ever updated itself.
 pub fn launcher_version() -> &'static str {
-    match option_env!("REBORN_BUILD_VERSION") {
-        Some(v) if !v.trim().is_empty() => v,
-        _ => env!("CARGO_PKG_VERSION"),
-    }
+    reborn_core::build_version()
 }
 
 use serde::{Deserialize, Serialize};
@@ -1067,12 +1064,24 @@ fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: 
             }
         }
     }
+    // The record is what the rebuild reads, so it is written first; if the
+    // rebuild then fails, the previous record goes back, so Music never
+    // claims a soundtrack the disc does not carry.
+    let previous = Soundtrack::load(data_root).map_err(|e| e.to_string())?;
     st.base = base;
     if on {
         st.enabled = true;
     }
     st.save(data_root).map_err(|e| e.to_string())?;
-    let outcome = music_page::rebuild_now(data_root, &mut |_| {})?;
+    let outcome = match music_page::rebuild_now(data_root, &mut |_| {}) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            if let Err(back) = previous.save(data_root) {
+                eprintln!("the soundtrack record could not be put back: {back}");
+            }
+            return Err(e);
+        }
+    };
     Ok(match outcome {
         reborn_core::soundtrack::apply::Outcome::Refused(reborn_core::soundtrack::Refusal::NothingStaged) => "Your game plays the original soundtrack.".to_string(),
         other => other.note(),
@@ -4303,9 +4312,16 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
             .map_err(|e| e.player_message().to_string())?;
 
         let env = std::collections::BTreeMap::new();
-        let handle = p.processes
-            .spawn(&exe, &args, exe.parent(), &env)
-            .map_err(|e| e.player_message().to_string())?;
+        let handle = match p.processes.spawn(&exe, &args, exe.parent(), &env) {
+            Ok(handle) => handle,
+            Err(e) => {
+                // Nothing ran, so the record is closed here instead of being
+                // found unfinished at the next launch and shown as a game
+                // that did not close properly.
+                let _ = supervisor.finish(record, &reborn_core::platform::ExitKind::Error { code: -1 });
+                return Err(e.player_message().to_string());
+            }
+        };
         let user_path = user.path().to_path_buf();
         std::thread::spawn(move || {
             // Held across the wait and across the collection, which is what
@@ -5365,6 +5381,22 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // One launcher window. A second start, most often an invite link
+        // clicked while this one is open, hands its arguments here and
+        // exits: the room code is kept and this window comes forward, and
+        // Play and Online read the code when the window gets focus.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(code) = args.iter().find_map(|a| join_code_from(a)) {
+                if let Err(why) = remember_pending_join(&Platform::detect(), &code) {
+                    eprintln!("Could not keep the invite's room code: {why}");
+                }
+            }
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             // Already here.
             dolphin_settings::netplay_open,

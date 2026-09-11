@@ -308,7 +308,7 @@ pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result
         };
 
         let transport = UreqTransport::new();
-        let plan = build_upload_plan(&origin, id, &version, &transport, bucket)?;
+        let plan = build_upload_plan(&origin, id, &version, &transport, bucket, sink)?;
         let http = UreqHttp::new(concat!("reborn-publisher/", env!("CARGO_PKG_VERSION")));
         let upload_req = UploadRequest {
             bucket,
@@ -580,6 +580,7 @@ fn build_upload_plan(
     version: &str,
     transport: &dyn upload::Transport,
     bucket: &Bucket,
+    sink: Sink<'_>,
 ) -> reborn_core::Result<UploadPlan> {
     let mut plan = UploadPlan::new();
 
@@ -589,7 +590,10 @@ fn build_upload_plan(
         .map_err(|e| plain_err(format!("{} does not parse as a component manifest: {e}", manifest_local.display())))?;
 
     // One listing, not one HEAD per file: a texture set is eight thousand.
-    let (already, _how) = upload::already_on_bucket(transport, bucket)?;
+    // Said out loud either way: a bucket that would not list falls back to
+    // one request per key, and that is slow enough to look hung.
+    let (already, how) = upload::already_on_bucket(transport, bucket)?;
+    sink(Event::out(how));
     let manifest_key = manifest_url(id, version);
     if already(&manifest_key) != Some(manifest_bytes.len() as u64) {
         let sha = Sha256Hex::from_bytes(&manifest_bytes);

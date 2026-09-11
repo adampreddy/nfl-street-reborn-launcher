@@ -77,7 +77,7 @@ export const OPERATION_PAGES = {
   roster: "Roster",
   history: "Roll back",
   game_build: "Build an ISO",
-  game_patch: "Build an ISO",
+  game_patch: "Game patch",
   set: "Full installer set",
 };
 
@@ -285,9 +285,15 @@ export function job(host, config) {
 
   function stopPolling() {
     if (pollHandle) {
-      clearInterval(pollHandle);
+      clearTimeout(pollHandle);
       pollHandle = null;
     }
+  }
+
+  // Every poll carries the whole line list, so a long upload's page slows
+  // down as its Details grow: the poll spaces out once the list is long.
+  function pollDelay() {
+    return last && Array.isArray(last.lines) && last.lines.length > 2000 ? 1000 : JOB_POLL_MS;
   }
 
   /// Poll until this job's operation settles; resolve with the settled
@@ -323,7 +329,13 @@ export function job(host, config) {
           resolve(null);
         }
       };
-      pollHandle = setInterval(tick, JOB_POLL_MS);
+      const schedule = () => {
+        pollHandle = setTimeout(async () => {
+          await tick();
+          if (pollHandle) schedule();
+        }, pollDelay());
+      };
+      schedule();
       tick();
     });
   }
@@ -462,6 +474,10 @@ export function job(host, config) {
       draw();
       const settled = await follow(phase);
       if (settled) settle(phase, settled);
+      // A publish that settled while this page was away is finished, not
+      // still "publishing" with its button disabled; the server check is
+      // one press away on the page's own controls.
+      if (phase === "publishing") phase = settled ? "done" : "idle";
       draw();
       return;
     }

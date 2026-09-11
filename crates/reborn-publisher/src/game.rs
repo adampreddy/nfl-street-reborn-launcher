@@ -855,7 +855,10 @@ fn finish_game_patch_run(
         return Ok(Outcome::Done(value));
     };
 
-    let (already, _how) = upload::already_on_bucket(transport, bucket)?;
+    let (already, how) = upload::already_on_bucket(transport, bucket)?;
+    // Said out loud: a bucket that would not list falls back to one request
+    // per key, and that is slow enough to look hung.
+    sink(reborn_core::publish::Event::out(how));
     let plan = upload::plan_origin(origin, &*already)?;
     let upload_req = UploadRequest {
         bucket,

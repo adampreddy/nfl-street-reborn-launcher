@@ -226,7 +226,7 @@ impl ConfigGenerator {
         let mut out=Overlay::new();
         for (section,key,value) in [
             ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
-            ("Video_Settings","InternalResolution","3"),("Video_Settings","MSAA","1"),("Video_Settings","SSAA","False"),
+            ("Video_Settings","InternalResolution","3"),("Video_Settings","SSAA","False"),
             ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","True"),
             ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
             ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True"),

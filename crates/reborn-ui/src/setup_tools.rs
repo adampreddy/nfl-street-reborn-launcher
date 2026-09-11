@@ -131,10 +131,14 @@ fn patch_to_newest(p:&Platform,report:&dyn Fn(&str))->Result<PatchOutcome,String
     let data=p.paths.data_root().map_err(|e|e.to_string())?;
     let patcher=Xdelta3::new(p,xdelta);
     report("Updating your game to the newest build…");
-    match apply(p,&ApplyRequest{data_root:&data,patcher:&patcher}).map_err(|e|e.to_string())? {
-        Outcome::Applied(r)=>Ok(PatchOutcome::Applied(r.steps.last().cloned().unwrap_or_default())),
-        Outcome::UpToDate{..}=>Ok(PatchOutcome::UpToDate),
-        Outcome::Refused(r)=>{eprintln!("game not patched during setup: {}",r.message());Ok(PatchOutcome::Unknown(r.message().to_string()))}
+    // A hard failure here (xdelta3 dying, staging full) must not undo an
+    // import that already landed: the disc stays as imported and the wizard
+    // says so, instead of reporting the whole import as failed.
+    match apply(p,&ApplyRequest{data_root:&data,patcher:&patcher}) {
+        Ok(Outcome::Applied(r))=>Ok(PatchOutcome::Applied(r.steps.last().cloned().unwrap_or_default())),
+        Ok(Outcome::UpToDate{..})=>Ok(PatchOutcome::UpToDate),
+        Ok(Outcome::Refused(r))=>{eprintln!("game not patched during setup: {}",r.message());Ok(PatchOutcome::Unknown(r.message().to_string()))}
+        Err(e)=>{eprintln!("game not patched during setup: {e}");Ok(PatchOutcome::Unknown("The update could not be applied right now; the launcher will try again after setup.".to_string()))}
     }
 }
 

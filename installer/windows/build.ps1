@@ -111,7 +111,7 @@ if ($Publisher) {
     }
     if (-not $RuntimeOnly -and (-not $Runtime -or -not $Textures -or -not $PromptPackages)) { throw "Runtime, Textures, and PromptPackages are required for a complete first-run installer." }
 }
-if (-not $Publisher -and -not (Test-Path -LiteralPath $Builder -PathType Leaf)) { throw "No Reborn Builder console build at $Builder. Pass -Builder <path to reborn-builder-cli.exe>; roster updates need it. Nothing was built." }
+if (-not $Publisher -and -not $RuntimeOnly -and -not (Test-Path -LiteralPath $Builder -PathType Leaf)) { throw "No Reborn Builder console build at $Builder. Pass -Builder <path to reborn-builder-cli.exe>; roster updates need it. Nothing was built." }
 
 $root = Resolve-Path "$PSScriptRoot\..\.."
 $AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "NFL Street Reborn" }

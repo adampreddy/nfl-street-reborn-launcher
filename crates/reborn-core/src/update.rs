@@ -332,7 +332,11 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
 /// should decide instead.
 pub fn dir_switch(root: &Path, local_programs: Option<&Path>) -> Option<std::ffi::OsString> {
     if let Some(programs) = local_programs {
-        if root.starts_with(programs) {
+        // Compared as lowercased text: Windows paths are case-insensitive
+        // and the two can differ in case (C:\Users\adam vs C:\Users\Adam).
+        let r = root.to_string_lossy().replace('/', "\\").to_lowercase();
+        let p = programs.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+        if r == p || r.starts_with(&format!("{p}\\")) {
             return None;
         }
     }

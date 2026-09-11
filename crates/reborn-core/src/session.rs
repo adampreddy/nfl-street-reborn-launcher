@@ -446,7 +446,12 @@ pub fn resolve_user_dir_for(
     if let Some(dir) = runtime_exe.and_then(Path::parent) {
         let beside = dir.join("User");
         let portable = dir.join("portable.txt").is_file();
-        if beside.is_dir() && (portable || user_dir_score(&beside) > 0) {
+        // The bundled runtime ships a `User` template (Config, GameSettings)
+        // for seeding new user folders; that must never count as the
+        // player's own folder, or a launch with no chosen folder would boot
+        // inside the runtime package. Only a memory card (score 100) or an
+        // explicit portable.txt makes a folder beside the emulator theirs.
+        if beside.is_dir() && (portable || user_dir_score(&beside) >= 100) {
             return Ok(UserDir::Portable(beside));
         }
     }
