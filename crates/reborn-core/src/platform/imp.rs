@@ -102,22 +102,37 @@ const PRODUCT: &str = "NFL Street Reborn";
 /// are the same directory is not a migration.
 const PRODUCT_DATA: &str = "NFL Street Reborn Launcher";
 
+impl RealPaths {
+    /// The directory of `exe` when it is an install: the launcher itself
+    /// sits there. `None` for anything else (a test binary under target,
+    /// a copied tool), so the fixed per-channel path answers instead.
+    pub(crate) fn install_dir_holding(exe: &Path) -> Option<PathBuf> {
+        let dir = exe.parent()?.to_path_buf();
+        dir.join("reborn-launcher.exe").is_file().then_some(dir)
+    }
+}
+
 impl Paths for RealPaths {
     fn install_root(&self) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            // Deliberately NOT %APPDATA%. The current 2.1 installer puts program
-            // files in the same folder as the user's memory cards, which is why
-            // its uninstaller deletes saves. Keeping the roots on separate
-            // branches makes that bug unwritable.
+            // The folder holding the running launcher. Since beta.8 the
+            // installer puts the program in `app` INSIDE the data root
+            // ({userappdata}\NFL Street Reborn Launcher[ Beta]\app); before
+            // that it was {localappdata}\Programs\NFL Street Reborn[ Beta].
+            // Answering with the fixed Programs path after the move made
+            // the first run seed nothing from the shipped content and plan a
+            // 6.4 GB download of what sat beside the exe (measured on the
+            // beta.8 walk, 2026-09-11). The exe's own directory is right for
+            // both layouts and for a payload folder run in place. A test
+            // binary or a stray rebornctl.exe copied elsewhere has no
+            // launcher beside it and gets the per-channel Programs path.
+            if let Some(dir) = std::env::current_exe().ok().and_then(|exe| RealPaths::install_dir_holding(&exe)) {
+                return Ok(dir);
+            }
             let base = RealPaths::env_path("LOCALAPPDATA")
                 .map(|p| p.join("Programs"))
                 .ok_or(Error::NoHomeDirectory)?;
-            // The product's name, not the product plus "Launcher". Adam,
-            // reading it on the wizard's folder page: only the app itself
-            // should say Launcher. Under LOCALAPPDATA\Programs, which is a
-            // different root from the APPDATA folder 2.1 owns, so dropping
-            // the word cannot collide with it.
             Ok(base.join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "macos")]
@@ -1241,6 +1256,22 @@ mod tests {
     // -----------------------------------------------------------------------
     // Channels: a beta never shares a root with stable
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_install_root_is_the_folder_holding_the_running_launcher() {
+        // Since beta.8 the program lives in `app` inside the data root; the
+        // fixed Programs path made a fresh beta.8 seed nothing and plan a
+        // 6.4 GB download of the content sitting beside its own exe.
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("rebornctl.exe");
+        std::fs::write(&tool, b"").unwrap();
+        assert_eq!(RealPaths::install_dir_holding(&tool), None, "no launcher beside it: not an install");
+        std::fs::write(dir.path().join("reborn-launcher.exe"), b"").unwrap();
+        assert_eq!(RealPaths::install_dir_holding(&tool).as_deref(), Some(dir.path()));
+        // This test binary has no launcher beside it, so the channel path
+        // still answers and the roots below stay apart.
+        assert!(RealPaths::install_dir_holding(&std::env::current_exe().unwrap()).is_none());
+    }
 
     #[test]
     fn a_beta_keeps_every_root_apart_from_stable() {

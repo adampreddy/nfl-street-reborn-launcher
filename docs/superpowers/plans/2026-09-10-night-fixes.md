@@ -31,6 +31,45 @@ on branch `publisher-redesign` in its own worktree, merged into
   run/Run/Verify/Cancel/Clear on every page, paragraphs of prose, jargon.
   Adam chose "one button per job".
 
+## Corrections found while doing Track A
+
+- A retail disc IS patched already, by the shipped game-import bundle
+  (`game-import\reborn.xdelta`, 80 MB): DolphinTool extracts the disc, the
+  63 retail files are verified by sha256 (so junk regions do not matter and
+  Redump and scrubbed images both pass), concatenated, and patched straight
+  to NSRV3. The chain only moves older Reborn discs forward. Adam's
+  `GC NFL Street 2 (USA).nkit.iso` is a scrubbed full-size image (sha1
+  CFE7AF47…, not Redump's D8603281…), which is exactly what the bundle
+  handles. No retail chain step is needed; the wizard wording was.
+- Retail -> 2.1 whole-window patch is 4.7 MB; kept in the scratchpad, unused.
+- Seeding already hardlinks; beta.4 had copied because the exe ran from
+  `%LOCALAPPDATA%` (different tree, links attempted across the same volume
+  should have worked; unverified why). With `app` inside the data root the
+  walk measures link counts directly.
+
+## Status (23:55)
+
+- Version fix committed (ed84ea0), tests green (21 in update/game_patch/seed).
+- game-patch 2026.09.11 + release 3.0.1 seq 10 LIVE (58.5 MB blob, read back).
+- Layout, wizard wording, play column committed (d2a0812); beta.8 full build
+  running (schtasks RebornBeta8Full); then walk from the retail disc with
+  `REBORN_WALK_DISC` + `REBORN_WALK_EXPECT_OUTCOME=bundle`, then upload,
+  then `publish-beta-launcher.ps1 -Version 3.0.1-beta.8`.
+
+## Status (00:25)
+
+- beta.8 built, walked from the retail disc (ALL PASS, bundle outcome,
+  17 s to NSRV3), version belief 3.0.1-beta.8, play column aligned at
+  1280 and 1920, set + self-update LIVE.
+- BUT the walk's fresh root planned a 6.4 GB download: `Paths::install_root`
+  on Windows was the fixed `%LOCALAPPDATA%\Programs\...` path, so seeding
+  found nothing beside the moved exe. Fixed: the folder holding
+  `reborn-launcher.exe` (falls back to the channel path for test binaries).
+  beta.9 replaces beta.8 (same set otherwise); beta.8 installs self-update.
+- The restore of Adam's beta data into the new root: robocopy exit 11
+  (some files failed to move; the leftovers were removed). Their game,
+  library, mods, users and config are present; the beta root is test data.
+
 ## Track A: launcher (this worktree)
 
 1. Version: `build.ps1 -Version` reaches the exe (`REBORN_BUILD_VERSION`
