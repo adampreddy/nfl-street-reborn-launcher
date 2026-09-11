@@ -42,7 +42,7 @@ DEFERRED (real, not for the 3.0.0 launch).
 | 7 | Two quick presses on Sign in started two device-code flows. | FIXED: a `starting` guard. |
 | 8 | The opened "Customize controls" fold clips the Swap and Restore buttons at 1280x800. | DISPROVED by rendering: the buttons end at 651 px inside a stage that ends at 658 px. The onboarding checker now asserts this. |
 | 9 | The locked Display toggle stayed in the pad's focus order. | FIXED: `aria-disabled` elements are skipped and the locked link is out of the tab order; dead `button.play-overview-toggle` CSS removed. |
-| 10 | The netplay poll re-enabled the form while Dolphin was still shutting down. | FIXED: the session-state event owns `sessionActive`. |
+| 10 | The netplay poll re-enabled the form while Dolphin was still shutting down. | DISPROVED: `netplay_status` reports `closed` only after the emulator process has exited (`session.active` is cleared right after the process wait in `dolphin_settings.rs`), so the immediate re-enable is right, and `check-online-restored.mjs` asserts it. Left as it was. |
 | 11 | `players.css` narrow-window padding could never apply. | FIXED: the media query is last. |
 | 12 | `finish.css` used an undefined `--text`. | FIXED: `--fg`. |
 | 13 | `build.ps1 -RuntimeOnly` still required the Builder. | FIXED. |
