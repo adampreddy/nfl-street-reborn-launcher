@@ -518,7 +518,10 @@ impl CardsAfterSession {
     /// someone should know.
     pub fn explain(&self) -> Option<String> {
         match self {
-            CardsAfterSession::Failed(why) => Some(format!("The memory cards could not be checked for gear edits: {why}")),
+            // A constant, never the error's text: the detail went to the log
+            // where it happened, as `NOT_SYNCED` and the session's own
+            // sentences do.
+            CardsAfterSession::Failed(_) => Some(NOT_HARVESTED.to_string()),
             CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoRoster { .. })) => None,
             CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoCards { .. })) => None,
             CardsAfterSession::Synced(outcome) => {
@@ -533,7 +536,10 @@ impl CardsAfterSession {
 pub fn after_session(platform: &Platform, user_dir: &Path) -> CardsAfterSession {
     let data_root = match platform.paths.data_root() {
         Ok(p) => p,
-        Err(e) => return CardsAfterSession::Failed(e.to_string()),
+        Err(e) => {
+            tracing::warn!("the memory cards were not checked for gear edits after the game: {e}");
+            return CardsAfterSession::Failed(e.to_string());
+        }
     };
     let roster = installed_roster(&data_root);
     let dirs = crate::roster::builder_dirs(platform, &[]);
@@ -543,9 +549,16 @@ pub fn after_session(platform: &Platform, user_dir: &Path) -> CardsAfterSession 
     let req = SyncRequest { data_root: &data_root, roster: &roster, builder: &builder, user_dir, harvest_only: true, dry_run: false };
     match sync(platform, &req) {
         Ok(o) => CardsAfterSession::Synced(o),
-        Err(e) => CardsAfterSession::Failed(e.to_string()),
+        Err(e) => {
+            tracing::warn!("the memory cards were not checked for gear edits after the game: {e}");
+            CardsAfterSession::Failed(e.to_string())
+        }
     }
 }
+
+/// The sentence for a harvest that could not even be attempted after a game.
+/// A constant, never an error's text, like [`NOT_SYNCED`].
+pub const NOT_HARVESTED: &str = "The memory cards could not be checked for gear edits, so they are as they were.";
 
 /// The sentence for a full sync that could not even be attempted (before a
 /// game, after an update). A constant, never an error's text: the detail goes
@@ -959,7 +972,9 @@ mod tests {
         assert!(CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoRoster { path: "r".into() })).explain().is_none());
         assert!(CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoCards { dir: "d".into() })).explain().is_none());
         assert!(CardsAfterSession::Synced(SyncOutcome::Refused(SyncRefusal::NoBuilder { looked: vec![] })).explain().is_some());
-        assert!(CardsAfterSession::Failed("boom".into()).explain().unwrap().contains("boom"));
+        let failed = CardsAfterSession::Failed("boom: C:\\somewhere\\private".into()).explain().unwrap();
+        assert_eq!(failed, NOT_HARVESTED, "an error's text never reaches a player");
+        crate::player_sentence::assert_player_safe(NOT_HARVESTED);
     }
 
     #[test]
