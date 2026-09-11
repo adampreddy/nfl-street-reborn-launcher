@@ -134,11 +134,16 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
     out!(sink);
     out!(sink, "Encoding the delta. This reads both images once.");
     let started = Instant::now();
+    // The source window must span the WHOLE source image. A rebuilt disc
+    // moves files: with the default 256 MB window every file that moved more
+    // than that read as new data, and 2.1 -> NSRV3 came out at 758 MB. Over
+    // the whole 1.46 GB disc the same step is 58 MB (measured 2026-09-10).
+    let window = source_window_bytes(std::fs::metadata(from).map_err(|e| io_err(from, e))?.len());
     let args: Vec<OsString> = vec![
         "-e".into(),
         "-f".into(),
         "-B".into(),
-        "268435456".into(),
+        window.to_string().into(),
         "-s".into(),
         from.as_os_str().to_os_string(),
         to.as_os_str().to_os_string(),
@@ -243,6 +248,16 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
 
 /// xdelta3 for the publisher: as given, the repository's import bundle when
 /// run from the repository, or the bundle beside rebornctl.
+/// The `-B` xdelta3 gets: the whole source image, rounded up to a mebibyte,
+/// capped below xdelta3's 2 GiB limit. Anything smaller than the image
+/// makes moved files look like new data.
+pub fn source_window_bytes(source_len: u64) -> u64 {
+    const MIB: u64 = 1 << 20;
+    const CAP: u64 = (1 << 31) - MIB;
+    let rounded = source_len.div_ceil(MIB) * MIB;
+    rounded.clamp(MIB, CAP)
+}
+
 pub fn find_xdelta_for_publishing(platform: &Platform, given: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = given {
         return p.is_file().then(|| p.to_path_buf());
@@ -294,6 +309,14 @@ mod tests {
         let platform = crate::Platform::detect();
         let mut lines = Vec::new();
         (publish_game_patch(&platform, r, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap(), lines)
+    }
+
+    #[test]
+    fn the_source_window_spans_the_whole_image() {
+        // A GameCube disc: 1,459,978,240 bytes is 1392.4 MiB, rounded up.
+        assert_eq!(source_window_bytes(1_459_978_240), 1393 << 20);
+        assert_eq!(source_window_bytes(0), 1 << 20);
+        assert_eq!(source_window_bytes(1 << 40), (1 << 31) - (1 << 20));
     }
 
     #[test]

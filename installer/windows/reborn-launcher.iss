@@ -20,10 +20,11 @@
 ;
 ; 1. DefaultDirName was {userappdata}\NFL Street Reborn, which made the install
 ;    root and the data root the same folder. The uninstaller then removed the
-;    folder holding the player's memory cards. Here {app} is under
-;    {localappdata}\Programs and the launcher's data root is under
-;    {userappdata}, on separate branches, so uninstall physically cannot reach
-;    saves.
+;    folder holding the player's memory cards. Here {app} is the `app`
+;    subfolder INSIDE the data root ({userappdata}\NFL Street Reborn
+;    Launcher\app since beta.8; {localappdata}\Programs before that): the
+;    uninstaller empties that subfolder and nothing beside it, so it cannot
+;    reach saves, the game library or Dolphin's user folders.
 ;
 ; 2. UsePreviousAppDir was never set, so Inno defaulted it to YES. With the old
 ;    AppId retained, an upgrade looks up the previous install's recorded
@@ -70,6 +71,9 @@
   #define AppId   "{{7C3E9A5D-2B41-4F0E-9D6A-B8E1F2C4A9B3}"
   #define AppName "NFL Street Reborn Beta"
   #define DirName "NFL Street Reborn Beta"
+  ; The launcher's data root for this channel (reborn_core's PRODUCT_DATA
+  ; plus the channel suffix). The program installs into `app` inside it.
+  #define DataDir "NFL Street Reborn Launcher Beta"
 #elif Channel == "stable"
   ; The 2.1 AppId is kept ON PURPOSE. It is how an upgrade recognizes an
   ; existing install instead of leaving two entries in Programs and Features.
@@ -78,6 +82,7 @@
   #define AppId   "{{DCD6B9B9-11DE-4AC0-A7F5-256E7AC55A7E}"
   #define AppName "NFL Street Reborn"
   #define DirName "NFL Street Reborn"
+  #define DataDir "NFL Street Reborn Launcher"
 #else
   #error Channel must be "stable" or "beta"
 #endif
@@ -109,7 +114,12 @@ AppUpdatesURL={#AppURL}
 ; under LOCALAPPDATA\Programs, a different root from the APPDATA folder 2.1
 ; owns, so the plain name cannot collide with it. The application is the
 ; thing that carries the word, not its folder.
-DefaultDirName={localappdata}\Programs\{#DirName}
+; Since beta.8: the program lives in `app` INSIDE the launcher's data root,
+; so a player has one folder (Adam: "put everything in roaming like we used
+; to"). Note 1 still holds: {app} is a subfolder the uninstaller can empty,
+; never the data root itself, and InstallDirIsSafe below allows exactly this
+; one subfolder under a data root and refuses every other.
+DefaultDirName={userappdata}\{#DataDir}\app
 DefaultGroupName={#AppName}
 
 ; See note 2. Without these two an upgrade puts {app} back on the old data root.
@@ -342,6 +352,12 @@ begin
   Result := ExpandConstant('{userappdata}\NFL Street Reborn');
 end;
 
+// The program lives INSIDE the data root, in its own `app` subfolder, so a
+// player finds everything in one place (Adam: "put everything in roaming like
+// we used to"). That subfolder, and only that subfolder, is a safe install
+// directory under a data root: the uninstaller removes what it installed
+// under `app` and cannot reach `library`, `saves` or `dolphin-users` beside
+// it. The data root itself, or any other folder inside it, stays refused.
 function InstallDirIsSafe(Dir: String): Boolean;
 var
   Normalized, Old, Current, Beta: String;
@@ -350,6 +366,11 @@ begin
   Old := Lowercase(RemoveBackslashUnlessRoot(OldDataRoot()));
   Current := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
   Beta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
+  if (Normalized = Current + '\app') or (Normalized = Beta + '\app') then
+  begin
+    Result := True;
+    exit;
+  end;
   // Equal to it, or inside it. Both are fatal for the same reason.
   Result := (Pos(Old + '\', Normalized + '\') <> 1)
     and (Pos(Current + '\', Normalized + '\') <> 1)
@@ -360,8 +381,44 @@ function UnsafeInstallDirMessage(): String;
 begin
   Result := 'That folder contains NFL Street Reborn save data or settings.'
     + #13#10#13#10
-    + 'Choose a separate folder for the program, such as the default folder '
-    + 'under LocalAppData\Programs. Your existing files have not been changed.';
+    + 'Choose a separate folder for the program, such as the default `app` '
+    + 'folder. Your existing files have not been changed.';
+end;
+
+// A 3.0 build before beta.8 installed its program under
+// {localappdata}\Programs. Left there, an upgrade to the new location would
+// strand up to 8 GB of shipped content and a second uninstall entry. That
+// older uninstaller removes only what it installed (it has no
+// [UninstallDelete] section), so it is safe to run silently first. The 2.1
+// uninstaller lives in {userappdata}\NFL Street Reborn and would destroy
+// saves; it is never under Programs, so this never runs it.
+function PreviousProgramsInstall(): String;
+var
+  Key, Value, Programs: String;
+begin
+  Result := '';
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + ExpandConstant('{#AppId}') + '_is1';
+  if not RegQueryStringValue(HKCU, Key, 'UninstallString', Value) then
+    exit;
+  Value := RemoveQuotes(Trim(Value));
+  Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
+  if (Pos(Programs, Lowercase(Value)) = 1) and FileExists(Value) then
+    Result := Value;
+end;
+
+procedure RemovePreviousProgramsInstall();
+var
+  Uninstaller: String;
+  Code: Integer;
+begin
+  Uninstaller := PreviousProgramsInstall();
+  if Uninstaller = '' then
+    exit;
+  Log('Removing the previous program folder first: ' + Uninstaller);
+  if not Exec(Uninstaller, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('The previous uninstaller could not be started; continuing.')
+  else
+    Log('The previous uninstaller finished with code ' + IntToStr(Code));
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -384,7 +441,11 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if not InstallDirIsSafe(ExpandConstant('{app}')) then
+  begin
     Result := UnsafeInstallDirMessage();
+    exit;
+  end;
+  RemovePreviousProgramsInstall();
 end;
 
 // WebView2 draws the launcher's window. It ships with Windows 11 and with any

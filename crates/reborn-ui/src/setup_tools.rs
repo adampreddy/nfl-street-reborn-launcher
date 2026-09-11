@@ -102,19 +102,39 @@ pub fn seed_game_patch(p:&Platform)->Result<(),String> {
 /// the current one here rather than in a download after setup. A disc the
 /// chain does not know is left as imported. Returns the build's label when
 /// a patch was applied.
-fn patch_to_newest(p:&Platform,report:&dyn Fn(&str))->Result<Option<String>,String> {
+/// What the shipped patch chain did to the player's disc, so the wizard can
+/// say it in words instead of "Imported" for every case. Adam saw "Game
+/// File Imported!" on a disc that was already NSRV3 and read it as "it is
+/// not patching at all".
+pub enum PatchOutcome {
+    /// The chain took the disc to its newest build; the label is that build's.
+    Applied(String),
+    /// The disc already is the chain's newest build.
+    UpToDate,
+    /// The chain does not know this disc (or refused it); kept as it came.
+    Unknown(String),
+    /// No chain or no xdelta3 shipped with this build; nothing could run.
+    NoChain,
+}
+impl PatchOutcome {
+    pub fn applied(&self)->Option<&str>{ if let PatchOutcome::Applied(l)=self {Some(l)} else {None} }
+    pub fn name(&self)->&'static str{ match self { PatchOutcome::Applied(_)=>"patched", PatchOutcome::UpToDate=>"newest", PatchOutcome::Unknown(_)=>"unknown", PatchOutcome::NoChain=>"no-chain" } }
+    pub fn note(&self)->Option<&str>{ if let PatchOutcome::Unknown(n)=self {Some(n)} else {None} }
+}
+
+fn patch_to_newest(p:&Platform,report:&dyn Fn(&str))->Result<PatchOutcome,String> {
     use reborn_core::game_patch::{apply,find_xdelta,xdelta_dirs,ApplyRequest,Outcome,Xdelta3,BUNDLE_DIR};
     seed_game_patch(p)?;
     let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
     let dirs=xdelta_dirs(p,&[exe_dir.join(BUNDLE_DIR)]);
-    let Some(xdelta)=find_xdelta(p,&dirs) else {return Ok(None)};
+    let Some(xdelta)=find_xdelta(p,&dirs) else {return Ok(PatchOutcome::NoChain)};
     let data=p.paths.data_root().map_err(|e|e.to_string())?;
     let patcher=Xdelta3::new(p,xdelta);
     report("Updating your game to the newest build…");
     match apply(p,&ApplyRequest{data_root:&data,patcher:&patcher}).map_err(|e|e.to_string())? {
-        Outcome::Applied(r)=>Ok(r.steps.last().cloned()),
-        Outcome::UpToDate{..}=>Ok(None),
-        Outcome::Refused(r)=>{eprintln!("game not patched during setup: {}",r.message());Ok(None)}
+        Outcome::Applied(r)=>Ok(PatchOutcome::Applied(r.steps.last().cloned().unwrap_or_default())),
+        Outcome::UpToDate{..}=>Ok(PatchOutcome::UpToDate),
+        Outcome::Refused(r)=>{eprintln!("game not patched during setup: {}",r.message());Ok(PatchOutcome::Unknown(r.message().to_string()))}
     }
 }
 
@@ -156,14 +176,22 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // A disc the bundle could not patch (an old NSR.iso, say) may still be
         // one the shipped chain knows. Either way the player ends on the
         // newest build here, or on their own disc if nothing knows it.
-        let patched=patched||patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?.is_some();
+        // Three ways to end on the newest build, told apart for the wizard:
+        // the bundle patched an original disc ("bundle"), the chain moved an
+        // older Reborn disc forward ("patched"), or the disc already was the
+        // newest ("newest"). "unknown" is a disc nothing recognised.
+        let (outcome,label,note)=if patched {("bundle".to_string(),Some("NSRV3".to_string()),None)} else {
+            let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
+            (o.name().to_string(),o.applied().map(String::from),o.note().map(String::from))
+        };
+        let patched=patched||outcome=="patched";
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
         saved.save(&settings).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
         // The pristine after the chain ran, not the one the import landed.
         let pristine=reborn_core::game_image::find_pristine(&data).map(|p|p.path).unwrap_or(output);
-        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched}))
+        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note}))
     }).await.map_err(|e|e.to_string())?
 }
 
