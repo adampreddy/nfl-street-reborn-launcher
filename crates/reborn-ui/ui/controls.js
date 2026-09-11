@@ -1,4 +1,5 @@
 import {bridge,call,el,get,reason,markCurrent,wireCoreFold} from './shell.js';
+import {mountNotices} from './notices.js';
 let active=0,busy=false,workspace=null,state={pads:[],slots:[null,null,null,null]},problem='';
 const screen=document.getElementById('screen');
 document.body.dataset.controllerTesting='setup';
@@ -39,7 +40,9 @@ function draw(){
  const textures=el('select',{id:'player-textures','aria-label':'Button textures'});for(const option of state.options||[])textures.append(el('option',{value:option.slug,text:option.label}));textures.value=state.current?.profile||'gamecube';
  textures.addEventListener('change',async()=>{if(busy)return;lock(true);const previous=state.current?.profile;try{const result=await call('controls_set',{profile:textures.value,runtime:state.runtime});state.current={profile:textures.value};feedback.textContent=result.sync_note||'Button textures saved. They apply to all players.';}catch(e){textures.value=previous||'gamecube';feedback.textContent=reason(e);}finally{lock(false);}});
  panel.append(el('div',{class:'player-textures'},el('label',{for:'player-textures',text:'Button textures'}),textures,el('span',{text:'Shared by all four players.'})),feedback);
- screen.replaceChildren(tabs,panel);
+ const noticeHost=el('div',{class:'notices'});
+ screen.replaceChildren(noticeHost,tabs,panel);
+ if(bridge)mountNotices(noticeHost);
 }
 markCurrent();wireCoreFold();
 if(bridge)refresh();else{problem='Open Controllers from the launcher to connect your devices.';draw();}

@@ -93,3 +93,23 @@ mod tests {
         // The site itself would launch a browser here, so it is not exercised.
     }
 }
+
+/// One-time notices the launcher owes the player, with their words. The
+/// core decides both; a page only draws them and reports "Got it".
+#[tauri::command]
+pub fn notices_pending() -> Result<Vec<serde_json::Value>, String> {
+    let p = reborn_core::Platform::detect();
+    let ids = reborn_core::notices::pending(&p).map_err(|e| e.to_string())?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| {
+            reborn_core::notices::text(id)
+                .map(|(title, text)| serde_json::json!({"id": id, "title": title, "text": text}))
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn notice_dismiss(id: String) -> Result<(), String> {
+    reborn_core::notices::dismiss(&reborn_core::Platform::detect(), &id).map_err(|e| e.to_string())
+}

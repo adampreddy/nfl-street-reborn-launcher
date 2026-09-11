@@ -16,7 +16,16 @@
   const tabs=make('div','mapping-tabs'),grid=make('div','compact-mappings');tabs.setAttribute('aria-label','Control groups');
   const editor=make('div','binding-editor');editor.hidden=true;
   const reset=make('button','mapping-reset','Restore automatic mapping');reset.type='button';reset.disabled=true;
-  right.append(title,message,tabs,grid,editor,reset);
+  // The one change most people ever want, in one press. The game itself
+  // already swaps X and B in a match (NSRV3), so this is for the few who
+  // want them the other way round on their pad regardless.
+  const swap=make('button','mapping-swap','Swap X and B');swap.type='button';
+  // First run: the standard layout is right for nearly everyone, so the
+  // grid of bindings hides behind one line until someone asks for it.
+  // Adam, 2026-09-11: "The initial controller remapping sucks and is a PIA."
+  const custom=make('details','customize-controls');const customSummary=make('summary',null,'Customize controls');customSummary.title='The standard layout fits most controllers: A, B, X and Y as printed on your pad. Change any button here, or later under Controllers.';
+  if(layout==='players'){right.append(title,message,tabs,grid,editor,swap,reset);}
+  else{custom.append(customSummary,tabs,grid,editor,swap,reset);right.append(title,message,custom);}
   const setMode=value=>{mode=value;if(value==='test')document.body.dataset.controllerTesting='setup';else delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));root.dataset.testing=String(value==='test');toggle.textContent=value==='test'?(layout==='players'?'Finish test':'Use controller to navigate'):'Test controller';toggle.setAttribute('aria-pressed',String(value==='test'));hint.textContent=layout==='players'?(value==='test'?'Navigation is paused. Click Finish test or press Esc.':'Select a control to change its binding.'):value==='test'?'Live test is on. Esc or View + Menu switches to navigation.':'Controller navigation is on. Use the D-pad or left stick to move, A / Cross to select, and B / Circle to go back.';};
   toggle.onclick=()=>{if(saving)return;cancelCapture();setMode(mode==='test'?'navigate':'test');};
   const finishCapture=()=>{capture=null;editor.hidden=true;onBusy(false);setMode(mode);renderRows();};
@@ -28,10 +37,13 @@
   };
   function assign(row){
    if(saving)return;cancelCapture();capture={row,neutral:false};document.body.dataset.controllerTesting='setup';document.dispatchEvent(new Event('controller-test-state'));onBusy(true);
-   message.textContent=`Assign ${row.label}: release the controls, then press a button or move a stick.`;
+   message.textContent=`${row.label}: press the button on your controller now, or move the stick. Esc cancels.`;
    const label=make('label',null,`${row.label} binding`),input=make('input');input.value=row.binding;input.setAttribute('aria-label',`${row.label} binding`);label.append(input);
    const apply=make('button',null,'Use binding'),cancel=make('button',null,'Cancel');apply.type=cancel.type='button';apply.onclick=()=>save(row,input.value);cancel.onclick=cancelCapture;
-   editor.setAttribute('role','dialog');editor.setAttribute('aria-label',`Assign ${row.label}`);editor.replaceChildren(label,apply,cancel);editor.hidden=false;renderRows();cancel.focus({preventScroll:true});
+   // Pressing the button is the way; typing a Dolphin input name is the
+   // fallback for a pad the capture does not understand, kept out of the way.
+   const typed=make('details','typed-binding');typed.append(make('summary',null,'Type a Dolphin input name instead'),label,apply);
+   editor.setAttribute('role','dialog');editor.setAttribute('aria-label',`Assign ${row.label}`);editor.replaceChildren(make('p','note',`Press the button you want for ${row.label}.`),typed,cancel);editor.hidden=false;custom.open=true;renderRows();cancel.focus({preventScroll:true});
   }
   const belongs=row=>group==='D-pad'?/^D-Pad\//.test(row.key):group==='Sticks'?/^(Main Stick|C-Stick)\//.test(row.key):group==='Triggers'?/^Triggers\//.test(row.key):! /^(Main Stick|C-Stick|Triggers|D-Pad)\//.test(row.key);
   function renderRows(){
@@ -49,6 +61,13 @@
 
   for(const name of ['Buttons','Sticks','Triggers','D-pad']){const b=make('button',null,name);b.type='button';b.onclick=()=>{if(saving)return;cancelCapture();group=name;renderRows();};tabs.append(b);}
   const load=async()=>{try{const result=await invoke('setup_controller_mapping');if(disposed)return;rows=result.rows.map(row=>({...row,label:row.key.startsWith('Main Stick/')?'Left stick '+row.key.split('/')[1].toLowerCase():row.key.startsWith('C-Stick/')?'Right stick '+row.key.split('/')[1].toLowerCase():row.label}));message.textContent=result.custom?'Your saved mapping is loaded. Select a control to change it.':'Standard controls mapped automatically. Select a control to change it.';reset.disabled=false;renderRows();}catch(e){message.textContent=String(e.message||e);}};
+  swap.onclick=async()=>{
+   if(saving)return;cancelCapture();const b=rows.find(r=>r.key==='Buttons/B'),x=rows.find(r=>r.key==='Buttons/X');if(!b||!x)return;
+   saving=true;onBusy(true);swap.disabled=true;
+   try{await invoke('setup_save_mapping',{bindings:{'Buttons/B':x.binding,'Buttons/X':b.binding},reset:false});await load();message.textContent='X and B swapped on your controller. The game already swaps them in a match on its own, so most people leave this alone.';}
+   catch(e){message.textContent=String(e.message||e);}
+   finally{saving=false;onBusy(false);swap.disabled=false;renderRows();}
+  };
   reset.onclick=async()=>{if(saving)return;cancelCapture();saving=true;onBusy(true);reset.disabled=true;try{await invoke('setup_save_mapping',{bindings:{},reset:true});await load();}catch(e){message.textContent=String(e.message||e);}finally{saving=false;onBusy(false);reset.disabled=false;renderRows();}};
   function showArt(id){if(id===previewId)return;previewId=id;preview=window.createControllerPreview?.(id);if(preview)art.replaceChildren(preview);}
   showArt(device);

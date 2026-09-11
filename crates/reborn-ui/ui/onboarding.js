@@ -366,17 +366,17 @@ const SCREENS = {
       const isShipped=()=>{try{return localStorage.getItem('setup:shipped:'+pending.image)==='true';}catch(_){return false;}};
       // What happened to the disc, in words. "Imported" alone read as "it is
       // not patching at all" when the disc was simply already the newest build.
-      const outcomeWords=(outcome,label,note)=>{
+      const outcomeWords=(outcome,label,note,patched)=>{
         const build=label||'NSRV3';
         switch(outcome){
           case 'bundle':return ['Game File Patched!',`Your original NFL Street 2 disc was patched to ${build} and verified. Continue to your controller.`];
           case 'patched':return ['Game File Patched!',`Your disc was updated to ${build} and verified. Continue to your controller.`];
           case 'newest':return ['Game File Imported!',`This disc is already the newest Reborn build (${build}). Continue to your controller.`];
           case 'unknown':return ['Game File Imported!',`This disc is not one Reborn recognizes, so it was kept exactly as it is.${note?' '+note:''} Continue to your controller.`];
-          default:return ['Game File Imported!','Imported and ready. Continue to your controller.'];
+          default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
         }
       };
-      const storedWords=()=>{try{return outcomeWords(localStorage.getItem('setup:outcome:'+pending.image)||'',localStorage.getItem('setup:label:'+pending.image)||'',localStorage.getItem('setup:note:'+pending.image)||'');}catch(_){return outcomeWords('', '', '');}};
+      const storedWords=()=>{try{return outcomeWords(localStorage.getItem('setup:outcome:'+pending.image)||'',localStorage.getItem('setup:label:'+pending.image)||'',localStorage.getItem('setup:note:'+pending.image)||'',isPatched());}catch(_){return outcomeWords('', '', '', false);}};
       const shipped=installInfo?.shipped_game||null;
       const status=el('p','import-status',pending.image?(isShipped()?'NFL Street Reborn is ready':storedWords()[0]):shipped?'Preparing NFL Street Reborn…':'Your original file stays untouched.');status.setAttribute('role','status');
       const progress=el('progress','patch-progress');progress.max=100;progress.hidden=!pending.image&&!shipped;if(pending.image)progress.value=100;
@@ -411,7 +411,7 @@ const SCREENS = {
           pending.image=typeof imported==='string'?imported:imported.path;
           try{localStorage.setItem('setup:patched:'+pending.image,String(imported.patched===true));localStorage.setItem('setup:outcome:'+pending.image,String(imported.outcome||''));localStorage.setItem('setup:label:'+pending.image,String(imported.label||''));localStorage.setItem('setup:note:'+pending.image,String(imported.note||''));}catch(_){}
           try{localStorage.setItem('h:game',pending.image);}catch(_){}
-          const words=outcomeWords(imported.outcome||'',imported.label||'',imported.note||'');
+          const words=outcomeWords(imported.outcome||'',imported.label||'',imported.note||'',imported.patched===true);
           progress.value=100;box.classList.add('patch-complete');status.textContent=words[0];detail.textContent=words[1];browse.textContent='Choose a different file';browse.className='';
         }catch(e){status.textContent='Your game could not be prepared';detail.textContent=String(e.message||e);progress.hidden=true;}
         finally{unlisten?.();moving=false;browse.disabled=false;updateNav();if(pending.image)document.getElementById('next').focus({preventScroll:true});}

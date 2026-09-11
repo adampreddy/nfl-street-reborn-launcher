@@ -71,7 +71,10 @@ function check(what, ok, detail = "") {
 // The pages import ./shell.js, which a data: URL cannot resolve, so the shared
 // module is inlined: its exports become plain declarations.
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from ['"]\.\/shell\.js['"];\r?\n/m;
+// notices.js is the one other shared module a page imports; inlined the
+// same way, after shell.js, with its own shell import dropped.
+const NOTICES = readFileSync("crates/reborn-ui/ui/notices.js", "utf8").replaceAll("export ", "").replace(/^import .*from ['"]\.\/shell\.js['"];\r?\n/m, "");
+const IMPORT_LINE = /^import .*from ['"]\.\/(shell|notices)\.js['"];\r?\n/gm;
 
 async function loadPage(file, answers, mode) {
   const calls = [];
@@ -91,7 +94,7 @@ async function loadPage(file, answers, mode) {
   byId["screen"] = fakeEl("div#screen");
   const src = readFileSync(file, "utf8").replace(IMPORT_LINE, "");
   // A fresh module each time: a cache-busting comment on the data: URL.
-  const mod = SHELL + "\n" + src + `\n// ${file} ${mode} ${Math.random()}`;
+  const mod = SHELL + "\n" + NOTICES + "\n" + src + `\n// ${file} ${mode} ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   await tick(); await tick(); await tick();
   return { calls, screen: byId["screen"] };
@@ -110,7 +113,7 @@ async function loadPageDriven(file, invoke) {
   global.window = { addEventListener() {}, __TAURI__: { core: { invoke } } };
   byId["screen"] = fakeEl("div#screen");
   const src = readFileSync(file, "utf8").replace(IMPORT_LINE, "");
-  const mod = SHELL + "\n" + src + `\n// ${file} driven ${Math.random()}`;
+  const mod = SHELL + "\n" + NOTICES + "\n" + src + `\n// ${file} driven ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   await tick(); await tick(); await tick();
   return {

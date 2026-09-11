@@ -53,6 +53,7 @@ pub mod backend;
 pub mod content;
 pub mod controller;
 pub mod controller_profiles;
+pub mod notices;
 pub mod devices;
 pub mod gamepad;
 pub mod game_image;

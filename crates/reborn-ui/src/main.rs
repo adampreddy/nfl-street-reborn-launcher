@@ -5297,6 +5297,8 @@ fn main() {
             shell_tools::open_website,
             shell_tools::uninstall_launcher,
             shell_tools::update_progress,
+            shell_tools::notices_pending,
+            shell_tools::notice_dismiss,
             stats_view::stats_games,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,

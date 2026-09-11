@@ -2,6 +2,7 @@
 // live in Game details without moving the artwork or interrupting navigation.
 
 import { bridge, call, el, fact, facts, get, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
+import { mountNotices } from "./notices.js";
 
 // Each read settles on its own: a failed pad scan must not blank the page.
 const state = {};
@@ -328,6 +329,10 @@ function draw() {
     el("span", { class: "play-history", text: inSession ? "Settings apply to your next session" : error || (result?.needs_recovery ? result.message : null) || history })));
   bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
     el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
+  // What the launcher changed on the player's behalf, said once, above Play.
+  const noticeHost = el("div", { class: "notices" });
+  controls.append(noticeHost);
+  if (bridge) mountNotices(noticeHost);
   controls.append(bar);
   controls.append(identityCard());
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;

@@ -26,6 +26,8 @@ pub fn save(file: &Path, profile: ControllerProfile) -> Result<()> {
 /// Adopt a migrated binding set when that device first reconnects. Existing
 /// launcher mappings always win, including the user's explicit reset to defaults.
 pub fn adopt_migrated(platform: &Platform, scan: &crate::devices::Enumeration) -> Result<()> {
+    // Profiles adopted by an earlier build may still carry the 2.1 swap.
+    normalize_saved(platform)?;
     let file=path(platform)?;
     let legacy=file.with_file_name("migrated-controller.ini");
     let Ok(text)=std::fs::read_to_string(&legacy) else {return Ok(())};
@@ -40,17 +42,64 @@ pub fn adopt_migrated(platform: &Platform, scan: &crate::devices::Enumeration) -
             for input in crate::controller::GcInput::ALL {
                 if let Some(binding)=doc.get(&section,input.ini_key()).filter(|v|!v.is_empty()){profile.rebind(*input,binding.to_string());}
             }
+            let undone=undo_legacy_bx_swap(&mut profile);
             save(&file,profile)?;
+            if undone { crate::notices::add(platform, crate::notices::BX_SWAP_UNDONE)?; }
             break;
         }
     }
     Ok(())
 }
 
+/// 2.1 told players to swap B and X in Dolphin because the game had them the
+/// wrong way round. NSRV3 swaps them inside the game (a match-gated pad
+/// cave), so a mapping that still carries the Dolphin swap cancels it out
+/// in a match and wrongly swaps the menus, which stay vanilla. Undo it: B is
+/// B, X is X. True when the profile changed. Adam, 2026-09-11: "for
+/// returning installs X and B are back to normal".
+pub fn undo_legacy_bx_swap(profile: &mut ControllerProfile) -> bool {
+    use crate::controller::GcInput::{ButtonB, ButtonX};
+    let swapped=profile.mapping.get(ButtonB)==Some("`Button X`") && profile.mapping.get(ButtonX)==Some("`Button B`");
+    if !swapped { return false; }
+    profile.reset(&[ButtonB, ButtonX]);
+    true
+}
+
+/// Every saved profile, unswapped. Returns how many changed; a change also
+/// queues the notice players read once on Play and Controllers.
+pub fn normalize_saved(platform: &Platform) -> Result<usize> {
+    let file=path(platform)?;
+    let mut changed=0;
+    for mut profile in load(&file)? {
+        if undo_legacy_bx_swap(&mut profile) { save(&file,profile)?; changed+=1; }
+    }
+    if changed>0 { crate::notices::add(platform, crate::notices::BX_SWAP_UNDONE)?; }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{controller::{DeviceFamily, GcInput}, devices::{Backend, DetectedDevice, Enumeration}};
+    #[test]
+    fn a_2_1_mapping_that_swapped_b_and_x_is_put_back_and_nothing_else_is_touched() {
+        let device=DetectedDevice{backend:Backend::XInput,id:0,name:"Gamepad".into(),family:DeviceFamily::Xbox};
+        let mut profile=ControllerProfile::new(device.identity(),1);
+        profile.rebind(GcInput::ButtonB,"`Button X`");
+        profile.rebind(GcInput::ButtonX,"`Button B`");
+        profile.rebind(GcInput::ButtonZ,"`Shoulder L`");
+        assert!(undo_legacy_bx_swap(&mut profile), "a swapped pair is undone");
+        assert_eq!(profile.mapping.get(GcInput::ButtonB),Some("`Button B`"));
+        assert_eq!(profile.mapping.get(GcInput::ButtonX),Some("`Button X`"));
+        assert_eq!(profile.mapping.get(GcInput::ButtonZ),Some("`Shoulder L`"),"the player's other choices stay");
+        assert!(!profile.overridden.contains(&GcInput::ButtonB) && !profile.overridden.contains(&GcInput::ButtonX),"B and X count as default again");
+        assert!(!undo_legacy_bx_swap(&mut profile),"nothing to undo the second time");
+        // A deliberate one-sided rebind is not a 2.1 swap and is left alone.
+        let mut other=ControllerProfile::new(device.identity(),1);
+        other.rebind(GcInput::ButtonB,"`Button X`");
+        assert!(!undo_legacy_bx_swap(&mut other));
+        assert_eq!(other.mapping.get(GcInput::ButtonB),Some("`Button X`"));
+    }
     #[test]
     fn four_players_keep_independent_mappings_and_disconnected_slots() {
         let devices=(0..4).map(|id|DetectedDevice{backend:Backend::XInput,id,name:"Gamepad".into(),family:DeviceFamily::Xbox}).collect::<Vec<_>>();

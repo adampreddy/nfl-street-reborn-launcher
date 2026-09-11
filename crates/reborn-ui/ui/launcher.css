@@ -222,3 +222,5 @@ body.shell.page-setup #screen>h1{max-width:600px;margin:0 auto 14px;font-size:32
 .layered-preview>[class^="vendor-"] .clear{clear:both}
 .layered-preview figcaption{display:none}
 .layered-preview .pad-button{border:0;border-radius:0;padding:0;min-width:0;min-height:0;box-shadow:none;transition:none}
+.notices:empty{display:none}.notice.migration{margin:0 0 18px;padding:14px 16px;border:1px solid #ffffff2e;border-left:4px solid var(--red,#e0332f);border-radius:0 8px 8px 0;background:#ffffff0a;display:grid;gap:6px}.notice.migration strong{font-size:14px}.notice.migration p{margin:0;font-size:13px;color:#d1d4da;max-width:720px}.notice.migration .notice-dismiss{justify-self:start;margin-top:4px}
+.customize-controls>summary{cursor:pointer;font-weight:600;margin:10px 0}.typed-binding>summary{cursor:pointer;font-size:12px;color:var(--muted)}.mapping-swap{margin-right:8px}
