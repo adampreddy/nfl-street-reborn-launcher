@@ -16,6 +16,10 @@ param(
     [string]$Channel = "stable",
     # Where the Reborn Dolphin build lives. Staged by ALLOWLIST, see below.
     [string]$Runtime = "",
+    # The tuned Dolphin User folder every new user folder starts from (Adam's
+    # DOLPHIN ONLINE TEST User). Staged and sanitized by the core; required
+    # whenever -Runtime is given.
+    [string]$UserTemplate = "",
     # Game images. However many are given, all install. There is no fixed list
     # and no cap.
     [string[]]$GameImages = @(),
@@ -279,21 +283,20 @@ if ($Runtime -and (Test-Path $Runtime)) {
             $missing += "$d\"
         }
     }
-    # The baseline for a new Dolphin user folder: User\Config\*.ini and
-    # User\GameSettings\*.ini, made from the Dolphin Adam tuned, and nothing
-    # else from User. A runtime the launcher has run in also has Dump, Logs
-    # and a Load tree under User; none of that ships. The launcher seeds each
-    # new user folder from these (reborn_core::runtime::seed_user_from_template).
-    foreach ($d in "User\Config", "User\GameSettings") {
-        $src = Join-Path $Runtime $d
-        if (Test-Path $src -PathType Container) {
-            $target = Join-Path $dest $d
-            New-Item -ItemType Directory -Force $target | Out-Null
-            Get-ChildItem $src -Filter *.ini -File | Copy-Item -Destination $target
-        } else {
-            $missing += "$d\"
-        }
+    # The baseline for every new Dolphin user folder, staged from the tuned
+    # reference folder by the core (rebornctl runtime-template): Config and
+    # GameSettings INIs and the shader lists, cleaned of anything personal.
+    # Nothing else from any User folder ships. The launcher seeds each new
+    # user folder from it (reborn_core::runtime::seed_user_from_template).
+    if (-not $UserTemplate) { throw "-UserTemplate <tuned User folder> is required with -Runtime. Nothing was built." }
+    if (-not (Test-Path (Join-Path $UserTemplate "Config\Dolphin.ini"))) { throw "$UserTemplate has no Config\Dolphin.ini. Nothing was built." }
+    $ctl = Join-Path $root "target\release\rebornctl.exe"
+    if (-not (Test-Path $ctl)) {
+        cargo build --release -p reborn-cli
+        if ($LASTEXITCODE -ne 0) { throw "cargo build of rebornctl failed. Nothing was built." }
     }
+    & $ctl runtime-template --from $UserTemplate --into (Join-Path $dest "User")
+    if ($LASTEXITCODE -ne 0) { throw "rebornctl runtime-template failed. Nothing was built." }
 
     # NFL Street Reborn Dolphin.exe is the runtime. Everything else can be
     # missing on a build that does not carry it, and is reported; this one

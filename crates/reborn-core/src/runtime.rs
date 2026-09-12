@@ -834,44 +834,39 @@ pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
     Ok(())
 }
 
-/// The folders a runtime ships as the starting point for a new Dolphin user
-/// folder, under `User` beside the emulator: `Config\*.ini` and
-/// `GameSettings\*.ini`. Made from the Dolphin Adam tuned, so a fresh player
-/// starts with dual core, the anti-aliasing and filtering, and the game's
-/// Gecko codes, none of which the launcher's own required keys carry.
-pub const USER_TEMPLATE_DIRS: &[&str] = &["Config", "GameSettings"];
-
-/// Seed a user folder from the runtime's template, file by file, never
+/// Seed a user folder from the runtime's template (`User` beside the
+/// emulator, staged by `crate::user_template`), file by file, never
 /// replacing one that exists. A folder a player has already run in keeps
-/// every edit; a folder the setup just created gets the whole baseline. The
-/// session layers the launcher's required keys on afterwards, so those still
-/// win. Returns the files written, for the launch report.
+/// every edit; a folder the setup just created gets the whole baseline: the
+/// tuned INIs, the game settings and the shader lists. The session layers
+/// the launcher's required keys on afterwards, so those still win. Returns
+/// the files written, for the launch report.
 pub fn seed_user_from_template(runtime_exe: &Path, user_dir: &Path) -> Result<Vec<PathBuf>> {
     let Some(template) = runtime_exe.parent().map(|d| d.join("User")) else {
         return Ok(Vec::new());
     };
+    if !template.is_dir() {
+        return Ok(Vec::new());
+    }
     let mut written = Vec::new();
-    for dir in USER_TEMPLATE_DIRS {
-        let Ok(entries) = std::fs::read_dir(template.join(dir)) else {
-            continue;
-        };
-        let to = user_dir.join(dir);
-        for entry in entries.flatten() {
-            let src = entry.path();
-            let is_ini = src.extension().map_or(false, |e| e.eq_ignore_ascii_case("ini"));
-            if !src.is_file() || !is_ini {
-                continue;
-            }
-            let dst = to.join(entry.file_name());
-            if dst.exists() {
-                continue;
-            }
-            std::fs::create_dir_all(&to).map_err(|source| Error::Io { path: to.clone(), source })?;
+    seed_dir(&template, user_dir, &mut written)?;
+    Ok(written)
+}
+
+fn seed_dir(from: &Path, to: &Path, written: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = std::fs::read_dir(from).map_err(|source| Error::Io { path: from.to_path_buf(), source })?;
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            seed_dir(&src, &dst, written)?;
+        } else if src.is_file() && !dst.exists() {
+            std::fs::create_dir_all(to).map_err(|source| Error::Io { path: to.to_path_buf(), source })?;
             std::fs::copy(&src, &dst).map_err(|source| Error::Io { path: dst.clone(), source })?;
             written.push(dst);
         }
     }
-    Ok(written)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -887,7 +882,7 @@ mod template_tests {
             ("User/Config/GFX.ini", "[Settings]\nMSAA = 0x00000004\n"),
             ("User/GameSettings/GN7E69.ini", "[Gecko]\n$Point Remover\n"),
             ("User/Config/notes.txt", "not an ini"),
-            ("User/Dump/frame.png", "never shipped, never seeded"),
+            ("User/Cache/GN7E69.uidcache", "the shader list"),
         ] {
             let p = exe.parent().unwrap().join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -896,8 +891,11 @@ mod template_tests {
         exe
     }
 
+    /// Everything the runtime ships as its template is the baseline: the
+    /// build's staging (crate::user_template) decides what ships, and the
+    /// seed copies it whole.
     #[test]
-    fn a_new_user_folder_gets_every_template_ini_and_nothing_else() {
+    fn a_new_user_folder_gets_every_template_file() {
         let dir = tempfile::tempdir().unwrap();
         let exe = runtime_with_template(dir.path());
         let user = dir.path().join("dolphin-users").join("fresh-1");
@@ -907,10 +905,9 @@ mod template_tests {
             .map(|p| p.strip_prefix(&user).unwrap().to_string_lossy().replace('\\', "/"))
             .collect();
         names.sort();
-        assert_eq!(names, ["Config/Dolphin.ini", "Config/GFX.ini", "GameSettings/GN7E69.ini"]);
+        assert_eq!(names, ["Cache/GN7E69.uidcache", "Config/Dolphin.ini", "Config/GFX.ini", "Config/notes.txt", "GameSettings/GN7E69.ini"]);
         assert_eq!(std::fs::read_to_string(user.join("GameSettings/GN7E69.ini")).unwrap(), "[Gecko]\n$Point Remover\n");
-        assert!(!user.join("Config/notes.txt").exists(), "only ini files are part of the baseline");
-        assert!(!user.join("Dump").exists());
+        assert_eq!(std::fs::read_to_string(user.join("Cache/GN7E69.uidcache")).unwrap(), "the shader list");
     }
 
     #[test]
@@ -922,7 +919,7 @@ mod template_tests {
         std::fs::write(user.join("Config/Dolphin.ini"), "[Core]\nCPUThread = False\n").unwrap();
         let written = seed_user_from_template(&exe, &user).unwrap();
         assert_eq!(std::fs::read_to_string(user.join("Config/Dolphin.ini")).unwrap(), "[Core]\nCPUThread = False\n");
-        assert_eq!(written.len(), 2, "the two files they did not have: {written:?}");
+        assert_eq!(written.len(), 4, "the four files they did not have: {written:?}");
         assert!(user.join("Config/GFX.ini").is_file());
         assert!(user.join("GameSettings/GN7E69.ini").is_file());
     }

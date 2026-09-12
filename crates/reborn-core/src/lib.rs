@@ -88,6 +88,7 @@ pub mod signing;
 pub mod stats;
 pub mod supervisor;
 pub mod update;
+pub mod user_template;
 pub mod xbox;
 
 pub use platform::{

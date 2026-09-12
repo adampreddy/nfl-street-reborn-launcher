@@ -136,6 +136,18 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Stage the Dolphin user-folder template the runtime ships, from a
+    /// tuned User folder: Config and GameSettings INIs and the shader
+    /// lists, cleaned of anything personal. build.ps1 runs this.
+    RuntimeTemplate {
+        /// The tuned User folder.
+        #[arg(long)]
+        from: PathBuf,
+        /// The runtime's User folder to write.
+        #[arg(long)]
+        into: PathBuf,
+    },
+
     /// Print the GCPadNew.ini the launcher would generate.
     Controller {
         /// Ask this Reborn Dolphin what it calls the devices. Strongly preferred.
@@ -641,6 +653,14 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
+        Command::RuntimeTemplate { from, into } => {
+            let report = reborn_core::user_template::stage(&from, &into)?;
+            for p in &report.written {
+                println!("staged {}", p.display());
+            }
+            println!("{} file(s) staged into {}", report.written.len(), into.display());
+            Ok(OK)
+        }
         Command::Controller {
             runtime,
             out,
