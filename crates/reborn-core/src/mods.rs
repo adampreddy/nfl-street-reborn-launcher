@@ -133,7 +133,7 @@ fn refused(message: String) -> Error {
 ///
 /// Validated rather than passed through as a string because it is joined onto
 /// two roots. `GameId::parse("..")` would make the composed root the parent of
-/// `mods/active`, and every write would land outside the tree the launcher is
+/// `Load/Textures`, and every write would land outside the tree the launcher is
 /// allowed to touch.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
@@ -151,7 +151,7 @@ impl GameId {
             return Err(invalid(format!(
                 "{s:?} is not a game id. Use 1 to 16 ASCII letters and digits, \
                  for example GN7E69. It becomes a directory name under both \
-                 library/textures and mods/active, so anything else could point \
+                 library/textures and the user folder's Load/Textures, so anything else could point \
                  composition outside those trees"
             )));
         }

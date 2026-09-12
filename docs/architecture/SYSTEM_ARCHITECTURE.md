@@ -142,21 +142,28 @@ section rather than repeat it.
 
 ```text
 INSTALL ROOT          installer owns it, replaceable wholesale
-  Windows   %LOCALAPPDATA%\Programs\NFL Street Reborn Launcher
-  macOS     /Applications/NFL Street Reborn Launcher.app
+  Windows   <DATA ROOT>\app          (since 2026-09-12; before that
+                                     %APPDATA%\NFL Street Reborn Launcher[ Beta]\app,
+                                     and %LOCALAPPDATA%\Programs before beta.8)
+  macOS     /Applications/NFL Street Reborn.app
   Linux     AppImage or Flatpak
 
-  app/                  the running bundle
-  app.staging/          a verified new bundle, briefly
-  app.prior/            the previous bundle, kept for rollback
-
 DATA ROOT             launcher owns it, survives uninstall by default
-  Windows   %APPDATA%\NFL Street Reborn Launcher
-  macOS     ~/Library/Application Support/NFL Street Reborn Launcher
-  Linux     $XDG_DATA_HOME/NFL Street Reborn Launcher
+  Windows   %APPDATA%\NFL Street Reborn          (beta: NFL Street Reborn Beta)
+  macOS     ~/Library/Application Support/NFL Street Reborn
+  Linux     $XDG_DATA_HOME/NFL Street Reborn
 
-  NOT %APPDATA%\NFL Street Reborn, which is 2.1's own live Dolphin user
-  tree. See the corrected verdict in section 9.
+  The stable folder is the one 2.1 used. At its first start the launcher
+  moves a 2.1 install found there into `Reborn 2.1/` (renames only, nothing
+  deleted) and migration reads from it; a `NFL Street Reborn Launcher[ Beta]`
+  root from an earlier 3.0 build is adopted the same way. See
+  `crates/reborn-core/src/layout.rs` and the 2026-09-12 spec.
+
+  Reborn 2.1/                         the tucked 2.1 install, never touched again
+  app/                                the program (installer owns it)
+  dolphin-users/<name>/               one Dolphin user folder per player
+  dolphin-users/<name>/Load/Textures/<gameid>/
+                                      the COMPOSED texture tree Dolphin loads
 
   downloads/<component>/<version>/
   staging/<component>/<version>/
@@ -168,7 +175,6 @@ DATA ROOT             launcher owns it, survives uninstall by default
   runtime/<platform>/                 Reborn Dolphin             managed
   mods/staging/<id>/<version>/        unverified download
   mods/packages/<id>/<version>/       validated payloads
-  mods/active/<gameid>/               the composed tree Dolphin loads
   mods/activation.json                ordered active ids and versions
   music/sources/                      USER FILES, never delete
   music/packs/
@@ -212,10 +218,21 @@ same-volume precondition holds for all of them without a special case.
 `library/textures/<gameid>/` is pristine, manifest-verified, and **read only**.
 Nothing ever writes into it.
 
-`mods/active/<gameid>/` is a **composed** tree: hardlinks to every pristine file,
-with active package files placed over the ones they override. It is the only
-texture tree Dolphin is pointed at. Deactivating a mod deletes the composed tree
-and rebuilds it from `mods/activation.json`.
+`<user folder>/Load/Textures/<gameid>/` is a **composed** tree: hardlinks to
+every pristine file, with active package files placed over the ones they
+override. It is a real directory inside the Dolphin user folder, so no
+junction and no absolute path joins the two (until 2026-09-12 it lived at
+`mods/active/<gameid>/` and a junction pointed at it). Deactivating a mod
+rebuilds the composed tree from `mods/activation.json`. The tree's record
+carries the identity of the pristine tree it was built from (the textures
+content pointer), so a texture update, which swaps the pristine folder whole,
+always rebuilds it.
+
+**The path law.** A Dolphin user folder the launcher manages carries no path
+keys in `Dolphin.ini`: every path Dolphin uses (textures, dumps, NAND,
+resource packs, memory cards) derives from the `-u` folder. The launcher
+removes such keys at every launch; a path a player deliberately set outside
+every Dolphin user folder is kept.
 
 **There is no reverse map and no backup folder, because nothing is ever
 displaced.** That is the whole reason this model is chosen over JSGME's, which
@@ -234,7 +251,7 @@ case, and it has to be budgeted as such.
 | User-provided | `music/sources/` | Never delete without a separate explicit confirmation |
 | User-generated | `saves/`, `stats/` | Never delete. Preserved across uninstall by default |
 | Managed | `runtime/`, `library/`, `mods/packages/` | Launcher owns it. Safe to replace atomically |
-| Derived | `library/work/`, `mods/active/`, `cache/` | Regenerable. Safe to purge for disk space |
+| Derived | `library/work/`, `cache/`, the composed `Load/Textures/<gameid>/` in a user folder | Regenerable. Safe to purge for disk space |
 
 **Two verified failure modes this model exists to prevent:**
 
@@ -243,7 +260,7 @@ case, and it has to be budgeted as such.
 
 | Existing | Verdict |
 |---|---|
-| `%APPDATA%\NFL Street Reborn` root | **CORRECTED. Do not reuse. Migrate out of it.** Earlier text here said to reuse the root and restructure inside it. That is a data-loss bug, found by running the CLI against a real machine. The folder is a live Dolphin user tree with a JSGME `MODS` directory holding the player's installed mods. Windows paths are case insensitive, so the launcher's `mods/` is that `MODS/`, and `mods/staging` and `mods/active` are classed derived, which means a cache purge may delete them. Launcher data now lives in its own root, and this folder is only ever a migration source |
+| `%APPDATA%\NFL Street Reborn` root | **The stable data root since 2026-09-12, taken over safely.** From 2026-09-02 to 09-12 the launcher kept its own `... Launcher` root because sharing this folder made the launcher's `mods/` JSGME's `MODS/` (Windows paths are case insensitive) and `mods/staging` is purgeable. Now `layout::prepare_data_root` runs before the supervisor lock and moves every 2.1 entry (JSGME's `MODS` entries included) into `Reborn 2.1/` by rename, so the launcher never writes beside 2.1 files. The supervisor still refuses a root where that could not finish (the old game running) |
 | `User\GC` memory cards | **Reuse**, moved to `saves/` |
 | `User\Load\Textures\GN7E69` | **Reuse**, moved to `library/textures/GN7E69/` as pristine |
 | JSGME `!BACKUP`, `!INSTLOGS` | **Retire.** Composition makes both unnecessary |
