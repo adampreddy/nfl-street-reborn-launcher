@@ -2287,7 +2287,7 @@ mod tests {
     fn a_drive_holding_the_launchers_own_files_is_listed_but_never_written_to() {
         let tmp = tempfile::tempdir().unwrap();
         let usb = tmp.path().join("usbroot");
-        let data_root = usb.join("NFL Street Reborn Launcher");
+        let data_root = usb.join("NFL Street Reborn");
         std::fs::create_dir_all(&data_root).unwrap();
 
         let survey = survey_of(

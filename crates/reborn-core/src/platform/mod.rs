@@ -574,6 +574,13 @@ pub trait Paths: Send + Sync {
     /// Per-platform cache, safe to purge at any time.
     fn cache_root(&self) -> Result<PathBuf>;
 
+    /// The data root a build before 2026-09-12 used (`... Launcher[ Beta]`),
+    /// so a first start under the new name can adopt what is there. `None`
+    /// where no such folder was ever used (test fakes).
+    fn previous_data_root(&self) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
+
     /// The executable suffix, empty on Unix.
     fn exe_suffix(&self) -> &'static str;
 
