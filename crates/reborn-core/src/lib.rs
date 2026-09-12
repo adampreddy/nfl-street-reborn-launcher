@@ -64,6 +64,7 @@ pub mod identity;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
+pub mod layout;
 pub mod library;
 pub mod logging;
 pub mod manifest;

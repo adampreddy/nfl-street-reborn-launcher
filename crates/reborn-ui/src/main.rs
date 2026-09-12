@@ -652,16 +652,15 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
 fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
     if let Ok(file) = reborn_core::settings::settings_path(platform) {
         if let Ok(settings) = reborn_core::settings::Settings::load(&file) {
-            if let Some(root) = settings.legacy_root { return Some(root); }
+            if let Some(root) = settings.legacy_root { if root.is_dir() { return Some(root); } }
         }
     }
-    let guess = platform
-        .paths
-        .data_root()
-        .ok()?
-        .parent()?
-        .join("NFL Street Reborn");
-    guess.is_dir().then_some(guess)
+    let data = platform.paths.data_root().ok()?;
+    // The 2.1 install tucked into the data root at first start, else the
+    // folder 2.1 used beside a launcher-named root (builds before 09-12).
+    if let Some(tucked) = reborn_core::layout::legacy_root(&data) { return Some(tucked); }
+    let guess = data.parent()?.join("NFL Street Reborn");
+    (guess.is_dir() && !reborn_core::layout::same_named(&guess, &data)).then_some(guess)
 }
 
 static LAUNCH_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -5342,6 +5341,15 @@ fn main() {
     // no subscriber is dropped: the detail was not moved off the screen, it
     // was deleted. It says nothing and it cannot fail a start.
     reborn_core::logging::start(&Platform::detect());
+
+    // The data root, made ready before the lock, the seeding and the window:
+    // a 2.1 install at the root goes into its own subfolder and the data of
+    // a launcher named "Launcher" is adopted. Renames only; it says nothing
+    // and it cannot fail a start.
+    match reborn_core::layout::prepare_data_root(&Platform::detect()) {
+        Ok(prepared) => prepared.log(),
+        Err(why) => tracing::warn!("the data root could not be prepared: {why}"),
+    }
 
     // A credential this product retired, taken off the machine. `nsr.league.ingest`
     // was the bearer token Dolphin's own uploader posted with; the module that

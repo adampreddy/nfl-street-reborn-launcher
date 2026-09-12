@@ -608,6 +608,15 @@ fn main() -> std::process::ExitCode {
     // fail a command.
     reborn_core::logging::start(&Platform::detect());
 
+    // The data root, made ready before the lock, the seeding and the command:
+    // a 2.1 install at the root goes into its own subfolder and the data of
+    // a launcher named "Launcher" is adopted. Renames only; it says nothing
+    // and it cannot fail a start.
+    match reborn_core::layout::prepare_data_root(&Platform::detect()) {
+        Ok(prepared) => prepared.log(),
+        Err(why) => tracing::warn!("the data root could not be prepared: {why}"),
+    }
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
