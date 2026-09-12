@@ -1272,6 +1272,8 @@ pub struct CompositionPlan {
     pub game: GameId,
     pub pristine_root: PathBuf,
     pub composed_root: PathBuf,
+    /// See [`ComposeRequest::pristine_identity`].
+    pub pristine_identity: Option<String>,
     /// What the plan expects to pay. The report says what was actually paid,
     /// because a hardlink can still fail per filesystem at composition time.
     pub method: LinkMethod,
@@ -1327,6 +1329,7 @@ impl CompositionPlan {
         ComposedRecord {
             game: self.game.clone(),
             pristine_root: self.pristine_root.clone(),
+            pristine_identity: self.pristine_identity.clone(),
             activation: self.activation.clone(),
             total_entries: self.entries.len() as u64,
             pristine_entries: self.pristine_count() as u64,
@@ -1346,6 +1349,11 @@ pub struct ComposeRequest {
     /// decides which of two packages wins a contested path, because a contested
     /// path refuses the plan instead.
     pub packages: Vec<ModPackage>,
+    /// Which pristine tree this is, as the textures content pointer names it
+    /// (`<version>#<sequence>`), or `None` when no update has delivered one.
+    /// Recorded in the composed tree, so a swapped pristine folder with the
+    /// same names and count still rebuilds; see [`pristine_identity`].
+    pub pristine_identity: Option<String>,
 }
 
 impl ComposeRequest {
@@ -1360,6 +1368,7 @@ impl ComposeRequest {
             pristine_root: pristine_root(platform, &game)?,
             composed_root: composed_root(user_dir, &game),
             packages_root: packages_root(platform)?,
+            pristine_identity: pristine_identity(platform, &game),
             game,
             packages,
         })
@@ -1458,6 +1467,23 @@ pub fn composed_root(user_dir: &Path, game: &GameId) -> PathBuf {
 /// 2026-09-12 composed. Only named so a sync can retire what is left there.
 pub fn old_composed_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
     Ok(platform.paths.data_root()?.join("mods").join("active").join(game.as_str()))
+}
+
+/// What the textures content pointer says is installed, as one string, or
+/// `None` when no update has delivered textures yet.
+///
+/// The update engine swaps the whole pristine folder, and the composed tree
+/// is hardlinks into the OLD folder: with the same names and count nothing
+/// used to notice, and the game kept the old bytes. A tree without a pointer
+/// is never swapped by anything, so `None` is a stable identity.
+pub fn pristine_identity(platform: &Platform, game: &GameId) -> Option<String> {
+    if game.as_str() != "GN7E69" {
+        return None;
+    }
+    let data = platform.paths.data_root().ok()?;
+    let layout = crate::content::ContentLayout::new(&data);
+    let pointer = crate::content::Pointer::load(&layout.pointer_path("textures")).ok().flatten()?;
+    Some(format!("{}#{}", pointer.current.version, pointer.current.sequence))
 }
 
 /// `mods/packages/`, the validated payloads.
@@ -1685,6 +1711,11 @@ pub struct OverlayRecord {
 pub struct ComposedRecord {
     pub game: GameId,
     pub pristine_root: PathBuf,
+    /// Which pristine tree the links point into. Absent in records written
+    /// before 2026-09-12, which reads as "unknown" and differs from any
+    /// planned identity, so those trees rebuild once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pristine_identity: Option<String>,
     pub activation: Vec<ActivePackage>,
     pub total_entries: u64,
     pub pristine_entries: u64,
@@ -1743,6 +1774,12 @@ pub enum Discrepancy {
         recorded: PathBuf,
         planned: PathBuf,
     },
+    /// The pristine tree was swapped (a texture update), so the links point
+    /// at the old bytes even when every name and count still matches.
+    PristineIdentityDiffers {
+        recorded: Option<String>,
+        planned: Option<String>,
+    },
     ActivationDiffers {
         recorded: Vec<ActivePackage>,
         planned: Vec<ActivePackage>,
@@ -1788,6 +1825,11 @@ impl Discrepancy {
                 "the tree was composed from {}, not {}.",
                 recorded.display(),
                 planned.display()
+            ),
+            Discrepancy::PristineIdentityDiffers { recorded, planned } => format!(
+                "the pristine textures changed (was {}, now {})",
+                recorded.as_deref().unwrap_or("unknown"),
+                planned.as_deref().unwrap_or("unknown")
             ),
             Discrepancy::ActivationDiffers { recorded, planned } => format!(
                 "the tree was composed from {} active package(s), the plan has {}.",
@@ -2034,6 +2076,7 @@ impl Composer {
             game: req.game.clone(),
             pristine_root: req.pristine_root.clone(),
             composed_root: req.composed_root.clone(),
+            pristine_identity: req.pristine_identity.clone(),
             method,
             entries: entries.into_values().collect(),
             activation,
@@ -2309,6 +2352,12 @@ impl Composer {
                 planned: plan.pristine_root.clone(),
             });
         }
+        if record.pristine_identity != plan.pristine_identity {
+            found.push(Discrepancy::PristineIdentityDiffers {
+                recorded: record.pristine_identity.clone(),
+                planned: plan.pristine_identity.clone(),
+            });
+        }
         if record.activation != plan.activation {
             found.push(Discrepancy::ActivationDiffers {
                 recorded: record.activation.clone(),
@@ -2504,6 +2553,8 @@ pub struct SyncRequest {
     /// Where builds before 2026-09-12 composed (`mods/active/<game>`), so a
     /// sync can retire what is left there. `None` skips that.
     pub old_composed_root: Option<PathBuf>,
+    /// See [`ComposeRequest::pristine_identity`].
+    pub pristine_identity: Option<String>,
     /// Compose THIS list instead of reading `activation.json`, leaving the
     /// file as it is. `Some(vec![])` is "start with mods disabled": the
     /// game loads the pristine tree once, and the player's selection is
@@ -2528,6 +2579,7 @@ impl SyncRequest {
             activation_file: activation_path(platform)?,
             user_dir: user_dir.to_path_buf(),
             old_composed_root: old_composed_root(platform, &game).ok(),
+            pristine_identity: pristine_identity(platform, &game),
             game,
             active_override: None,
             manage_user_texture_folder: true,
@@ -2688,6 +2740,7 @@ pub fn sync_active(
         composed_root: req.composed_root.clone(),
         packages_root: req.packages_root.clone(),
         packages,
+        pristine_identity: req.pristine_identity.clone(),
     };
     let plan = match Composer::plan(platform, &compose)? {
         Composition::Planned(plan) => plan,
@@ -2838,6 +2891,7 @@ mod tests {
                 composed_root: self.composed.clone(),
                 packages_root: self.packages.clone(),
                 packages,
+                pristine_identity: None,
             }
         }
     }
@@ -3641,6 +3695,7 @@ mod tests {
             record: Some(ComposedRecord {
                 game: game(),
                 pristine_root: PathBuf::from("pristine"),
+                pristine_identity: None,
                 activation: vec![ActivePackage {
                     id: ModId::parse("reborn.ball.purple").unwrap(),
                     version: PackageVersion::parse("1.0.0").unwrap(),
@@ -4194,6 +4249,37 @@ mod tests {
         assert!(foreign.join("keep.dds").is_file(), "no marker, never deleted");
     }
 
+    /// The update engine swaps the whole pristine folder. The composed tree
+    /// is hardlinks into the OLD folder, so with the same names and count
+    /// nothing used to notice and the game kept the old bytes. The record
+    /// carries the pristine tree's identity, so a new identity rebuilds.
+    #[test]
+    fn a_pristine_tree_swapped_under_the_same_names_rebuilds_the_composed_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let guard = lock(&p, &fx);
+        let mut req = sync_request(&fx, &user_dir);
+        req.pristine_identity = Some("1.1.0#2".into());
+        done(sync_active(&p, &guard, &req, 1).unwrap());
+        let composed = composed_root(&user_dir, &game()).join(BALL);
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the original football");
+
+        // the swap: same names, new bytes
+        let prior = fx.pristine.with_file_name("GN7E69.prior");
+        std::fs::rename(&fx.pristine, &prior).unwrap();
+        lay_pristine(&fx.pristine);
+        std::fs::write(fx.pristine.join(BALL), b"the NEW football").unwrap();
+        let same = done(sync_active(&p, &guard, &req, 2).unwrap());
+        assert_eq!(same.tree, TreeStep::AlreadyCurrent, "same identity: the count check cannot see a swap, by design");
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the original football", "and the game still gets the old bytes");
+
+        req.pristine_identity = Some("1.2.0#3".into());
+        let rebuilt = done(sync_active(&p, &guard, &req, 3).unwrap());
+        assert!(matches!(rebuilt.tree, TreeStep::Rebuilt { .. }), "{:?}", rebuilt.tree);
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the NEW football");
+    }
+
     // -----------------------------------------------------------------------
     /// `lay_package` plus the manifest on disk, which is what makes a
     /// package INSTALLED rather than merely laid out: sync reads the list
@@ -4226,6 +4312,7 @@ mod tests {
             activation_file: fx.activation(),
             user_dir: user_dir.to_path_buf(),
             old_composed_root: Some(fx.composed.clone()),
+            pristine_identity: None,
             active_override: None,
             manage_user_texture_folder: true,
         }
