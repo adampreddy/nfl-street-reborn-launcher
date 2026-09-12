@@ -11,7 +11,10 @@
 //!
 //! Both are renames on one volume: instant, and nothing is ever deleted or
 //! copied. Both are idempotent, and both run BEFORE the supervisor lock and
-//! before seeding, from `main` in the window and the CLI.
+//! before seeding, from `main` in the WINDOW only. Never from `rebornctl`:
+//! that binary runs on developers' PCs under every end-to-end script, against
+//! scratch roots, and a first version that prepared the real root from there
+//! moved Adam's 2.1 folder aside in the middle of a test run (2026-09-12).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

@@ -604,14 +604,13 @@ fn main() -> std::process::ExitCode {
     // fail a command.
     reborn_core::logging::start(&Platform::detect());
 
-    // The data root, made ready before the lock, the seeding and the command:
-    // a 2.1 install at the root goes into its own subfolder and the data of
-    // a launcher named "Launcher" is adopted. Renames only; it says nothing
-    // and it cannot fail a start.
-    match reborn_core::layout::prepare_data_root(&Platform::detect()) {
-        Ok(prepared) => prepared.log(),
-        Err(why) => eprintln!("The data root could not be prepared: {why}"),
-    }
+    // NOT `reborn_core::layout::prepare_data_root` here. The window runs it
+    // at its start, because the window is the product. This binary is also
+    // what every end-to-end script, the Publisher and the build run on a
+    // developer's PC, always against a scratch `--data-root`, and on
+    // 2026-09-12 a first version that prepared the REAL data root from here
+    // moved Adam's 2.1 folder aside in the middle of a test run. A command
+    // touches the real roots only when it is told to.
 
     let cli = Cli::parse();
     match run(cli) {

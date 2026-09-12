@@ -38,7 +38,7 @@ Approved by Adam in chat, 2026-09-12 (approach A, tuck-first, no migrated-textur
 
 ### 2. First start, before the supervisor lock
 
-A new core module `layout` (name to be settled in the plan) runs two steps at every start, before `Supervisor::acquire`, before seeding, before the window loads. Both are idempotent and log one line each.
+A new core module `layout` runs two steps at every start of the WINDOW, before `Supervisor::acquire`, before seeding, before the page loads. Both are idempotent and log one line each. `rebornctl` never runs them implicitly: it is what every end-to-end script, the Publisher and the build run on a developer's PC against scratch roots, and a first version that prepared the real root from the CLI moved Adam's 2.1 folder aside in the middle of a test run (2026-09-12, reversed by rename).
 
 **Adopt** a `Launcher`-era root. Condition: the new root has no `config\settings.json` and the previous root (`<parent>\NFL Street Reborn Launcher[ Beta]`) has one. Action: rename every top-level entry whose name is a known 3.0 layout name (`DataDir::ALL` roots: `library`, `runtime`, `mods`, `music`, `saves`, `screenshots`, `stats`, `versions`, `recovery`, `backups`, `cache`, `logs`, `config`, `downloads`, `staging`, plus `dolphin-users`, `journal.json`, `migrated-effects`, `migrated-textures`) into the new root. Skip `app`. Unknown entries (`publisher`) stay. A collision is skipped and logged, never overwritten. If the previous root ends up empty it is removed.
 
