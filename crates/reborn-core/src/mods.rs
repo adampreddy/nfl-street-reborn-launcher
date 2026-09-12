@@ -2182,10 +2182,19 @@ impl Composer {
             )));
         }
 
-        Self::discard(_lock, &plan.composed_root)?;
-
-        std::fs::create_dir_all(&plan.composed_root).map_err(|source| Error::Io {
-            path: plan.composed_root.clone(),
+        // Built beside the live tree, then swapped in. The user folder's
+        // texture path is a junction that names the composed root by path,
+        // so the game sees the whole old tree until the swap and the whole
+        // new one after it, never a cleared or half-built folder. A build
+        // that fails leaves the old tree exactly as it was. (Adam,
+        // 2026-09-12, after an update on another PC: "all the textures went
+        // away", "It shouldn't happen at all though".)
+        let building = beside(&plan.composed_root, ".building");
+        let previous = beside(&plan.composed_root, ".previous");
+        Self::discard(_lock, &building)?;
+        Self::discard(_lock, &previous)?;
+        std::fs::create_dir_all(&building).map_err(|source| Error::Io {
+            path: building.clone(),
             source,
         })?;
 
@@ -2196,7 +2205,7 @@ impl Composer {
         // clear it, leaving no way forward without the user deleting a folder
         // by hand.
         write_marker_durably(
-            &plan.composed_root,
+            &building,
             &ComposedMarker {
                 schema: COMPOSED_SCHEMA.to_string(),
                 game: plan.game.clone(),
@@ -2219,7 +2228,7 @@ impl Composer {
                     path
                 }
             };
-            let dest = join_relative(&plan.composed_root, &entry.relative);
+            let dest = join_relative(&building, &entry.relative);
 
             if !links_unavailable {
                 match platform.files.hardlink(source, &dest) {
@@ -2253,13 +2262,43 @@ impl Composer {
 
         let record = plan.record();
         write_marker_durably(
-            &plan.composed_root,
+            &building,
             &ComposedMarker {
                 schema: COMPOSED_SCHEMA.to_string(),
                 game: plan.game.clone(),
                 record: Some(record.clone()),
             },
         )?;
+
+        // The swap. The old tree is checked the way discard checks it: only
+        // a composed tree (or an empty folder) is ever moved out of the way.
+        if plan.composed_root.exists() {
+            if !plan.composed_root.is_dir() {
+                return Err(refused(format!(
+                    "{} is not a directory, so it is not a composed tree. Move it \
+                     aside and compose again",
+                    plan.composed_root.display()
+                )));
+            }
+            if let Some(refusal) = foreign_tree_refusal(&plan.composed_root)? {
+                return Err(refused(refusal.message()));
+            }
+            std::fs::rename(&plan.composed_root, &previous).map_err(|source| Error::Io {
+                path: plan.composed_root.clone(),
+                source,
+            })?;
+        }
+        if let Err(source) = std::fs::rename(&building, &plan.composed_root) {
+            // The old tree goes back so the game is never left without one.
+            if previous.exists() {
+                let _ = std::fs::rename(&previous, &plan.composed_root);
+            }
+            return Err(Error::Io { path: plan.composed_root.clone(), source });
+        }
+        if previous.exists() {
+            // Best effort: a leftover is discarded at the next build.
+            let _ = std::fs::remove_dir_all(&previous);
+        }
 
         Ok(ComposeReport {
             game: plan.game.clone(),
@@ -2434,6 +2473,13 @@ impl Composer {
 // ---------------------------------------------------------------------------
 
 /// `None` when the directory is absent, empty, or carries the marker.
+/// `path` with `suffix` appended to its last component: the folder a tree
+/// is built in, or moved to, beside the live one.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!("{name}{suffix}"))
+}
+
 fn foreign_tree_refusal(composed_root: &Path) -> Result<Option<ComposeRefusal>> {
     if !composed_root.exists() {
         return Ok(None);
@@ -2885,6 +2931,59 @@ mod tests {
                 packages,
             }
         }
+    }
+
+    fn paths_under(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        fn go(dir: &Path, root: &Path, out: &mut Vec<String>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        go(&p, root, out);
+                    } else {
+                        out.push(p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        go(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// A build that fails part way leaves the live tree exactly as it was:
+    /// the new tree is built beside it and swapped in only when whole, so
+    /// the game is never pointed at a cleared or half-built folder.
+    #[test]
+    fn a_failed_build_leaves_the_previous_tree_in_place() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let req = fx.request(vec![]);
+        let plan = planned(&p, &req);
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &plan).unwrap();
+        let before = paths_under(&fx.composed);
+        assert!(before.len() > 1);
+
+        // a source that vanishes between planning and building
+        let plan2 = planned(&p, &req);
+        let victim = match &plan2.entries[0].source {
+            EntrySource::Pristine { path } => path.clone(),
+            EntrySource::Overlay { path, .. } => path.clone(),
+        };
+        let bytes = std::fs::read(&victim).unwrap();
+        std::fs::remove_file(&victim).unwrap();
+        Composer::apply(&p, &guard, &plan2).expect_err("a missing source fails the build");
+        assert_eq!(paths_under(&fx.composed), before, "the live tree is untouched by a build that failed");
+        assert!(Composer::verify(&plan).unwrap().matches_the_plan());
+
+        // the next build discards the leftover and succeeds once the source is back
+        std::fs::write(&victim, bytes).unwrap();
+        Composer::apply(&p, &guard, &planned(&p, &req)).unwrap();
+        assert_eq!(paths_under(&fx.composed), before);
+        assert!(!beside(&fx.composed, ".building").exists(), "no leftover build folder");
+        assert!(!beside(&fx.composed, ".previous").exists(), "no leftover previous folder");
     }
 
     fn planned(platform: &Platform, req: &ComposeRequest) -> CompositionPlan {
