@@ -161,10 +161,11 @@ plan `docs/superpowers/plans/2026-09-12-install-layout-and-path-law.md`.
    slide. Regenerate from `projects\menu_re\build\slideshow\hd_overrides\`
    and publish textures 1.2.2.
 5. The baked-soundtrack disc (sha 37eeffd1..., the other session's work) is
-   not published as a game patch; `library/game-patch` on Adam's beta root
-   was hand-edited for it. Decide whether the disc's own soundtrack should be
-   the Reborn one; if so publish the patch NSRV3 to 37eeffd1 and mods
-   together. The null function-pointer crash fix is likewise only in `root/`
+   not published as a game patch, and the dev FIELDS ISO moved on again at
+   14:36 (sha fb69842a...), so the launcher discs on this PC (37eeffd1) are
+   already behind the dev tree. Decide whether the disc's own soundtrack
+   should be the Reborn one; if so publish the patch NSRV3 to the current
+   FIELDS disc and re-pin the game-patch release. The null function-pointer crash fix is likewise only in `root/`
    and the FIELDS disc, so NSRV3 players still have the crash until a game
    patch ships.
 6. Reborn soundtrack on by default (without a Mods switch) is not built.
