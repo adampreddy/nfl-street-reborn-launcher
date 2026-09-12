@@ -980,7 +980,8 @@ fn package_kind(dir: &Path) -> Option<String> {
 }
 
 /// Soundtrack packages under `mods/packages`: schema `nsr.soundtrack-mod.v1`,
-/// one `.nsrmusic` (or an empty pack.json for the original soundtrack) instead
+/// one `.nsrmusic` (or an empty pack.json for the Reborn soundtrack, the
+/// disc's own) instead
 /// of textures. The composition loader refuses them by design, so they are
 /// read raw here, listed beside the texture packages, and switched through
 /// the soundtrack record rather than activation.json. Returns the entries and
@@ -1009,7 +1010,8 @@ fn read_soundtrack_packages(root: &Path, unreadable: Vec<String>, data_root: &Pa
             let bytes: u64 = files.iter().filter_map(|f| f.get("bytes").and_then(|b| b.as_u64())).sum();
             let has_songs = files.iter().any(|f| f.get("path").and_then(|p| p.as_str()).map(|p| p.ends_with(".nsrmusic")).unwrap_or(false));
             // Active means "this is the soundtrack base": the package with a
-            // pack when the record names it, the original when the base is stock.
+            // pack when the record names it, the one with no songs (the Reborn
+            // soundtrack, which is the disc's own) when the base is stock.
             let active = match record.as_ref().map(|r| &r.base) {
                 Some(Base::Package { id: bid, version: bver, .. }) => *bid == id && *bver == version,
                 Some(Base::Stock) => !has_songs,
@@ -1040,8 +1042,9 @@ fn read_soundtrack_packages(root: &Path, unreadable: Vec<String>, data_root: &Pa
 /// A soundtrack package switched on or off: set the soundtrack base and
 /// rebuild the disc now, under the launch guard. Returns the sentence to show.
 ///
-/// A package whose pack carries no songs (the "original" package) sets the
-/// base to stock, and so does switching any soundtrack package off.
+/// A package whose pack carries no songs (the Reborn soundtrack, the disc's
+/// own) sets the base to stock, and so does switching any soundtrack package
+/// off.
 fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: bool) -> Result<String, String> {
     use reborn_core::soundtrack::state::{Base, Soundtrack};
     let mut st = Soundtrack::load(data_root).map_err(|e| e.to_string())?;
@@ -1050,7 +1053,7 @@ fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: 
         let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).map_err(|e| e.to_string())?;
         let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
         let file = v.get("files").and_then(|f| f.as_array()).and_then(|a| a.first()).and_then(|f| f.get("path")).and_then(|p| p.as_str()).unwrap_or("");
-        // Only a .nsrmusic payload is a pack; the original package carries a
+        // Only a .nsrmusic payload is a pack; the Reborn package carries a
         // bare pack.json with no songs, which means the disc's own soundtrack.
         if file.ends_with(".nsrmusic") {
             let pack_path = dir.join("files").join(file);
@@ -1083,7 +1086,7 @@ fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: 
         }
     };
     Ok(match outcome {
-        reborn_core::soundtrack::apply::Outcome::Refused(reborn_core::soundtrack::Refusal::NothingStaged) => "Your game plays the original soundtrack.".to_string(),
+        reborn_core::soundtrack::apply::Outcome::Refused(reborn_core::soundtrack::Refusal::NothingStaged) => "Your game plays its own soundtrack.".to_string(),
         other => other.note(),
     })
 }

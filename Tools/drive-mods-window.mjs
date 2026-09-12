@@ -50,9 +50,9 @@ await page.waitForTimeout(800);
 await shot("window-music-ns1");
 
 await soundtrackTab();
-await toggle("NFL Street 2 Original Soundtrack", "original soundtrack");
-console.log("after original:", (await page.locator(".partial").allInnerTexts()).join(" | "));
+await toggle("NFL Street Reborn Soundtrack", "its own soundtrack");
+console.log("after reborn:", (await page.locator(".partial").allInnerTexts()).join(" | "));
 st = await invoke("music_status", {});
 console.log("music_status: base", JSON.stringify(st.base), "soundtrack_mod slots", st.slots.filter((s) => s.source === "soundtrack_mod").length, "enabled", st.enabled);
-await shot("window-mods-original-enabled");
+await shot("window-mods-reborn-enabled");
 await browser.close();

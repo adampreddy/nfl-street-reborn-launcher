@@ -5841,13 +5841,15 @@ enum MusicCommand {
         #[arg(long, default_value = "")]
         description: String,
     },
-    /// Write the two soundtrack mod packages (original, NFL Street 1) as a
+    /// Write the soundtrack mod packages (Reborn, original, NFL Street 1) as a
     /// mods/packages tree ready to publish.
     SoundtrackPackages {
         /// The .nsrmusic built by pack-from-street1.
         #[arg(long)]
         pack: PathBuf,
-        /// A pack of the retail NFL Street 2 songs, for the original package.
+        /// A pack of the retail NFL Street 2 songs (pack-from-image on a retail
+        /// disc), for the original package. Without it that package is not
+        /// written: the Reborn disc does not carry the 2004 songs.
         #[arg(long)]
         original: Option<PathBuf>,
         #[arg(long)]
@@ -6129,10 +6131,18 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
             Ok(std::process::ExitCode::SUCCESS)
         }
         MusicCommand::SoundtrackPackages { pack, original, out_dir, version } => {
+            use reborn_core::soundtrack::street1::{ORIGINAL_ID, REBORN_ID, STREET1_ID};
             reborn_core::soundtrack::street1::write_packages(&pack, original.as_deref(), &out_dir, &version)?;
-            for id in ["reborn.soundtrack.original", "reborn.soundtrack.nfl-street-1"] {
+            for id in [REBORN_ID, ORIGINAL_ID, STREET1_ID] {
                 let dir = out_dir.join(id).join(&version);
-                println!("{}: {}", id, if dir.join("package.json").is_file() { "written" } else { "MISSING" });
+                let state = if dir.join("package.json").is_file() {
+                    "written"
+                } else if id == ORIGINAL_ID {
+                    "not written (no --original pack)"
+                } else {
+                    "MISSING"
+                };
+                println!("{id}: {state}");
             }
             Ok(std::process::ExitCode::SUCCESS)
         }

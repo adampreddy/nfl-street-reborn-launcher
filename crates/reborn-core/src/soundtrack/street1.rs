@@ -31,16 +31,25 @@ pub const PACK_NAME: &str = "NFL Street Soundtrack";
 pub const PACK_AUTHOR: &str = "NFL Street Reborn";
 pub const PACK_DESCRIPTION: &str = "The 14 songs from the first NFL Street, in slots 1 to 14.";
 
+/// The Reborn soundtrack: the 21 songs baked into the Reborn disc. Its
+/// payload is a pack with no songs, which means "every slot is the disc's
+/// own", so enabling it puts the base back to stock. It is the package the
+/// mods page shows as enabled when nothing else is.
+pub const REBORN_ID: &str = "reborn.soundtrack.reborn";
+pub const REBORN_NAME: &str = "NFL Street Reborn Soundtrack";
+pub const REBORN_DESCRIPTION: &str =
+    "The 21 songs the Reborn disc plays. Your game starts with this soundtrack, and songs you add on the Music page play over it.";
+pub const REBORN_PACK_JSON: &str =
+    r#"{"magic":"NSRMUSIC","format":2,"id":"reborn","name":"NFL Street Reborn Soundtrack","songs":{}}"#;
+
+/// The 2004 soundtrack. The Reborn disc does not carry it any more, so this
+/// package has to bring the audio: a real pack of the retail 21, never an
+/// empty one.
 pub const ORIGINAL_ID: &str = "reborn.soundtrack.original";
 pub const ORIGINAL_NAME: &str = "NFL Street 2 Original Soundtrack";
 pub const ORIGINAL_DESCRIPTION: &str =
-    "The 21 songs NFL Street 2 shipped with. The Reborn disc replaces three of them, so this puts those back.";
-/// The original soundtrack's payload when it carries real audio.
+    "The 21 songs NFL Street 2 shipped with in 2004. The Reborn disc plays its own soundtrack, so this puts the 2004 songs back.";
 pub const ORIGINAL_PACK_FILE: &str = "nfl-street-2.nsrmusic";
-/// The original package's payload: a pack with no songs, which means "every
-/// slot is the disc's own".
-pub const ORIGINAL_PACK_JSON: &str =
-    r#"{"magic":"NSRMUSIC","format":2,"id":"original","name":"NFL Street 2 Original Soundtrack","songs":{}}"#;
 
 pub const STREET1_ID: &str = "reborn.soundtrack.nfl-street-1";
 pub const STREET1_NAME: &str = "NFL Street 1 Soundtrack";
@@ -438,26 +447,25 @@ fn write_package(out_dir: &Path, id: &str, name: &str, version: &str, descriptio
     std::fs::write(&manifest_path, manifest).map_err(|e| io(&manifest_path, e))
 }
 
-/// Write the two soundtrack package folders under `out_dir`:
-/// `reborn.soundtrack.original/<version>` (a pack with no songs) and
+/// Write the soundtrack package folders under `out_dir`:
+/// `reborn.soundtrack.reborn/<version>` (a pack with no songs: the disc's own
+/// soundtrack, which on the Reborn disc is the Reborn one),
+/// `reborn.soundtrack.original/<version>` (a copy of `original`) and
 /// `reborn.soundtrack.nfl-street-1/<version>` (a copy of `pack`).
-/// Write the two soundtrack packages.
 ///
 /// `original` is a pack of the retail NFL Street 2 songs, built from a retail
 /// disc with [`crate::soundtrack::apply::export_from_files`]. Without one the
-/// original package ships an empty pack, which means "whatever this disc
-/// shipped with"; that is only the true original when the disc is retail, and
-/// the Reborn disc is not, so pass it.
+/// original package is not written at all: an empty pack would mean "whatever
+/// this disc carries", and the Reborn disc carries the Reborn soundtrack, not
+/// the 2004 one.
 pub fn write_packages(pack_path: &Path, original: Option<&Path>, out_dir: &Path, version: &str) -> Result<()> {
     let pack_bytes = std::fs::read(pack_path).map_err(|e| io(pack_path, e))?;
     pack::read_pack(pack_path)?;
-    match original {
-        Some(path) => {
-            let bytes = std::fs::read(path).map_err(|e| io(path, e))?;
-            pack::read_pack(path)?;
-            write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, ORIGINAL_PACK_FILE, &bytes)?;
-        }
-        None => write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, "pack.json", ORIGINAL_PACK_JSON.as_bytes())?,
+    write_package(out_dir, REBORN_ID, REBORN_NAME, version, REBORN_DESCRIPTION, "pack.json", REBORN_PACK_JSON.as_bytes())?;
+    if let Some(path) = original {
+        let bytes = std::fs::read(path).map_err(|e| io(path, e))?;
+        pack::read_pack(path)?;
+        write_package(out_dir, ORIGINAL_ID, ORIGINAL_NAME, version, ORIGINAL_DESCRIPTION, ORIGINAL_PACK_FILE, &bytes)?;
     }
     write_package(out_dir, STREET1_ID, STREET1_NAME, version, STREET1_DESCRIPTION, STREET1_PACK_FILE, &pack_bytes)
 }
@@ -489,16 +497,20 @@ mod tests {
         let out = dir.path().join("packages");
         write_packages(&pack_path, None, &out, "1.0.0").unwrap();
 
-        let orig_dir = out.join(ORIGINAL_ID).join("1.0.0");
+        let reborn_dir = out.join(REBORN_ID).join("1.0.0");
         let s1_dir = out.join(STREET1_ID).join("1.0.0");
-        let orig_payload = std::fs::read(orig_dir.join("files").join("pack.json")).unwrap();
-        assert_eq!(orig_payload, ORIGINAL_PACK_JSON.as_bytes());
+        let reborn_payload = std::fs::read(reborn_dir.join("files").join("pack.json")).unwrap();
+        assert_eq!(reborn_payload, REBORN_PACK_JSON.as_bytes(), "the Reborn package is the disc's own soundtrack: no songs of its own");
+        assert!(
+            !out.join(ORIGINAL_ID).exists(),
+            "without a retail pack there is no original package: an empty one would claim the Reborn disc plays the 2004 songs"
+        );
         let s1_payload = std::fs::read(s1_dir.join("files").join(STREET1_PACK_FILE)).unwrap();
         assert_eq!(s1_payload, std::fs::read(&pack_path).unwrap(), "the pack is copied verbatim");
         pack::read_pack(&s1_dir.join("files").join(STREET1_PACK_FILE)).unwrap();
 
         for (dir, id, name, payload_name, payload) in [
-            (&orig_dir, ORIGINAL_ID, ORIGINAL_NAME, "pack.json", &orig_payload),
+            (&reborn_dir, REBORN_ID, REBORN_NAME, "pack.json", &reborn_payload),
             (&s1_dir, STREET1_ID, STREET1_NAME, STREET1_PACK_FILE, &s1_payload),
         ] {
             let raw = std::fs::read_to_string(dir.join("package.json")).unwrap();
@@ -527,12 +539,34 @@ mod tests {
         // an empty `targets` list, so a soundtrack package is not a texture
         // package to it. Pinned here so the fact is visible; the parent
         // decides how the mods page admits soundtrack packages.
-        let err = crate::mods::ModPackage::load(&orig_dir).unwrap_err().to_string();
-        eprintln!("ModPackage::load(original): {err}");
+        let err = crate::mods::ModPackage::load(&reborn_dir).unwrap_err().to_string();
+        eprintln!("ModPackage::load(reborn): {err}");
         let err2 = crate::mods::ModPackage::load(&s1_dir).unwrap_err().to_string();
         eprintln!("ModPackage::load(nfl-street-1): {err2}");
         assert!(err.contains("payload path") || err.contains("target"), "{err}");
         assert!(err2.contains("payload path") || err2.contains("target"), "{err2}");
+    }
+
+    #[test]
+    fn the_original_package_carries_the_retail_pack_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack_path = small_pack(dir.path());
+        let out = dir.path().join("packages");
+        write_packages(&pack_path, Some(&pack_path), &out, "1.2.0").unwrap();
+
+        let orig_dir = out.join(ORIGINAL_ID).join("1.2.0");
+        let payload = std::fs::read(orig_dir.join("files").join(ORIGINAL_PACK_FILE)).unwrap();
+        assert_eq!(payload, std::fs::read(&pack_path).unwrap(), "the retail pack is copied verbatim, never replaced by an empty one");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(orig_dir.join("package.json")).unwrap()).unwrap();
+        assert_eq!(v["id"], ORIGINAL_ID);
+        assert_eq!(v["name"], ORIGINAL_NAME);
+        assert_eq!(v["version"], "1.2.0");
+        assert_eq!(v["files"][0]["path"], ORIGINAL_PACK_FILE);
+        assert_eq!(v["files"][0]["sha256"], hex::encode(Sha256::digest(&payload)));
+        assert_eq!(v["files"][0]["bytes"], payload.len() as u64);
+        // The other two are written as well, at the same version.
+        assert!(out.join(REBORN_ID).join("1.2.0").join("package.json").is_file());
+        assert!(out.join(STREET1_ID).join("1.2.0").join("package.json").is_file());
     }
 
     #[test]

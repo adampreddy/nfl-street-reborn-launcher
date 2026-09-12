@@ -123,11 +123,13 @@ const standalone = {
   active: false,
 };
 
-// Two soundtrack packages: read raw by the window (schema nsr.soundtrack-mod.v1),
-// never composed, switched through the soundtrack record.
+// Three soundtrack packages: read raw by the window (schema nsr.soundtrack-mod.v1),
+// never composed, switched through the soundtrack record. The Reborn one is the
+// disc's own soundtrack (a pack with no songs), enabled while the base is stock.
 const soundtracks = [
-  { id: "reborn.soundtrack.original", version: "1.0.0", name: "NFL Street 2 Original Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 90, active: true, kind: "soundtrack" },
-  { id: "reborn.soundtrack.nfl-street-1", version: "1.0.0", name: "NFL Street 1 Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 78_894_680, active: false, kind: "soundtrack" },
+  { id: "reborn.soundtrack.reborn", version: "1.2.0", name: "NFL Street Reborn Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 94, active: true, kind: "soundtrack" },
+  { id: "reborn.soundtrack.original", version: "1.2.0", name: "NFL Street 2 Original Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 106_755_203, active: false, kind: "soundtrack" },
+  { id: "reborn.soundtrack.nfl-street-1", version: "1.2.0", name: "NFL Street 1 Soundtrack", targets: [], conflict_group: "soundtrack", files: 1, bytes: 77_747_800, active: false, kind: "soundtrack" },
 ];
 const library = {
   packages_root: "C:\\data\\mods\\packages",
@@ -205,7 +207,7 @@ await enable.listeners.click[0]();
 {
   const tab = walk(screen()).find((n) => n.tagName === "button" && n.textContent === "Soundtrack");
   tab.listeners.click[0]();
-  check("the Soundtrack tab lists the soundtrack packages", walk(screen()).filter((n) => n.className.split(" ").includes("store-card")).length === 2 && text(screen()).includes("NFL Street 1 Soundtrack"));
+  check("the Soundtrack tab lists the soundtrack packages", walk(screen()).filter((n) => n.className.split(" ").includes("store-card")).length === 3 && text(screen()).includes("NFL Street 1 Soundtrack") && text(screen()).includes("NFL Street Reborn Soundtrack"));
   const enable = walk(screen()).find((n) => n.attrs["aria-label"] === "Enable NFL Street 1 Soundtrack");
   check("a soundtrack package offers Enable", !!enable);
   await enable.listeners.click[0]();
