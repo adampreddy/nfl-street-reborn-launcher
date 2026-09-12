@@ -402,6 +402,36 @@ begin
       Result := False;
 end;
 
+// A launcher built before 2026-09-12 self-updates with /DIR naming its own
+// program folder: {userappdata}\NFL Street Reborn Launcher[ Beta]\app, or a
+// folder under {localappdata}\Programs before beta.8. Those are refused by
+// InstallDirIsSafe, and a refused silent self-update would leave every
+// player on the old build for good. So a retired folder is redirected to
+// this channel's `app` here, before any page or check looks at it; the old
+// folder is then removed by RemovePreviousLauncherInstall and the launcher
+// adopts the data beside it at its first start. (The launcher itself stops
+// passing a retired folder from 2026-09-12 on; this is for the ones that
+// are already installed.)
+function RetiredProgramDir(Dir: String): Boolean;
+var
+  N, Programs: String;
+begin
+  N := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
+  Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
+  Result := (N = Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher\app')))
+    or (N = Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta\app')))
+    or ((Pos(Programs, N) = 1) and (N + '\' <> Programs));
+end;
+
+procedure InitializeWizard();
+begin
+  if RetiredProgramDir(WizardDirValue) then
+  begin
+    Log('Retired program folder ' + WizardDirValue + ' redirected to ' + ExpandConstant('{userappdata}\{#DataDir}\app'));
+    WizardForm.DirEdit.Text := ExpandConstant('{userappdata}\{#DataDir}\app');
+  end;
+end;
+
 function UnsafeInstallDirMessage(): String;
 begin
   Result := 'That folder contains NFL Street Reborn save data or settings.'
