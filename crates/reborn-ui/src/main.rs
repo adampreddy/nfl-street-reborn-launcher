@@ -5348,7 +5348,7 @@ fn main() {
     // and it cannot fail a start.
     match reborn_core::layout::prepare_data_root(&Platform::detect()) {
         Ok(prepared) => prepared.log(),
-        Err(why) => tracing::warn!("the data root could not be prepared: {why}"),
+        Err(why) => eprintln!("The data root could not be prepared: {why}"),
     }
 
     // A credential this product retired, taken off the machine. `nsr.league.ingest`

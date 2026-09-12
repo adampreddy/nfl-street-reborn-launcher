@@ -614,7 +614,7 @@ fn main() -> std::process::ExitCode {
     // and it cannot fail a start.
     match reborn_core::layout::prepare_data_root(&Platform::detect()) {
         Ok(prepared) => prepared.log(),
-        Err(why) => tracing::warn!("the data root could not be prepared: {why}"),
+        Err(why) => eprintln!("The data root could not be prepared: {why}"),
     }
 
     let cli = Cli::parse();
