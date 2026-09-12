@@ -1038,7 +1038,7 @@ fn sync_mods_for_launch(
         let game = crate::mods::GameId::parse(build.game_id())?;
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
-        req.link_into_user_dir = crate::settings::manage_texture_folder(&settings_file)?;
+        req.manage_user_texture_folder = crate::settings::manage_texture_folder(&settings_file)?;
         if disabled {
             req.active_override = Some(Vec::new());
         }

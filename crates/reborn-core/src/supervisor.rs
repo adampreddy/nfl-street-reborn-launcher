@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(ended["end"]["detail"], "boom");
     }
     /// The launcher must not adopt a 2.1 install as its own data root. Doing so
-    /// put `mods/staging` and `mods/active`, both purgeable, inside the
+    /// put `mods/staging`, which is purgeable, inside the
     /// player's JSGME mod library.
     ///
     /// The refusal is one of the two in this crate whose wording was already

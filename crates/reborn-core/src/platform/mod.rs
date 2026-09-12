@@ -614,7 +614,6 @@ pub enum DataDir {
     Runtime,
     ModsStaging,
     ModsPackages,
-    ModsActive,
     MusicSources,
     MusicPacks,
     /// Memory cards. Never deleted without a separate explicit confirmation.
@@ -646,7 +645,6 @@ impl DataDir {
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
-            DataDir::ModsActive => "mods/active",
             DataDir::MusicSources => "music/sources",
             DataDir::MusicPacks => "music/packs",
             DataDir::Saves => "saves",
@@ -675,7 +673,6 @@ impl DataDir {
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,
-        DataDir::ModsActive,
         DataDir::MusicSources,
         DataDir::MusicPacks,
         DataDir::Saves,
@@ -714,7 +711,6 @@ impl DataDir {
                 | DataDir::Downloads
                 | DataDir::Staging
                 | DataDir::LibraryWork
-                | DataDir::ModsActive
                 | DataDir::ModsStaging
         )
     }

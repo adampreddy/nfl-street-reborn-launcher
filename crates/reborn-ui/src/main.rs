@@ -1347,8 +1347,11 @@ fn compose_request(
     let game = GameId::parse(game).map_err(|e| e.to_string())?;
     let root = reborn_core::mods::packages_root(platform).map_err(|e| e.to_string())?;
     let loaded = load_packages(&root, packages)?;
-    let req =
-        ComposeRequest::in_data_root(platform, game.clone(), loaded).map_err(|e| e.to_string())?;
+    // The composed tree lives in the user folder a launch would use.
+    let exe = runtime_for(platform, None);
+    let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let user = reborn_core::session::resolve_user_dir_for(platform, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
+    let req = ComposeRequest::in_data_root(platform, game.clone(), user.path(), loaded).map_err(|e| e.to_string())?;
     Ok((game, req))
 }
 
@@ -1369,7 +1372,7 @@ struct ModSyncView {
     tree: Option<&'static str>,
     entries: u64,
     overlaid: u64,
-    /// "linked" or "already_linked". Absent when refused.
+    /// "composed_in_user_folder" or "left_alone". Absent when refused.
     link: Option<&'static str>,
     link_at: Option<String>,
     /// Where the folder that was at link_at went, when one was there. Nothing
@@ -1393,7 +1396,7 @@ fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackag
 }
 
 fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncView {
-    use reborn_core::mods::{SyncOutcome, TextureLink, TreeStep};
+    use reborn_core::mods::{SyncOutcome, TreeStep};
     let note = outcome.explain();
     match outcome {
         SyncOutcome::Refused(why) => ModSyncView {
@@ -1414,18 +1417,17 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
         },
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
+                TreeStep::LeftAlone => ("left_alone", 0, 0),
                 TreeStep::AlreadyCurrent => ("already_current", 0, 0),
                 TreeStep::Rebuilt {
                     entries, overlaid, ..
                 } => ("rebuilt", *entries, *overlaid),
             };
-            let (link, link_at, moved_aside) = match &r.link {
-                TextureLink::LeftAlone { at } => ("left_alone", at.clone(), None),
-                TextureLink::AlreadyLinked { at, .. } => ("already_linked", at.clone(), None),
-                TextureLink::Linked {
-                    at, moved_aside, ..
-                } => ("linked", at.clone(), moved_aside.clone()),
-            };
+            // The composed tree IS the game's texture folder now; "link"
+            // stays in the view for the harness page that shows it.
+            let link = if matches!(r.tree, TreeStep::LeftAlone) { "left_alone" } else { "composed_in_user_folder" };
+            let link_at = r.composed_root.clone();
+            let moved_aside = r.moved_aside.clone();
             ModSyncView {
                 game: r.game.to_string(),
                 synced: true,
@@ -1468,7 +1470,7 @@ pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Resul
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
-    req.link_into_user_dir = preferences.manage_texture_folder.unwrap_or(true);
+    req.manage_user_texture_folder = preferences.manage_texture_folder.unwrap_or(true);
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
     Ok(sync_view(&game, outcome))
@@ -1712,7 +1714,10 @@ async fn mods_unapply(game: String, confirm: bool) -> Result<ModUnapplyView, Str
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let game = GameId::parse(&game).map_err(|e| e.to_string())?;
-        let composed = reborn_core::mods::composed_root(&p, &game).map_err(|e| e.to_string())?;
+        let exe = runtime_for(&p, None);
+        let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let user = reborn_core::session::resolve_user_dir_for(&p, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
+        let composed = reborn_core::mods::composed_root(user.path(), &game);
         let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
         let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
 
