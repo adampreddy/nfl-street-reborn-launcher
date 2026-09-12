@@ -59,6 +59,9 @@ pub struct Prepared {
     pub blocked: Vec<(PathBuf, String)>,
     /// The tucked 2.1 install, when there is one.
     pub legacy_root: Option<PathBuf>,
+    /// Files whose absolute paths named the previous root and now name this
+    /// one (settings, retained-version records, the stats queue).
+    pub rebased: Vec<PathBuf>,
 }
 
 impl Prepared {
@@ -72,6 +75,9 @@ impl Prepared {
         }
         for (p, why) in &self.blocked {
             tracing::warn!("could not move {}: {why}", p.display());
+        }
+        for p in &self.rebased {
+            tracing::warn!("rebased paths from the previous data root in {}", p.display());
         }
     }
 }
@@ -100,8 +106,87 @@ pub fn prepare_at(data_root: &Path, previous_root: Option<&Path>) -> Result<Prep
                 out.adopted = adopt_previous(previous, data_root)?;
             }
         }
+        // Every start, not only the one that adopted: a root adopted by a
+        // build before this step existed still carries the old paths.
+        if !same_named(previous, data_root) {
+            out.rebased = rebase_paths(previous, data_root)?;
+        }
     }
     Ok(out)
+}
+
+/// The files the launcher writes absolute paths into. Relative to the data
+/// root; a `*` names every file of a directory.
+const REBASED_FILES: &[&str] = &["config/settings.json", "versions/*/prior.json", "stats/queue/*"];
+
+/// Rewrite every absolute path that names `previous` inside the files the
+/// launcher writes paths into, so they name `data_root` instead.
+///
+/// Adoption moves the files but not what is written in them: after it,
+/// `settings.json` still said `user_dir` and `game_path` were under the old
+/// root, so a launch would have made a fresh, empty user folder at a path
+/// that no longer holds anything and looked for a disc that had moved.
+/// Both spellings are handled: the JSON-escaped backslash form the launcher
+/// writes, and the forward-slash form. Idempotent; returns the files changed.
+pub fn rebase_paths(previous: &Path, data_root: &Path) -> Result<Vec<PathBuf>> {
+    let old = previous.to_string_lossy().to_string();
+    let new = data_root.to_string_lossy().to_string();
+    if old.is_empty() || old == new {
+        return Ok(Vec::new());
+    }
+    let pairs = [
+        (old.replace('\\', "\\\\"), new.replace('\\', "\\\\")),
+        (old.replace('\\', "/"), new.replace('\\', "/")),
+        (old.clone(), new.clone()),
+    ];
+    let mut changed = Vec::new();
+    for pattern in REBASED_FILES {
+        let mut files = Vec::new();
+        let parts: Vec<&str> = pattern.split('/').collect();
+        collect_matching(data_root, &parts, &mut files);
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            let mut out = text.clone();
+            for (from, to) in &pairs {
+                if !from.is_empty() {
+                    out = out.replace(from.as_str(), to.as_str());
+                }
+            }
+            if out != text {
+                std::fs::write(&file, out).map_err(|source| Error::Io { path: file.clone(), source })?;
+                changed.push(file);
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// Expand a pattern like `versions/*/prior.json` under `root`, one `*` per
+/// segment at most, into the files that exist.
+fn collect_matching(dir: &Path, parts: &[&str], out: &mut Vec<PathBuf>) {
+    let Some((head, rest)) = parts.split_first() else { return };
+    if *head == "*" {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if rest.is_empty() {
+                if path.is_file() {
+                    out.push(path);
+                }
+            } else if path.is_dir() {
+                collect_matching(&path, rest, out);
+            }
+        }
+    } else {
+        let path = dir.join(head);
+        if rest.is_empty() {
+            if path.is_file() {
+                out.push(path);
+            }
+        } else if path.is_dir() {
+            collect_matching(&path, rest, out);
+        }
+    }
 }
 
 /// `<data root>/Reborn 2.1`, when a 2.1 install sits there.
@@ -376,6 +461,41 @@ mod tests {
         assert_eq!(names(&root.join(LEGACY_SUBFOLDER).join("MODS")), ["!INSTLOGS", "Aqua Football"]);
         assert_eq!(names(&root.join("MODS")), ["activation.json", "packages"]);
         assert!(root.join("MODS/packages/p/1.0.0/package.json").is_file());
+    }
+
+    /// Adoption moves the files; this moves what is written in them. A root
+    /// adopted before this step existed is fixed at any later start too.
+    #[test]
+    fn paths_written_under_the_previous_root_are_rebased_in_both_spellings_every_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("NFL Street Reborn Beta");
+        let previous = dir.path().join("NFL Street Reborn Launcher Beta");
+        let old_json = previous.to_string_lossy().replace('\\', "\\\\");
+        let old_fwd = previous.to_string_lossy().replace('\\', "/");
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("versions").join("runtime")).unwrap();
+        std::fs::create_dir_all(root.join("stats").join("queue")).unwrap();
+        std::fs::write(
+            root.join("config").join("settings.json"),
+            format!(r#"{{"schema":"nsr.settings.v1","user_dir":"{old_json}\\dolphin-users\\fresh-1","game_path":"{old_fwd}/library/offline/NSR.iso","legacy_root":"D:\\Elsewhere\\NFL Street Reborn"}}"#),
+        )
+        .unwrap();
+        std::fs::write(root.join("versions").join("runtime").join("prior.json"), format!(r#"{{"prior":"{old_json}\\versions\\runtime\\prior"}}"#)).unwrap();
+        std::fs::write(root.join("stats").join("queue").join("a.entry.json"), format!(r#"{{"payload":"{old_json}\\stats\\games\\a.json"}}"#)).unwrap();
+        // no previous root on disk any more: the rebase still runs
+        let p = prepare_at(&root, Some(&previous)).unwrap();
+        assert_eq!(p.rebased.len(), 3, "{:?}", p.rebased);
+        let text = std::fs::read_to_string(root.join("config").join("settings.json")).unwrap();
+        let new_json = root.to_string_lossy().replace('\\', "\\\\");
+        let new_fwd = root.to_string_lossy().replace('\\', "/");
+        assert!(text.contains(&format!("{new_json}\\\\dolphin-users")), "{text}");
+        assert!(text.contains(&format!("{new_fwd}/library/offline/NSR.iso")), "{text}");
+        assert!(text.contains("D:\\\\Elsewhere"), "a path elsewhere is untouched: {text}");
+        assert!(!text.contains("Launcher Beta"), "{text}");
+        assert!(std::fs::read_to_string(root.join("stats").join("queue").join("a.entry.json")).unwrap().contains(&new_json));
+        // idempotent
+        let again = prepare_at(&root, Some(&previous)).unwrap();
+        assert!(again.rebased.is_empty());
     }
 
     #[test]
