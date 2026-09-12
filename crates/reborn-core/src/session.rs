@@ -570,11 +570,11 @@ impl Session {
         let user_dir = user.path().to_path_buf();
         // A folder the setup just created starts from the runtime's baseline,
         // the Dolphin Adam tuned; one a player has run in keeps every edit.
-        // Before the portable-path rewrite, so the baseline's relative paths
-        // are resolved like any other, and before the overlays, so the
-        // launcher's required keys still win.
+        // Before the path law strips path keys, so a relative path in the
+        // baseline goes the way any other would, and before the overlays,
+        // so the launcher's required keys still win.
         let seeded = crate::runtime::seed_user_from_template(&req.runtime_exe, &user_dir)?;
-        crate::dolphin_preferences::resolve_portable_paths(&user_dir)?;
+        crate::dolphin_preferences::apply_path_law(&user_dir)?;
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
             path: config_dir.clone(),
@@ -1080,27 +1080,22 @@ pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], pr
 }
 
 /// The memory card the game saves to. A fresh user folder seeded from the
-/// runtime template has both slots set to none (Dolphin.ini `SlotA = 255`),
-/// so the game could never save and the card gear sync had no card to
-/// bring up to date (Adam, 2026-09-12: "it didn't change the memory
-/// card"). When no card is configured, slot A becomes a raw card in the
-/// user folder, which Dolphin creates on first boot; a card path the file
-/// already names is kept when that file exists. A player's own working
-/// choice (a raw card, a folder of GCIs) is left exactly as it is.
-pub fn memory_card_overlay(doc: &crate::ini::IniDocument, user_dir: &Path) -> crate::ini::Overlay {
+/// runtime template used to name no card at all (SlotA = 255), so the game
+/// could never save and the card gear sync had no card to bring up to date
+/// (Adam, 2026-09-12: "it didn't change the memory card"). Slot A becomes a
+/// raw memory card with NO path: Dolphin then uses its default,
+/// `<user>/GC/MemoryCardA.<region>.raw`, which is the path law
+/// (`dolphin_preferences::apply_path_law`). A card path the file names is the
+/// law's business: one inside a Dolphin user folder is removed for the
+/// default, one elsewhere is a player's own choice and stays. A working slot
+/// (a raw card, a folder of GCIs) is left as it is.
+pub fn memory_card_overlay(doc: &crate::ini::IniDocument, _user_dir: &Path) -> crate::ini::Overlay {
     let mut overlay = crate::ini::Overlay::new();
     let slot = doc.get("Core", "SlotA").map(str::trim).unwrap_or("");
     if !(slot.is_empty() || slot == "255" || slot == "0") {
         return overlay;
     }
-    let core = overlay.entry("Core".into()).or_default();
-    core.insert("SlotA".into(), "1".into());
-    let existing = doc.get("Core", "MemcardAPath").map(str::trim).filter(|p| !p.is_empty() && Path::new(p).is_file());
-    let card = match existing {
-        Some(p) => p.to_string(),
-        None => user_dir.join("GC").join("MemoryCardA.USA.raw").to_string_lossy().replace('\\', "/"),
-    };
-    core.insert("MemcardAPath".into(), card);
+    overlay.entry("Core".into()).or_default().insert("SlotA".into(), "1".into());
     overlay
 }
 
@@ -1598,9 +1593,9 @@ mod tests {
     use crate::player_sentence::assert_player_safe;
 
     /// A fresh user folder seeded from the runtime template has no memory
-    /// card at all (SlotA = 255); the launch gives it a raw card in its own
-    /// GC folder. A working card choice is never touched, and a card the
-    /// file already names is kept when it exists.
+    /// card at all (SlotA = 255); the launch turns slot A into a raw card
+    /// with no path, so Dolphin uses its default inside the user folder.
+    /// A working card choice is never touched.
     #[test]
     fn a_launch_gives_a_cardless_user_folder_a_memory_card_and_leaves_a_working_one_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -1608,21 +1603,18 @@ mod tests {
         let none = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nSlotB = 255\n");
         let overlay = memory_card_overlay(&none, user);
         assert_eq!(overlay["Core"]["SlotA"], "1");
-        let expected = user.join("GC").join("MemoryCardA.USA.raw").to_string_lossy().replace('\\', "/");
-        assert_eq!(overlay["Core"]["MemcardAPath"], expected);
+        assert!(!overlay["Core"].contains_key("MemcardAPath"), "no path: Dolphin's default inside the user folder is the path law");
         assert!(!overlay["Core"].contains_key("SlotB"), "slot B stays as it was");
         // no [Core] section at all: the same card
         assert_eq!(memory_card_overlay(&crate::ini::IniDocument::parse("[Display]\n"), user)["Core"]["SlotA"], "1");
         // a folder of GCIs, or a raw card: nothing to change
         assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 8\n"), user).is_empty());
         assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 1\nMemcardAPath = C:/cards/A.raw\n"), user).is_empty());
-        // slot none but a card file the ini already names: that card comes back
-        std::fs::create_dir_all(user.join("old")).unwrap();
-        let old = user.join("old").join("MemoryCardA.USA.raw");
-        std::fs::write(&old, [0u8; 16]).unwrap();
-        let old_text = old.to_string_lossy().replace('\\', "/");
-        let doc = crate::ini::IniDocument::parse(&format!("[Core]\nSlotA = 255\nMemcardAPath = {old_text}\n"));
-        assert_eq!(memory_card_overlay(&doc, user)["Core"]["MemcardAPath"], old_text);
+        // slot none with a card path named: the slot is turned on; the path is the path law's business
+        let doc = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nMemcardAPath = D:/cards/A.raw\n");
+        let on = memory_card_overlay(&doc, user);
+        assert_eq!(on["Core"]["SlotA"], "1");
+        assert!(!on["Core"].contains_key("MemcardAPath"));
     }
 
     /// The launch gives the single-instance lock back before the network work.

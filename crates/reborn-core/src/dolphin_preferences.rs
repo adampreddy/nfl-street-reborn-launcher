@@ -36,10 +36,15 @@ pub fn fullscreen(platform:&crate::platform::Platform,fallback:bool)->crate::pla
  Ok(saved.emulator_preferences.get("fullscreen").map(|v|v.eq_ignore_ascii_case("true")).unwrap_or(fallback))
 }
 
-/// Old portable installs store paths relative to the executable, even when
-/// Dolphin is given a different User directory with -u. Bind User/... paths
-/// to that selected profile before a bundled executable opens it.
-pub fn resolve_portable_paths(user: &std::path::Path) -> crate::platform::Result<()> {
+/// The path law: a Reborn user folder is self-contained. Dolphin derives
+/// every path from the `-u` folder, so Dolphin.ini carries no path key that
+/// points inside a Dolphin user folder (this one or another) and none that
+/// is relative. A 2.1 Dolphin.ini copied into a migrated folder kept the
+/// game loading textures from the old install (Adam, 2026-09-11, second
+/// PC); a relative `User/Load` resolves against the working directory.
+/// Absolute paths outside every Dolphin user folder are a player's own
+/// choice and stay. The disc keys go always: the launcher passes `-e`.
+pub fn apply_path_law(user: &std::path::Path) -> crate::platform::Result<()> {
  let file=user.join("Config/Dolphin.ini");
  let text=match std::fs::read_to_string(&file){
   Ok(text)=>text,
@@ -47,53 +52,50 @@ pub fn resolve_portable_paths(user: &std::path::Path) -> crate::platform::Result
   Err(e)=>return Err(e.into()),
  };
  let mut doc=crate::ini::IniDocument::parse(&text);
- let changes=portable_path_overlay(&doc,user);
- if !doc.merge(&changes).is_noop(){
-  let backup=file.with_extension("ini.before-path-fix");
-  if !backup.exists(){std::fs::write(&backup,&text)?;}
-  std::fs::write(file,doc.render())?;
- }
+ let removals=path_law_removals(&doc,user);
+ if removals.is_empty(){return Ok(());}
+ for (section,key) in &removals{doc.remove(section,key);}
+ let backup=file.with_extension("ini.before-path-law");
+ if !backup.exists(){std::fs::write(&backup,&text)?;}
+ std::fs::write(file,doc.render())?;
  Ok(())
 }
 
-fn portable_path_overlay(doc:&crate::ini::IniDocument,user:&std::path::Path)->crate::ini::Overlay{
- let mut changes=crate::ini::Overlay::new();
- for (section,keys) in [
-  ("General",&["LoadPath","DumpPath","NANDRootPath","ResourcePackPath","WiiSDCardPath"][..]),
-  ("Core",&["MemcardAPath","MemcardBPath","GCIFolderAPathOverride","GCIFolderBPathOverride","AgpCartAPath","AgpCartBPath"][..]),
-  ("GBA",&["BIOS","SavesPath","Rom1","Rom2","Rom3","Rom4"][..]),
- ]{
-  for key in keys{
-   let Some(value)=doc.get(section,key)else{continue};
+const ALWAYS_REMOVED:&[(&str,&str)]=&[("General","ISOPaths"),("General","ISOPath0"),("General","ISOPath1"),("General","ISOPath2"),("General","ISOPath3"),("Core","DefaultISO")];
+const PATH_KEYS:&[(&str,&[&str])]=&[
+ ("General",&["LoadPath","DumpPath","NANDRootPath","ResourcePackPath","WiiSDCardPath"]),
+ ("Core",&["MemcardAPath","MemcardBPath","GCIFolderAPathOverride","GCIFolderBPathOverride","AgpCartAPath","AgpCartBPath"]),
+ ("GBA",&["BIOS","SavesPath","Rom1","Rom2","Rom3","Rom4"]),
+];
+const DOLPHIN_SUBFOLDERS:&[&str]=&["Load","Dump","ResourcePacks","GC","Wii","StateSaves","Config","GameSettings","Logs","GBA"];
+
+/// Section and key of every pair the law removes from `doc`.
+pub fn path_law_removals(doc:&crate::ini::IniDocument,user:&std::path::Path)->Vec<(String,String)>{
+ let mut out=Vec::new();
+ for (section,key) in ALWAYS_REMOVED{ if doc.get(section,key).is_some(){out.push(((*section).to_string(),(*key).to_string()));} }
+ for (section,keys) in PATH_KEYS{
+  for key in *keys{
+   let Some(value)=doc.get(section,key) else{continue};
    let normalized=value.trim().trim_matches('"').replace('\\',"/");
-   let all:Vec<&str>=normalized.split('/').filter(|p|!p.is_empty()&&*p!=".").collect();
-   // Two shapes are rebased onto THIS user folder. A portable one
-   // ("User/Load"), and an absolute one that points inside ANOTHER
-   // Dolphin user folder: a 2.1 Dolphin.ini carries
-   // "C:/.../NFL Street Reborn/User/Load", and copied into a migrated
-   // user folder it kept the game loading textures from the old install,
-   // so no texture update ever reached it (Adam, 2026-09-11, second PC).
-   let tail:Option<&[&str]>=if !normalized.starts_with('/')&&all.first().is_some_and(|p|p.eq_ignore_ascii_case("User")){
-    Some(&all[1..])
-   } else if is_absolute(&normalized)&&!under(&normalized,user){
-    // Only a path that really points into another Dolphin user folder: the
-    // "User" component must not be a Windows account folder
-    // (C:/Users/User/Documents/...) and what follows must be one of Dolphin's
-    // own subfolders, so a memory card kept somewhere unusual is left alone.
-    all.iter().rposition(|p|p.eq_ignore_ascii_case("User")).and_then(|i|{
-     let before_is_users_root=i>0&&all[i-1].eq_ignore_ascii_case("Users");
-     let tail=&all[i+1..];
-     let dolphin_folder=tail.first().is_some_and(|f|["Load","Dump","ResourcePacks","GC","Wii","StateSaves","Config","GameSettings","Logs","GBA"].iter().any(|k|k.eq_ignore_ascii_case(f)));
-     (!before_is_users_root&&dolphin_folder).then_some(tail)
-    })
-   } else {None};
-   let Some(tail)=tail else{continue};
-   let mut resolved=user.to_path_buf();
-   for part in tail{resolved.push(part);}
-   changes.entry(section.into()).or_default().insert((*key).into(),resolved.to_string_lossy().replace('\\',"/"));
+   if normalized.is_empty()||normalized.eq_ignore_ascii_case("none"){continue;}
+   if !is_absolute(&normalized)||under(&normalized,user)||inside_another_dolphin_user_folder(&normalized){
+    out.push(((*section).to_string(),(*key).to_string()));
+   }
   }
  }
- changes
+ out
+}
+
+/// `.../User/<Dolphin subfolder>/...` where that `User` is not a Windows
+/// account folder (`C:/Users/User/...`), or anything under `dolphin-users`.
+fn inside_another_dolphin_user_folder(normalized:&str)->bool{
+ let all:Vec<&str>=normalized.split('/').filter(|p|!p.is_empty()&&*p!=".").collect();
+ if all.iter().any(|p|p.eq_ignore_ascii_case("dolphin-users")){return true;}
+ all.iter().rposition(|p|p.eq_ignore_ascii_case("User")).is_some_and(|i|{
+  let before_is_users_root=i>0&&all[i-1].eq_ignore_ascii_case("Users");
+  let dolphin_folder=all.get(i+1).is_some_and(|f|DOLPHIN_SUBFOLDERS.iter().any(|k|k.eq_ignore_ascii_case(f)));
+  !before_is_users_root&&dolphin_folder
+ })
 }
 
 /// "C:/x" or "//server/x": a path that names its own root.
@@ -104,52 +106,48 @@ fn is_absolute(normalized:&str)->bool{
 /// Whether `normalized` (forward slashes) is `user` or inside it.
 fn under(normalized:&str,user:&std::path::Path)->bool{
  let u=user.to_string_lossy().replace('\\',"/");
+ if u.is_empty(){return false;}
  let a=normalized.trim_end_matches('/').to_ascii_lowercase();
  let b=u.trim_end_matches('/').to_ascii_lowercase();
  a==b||a.starts_with(&format!("{b}/"))
 }
 
-#[cfg(test)] mod portable_path_tests {
+#[cfg(test)] mod path_law_tests {
  use super::*;
- #[test] fn a_migrated_config_pointing_at_the_old_install_is_rebased_onto_this_user_folder(){
-  let user=std::path::Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher\dolphin-users\migrated");
-  let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn/User/Load\nDumpPath = C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\User\\Dump\nResourcePackPath = D:/Packs\nWiiSDCardPath = None\n[Core]\nMemcardAPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn/User/GC/MemoryCardA.USA.raw\n");
-  let changes=portable_path_overlay(&doc,user);
-  let general=&changes["General"];
-  assert_eq!(general["LoadPath"],"C:/Users/Adam/AppData/Roaming/NFL Street Reborn Launcher/dolphin-users/migrated/Load");
-  assert_eq!(general["DumpPath"],"C:/Users/Adam/AppData/Roaming/NFL Street Reborn Launcher/dolphin-users/migrated/Dump");
-  assert!(!general.contains_key("ResourcePackPath"),"a path with no user folder in it is someone's own choice");
-  assert!(!general.contains_key("WiiSDCardPath"));
-  assert_eq!(changes["Core"]["MemcardAPath"],"C:/Users/Adam/AppData/Roaming/NFL Street Reborn Launcher/dolphin-users/migrated/GC/MemoryCardA.USA.raw");
-  // Already this user folder: nothing to change.
-  let own=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn Launcher/dolphin-users/migrated/Load\n");
-  assert!(portable_path_overlay(&own,user).is_empty());
-  // A Windows account called User, and a card kept somewhere of the player's
-  // own choosing: neither is a Dolphin user folder, so both stay as they are.
-  let account=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/User/Documents/Dolphin Emulator/Load\n[Core]\nMemcardAPath = C:/Users/User/Documents/Dolphin Emulator/GC/MemoryCardA.USA.raw\nMemcardBPath = D:/Backups/User/Cards/MemoryCardB.USA.raw\n");
-  assert!(portable_path_overlay(&account,user).is_empty(),"{:?}",portable_path_overlay(&account,user));
+ fn user()->std::path::PathBuf{ std::path::PathBuf::from(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn\dolphin-users\fresh-1") }
+ fn keys(removed:&[(String,String)])->Vec<String>{ removed.iter().map(|(s,k)|format!("{s}/{k}")).collect() }
+ #[test] fn paths_inside_this_or_another_dolphin_user_folder_are_removed(){
+  let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn/User/Load\nDumpPath = C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\dolphin-users\\fresh-1\\Dump\nResourcePackPath = D:/Packs\nWiiSDCardPath = None\n[Core]\nMemcardAPath = C:/Users/Adam/AppData/Roaming/NFL Street Reborn/User/GC/MemoryCardA.USA.raw\nMemcardBPath = D:/Backups/User/Cards/MemoryCardB.USA.raw\n");
+  let removed=keys(&path_law_removals(&doc,&user()));
+  assert_eq!(removed,["General/LoadPath","General/DumpPath","Core/MemcardAPath"]);
  }
- #[test] fn selected_profile_owns_legacy_paths_without_replacing_external_choices(){
-  let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = User/Load///\nDumpPath = .\\User\\Dump\\\nResourcePackPath = D:/Packs\nWiiSDCardPath = None\n[Core]\nMemcardBPath = User/GC/Card.raw\nSlotA = 255\n[DSP]\nVolume = 0\n");
-  let changes=portable_path_overlay(&doc,std::path::Path::new("C:/Existing/User"));
-  assert_eq!(changes["General"]["LoadPath"],"C:/Existing/User/Load");
-  assert_eq!(changes["General"]["DumpPath"],"C:/Existing/User/Dump");
-  assert_eq!(changes["Core"]["MemcardBPath"],"C:/Existing/User/GC/Card.raw");
-  assert!(!changes["General"].contains_key("ResourcePackPath"));
-  assert!(!changes["General"].contains_key("WiiSDCardPath"));
-  assert!(!changes["Core"].contains_key("SlotA"));
-  assert!(!changes.contains_key("DSP"));
+ #[test] fn relative_paths_are_removed_and_foreign_absolute_ones_kept(){
+  let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = User/Load///\nDumpPath = .\\User\\Dump\\\nResourcePackPath = D:/Packs\n[Core]\nMemcardBPath = User/GC/Card.raw\nMemcardAPath = D:/cards/A.raw\nSlotA = 255\n[GBA]\nBIOS = None\nRom1 = D:/roms/a.gba\n");
+  let removed=keys(&path_law_removals(&doc,&user()));
+  assert_eq!(removed,["General/LoadPath","General/DumpPath","Core/MemcardBPath"]);
  }
- #[test] fn path_fix_is_repeatable_and_keeps_original_settings(){
-  let tmp=tempfile::tempdir().unwrap();let user=tmp.path().join("User");
-  std::fs::create_dir_all(user.join("Config")).unwrap();
+ #[test] fn the_default_iso_and_iso_paths_are_always_removed(){
+  let doc=crate::ini::IniDocument::parse("[General]\nISOPaths = 1\nISOPath0 = Games\n[Core]\nDefaultISO = C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\Games\\NSRV3.iso\n");
+  let removed=keys(&path_law_removals(&doc,&user()));
+  assert_eq!(removed,["General/ISOPaths","General/ISOPath0","Core/DefaultISO"]);
+ }
+ #[test] fn an_account_folder_called_user_is_not_a_dolphin_user_folder(){
+  let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/User/Documents/Dolphin Emulator/Load\n[Core]\nMemcardAPath = C:/Users/User/Documents/Dolphin Emulator/GC/MemoryCardA.USA.raw\n");
+  assert!(path_law_removals(&doc,&user()).is_empty());
+ }
+ #[test] fn apply_writes_only_when_something_changed_and_keeps_one_backup(){
+  let dir=tempfile::tempdir().unwrap();let user=dir.path().join("u");std::fs::create_dir_all(user.join("Config")).unwrap();
   let file=user.join("Config/Dolphin.ini");
-  let original="[General]\nLoadPath = User/Load\n[DSP]\nVolume = 0\n";
-  std::fs::write(&file,original).unwrap();
-  resolve_portable_paths(&user).unwrap();let first=std::fs::read_to_string(&file).unwrap();
-  resolve_portable_paths(&user).unwrap();assert_eq!(std::fs::read_to_string(&file).unwrap(),first);
-  assert_eq!(std::fs::read_to_string(file.with_extension("ini.before-path-fix")).unwrap(),original);
-  assert_eq!(crate::ini::IniDocument::parse(&first).get("DSP","Volume"),Some("0"));
+  std::fs::write(&file,"[General]\nLoadPath = User/Load\n[DSP]\nVolume = 0\n").unwrap();
+  apply_path_law(&user).unwrap();
+  assert_eq!(std::fs::read_to_string(&file).unwrap(),"[General]\n[DSP]\nVolume = 0\n");
+  assert!(user.join("Config/Dolphin.ini.before-path-law").is_file());
+  let clean="[DSP]\nVolume = 0\n";std::fs::write(&file,clean).unwrap();
+  let before=std::fs::metadata(&file).unwrap().modified().unwrap();
+  apply_path_law(&user).unwrap();
+  assert_eq!(std::fs::read_to_string(&file).unwrap(),clean);
+  assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(),before,"untouched when nothing to remove");
+  assert!(apply_path_law(&dir.path().join("absent")).is_ok(),"no Dolphin.ini is not an error");
  }
 }
 

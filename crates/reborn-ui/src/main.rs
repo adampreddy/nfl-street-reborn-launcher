@@ -4310,7 +4310,7 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
             .map_err(|e| e.player_message().to_string())?;
         let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
         reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e| e.player_message().to_string())?;
-        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e| e.player_message().to_string())?;
+        reborn_core::dolphin_preferences::apply_path_law(user.path()).map_err(|e| e.player_message().to_string())?;
 
         // The lock, then anything left unfinished, then the record. The same
         // first steps as a launch, because this ends the same way: with a
