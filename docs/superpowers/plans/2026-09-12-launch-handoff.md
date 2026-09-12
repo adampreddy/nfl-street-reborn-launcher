@@ -1,5 +1,7 @@
 # Launch handoff, 2026-09-12
 
+Later local launcher polish is documented in [2026-09-12-launch-polish.md](2026-09-12-launch-polish.md). It includes the beta.28 local build with the redesigned Stats page, the staged matching Dolphin runtime and verified default-soundtrack patch, and verification. The published versions below are unchanged by that work.
+
 The state of the NFL Street Reborn Launcher on launch day, written for whoever
 picks it up next (a person or an agent). Facts here were read from the
 bucket, the repo and this PC at about 15:00 ET on 2026-09-12.
@@ -89,8 +91,9 @@ plan `docs/superpowers/plans/2026-09-12-install-layout-and-path-law.md`.
 - A build that ships a new runtime or texture tree MUST be followed by a
   content release pinning those trees, or the updater drags installs back.
 - Publish the runtime only from `build.ps1 -RuntimeOnly -UserTemplate` output;
-  the full payload's runtime is dirty after any walk (ReShade logs). Note that
-  `-RuntimeOnly` wipes `target\installer-payload`.
+  the full payload's runtime is dirty after any walk (ReShade logs). The later
+  polish fix gives runtime-only staging its own folder and preserves
+  `target\installer-payload`.
 - Never run two cargo builds at once (memory). A running `rebornctl.exe`
   (pack rebuilds) makes the launcher build fail with "Access is denied";
   finish CLI jobs first. Long builds go through `schtasks /create /sc once
@@ -168,7 +171,9 @@ plan `docs/superpowers/plans/2026-09-12-install-layout-and-path-law.md`.
    FIELDS disc and re-pin the game-patch release. The null function-pointer crash fix is likewise only in `root/`
    and the FIELDS disc, so NSRV3 players still have the crash until a game
    patch ships.
-6. Reborn soundtrack on by default (without a Mods switch) is not built.
+6. At handoff time, Reborn soundtrack on by default was not built. The later
+   polish work staged and verified a soundtrack-only patch; see the linked
+   polish handoff. Public release is still pending.
 7. Adam's PC: the beta roots renamed aside at 14:32
    (`*.before-fresh-20260912-143218`, 19 GB) hold his card, textures and
    imported disc; the stale `%APPDATA%\NFL Street Reborn Launcher` root would

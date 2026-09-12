@@ -137,10 +137,9 @@ pub struct Mapping(BTreeMap<GcInput, PhysicalBinding>);
 impl Mapping {
     /// The shipping default, one mapping for every modern pad.
     ///
-    /// Taken from the working `Xbox.ini`, including the deliberate B and X
-    /// swap: GameCube B sits on the physical X button and GameCube X on the
-    /// physical B. That is not a transcription error, it is how NFL Street has
-    /// always been played here and changing it would break muscle memory.
+    /// B binds to physical B and X binds to physical X. The game's own
+    /// match-specific handling already supplies the intended behavior;
+    /// duplicating the old Dolphin swap would reverse it again.
     ///
     /// The one thing dropped from the old pair of profiles is the
     /// shoulder-versus-trigger difference between Xbox and PlayStation. Adam's

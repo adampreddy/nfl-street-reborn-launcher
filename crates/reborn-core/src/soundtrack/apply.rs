@@ -1001,6 +1001,7 @@ mod tests {
     #[test]
     fn a_soundtrack_too_big_for_the_disc_is_refused_with_the_overflow() {
         let (dir, _pristine, booted, size) = scratch_root();
+        set_enabled(dir.path(), true).unwrap();
         let root = dir.path();
         let platform = Platform::detect();
         let pack_path = root.join("big.nsrmusic");
@@ -1024,6 +1025,7 @@ mod tests {
     #[test]
     fn apply_rebuilds_the_booted_image_records_the_hash_and_commits_pending() {
         let (dir, pristine, booted, size) = scratch_root();
+        set_enabled(dir.path(), true).unwrap();
         let root = dir.path();
         let platform = Platform::detect();
         // nothing staged: refused, nothing written
@@ -1153,6 +1155,7 @@ mod tests {
     #[test]
     fn revert_puts_the_pristine_image_back_and_clears_the_record() {
         let (dir, pristine, booted, size) = scratch_root();
+        set_enabled(dir.path(), true).unwrap();
         let root = dir.path();
         let platform = Platform::detect();
         let pack_path = root.join("p.nsrmusic");

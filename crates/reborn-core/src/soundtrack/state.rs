@@ -116,7 +116,7 @@ impl Default for Soundtrack {
     fn default() -> Self {
         Self {
             schema: SCHEMA.to_string(),
-            enabled: true,
+            enabled: false,
             base: Base::Stock,
             slots: BTreeMap::new(),
             pending: BTreeMap::new(),
@@ -361,6 +361,7 @@ mod tests {
     #[test]
     fn default_saves_and_loads_back_and_absent_is_default() {
         let dir = tempfile::tempdir().unwrap();
+        assert!(!Soundtrack::load(dir.path()).unwrap().enabled, "Custom music is opt-in");
         assert_eq!(Soundtrack::load(dir.path()).unwrap(), Soundtrack::default());
         let mut s = Soundtrack::default();
         s.stage(Slot::new(3).unwrap(), user("abc"));

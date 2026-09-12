@@ -1373,6 +1373,7 @@ mod tests {
         let pack_path = root.join("p.nsrmusic");
         pack::write_pack(&pack_path, "P", "", "", &[pack::SongInput { slot: Slot::new(5).unwrap(), blob, title: "Five".into(), artist: String::new(), album: String::new() }]).unwrap();
         sapply::stage_pack(root, &pack_path).unwrap();
+        sapply::set_enabled(root, true).unwrap();
         match sapply::apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
             sapply::Outcome::Applied(a) => assert_eq!(a.slots_changed, vec![5]),
             other => panic!("{other:?}"),

@@ -14,12 +14,15 @@ function stopScrolling() {
   cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0; scrollTargets.clear();
 }
 function animateScroll(now) {
-  if (document.hidden || !document.hasFocus() || (active&&!document.body.dataset.netplayLobby) || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
+  if (document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
   const dt = Math.min(40, now - (scrollTime || now - 16)); scrollTime = now;
   // One continuously retargeted curve, rather than restarting a browser smooth
   // scroll every time the D-pad repeats. Time-based damping works at any refresh rate.
   const blend = 1 - Math.exp(-dt / 65);
+  const modal = document.querySelector('dialog[open]');
   for (const [area, requested] of scrollTargets) {
+    // A modal owns scrolling while open; discard momentum on the page behind it.
+    if (!area.isConnected || area.matches('dialog:not([open])') || (modal && !modal.contains(area))) { scrollTargets.delete(area); continue; }
     const target = Math.max(0, Math.min(area.scrollHeight-area.clientHeight, requested));
     const distance = target-area.scrollTop;
     if (reducedMotion.matches || Math.abs(distance)<.7) { area.scrollTop=target; scrollTargets.delete(area); }
@@ -97,7 +100,7 @@ function focus(n, reveal = true) {
   n.classList.add('pad-focus');
   if (reveal) {
     const target = n.closest('label.choice') || n;
-    const area = n.closest('.shell-nav') || main;
+    const area = n.closest('dialog[open]') || n.closest('.shell-nav') || main;
     const rect = target.getBoundingClientRect(), viewport = area.getBoundingClientRect();
     const top = viewport.top + 16, bottom = viewport.bottom - 16;
     const delta = rect.top < top ? rect.top-top : rect.bottom > bottom ? rect.bottom-bottom : 0;
@@ -164,7 +167,7 @@ function move(direction) {
   // control should never steal focus from the next settings row.
   const items = reachable(inNav ? document.querySelector('.shell-nav') : main);
   const a = box(current), ax = a.x+a.width/2, ay = a.y+a.height/2;
-  const viewport = main.getBoundingClientRect();
+  const viewport = (current.closest('dialog[open]') || main).getBoundingClientRect();
   if (!inNav && (a.bottom < viewport.top || a.top > viewport.bottom)) {
     const onScreen = items.filter(n => { const b = box(n); return b.top >= viewport.top && b.bottom <= viewport.bottom; });
     if (onScreen.length) { focus(direction === 'up' ? onScreen.at(-1) : onScreen[0]); return; }
@@ -249,7 +252,7 @@ if (bridge) { sessionState(); setInterval(sessionState,1500); }
 let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
 function poll(now) {
   requestAnimationFrame(poll);
-  if (document.hidden || !document.hasFocus() || (active&&!document.body.dataset.netplayLobby) || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
+  if (document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
     previous = []; direction = null; lastFrame = 0; armed = false; return;
   }
   const pads = connectedPads();
@@ -282,7 +285,10 @@ function poll(now) {
   }
   if (d && (d !== direction || now >= nextRepeat)) { move(d); nextRepeat = now+(d !== direction ? 330 : 115); }
   direction = d;
-  if (scroll && !selectEdit) scrollToTarget(main,(scrollTargets.get(main) ?? main.scrollTop)+scroll*elapsed*1.35);
+  if (scroll && !selectEdit) {
+    const area = document.querySelector('dialog[open]') || main;
+    scrollToTarget(area,(scrollTargets.get(area) ?? area.scrollTop)+scroll*elapsed*1.35);
+  }
   if (pressed(4)) pageStep(-1);
   else if (pressed(5)) pageStep(1);
   else if (pressed(1)) back();
@@ -294,3 +300,4 @@ if (controllerMode) focus(primary());
 requestAnimationFrame(poll);
 window.addEventListener('gamepadconnected',() => {renderHints();document.dispatchEvent(new Event('refresh-devices'));});
 window.addEventListener('gamepaddisconnected',() => { armed = false; renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
+import './update-notice.js';

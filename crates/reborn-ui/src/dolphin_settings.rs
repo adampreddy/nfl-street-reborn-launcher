@@ -21,7 +21,7 @@ fn player(e: impl Into<reborn_core::Error>) -> String {
 }
 
 use reborn_core::dolphin_preferences::{Field, FIELDS};
-fn config_user(p: &Platform, runtime: Option<&str>) -> Result<(PathBuf,PathBuf),String> {
+pub(crate) fn config_user(p: &Platform, runtime: Option<&str>) -> Result<(PathBuf,PathBuf),String> {
     let exe=runtime_for(p,runtime).ok_or("Dolphin was not found. Choose its location in Files and storage.")?;
     let prefs=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(player)?).map_err(player)?;
     let user=reborn_core::session::resolve_user_dir_for(p,prefs.user_dir.as_deref(),Some(&exe)).map_err(player)?;
@@ -44,7 +44,7 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
     }
 }
 // Dolphin rewrites its in-memory settings on exit. Refuse edits while it is open.
-fn require_closed(exe:&Path)->Result<(),String>{
+pub(crate) fn require_closed(exe:&Path)->Result<(),String>{
     #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
         let result=std::process::Command::new("tasklist.exe").args(["/FO","CSV","/NH"]).creation_flags(0x08000000).output().map_err(player)?;
@@ -57,11 +57,33 @@ fn require_closed(exe:&Path)->Result<(),String>{
 }
 #[tauri::command]
 pub async fn dolphin_preferences(runtime:Option<String>)->Result<serde_json::Value,String>{
-    tauri::async_runtime::spawn_blocking(move||{let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;let mut values=serde_json::Map::new();for field in FIELDS {let doc=read_ini(&user.join("Config").join(field.file))?;values.insert(field.id.into(),serde_json::json!(doc.get(field.section,field.key).unwrap_or(field.default)));}let readonly_reason=require_closed(&exe).err();Ok(serde_json::json!({"values":values,"user_dir":user,"editable":readonly_reason.is_none(),"readonly_reason":readonly_reason}))}).await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move|| {
+        let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;
+        let mut values=serde_json::Map::new();
+        for field in FIELDS {let doc=read_ini(&user.join("Config").join(field.file))?;values.insert(field.id.into(),serde_json::json!(doc.get(field.section,field.key).unwrap_or(field.default)));}
+        let live=crate::live_settings::status(&user);
+        if let Some(status)=&live {values.insert("volume".into(),status["volume"].to_string().into());values.insert("muted".into(),status["muted"].to_string().into());}
+        let readonly_reason=require_closed(&exe).err();
+        Ok(serde_json::json!({"values":values,"user_dir":user,"editable":readonly_reason.is_none(),"live_editable":if live.is_some(){vec!["volume","muted"]}else{vec![]},"readonly_reason":readonly_reason}))
+    }).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
 pub async fn dolphin_preference_set(runtime:Option<String>,key:String,value:String)->Result<(),String>{
-    tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;require_closed(&exe)?;let field=FIELDS.iter().find(|f|f.id==key).ok_or("Unknown setting.")?;let value=checked_value(field,&value)?;let file=user.join("Config").join(field.file);let mut doc=read_ini(&file)?;let mut overlay=Overlay::new();overlay.entry(field.section.into()).or_default().insert(field.key.into(),value.clone());if !doc.merge(&overlay).is_noop(){std::fs::create_dir_all(file.parent().unwrap()).map_err(player)?;std::fs::write(&file,doc.render()).map_err(player)?;}let settings_file=reborn_core::settings::settings_path(&p).map_err(player)?;let mut settings=reborn_core::settings::Settings::load(&settings_file).map_err(player)?;settings.emulator_preferences.insert(key,value);settings.save(&settings_file).map_err(player)?;Ok(())}).await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move|| {
+        let p=Platform::detect();let (exe,user)=config_user(&p,runtime.as_deref())?;
+        let field=FIELDS.iter().find(|f|f.id==key).ok_or("Unknown setting.")?;let value=checked_value(field,&value)?;
+        let live=crate::live_settings::status(&user).is_some();
+        let _guard=if live && ["volume","muted"].contains(&key.as_str()) {None} else {Some(LaunchGuard::acquire()?)};
+        if live && ["volume","muted"].contains(&key.as_str()) {
+            let wire=if key=="volume"{serde_json::json!(value.parse::<u32>().map_err(|_|"Invalid volume.")?)}else{serde_json::json!(value=="True")};
+            crate::live_settings::send(&p,&user,serde_json::json!({"action":key,"value":wire}))?;
+        } else {
+            require_closed(&exe)?;
+            let file=user.join("Config").join(field.file);let mut doc=read_ini(&file)?;let mut overlay=Overlay::new();overlay.entry(field.section.into()).or_default().insert(field.key.into(),value.clone());
+            if !doc.merge(&overlay).is_noop(){std::fs::create_dir_all(file.parent().unwrap()).map_err(player)?;std::fs::write(&file,doc.render()).map_err(player)?;}
+        }
+        let settings_file=reborn_core::settings::settings_path(&p).map_err(player)?;let mut settings=reborn_core::settings::Settings::load(&settings_file).map_err(player)?;settings.emulator_preferences.insert(key,value);settings.save(&settings_file).map_err(player)?;Ok(())
+    }).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
 pub async fn dolphin_saves_folder(runtime:Option<String>)->Result<(),String>{

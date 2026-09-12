@@ -105,30 +105,6 @@ body.shell.page-setup .shell-nav{grid-area:nav;flex-direction:row;align-items:ce
 .update-notice progress.notice-bar{flex-basis:100%;width:100%;height:10px;border:0;border-radius:6px;overflow:hidden}
 .play-copy{margin-top:6px}
 .play-copy-box{position:fixed;left:-9999px;top:0}
-/* Stats: the wrap cards, the game list, the box scores. */
-.wrap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin:10px 0 6px}
-.wrap-card{display:flex;flex-direction:column;gap:4px;padding:16px 18px;border:1px solid #ffffff22;border-radius:12px;background:linear-gradient(160deg,#20221c,#151612)}
-.wrap-label{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-.wrap-value{font-size:22px;font-weight:700;color:#fff;line-height:1.15}
-.wrap-detail{font-size:12px;color:#c9cbc2}
-.game-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
-.game-row{border:1px solid #ffffff1e;border-radius:10px;background:#1a1c17;overflow:hidden}
-.game-row.open{border-color:#ffffff40}
-.game-head{display:grid;grid-template-columns:150px 1fr 70px;align-items:center;gap:12px;width:100%;padding:12px 16px;margin:0;border:0;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer;min-height:0}
-.game-head:hover{background:#ffffff08}
-.game-when{font-size:11px;color:var(--muted)}
-.game-score{display:flex;align-items:center;justify-content:center;gap:14px;font-size:13px}
-.game-score strong{font-size:18px;color:#fff;min-width:72px;text-align:center}
-.game-team{min-width:120px;text-align:center}
-.game-source{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);text-align:right}
-.box-score{padding:6px 16px 16px;display:flex;flex-direction:column;gap:14px;border-top:1px solid #ffffff14}
-.box-table{width:100%;border-collapse:collapse;font-size:12px}
-.box-table caption{text-align:left;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:8px 0 4px}
-.box-table th,.box-table td{padding:5px 8px;border-bottom:1px solid #ffffff12;text-align:right;white-space:nowrap}
-.box-table th:first-child,.box-table td:first-child{text-align:left}
-.box-table thead th{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:500}
-.box-table tbody th{font-weight:500;color:var(--fg)}
-.box-table.totals td{font-weight:600;color:#fff}
 body.shell.page-setup main{width:100%;max-width:690px;justify-self:center;padding:24px 36px 0;background:transparent;scrollbar-gutter:stable}
 .page-setup #steps{justify-content:center;gap:7px;margin:0 0 26px}.page-setup #steps span{width:7px;height:7px;padding:0;border:0;border-radius:50%;background:#36383e}.page-setup #steps span.now{background:#ee6268;width:22px;border-radius:5px}.page-setup #steps span.done{background:#a8abb4}
 body.shell.page-setup #screen{padding:0;border:0;min-height:0;display:block}

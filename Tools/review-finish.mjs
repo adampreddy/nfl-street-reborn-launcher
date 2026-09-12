@@ -34,6 +34,11 @@ const url=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({channel:process.env.REBORN_TEST_BROWSER || 'msedge',headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:800}});
 await context.addInitScript(data=>{
+ // This review edits update preferences directly. Keep the shared automatic
+ // notice postponed; check-update-notice.mjs covers its countdown and focus.
+ for(const [kind,version] of [['launcher','3.0.1'],['content',data.content_status?.release]]) {
+  if(version)sessionStorage.setItem(`update-choice:${kind}:${version}`,JSON.stringify({until:Date.now()+15*60*1000}));
+ }
  window.__calls=[]; window.__fixture=data;window.__events={};
  const stage=new URL(location.href).searchParams.get('stage');
  if(stage) {
@@ -46,9 +51,10 @@ await context.addInitScript(data=>{
   window.__calls.push({cmd,args});
   if(window.__delayCommand===cmd) await new Promise(resolve=>{window.__releaseDelayed=resolve;});
   if(window.__reject===cmd) throw new Error(window.__rejectMessage||('Test failure: '+cmd));
-  if(cmd==='dolphin_preferences') return {editable:true,user_dir:'C:/Reborn/User',values:{audio_backend:'Cubeb',volume:'100',muted:'False',audio_stretch:'False',audio_latency:'20',fullscreen:'True',always_on_top:'False',vsync:'False',show_fps:'False',show_ping:'False',borderless:'False',confirm_stop:'True',pause_unfocused:'False',osd_messages:'True',slot_a:'8',slot_b:'255',card_a:'',card_b:'',gci_a:'',gci_b:'',...JSON.parse(localStorage.getItem('qa:dolphin')||'{}')}};
+  if(cmd==='dolphin_preferences') return {editable:!data.session_active,live_editable:data.session_active?['volume','muted']:[],user_dir:'C:/Reborn/User',values:{audio_backend:'Cubeb',volume:'100',muted:'False',audio_stretch:'False',audio_latency:'20',fullscreen:'True',always_on_top:'False',vsync:'False',show_fps:'False',show_ping:'False',borderless:'False',confirm_stop:'True',pause_unfocused:'False',osd_messages:'True',slot_a:'8',slot_b:'255',card_a:'',card_b:'',gci_a:'',gci_b:'',...JSON.parse(localStorage.getItem('qa:dolphin')||'{}')}};
   if(cmd==='dolphin_preference_set'){const current=JSON.parse(localStorage.getItem('qa:dolphin')||'{}');current[args.key]=args.value;localStorage.setItem('qa:dolphin',JSON.stringify(current));return;}
-  if(cmd==='open_runtime'||cmd==='dolphin_saves_folder')return {started:true};
+  if(cmd==='open_runtime'){data.session_active=true;return {started:true};}
+  if(cmd==='dolphin_saves_folder')return {started:true};
   if(cmd==='update_policy_set'){data.update_policy={automatic:args.automatic,source:'settings'};return data.update_policy;}
   if(cmd==='update_check')return {state:'available',latest:'3.0.1',note:'A new version is available.',notes:'Improved controller support.'};
   if(cmd==='update_download')return {path:'C:/Reborn/update.exe',bytes:38000000};
@@ -141,7 +147,7 @@ try{
  await page.getByRole('button',{name:'Check for updates',exact:true}).click();await page.getByRole('button',{name:'Download 3.0.1',exact:true}).click();await page.getByRole('button',{name:'Install and restart',exact:true}).waitFor();
  await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-settings-updates.png')});
  await page.evaluate(()=>window.__fixture.content_status={phase:'checking',note:'Checking for content updates…'});await page.getByRole('button',{name:'Refresh settings',exact:true}).click();await page.getByRole('progressbar',{name:'Checking for updates'}).waitFor();
- await page.locator('#update-policy').focus();await page.evaluate(()=>window.__fixture.content_status={phase:'up_to_date',note:'Your content is up to date.'});await page.getByText('Your content is up to date.',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Verify and repair'}).isEnabled(),true);assert.equal(await page.evaluate(()=>document.activeElement.id),'update-policy');
+ await page.locator('#update-policy').focus();await page.evaluate(()=>window.__fixture.content_status={phase:'up_to_date',note:'Your content is up to date.'});await page.getByText('Your content is up to date.',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Verify and repair'}).isEnabled(),true);assert.equal(await page.evaluate(()=>document.activeElement.id),'update-policy',JSON.stringify(await page.evaluate(()=>({active:document.activeElement.outerHTML,dialogs:[...document.querySelectorAll('dialog[open]')].map(n=>n.textContent)}))));
  await page.setViewportSize({width:800,height:600});
  for(const tab of ['Graphics','Updates']){await page.getByRole('button',{name:tab,exact:true}).click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-settings-'+tab.toLowerCase()+'-800.png')});}
  await page.setViewportSize({width:1280,height:800});await page.getByRole('button',{name:'Graphics',exact:true}).click();

@@ -165,6 +165,14 @@ fn held() -> std::sync::MutexGuard<'static, Held> {
     HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+pub(crate) fn close_state() -> &'static str {
+    match &held().phase {
+        Phase::Fetching => "downloading",
+        Phase::Installing => "installing",
+        _ => "idle",
+    }
+}
+
 fn mb(bytes: u64) -> u64 {
     (bytes + 1_048_575) / 1_048_576
 }

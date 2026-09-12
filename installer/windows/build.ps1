@@ -119,7 +119,7 @@ if (-not $Publisher -and -not $RuntimeOnly -and -not (Test-Path -LiteralPath $Bu
 
 $root = Resolve-Path "$PSScriptRoot\..\.."
 $AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "NFL Street Reborn" }
-# Three staging folders, one per kind of build. The full payload holds the
+# Separate staging folders for full, launcher, Publisher and runtime builds. The full payload holds the
 # runtime and the 687 MB import bundle, restaged from their sources on every
 # full build and left alone by a launcher-only build, which stages its few
 # files beside it. Before this, a launcher-only build would have wiped the
@@ -127,9 +127,20 @@ $AppNameForZip = if ($Channel -eq "beta") { "NFL Street Reborn Beta" } else { "N
 # Publisher gets a third folder of its own for the same reason turned up to
 # the obvious case: it is a different program entirely, so a Publisher build
 # must never be able to delete a launcher payload, or vice versa.
-$payloadName = if ($Publisher) { "target\installer-payload-publisher" } elseif ($LauncherOnly) { "target\installer-payload-launcher" } else { "target\installer-payload" }
+$payloadName = if ($Publisher) { "target\installer-payload-publisher" } elseif ($LauncherOnly) { "target\installer-payload-launcher" } elseif ($RuntimeOnly) { "target\installer-payload-runtime" } else { "target\installer-payload" }
 $payload = Join-Path $root $payloadName
 $dist = Join-Path $root "dist"
+
+if ($Runtime) {
+    foreach ($sourcePath in @($Runtime, $UserTemplate)) {
+        if (-not $sourcePath) { continue }
+        $sourceFull = [System.IO.Path]::GetFullPath($sourcePath).TrimEnd('\')
+        $payloadFull = [System.IO.Path]::GetFullPath($payload).TrimEnd('\')
+        if ($sourceFull -eq $payloadFull -or $sourceFull.StartsWith($payloadFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "A runtime source or User template is inside $payload, which this build restages. Use a source outside that folder. Nothing was built."
+        }
+    }
+}
 
 # A full build restages the import bundle from -GamePatch into the payload
 # it is about to delete. Pointed at the payload's own copy, it would delete
@@ -197,7 +208,7 @@ if ($Publisher) {
     Copy-Item (Join-Path $root "target\release\reborn-publisher.exe") $payload
     Copy-Item (Join-Path $root "target\release\rebornctl.exe") $payload
     Write-Host "Build: Reborn Publisher (admin tool). No runtime, Builder, textures, channel or import bundle."
-} else {
+} elseif (-not $RuntimeOnly) {
     # Skipped for -RuntimeOnly along with the build above: without it these
     # files may be absent or stale, and a runtime-only publish never ships them.
     if (-not $RuntimeOnly) {
@@ -388,12 +399,9 @@ if ($Runtime -and (Test-Path $Runtime)) {
         (Get-ChildItem $dest -Recurse -File).Count, ($rsize / 1MB))
 
     if ($RuntimeOnly) {
-        # Stage the runtime alone, for a runtime component publish. Nothing else is built.
-        $only = Join-Path $PSScriptRoot "..\..\target\installer-payload-runtime"
-        if (Test-Path $only) { Remove-Item -Recurse -Force $only }
-        New-Item -ItemType Directory (Join-Path $only "runtime") -Force | Out-Null
-        Copy-Item (Join-Path $payload "runtime\*") (Join-Path $only "runtime") -Recurse -Force
-        Write-Host "Runtime staged alone at $only\runtime"
+        # This build owns its own payload. Never wipe the full installer to
+        # produce a runtime component, and never make a second runtime copy.
+        Write-Host "Runtime staged alone at $dest"
         exit 0
     }
 } elseif ($LauncherOnly) {

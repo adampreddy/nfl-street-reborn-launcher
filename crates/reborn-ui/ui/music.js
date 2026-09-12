@@ -297,7 +297,7 @@ function discNow(){
   const toggle=el('input',{type:'checkbox',role:'switch','aria-label':'Custom soundtrack',checked:!!status?.enabled,disabled:locked()||!status?.image_ok,onchange:ev=>act('music_set_enabled',{on:ev.target.checked})});
   const nothingCustom=!slots().some(s=>s.source!=='original'||s.pending)&&status?.base?.kind!=='package';
   const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',class:'music-quiet',text:'Reset soundtrack',disabled:locked()||!status?.image_ok||nothingCustom,onclick:resetDialog}),el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',text:'Add songs…',disabled:locked()||!status?.image_ok,onclick:bulkDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
-  return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Original songs play. Your custom songs are kept.'}))),buttons);
+  return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Your game’s default soundtrack plays. Custom songs are kept.'}))),buttons);
 }
 function statusLine(){
   if(working()){
@@ -397,7 +397,7 @@ function discList(){
     // the row follows the mouse itself. Press anywhere on the row that is
     // not a control, move, and let go over the place it should take.
     row.addEventListener('pointerdown',ev=>{if(ev.button!==0||locked()||ev.target.closest('button,select,input,a'))return;beginRowDrag(ev,row,song.slot);});
-    row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')}),arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
+    row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')}),arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(song.duration_ms??o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
     body.append(row);
   }
   table.append(body);sec.append(table);return sec;
@@ -409,7 +409,7 @@ function draw(){
   if(status&&!status.image_ok&&slots().length)parts.push(el('p',{class:'music-error',role:'status',text:status.image_note||'Set up your game before editing its soundtrack.'}));
   const progress=statusLine();if(progress)parts.push(progress);
   parts.push(discList());const bar=queue();if(bar)parts.push(bar);
-  parts.push(el('p',{class:'music-footnote',text:'Custom music applies to offline play. Online play uses the original soundtrack.'}));
+  parts.push(el('p',{class:'music-footnote',text:'Custom music applies to offline play. Online uses the shared Reborn soundtrack.'}));
   const focus=document.activeElement?.getAttribute?.('aria-label');
   screen.replaceChildren(...parts);
   if(focus&&!editor?.open)Array.from(screen.querySelectorAll('[aria-label]')).find(n=>n.getAttribute('aria-label')===focus)?.focus({preventScroll:true});

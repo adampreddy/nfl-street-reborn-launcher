@@ -28,8 +28,10 @@ mod setup_tools;
 mod shell_tools;
 mod stats_view;
 mod dolphin_settings;
+mod live_settings;
 
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 /// The version this launcher believes it is: the one `build.ps1 -Version`
 /// stamped on the build, falling back to the crate version for a plain
@@ -4206,11 +4208,28 @@ struct UpdateDownloadView {
     sha256: Option<String>,
 }
 
+static UPDATE_DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UPDATE_READY: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
+static CLOSE_PROMPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct DownloadGuard;
+impl Drop for DownloadGuard {
+    fn drop(&mut self) { UPDATE_DOWNLOADING.store(false, std::sync::atomic::Ordering::SeqCst); }
+}
+#[tauri::command]
+fn update_activity() -> serde_json::Value {
+    serde_json::json!({"downloading":UPDATE_DOWNLOADING.load(std::sync::atomic::Ordering::SeqCst),
+        "ready":UPDATE_READY.lock().unwrap_or_else(|e|e.into_inner()).clone()})
+}
+
 /// Download the newer installer into the downloads folder and verify it.
 /// Nothing is installed. A hash mismatch deletes the file and is an error.
 #[tauri::command]
 async fn update_download(source: Option<String>) -> Result<UpdateDownloadView, String> {
+    if UPDATE_DOWNLOADING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("An update is already downloading.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
+        let _download=DownloadGuard;
         let p = Platform::detect();
         let source = update_source_for(&p, source.as_deref())?;
         let http = http_client();
@@ -4221,12 +4240,14 @@ async fn update_download(source: Option<String>) -> Result<UpdateDownloadView, S
         };
         let dir = p.data_dir(DataDir::Downloads).map_err(|e| e.to_string())?;
         let got = reborn_core::update::download(&http, asset, &dir).map_err(|e| e.to_string())?;
-        Ok(UpdateDownloadView {
+        let result=UpdateDownloadView {
             check: view,
             path: Some(got.path.display().to_string()),
             bytes: got.bytes,
             sha256: Some(got.sha256.as_str().to_string()),
-        })
+        };
+        *UPDATE_READY.lock().unwrap_or_else(|e|e.into_inner())=serde_json::to_value(&result).ok();
+        Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5409,6 +5430,30 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. }=event {
+                let content=content_updates::close_state();
+                let downloading=UPDATE_DOWNLOADING.load(std::sync::atomic::Ordering::SeqCst)||content=="downloading";
+                if downloading||content=="installing" {
+                    api.prevent_close();
+                    if CLOSE_PROMPT.swap(true,std::sync::atomic::Ordering::SeqCst){return;}
+                    let app=window.app_handle().clone();
+                    std::thread::spawn(move|| {
+                        if content=="installing" {
+                            rfd::MessageDialog::new().set_title("Finishing your update")
+                                .set_description("An update is being installed. Keep the launcher open until it finishes.")
+                                .set_buttons(rfd::MessageButtons::Ok).show();
+                        } else {
+                            let answer=rfd::MessageDialog::new().set_title("An update is downloading")
+                                .set_description("Closing the launcher will interrupt this download. Keep the launcher open to finish the update.")
+                                .set_buttons(rfd::MessageButtons::OkCancelCustom("Keep downloading".into(),"Close launcher".into())).show();
+                            if answer==rfd::MessageDialogResult::Custom("Close launcher".into()) && content_updates::close_state()!="installing" {app.exit(0);}
+                        }
+                        CLOSE_PROMPT.store(false,std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
+            }
+        })
         // One launcher window. A second start, most often an invite link
         // clicked while this one is open, hands its arguments here and
         // exits: the room code is kept and this window comes forward, and
@@ -5529,6 +5574,7 @@ fn main() {
             pick_paths,
             update_check,
             update_download,
+            update_activity,
             update_apply,
             open_runtime,
             diagnostic_bundle,

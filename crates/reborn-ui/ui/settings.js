@@ -5,7 +5,7 @@ import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, re
 const state = {};
 // What changed in each release, on the site. Opened in the browser.
 const PATCH_NOTES_URL = "https://nflstreetreborn.com/blog";
-const tabForHash = () => ({graphics:"Graphics",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1)] || "General";
+const tabForHash = () => ({general:"General",graphics:"Graphics",display:"Display",audio:"Audio",saves:"Saves",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1).toLowerCase()] || "General";
 let settingsTab=tabForHash();
 window.addEventListener?.("hashchange", () => { if (!busy) { settingsTab=tabForHash(); draw(); } });
 let problem = null;
@@ -262,7 +262,8 @@ const preferenceGroups={
 function dolphinBlock(){
  const group=el('section',{class:'preference-group'},el('h2',{text:settingsTab==='Saves'?'Memory cards & save data':settingsTab==='Graphics'?'Rendering':settingsTab}));
  if(!ok(state.dolphin)){group.append(el('p',{class:'partial',text:state.dolphin?.error||'Dolphin settings could not be read.'}));return el('div',{class:'settings-content'},group);}
- const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
+ const canEdit=key=>state.dolphin.editable!==false||(state.dolphin.live_editable||[]).includes(key);
+ const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:settingsTab==='Audio'&&(state.dolphin.live_editable||[]).length?'Volume and mute apply immediately, including during NetPlay. Other audio settings apply next time.':state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
  for(const [key,label,description,type,min,max] of preferenceGroups[settingsTab]||[]){
   if(key==='audio_latency'&&!['WASAPI (Exclusive Mode)','OpenAL'].includes(values.audio_backend))continue;
   if(values[key]===undefined){group.append(el('p',{class:'partial',text:label+' is unavailable. Refresh settings to try again.'}));continue;}
@@ -273,11 +274,11 @@ function dolphinBlock(){
   else if(type==='bool')control=el('input',{id,type:'checkbox',checked:String(values[key]).toLowerCase()==='true'});
   else if(type==='range')control=el('input',{id,type:'range',min,max,step:1,value:values[key]});
   else control=el('input',{id,type:'text',value:values[key]||'',placeholder:'Use default'});
-  control.disabled=busy||state.dolphin.editable===false;area.append(control);
+  control.dataset.preferenceKey=key;control.disabled=busy||!canEdit(key);area.append(control);
   const output=type==='range'?el('output',{for:id,text:values[key]+(key==='volume'?'%':' ms')}):null;if(output){area.append(output);control.addEventListener('input',()=>output.textContent=control.value+(key==='volume'?'%':' ms'));}
-  const save=async()=>{if(busy)return;const hadFocus=document.activeElement===control;document.getElementById("screen").setAttribute("aria-busy","true");const previous=values[key],value=type==='bool'?String(control.checked):control.value;busy=true;group.querySelectorAll('input,select,button').forEach(n=>n.disabled=true);status.textContent='Saving…';try{await call('dolphin_preference_set',{runtime:get('runtime'),key,value});values[key]=value;status.textContent=label+' saved.';}catch(e){if(type==='bool')control.checked=String(previous).toLowerCase()==='true';else control.value=previous||'';if(output)output.textContent=control.value+(key==='volume'?'%':' ms');status.textContent=reason(e);}finally{busy=false;document.getElementById('screen').removeAttribute('aria-busy');group.querySelectorAll('input,select,button').forEach(n=>n.disabled=state.dolphin.editable===false);if(hadFocus)control.focus({preventScroll:true});if(key==='audio_backend'){draw();document.getElementById(id)?.focus({preventScroll:true});}}};
+  const save=async()=>{if(busy)return;const hadFocus=document.activeElement===control;document.getElementById("screen").setAttribute("aria-busy","true");const previous=values[key],value=type==='bool'?String(control.checked):control.value;busy=true;group.querySelectorAll('input,select,button').forEach(n=>n.disabled=true);status.textContent='Saving…';try{await call('dolphin_preference_set',{runtime:get('runtime'),key,value});values[key]=value;status.textContent=label+' saved.';}catch(e){if(type==='bool')control.checked=String(previous).toLowerCase()==='true';else control.value=previous||'';if(output)output.textContent=control.value+(key==='volume'?'%':' ms');status.textContent=reason(e);}finally{busy=false;document.getElementById('screen').removeAttribute('aria-busy');group.querySelectorAll('input,select,button').forEach(n=>n.disabled=!canEdit(n.dataset.preferenceKey));if(hadFocus)control.focus({preventScroll:true});if(key==='audio_backend'){draw();document.getElementById(id)?.focus({preventScroll:true});}}};
   control.addEventListener('change',save);
-  if(type==='card'||type==='folder'){area.append(el('button',{type:'button',text:'Browse','aria-label':'Browse '+label,disabled:control.disabled,onclick:async()=>{try{const picked=await call('pick_path',{kind:type==='card'?'memory_card':'folder'});if(picked){control.value=picked;await save();}}catch(e){status.textContent=reason(e);}}}));}
+  if(type==='card'||type==='folder'){area.append(el('button',{type:'button',text:'Browse','data-preference-key':key,'aria-label':'Browse '+label,disabled:control.disabled,onclick:async()=>{try{const picked=await call('pick_path',{kind:type==='card'?'memory_card':'folder'});if(picked){control.value=picked;await save();}}catch(e){status.textContent=reason(e);}}}));}
   group.append(el('div',{class:'preference-row'},el('div',{class:'preference-description'},el('label',{for:id,text:label}),el('p',{text:description})),area));
  }
  const wrap=el('div',{class:'settings-content'},status,group);
@@ -289,7 +290,7 @@ function draw() {
  const screen=document.getElementById('screen'),parts=[];
  if(problem)parts.push(refusal(problem));
  const status=el('p',{class:'settings-status',role:'status'});
- parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened. Close it before changing settings here.';state.dolphin&&(state.dolphin.editable=false);screen.querySelectorAll(".settings-content input,.settings-content select,.settings-content button").forEach(n=>n.disabled=true);}catch(e){status.textContent=reason(e);}}})),status);
+ parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened.';await refresh();}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
  if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
  parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);

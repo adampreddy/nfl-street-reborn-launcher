@@ -363,23 +363,19 @@ function draw() {
     ["controls.html", "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"],
     ["settings.html#graphics", "Graphics", graphicsLabel()],
   ]) overview.append(el("a", { href }, el("span", { text: title }), el("strong", { text: value }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
-  // Windowed or fullscreen, right here: the same Dolphin setting the Display
-  // tab has, one click away from Play. Adam: "the option to check if the game
-  // opens in window mode vs full screen".
   const dolphin = ok(state.dolphin) ? state.dolphin : null;
-  const fullscreen = dolphin ? String(dolphin.values?.fullscreen ?? "True").toLowerCase() === "true" : null;
-  // Drawn exactly like its two neighbours (same element, same classes, same
-  // chevron), so it reads as one strip of three; only the click differs.
-  // Adam: "Display fullscreen vs windowed isn't blending in with the rest".
+  const fullscreen = String(dolphin?.values?.fullscreen ?? "True").toLowerCase() === "true";
   const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
-  overview.append(el("a", { href: "#", role: "button", class: displayLocked ? "is-locked" : "", "aria-disabled": String(displayLocked), tabindex: displayLocked ? "-1" : "0", title: dolphin?.editable === false ? (dolphin.readonly_reason || "Close Dolphin to change this.") : "Switch between fullscreen and a window", onclick: async (event) => {
-    event.preventDefault();
-    if (displayLocked || busy) return;
-    busy = true; draw();
-    try { await call("dolphin_preference_set", { runtime: get("runtime"), key: "fullscreen", value: String(!fullscreen) }); }
-    catch (e) { problem = reason(e); }
-    busy = false; await refresh();
-  } }, el("span", { text: "Display" }), el("strong", { text: fullscreen === null ? "Unknown" : fullscreen ? "Fullscreen" : "Windowed" }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
+  const display = el("input", {type:"checkbox", id:"play-fullscreen", checked:fullscreen, disabled:displayLocked});
+  display.addEventListener("change", async () => {
+    display.disabled = true;
+    try {
+      await call("dolphin_preference_set", {runtime:get("runtime"), key:"fullscreen", value:String(display.checked)});
+      dolphin.values.fullscreen = String(display.checked);
+    } catch (e) { display.checked = fullscreen; problem = reason(e); draw(); }
+    finally { display.disabled = displayLocked; }
+  });
+  overview.append(el("label", {class:"play-fullscreen", for:"play-fullscreen"}, display, el("span", {text:"Fullscreen"})));
   const dialog = detailsDialog();
   screen.replaceChildren(scene, controls, overview, dialog);
   if (wasOpen) { dialog.showModal(); if (filesOpen) dialog.querySelector("details").open = true; }

@@ -225,7 +225,7 @@ pub async fn controller_slots() -> Result<serde_json::Value,String> {
 pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:Option<String>) -> Result<serde_json::Value,String> {
     tauri::async_runtime::spawn_blocking(move|| {
         if !(1..=4).contains(&player){return Err("Choose Player 1 through Player 4.".into());}
-        let _guard=LaunchGuard::acquire()?;let p=Platform::detect();
+        let _guard=if session_active(){None}else{Some(LaunchGuard::acquire()?)};let p=Platform::detect();
         let scan=runtime.as_deref().and_then(|exe|reborn_core::devices::scan_via_runtime(&p,Path::new(exe),&p.paths.data_root().ok()?.join("cache")).ok()).unwrap_or_else(DeviceScanner::scan);
         let mut pads=scan.playable_pads();
         if device.as_ref().is_some_and(|d|!pads.iter().any(|p|p.device_string()==*d)){return Err("That controller disconnected. Scan again before assigning it.".into());}
@@ -235,7 +235,10 @@ pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:
         let mut slots=saved.controller_slots.unwrap_or_else(||std::array::from_fn(|i|pads.get(i).map(|p|p.device_string())));
         if let Some(device)=&device {for slot in &mut slots {if slot.as_ref()==Some(device){*slot=None;}}}
         slots[usize::from(player-1)]=device;
-        saved.primary_controller=slots[0].clone();saved.controller_slots=Some(slots.clone());saved.save(&file).map_err(|e|e.to_string())?;
+        saved.primary_controller=slots[0].clone();saved.controller_slots=Some(slots.clone());
+        let profiles=reborn_core::controller_profiles::load(&reborn_core::controller_profiles::path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
+        saved.save(&file).map_err(|e|e.to_string())?;
         Ok(serde_json::json!({"slots":slots}))
     }).await.map_err(|e|e.to_string())?
 }
@@ -252,7 +255,7 @@ pub async fn setup_controller_mapping(runtime: Option<String>, device: String) -
 #[tauri::command]
 pub async fn setup_save_mapping(runtime: Option<String>, device: String, bindings: BTreeMap<String,String>, reset: bool) -> Result<(),String> {
     tauri::async_runtime::spawn_blocking(move|| {
-        let _guard=LaunchGuard::acquire()?;
+        let _guard=if session_active(){None}else{Some(LaunchGuard::acquire()?)};
         let mut profile=controller(runtime.as_deref(),&device)?;
         if reset { profile.reset(&[]); }
         else {
@@ -266,6 +269,11 @@ pub async fn setup_save_mapping(runtime: Option<String>, device: String, binding
         }
         let p=Platform::detect();
         let file=reborn_core::controller_profiles::path(&p).map_err(|e|e.to_string())?;
+        let saved=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let mut profiles=reborn_core::controller_profiles::load(&file).map_err(|e|e.to_string())?;
+        profiles.retain(|p|p.identity.profile_key()!=profile.identity.profile_key());profiles.push(profile.clone());
+        let scan=runtime.as_deref().and_then(|exe|reborn_core::devices::scan_via_runtime(&p,Path::new(exe),&p.paths.data_root().ok()?.join("cache")).ok()).unwrap_or_else(DeviceScanner::scan);
+        crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
         reborn_core::controller_profiles::save(&file,profile).map_err(|e|e.to_string())
     }).await.map_err(|e|e.to_string())?
 }

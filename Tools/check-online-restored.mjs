@@ -16,6 +16,10 @@ Object.assign(fixture, {
  session_active: false,
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
+ update_check: {state:'current',current:'3.0.0'},
+ update_activity: {downloading:false,ready:null},
+ content_status: {phase:'up_to_date',note:'Current'},
+ content_check: {phase:'up_to_date',note:'Current'},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'soundtrack-classic',version:'1.0',name:'Classic soundtrack',active:false,files:12,bytes:18000000},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
@@ -50,7 +54,7 @@ await context.addInitScript(data=>{
   if(cmd==='dolphin_preference_set'){const current=JSON.parse(localStorage.getItem('qa:dolphin')||'{}');current[args.key]=args.value;localStorage.setItem('qa:dolphin',JSON.stringify(current));return;}
   if(cmd==='open_runtime'||cmd==='dolphin_saves_folder')return {started:true};
   if(cmd==='update_policy_set'){data.update_policy={automatic:args.automatic,source:'settings'};return data.update_policy;}
-  if(cmd==='update_check')return {state:'available',latest:'3.0.1',note:'A new version is available.',notes:'Improved controller support.'};
+  if(cmd==='update_check')return data.update_check;
   if(cmd==='update_download')return {path:'C:/Reborn/update.exe',bytes:38000000};
   if(cmd==='netplay_open'){data.session_active=true;data.netplay_status={phase:'lobby',active:true,host:args.mode==='host',connection:args.connection,port:args.port,code:args.connection==='traversal'?'ABC12345':'',can_start:args.mode==='host',players:[{id:1,name:'Player One',status:'OK',ping:'0 ms'}],ports:[1,0,0,0]};return {started:true};}
   if(cmd==='netplay_status')return data.netplay_status||{phase:'idle',active:false};

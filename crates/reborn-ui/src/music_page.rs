@@ -176,18 +176,21 @@ pub struct PackPreviewView {
 
 /// The disc's own 21 songs, read once per pristine image and kept for the
 /// life of the process (music_status is polled every second during a build).
-static STOCK: Mutex<Option<(String, Vec<apply::StockSong>)>> = Mutex::new(None);
+static STOCK: Mutex<Vec<(String, Vec<apply::StockSong>)>> = Mutex::new(Vec::new());
 
 fn stock_songs(root: &Path) -> Option<Vec<apply::StockSong>> {
     let pristine = reborn_core::game_image::find_pristine(root)?;
+    songs_from_image(&pristine.path)
+}
+
+fn songs_from_image(path: &Path) -> Option<Vec<apply::StockSong>> {
+    let metadata = path.metadata().ok()?;
+    let fingerprint = format!("{}:{}:{:?}", path.display(), metadata.len(), metadata.modified().ok()?);
     let mut cache = STOCK.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((sha, songs)) = cache.as_ref() {
-        if *sha == pristine.folder_sha256 {
-            return Some(songs.clone());
-        }
-    }
-    let songs = apply::stock_songs(&pristine.path).ok()?;
-    *cache = Some((pristine.folder_sha256.clone(), songs.clone()));
+    if let Some((_, songs)) = cache.iter().find(|(key,_)|key==&fingerprint) {return Some(songs.clone());}
+    let songs = apply::stock_songs(path).ok()?;
+    if cache.len()>=4 {cache.remove(0);}
+    cache.push((fingerprint, songs.clone()));
     Some(songs)
 }
 
@@ -220,11 +223,17 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
         Base::Package { id, .. } => BaseView { kind: "package", name: Some(base_pack.as_ref().map(|p| p.manifest.name.clone()).unwrap_or_else(|| id.clone())) },
     };
     let stock = stock_songs(root);
+    // The playing disc may already contain the new Reborn soundtrack while
+    // the import used as a rebuild source still has the older track list.
+    // Read the actual selected game, without hashing or copying the ISO.
+    let settings=reborn_core::settings::Settings::load(&root.join(reborn_core::DataDir::Config.relative()).join("settings.json")).ok();
+    let booted=settings.as_ref().and_then(|s|s.game_path.clone()).unwrap_or_else(||reborn_core::game_image::booted_path(root));
+    let playing=songs_from_image(&booted);
     let mut slots = Vec::with_capacity(21);
     for slot in Slot::all() {
         let n = slot.get();
         let original = stock.as_ref().and_then(|s| s.get(slot.index())).map(|o| OriginalView { title: o.title.clone(), artist: o.artist.clone(), album: o.album.clone(), duration_ms: o.duration_ms });
-        let (title, artist, album, duration_ms, source, source_name) = match &applied[&slot] {
+        let (mut title, mut artist, mut album, mut duration_ms, mut source, mut source_name) = match &applied[&slot] {
             // The disc's own song, shown under the player's name when they
             // renamed it: the audio is the disc's, the banner is theirs.
             Effective::Stock { text } => match (&original, text) {
@@ -246,6 +255,11 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
                 (title.clone(), artist.clone(), album.clone(), duration, source, name)
             }
         };
+        if (!st.enabled || matches!(&applied[&slot],Effective::Stock { text:None })) && playing.is_some() {
+            if let Some(song)=playing.as_ref().and_then(|songs|songs.get(slot.index())) {
+                title=song.title.clone();artist=song.artist.clone();album=song.album.clone();duration_ms=Some(song.duration_ms);source="original";source_name=None;
+            }
+        }
         let pending = st.pending.get(&n).map(|e| PendingView {
             kind: match &e.source {
                 Source::Stock => "original",
@@ -276,7 +290,7 @@ fn view(root: &Path) -> Result<MusicStatusView, String> {
     Ok(MusicStatusView {
         phase: h.phase.name(),
         progress,
-        enabled: st.enabled,
+        enabled: st.enabled && (!Soundtrack::is_all_stock(&applied) || st.has_pending()),
         base,
         slots,
         pending_count: st.pending.len(),
@@ -732,6 +746,10 @@ pub async fn music_apply(confirm: bool) -> Result<MusicStatusView, String> {
     crate::confirmed(confirm, "music_apply", "rebuild the offline game image with your soundtrack")?;
     refuse_if_busy()?;
     let root = data_root()?;
+    // Applying deliberately selected songs is the opt-in. Merely opening
+    // Music never enables the custom soundtrack.
+    let staged=Soundtrack::load(&root).map_err(|e|e.to_string())?;
+    if staged.has_pending() {apply::set_enabled(&root,true).map_err(|e|e.to_string())?;}
     start_rebuild(root)
 }
 
@@ -782,6 +800,6 @@ mod tests {
         assert!(v.slots.iter().all(|s| s.source == "original" && s.pending.is_none()));
         assert!(!v.image_ok);
         assert!(v.image_note.contains("Import the game"));
-        assert!(v.enabled);
+        assert!(!v.enabled, "Opening Music must not enable a custom soundtrack");
     }
 }
