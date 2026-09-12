@@ -448,7 +448,10 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         let user=data.join("dolphin-users").join(format!("migrated-{folder}"));
         let mut copied=0;
         report("Copying saves and settings…",None,0);
-        let bytes=reborn_core::migration::copy_tree_with_progress(&root.join("User"),&user,&mut |n|{copied+=n;report("Copying saves and settings…",None,copied);}).map_err(|e|e.to_string())?;
+        // Saves and settings, not the 2 GB texture pack: the installer ships
+        // the pack, the composed folder is built from it at every launch, and
+        // the 2.1 pack stays where it is, intact.
+        let bytes=reborn_core::migration::copy_tree_excluding(&root.join("User"),&user,&["Load/Textures"],&mut |n|{copied+=n;report("Copying saves and settings…",None,copied);}).map_err(|e|e.to_string())?;
         rebase_user_paths(&root,&user)?;
         let pristine=import_existing_progress(&p,&source,&report)?;
         report("Setting up your game…",Some(96),copied);
@@ -480,24 +483,7 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         std::fs::write(data.join("config/migrated-graphics.json"),serde_json::to_vec_pretty(&options).unwrap()).map_err(|e|e.to_string())?;
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
-        let textures=user.join("Load/Textures/GN7E69");
-        if textures.is_dir() && std::fs::read_dir(&textures).map_err(|e|e.to_string())?.next().is_some(){
-            let base=data.join("migrated-textures").join(folder.to_string());
-            reborn_core::migration::copy_tree_with_progress(&textures,&base,&mut |n|{copied+=n;report("Importing textures…",Some(95),copied);}).map_err(|e|e.to_string())?;
-            // Managed button art starts from the release's GameCube baseline,
-            // so selecting GameCube can also undo an old Xbox/PS texture pack.
-            let shipped=runtime.parent().unwrap().parent().unwrap().join("content");
-            // Whichever version of the Xbox pack shipped. Named 1.0.0 here while
-            // 1.1.0 shipped, this reset silently did nothing.
-            let packs=shipped.join("prompt-packages/jsgme.xbox-controls");
-            let prompts=std::fs::read_dir(&packs).ok().and_then(|d|d.flatten().map(|e|e.path()).filter(|v|v.is_dir()).max()).map(|v|v.join("files/GN7E69")).unwrap_or_else(||packs.join("1.0.0/files/GN7E69"));
-            if let Ok(entries)=std::fs::read_dir(prompts){for entry in entries.flatten(){
-                if !entry.path().is_file(){continue;}
-                let original=shipped.join("textures/GN7E69").join(entry.file_name());
-                if original.is_file(){std::fs::copy(original,base.join(entry.file_name())).map_err(|e|e.to_string())?;}
-            }}
-            saved.migrated_texture_root=Some(base);
-        }saved.save(&file).map_err(|e|e.to_string())?;
+        saved.save(&file).map_err(|e|e.to_string())?;
         // Only recognizable old screenshots are moved; other game files and textures remain untouched.
         if let Ok(entries)=std::fs::read_dir(&root){for e in entries.flatten(){let source=e.path();let name=e.file_name().to_string_lossy().into_owned();if source.is_file()&&name.starts_with("NFL Street Reborn Dolphin ")&&source.extension().is_some_and(|e|["png","jpg","jpeg","bmp"].iter().any(|x|e.eq_ignore_ascii_case(x))){let dest=root.join("Old Screenshots");std::fs::create_dir_all(&dest).map_err(|e|e.to_string())?;let mut target=dest.join(&name);let mut suffix=1;
             while target.exists(){target=dest.join(format!("{} ({suffix}).{}",source.file_stem().unwrap().to_string_lossy(),source.extension().unwrap().to_string_lossy()));suffix+=1;}

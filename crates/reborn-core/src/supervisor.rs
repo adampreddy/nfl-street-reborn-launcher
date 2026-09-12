@@ -224,10 +224,9 @@ const LOCK_FILE: &str = "launcher.lock";
 /// and replaced the whole thing with "Something unexpected happened. Try
 /// again." The folder is in the log; the player gets the part they can act on.
 pub const OLDER_INSTALL_IN_THE_WAY: &str =
-    "This folder already holds an older NFL Street Reborn installation, so the \
-     launcher will not put its own files there: doing that could delete mods that \
-     are already installed. Choose a different folder, and bring the older \
-     installation across from inside the launcher instead.";
+    "This folder still holds files from an older NFL Street Reborn that could \
+     not be moved out of the way. Close the older game and any of its tools, \
+     then open the launcher again.";
 
 /// How long a launch waits for a lock before it believes the refusal.
 ///
@@ -327,15 +326,16 @@ impl Supervisor {
         run_dir: &Path,
         clock: C,
     ) -> Result<Startup> {
-        // Refuse to run inside a 2.1 install.
+        // Refuse to run inside a 2.1 install that is still in the way.
         //
-        // The data root used to be exactly that folder, which meant the
-        // launcher's `mods/` was the player's JSGME `MODS/`, because Windows
-        // paths are case insensitive. `mods/staging` and `mods/active` are
-        // classed derived, so a cache purge could have deleted files out of a
-        // real mod library. The default path is fixed, but the default is not
-        // the only way to get here, so the dangerous case is refused rather
-        // than merely avoided.
+        // The stable data root IS 2.1's folder, and `crate::layout` moves a
+        // 2.1 install found there into `Reborn 2.1` before this lock is
+        // taken. When that could not finish (the old game still running
+        // holds a file), the launcher's `mods/` would be the player's JSGME
+        // `MODS/`, because Windows paths are case insensitive, and
+        // `mods/staging` is classed derived, so a cache purge could delete
+        // files out of a real mod library. So the case is refused, with the
+        // way forward: close the old game and start again.
         let data_root = run_dir.parent().unwrap_or(run_dir);
         if crate::migration::LegacyInstall::detect(data_root).is_some() {
             // Which folder, to the log. The player is told what is wrong and
@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(ended["end"]["detail"], "boom");
     }
     /// The launcher must not adopt a 2.1 install as its own data root. Doing so
-    /// put `mods/staging` and `mods/active`, both purgeable, inside the
+    /// put `mods/staging`, which is purgeable, inside the
     /// player's JSGME mod library.
     ///
     /// The refusal is one of the two in this crate whose wording was already
@@ -802,7 +802,7 @@ mod tests {
         );
         crate::player_sentence::assert_player_safe(shown);
         assert!(
-            shown.contains("Choose a different folder"),
+            shown.contains("Close the older game"),
             "no way forward given: {shown}"
         );
         assert!(

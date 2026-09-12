@@ -183,6 +183,31 @@ impl IniDocument {
         report
     }
 
+    /// Take one key out of one section. Everything else, comments and blank
+    /// lines included, stays exactly as it was. Returns whether a pair was
+    /// removed.
+    pub fn remove(&mut self, section: &str, key: &str) -> bool {
+        let mut current: Option<String> = None;
+        let mut index = None;
+        for (i, line) in self.lines.iter().enumerate() {
+            match line {
+                Line::Section { name, .. } => current = Some(name.clone()),
+                Line::Pair { key: k, .. } if current.as_deref() == Some(section) && k == key => {
+                    index = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        match index {
+            Some(i) => {
+                self.lines.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn set_existing(&mut self, section: &str, key: &str, value: &str) -> SetResult {
         let mut current: Option<String> = None;
         for line in self.lines.iter_mut() {
@@ -298,6 +323,18 @@ enum SetResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_takes_one_key_out_and_leaves_everything_else_byte_for_byte() {
+        let text = "[General]\r\nLoadPath = User/Load///\r\nGDBPort = -1\r\n[Core]\r\nSlotA = 255\r\n";
+        let mut doc = IniDocument::parse(text);
+        assert!(doc.remove("General", "LoadPath"));
+        assert!(!doc.remove("General", "LoadPath"), "gone already");
+        assert!(!doc.remove("Nope", "GDBPort"), "wrong section");
+        assert_eq!(doc.render(), "[General]\r\nGDBPort = -1\r\n[Core]\r\nSlotA = 255\r\n");
+        let untouched = IniDocument::parse(text);
+        assert_eq!(untouched.render(), text);
+    }
 
     fn overlay(items: &[(&str, &str, &str)]) -> Overlay {
         let mut o = Overlay::new();

@@ -110,6 +110,12 @@ out of the middle of your mod library. Launcher data now lives in
 `%APPDATA%\NFL Street Reborn Launcher`, and the supervisor refuses to start in a
 folder that looks like a 2.1 install.
 
+**2026-09-12.** The data root is `%APPDATA%\NFL Street Reborn` again, safely:
+before the supervisor lock, `layout::prepare_data_root` moves every 2.1 entry
+(JSGME's `MODS` entries included) into `Reborn 2.1\` by rename, and the
+supervisor refuses only a root where that could not finish. The composed
+texture tree lives in each Dolphin user folder now, so `mods/active` is gone.
+
 **Migration was copying something irreplaceable into a purgeable directory.**
 Screenshots were marked irreplaceable and copied to `cache`. A purge would have
 deleted exactly what migration had just rescued.

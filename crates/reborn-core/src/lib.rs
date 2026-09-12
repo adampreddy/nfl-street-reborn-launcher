@@ -64,6 +64,7 @@ pub mod identity;
 pub mod ini;
 pub mod inventory;
 pub mod jsgme;
+pub mod layout;
 pub mod library;
 pub mod logging;
 pub mod manifest;
@@ -87,6 +88,7 @@ pub mod signing;
 pub mod stats;
 pub mod supervisor;
 pub mod update;
+pub mod user_template;
 pub mod xbox;
 
 pub use platform::{
@@ -701,51 +703,6 @@ mod tests {
         assert!(
             data.to_string_lossy().contains("NFL Street Reborn"),
             "{} should be under a product-named directory",
-            data.display()
-        );
-    }
-
-    /// The 2.1 build owns `%APPDATA%\NFL Street Reborn` and fills it with a
-    /// live Dolphin user tree, including a JSGME `MODS` folder full of the
-    /// player's mods.
-    ///
-    /// The launcher must not share it. Windows is case insensitive, so our
-    /// `mods/` would be their `MODS/`, and `mods/staging` and `mods/active`
-    /// are classed derived, which means a cache purge could delete files out
-    /// of the middle of somebody's real mod library.
-    ///
-    /// Found by running the CLI against a real machine, not by a test.
-    #[test]
-    fn the_data_root_is_not_the_legacy_install_folder() {
-        let p = Platform::detect();
-        let data = p.paths.data_root().expect("data root");
-        let leaf = data
-            .file_name()
-            .expect("data root has a name")
-            .to_string_lossy()
-            .to_lowercase();
-        assert_ne!(
-            leaf, "nfl street reborn",
-            "the data root is 2.1's own folder; see PRODUCT_DATA in platform::imp"
-        );
-    }
-
-    /// A data root must never be a 2.1 install. Sharing one means the
-    /// launcher's `mods/` is the player's JSGME `MODS/`, because Windows paths
-    /// are case insensitive, and `mods/staging` and `mods/active` are classed
-    /// derived, which means a cache purge can delete files out of the middle of
-    /// a real mod library.
-    ///
-    /// Found by running the CLI on a real machine. The shipped data root was
-    /// exactly that folder.
-    #[test]
-    fn the_real_data_root_is_not_a_legacy_install() {
-        let p = Platform::detect();
-        let data = p.paths.data_root().expect("data root");
-        assert!(
-            crate::migration::LegacyInstall::detect(&data).is_none(),
-            "the data root {} is a 2.1 install; the launcher would write into \
-             the player's live Dolphin tree",
             data.display()
         );
     }

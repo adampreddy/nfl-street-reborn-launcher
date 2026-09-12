@@ -574,6 +574,13 @@ pub trait Paths: Send + Sync {
     /// Per-platform cache, safe to purge at any time.
     fn cache_root(&self) -> Result<PathBuf>;
 
+    /// The data root a build before 2026-09-12 used (`... Launcher[ Beta]`),
+    /// so a first start under the new name can adopt what is there. `None`
+    /// where no such folder was ever used (test fakes).
+    fn previous_data_root(&self) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
+
     /// The executable suffix, empty on Unix.
     fn exe_suffix(&self) -> &'static str;
 
@@ -607,7 +614,6 @@ pub enum DataDir {
     Runtime,
     ModsStaging,
     ModsPackages,
-    ModsActive,
     MusicSources,
     MusicPacks,
     /// Memory cards. Never deleted without a separate explicit confirmation.
@@ -639,7 +645,6 @@ impl DataDir {
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
-            DataDir::ModsActive => "mods/active",
             DataDir::MusicSources => "music/sources",
             DataDir::MusicPacks => "music/packs",
             DataDir::Saves => "saves",
@@ -668,7 +673,6 @@ impl DataDir {
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,
-        DataDir::ModsActive,
         DataDir::MusicSources,
         DataDir::MusicPacks,
         DataDir::Saves,
@@ -707,7 +711,6 @@ impl DataDir {
                 | DataDir::Downloads
                 | DataDir::Staging
                 | DataDir::LibraryWork
-                | DataDir::ModsActive
                 | DataDir::ModsStaging
         )
     }

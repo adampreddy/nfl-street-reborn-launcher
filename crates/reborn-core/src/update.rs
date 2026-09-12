@@ -340,6 +340,20 @@ pub fn dir_switch(root: &Path, local_programs: Option<&Path>) -> Option<std::ffi
             return None;
         }
     }
+    // A launcher-era data root (`... Launcher[ Beta]\app`, before
+    // 2026-09-12) is retired the same way: not restated, so the installer's
+    // default puts the program in the new root's `app`, removes this folder,
+    // and the launcher adopts the data beside it at its first start. Restated,
+    // the installer would refuse it as an unsafe folder and the update would
+    // stop there.
+    let leaf_is_app = root.file_name().is_some_and(|n| n.eq_ignore_ascii_case("app"));
+    let parent_retired = root.parent().and_then(Path::file_name).is_some_and(|n| {
+        let n = n.to_string_lossy().to_lowercase();
+        n == "nfl street reborn launcher" || n == "nfl street reborn launcher beta"
+    });
+    if leaf_is_app && parent_retired {
+        return None;
+    }
     Some(format!("/DIR={}", root.display()).into())
 }
 
@@ -354,7 +368,7 @@ mod tests {
     #[test]
     fn the_installer_is_told_the_folder_except_the_retired_programs_default() {
         let programs = Path::new(r"C:\Users\Adam\AppData\Local\Programs");
-        let app = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher Beta\app");
+        let app = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Beta\app");
         let custom = Path::new(r"D:\Games\Reborn");
         let old = Path::new(r"C:\Users\Adam\AppData\Local\Programs\NFL Street Reborn Beta");
         assert_eq!(dir_switch(app, Some(programs)).unwrap().to_string_lossy(), format!("/DIR={}", app.display()));
@@ -364,6 +378,15 @@ mod tests {
         assert!(dir_switch(old, Some(programs)).is_none());
         // Without a known Programs folder the root is always restated.
         assert!(dir_switch(old, None).is_some());
+        // A launcher running from a Launcher-era data root (before
+        // 2026-09-12) says nothing too: the installer's default is the new
+        // root's `app`, and the launcher adopts the old root's data at its
+        // first start. Restated, the installer would refuse the folder.
+        let launcher_era = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher Beta\app");
+        assert!(dir_switch(launcher_era, Some(programs)).is_none());
+        assert!(dir_switch(launcher_era, None).is_none());
+        let launcher_era_stable = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher\app");
+        assert!(dir_switch(launcher_era_stable, None).is_none());
     }
 
     fn manifest(version: &str, sha: &str) -> String {

@@ -27,8 +27,10 @@ try {
     $webviewKey = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
     Check 'WebView2 is installed' ((Test-Path "HKCU:\$webviewKey") -or (Test-Path "HKLM:\Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"))
     $old = Join-Path $env:APPDATA 'NFL Street Reborn'
-    $data = Join-Path $env:APPDATA 'NFL Street Reborn Launcher'
-    $betaData = Join-Path $env:APPDATA 'NFL Street Reborn Launcher Beta'
+    # Since 2026-09-12 the stable data root IS the 2.1 folder (the launcher
+    # tucks the 2.1 files into `Reborn 2.1` inside it at first start).
+    $data = $old
+    $betaData = Join-Path $env:APPDATA 'NFL Street Reborn Beta'
     $card = Join-Path $old 'User\GC\MemoryCardA.USA.raw'
     New-Item -ItemType Directory -Path (Split-Path $card),$data,$betaData -Force | Out-Null
     Set-Content -LiteralPath $card 'existing player save fixture' -NoNewline

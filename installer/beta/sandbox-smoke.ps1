@@ -317,7 +317,7 @@ try {
         $launcherExe = Join-Path $stableDir "reborn-launcher.exe"
 
         $wanted = @(
-            @{ File = "NFL Street Reborn Launcher.lnk"; Args = "";         What = "the launcher" }
+            @{ File = "NFL Street Reborn.lnk"; Args = "";                  What = "the launcher" }
             @{ File = "Play NFL Street Reborn.lnk";     Args = "--play";   What = "the game directly" }
             @{ File = "NFL Street Reborn files.lnk";    Args = "--folder"; What = "the install folder" }
         )
@@ -351,7 +351,7 @@ try {
         if (Test-Path $cli) {
             $status = Run-Ours $cli "status" "status-stable.txt"
             Check "stable rebornctl runs at all on a clean Windows" (-not [string]::IsNullOrWhiteSpace($status)) "it produced nothing"
-            Check "stable rebornctl status names the stable channel and data root" ($status -match "Channel\s+stable" -and $status -match "Data root\s+.*NFL Street Reborn Launcher\s" -and $status -notmatch "Launcher Beta")
+            Check "stable rebornctl status names the stable channel and data root" ($status -match "Channel\s+stable" -and $status -match "Data root\s+.*NFL Street Reborn\s" -and $status -notmatch "Reborn Beta")
             Check "stable rebornctl status confirms the data root is outside the install root" ($status -match "uninstall cannot eat saves")
         }
         # The launcher itself. Every check above is about files on disk, and
@@ -460,7 +460,7 @@ try {
             $status = Run-Ours $cli "status" "status-beta.txt"
             Check "beta rebornctl runs at all on a clean Windows" (-not [string]::IsNullOrWhiteSpace($status)) "it produced nothing"
             Check "beta rebornctl status names the beta channel, from the marker file" ($status -match "Channel\s+beta channel, from the channel file")
-            Check "beta rebornctl status reports the beta data root" ($status -match "Data root\s+.*NFL Street Reborn Launcher Beta")
+            Check "beta rebornctl status reports the beta data root" ($status -match "Data root\s+.*NFL Street Reborn Beta")
         }
         Check "the memory card survived the beta too" ((Test-Path $card) -and ((Get-FileHash $card -Algorithm SHA256).Hash -eq $cardHash))
     }

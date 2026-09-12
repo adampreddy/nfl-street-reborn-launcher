@@ -81,26 +81,17 @@ impl RealPaths {
 /// between them sees the same folder.
 const PRODUCT: &str = "NFL Street Reborn";
 
-/// The directory name for the launcher's own data.
+/// The data root is `PRODUCT` plus the channel suffix, in the platform's
+/// per-user data folder. On Windows that is `%APPDATA%\NFL Street Reborn`,
+/// which the 2.1 build also used: a 2.1 install found there is moved into a
+/// `Reborn 2.1` subfolder by `crate::layout` before the launcher writes
+/// anything, so the launcher's `mods` can never be JSGME's `MODS` (Windows
+/// paths are case insensitive, and `mods/staging` is purgeable).
 ///
-/// Deliberately NOT `PRODUCT`. The shipped 2.1 build already owns
-/// `%APPDATA%\NFL Street Reborn`, and it is a live Dolphin user tree: `User`,
-/// `Games`, `Sys`, screenshots, and a JSGME `MODS` folder holding the player's
-/// installed mods.
-///
-/// Sharing it looked reasonable and is not. Windows paths are case insensitive,
-/// so the launcher's `mods/` IS that `MODS/`, and `mods/staging` and
-/// `mods/active` are classed derived, which means purgeable. A cache purge
-/// would delete files out of the middle of the player's real mod library.
-///
-/// Confirmed on a real install rather than reasoned about: listing `mods` in
-/// that folder returns `!BACKUP`, `!INSTLOGS`, `Aqua Football`, and the rest of
-/// the JSGME tree.
-///
-/// Keeping the names apart also makes migration honest. The 2.1 folder is the
-/// source and this is the destination, and a copy whose source and destination
-/// are the same directory is not a migration.
-const PRODUCT_DATA: &str = "NFL Street Reborn Launcher";
+/// Builds before 2026-09-12 used `NFL Street Reborn Launcher[ Beta]`; see
+/// `previous_data_root`, which names that folder so `crate::layout` can adopt
+/// what is in it.
+const PREVIOUS_DATA_SUFFIX: &str = " Launcher";
 
 impl RealPaths {
     /// The directory of `exe` when it is an install: the launcher itself
@@ -156,31 +147,37 @@ impl Paths for RealPaths {
     fn data_root(&self) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            // Not %APPDATA%\NFL Street Reborn: that is 2.1's live user tree.
-            // See PRODUCT_DATA.
+            // %APPDATA%\NFL Street Reborn. A 2.1 install found there is
+            // tucked into `Reborn 2.1` at start; see crate::layout.
             let base = RealPaths::env_path("APPDATA")
                 .ok_or(Error::NoHomeDirectory)
                 .or_else(|_| RealPaths::home().map(|h| h.join("AppData").join("Roaming")))?;
-            Ok(base.join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
+            Ok(base.join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "macos")]
         {
             Ok(RealPaths::home()?
                 .join("Library")
                 .join("Application Support")
-                .join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
+                .join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(target_os = "linux")]
         {
             let base = RealPaths::env_path("XDG_DATA_HOME")
                 .map(Ok)
                 .unwrap_or_else(|| RealPaths::home().map(|h| h.join(".local").join("share")))?;
-            Ok(base.join(format!("{PRODUCT_DATA}{}", self.channel.suffix())))
+            Ok(base.join(format!("{PRODUCT}{}", self.channel.suffix())))
         }
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             not_implemented("data_root")
         }
+    }
+
+    fn previous_data_root(&self) -> Result<Option<PathBuf>> {
+        let data = self.data_root()?;
+        let Some(parent) = data.parent() else { return Ok(None) };
+        Ok(Some(parent.join(format!("{PRODUCT}{PREVIOUS_DATA_SUFFIX}{}", self.channel.suffix()))))
     }
 
     fn cache_root(&self) -> Result<PathBuf> {
@@ -625,11 +622,14 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 
 /// The service name every launcher credential is filed under.
 ///
-/// Reuses [`PRODUCT_DATA`] so the entry names the launcher and not the game. On
+/// Names the launcher and not the game. On
 /// Windows the credential shows up in Credential Manager as
 /// `{account}.NFL Street Reborn Launcher`, a name the user can find and delete
 /// without us. Confirmed with `cmdkey /list` after a write.
-const CREDENTIAL_SERVICE: &str = PRODUCT_DATA;
+// The vault entry name every stored credential was written under. It is a
+// contract with what is already in Windows Credential Manager on every PC,
+// so it keeps the old data-root name on purpose.
+const CREDENTIAL_SERVICE: &str = "NFL Street Reborn Launcher";
 
 /// What the platform's store is called.
 ///
@@ -1279,6 +1279,26 @@ mod tests {
         // This test binary has no launcher beside it, so the channel path
         // still answers and the roots below stay apart.
         assert!(RealPaths::install_dir_holding(&std::env::current_exe().unwrap()).is_none());
+    }
+
+    #[test]
+    fn the_data_root_is_the_product_name_in_the_platform_data_folder() {
+        let stable = RealPaths { channel: Channel::Stable }.data_root().unwrap();
+        let beta = RealPaths { channel: Channel::Beta }.data_root().unwrap();
+        assert_eq!(stable.file_name().unwrap().to_string_lossy(), "NFL Street Reborn");
+        assert_eq!(beta.file_name().unwrap().to_string_lossy(), "NFL Street Reborn Beta");
+        assert_eq!(stable.parent(), beta.parent());
+    }
+
+    #[test]
+    fn the_previous_data_root_is_the_launcher_era_folder_beside_the_new_one() {
+        for (channel, name) in [(Channel::Stable, "NFL Street Reborn Launcher"), (Channel::Beta, "NFL Street Reborn Launcher Beta")] {
+            let paths = RealPaths { channel };
+            let data = paths.data_root().unwrap();
+            let previous = paths.previous_data_root().unwrap().expect("a previous root is always named");
+            assert_eq!(previous.file_name().unwrap().to_string_lossy(), name);
+            assert_eq!(previous.parent(), data.parent());
+        }
     }
 
     #[test]

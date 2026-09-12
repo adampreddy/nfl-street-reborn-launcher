@@ -136,6 +136,18 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Stage the Dolphin user-folder template the runtime ships, from a
+    /// tuned User folder: Config and GameSettings INIs and the shader
+    /// lists, cleaned of anything personal. build.ps1 runs this.
+    RuntimeTemplate {
+        /// The tuned User folder.
+        #[arg(long)]
+        from: PathBuf,
+        /// The runtime's User folder to write.
+        #[arg(long)]
+        into: PathBuf,
+    },
+
     /// Print the GCPadNew.ini the launcher would generate.
     Controller {
         /// Ask this Reborn Dolphin what it calls the devices. Strongly preferred.
@@ -477,22 +489,6 @@ enum ModsCommand {
         apply: bool,
     },
 
-    /// Point the emulator's texture folder at the composed tree.
-    ///
-    /// Composition builds a tree the emulator does not read. Without this the
-    /// mods are applied correctly and none of it reaches the game.
-    Link {
-        /// The build to link, for example GN7E69.
-        #[arg(long)]
-        game: String,
-        /// The Dolphin user folder. Defaults to the one a launch would use.
-        #[arg(long)]
-        user_dir: Option<PathBuf>,
-        /// Make the link. Without this, nothing is changed.
-        #[arg(long)]
-        apply: bool,
-    },
-
     /// Make the game load what activation.json says is on.
     ///
     /// The same call a launch makes: verify the composed tree against the
@@ -608,6 +604,14 @@ fn main() -> std::process::ExitCode {
     // fail a command.
     reborn_core::logging::start(&Platform::detect());
 
+    // NOT `reborn_core::layout::prepare_data_root` here. The window runs it
+    // at its start, because the window is the product. This binary is also
+    // what every end-to-end script, the Publisher and the build run on a
+    // developer's PC, always against a scratch `--data-root`, and on
+    // 2026-09-12 a first version that prepared the REAL data root from here
+    // moved Adam's 2.1 folder aside in the middle of a test run. A command
+    // touches the real roots only when it is told to.
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
@@ -648,6 +652,14 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
+        Command::RuntimeTemplate { from, into } => {
+            let report = reborn_core::user_template::stage(&from, &into)?;
+            for p in &report.written {
+                println!("staged {}", p.display());
+            }
+            println!("{} file(s) staged into {}", report.written.len(), into.display());
+            Ok(OK)
+        }
         Command::Controller {
             runtime,
             out,
@@ -679,11 +691,6 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 version,
                 apply,
             } => mods_import(&platform, from, &build, &version, apply),
-            ModsCommand::Link {
-                game,
-                user_dir,
-                apply,
-            } => mods_link(&platform, &game, user_dir, apply),
             ModsCommand::Sync { game, user_dir } => mods_sync(&platform, &game, user_dir),
             ModsCommand::Apply {
                 id,
@@ -1627,9 +1634,14 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
     let data = platform.paths.data_root()?;
     let mut out = Vec::new();
 
-    // The sibling of the launcher's own data root. platform::imp keeps those two
-    // names apart on purpose, and this is the other half of that decision: the
-    // folder the launcher must never write into is the folder migration reads.
+    // Since 2026-09-12 the stable data root is the folder 2.1 used, and a 2.1
+    // install found there is moved into `Reborn 2.1` inside it at first start
+    // (reborn_core::layout). That is where migration reads from.
+    let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
+    out.push(tucked.clone());
+
+    // The sibling of the launcher's own data root: where 2.1 sits beside a
+    // beta root, or beside a Launcher-era root from a build before 09-12.
     if let Some(parent) = data.parent() {
         out.push(parent.join("NFL Street Reborn"));
     }
@@ -1641,8 +1653,10 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
 
     // A candidate that contains the data root, or sits inside it, would make
     // migration a copy of a tree onto itself. Dropped here rather than checked
-    // again at every call site.
-    out.retain(|c| !data.starts_with(c) && !c.starts_with(&data));
+    // again at every call site. The tucked folder is the one exception: it is
+    // inside the data root by design, and migration copies OUT of it into
+    // `dolphin-users`, never over it.
+    out.retain(|c| *c == tucked || (!data.starts_with(c) && !c.starts_with(&data)));
     Ok(out)
 }
 
@@ -2236,15 +2250,16 @@ fn mods_list(
 
     let textures = data.join(DataDir::LibraryTextures.relative());
     let (builds, _) = recognized_builds(&textures);
+    // The composed tree lives in the user folder a launch would use.
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
     println!();
     println!("Pristine trees under {}", textures.display());
+    println!("Composed trees under {}", user.path().join("Load").join("Textures").display());
     if builds.is_empty() {
         println!("  none, so there is nothing to compose over yet");
     }
     for build in &builds {
-        let composed = data
-            .join(DataDir::ModsActive.relative())
-            .join(build.as_str());
+        let composed = reborn_core::mods::composed_root(user.path(), build);
         let state = if !composed.exists() {
             "not composed".to_string()
         } else if composed.join(COMPOSED_MARKER).exists() {
@@ -2416,104 +2431,6 @@ fn pristine(
     Ok(OK)
 }
 
-/// Point the emulator's texture folder at the composed tree.
-///
-/// Dry by default, and the plan says exactly which folder would move where,
-/// because this changes the shape of a live install.
-fn mods_link(
-    platform: &Platform,
-    game: &str,
-    user_dir: Option<PathBuf>,
-    apply: bool,
-) -> reborn_core::Result<std::process::ExitCode> {
-    let game = match GameId::parse(game) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("--game: {e}");
-            return Ok(misuse());
-        }
-    };
-
-    // The folder a launch would actually use, so the link lands where the game
-    // will look rather than where a fresh directory would be made.
-    let user = reborn_core::session::resolve_user_dir(platform, user_dir.as_deref())?;
-    let composed = reborn_core::mods::composed_root(platform, &game)?;
-    let at = user
-        .path()
-        .join("Load")
-        .join("Textures")
-        .join(game.as_str());
-
-    println!("Build      {game}");
-    println!("User dir   {}", user.path().display());
-    println!("  {}", user.explain());
-    println!();
-    println!("Link       {}", at.display());
-    println!("        -> {}", composed.display());
-    println!();
-
-    if !composed.is_dir() {
-        println!("BLOCKED. Nothing was changed.");
-        println!();
-        println!("There is no composed tree yet. Run `mods apply` first, or the game");
-        println!("would be pointed at nothing and look like a broken install.");
-        return Ok(PROBLEM);
-    }
-
-    if at.exists() {
-        let existing = std::fs::symlink_metadata(&at)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if existing {
-            println!("It is already a link. Re-linking would only repoint it.");
-        } else {
-            let (files, _) = match std::fs::read_dir(&at) {
-                Ok(entries) => (entries.count(), 0u64),
-                Err(_) => (0, 0),
-            };
-            println!(
-                "That folder holds {files} entry(s) and would be RENAMED, not deleted."
-            );
-            println!("Nothing here removes a texture, so getting this wrong costs a rename.");
-        }
-        println!();
-    }
-
-    if !apply {
-        println!("Nothing was changed. Re-run with --apply to do it.");
-        return Ok(OK);
-    }
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    match reborn_core::mods::link_textures(user.path(), &game, &composed, now_ms)? {
-        reborn_core::mods::TextureLink::LeftAlone { at } => {
-            println!("Left alone: {}", at.display());
-            println!();
-            println!("Nothing was linked. This command only reports it; a launch reads the");
-            println!("setting and would leave the folder alone too.");
-        }
-        reborn_core::mods::TextureLink::AlreadyLinked { .. } => {
-            println!("Already pointing at the composed tree. Nothing was changed.");
-        }
-        reborn_core::mods::TextureLink::Linked { moved_aside, .. } => {
-            println!("Linked.");
-            if let Some(aside) = moved_aside {
-                println!();
-                println!("The folder that was there is now at:");
-                println!("  {}", aside.display());
-                println!();
-                println!("Nothing was deleted. Rename it back to undo this.");
-            }
-        }
-    }
-
-    Ok(OK)
-}
-
 /// Make the game load the active set. See `reborn_core::mods::sync_active`.
 fn mods_sync(
     platform: &Platform,
@@ -2559,14 +2476,10 @@ fn mods_sync(
                 };
                 println!("  {}@{}  {state}", entry.id, entry.version);
             }
-            if let reborn_core::mods::TextureLink::Linked {
-                moved_aside: Some(aside),
-                ..
-            } = &report.link
-            {
+            if let Some(aside) = &report.moved_aside {
                 println!();
                 println!("The folder that was there is now at {}.", aside.display());
-                println!("Nothing was deleted. Rename it back to undo the link.");
+                println!("Nothing was deleted. Rename it back to keep using it by hand.");
             }
             Ok(OK)
         }
@@ -2877,7 +2790,8 @@ fn mods_activation(
         }
     }
 
-    let request = ComposeRequest::in_data_root(platform, game_id, ordered)?;
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
+    let request = ComposeRequest::in_data_root(platform, game_id, user.path(), ordered)?;
     let composition = Composer::plan(platform, &request)?;
     let plan = match &composition {
         Composition::Refused(refusal) => {
@@ -2971,7 +2885,8 @@ fn mods_verify(
         }
     }
 
-    let request = ComposeRequest::in_data_root(platform, game_id, ordered)?;
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
+    let request = ComposeRequest::in_data_root(platform, game_id, user.path(), ordered)?;
     let composition = Composer::plan(platform, &request)?;
     let plan = match &composition {
         Composition::Refused(refusal) => {
@@ -5544,13 +5459,19 @@ mod tests {
     /// Migration reads the 2.1 folder and writes the data root. A candidate that
     /// is the data root, or holds it, would make migration a copy of a tree onto
     /// itself, with the launcher's own `mods/` sitting on the player's JSGME
-    /// `MODS/` on a case insensitive filesystem.
+    /// `MODS/` on a case insensitive filesystem. The one candidate inside the
+    /// data root is the tucked `Reborn 2.1` folder, which the launcher made by
+    /// moving the 2.1 entries out of the way first.
     #[test]
     fn no_migration_source_is_the_data_root() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
+        let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         for candidate in legacy_candidates(&platform).expect("candidates") {
             assert_ne!(candidate, data, "a candidate is the data root itself");
+            if candidate == tucked {
+                continue;
+            }
             assert!(
                 !data.starts_with(&candidate),
                 "{} holds the data root {}",
@@ -5571,21 +5492,18 @@ mod tests {
     /// This is the bug this list was widened to fix: the shipped build lives
     /// beside the launcher's data root, and only checking beside the install root
     /// meant `migrate` reported nothing to do on a machine holding 35,015 files
-    /// of it.
+    /// of it. Since 2026-09-12 the stable data root IS that folder and the 2.1
+    /// files are tucked into `Reborn 2.1` inside it, which comes first.
     #[test]
-    fn the_sibling_of_the_data_root_is_a_candidate() {
+    fn the_tucked_folder_inside_the_data_root_is_the_first_candidate() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
-        let expected = data
-            .parent()
-            .expect("the data root has a parent")
-            .join("NFL Street Reborn");
+        let expected = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         let candidates = legacy_candidates(&platform).expect("candidates");
+        assert_eq!(candidates.first(), Some(&expected), "{candidates:?}");
         assert!(
-            candidates.contains(&expected),
-            "{} is not among {:?}",
-            expected.display(),
-            candidates
+            !candidates.iter().any(|c| *c == data),
+            "the data root itself is never a migration source: {candidates:?}"
         );
     }
 
