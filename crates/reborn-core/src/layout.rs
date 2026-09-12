@@ -43,6 +43,10 @@ pub fn top_level_names() -> BTreeSet<String> {
     names
 }
 
+/// What a move step did: the entries now in their new place, and the ones
+/// that could not be moved with the reason.
+pub type Moves = (Vec<PathBuf>, Vec<(PathBuf, String)>);
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Prepared {
     pub tucked: Vec<PathBuf>,
@@ -105,7 +109,7 @@ pub fn legacy_root(data_root: &Path) -> Option<PathBuf> {
 
 /// Move every top-level entry that is not part of the 3.0 layout into
 /// `Reborn 2.1`. Entries that cannot be moved are reported, not fatal.
-pub fn tuck_legacy(data_root: &Path) -> Result<(Vec<PathBuf>, Vec<(PathBuf, String)>)> {
+pub fn tuck_legacy(data_root: &Path) -> Result<Moves> {
     let keep = top_level_names();
     let into = data_root.join(LEGACY_SUBFOLDER);
     std::fs::create_dir_all(&into).map_err(|source| Error::Io { path: into.clone(), source })?;
@@ -151,7 +155,7 @@ const LAUNCHER_MODS_ENTRIES: &[&str] = &["packages", "staging", "activation.json
 /// Move JSGME's entries out of a `MODS` folder into `into`, leaving the
 /// launcher's own entries. A folder with nothing left is removed, so the
 /// launcher recreates `mods` in its own spelling.
-fn tuck_jsgme_mods(mods: &Path, into: &Path) -> Result<(Vec<PathBuf>, Vec<(PathBuf, String)>)> {
+fn tuck_jsgme_mods(mods: &Path, into: &Path) -> Result<Moves> {
     let mut moved = Vec::new();
     let mut blocked = Vec::new();
     let entries = std::fs::read_dir(mods).map_err(|source| Error::Io { path: mods.to_path_buf(), source })?;

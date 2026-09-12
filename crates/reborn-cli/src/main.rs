@@ -1635,9 +1635,14 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
     let data = platform.paths.data_root()?;
     let mut out = Vec::new();
 
-    // The sibling of the launcher's own data root. platform::imp keeps those two
-    // names apart on purpose, and this is the other half of that decision: the
-    // folder the launcher must never write into is the folder migration reads.
+    // Since 2026-09-12 the stable data root is the folder 2.1 used, and a 2.1
+    // install found there is moved into `Reborn 2.1` inside it at first start
+    // (reborn_core::layout). That is where migration reads from.
+    let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
+    out.push(tucked.clone());
+
+    // The sibling of the launcher's own data root: where 2.1 sits beside a
+    // beta root, or beside a Launcher-era root from a build before 09-12.
     if let Some(parent) = data.parent() {
         out.push(parent.join("NFL Street Reborn"));
     }
@@ -1649,8 +1654,10 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
 
     // A candidate that contains the data root, or sits inside it, would make
     // migration a copy of a tree onto itself. Dropped here rather than checked
-    // again at every call site.
-    out.retain(|c| !data.starts_with(c) && !c.starts_with(&data));
+    // again at every call site. The tucked folder is the one exception: it is
+    // inside the data root by design, and migration copies OUT of it into
+    // `dolphin-users`, never over it.
+    out.retain(|c| *c == tucked || (!data.starts_with(c) && !c.starts_with(&data)));
     Ok(out)
 }
 
@@ -5453,13 +5460,19 @@ mod tests {
     /// Migration reads the 2.1 folder and writes the data root. A candidate that
     /// is the data root, or holds it, would make migration a copy of a tree onto
     /// itself, with the launcher's own `mods/` sitting on the player's JSGME
-    /// `MODS/` on a case insensitive filesystem.
+    /// `MODS/` on a case insensitive filesystem. The one candidate inside the
+    /// data root is the tucked `Reborn 2.1` folder, which the launcher made by
+    /// moving the 2.1 entries out of the way first.
     #[test]
     fn no_migration_source_is_the_data_root() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
+        let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         for candidate in legacy_candidates(&platform).expect("candidates") {
             assert_ne!(candidate, data, "a candidate is the data root itself");
+            if candidate == tucked {
+                continue;
+            }
             assert!(
                 !data.starts_with(&candidate),
                 "{} holds the data root {}",
@@ -5480,21 +5493,18 @@ mod tests {
     /// This is the bug this list was widened to fix: the shipped build lives
     /// beside the launcher's data root, and only checking beside the install root
     /// meant `migrate` reported nothing to do on a machine holding 35,015 files
-    /// of it.
+    /// of it. Since 2026-09-12 the stable data root IS that folder and the 2.1
+    /// files are tucked into `Reborn 2.1` inside it, which comes first.
     #[test]
-    fn the_sibling_of_the_data_root_is_a_candidate() {
+    fn the_tucked_folder_inside_the_data_root_is_the_first_candidate() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
-        let expected = data
-            .parent()
-            .expect("the data root has a parent")
-            .join("NFL Street Reborn");
+        let expected = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         let candidates = legacy_candidates(&platform).expect("candidates");
+        assert_eq!(candidates.first(), Some(&expected), "{candidates:?}");
         assert!(
-            candidates.contains(&expected),
-            "{} is not among {:?}",
-            expected.display(),
-            candidates
+            !candidates.iter().any(|c| *c == data),
+            "the data root itself is never a migration source: {candidates:?}"
         );
     }
 
