@@ -723,22 +723,32 @@ impl Session {
                 })?;
                 written.files.push(path);
                 written.pads = assignment;
-                let dolphin_file=config_dir.join("Dolphin.ini");
-                let dolphin_text = match std::fs::read_to_string(&dolphin_file) {
-                    Ok(text) => text,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(error) => return Err(error.into()),
-                };
-                let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
-                let overlay=controller_port_overlay(&written.pads);
-                if !dolphin_doc.merge(&overlay).is_noop(){
-                    std::fs::write(&dolphin_file,dolphin_doc.render())?;
-                    if !written.files.contains(&dolphin_file) { written.files.push(dolphin_file); }
-                }
                 written.no_controller = written.pads.is_empty();
-
             }
             None => written.no_controller = true,
+        }
+
+        // Dolphin.ini: the controller ports for the pads bound above, and a
+        // memory card when none is configured. Written only when something
+        // changes, and whether or not a pad was found: a keyboard player
+        // still needs somewhere to save.
+        let dolphin_file=config_dir.join("Dolphin.ini");
+        let dolphin_text = match std::fs::read_to_string(&dolphin_file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
+        let user_dir = config_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| config_dir.clone());
+        let card = memory_card_overlay(&dolphin_doc, &user_dir);
+        let mut changed = false;
+        if !written.no_controller {
+            changed |= !dolphin_doc.merge(&controller_port_overlay(&written.pads)).is_noop();
+        }
+        changed |= !dolphin_doc.merge(&card).is_noop();
+        if changed {
+            std::fs::write(&dolphin_file,dolphin_doc.render())?;
+            if !written.files.contains(&dolphin_file) { written.files.push(dolphin_file); }
         }
 
         Ok(written)
@@ -1067,6 +1077,31 @@ pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], pr
     let mut ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
     for port in 1..=4 {if !assignment.iter().any(|(p,_)|*p==port){ini.push_str(&format!("[GCPad{port}]\nDevice = \n\n"));}}
     Some((ini,assignment))
+}
+
+/// The memory card the game saves to. A fresh user folder seeded from the
+/// runtime template has both slots set to none (Dolphin.ini `SlotA = 255`),
+/// so the game could never save and the card gear sync had no card to
+/// bring up to date (Adam, 2026-09-12: "it didn't change the memory
+/// card"). When no card is configured, slot A becomes a raw card in the
+/// user folder, which Dolphin creates on first boot; a card path the file
+/// already names is kept when that file exists. A player's own working
+/// choice (a raw card, a folder of GCIs) is left exactly as it is.
+pub fn memory_card_overlay(doc: &crate::ini::IniDocument, user_dir: &Path) -> crate::ini::Overlay {
+    let mut overlay = crate::ini::Overlay::new();
+    let slot = doc.get("Core", "SlotA").map(str::trim).unwrap_or("");
+    if !(slot.is_empty() || slot == "255" || slot == "0") {
+        return overlay;
+    }
+    let core = overlay.entry("Core".into()).or_default();
+    core.insert("SlotA".into(), "1".into());
+    let existing = doc.get("Core", "MemcardAPath").map(str::trim).filter(|p| !p.is_empty() && Path::new(p).is_file());
+    let card = match existing {
+        Some(p) => p.to_string(),
+        None => user_dir.join("GC").join("MemoryCardA.USA.raw").to_string_lossy().replace('\\', "/"),
+    };
+    core.insert("MemcardAPath".into(), card);
+    overlay
 }
 
 pub fn controller_port_overlay(assignment:&[(u8,String)])->crate::ini::Overlay {
@@ -1561,6 +1596,34 @@ pub fn is_game_image(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::player_sentence::assert_player_safe;
+
+    /// A fresh user folder seeded from the runtime template has no memory
+    /// card at all (SlotA = 255); the launch gives it a raw card in its own
+    /// GC folder. A working card choice is never touched, and a card the
+    /// file already names is kept when it exists.
+    #[test]
+    fn a_launch_gives_a_cardless_user_folder_a_memory_card_and_leaves_a_working_one_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path();
+        let none = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nSlotB = 255\n");
+        let overlay = memory_card_overlay(&none, user);
+        assert_eq!(overlay["Core"]["SlotA"], "1");
+        let expected = user.join("GC").join("MemoryCardA.USA.raw").to_string_lossy().replace('\\', "/");
+        assert_eq!(overlay["Core"]["MemcardAPath"], expected);
+        assert!(!overlay["Core"].contains_key("SlotB"), "slot B stays as it was");
+        // no [Core] section at all: the same card
+        assert_eq!(memory_card_overlay(&crate::ini::IniDocument::parse("[Display]\n"), user)["Core"]["SlotA"], "1");
+        // a folder of GCIs, or a raw card: nothing to change
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 8\n"), user).is_empty());
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 1\nMemcardAPath = C:/cards/A.raw\n"), user).is_empty());
+        // slot none but a card file the ini already names: that card comes back
+        std::fs::create_dir_all(user.join("old")).unwrap();
+        let old = user.join("old").join("MemoryCardA.USA.raw");
+        std::fs::write(&old, [0u8; 16]).unwrap();
+        let old_text = old.to_string_lossy().replace('\\', "/");
+        let doc = crate::ini::IniDocument::parse(&format!("[Core]\nSlotA = 255\nMemcardAPath = {old_text}\n"));
+        assert_eq!(memory_card_overlay(&doc, user)["Core"]["MemcardAPath"], old_text);
+    }
 
     /// The launch gives the single-instance lock back before the network work.
     ///
