@@ -172,10 +172,14 @@ await page.getByRole('combobox',{name:'Your controller',exact:true}).selectOptio
 assert.equal(await page.locator('#next').isEnabled(),true);
 await page.getByRole('button',{name:'Scan again'}).click();
 await page.getByRole('combobox',{name:'Your controller',exact:true}).selectOption('0');
+// First run keeps the bindings behind "Customize controls" since 2026-09-11.
+await page.getByText('Customize controls',{exact:true}).click();
 await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
 assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
 await page.screenshot({path:path.join(out,'reborn-setup-controller.png')});
 await page.getByRole('button',{name:'Assign A',exact:true}).click();
+// The typed input sits behind "Type a Dolphin input name instead" since 2026-09-11.
+await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
 await page.getByRole('textbox',{name:'A binding',exact:true}).fill('`Button Y`');
 await page.getByRole('button',{name:'Use binding',exact:true}).click();
 await page.getByRole('status').filter({hasText:'A saved.'}).waitFor();
@@ -282,7 +286,11 @@ await page.goto(url+'/index.html?notice-test');
 await page.waitForFunction(()=>document.querySelectorAll('#play-notices .update-notice').length===2);
 const notices=await page.locator('#play-notices .update-notice').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
 assert.ok(notices[0].bottom<=notices[1].top,'update notices do not overlap each other');
-assert.ok(notices[1].bottom<=await page.locator('.input-footer').evaluate(n=>n.getBoundingClientRect().top),'update notices fit above the input footer');
+// The pad hint footer is hidden until a pad is in use (its box is empty
+// then), so the ceiling is the footer when it shows, else the window.
+const footerTop=await page.locator('.input-footer').evaluate(n=>{const r=n.getBoundingClientRect();return r.height>0?r.top:innerHeight;});
+console.log('play notices at 800x560',JSON.stringify({notices,footerTop}));
+assert.ok(notices[1].bottom<=footerTop,`update notices fit above the input footer or the window (${notices[1].bottom} vs ${footerTop})`);
 await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
 assert.ok(await page.locator('#play-now').evaluate(n=>n.getBoundingClientRect().bottom)<=notices[0].top,'updates do not cover Play');
 await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
