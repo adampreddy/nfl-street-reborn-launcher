@@ -9,4 +9,16 @@ async function run(options){const p=await browser.newPage();await p.route('http:
 let p=await run({automatic:false});assert.equal(await p.getByRole('button',{name:'View update'}).count(),1);assert.equal(await p.evaluate(()=>calls.includes('update_download')),false);await p.close();
 p=await run({automatic:true,active:true});assert.equal(await p.evaluate(()=>calls.includes('update_download')),true);assert.equal(await p.evaluate(()=>calls.includes('update_apply')),false);await p.evaluate(()=>{window.active=false;window.tick()});await p.waitForFunction(()=>window.installed);await p.evaluate(()=>window.tick?.());assert.equal(await p.evaluate(()=>calls.filter(c=>c==='update_apply').length),1);await p.evaluate(()=>window.installed({}));await p.close();
 p=await run({automatic:false,current:'2',receipt:{version:'2',notes:'New features'}});await p.getByText('Updated to Reborn 2. New features',{exact:true}).waitFor();await p.getByRole('button',{name:'Got it'}).click();assert.equal(await p.evaluate(()=>localStorage.getItem('updates:pending-summary')),null);await p.close();
-console.log('PASS: ask-first downloads nothing; automatic updates wait for game exit and install once; installed update summary is dismissible.');await browser.close();
+// A launcher left open checks again on its timer: nothing new at start,
+// then the timer fires and the check runs a second time and draws the
+// notice once something is available.
+p=await run({automatic:false,current:'2'});
+assert.equal(await p.evaluate(()=>calls.filter(c=>c==='update_check').length),1,'one check at start');
+assert.equal(await p.getByRole('button',{name:'View update'}).count(),0,'nothing to show while current');
+await p.evaluate(()=>{window.__TAURI__.core.invoke=(orig=>async(cmd,args)=>{calls.push(cmd);if(cmd==='update_check')return {current:'2',latest:'3',notes:'',state:'available'};return orig(cmd,args);})(window.__TAURI__.core.invoke);window.tick();});
+await p.getByRole('button',{name:'View update'}).waitFor();
+assert.equal(await p.evaluate(()=>calls.filter(c=>c==='update_check').length),2,'the timer checked again');
+await p.evaluate(()=>window.tick());await p.waitForTimeout(60);
+assert.equal(await p.getByRole('button',{name:'View update'}).count(),1,'one notice, not one per tick');
+await p.close();
+console.log('PASS: ask-first downloads nothing; automatic updates wait for game exit and install once; installed update summary is dismissible; the timer checks again and draws one notice.');await browser.close();
