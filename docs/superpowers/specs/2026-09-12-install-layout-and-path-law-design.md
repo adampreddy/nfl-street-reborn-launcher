@@ -66,6 +66,7 @@ A Reborn user folder is self-contained: Dolphin derives every path from the `-u`
 - `memory_card_overlay`: slot A none becomes `SlotA = 1` with no `MemcardAPath`; an existing `MemcardAPath` is kept only when it is outside the user folder and the file exists.
 - The card gear sync and every other reader of the card path fall back to `<user>\GC\MemoryCardA.USA.raw` already (session.rs); confirmed in the plan by grep before relying on it.
 - To prove on the fork before the law is final: launch with Dolphin.ini carrying no path keys and no `MemcardAPath`, then read back that textures loaded from `<user>\Load\Textures\GN7E69`, the card was created at `<user>\GC\MemoryCardA.USA.raw`, and Dolphin.ini on exit still carries no path key. If Dolphin writes a path back, the launch-time removal still makes the next launch correct, and that fact is recorded in the doc.
+- **Observed on the fork, 2026-09-12 (Tools\walk-paths-overhaul.ps1, two runs):** with no path keys, Dolphin's video log names `<user>/Load/Textures/GN7E69` as the folder it scans for custom textures (its default from `-u`), the migrated memory card sits at `<user>\GC\MemoryCardA.USA.raw` with `SlotA = 1` and no path, and after a graceful close Dolphin.ini still carries none of the nine path keys: the fork writes nothing back. The law holds without the launch-time removal doing anything on later launches.
 
 ### 5. User template
 
@@ -93,6 +94,16 @@ A Reborn user folder is self-contained: Dolphin derives every path from the `-u`
 - `Tools\test-all.ps1` green: Rust suite, checkers, browser suites.
 - Real window on a scratch root: a fake 2.1 folder (small `User` with a 16 MB card, `MODS` with one JSGME mod, `Games\NSR.iso` hardlinked) at the data root; start the payload launcher with the debugging port; observe the tuck; walk "I already have Reborn" from `Reborn 2.1`; Play; then read back: real composed folder with `composed.json`, no `mods\active`, no path keys in Dolphin.ini, card at the default path, Dolphin's log shows custom textures loaded. Screenshots into `target\review`.
 - Beta rename: run the launcher against an old-named scratch root and confirm adoption by listing both roots.
+
+### Result (2026-09-12)
+
+Tasks 1 to 13 of the plan are done on `paths-overhaul` (commits 44ebe3a..ad132dd). 981 Rust tests pass; `Tools\test-all.ps1 -Browser` is 28 of 29, the miss being "a stable installer exists in dist" until one is built. The real-window walk (`Tools\walk-paths-overhaul.ps1`, a fake 2.1 install at a scratch beta data root plus a Launcher-era root beside it, beta.24 payload) is ALL PASS on its second run: tuck and adopt before the window drew; "I already have Reborn" found `Reborn 2.1`, its disc and its card by itself; import, wizard, Play; no path keys, slot A default; `Load\Textures\GN7E69` a real composed directory of 8,319 entries whose files are one hardlink shared with `library\textures` and the payload; no `mods\active`; Dolphin started, closed on request, wrote no path keys back. The first run's three texture FAILs were the driver checking before the launch-time sync; the driver now syncs first.
+
+Two things the walk surfaced that are NOT this design's:
+- The game's main menu shows the disc's "MISSING TEXTURES" placeholder slide. The `Menu Slideshow` override folder is absent from every texture pack on this PC, the live 2.1 pack and the staged textures 1.2.0 included, so the published pack lacks it and every player sees the placeholder. A content publish, not a launcher change.
+- Dolphin's video log reports duplicate texture names and an oversized 3840x2160 texture in the pack; both are pack content.
+
+One incident during the work: the first version prepared the real data root from `rebornctl`, and `test-all`'s end-to-end scripts ran it on this PC, so the 2.1 folder was tucked aside for a few minutes. Reversed by rename the same hour, nothing lost; the CLI no longer touches the real roots (56eff37).
 
 ### Sequencing
 
