@@ -793,6 +793,7 @@ impl Session {
         // Seeding a profile for every connected pad also means the builders
         // below never fall back to their own `ControllerProfile::new`, which
         // still carries the XInput default.
+        let mut profiles_changed = false;
         {
             for pad in scan.playable_pads() {
                 // Ask the runtime first. Fall back to a recorded device only
@@ -826,6 +827,26 @@ impl Session {
                     .find(|p| p.identity.profile_key() == key)
                 {
                     Some(existing) => {
+                        let before = existing.clone();
+                        // Widen first, repair second. A saved profile can
+                        // still carry the XInput-only default: written by a
+                        // build before 3.0.6, or adopted out of the old pad
+                        // file by the first 3.0.6 launch as twenty
+                        // "overrides". On a PlayStation pad that is dead, and
+                        // when the runtime cannot list the pad's controls
+                        // `repair_for` has no evidence to act on, so it never
+                        // reached those players. The universal binding needs
+                        // no evidence; the repair narrows it back to exact
+                        // names whenever it can.
+                        let widened = existing.widen_stale_defaults();
+                        if !widened.is_empty() {
+                            tracing::info!(
+                                "{}: {} binding(s) were the launcher's own older vocabulary and were widened to bind every pad: {:?}",
+                                pad.device_string(),
+                                widened.len(),
+                                widened
+                            );
+                        }
                         let repaired = existing.repair_for(&available);
                         if !repaired.is_empty() {
                             tracing::info!(
@@ -834,6 +855,9 @@ impl Session {
                                 repaired.len(),
                                 repaired
                             );
+                        }
+                        if *existing != before {
+                            profiles_changed = true;
                         }
                     }
                     None => {
@@ -880,10 +904,16 @@ impl Session {
             let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles);
             if !adopted.is_empty() {
                 tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
-                if let Ok(file) = crate::controller_profiles::path(platform) {
-                    for profile in &saved_profiles {
-                        let _ = crate::controller_profiles::save(&file, profile.clone());
-                    }
+                profiles_changed = true;
+            }
+        }
+        // Persist what changed: an adoption, a widening, or a repair. A
+        // widened or repaired profile left unsaved would show its dead
+        // bindings on the Controllers page as the player's own choices.
+        if profiles_changed {
+            if let Ok(file) = crate::controller_profiles::path(platform) {
+                for profile in &saved_profiles {
+                    let _ = crate::controller_profiles::save(&file, profile.clone());
                 }
             }
         }

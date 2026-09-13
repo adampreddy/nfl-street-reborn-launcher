@@ -285,6 +285,35 @@ impl Mapping {
         )
     }
 
+    /// True when `value` is the launcher's own vocabulary for this input:
+    /// every name in it is one of the input's candidates.
+    ///
+    /// That covers the universal binding, the exact name a runtime dump
+    /// narrows it to, and the XInput-only default every build before 3.0.6
+    /// wrote. None of those is a player's choice, and none says anything the
+    /// universal binding does not already say. A value naming anything else
+    /// (`Circle` on A, `Trigger R` on Z) is the player's.
+    pub fn is_own_vocabulary(input: GcInput, value: &str) -> bool {
+        Self::names_are_all_in(value, Self::candidates(input))
+    }
+
+    /// [`Mapping::is_own_vocabulary`] for the three non-GameCube bindings.
+    pub fn extra_is_own_vocabulary(extra: Extra, value: &str) -> bool {
+        Self::names_are_all_in(value, Self::extra_candidates(extra))
+    }
+
+    fn names_are_all_in(value: &str, names: &[&str]) -> bool {
+        let mut any = false;
+        for part in value.split('|') {
+            let bare = Self::bare(part);
+            if bare.is_empty() || !names.contains(&bare) {
+                return false;
+            }
+            any = true;
+        }
+        any
+    }
+
     /// Strip the backticks Dolphin uses to quote a control name containing
     /// spaces, so a stored binding can be compared to a reported input name.
     pub fn bare(binding: &str) -> &str {
@@ -913,6 +942,50 @@ impl ControllerProfile {
         profile
     }
 
+    /// Widen every binding that is the launcher's own vocabulary back to the
+    /// universal binding, and say which.
+    ///
+    /// A saved profile can carry the XInput-only default in two ways: a build
+    /// before 3.0.6 wrote it, or the first 3.0.6 launch adopted it out of the
+    /// old pad file as twenty "overrides". On a PlayStation pad it is dead,
+    /// and on a runtime that cannot list the pad's controls nothing can prove
+    /// it so, which is why [`ControllerProfile::repair_for`] alone never
+    /// reached those players. Widening needs no proof: the universal binding
+    /// is a superset, an unresolvable name is silently zero, and an Xbox pad
+    /// loses nothing. When the runtime CAN list controls, `repair_for` narrows
+    /// it straight back to the exact name.
+    ///
+    /// A binding that names anything outside its input's own candidates is
+    /// the player's, and is never touched.
+    pub fn widen_stale_defaults(&mut self) -> Vec<GcInput> {
+        let mut widened = Vec::new();
+        for input in GcInput::ALL {
+            let universal = Mapping::universal(*input);
+            let Some(current) = self.mapping.get(*input).map(str::to_owned) else { continue };
+            if !Mapping::is_own_vocabulary(*input, &current) {
+                continue;
+            }
+            // Not a choice, so not an override, whether or not it needs
+            // widening: a stick axis has one name in every vocabulary.
+            self.overridden.retain(|i| i != input);
+            if current != universal {
+                self.mapping.set(*input, universal);
+                widened.push(*input);
+            }
+        }
+        for extra in Extra::ALL {
+            let universal = Extras::universal(*extra);
+            let current = self.extras.get(*extra).to_owned();
+            if !current.is_empty()
+                && current != universal
+                && Mapping::extra_is_own_vocabulary(*extra, &current)
+            {
+                self.extras.set(*extra, universal);
+            }
+        }
+        widened
+    }
+
     /// Rebind one input and remember that the user chose it.
     pub fn rebind(&mut self, input: GcInput, binding: impl Into<String>) {
         self.mapping.set(input, binding);
@@ -928,7 +1001,10 @@ impl ControllerProfile {
     /// defaults" button does. Resetting a subset is what the per-row reset
     /// does.
     pub fn reset(&mut self, inputs: &[GcInput]) {
-        let defaults = Mapping::default_gamepad();
+        // The universal binding, the same one `new` starts from, not the
+        // XInput-only default: "Reset to defaults" on a PlayStation pad must
+        // not put twenty dead bindings back.
+        let defaults = Mapping::universal_gamepad();
         let targets: Vec<GcInput> = if inputs.is_empty() {
             GcInput::ALL.to_vec()
         } else {
@@ -942,6 +1018,7 @@ impl ControllerProfile {
         }
         if inputs.is_empty() {
             self.tuning = Tuning::default();
+            self.extras = Extras::default();
         }
     }
 
@@ -1090,6 +1167,18 @@ pub fn adopt_external_edits(
             }
 
             if let Some(input) = GcInput::ALL.iter().find(|i| i.ini_key() == key) {
+                // The launcher's own vocabulary is not a choice. A value that
+                // names nothing but this input's own candidates is what some
+                // build of the launcher wrote: this one, or the XInput-only
+                // default every build before 3.0.6 wrote. There was no
+                // sidecar before 3.0.6 either, so on the first launch after
+                // upgrading, adopting it took the dead file a PlayStation
+                // player already had for twenty deliberate remaps, wrote it
+                // straight back out, and saved it as theirs. The universal
+                // binding already says everything such a value says.
+                if Mapping::is_own_vocabulary(*input, value) {
+                    continue;
+                }
                 profile.rebind(*input, value.clone());
                 adopted.push(format!("port {}: {key} = {value}", profile.port));
             } else if key == "Main Stick/Calibration" || key == "C-Stick/Calibration" {
@@ -1106,21 +1195,41 @@ pub fn adopt_external_edits(
                     adopted.push(format!("port {}: trigger threshold {percent}", profile.port));
                 }
             } else if key == "Rumble/Motor" {
-                // `<binding> <strength>`: the strength is the trailing number.
-                let (binding, strength) = value.rsplit_once(' ').unwrap_or((value.as_str(), ""));
-                if let Some(percent) = parse_percent(strength) {
+                // `<binding> <strength>` was the old broken form: the
+                // strength is the trailing token only when it is a number. A
+                // motor's own name can contain a space (`Motor L`), so the
+                // split is not taken on faith.
+                let (binding, strength) = match value.rsplit_once(' ') {
+                    Some((binding, tail)) if parse_percent(tail).is_some() => {
+                        (binding, parse_percent(tail))
+                    }
+                    _ => (value.as_str(), None),
+                };
+                let mut changed = false;
+                if let Some(percent) = strength.filter(|p| *p != profile.tuning.rumble_percent) {
                     profile.tuning.rumble_percent = percent;
+                    changed = true;
                 }
-                if !binding.is_empty() {
+                if !binding.is_empty()
+                    && !Mapping::extra_is_own_vocabulary(Extra::RumbleMotor, binding)
+                    && profile.extras.get(Extra::RumbleMotor) != binding
+                {
                     profile.extras.set(Extra::RumbleMotor, binding.to_string());
+                    changed = true;
                 }
-                adopted.push(format!("port {}: rumble", profile.port));
+                if changed {
+                    adopted.push(format!("port {}: rumble", profile.port));
+                }
             } else if key == "Triggers/L-Analog" {
-                profile.extras.set(Extra::AnalogTriggerL, value.clone());
-                adopted.push(format!("port {}: {key}", profile.port));
+                if !Mapping::extra_is_own_vocabulary(Extra::AnalogTriggerL, value) {
+                    profile.extras.set(Extra::AnalogTriggerL, value.clone());
+                    adopted.push(format!("port {}: {key}", profile.port));
+                }
             } else if key == "Triggers/R-Analog" {
-                profile.extras.set(Extra::AnalogTriggerR, value.clone());
-                adopted.push(format!("port {}: {key}", profile.port));
+                if !Mapping::extra_is_own_vocabulary(Extra::AnalogTriggerR, value) {
+                    profile.extras.set(Extra::AnalogTriggerR, value.clone());
+                    adopted.push(format!("port {}: {key}", profile.port));
+                }
             } else {
                 // Dolphin's window writes plenty this model has no concept of.
                 // Keep it exactly, so regenerating does not delete it.
@@ -1327,14 +1436,86 @@ mod external_edit_tests {
 
     /// A pad the launcher never wrote a section for, whose bindings the player
     /// set up entirely in Dolphin, is adopted rather than replaced.
+    ///
+    /// The player here swapped A and B by hand. `Circle` is not one of the
+    /// names the launcher would ever put on A, so it is unmistakably theirs.
     #[test]
     fn a_port_we_never_wrote_is_adopted_whole() {
         let mut profiles = [ControllerProfile::new(identity("Wireless Controller"), 2)];
-        let theirs = "[GCPad2]\nDevice = WGInput/1/Controller\nButtons/A = Cross\nButtons/B = Circle\nMain Stick/Dead Zone = 12.00\n";
+        let theirs = "[GCPad2]\nDevice = WGInput/1/Controller\nButtons/A = Circle\nButtons/B = Cross\nMain Stick/Dead Zone = 12.00\n";
         let adopted = adopt_external_edits(theirs, "", &mut profiles);
         assert!(!adopted.is_empty());
-        assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("Cross"));
+        assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("Circle"));
+        assert_eq!(profiles[0].mapping.get(GcInput::ButtonB), Some("Cross"));
         assert_eq!(profiles[0].tuning.deadzone_percent, 12);
+    }
+
+    /// Exactly the file a launcher before 3.0.6 left on a PlayStation
+    /// player's disk: the XInput default on a WGInput device, the hardcoded
+    /// XInput extras, and the rumble line in its old broken form. Dead, every
+    /// line of it, which is the bug 3.0.6 was meant to end.
+    fn what_3_0_5_wrote(device: &str) -> String {
+        let mut old = ControllerProfile::new(identity("Wireless Controller"), 1);
+        old.mapping = Mapping::default_gamepad();
+        old.extras = Extras {
+            analog_trigger_l: "`Shoulder L`".into(),
+            analog_trigger_r: "`Shoulder R`".into(),
+            rumble_motor: "`Motor`".into(),
+        };
+        GcPadConfig::generate(std::slice::from_ref(&old), |_| device.into()).replace(
+            "Rumble/Motor = `Motor`\nRumble/Motor/Range = 100.00\n",
+            "Rumble/Motor = `Motor` 100.00\n",
+        )
+    }
+
+    /// The Discord complaint after 3.0.6 and 3.0.7 shipped, as a test.
+    ///
+    /// A PlayStation player upgrades. The pad file on disk is the one the OLD
+    /// launcher wrote, and there is no sidecar, because the sidecar did not
+    /// exist before 3.0.6. With nothing to compare against, adoption took
+    /// every line of that dead file as the player's own choice, wrote it
+    /// straight back out, and saved it as twenty overrides. The universal
+    /// binding never reached the file, on any install that had the bug.
+    ///
+    /// The previous launcher's own vocabulary is not a choice. A value that
+    /// names nothing but this input's own candidates carries no information
+    /// the universal binding does not already carry, and must be left alone.
+    #[test]
+    fn the_previous_launchers_dead_defaults_are_not_adopted_as_the_players_choice() {
+        let profile = ControllerProfile::new(identity("Wireless Controller"), 1);
+        let left_behind = what_3_0_5_wrote("WGInput/0/Wireless Controller");
+        assert!(left_behind.contains("Buttons/A = `Button A`"), "{left_behind}");
+
+        let mut profiles = [profile.clone()];
+        adopt_external_edits(&left_behind, "", &mut profiles);
+
+        assert_eq!(
+            profiles[0].mapping, profile.mapping,
+            "the old launcher's XInput-only vocabulary was adopted over the universal binding"
+        );
+        assert!(
+            profiles[0].overridden.is_empty(),
+            "nothing in that file was the player's choice: {:?}",
+            profiles[0].overridden
+        );
+        assert_eq!(
+            profiles[0].extras, profile.extras,
+            "the old hardcoded XInput extras were adopted over the universal ones"
+        );
+    }
+
+    /// The positive control for the test above: with no sidecar, a change
+    /// the player really made in that same old file is still adopted.
+    #[test]
+    fn a_real_remap_in_a_file_with_no_sidecar_is_still_adopted() {
+        let theirs = what_3_0_5_wrote("WGInput/0/Wireless Controller")
+            .replace("Buttons/A = `Button A`", "Buttons/A = `Circle`")
+            .replace("Main Stick/Dead Zone = 15.00", "Main Stick/Dead Zone = 5.00");
+        let mut profiles = [ControllerProfile::new(identity("Wireless Controller"), 1)];
+        adopt_external_edits(&theirs, "", &mut profiles);
+        assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("`Circle`"), "their remap");
+        assert_eq!(profiles[0].overridden, vec![GcInput::ButtonA], "only that one was theirs");
+        assert_eq!(profiles[0].tuning.deadzone_percent, 5, "their dead zone");
     }
 }
 
@@ -1467,7 +1648,9 @@ mod tests {
         assert!(p.is_customized());
 
         p.reset(&[GcInput::ButtonZ]);
-        assert_eq!(p.mapping.get(GcInput::ButtonZ), Some("`Shoulder R`"));
+        // Back to what `new` starts from, which binds every pad, not the
+        // XInput-only name that is dead on a PlayStation pad.
+        assert_eq!(p.mapping.get(GcInput::ButtonZ), Some(Mapping::universal(GcInput::ButtonZ).as_str()));
         assert!(!p.is_customized());
     }
 
@@ -1476,11 +1659,13 @@ mod tests {
         let mut p = ControllerProfile::new(identity("Xbox Wireless Controller"), 1);
         p.rebind(GcInput::ButtonA, "`Button Y`");
         p.tuning.deadzone_percent = 40;
+        p.extras.rumble_motor = String::new();
         assert!(p.is_customized());
 
         p.reset(&[]);
-        assert_eq!(p.mapping, Mapping::default_gamepad());
+        assert_eq!(p.mapping, Mapping::universal_gamepad());
         assert_eq!(p.tuning, Tuning::default());
+        assert_eq!(p.extras, Extras::default());
         assert!(!p.is_customized());
     }
 

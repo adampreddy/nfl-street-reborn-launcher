@@ -102,8 +102,10 @@ mod tests {
         profile.rebind(GcInput::ButtonX,"`Button B`");
         profile.rebind(GcInput::ButtonZ,"`Shoulder L`");
         assert!(undo_legacy_bx_swap(&mut profile), "a swapped pair is undone");
-        assert_eq!(profile.mapping.get(GcInput::ButtonB),Some("`Button B`"));
-        assert_eq!(profile.mapping.get(GcInput::ButtonX),Some("`Button X`"));
+        // B is B and X is X again, in the binding `new` starts from, which
+        // names every pad's east and west buttons rather than only Xbox's.
+        assert_eq!(profile.mapping.get(GcInput::ButtonB),Some(crate::controller::Mapping::universal(GcInput::ButtonB).as_str()));
+        assert_eq!(profile.mapping.get(GcInput::ButtonX),Some(crate::controller::Mapping::universal(GcInput::ButtonX).as_str()));
         assert_eq!(profile.mapping.get(GcInput::ButtonZ),Some("`Shoulder L`"),"the player's other choices stay");
         assert!(!profile.overridden.contains(&GcInput::ButtonB) && !profile.overridden.contains(&GcInput::ButtonX),"B and X count as default again");
         assert!(!undo_legacy_bx_swap(&mut profile),"nothing to undo the second time");

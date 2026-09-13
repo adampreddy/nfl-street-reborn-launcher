@@ -541,3 +541,224 @@ DInput/0/DualSense Wireless Controller",
     assert!(!ini.contains("` 100.00"), "the old broken rumble form survives:
 {ini}");
 }
+
+/// Every binding line in a generated pad file names at least one control the
+/// real pad reported. Returns how many lines were checked.
+fn assert_every_binding_is_live_on_the_pad(ini: &str, available: &[String]) -> usize {
+    let mut checked = 0;
+    for line in ini.lines() {
+        let Some((key, value)) = line.split_once(" = ") else { continue };
+        if !(key.starts_with("Buttons/")
+            || key.starts_with("Main Stick/")
+            || key.starts_with("C-Stick/")
+            || key.starts_with("D-Pad/")
+            || key.starts_with("Triggers/")
+            || key == "Rumble/Motor")
+            || key.contains("Calibration")
+            || key.contains("Dead Zone")
+            || key.contains("Threshold")
+            || key.contains("Range")
+        {
+            continue;
+        }
+        let resolves = value
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{key} = {value}, and none of those exist on the real pad:\n{ini}");
+        checked += 1;
+    }
+    checked
+}
+
+/// The pad file a launcher before 3.0.6 left on every PlayStation player's
+/// disk: the XInput default on the WGInput device, the hardcoded XInput
+/// extras, the rumble line in its old broken form. Every binding dead.
+fn what_3_0_5_left_behind(pad: &reborn_core::devices::DetectedDevice) -> String {
+    use reborn_core::controller::{ControllerProfile, Extras, GcPadConfig};
+    let mut old = ControllerProfile::new(pad.identity(), 1);
+    old.mapping = Mapping::default_gamepad();
+    old.extras = Extras {
+        analog_trigger_l: "`Shoulder L`".into(),
+        analog_trigger_r: "`Shoulder R`".into(),
+        rumble_motor: "`Motor`".into(),
+    };
+    GcPadConfig::generate(std::slice::from_ref(&old), |_| pad.device_string()).replace(
+        "Rumble/Motor = `Motor`\nRumble/Motor/Range = 100.00\n",
+        "Rumble/Motor = `Motor` 100.00\n",
+    )
+}
+
+/// "Users STILL cannot use their PlayStation controllers", 2026-09-13, after
+/// 3.0.6 and 3.0.7 had both shipped the universal binding.
+///
+/// This is the first launch after the upgrade, step for step as
+/// `Session::prepare` does it: seed the pad (the old runtime cannot list its
+/// controls, so no exact names), adopt whatever differs from the sidecar,
+/// generate. The sidecar does not exist yet, so BEFORE the fix every line of
+/// the dead file 3.0.5 wrote was adopted as the player's choice and written
+/// straight back out. The universal binding never reached the disk of a
+/// single player who had the bug.
+#[test]
+fn an_install_upgraded_from_3_0_5_gets_a_live_pad_on_its_first_launch() {
+    use reborn_core::controller::{adopt_external_edits, ControllerProfile};
+    use reborn_core::devices::parse_device_list;
+    use reborn_core::session::build_gcpad_for_slots;
+
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+    );
+    let pad = scan.playable_pads()[0].clone();
+    let left_behind = what_3_0_5_left_behind(&pad);
+    assert!(left_behind.contains("Buttons/A = `Button A`"), "{left_behind}");
+
+    let mut profiles = vec![ControllerProfile::from_device(pad.identity(), 1, &[])];
+    let adopted = adopt_external_edits(&left_behind, "", &mut profiles);
+    let (ini, _) = build_gcpad_for_slots(&scan, &profiles, None, None).expect("a file");
+    eprintln!("---- first launch after upgrading from 3.0.5 ----\n{ini}---- adopted: {adopted:?}");
+
+    let checked = assert_every_binding_is_live_on_the_pad(&ini, &ps5().all_names());
+    assert!(checked >= 22, "expected every binding checked, saw {checked}");
+    assert!(
+        profiles[0].overridden.is_empty(),
+        "the old launcher's file is not the player's choice: {:?}",
+        profiles[0].overridden
+    );
+}
+
+/// The saved profile the first 3.0.6 or 3.0.7 launch already left on every
+/// PlayStation player's disk: every binding the old XInput default, every
+/// one recorded as the player's own override, the extras the old hardcoded
+/// names. That is the shape of `config/controller-profiles.json` on this PC.
+///
+/// On a runtime that cannot list the pad's controls, nothing can prove those
+/// bindings dead, so `repair_for` alone leaves them forever. Widening needs
+/// no proof. And once the runtime can list controls, the widened binding
+/// narrows to the exact name, so an Xbox pad ends up exactly where it was.
+#[test]
+fn a_profile_poisoned_by_the_first_3_0_6_launch_is_healed_without_the_runtime_dump() {
+    use reborn_core::controller::{ControllerProfile, DeviceFamily, Extras};
+    use reborn_core::devices::{Backend, DetectedDevice};
+
+    let identity = DetectedDevice {
+        backend: Backend::Other("WGInput".into()),
+        id: 0,
+        name: "Wireless Controller".to_string(),
+        family: DeviceFamily::PlayStation,
+    }
+    .identity();
+
+    let mut poisoned = ControllerProfile::new(identity.clone(), 1);
+    let old_default = Mapping::default_gamepad();
+    for input in GcInput::ALL {
+        poisoned.rebind(*input, old_default.get(*input).unwrap().to_string());
+    }
+    poisoned.extras = Extras {
+        analog_trigger_l: "`Shoulder L`".into(),
+        analog_trigger_r: "`Shoulder R`".into(),
+        rumble_motor: "`Motor`".into(),
+    };
+    assert_eq!(poisoned.overridden.len(), 20, "the shape adoption left behind");
+
+    // No dump: the old runtime. Repair alone does nothing, by design.
+    assert!(poisoned.clone().repair_for(&[]).is_empty());
+
+    // The sticks and triggers have one name in every vocabulary, so the old
+    // default already IS the universal binding for them; only the inputs
+    // with more than one name change.
+    let more_than_one_name = GcInput::ALL
+        .iter()
+        .filter(|i| Mapping::candidates(**i).len() > 1)
+        .count();
+    let widened = poisoned.widen_stale_defaults();
+    assert_eq!(widened.len(), more_than_one_name, "every one of them was the launcher's own vocabulary");
+    assert!(poisoned.overridden.is_empty(), "none of them was ever a choice: {:?}", poisoned.overridden);
+
+    let available = ps5().all_names();
+    for input in GcInput::ALL {
+        let binding = poisoned.mapping.get(*input).expect("bound");
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{input:?} is still {binding}, dead on the real pad");
+    }
+    for (label, binding) in [
+        ("analog L", poisoned.extras.analog_trigger_l.as_str()),
+        ("analog R", poisoned.extras.analog_trigger_r.as_str()),
+        ("rumble", poisoned.extras.rumble_motor.as_str()),
+    ] {
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{label} is still {binding}, dead on the real pad");
+    }
+
+    // Widening is idempotent: the universal binding is not widened again.
+    assert!(poisoned.widen_stale_defaults().is_empty());
+
+    // The moment the runtime can list controls, the exact names come back.
+    let repaired = poisoned.repair_for(&available);
+    assert_eq!(repaired.len(), more_than_one_name);
+    assert_eq!(poisoned.mapping.get(GcInput::ButtonA), Some("`Cross`"));
+    assert_eq!(poisoned.mapping.get(GcInput::ButtonZ), Some("`Bumper R`"));
+    assert_eq!(poisoned.extras.rumble_motor, "`Motor L`");
+
+    // A choice the player really made is never widened away.
+    let mut chosen = ControllerProfile::new(identity, 1);
+    chosen.rebind(GcInput::ButtonA, "`Circle`");
+    assert!(chosen.widen_stale_defaults().is_empty());
+    assert_eq!(chosen.mapping.get(GcInput::ButtonA), Some("`Circle`"));
+    assert_eq!(chosen.overridden, vec![GcInput::ButtonA]);
+}
+
+/// The profile store on the machine this is running on, when it is the one
+/// the launcher really wrote: every profile in it that carries only the
+/// launcher's own vocabulary comes out with no overrides and with every
+/// binding either universal or exact. Read from a copy; nothing is written.
+#[test]
+fn the_profile_store_on_this_machine_is_healed_when_it_exists() {
+    use reborn_core::controller::Mapping;
+    let Some(appdata) = std::env::var_os("APPDATA") else { return };
+    let file = std::path::Path::new(&appdata)
+        .join("NFL Street Reborn")
+        .join("config")
+        .join("controller-profiles.json");
+    if !file.is_file() {
+        eprintln!("no live profile store on this machine; nothing to check");
+        return;
+    }
+    let profiles = reborn_core::controller_profiles::load(&file).expect("the live store parses");
+    for mut profile in profiles {
+        let all_own = GcInput::ALL.iter().all(|i| {
+            profile
+                .mapping
+                .get(*i)
+                .is_some_and(|b| Mapping::is_own_vocabulary(*i, b))
+        });
+        let before = profile.overridden.len();
+        let widened = profile.widen_stale_defaults();
+        eprintln!(
+            "{}: {} override(s) before, {} widened, {} override(s) after",
+            profile.identity.profile_key(),
+            before,
+            widened.len(),
+            profile.overridden.len()
+        );
+        if all_own {
+            assert!(
+                profile.overridden.is_empty(),
+                "{}: the launcher's own vocabulary is still recorded as the player's choice: {:?}",
+                profile.identity.profile_key(),
+                profile.overridden
+            );
+        }
+        for input in GcInput::ALL {
+            let binding = profile.mapping.get(*input).expect("bound");
+            assert!(
+                !Mapping::is_own_vocabulary(*input, binding) || binding == Mapping::universal(*input),
+                "{input:?} = {binding} is the launcher's vocabulary but was not widened"
+            );
+        }
+    }
+}
