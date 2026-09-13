@@ -4025,6 +4025,24 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
         };
         let p = Platform::detect();
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        if matches!(setting, PathSetting::Game) && !value.trim().is_empty() {
+            let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+            let tool = std::env::current_exe().map_err(|e| e.to_string())?.parent().unwrap()
+                .join("game-import/DolphinTool.exe");
+            let image = reborn_core::session::user_path(value.trim());
+            match reborn_core::game_identity::identify(&data, &tool, &image) {
+                reborn_core::game_identity::Verdict::Unreadable { reason } => return Err(reason),
+                reborn_core::game_identity::Verdict::Unconverted => {
+                    let sha = reborn_core::library::hash_file(&image)
+                        .map(|h| h.as_str().to_string()).map_err(|e| e.to_string())?;
+                    let mut saved = reborn_core::settings::Settings::load(&file)
+                        .map_err(|e| e.player_message().to_string())?;
+                    saved.unverified_game_ack = Some(sha);
+                    saved.save(&file).map_err(|e| e.player_message().to_string())?;
+                }
+                _ => {}
+            }
+        }
         let stored = reborn_core::settings::set_path(&file, setting, &value).map_err(|e| e.to_string())?;
         Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()) })
     })

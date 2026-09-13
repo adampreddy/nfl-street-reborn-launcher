@@ -314,7 +314,10 @@ export const outcomeWords=(outcome,label,note,patched)=>{
     case 'bundle':return ['Game File Patched!',`Your original NFL Street 2 disc was patched to ${build} and verified. Continue to your controller.`];
     case 'patched':return ['Game File Patched!',`Your disc was updated to ${build} and verified. Continue to your controller.`];
     case 'newest':return ['Game File Imported!',`This disc is already the newest Reborn build (${build}). Continue to your controller.`];
-    case 'unknown':return ['Game File Imported!',`This disc is not one Reborn recognizes, so it was kept exactly as it is.${note?' '+note:''} Continue to your controller.`];
+    case 'unconverted':return ["Your game file isn't NFL Street Reborn",`This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc.${note?' '+note:''}`];
+    case 'different-game':return ['This is not NFL Street 2',`${note?note+' ':''}Reborn's roster, textures and updates do not apply to it.`];
+    case 'unreadable':return ['Your game file could not be read',note||'Choose an NFL Street 2 (USA) disc image.'];
+    case 'unknown':case 'no-chain':return ["Your game file isn't NFL Street Reborn",'Reborn could not confirm this disc is one of its builds, so it was left exactly as it is. Repair it before playing.'];
     default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
   }
 };
@@ -443,7 +446,8 @@ const SCREENS = {
         }catch(e){status.textContent='Your game could not be prepared';detail.textContent=String(e.message||e);progress.hidden=true;}
         finally{unlisten?.();moving=false;browse.disabled=false;updateNav();if(pending.image)document.getElementById('next').focus({preventScroll:true});}
       });
-      return {nodes:[el('p',null,shipped?'NFL Street Reborn is included with this install.':'Choose your legally obtained copy of NFL Street 2 (USA) for GameCube.'),box],ready:()=>!!pending.image,nextLabel:pending.image?'Continue':'Continue',answer:()=>call('onboarding_confirm_game',{image:pending.image})};
+      const blocked=()=>{try{return ['unconverted','unreadable'].includes(localStorage.getItem('setup:outcome:'+pending.image)||'');}catch(_){return false;}};
+      return {nodes:[el('p',null,shipped?'NFL Street Reborn is included with this install.':'Choose your legally obtained copy of NFL Street 2 (USA) for GameCube.'),box],ready:()=>!!pending.image&&!blocked(),nextLabel:'Continue',answer:()=>call('onboarding_confirm_game',{image:pending.image})};
     }
     const summary=el('section','detected-install');
     const header=el('div','detected-header');

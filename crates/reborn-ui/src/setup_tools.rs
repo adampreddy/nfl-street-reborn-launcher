@@ -518,6 +518,12 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         let options=reborn_core::settings::GraphicsOverride{label:"Previous settings".into(),resolution:3,msaa:1,ssaa:false,legacy_gfx:Some(gfx),legacy_reshade:migrate_effects(&root,&data.join("migrated-effects").join(folder.to_string()))?};
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-graphics.json"),serde_json::to_vec_pretty(&options).unwrap()).map_err(|e|e.to_string())?;
+        const UNVERIFIED_MIGRATED_GAME:&str="The game file in your old installation isn't an NFL Street Reborn build, so it was not brought over. Choose your NFL Street 2 disc on the next step and Reborn will convert it.";
+        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
+        let inherited=reborn_core::game_identity::identify(&data,&tool,&game);
+        // A 2.1 install's disc is adopted only if it is one of ours. Anything
+        // else goes to recovery rather than becoming this install's game.
+        let game=if inherited.is_reborn()||matches!(inherited,reborn_core::game_identity::Verdict::Convertible){game.clone()}else{return Err(UNVERIFIED_MIGRATED_GAME.to_string())};
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
         saved.save(&file).map_err(|e|e.to_string())?;
