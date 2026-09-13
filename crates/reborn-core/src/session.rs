@@ -893,6 +893,16 @@ pub struct SessionResults {
 }
 
 impl SessionResults {
+    /// Explain local collection before a background upload has answered.
+    /// Do not claim delivery or a sign-in failure before contacting the service.
+    pub fn background_note(&self) -> Option<String> {
+        if self.queue.is_none() { return Some(RESULTS_NOT_COLLECTED.to_string()); }
+        if let Some(problem) = self.problem { return Some(problem.message().to_string()); }
+        let recorded = self.enqueued.iter().any(|entry| matches!(entry,
+            crate::stats::Enqueued::Queued(_) | crate::stats::Enqueued::Quarantined(_)));
+        recorded.then(|| "Match results are saved. View their sync status on Stats.".to_string())
+    }
+
     /// Send what was collected, and everything else already queued.
     ///
     /// Needs no lock and no guard. Never returns an error: by the time this
@@ -1591,6 +1601,23 @@ pub fn is_game_image(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::player_sentence::assert_player_safe;
+
+    #[test]
+    fn background_sync_reports_collection_without_claiming_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let queue = crate::stats::StatsQueue::open_at(&root.path().join("queue"), crate::supervisor::SystemClock).unwrap();
+        let entry = queue.enqueue(b"{}", None, Some("local-session"), Some("offline")).unwrap();
+        let mut results = SessionResults { queue: Some(queue), history: vec![], enqueued: vec![entry], problem: None };
+        let note = results.background_note().unwrap();
+        assert!(note.contains("saved"));
+        assert!(!note.contains("sent") && !note.contains("sign-in"), "No network request has answered yet");
+        assert_player_safe(&note);
+        assert_eq!(results.queue.as_ref().unwrap().entries().unwrap().len(), 1, "The background handoff keeps queued data");
+        results.problem = Some(StatsProblem::Collecting);
+        assert_eq!(results.background_note().as_deref(), Some(StatsProblem::Collecting.message()));
+        results.queue = None;
+        assert_eq!(results.background_note().as_deref(), Some(RESULTS_NOT_COLLECTED));
+    }
 
     /// A fresh user folder seeded from the runtime template has no memory
     /// card at all (SlotA = 255); the launch turns slot A into a raw card

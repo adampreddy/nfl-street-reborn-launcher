@@ -818,20 +818,72 @@ mod tests {
 /// Settings page's open-the-emulator button.
 pub const CLOSE_EMULATOR_FIRST: &str =
     "Close Reborn Dolphin before applying settings, then try again.";
+const PROCESS_CHECK_UNAVAILABLE: &str =
+    "Windows could not check whether Reborn Dolphin is running. Try again.";
 
 /// Avoid Dolphin's in-memory settings overwriting configuration written during a session.
 pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
-    #[cfg(windows)] {
-        use std::os::windows::process::CommandExt;
-        if exe.is_file() {
-            let target=exe.to_string_lossy().replace('/',"\\");
-            let canonical=std::fs::canonicalize(exe)?.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
-            let script="$ErrorActionPreference='Stop'; $running=@(Get-Process -Name $env:REBORN_PROCESS_NAME -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $env:REBORN_PROCESS_PATH -or $_.Path -eq $env:REBORN_PROCESS_CANONICAL}); if($running.Count -gt 0){'running'}";
-            let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).creation_flags(0x08000000).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
-            if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(crate::Error::player(CLOSE_EMULATOR_FIRST));}
-        }
-    }
+    if runtime_is_running(exe)? { return Err(crate::Error::player(CLOSE_EMULATOR_FIRST)); }
     Ok(())
+}
+
+/// A fresh OS snapshot of this executable. A different install with the same
+/// filename is not this runtime, and an inspection error is not proof it is open.
+pub fn runtime_is_running(exe: &Path) -> Result<bool> {
+    #[cfg(windows)] {
+        use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
+        if !exe.is_file() { return Ok(false); }
+        let normalize = |path: &Path| path.to_string_lossy().replace('/', "\\")
+            .trim_start_matches("\\\\?\\").to_lowercase();
+        let target = normalize(exe);
+        let canonical = normalize(&std::fs::canonicalize(exe)?);
+        let snapshot = System::new_with_specifics(RefreshKind::nothing()
+            .with_processes(ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet)));
+        let check_error = || crate::Error::player(PROCESS_CHECK_UNAVAILABLE);
+        if snapshot.processes().is_empty() { return Err(check_error()); }
+        let mut unreadable_match = false;
+        for process in snapshot.processes().values() {
+            if let Some(path) = process.exe() {
+                let path = normalize(path);
+                if path == target || path == canonical { return Ok(true); }
+            } else if process.name().to_string_lossy().eq_ignore_ascii_case(&exe.file_name().unwrap_or_default().to_string_lossy()) {
+                unreadable_match = true;
+            }
+        }
+        if unreadable_match { return Err(check_error()); }
+    }
+    #[cfg(not(windows))] let _ = exe;
+    Ok(false)
+}
+
+#[cfg(all(test, windows))]
+mod process_detection_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn exact_runtime_detection_recovers_after_exit_and_ignores_another_install() {
+        struct Child(std::process::Child);
+        impl Drop for Child { fn drop(&mut self) { let _=self.0.kill(); let _=self.0.wait(); } }
+        let root=tempfile::tempdir().unwrap();
+        let (first, second)=(root.path().join("first"), root.path().join("second"));
+        std::fs::create_dir(&first).unwrap();std::fs::create_dir(&second).unwrap();
+        let (first, second)=(first.join("NSR Process Probe.exe"), second.join("NSR Process Probe.exe"));
+        let source=std::env::var_os("ComSpec").unwrap();
+        std::fs::copy(&source,&first).unwrap();std::fs::copy(&source,&second).unwrap();
+        assert!(!runtime_is_running(&first).unwrap());
+        let mut child=Child(std::process::Command::new(&first)
+            .args(["/D","/Q","/C","set /p REBORN_TEST_WAIT="])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).creation_flags(0x08000000).spawn().unwrap());
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(runtime_is_running(&first).unwrap(), "The actual child must be protected");
+        assert!(ensure_runtime_idle(&first).is_err());
+        assert!(!runtime_is_running(&second).unwrap(), "Another installation must not be blocked by its filename");
+        drop(child);
+        assert!(!runtime_is_running(&first).unwrap(), "Exited processes must not leave stale running state");
+        assert!(ensure_runtime_idle(&first).is_ok());
+    }
 }
 
 /// Seed a user folder from the runtime's template (`User` beside the

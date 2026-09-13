@@ -33,9 +33,9 @@ keyring = "4.2"
 
 # Volume enumeration with a removable flag, for platform::RemovableDrives, so
 # the Xbox wizard cannot be handed a fixed disk to copy 3 GB onto.
-# default-features = false drops the process, CPU, memory, network, user and
-# component probing; only the disk module is used.
-sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
+# Process enumeration also checks the exact Dolphin executable without shell
+# commands. Refreshes request executable paths only, not CPU/memory metrics.
+sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
 ureq = { version = "2", features = ["json"] }
 
 # Custom soundtrack. All pure Rust: this crate forbids unsafe and the

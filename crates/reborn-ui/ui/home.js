@@ -55,7 +55,6 @@ function preset() {
 
 async function load() {
   const reads = {
-    active: call("session_active"),
     graphicsOptions: call("setup_graphics_options"),
     dolphin: call("dolphin_preferences", { runtime: get("runtime") }),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
@@ -416,6 +415,11 @@ if (bridge) {
 }
 
 if (typeof document.addEventListener === "function") {
-  document.addEventListener("session-state", e => { state.active = e.detail; externalSession = e.detail; if (!busy) refresh(); });
+  document.addEventListener("session-state", e => {
+    if (typeof e.detail !== "boolean") return;
+    const changed = externalSession !== e.detail;
+    state.active = externalSession = e.detail;
+    if (changed && !busy) refresh();
+  });
   document.addEventListener("refresh-devices", () => { if (!busy) refresh(); });
 }

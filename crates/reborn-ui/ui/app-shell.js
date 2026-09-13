@@ -245,7 +245,12 @@ async function sessionState() {
   checking = true;
   try {
     const next = await bridge.invoke('session_active');
-    if (next !== active) { active = next; document.dispatchEvent(new CustomEvent('session-state',{detail:active})); }
+    // Repeat authoritative snapshots so a page mounted after a transition,
+    // or a late initial read, cannot stay stuck on an old active value.
+    if (typeof next === 'boolean') {
+      active = next;
+      document.dispatchEvent(new CustomEvent('session-state',{detail:active}));
+    }
   } catch (_) {} finally { checking = false; }
 }
 if (bridge) { sessionState(); setInterval(sessionState,1500); }

@@ -46,11 +46,7 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
 // Dolphin rewrites its in-memory settings on exit. Refuse edits while it is open.
 pub(crate) fn require_closed(exe:&Path)->Result<(),String>{
     #[cfg(windows)] {
-        use std::os::windows::process::CommandExt;
-        let result=std::process::Command::new("tasklist.exe").args(["/FO","CSV","/NH"]).creation_flags(0x08000000).output().map_err(player)?;
-        if !result.status.success(){return Err("Could not check whether Dolphin is open. Try again.".into());}
-        let name=exe.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        if String::from_utf8_lossy(&result.stdout).lines().any(|line|{let process=line.split(',').next().unwrap_or("").trim_matches('"').to_lowercase();process==name||process=="dolphin.exe"}){return Err("Close Dolphin before changing its settings. Your changes have not been applied.".into());}
+        reborn_core::runtime::ensure_runtime_idle(exe).map_err(player)?;
     }
     #[cfg(not(windows))] {let _=exe;return Err("Open Dolphin to change emulator settings on this platform.".into());}
     Ok(())
@@ -186,7 +182,7 @@ fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
 #[tauri::command]
 pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16)->Result<serde_json::Value,String>{
  tauri::async_runtime::spawn_blocking(move||{
-  let guard=LaunchGuard::acquire()?;
+  let guard=LaunchGuard::acquire_session()?;
   let nickname=nickname.trim();let address=address.trim();
   if nickname.is_empty()||nickname.chars().count()>32||nickname.chars().any(char::is_control){return Err("Enter a player name of 1 to 32 characters.".into());}
   if !["host","join"].contains(&mode.as_str())||!["direct","traversal"].contains(&connection.as_str())||port==0{return Err("Choose valid connection settings.".into());}

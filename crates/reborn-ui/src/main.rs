@@ -666,19 +666,35 @@ fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
 }
 
 static LAUNCH_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-struct LaunchGuard;
+static GAME_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// All writers share exclusion, but only game launches are a game session.
+// Update adoption and settings writes must never make the UI report Dolphin open.
+struct LaunchGuard { session: bool }
 impl LaunchGuard {
     fn acquire() -> Result<Self, String> {
         LAUNCH_ACTIVE.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst).map_err(|_| "A game session is already active.".to_string())?;
-        Ok(Self)
+            std::sync::atomic::Ordering::SeqCst).map_err(|_| if session_active() {
+                "A game session is already active.".to_string()
+            } else {
+                "The launcher is applying changes. Please wait for them to finish.".to_string()
+            })?;
+        Ok(Self { session: false })
+    }
+    fn acquire_session() -> Result<Self, String> {
+        let mut guard = Self::acquire()?;
+        GAME_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+        guard.session = true;
+        Ok(guard)
     }
 }
 impl Drop for LaunchGuard {
-    fn drop(&mut self) { LAUNCH_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst); }
+    fn drop(&mut self) {
+        if self.session { GAME_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst); }
+        LAUNCH_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 #[tauri::command]
-fn session_active() -> bool { LAUNCH_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
+fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
 /// Start the game and answer when it stops.
 ///
@@ -697,7 +713,7 @@ async fn launch(
     league_match: Option<bool>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = LaunchGuard::acquire()?;
+        let _guard = LaunchGuard::acquire_session()?;
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
@@ -764,7 +780,11 @@ async fn launch(
             } => {
                 // With the lock and the guard both back. Never surfaced as a
                 // failure: the game was played whatever the backend answered.
-                let stats = results.send(&p);
+                // Return the finished game immediately. Waiting for a slow
+                // upload here leaves Play's pending invoke labelled "Session
+                // active" even after the native session guard has been released.
+                let stats_note = results.background_note();
+                std::thread::spawn(move || { let _ = results.send(&p); });
                 let needs_recovery = end.needs_recovery();
                 let message = match &end {
                     SessionEnd::Exited { code: Some(0) } => {
@@ -797,7 +817,7 @@ async fn launch(
                     pads_authoritative,
                     mods_note: Some(mods.explain()),
                     session_id: Some(session_id),
-                    stats_note: stats.explain(),
+                    stats_note,
                     cards_note: cards.explain(),
                 })
             }
@@ -4325,7 +4345,7 @@ struct OpenRuntimeView {
 #[tauri::command]
 async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Result<OpenRuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let guard = LaunchGuard::acquire()?;
+        let guard = LaunchGuard::acquire_session()?;
         let p = Platform::detect();
         let exe = runtime_for(&p, runtime.as_deref()).ok_or_else(|| {
             "No emulator was found. Set its path on the Settings page.".to_string()
@@ -5333,12 +5353,18 @@ mod shortcut_tests {
     fn another_launch_is_refused_until_the_session_guard_is_released() {
         assert!(!session_active());
         {
-            let _guard = LaunchGuard::acquire().unwrap();
+            let _guard = LaunchGuard::acquire_session().unwrap();
             assert!(session_active());
             assert!(LaunchGuard::acquire().is_err());
         }
         assert!(!session_active());
-        assert!(LaunchGuard::acquire().is_ok());
+        {
+            let _update = LaunchGuard::acquire().unwrap();
+            assert!(!session_active(), "An update or settings write is not a running Dolphin session");
+            assert!(LaunchGuard::acquire_session().is_err(), "Writes still prevent a conflicting launch");
+        }
+        assert!(LaunchGuard::acquire_session().is_ok());
+        assert!(!session_active(), "A failed or completed launch releases the game state");
     }
 
     #[test]
@@ -5894,6 +5920,9 @@ mod tests {
     /// inside what is searched.
     #[test]
     fn the_lock_and_the_guard_go_back_before_the_network_work() {
+        let launch_body = command_body(include_str!("main.rs"), "async fn launch(");
+        assert!(launch_body.find("std::thread::spawn(move ||").unwrap() < launch_body.find("results.send(&p)").unwrap(),
+            "A slow stats upload must not hold Play's invoke open after the emulator exits");
         for (name, body, collects, releases) in [
             (
                 "open_runtime",

@@ -669,7 +669,7 @@ pub async fn music_export(path: String, slots: Vec<u8>, name: String, author: St
 /// Used by the Mods page when a soundtrack package is switched, and by the
 /// background thread `music_apply` starts.
 pub(crate) fn rebuild_now(root: &Path, progress: &mut dyn FnMut(Progress)) -> Result<Outcome, String> {
-    let guard = LaunchGuard::acquire().map_err(|_| "The game is running. Close it, then apply your soundtrack.".to_string())?;
+    let guard = LaunchGuard::acquire()?;
     let p = Platform::detect();
     let settings = load_settings(&p)?;
     let verifier = verifier()?;

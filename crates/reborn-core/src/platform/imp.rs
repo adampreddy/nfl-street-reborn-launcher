@@ -31,8 +31,9 @@
 //!   falls back to something weaker: with no store, every call fails. Hand
 //!   rolling `CredWriteW` through `windows-sys` would mean `unsafe` in this
 //!   crate, and a stored token is not worth spending that guarantee on.
-//! - `sysinfo` for volume enumeration, restricted to its `disk` module. It is
-//!   the one safe crate that reports a removable flag on all three platforms.
+//! - `sysinfo` for volume enumeration. It is the safe crate that reports a
+//!   removable flag on all three platforms. The runtime check also uses its
+//!   process module to inspect executable paths without starting a shell.
 //!
 //! # Why [`RemovableDrives::eject`] still refuses
 //!

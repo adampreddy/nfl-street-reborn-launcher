@@ -668,8 +668,7 @@ fn game_patch_is_good(message: &str) -> bool {
 pub async fn content_promote(confirm: bool) -> Result<ContentStatusView, String> {
     crate::confirmed(confirm, "content_promote", "swap the downloaded update into the live installation")?;
     tauri::async_runtime::spawn_blocking(move || {
-        let guard = LaunchGuard::acquire()
-            .map_err(|_| "The game is running. The update installs after it closes.".to_string())?;
+        let guard = LaunchGuard::acquire()?;
         let (url, check) = {
             let mut h = held();
             if !matches!(h.phase, Phase::Staged) {

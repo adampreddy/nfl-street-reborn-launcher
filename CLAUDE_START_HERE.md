@@ -1,5 +1,7 @@
 # Claude: Start Here
 
+> September 12, 2026: Adam requested a Codex-to-Claude handoff. Read [the shared handoff](../../CODEX_TO_CLAUDE_HANDOFF.md) and [the stable session-state hotfix](docs/superpowers/plans/2026-09-12-session-state-hotfix.md) for the current implementation and verification. The discovery-stage description below is historical relative to this work.
+
 ## NFL Street Reborn Launcher
 
 Read this file completely before taking any project action.

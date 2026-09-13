@@ -1,5 +1,9 @@
 # Launch handoff, 2026-09-12
 
+Current follow-up: the launcher has moved to **stable**. The stuck Dolphin/session
+hotfix is documented in [2026-09-12-session-state-hotfix.md](2026-09-12-session-state-hotfix.md).
+The beta and release snapshot below describe earlier work.
+
 Later local launcher polish is documented in [2026-09-12-launch-polish.md](2026-09-12-launch-polish.md). It includes the beta.28 local build with the redesigned Stats page, the staged matching Dolphin runtime and verified default-soundtrack patch, and verification. The published versions below are unchanged by that work.
 
 The state of the NFL Street Reborn Launcher on launch day, written for whoever

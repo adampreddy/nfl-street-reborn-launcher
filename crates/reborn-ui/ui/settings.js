@@ -306,6 +306,26 @@ async function refresh() {
   draw();
 }
 
+// Dolphin can close while this page stays open, including when it was opened
+// outside the launcher. Refresh availability without rebuilding controls on
+// every poll or overwriting a volume slider the player is using.
+let pollingDolphin=false;
+async function refreshDolphinAvailability(){
+  if(pollingDolphin||busy||document.hidden||['Updates','Files & storage'].includes(settingsTab)||!state.dolphin)return;
+  pollingDolphin=true;
+  try{
+    const next=await call('dolphin_preferences',{runtime:get('runtime')});
+    if(busy||!next||['Updates','Files & storage'].includes(settingsTab))return;
+    const availability=value=>JSON.stringify([value.editable,value.live_editable,value.readonly_reason]);
+    const changed=availability(next)!==availability(state.dolphin);
+    state.dolphin=next;
+    if(changed){const focused=document.activeElement?.id;draw();if(focused)document.getElementById(focused)?.focus({preventScroll:true});}
+  }catch(_){/* A failed read is not evidence that Dolphin stopped. */}
+  finally{pollingDolphin=false;}
+}
+document.addEventListener('session-state',refreshDolphinAvailability);
+window.addEventListener('focus',refreshDolphinAvailability);
+
 // A content check or download can outlive the page that started it.
 // Update only its group so the preference being edited keeps its focus.
 let pollingContent=false;
