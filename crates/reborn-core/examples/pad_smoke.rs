@@ -12,7 +12,7 @@
 //!     cargo run -p reborn-core --example pad_smoke -- "<path to the runtime exe>"
 
 use reborn_core::controller::ControllerProfile;
-use reborn_core::devices::{dump_via_runtime, known_inputs, DeviceInputs};
+use reborn_core::devices::{dump_via_runtime, DeviceInputs};
 use reborn_core::platform::Platform;
 use reborn_core::session::build_gcpad_for_slots;
 
@@ -25,18 +25,34 @@ fn main() {
     let scratch = std::env::temp_dir().join("reborn-pad-smoke");
 
     println!("runtime: {exe}");
+    // Exactly the fallback chain Session::prepare uses, so this proves the
+    // path a player is really on, old runtime or new.
     let (scan, reported): (_, Vec<DeviceInputs>) =
         match dump_via_runtime(&platform, std::path::Path::new(&exe), &scratch) {
             Ok(pair) => {
-                println!("dump: the runtime listed its devices and their controls\n");
+                println!("dump: the runtime listed its devices AND their controls (new runtime)
+");
                 pair
             }
             Err(why) => {
-                eprintln!("dump refused: {why}");
-                std::process::exit(1);
+                println!("dump refused ({why})");
+                match reborn_core::devices::scan_via_runtime(
+                    &platform,
+                    std::path::Path::new(&exe),
+                    &scratch,
+                ) {
+                    Ok(scan) => {
+                        println!("falling back to the device list only (OLD runtime path)
+");
+                        (scan, Vec::new())
+                    }
+                    Err(why) => {
+                        eprintln!("the runtime could not even list devices: {why}");
+                        std::process::exit(1);
+                    }
+                }
             }
         };
-
     for device in &reported {
         println!(
             "  {} : {} input(s), {} output(s)",
@@ -59,7 +75,6 @@ fn main() {
             .iter()
             .find(|d| d.device == pad.device_string())
             .map(|d| d.all_names())
-            .or_else(|| known_inputs(&pad.device_string()))
             .unwrap_or_default();
 
         let profile =

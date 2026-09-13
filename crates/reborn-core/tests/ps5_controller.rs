@@ -403,3 +403,70 @@ DInput/0/DualSense Wireless Controller",
 {ini}");
     }
 }
+
+/// The case the first fix got wrong, and that players actually hit.
+///
+/// A launcher can only learn a pad's control names from a runtime carrying
+/// --dump-device-inputs, and players keep the runtime they have until a content
+/// update reaches them. The first attempt covered that gap by matching the
+/// device NAME against a list, which failed the moment Windows called the pad
+/// something not on it: the pad was detected, offered, and completely dead.
+///
+/// The universal mapping needs no identification at all.
+#[test]
+fn an_unidentified_pad_still_works_because_the_binding_names_both_vocabularies() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::{Backend, DetectedDevice};
+    use reborn_core::controller::DeviceFamily;
+
+    let pad = ps5();
+    let available = pad.all_names();
+
+    // A pad the launcher knows NOTHING about: no dump, no recognised name.
+    let identity = DetectedDevice {
+        backend: Backend::Other("WGInput".into()),
+        id: 0,
+        // Deliberately a name no table would recognise. Sony's own HID product
+        // string is often exactly this.
+        name: "Wireless Controller".to_string(),
+        family: DeviceFamily::PlayStation,
+    }
+    .identity();
+    let profile = ControllerProfile::from_device(identity, 1, &[]);
+
+    // Every GameCube control resolves against the real pad, with no lookup.
+    for input in GcInput::ALL {
+        let binding = profile.mapping.get(*input).expect("bound");
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(
+            resolves,
+            "{input:?} is {binding}, and none of those exist on the pad"
+        );
+    }
+
+    // And the three that are not GcInputs.
+    for (label, binding) in [
+        ("analog L", profile.extras.analog_trigger_l.as_str()),
+        ("analog R", profile.extras.analog_trigger_r.as_str()),
+        ("rumble", profile.extras.rumble_motor.as_str()),
+    ] {
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{label} is {binding}, and none of those exist on the pad");
+    }
+
+    // The same binding is simultaneously correct for an Xbox pad, which is the
+    // whole point: `A|B` is max(A, B), and an unresolvable side is 0.
+    let xbox: Vec<String> = ["Button A", "Shoulder R", "Start", "Pad N", "Shoulder L", "Motor"]
+        .iter().map(|s| s.to_string()).collect();
+    for input in [GcInput::ButtonA, GcInput::ButtonZ, GcInput::Start, GcInput::DPadUp] {
+        let binding = profile.mapping.get(input).unwrap();
+        assert!(
+            binding.split('|').any(|p| xbox.iter().any(|x| x == Mapping::bare(p))),
+            "{input:?} is {binding}, which binds nothing on an Xbox pad"
+        );
+    }
+}

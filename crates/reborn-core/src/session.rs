@@ -563,11 +563,17 @@ impl Session {
     pub fn prepare(platform: &Platform, req: &LaunchRequest) -> Result<WrittenConfig> {
         crate::runtime::ensure_runtime_idle(&req.runtime_exe)?;
         let prefs=crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
-        if let Some(text)=prefs.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_reshade.as_deref()) {
-            crate::reshade::apply_imported(&req.runtime_exe,text)?;
-        }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics})?;}
         let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
+
+        // After the user folder is known, because the ReShade depth filter has
+        // to be derived from the resolution the player is actually running at.
+        // See reshade::depth_filter_for: with the filter pinned to one
+        // resolution, every depth-driven effect vanishes at any other.
+        let resolution = crate::reshade::internal_resolution_of(&user_dir);
+        if let Some(text)=prefs.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_reshade.as_deref()) {
+            crate::reshade::apply_imported(&req.runtime_exe,text,resolution)?;
+        }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics}, resolution)?;}
         // A folder the setup just created starts from the runtime's baseline,
         // the Dolphin Adam tuned; one a player has run in keeps every edit.
         // Before the path law strips path keys, so a relative path in the
@@ -575,6 +581,33 @@ impl Session {
         // so the launcher's required keys still win.
         let seeded = crate::runtime::seed_user_from_template(&req.runtime_exe, &user_dir)?;
         crate::dolphin_preferences::apply_path_law(&user_dir)?;
+
+        // Undo what older builds welded into this install while the launcher
+        // had only one verb. One shot per install: it prunes the retired pins
+        // out of the per-game layer and puts the player's own values back where
+        // there is evidence of what they were. Un-forcing a key in source does
+        // nothing on its own, because a merge can add and update but never
+        // remove. See crate::settings_law::reconcile_once.
+        {
+            let mut ids = vec!["GN7E69", req.build.game_id()];
+            ids.sort();
+            ids.dedup();
+            match crate::settings_law::reconcile_once(platform, &user_dir, &ids) {
+                Ok(done) if !done.is_empty() => {
+                    tracing::info!(
+                        "settings law: pruned {} per-game pin(s), restored {}, repaired {}",
+                        done.pruned.len(),
+                        done.restored.len(),
+                        done.repaired.len()
+                    );
+                    let _ = crate::notices::add(platform, crate::notices::SETTINGS_ARE_YOURS);
+                }
+                Ok(_) => {}
+                // A repair that cannot run must never stop the player launching.
+                Err(error) => tracing::warn!("settings law: reconcile skipped: {error}"),
+            }
+        }
+
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
             path: config_dir.clone(),
@@ -611,25 +644,35 @@ impl Session {
         // real player's Dolphin.ini, including the paths to their own game
         // images. See crate::ini for the measurements.
         let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        let seeded_files = ConfigGenerator::seeded_overlays();
         for (name, mut overlay) in ConfigGenerator::overlays(&config) {
-            if name == "GFX.ini" {
-                let options = preferences.graphics_override.as_ref();
-                // Retain legacy visual choices, while the compatibility fixes below still win.
-                if options.is_some_and(|o|o.label=="Previous settings") {
-                    if let Some(section)=overlay.get_mut("Settings") { section.remove("MaxAnisotropy"); }
-                }
-                if let Some(previous)=options.filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_gfx.as_deref()) {
-                    let mut retained=crate::ini::Overlay::new();let mut section=String::new();
-                    for line in previous.lines(){let line=line.trim();if line.starts_with('[')&&line.ends_with(']'){section=line[1..line.len()-1].into();}else if !line.starts_with([';','#']){if let Some((key,value))=line.split_once('='){retained.entry(section.clone()).or_default().insert(key.trim().into(),value.trim().into());}}}
-                    for (section,keys) in overlay{retained.entry(section).or_default().extend(keys);}overlay=retained;
-                }
-                let section=overlay.entry("Settings".into()).or_default();
-                // MSAA is deliberately not here: the runtime's baseline sets
-                // 4x and the Anti-aliasing preference lets the player change it.
-                section.insert("InternalResolution".into(),"3".into());
-                section.insert("SSAA".into(),"False".into());
-            }
+            // The player's own choices from the launcher's Settings page. These
+            // are merged rather than seeded because the player asked for them
+            // here, in this launcher, and expects pressing Play to apply them.
             for (section, keys) in crate::dolphin_preferences::overlay(&name,&preferences.emulator_preferences) { overlay.entry(section).or_default().extend(keys); }
+
+            // Everything below is applied with merge_absent: a default, never
+            // an override. A key already in the file keeps its value.
+            let mut seeded = seeded_files.get(&name).cloned().unwrap_or_default();
+
+            // "Previous settings" carries a migrating player's whole old
+            // GFX.ini forward. It seeds a fresh folder and never overrides what
+            // is already there, so a change they make afterwards is not
+            // reverted on every launch for the rest of the install's life.
+            if name == "GFX.ini" {
+                if let Some(previous)=preferences.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_gfx.as_deref()) {
+                    let mut section=String::new();
+                    for line in previous.lines(){
+                        let line=line.trim();
+                        if line.starts_with('[')&&line.ends_with(']'){section=line[1..line.len()-1].into();}
+                        else if !line.starts_with([';','#']){
+                            if let Some((key,value))=line.split_once('='){
+                                seeded.entry(section.clone()).or_default().entry(key.trim().into()).or_insert_with(||value.trim().into());
+                            }
+                        }
+                    }
+                }
+            }
             let path = config_dir.join(&name);
 
             let existing = match std::fs::read_to_string(&path) {
@@ -657,8 +700,15 @@ impl Session {
             }
 
             let mut doc = IniDocument::parse(&existing);
-            crate::dolphin_preferences::preserve_existing(&name,&doc,&mut overlay);
-            let report = doc.merge(&overlay);
+            // Two verbs, in this order. `merge` for what the launcher decides
+            // and what the player set in the launcher; `merge_absent` for the
+            // tuned defaults, which fill a gap and never overwrite a choice.
+            // There is no third step restoring the player's value afterwards,
+            // because nothing above took it away. See crate::settings_law.
+            let mut report = doc.merge(&overlay);
+            let seeded_report = doc.merge_absent(&seeded);
+            report.added.extend(seeded_report.added);
+            report.sections_created.extend(seeded_report.sections_created);
 
             // Nothing to change means nothing to write. A launcher that
             // rewrites a config on every start looks like it is corrupting it.
@@ -753,16 +803,22 @@ impl Session {
                     .find(|d| d.device == pad.device_string())
                 {
                     Some(reported) => reported.all_names(),
-                    None => match crate::devices::known_inputs(&pad.device_string()) {
-                        Some(recorded) => {
-                            tracing::info!(
-                                "{}: the runtime cannot list inputs, using the recorded layout for this pad",
-                                pad.device_string()
-                            );
-                            recorded
-                        }
-                        None => continue,
-                    },
+                    // The runtime is too old to list controls. Do NOT try to
+                    // guess the pad from its name: Windows names a DualSense
+                    // from its HID product string, which differs between
+                    // machines, and a pad whose name we failed to recognise
+                    // got dead bindings, which is the original bug again.
+                    //
+                    // A profile seeded here already carries the universal
+                    // mapping, which binds every vocabulary at once and needs
+                    // no identification at all. Leave it alone.
+                    None => {
+                        tracing::info!(
+                            "{}: the runtime cannot list controls, so the pad keeps the universal mapping",
+                            pad.device_string()
+                        );
+                        Vec::new()
+                    }
                 };
                 let key = pad.identity().profile_key();
                 match saved_profiles
@@ -808,26 +864,49 @@ impl Session {
                 }
             }
         }
+        // Adopt whatever the player changed in Dolphin's own Controller
+        // Settings before regenerating. The launcher keeps owning the Device
+        // line and the port layout, because a remembered device string that no
+        // longer matches binds nothing and Dolphin says nothing about it. It
+        // stops owning the bindings, the tuning and the calibration.
+        //
+        // The sidecar holds exactly the bytes the launcher wrote last time, so
+        // "what did somebody else change" is answerable without guessing.
+        let pad_path = config_dir.join("GCPadNew.ini");
+        let sidecar = pad_path.with_extension("ini.launcher-wrote");
+        let mut saved_profiles = saved_profiles;
+        if let Ok(live) = std::fs::read_to_string(&pad_path) {
+            let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
+            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles);
+            if !adopted.is_empty() {
+                tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
+                if let Ok(file) = crate::controller_profiles::path(platform) {
+                    for profile in &saved_profiles {
+                        let _ = crate::controller_profiles::save(&file, profile.clone());
+                    }
+                }
+            }
+        }
         let saved_profiles = saved_profiles;
         let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
         match build_gcpad_for_slots(&scan, &saved_profiles, preferences.primary_controller.as_deref(), preferences.controller_slots.as_ref()) {
             Some((ini, assignment)) => {
-                let path = config_dir.join("GCPadNew.ini");
-                // The pad file IS wholly owned by the launcher: it is
-                // regenerated from the live device list every launch by
-                // design, because a remembered device string that no longer
-                // matches binds nothing without saying so. Still recorded
-                // once before the first overwrite.
+                let path = pad_path;
+                // Recorded once before the launcher's first overwrite, for
+                // evidence. Never restored from automatically.
                 if let Ok(prev) = std::fs::read_to_string(&path) {
                     let original = path.with_extension("ini.launcher-original");
                     if !original.exists() && !prev.is_empty() {
                         let _ = std::fs::write(&original, &prev);
                     }
                 }
-                std::fs::write(&path, ini).map_err(|source| Error::Io {
+                std::fs::write(&path, &ini).map_err(|source| Error::Io {
                     path: path.clone(),
                     source,
                 })?;
+                // What we just wrote, so the next launch can tell our lines
+                // from theirs.
+                let _ = std::fs::write(&sidecar, &ini);
                 written.files.push(path);
                 written.pads = assignment;
                 written.no_controller = written.pads.is_empty();
@@ -850,7 +929,8 @@ impl Session {
         let card = memory_card_overlay(&dolphin_doc, &user_dir);
         let mut changed = false;
         if !written.no_controller {
-            changed |= !dolphin_doc.merge(&controller_port_overlay(&written.pads)).is_noop();
+            let ports = controller_port_overlay(&dolphin_doc, &written.pads);
+            changed |= !dolphin_doc.merge(&ports).is_noop();
         }
         changed |= !dolphin_doc.merge(&card).is_noop();
         if changed {
@@ -1191,8 +1271,20 @@ pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], pr
         let mut profile=saved.iter().find(|p|p.identity.profile_key()==pad.identity().profile_key()).cloned().unwrap_or_else(||ControllerProfile::new(pad.identity(),index as u8+1));
         profile.port=index as u8+1;profiles.push(profile);assignment.push((index as u8+1,device.clone()));
     }
-    let mut ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
-    for port in 1..=4 {if !assignment.iter().any(|(p,_)|*p==port){ini.push_str(&format!("[GCPad{port}]\nDevice = \n\n"));}}
+    // No pad bound at all means there is nothing to say, and saying nothing
+    // means writing nothing. An empty GCPadNew.ini is indistinguishable from a
+    // broken pad, which is the invariant this crate already states for the
+    // other builder; it was never enforced on the path production uses.
+    if assignment.is_empty() {
+        return None;
+    }
+    let ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
+    // A port with no pad this session gets NO section at all.
+    //
+    // This used to write `[GCPadN]\nDevice = ` for every unfilled port, which
+    // meant one launch with a pad asleep or reconnecting over Bluetooth wiped
+    // that player's bindings for good. An omitted section leaves whatever
+    // Dolphin already has; an empty Device line destroys it.
     Some((ini,assignment))
 }
 
@@ -1216,9 +1308,33 @@ pub fn memory_card_overlay(doc: &crate::ini::IniDocument, _user_dir: &Path) -> c
     overlay
 }
 
-pub fn controller_port_overlay(assignment:&[(u8,String)])->crate::ini::Overlay {
+/// Turn ON the ports the launcher just bound a pad to. Never turn one off.
+///
+/// This used to write `SIDevice<n> = 0` for every port the launcher had not
+/// filled, on every launch. A pad asleep, reconnecting over Bluetooth, or
+/// simply unplugged for one session was enough to switch its port off, and it
+/// also destroyed a port a player had deliberately set to something the
+/// launcher has no concept of: a GameCube adapter (12), a GC keyboard (7).
+///
+/// Writing a port on is recoverable and visible. Writing one off is neither,
+/// so the launcher does not do it: `doc` is consulted and a port that already
+/// holds a value the launcher did not put there is left exactly as it is.
+pub fn controller_port_overlay(doc:&crate::ini::IniDocument,assignment:&[(u8,String)])->crate::ini::Overlay {
     let mut overlay=crate::ini::Overlay::new();
-    for index in 0..4 {overlay.entry("Core".into()).or_default().insert(format!("SIDevice{index}"),if assignment.iter().any(|(port,_)|*port==index+1){"6"}else{"0"}.into());}
+    for index in 0..4u8 {
+        if !assignment.iter().any(|(port,_)|*port==index+1) {
+            continue;
+        }
+        let key=format!("SIDevice{index}");
+        // Already a standard controller, or already something the player chose.
+        // Either way there is nothing to say.
+        match doc.get("Core",&key).map(str::trim) {
+            None | Some("") | Some("0") => {
+                overlay.entry("Core".into()).or_default().insert(key,"6".into());
+            }
+            Some(_) => {}
+        }
+    }
     overlay
 }
 
