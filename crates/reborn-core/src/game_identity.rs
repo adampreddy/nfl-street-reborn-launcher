@@ -9,7 +9,11 @@
 use crate::game_patch::{Chain, Route};
 
 /// The game ID every NFL Street 2 (USA) disc reports, Reborn's included.
-pub const DISC_ID: &str = "GN7E69";
+///
+/// Re-exported rather than redeclared: `Chain::parse` already refuses a
+/// chain whose `disc_id` is not this, so a second literal here could drift
+/// out of step with the one that gates the chain itself.
+pub use crate::game_patch::DISC_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -67,11 +71,12 @@ mod tests {
 
     /// Two steps: root -> mid -> head.
     fn chain() -> Chain {
-        let json = r#"{"schema":"nsr.game-patch-chain.v1","disc_id":"GN7E69","steps":[
+        let json = r#"{"schema":"nsr.game-patch-chain.v1","disc_id":"DISC_ID","steps":[
             {"from_sha256":"ROOT","to_sha256":"MID","to_bytes":1459978240,
              "patch":"patches/aa-bb.xdelta","label":"NSRV3"},
             {"from_sha256":"MID","to_sha256":"HEAD","to_bytes":1459978240,
              "patch":"patches/bb-cc.xdelta","label":"2026.09.13"}]}"#
+            .replace("DISC_ID", DISC_ID)
             .replace("ROOT", ROOT)
             .replace("MID", MID)
             .replace("HEAD", HEAD);
