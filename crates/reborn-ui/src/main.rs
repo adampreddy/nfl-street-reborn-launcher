@@ -701,6 +701,17 @@ fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqC
 /// build. Worded as the fault it almost always is, not as a preference.
 const UNVERIFIED_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc. Repair it from the Settings page.";
 
+/// Whether Play may boot this image, and whether Reborn may treat it as its
+/// own. Split out of `launch` so the fail-safe direction is pinned by tests:
+/// an inverted condition here would otherwise compile and pass everything
+/// while letting an unverified disc boot wearing Reborn's faces.
+fn may_play(verdict: &reborn_core::game_identity::Verdict, acknowledged: bool) -> Result<bool, &'static str> {
+    match verdict {
+        reborn_core::game_identity::Verdict::Unconverted if !acknowledged => Err(UNVERIFIED_GAME),
+        v => Ok(v.is_reborn()),
+    }
+}
+
 /// Start the game and answer when it stops.
 ///
 /// Runs on a blocking thread rather than the interface thread. The sequence has
@@ -743,15 +754,11 @@ async fn launch(
             reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?;
         let saved = reborn_core::settings::Settings::load(&settings_file)
             .map_err(|e| e.player_message().to_string())?;
-        let image_sha = reborn_core::library::hash_file(&game_path)
-            .map(|h| h.as_str().to_string())
-            .unwrap_or_default();
-        let verified = match &verdict {
-            reborn_core::game_identity::Verdict::Unconverted if !saved.ack_matches(&image_sha) => {
-                return Err(UNVERIFIED_GAME.to_string())
-            }
-            v => v.is_reborn(),
-        };
+        let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
+            && reborn_core::library::hash_file(&game_path)
+                .map(|h| saved.ack_matches(h.as_str()))
+                .unwrap_or(false);
+        let verified = may_play(&verdict, acknowledged).map_err(str::to_string)?;
         let _ = verified;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
@@ -5929,6 +5936,78 @@ mod tests {
         assert!(
             verify < request,
             "launch must know what the image is before it builds the request that boots it"
+        );
+    }
+
+    /// `may_play` holds the highest-scrutiny decision in this feature: every
+    /// case is pinned here so the fail-safe direction is defended by tests,
+    /// not just by code reading. Dropping the `!` before `acknowledged`
+    /// inside `may_play` would compile and pass every other test while
+    /// silently turning the fail-safe into a bypass.
+    #[test]
+    fn may_play_refuses_an_unacknowledged_unconverted_disc() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Unconverted, false),
+            Err(UNVERIFIED_GAME),
+            "a player's own unconverted NFL Street 2 must never boot wearing Reborn's texture pack"
+        );
+    }
+
+    #[test]
+    fn may_play_lets_an_acknowledged_unconverted_disc_boot_but_not_as_reborns_own() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Unconverted, true),
+            Ok(false),
+            "a player who already accepted this exact mismatch may still play, but Reborn must \
+             not start treating the disc as one of its own builds just because it was allowed \
+             through once"
+        );
+    }
+
+    #[test]
+    fn may_play_treats_a_reborn_build_as_its_own() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true },
+                false,
+            ),
+            Ok(true),
+            "a genuine Reborn build must boot and be offered Reborn's textures and updates"
+        );
+    }
+
+    #[test]
+    fn may_play_does_not_claim_a_convertible_disc_as_reborns_own() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Convertible, false),
+            Ok(false),
+            "an unconverted retail disc must not be treated as a Reborn build before setup has \
+             actually converted it, even though it is allowed to boot"
+        );
+    }
+
+    #[test]
+    fn may_play_does_not_claim_a_different_game() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::DifferentGame { game_id: "GAFE01".to_string() },
+                false,
+            ),
+            Ok(false),
+            "a disc for a different game entirely must never be treated as a Reborn build or \
+             receive its texture pack"
+        );
+    }
+
+    #[test]
+    fn may_play_does_not_claim_an_unreadable_image() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() },
+                false,
+            ),
+            Ok(false),
+            "an image this launcher could not even read must never be treated as a Reborn build"
         );
     }
 
