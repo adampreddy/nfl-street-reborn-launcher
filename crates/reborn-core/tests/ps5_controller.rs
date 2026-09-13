@@ -306,3 +306,38 @@ fn the_recorded_layout_is_exactly_what_the_hardware_reported() {
     assert!(known_inputs("WGInput/0/Xbox One Game Controller").is_none());
     assert!(known_inputs("DInput/0/DualSense Wireless Controller").is_none());
 }
+
+
+#[test]
+fn the_exact_string_the_shipped_runtime_prints_is_recognised_end_to_end() {
+    use reborn_core::controller::DeviceFamily;
+    use reborn_core::devices::{known_inputs, Backend, Enumeration};
+
+    // Verbatim output of `--list-input-devices` from the runtime players
+    // already have, captured on Adam's PC with a DualSense over USB. This is
+    // the exact path a player is on today, so every link is checked against
+    // the real strings rather than against something plausible.
+    let shipped = "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller";
+    let scan: Enumeration = reborn_core::devices::parse_device_list(shipped);
+
+    let pads = scan.playable_pads();
+    assert_eq!(pads.len(), 1, "exactly one pad is offered, got {pads:?}");
+    let pad = pads[0];
+    assert_eq!(pad.device_string(), "WGInput/0/PS5 Controller");
+    assert_eq!(pad.backend, Backend::Other("WGInput".into()));
+    assert_eq!(
+        pad.family,
+        DeviceFamily::PlayStation,
+        "so the game shows PlayStation button art"
+    );
+
+    // The recorded layout is found for that exact string, and mapping it
+    // leaves nothing dead.
+    let available = known_inputs(&pad.device_string()).expect("recognised");
+    let (mapping, unmatched) = Mapping::auto_from(&available);
+    assert!(unmatched.is_empty());
+    assert!(mapping.unresolvable(&available).is_empty());
+    assert!(mapping.unbound().is_empty());
+}

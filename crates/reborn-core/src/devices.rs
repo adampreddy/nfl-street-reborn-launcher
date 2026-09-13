@@ -522,6 +522,23 @@ pub fn dump_via_runtime(
     ))
 }
 
+/// Parse the whole of `--list-input-devices` output into an enumeration.
+///
+/// Public so the exact bytes a real runtime prints can be used as a test
+/// fixture. Nothing about device handling should have to be re-implemented in
+/// a test in order to be checked.
+pub fn parse_device_list(text: &str) -> Enumeration {
+    let mut devices: Vec<DetectedDevice> = text
+        .lines()
+        .filter_map(|line| parse_device_string(line.trim()))
+        .collect();
+    devices.sort_by(|a, b| (&a.backend, a.id).cmp(&(&b.backend, b.id)));
+    Enumeration {
+        devices,
+        not_searched: Vec::new(),
+    }
+}
+
 /// Parse one `source/id/name` line, the format of `DeviceQualifier::ToString`.
 ///
 /// The name may itself contain slashes, so only the first two are separators.
