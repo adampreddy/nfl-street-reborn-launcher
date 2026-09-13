@@ -308,6 +308,17 @@ function installationPanel() {
   return panel;
 }
 
+export const outcomeWords=(outcome,label,note,patched)=>{
+  const build=label||'NSRV3';
+  switch(outcome){
+    case 'bundle':return ['Game File Patched!',`Your original NFL Street 2 disc was patched to ${build} and verified. Continue to your controller.`];
+    case 'patched':return ['Game File Patched!',`Your disc was updated to ${build} and verified. Continue to your controller.`];
+    case 'newest':return ['Game File Imported!',`This disc is already the newest Reborn build (${build}). Continue to your controller.`];
+    case 'unknown':return ['Game File Imported!',`This disc is not one Reborn recognizes, so it was kept exactly as it is.${note?' '+note:''} Continue to your controller.`];
+    default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
+  }
+};
+
 const SCREENS = {
   welcome: () => ({
     nodes: [
@@ -392,18 +403,6 @@ const SCREENS = {
       const box=el('section','patch-card');
       const isPatched=()=>{try{return localStorage.getItem('setup:patched:'+pending.image)==='true';}catch(_){return false;}};
       const isShipped=()=>{try{return localStorage.getItem('setup:shipped:'+pending.image)==='true';}catch(_){return false;}};
-      // What happened to the disc, in words. "Imported" alone read as "it is
-      // not patching at all" when the disc was simply already the newest build.
-      const outcomeWords=(outcome,label,note,patched)=>{
-        const build=label||'NSRV3';
-        switch(outcome){
-          case 'bundle':return ['Game File Patched!',`Your original NFL Street 2 disc was patched to ${build} and verified. Continue to your controller.`];
-          case 'patched':return ['Game File Patched!',`Your disc was updated to ${build} and verified. Continue to your controller.`];
-          case 'newest':return ['Game File Imported!',`This disc is already the newest Reborn build (${build}). Continue to your controller.`];
-          case 'unknown':return ['Game File Imported!',`This disc is not one Reborn recognizes, so it was kept exactly as it is.${note?' '+note:''} Continue to your controller.`];
-          default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
-        }
-      };
       const storedWords=()=>{try{return outcomeWords(localStorage.getItem('setup:outcome:'+pending.image)||'',localStorage.getItem('setup:label:'+pending.image)||'',localStorage.getItem('setup:note:'+pending.image)||'',isPatched());}catch(_){return outcomeWords('', '', '', false);}};
       const shipped=installInfo?.shipped_game||null;
       const status=el('p','import-status',pending.image?(isShipped()?'NFL Street Reborn is ready':storedWords()[0]):shipped?'Preparing NFL Street Reborn…':'Your original file stays untouched.');status.setAttribute('role','status');
