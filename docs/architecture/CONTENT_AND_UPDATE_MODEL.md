@@ -668,6 +668,8 @@ This is chosen over directory renames and over symlinks or junctions on purpose:
 
 For components where the target must be a real directory that another process opens by fixed path, such as `library/textures/GN7E69`, the swap is a two-step: verified staging directory is renamed into place, previous is renamed aside into `prior/`, both within the same volume, and the journal records which step was reached.
 
+**2026-09-12.** The composed texture tree (section 13) is hardlinks into the pristine folder, and this swap leaves those links on the OLD bytes. The composed record therefore carries the textures pointer's identity (`<version>#<sequence>`), and the next sync rebuilds the tree when it differs, even when every name and count still matches. Data roots are `NFL Street Reborn[ Beta]` since the same date; see the 2026-09-12 spec.
+
 ### One volume, and enough of it
 
 **Two preconditions gate every operation in the state machine, and neither of them was previously stated.**
@@ -958,10 +960,11 @@ Every field in questionnaire row 11.3 is present: ID, name, version, author, cat
 **Replacement: the base texture tree is never written to.**
 
 ```
-  library/textures/GN7E69/       pristine, manifest-verified, READ ONLY
-  mods/packages/<id>/<version>/  extracted package payloads
-  mods/active/GN7E69/            COMPOSED tree, what Dolphin actually loads
-  mods/activation.json           ordered list of active package ids and versions
+  library/textures/GN7E69/                     pristine, manifest-verified, READ ONLY
+  mods/packages/<id>/<version>/                extracted package payloads
+  <user folder>/Load/Textures/GN7E69/          COMPOSED tree, what Dolphin actually loads
+                                               (was mods/active/GN7E69/ plus a junction until 2026-09-12)
+  mods/activation.json                         ordered list of active package ids and versions
 ```
 
 The composed tree is built by hardlinking every pristine file, then replacing the entries that active packages override. **Deactivation is deleting the composed tree and rebuilding it from `activation.json`.**
@@ -1068,6 +1071,18 @@ JSGME's own redistribution terms are unchecked (questionnaire row 11.8). **This 
 
 ## 15. Music and content versioning
 
+> **As built (2026-09-08, `docs/superpowers/specs/2026-09-08-music-editor-design.md`):**
+> the shipped design has no `library/work/` tree. An apply reads the two files
+> it changes straight out of the pristine and booted images and streams a new
+> ISO with a regenerated FST, so nothing is extracted and nothing is purged.
+> The record is `music/soundtrack.json` (schema `nsr.soundtrack.v2`: the
+> switch, the base soundtrack package, the 21 slots, the staged changes);
+> `music/state.json` stays the shared `RebuildState` this section describes.
+> After a roster or game patch rebuilds the image, `Updater::promote` replays
+> the soundtrack through `apply_current_soundtrack`, which is the "Reapply your
+> custom music" step below, done inline rather than queued. The rest of this
+> section is the design as it was proposed.
+
 The music feature is the only thing in the product that deliberately makes a managed artifact stop matching its manifest. That makes it a content-versioning problem, not only a feature.
 
 ### `library/work/`, and what it is derived from
@@ -1170,6 +1185,8 @@ The shipped image holds `template.dat` at 500,928 bytes. The development tree's 
 ---
 
 ## 16. Reducing the Inno Setup installer to install-only
+
+**2026-09-12.** The installer's `DataDir` is `NFL Street Reborn` (beta: `NFL Street Reborn Beta`) and the program goes to `<DataDir>\app`. The older `... Launcher[ Beta]\app` program folder is uninstalled by the installer (`PreviousLauncherInstall`, which never picks the 2.1 uninstaller registered under the same AppId) and the data beside it is adopted by the launcher at first start. The section below is the 2026-09-05 analysis and stands as history.
 
 ### What is wrong with it, all verified
 

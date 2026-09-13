@@ -56,17 +56,90 @@ pub async fn setup_install_info() -> Result<serde_json::Value,String> {
             }
         }
     }
-    Ok(serde_json::json!({"mode":if fresh(&p){"fresh"}else{"migrate"},"root":root,"memory_cards":cards,"installed_release":root.as_ref().and_then(|r|installed_release(r)),"settings_found":root.as_ref().is_some_and(|r|r.join("User/Config/GFX.ini").is_file()||r.join("User/Config/Dolphin.ini").is_file()),"games":root.as_ref().map(|r|legacy_games(r)).unwrap_or_default()}))
+    Ok(serde_json::json!({"mode":if fresh(&p){"fresh"}else{"migrate"},"root":root,"memory_cards":cards,"shipped_game":shipped_game(),"installed_release":root.as_ref().and_then(|r|installed_release(r)),"settings_found":root.as_ref().is_some_and(|r|r.join("User/Config/GFX.ini").is_file()||r.join("User/Config/Dolphin.ini").is_file()),"games":root.as_ref().map(|r|legacy_games(r)).unwrap_or_default()}))
 }
 
 pub fn seed_prompt_packages(p:&Platform)->Result<(),String> {
-    let shipped=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("content/prompt-packages");
+    let install=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
     let target=reborn_core::mods::packages_root(p).map_err(|e|e.to_string())?;
+    let shipped=install.join("content/prompt-packages");
     for id in ["jsgme.xbox-controls","jsgme.ps-controls"] {
         let source=shipped.join(id);
         if source.is_dir() {reborn_core::migration::copy_tree_no_clobber(&source,&target.join(id)).map_err(|e|e.to_string())?;}
     }
+    // Every pack the installer carries, so the Mods library is full on first
+    // run. Never over a pack that is already there: a player's own copy wins.
+    if let Ok(entries)=std::fs::read_dir(install.join("content/mods/packages")) {
+        for entry in entries.flatten() {
+            let source=entry.path();
+            if source.is_dir() {reborn_core::migration::copy_tree_no_clobber(&source,&target.join(entry.file_name())).map_err(|e|e.to_string())?;}
+        }
+    }
     Ok(())
+}
+
+/// The game the installer carries, if this one does: `content\games\NSR.iso`
+/// beside the launcher. Not shipped since 2026-09-10 (Adam: "NSR being
+/// included within this install is not allowed"); the code stays inert
+/// without the file, and setup patches the player's own disc instead.
+pub fn shipped_game()->Option<PathBuf> {
+    let path=std::env::current_exe().ok()?.parent()?.join("content/games/NSR.iso");
+    path.is_file().then_some(path)
+}
+
+/// The game patch chain the installer carries (`content\game-patch`), copied
+/// beside the library so setup can move an imported disc to the newest build
+/// with no download. Never over a chain an update delivered.
+pub fn seed_game_patch(p:&Platform)->Result<(),String> {
+    let shipped=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("content/game-patch");
+    if !shipped.join("chain.json").is_file(){return Ok(());}
+    let target=reborn_core::game_patch::component_root(&p.paths.data_root().map_err(|e|e.to_string())?);
+    reborn_core::migration::copy_tree_no_clobber(&shipped,&target).map(|_|()).map_err(|e|e.to_string())
+}
+
+/// Move the disc setup just imported to the newest build, with the shipped
+/// chain, before the player goes any further: an old install's disc becomes
+/// the current one here rather than in a download after setup. A disc the
+/// chain does not know is left as imported. Returns the build's label when
+/// a patch was applied.
+/// What the shipped patch chain did to the player's disc, so the wizard can
+/// say it in words instead of "Imported" for every case. Adam saw "Game
+/// File Imported!" on a disc that was already NSRV3 and read it as "it is
+/// not patching at all".
+pub enum PatchOutcome {
+    /// The chain took the disc to its newest build; the label is that build's.
+    Applied(String),
+    /// The disc already is the chain's newest build.
+    UpToDate,
+    /// The chain does not know this disc (or refused it); kept as it came.
+    Unknown(String),
+    /// No chain or no xdelta3 shipped with this build; nothing could run.
+    NoChain,
+}
+impl PatchOutcome {
+    pub fn applied(&self)->Option<&str>{ if let PatchOutcome::Applied(l)=self {Some(l)} else {None} }
+    pub fn name(&self)->&'static str{ match self { PatchOutcome::Applied(_)=>"patched", PatchOutcome::UpToDate=>"newest", PatchOutcome::Unknown(_)=>"unknown", PatchOutcome::NoChain=>"no-chain" } }
+    pub fn note(&self)->Option<&str>{ if let PatchOutcome::Unknown(n)=self {Some(n)} else {None} }
+}
+
+fn patch_to_newest(p:&Platform,report:&dyn Fn(&str))->Result<PatchOutcome,String> {
+    use reborn_core::game_patch::{apply,find_xdelta,xdelta_dirs,ApplyRequest,Outcome,Xdelta3,BUNDLE_DIR};
+    seed_game_patch(p)?;
+    let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
+    let dirs=xdelta_dirs(p,&[exe_dir.join(BUNDLE_DIR)]);
+    let Some(xdelta)=find_xdelta(p,&dirs) else {return Ok(PatchOutcome::NoChain)};
+    let data=p.paths.data_root().map_err(|e|e.to_string())?;
+    let patcher=Xdelta3::new(p,xdelta);
+    report("Updating your game to the newest build…");
+    // A hard failure here (xdelta3 dying, staging full) must not undo an
+    // import that already landed: the disc stays as imported and the wizard
+    // says so, instead of reporting the whole import as failed.
+    match apply(p,&ApplyRequest{data_root:&data,patcher:&patcher}) {
+        Ok(Outcome::Applied(r))=>Ok(PatchOutcome::Applied(r.steps.last().cloned().unwrap_or_default())),
+        Ok(Outcome::UpToDate{..})=>Ok(PatchOutcome::UpToDate),
+        Ok(Outcome::Refused(r))=>{eprintln!("game not patched during setup: {}",r.message());Ok(PatchOutcome::Unknown(r.message().to_string()))}
+        Err(e)=>{eprintln!("game not patched during setup: {e}");Ok(PatchOutcome::Unknown("The update could not be applied right now; the launcher will try again after setup.".to_string()))}
+    }
 }
 
 #[tauri::command]
@@ -104,11 +177,25 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":"Setting up your game…","percent":99}));
         let booted=establish_booted(&p,&data,&output)?;
+        // A disc the bundle could not patch (an old NSR.iso, say) may still be
+        // one the shipped chain knows. Either way the player ends on the
+        // newest build here, or on their own disc if nothing knows it.
+        // Three ways to end on the newest build, told apart for the wizard:
+        // the bundle patched an original disc ("bundle"), the chain moved an
+        // older Reborn disc forward ("patched"), or the disc already was the
+        // newest ("newest"). "unknown" is a disc nothing recognised.
+        let (outcome,label,note)=if patched {("bundle".to_string(),Some("NSRV3".to_string()),None)} else {
+            let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
+            (o.name().to_string(),o.applied().map(String::from),o.note().map(String::from))
+        };
+        let patched=patched||outcome=="patched";
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
         saved.save(&settings).map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
-        Ok(serde_json::json!({"path":booted,"pristine":output,"patched":patched}))
+        // The pristine after the chain ran, not the one the import landed.
+        let pristine=reborn_core::game_image::find_pristine(&data).map(|p|p.path).unwrap_or(output);
+        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note}))
     }).await.map_err(|e|e.to_string())?
 }
 
@@ -138,7 +225,7 @@ pub async fn controller_slots() -> Result<serde_json::Value,String> {
 pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:Option<String>) -> Result<serde_json::Value,String> {
     tauri::async_runtime::spawn_blocking(move|| {
         if !(1..=4).contains(&player){return Err("Choose Player 1 through Player 4.".into());}
-        let _guard=LaunchGuard::acquire()?;let p=Platform::detect();
+        let _guard=if session_active(){None}else{Some(LaunchGuard::acquire()?)};let p=Platform::detect();
         let scan=runtime.as_deref().and_then(|exe|reborn_core::devices::scan_via_runtime(&p,Path::new(exe),&p.paths.data_root().ok()?.join("cache")).ok()).unwrap_or_else(DeviceScanner::scan);
         let mut pads=scan.playable_pads();
         if device.as_ref().is_some_and(|d|!pads.iter().any(|p|p.device_string()==*d)){return Err("That controller disconnected. Scan again before assigning it.".into());}
@@ -148,7 +235,10 @@ pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:
         let mut slots=saved.controller_slots.unwrap_or_else(||std::array::from_fn(|i|pads.get(i).map(|p|p.device_string())));
         if let Some(device)=&device {for slot in &mut slots {if slot.as_ref()==Some(device){*slot=None;}}}
         slots[usize::from(player-1)]=device;
-        saved.primary_controller=slots[0].clone();saved.controller_slots=Some(slots.clone());saved.save(&file).map_err(|e|e.to_string())?;
+        saved.primary_controller=slots[0].clone();saved.controller_slots=Some(slots.clone());
+        let profiles=reborn_core::controller_profiles::load(&reborn_core::controller_profiles::path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
+        saved.save(&file).map_err(|e|e.to_string())?;
         Ok(serde_json::json!({"slots":slots}))
     }).await.map_err(|e|e.to_string())?
 }
@@ -165,7 +255,7 @@ pub async fn setup_controller_mapping(runtime: Option<String>, device: String) -
 #[tauri::command]
 pub async fn setup_save_mapping(runtime: Option<String>, device: String, bindings: BTreeMap<String,String>, reset: bool) -> Result<(),String> {
     tauri::async_runtime::spawn_blocking(move|| {
-        let _guard=LaunchGuard::acquire()?;
+        let _guard=if session_active(){None}else{Some(LaunchGuard::acquire()?)};
         let mut profile=controller(runtime.as_deref(),&device)?;
         if reset { profile.reset(&[]); }
         else {
@@ -179,6 +269,11 @@ pub async fn setup_save_mapping(runtime: Option<String>, device: String, binding
         }
         let p=Platform::detect();
         let file=reborn_core::controller_profiles::path(&p).map_err(|e|e.to_string())?;
+        let saved=reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let mut profiles=reborn_core::controller_profiles::load(&file).map_err(|e|e.to_string())?;
+        profiles.retain(|p|p.identity.profile_key()!=profile.identity.profile_key());profiles.push(profile.clone());
+        let scan=runtime.as_deref().and_then(|exe|reborn_core::devices::scan_via_runtime(&p,Path::new(exe),&p.paths.data_root().ok()?.join("cache")).ok()).unwrap_or_else(DeviceScanner::scan);
+        crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
         reborn_core::controller_profiles::save(&file,profile).map_err(|e|e.to_string())
     }).await.map_err(|e|e.to_string())?
 }
@@ -244,7 +339,12 @@ pub async fn setup_graphics_options() -> Result<serde_json::Value,String> {
 }
 #[tauri::command]
 pub async fn setup_save_graphics_options(mode:String,resolution:u32,msaa:u32,ssaa:bool)->Result<(),String>{
-    if !["preset","previous"].contains(&mode.as_str()) || resolution!=3 || msaa!=1 || ssaa{return Err("Reborn requires 3× resolution and anti-aliasing off.".into());}
+    // Resolution and supersampling are the player's now; see
+    // reborn_core::settings_law. They used to be refused here and pinned in the
+    // per-game layer, which is why neither this page nor Dolphin's own Graphics
+    // window could change them.
+    if !["preset","previous"].contains(&mode.as_str()){return Err("Choose a graphics option.".into());}
+    if !(1..=6).contains(&resolution){return Err("Choose a resolution from 1× to 6× native.".into());}
     let p=Platform::detect();let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
     let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
     saved.graphics_override=match mode.as_str(){
@@ -252,7 +352,7 @@ pub async fn setup_save_graphics_options(mode:String,resolution:u32,msaa:u32,ssa
         "previous"=>Some(serde_json::from_slice(&std::fs::read(p.paths.data_root().map_err(|e|e.to_string())?.join("config/migrated-graphics.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?),
         _=>Some(reborn_core::settings::GraphicsOverride{label:"Custom".into(),resolution,msaa,ssaa,legacy_gfx:None,legacy_reshade:None})
     };
-    if let Some(options)=saved.graphics_override.as_mut(){options.resolution=3;options.msaa=1;options.ssaa=false;}
+    if let Some(options)=saved.graphics_override.as_mut(){options.resolution=resolution;options.ssaa=ssaa;}
     saved.save(&file).map_err(|e|e.to_string())
 }
 
@@ -318,7 +418,7 @@ fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,Strin
         if let Ok(appdata)=std::env::var("APPDATA"){dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));}
         if let Some(builder)=reborn_core::roster::find_builder(p,&dirs){
             let textures=reborn_core::mods::pristine_root(p,&reborn_core::mods::GameId::parse("GN7E69").map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,textures_root:Some(&textures),accept_warnings:true}){
+            match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,output:None,textures_root:Some(&textures),accept_warnings:true}){
                 Ok(reborn_core::roster::ApplyOutcome::Refused(r))=>eprintln!("roster not applied to the imported game: {}",r.message()),
                 Err(e)=>eprintln!("roster not applied to the imported game: {e}"),
                 Ok(_)=>{}
@@ -332,6 +432,7 @@ fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,Strin
 pub async fn setup_import_existing_game(image:String)->Result<String,String>{
     tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let pristine=import_existing(&p,&reborn_core::session::user_path(&image))?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;let game=establish_booted(&p,&data,&pristine)?;
+        patch_to_newest(&p,&|_|{})?;
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
@@ -339,7 +440,7 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
 }
 #[tauri::command]
 pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String)->Result<serde_json::Value,String>{
-    tauri::async_runtime::spawn_blocking(move||->Result<(),String>{
+    let cards=tauri::async_runtime::spawn_blocking(move||->Result<Vec<String>,String>{
         use tauri::Emitter;
         let last=std::cell::Cell::new(std::time::Instant::now()-std::time::Duration::from_secs(1));
         let report=|stage:&str,percent:Option<u8>,bytes:u64|{if last.get().elapsed().as_millis()>=100 || percent==Some(100){last.set(std::time::Instant::now());let _=app.emit("install-import-progress",serde_json::json!({"stage":stage,"percent":percent,"bytes":bytes}));}};
@@ -350,19 +451,35 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         for name in ["Dolphin.exe","NFL Street Reborn Dolphin.exe","runtime/Dolphin.exe"]{
             reborn_core::runtime::ensure_runtime_idle(&root.join(name)).map_err(|e|e.to_string())?;
         }
-        let runtime=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("runtime/Dolphin.exe");
-        if !runtime.is_file(){return Err("The new launcher runtime is missing. Reinstall the complete package.".into());}
+        // The bundled runtime by whichever name this build gave the emulator.
+        // 3.1.0 renamed Dolphin.exe to NFL Street Reborn Dolphin.exe, and a
+        // fixed file name here refused every import against that runtime.
+        let runtime=match reborn_core::session::resolve_runtime(&p,None,None){Ok(reborn_core::session::Runtime::Bundled(path))=>path,_=>return Err("The new launcher runtime is missing. Reinstall the complete package.".into())};
         let source=reborn_core::session::user_path(&image);check_reborn_id(&source)?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;
         let folder=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
         let user=data.join("dolphin-users").join(format!("migrated-{folder}"));
         let mut copied=0;
         report("Copying saves and settings…",None,0);
-        let bytes=reborn_core::migration::copy_tree_with_progress(&root.join("User"),&user,&mut |n|{copied+=n;report("Copying saves and settings…",None,copied);}).map_err(|e|e.to_string())?;
+        // Saves and settings, not the 2 GB texture pack: the installer ships
+        // the pack, the composed folder is built from it at every launch, and
+        // the 2.1 pack stays where it is, intact.
+        let bytes=reborn_core::migration::copy_tree_excluding(&root.join("User"),&user,&["Load/Textures"],&mut |n|{copied+=n;report("Copying saves and settings…",None,copied);}).map_err(|e|e.to_string())?;
         rebase_user_paths(&root,&user)?;
         let pristine=import_existing_progress(&p,&source,&report)?;
         report("Setting up your game…",Some(96),copied);
         let game=establish_booted(&p,&data,&pristine)?;
+        // The old install's disc becomes the newest build now, offline, with
+        // the shipped chain: "I already have Reborn" changes the disc rather
+        // than copying the old one over.
+        patch_to_newest(&p,&|stage|report(stage,None,copied))?;
+        // The copied memory cards, brought up to date with the installed
+        // roster while the game is known to be closed. Facts for the page,
+        // never an error: the import itself has already succeeded, and a
+        // roster that is not installed yet simply says nothing (the first
+        // content update and every launch run the same sync).
+        report("Bringing your saves up to date…",None,copied);
+        let cards=match reborn_core::cards::after_apply(&p,&data,&user,&[]){Ok(outcome)=>outcome.facts(),Err(e)=>{eprintln!("memory cards after the import: {e}");vec![reborn_core::cards::NOT_SYNCED.to_string()]}};
         let pad_ini=std::fs::read_to_string(user.join("Config/GCPadNew.ini")).unwrap_or_default();
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-controller.ini"),&pad_ini).map_err(|e|e.to_string())?;
@@ -379,21 +496,7 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         std::fs::write(data.join("config/migrated-graphics.json"),serde_json::to_vec_pretty(&options).unwrap()).map_err(|e|e.to_string())?;
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
-        let textures=user.join("Load/Textures/GN7E69");
-        if textures.is_dir() && std::fs::read_dir(&textures).map_err(|e|e.to_string())?.next().is_some(){
-            let base=data.join("migrated-textures").join(folder.to_string());
-            reborn_core::migration::copy_tree_with_progress(&textures,&base,&mut |n|{copied+=n;report("Importing textures…",Some(95),copied);}).map_err(|e|e.to_string())?;
-            // Managed button art starts from the release's GameCube baseline,
-            // so selecting GameCube can also undo an old Xbox/PS texture pack.
-            let shipped=runtime.parent().unwrap().parent().unwrap().join("content");
-            let prompts=shipped.join("prompt-packages/jsgme.xbox-controls/1.0.0/files/GN7E69");
-            if let Ok(entries)=std::fs::read_dir(prompts){for entry in entries.flatten(){
-                if !entry.path().is_file(){continue;}
-                let original=shipped.join("textures/GN7E69").join(entry.file_name());
-                if original.is_file(){std::fs::copy(original,base.join(entry.file_name())).map_err(|e|e.to_string())?;}
-            }}
-            saved.migrated_texture_root=Some(base);
-        }saved.save(&file).map_err(|e|e.to_string())?;
+        saved.save(&file).map_err(|e|e.to_string())?;
         // Only recognizable old screenshots are moved; other game files and textures remain untouched.
         if let Ok(entries)=std::fs::read_dir(&root){for e in entries.flatten(){let source=e.path();let name=e.file_name().to_string_lossy().into_owned();if source.is_file()&&name.starts_with("NFL Street Reborn Dolphin ")&&source.extension().is_some_and(|e|["png","jpg","jpeg","bmp"].iter().any(|x|e.eq_ignore_ascii_case(x))){let dest=root.join("Old Screenshots");std::fs::create_dir_all(&dest).map_err(|e|e.to_string())?;let mut target=dest.join(&name);let mut suffix=1;
             while target.exists(){target=dest.join(format!("{} ({suffix}).{}",source.file_stem().unwrap().to_string_lossy(),source.extension().unwrap().to_string_lossy()));suffix+=1;}
@@ -404,9 +507,9 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
             if let Advance::Refused(why)=flow.satisfy(stage,answer).map_err(|e|e.to_string())?{return Err(why.message());}
         }
         report("Import complete. Continue to your controller.",Some(100),copied);
-        Ok(())
+        Ok(cards)
     }).await.map_err(|e|e.to_string())??;
-    Ok(serde_json::json!({"imported":true}))
+    Ok(serde_json::json!({"imported":true,"cards":cards}))
 }
 
 fn migrate_effects(root:&Path,destination:&Path)->Result<Option<String>,String>{

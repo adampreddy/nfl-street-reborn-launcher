@@ -137,10 +137,9 @@ pub struct Mapping(BTreeMap<GcInput, PhysicalBinding>);
 impl Mapping {
     /// The shipping default, one mapping for every modern pad.
     ///
-    /// Taken from the working `Xbox.ini`, including the deliberate B and X
-    /// swap: GameCube B sits on the physical X button and GameCube X on the
-    /// physical B. That is not a transcription error, it is how NFL Street has
-    /// always been played here and changing it would break muscle memory.
+    /// B binds to physical B and X binds to physical X. The game's own
+    /// match-specific handling already supplies the intended behavior;
+    /// duplicating the old Dolphin swap would reverse it again.
     ///
     /// The one thing dropped from the old pair of profiles is the
     /// shoulder-versus-trigger difference between Xbox and PlayStation. Adam's
@@ -236,6 +235,56 @@ impl Mapping {
         }
     }
 
+    /// One binding that works on every pad we know the vocabulary of, without
+    /// being told which pad it is.
+    ///
+    /// # Why this is not a bodge
+    ///
+    /// Read out of the fork's own `ExpressionParser.cpp`, not assumed:
+    ///
+    /// - An unresolvable control is **zero**, silently:
+    ///   `ControlExpression::GetValueIgnoringSuppression` opens with
+    ///   `if (!m_input) return 0.0;`. That silence is exactly what made the
+    ///   PlayStation bug invisible, and it is exactly what makes this safe.
+    /// - `|` is `TOK_OR`, and `BinaryExpression` evaluates it as
+    ///   `std::max(lhs, rhs)`. So `A|B` is "whichever of these exists".
+    /// - For outputs, `BinaryExpression::SetValue` drives BOTH sides, and
+    ///   `ControlExpression::SetValue` is a no-op when the output does not
+    ///   resolve. So an OR is safe for the rumble motor too.
+    ///
+    /// So `` `Button A`|`Cross` `` binds the south face button on an Xbox pad
+    /// AND on a PlayStation pad, with no detection of any kind. That matters
+    /// because the launcher cannot always ask what a pad calls its controls:
+    /// only a runtime carrying `--dump-device-inputs` can answer, and players
+    /// keep the runtime they have until a content update reaches them.
+    ///
+    /// Matching on the device NAME instead was the previous attempt and it was
+    /// wrong: Windows names a DualSense from its HID product string, which is
+    /// `PS5 Controller` on one machine and other things elsewhere. A pad whose
+    /// name was not in the list got a correct Device line and dead bindings,
+    /// which is the original bug wearing a different hat.
+    pub fn universal(input: GcInput) -> String {
+        Self::candidates(input)
+            .iter()
+            .map(|name| Self::quote(name))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    /// The mapping to use when the pad's own control names are NOT available.
+    ///
+    /// Every control binds every vocabulary at once. Exact names are better and
+    /// [`Mapping::auto_from`] produces them whenever the runtime can be asked;
+    /// this is what a player gets in the meantime, and it works.
+    pub fn universal_gamepad() -> Self {
+        Mapping(
+            GcInput::ALL
+                .iter()
+                .map(|input| (*input, Self::universal(*input)))
+                .collect(),
+        )
+    }
+
     /// Strip the backticks Dolphin uses to quote a control name containing
     /// spaces, so a stored binding can be compared to a reported input name.
     pub fn bare(binding: &str) -> &str {
@@ -311,6 +360,30 @@ impl Mapping {
             .collect()
     }
 
+    /// Bindings the pad file needs that are NOT GameCube inputs.
+    ///
+    /// The analog trigger travel and the rumble motor are written into
+    /// `GCPadNew.ini` alongside the twenty mapped controls, but they are not
+    /// `GcInput`s, so for a long time they sat hardcoded in the generator as
+    /// XInput names and were invisible to both the auto mapping and the
+    /// guardrail. On a PlayStation 5 pad all three were dead, and the file
+    /// still looked completely reasonable.
+    ///
+    /// MEASURED on a real DualSense 2026-09-12: the shoulders are `Bumper L`
+    /// and `Bumper R`, and the motors are `Motor L` and `Motor R`. There is no
+    /// `Shoulder L` and no `Motor` on that pad.
+    pub fn extra_candidates(extra: Extra) -> &'static [&'static str] {
+        match extra {
+            Extra::AnalogTriggerL => &["Shoulder L", "Bumper L"],
+            Extra::AnalogTriggerR => &["Shoulder R", "Bumper R"],
+            // One motor, not an expression combining both. `Motor L` is
+            // measured to exist and measured to resolve; a two motor
+            // expression would be an assumption about the parser that nothing
+            // here has checked.
+            Extra::RumbleMotor => &["Motor", "Motor L"],
+        }
+    }
+
     pub fn get(&self, input: GcInput) -> Option<&str> {
         self.0.get(&input).map(String::as_str)
     }
@@ -340,6 +413,116 @@ impl Mapping {
         }
         by_binding.retain(|_, inputs| inputs.len() > 1);
         by_binding
+    }
+}
+
+
+/// One of the three non-GameCube bindings the pad file also carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Extra {
+    AnalogTriggerL,
+    AnalogTriggerR,
+    RumbleMotor,
+}
+
+impl Extra {
+    pub const ALL: &'static [Extra] = &[
+        Extra::AnalogTriggerL,
+        Extra::AnalogTriggerR,
+        Extra::RumbleMotor,
+    ];
+}
+
+/// The resolved non-GameCube bindings for one pad.
+///
+/// Defaults to exactly what the generator used to hardcode, so an Xbox pad and
+/// every already saved profile keep the behaviour they had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extras {
+    pub analog_trigger_l: String,
+    pub analog_trigger_r: String,
+    pub rumble_motor: String,
+}
+
+impl Default for Extras {
+    /// Every vocabulary at once, for the same reason as
+    /// [`Mapping::universal`]: these three are bound by name too, and were
+    /// dead on a PlayStation pad for exactly the same reason the buttons
+    /// were. An OR is safe for the motor because
+    /// `BinaryExpression::SetValue` drives both sides and an unresolved
+    /// output is a no-op.
+    fn default() -> Self {
+        Self {
+            analog_trigger_l: Extras::universal(Extra::AnalogTriggerL),
+            analog_trigger_r: Extras::universal(Extra::AnalogTriggerR),
+            rumble_motor: Extras::universal(Extra::RumbleMotor),
+        }
+    }
+}
+
+impl Extras {
+    /// Every candidate for this extra, OR'd, so it binds whichever the pad has.
+    pub fn universal(extra: Extra) -> String {
+        Mapping::extra_candidates(extra)
+            .iter()
+            .map(|name| Mapping::quote(name))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    pub fn get(&self, extra: Extra) -> &str {
+        match extra {
+            Extra::AnalogTriggerL => &self.analog_trigger_l,
+            Extra::AnalogTriggerR => &self.analog_trigger_r,
+            Extra::RumbleMotor => &self.rumble_motor,
+        }
+    }
+
+    fn set(&mut self, extra: Extra, value: String) {
+        match extra {
+            Extra::AnalogTriggerL => self.analog_trigger_l = value,
+            Extra::AnalogTriggerR => self.analog_trigger_r = value,
+            Extra::RumbleMotor => self.rumble_motor = value,
+        }
+    }
+
+    /// Resolve all three from the names this device actually reports.
+    ///
+    /// Anything that cannot be resolved is left EMPTY, and an empty extra is
+    /// not written to the file at all. A pad with no rumble output should get
+    /// no `Rumble/Motor` line, not a line naming a motor it does not have:
+    /// the second is indistinguishable from the first while playing, and
+    /// indistinguishable from a bug while reading the file.
+    pub fn from_device(available: &[String]) -> Self {
+        let mut out = Self::default();
+        for extra in Extra::ALL {
+            let found = Mapping::extra_candidates(*extra)
+                .iter()
+                .find(|c| available.iter().any(|a| Mapping::bare(a) == **c));
+            out.set(
+                *extra,
+                found.map(|name| Mapping::quote(name)).unwrap_or_default(),
+            );
+        }
+        out
+    }
+
+    /// Which of the three name a control this device does not have.
+    pub fn unresolvable(&self, available: &[String]) -> Vec<Extra> {
+        if available.is_empty() {
+            return Vec::new();
+        }
+        Extra::ALL
+            .iter()
+            .copied()
+            .filter(|e| {
+                let bare = Mapping::bare(self.get(*e));
+                // Empty means "this pad has no such control and no line is
+                // written", which is a resolved state, not a broken one.
+                !bare.is_empty() && !available.iter().any(|a| Mapping::bare(a) == bare)
+            })
+            .collect()
     }
 }
 
@@ -593,12 +776,38 @@ pub struct ControllerProfile {
     pub port: u8,
     pub mapping: Mapping,
     pub tuning: Tuning,
+    /// The analog trigger and rumble bindings, resolved for this device.
+    ///
+    /// Defaulted so every profile saved before this existed keeps the exact
+    /// behaviour it had.
+    #[serde(default)]
+    pub extras: Extras,
+
     /// Bindings the user changed away from the default.
     ///
     /// Tracked so the remap screen can show what is customized and offer to
     /// reset just those, and so a future change to the shipping default reaches
     /// everything the user has not deliberately overridden.
     pub overridden: Vec<GcInput>,
+
+    /// The player's own stick calibration, as Dolphin's Calibrate wizard wrote
+    /// it, keyed by INI key (`Main Stick/Calibration`, `C-Stick/Calibration`).
+    ///
+    /// Empty means they never ran it, and the square gate is written instead.
+    /// A pad whose sticks have been measured must never be re-squared: the
+    /// hardcoded gate describes a perfect stick, and theirs is not one.
+    #[serde(default)]
+    pub calibration: BTreeMap<String, String>,
+
+    /// Lines from the player's `GCPadNew.ini` this model cannot express, kept
+    /// verbatim so regenerating the file does not silently delete them.
+    ///
+    /// Dolphin's own controller window writes plenty the launcher has no
+    /// concept of: `Buttons/Threshold`, per-direction `Range`,
+    /// `Main Stick/Modifier`, `Profile`. Before this, regenerating the file
+    /// from the launcher's model deleted every one of them.
+    #[serde(default)]
+    pub carried: BTreeMap<String, String>,
 }
 
 impl ControllerProfile {
@@ -606,9 +815,16 @@ impl ControllerProfile {
         Self {
             identity,
             port,
-            mapping: Mapping::default_gamepad(),
+            // Not default_gamepad: that is XInput-only vocabulary and is
+            // dead on a PlayStation pad. This binds every vocabulary at
+            // once and is replaced with exact names by `repair_for` as
+            // soon as the runtime can report them.
+            mapping: Mapping::universal_gamepad(),
             tuning: Tuning::default(),
+            extras: Extras::default(),
             overridden: Vec::new(),
+            calibration: BTreeMap::new(),
+            carried: BTreeMap::new(),
         }
     }
 
@@ -631,13 +847,43 @@ impl ControllerProfile {
             return Vec::new();
         }
         let mut needs: Vec<GcInput> = self.mapping.unresolvable(available);
+        // An OR binding is a placeholder for "we did not know what this pad
+        // calls its controls". Now that we do, replace it with the exact
+        // name, so the file a person reads says `Cross` rather than every
+        // vocabulary at once.
+        for input in GcInput::ALL {
+            if self
+                .mapping
+                .get(*input)
+                .is_some_and(|b| b.contains('|'))
+                && !needs.contains(input)
+            {
+                needs.push(*input);
+            }
+        }
         for input in self.mapping.unbound() {
             if !needs.contains(&input) {
                 needs.push(input);
             }
         }
         if needs.is_empty() {
+            // Still not a no-op: the extras can be dead even when all twenty
+            // mapped controls resolve, which is exactly the PlayStation 5 case.
+            if !self.extras.unresolvable(available).is_empty()
+                || Extra::ALL.iter().any(|e| self.extras.get(*e).contains('|'))
+            {
+                self.extras = Extras::from_device(available);
+            }
             return Vec::new();
+        }
+
+        // The analog triggers and the motor are bound by name too, and were
+        // dead on a PlayStation 5 pad for the same reason. Repaired on the
+        // same terms: only when the current name does not resolve.
+        if !self.extras.unresolvable(available).is_empty()
+            || Extra::ALL.iter().any(|e| self.extras.get(*e).contains('|'))
+        {
+            self.extras = Extras::from_device(available);
         }
 
         let (workable, _) = Mapping::auto_from(available);
@@ -767,6 +1013,134 @@ impl ConflictDetector {
 }
 
 /// Writes `GCPadNew.ini` from profiles.
+/// One `[GCPadN]` section as key/value pairs, in file order.
+type PadSection = BTreeMap<String, String>;
+
+/// Split a `GCPadNew.ini` into its `[GCPadN]` sections.
+///
+/// Deliberately forgiving: anything unparsed is skipped rather than refused,
+/// because failing to read a file the player hand-edited would be worse than
+/// not understanding part of it.
+pub fn parse_gcpad(text: &str) -> BTreeMap<u8, PadSection> {
+    let mut out: BTreeMap<u8, PadSection> = BTreeMap::new();
+    let mut port: Option<u8> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            port = line[1..line.len() - 1]
+                .strip_prefix("GCPad")
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=4).contains(n));
+            if let Some(port) = port {
+                out.entry(port).or_default();
+            }
+            continue;
+        }
+        if line.is_empty() || line.starts_with([';', '#']) {
+            continue;
+        }
+        let (Some(port), Some((key, value))) = (port, line.split_once('=')) else { continue };
+        out.entry(port)
+            .or_default()
+            .insert(key.trim().to_string(), value.trim().to_string());
+    }
+    out
+}
+
+/// Fold everything the player changed in Dolphin's own Controller Settings
+/// back into the launcher's profiles.
+///
+/// # Why this is not just "stop rewriting the file"
+///
+/// The launcher regenerates `GCPadNew.ini` on every launch for a real reason,
+/// stated where it happens: a remembered device string that no longer matches
+/// anything plugged in binds nothing, and Dolphin says nothing about it. The
+/// file parses, the section looks right, and the pad is silently dead. So the
+/// launcher keeps owning the `Device` line and the port layout.
+///
+/// What it stops owning is the bindings. `last_written` is the exact text the
+/// launcher wrote last time, kept beside the file; anything in `live` that
+/// differs from it was put there by somebody else, and is adopted rather than
+/// discarded. A key the launcher's model cannot express is carried verbatim.
+///
+/// Returns a description of what was adopted, per port, so the launcher can
+/// say so in the log rather than changing the player's controls in silence.
+pub fn adopt_external_edits(
+    live: &str,
+    last_written: &str,
+    profiles: &mut [ControllerProfile],
+) -> Vec<String> {
+    let live = parse_gcpad(live);
+    let ours = parse_gcpad(last_written);
+    let mut adopted = Vec::new();
+
+    for profile in profiles.iter_mut() {
+        let Some(section) = live.get(&profile.port) else { continue };
+        let previous = ours.get(&profile.port);
+
+        for (key, value) in section {
+            // The launcher owns which device is in which port. Everything else
+            // in the section is up for adoption.
+            if key == "Device" {
+                continue;
+            }
+            // Unchanged since we wrote it means nobody touched it.
+            if previous.and_then(|p| p.get(key)).is_some_and(|ours| ours == value) {
+                continue;
+            }
+
+            if let Some(input) = GcInput::ALL.iter().find(|i| i.ini_key() == key) {
+                profile.rebind(*input, value.clone());
+                adopted.push(format!("port {}: {key} = {value}", profile.port));
+            } else if key == "Main Stick/Calibration" || key == "C-Stick/Calibration" {
+                profile.calibration.insert(key.clone(), value.clone());
+                adopted.push(format!("port {}: {key} (their own measurement)", profile.port));
+            } else if key == "Main Stick/Dead Zone" || key == "C-Stick/Dead Zone" {
+                if let Some(percent) = parse_percent(value) {
+                    profile.tuning.deadzone_percent = percent;
+                    adopted.push(format!("port {}: dead zone {percent}", profile.port));
+                }
+            } else if key == "Triggers/Threshold" {
+                if let Some(percent) = parse_percent(value) {
+                    profile.tuning.trigger_threshold_percent = percent;
+                    adopted.push(format!("port {}: trigger threshold {percent}", profile.port));
+                }
+            } else if key == "Rumble/Motor" {
+                // `<binding> <strength>`: the strength is the trailing number.
+                let (binding, strength) = value.rsplit_once(' ').unwrap_or((value.as_str(), ""));
+                if let Some(percent) = parse_percent(strength) {
+                    profile.tuning.rumble_percent = percent;
+                }
+                if !binding.is_empty() {
+                    profile.extras.set(Extra::RumbleMotor, binding.to_string());
+                }
+                adopted.push(format!("port {}: rumble", profile.port));
+            } else if key == "Triggers/L-Analog" {
+                profile.extras.set(Extra::AnalogTriggerL, value.clone());
+                adopted.push(format!("port {}: {key}", profile.port));
+            } else if key == "Triggers/R-Analog" {
+                profile.extras.set(Extra::AnalogTriggerR, value.clone());
+                adopted.push(format!("port {}: {key}", profile.port));
+            } else {
+                // Dolphin's window writes plenty this model has no concept of.
+                // Keep it exactly, so regenerating does not delete it.
+                profile.carried.insert(key.clone(), value.clone());
+                adopted.push(format!("port {}: {key} (carried)", profile.port));
+            }
+        }
+    }
+
+    adopted
+}
+
+fn parse_percent(value: &str) -> Option<u8> {
+    let number: f64 = value.trim().parse().ok()?;
+    if !(0.0..=255.0).contains(&number) {
+        return None;
+    }
+    Some(number.round() as u8)
+}
+
 #[derive(Debug)]
 pub struct GcPadConfig;
 
@@ -796,27 +1170,32 @@ impl GcPadConfig {
             // the click; these are the travel, and without them a trigger held
             // part way reads as nothing. Present in the working install and
             // absent here until the two were compared.
-            out.push_str(
-                "Triggers/L-Analog = `Shoulder L`
-",
-            );
-            out.push_str(
-                "Triggers/R-Analog = `Shoulder R`
-",
-            );
+            // An empty extra means this pad has no such control. Write
+            // nothing rather than a line that cannot resolve.
+            for (key, extra) in [
+                ("Triggers/L-Analog", Extra::AnalogTriggerL),
+                ("Triggers/R-Analog", Extra::AnalogTriggerR),
+            ] {
+                let binding = profile.extras.get(extra);
+                if !binding.is_empty() {
+                    out.push_str(&format!("{key} = {binding}\n"));
+                }
+            }
 
             // Square gate calibration, the values Dolphin writes itself.
             // 141.42 is the diagonal, 100 * sqrt(2). Without these the stick
             // is treated as a circle and the corners cannot be reached.
+            //
+            // A player who has run Dolphin's Calibrate wizard has measured
+            // their actual stick, and that measurement replaces the gate. The
+            // gate describes a perfect stick; theirs is not one, and writing
+            // the gate back over a real calibration every launch undid the
+            // work and made the pad feel wrong again.
             const GATE: &str = "100.00 141.42 100.00 141.42 100.00 141.42 100.00 141.42";
-            out.push_str(&format!(
-                "Main Stick/Calibration = {GATE}
-"
-            ));
-            out.push_str(&format!(
-                "C-Stick/Calibration = {GATE}
-"
-            ));
+            for key in ["Main Stick/Calibration", "C-Stick/Calibration"] {
+                let value = profile.calibration.get(key).map(String::as_str).unwrap_or(GATE);
+                out.push_str(&format!("{key} = {value}\n"));
+            }
 
             out.push_str(&format!("Main Stick/Dead Zone = {dz:.2}\n"));
             out.push_str(&format!("C-Stick/Dead Zone = {dz:.2}\n"));
@@ -824,13 +1203,138 @@ impl GcPadConfig {
                 "Triggers/Threshold = {:.2}\n",
                 f64::from(profile.tuning.trigger_threshold_percent)
             ));
-            out.push_str(&format!(
-                "Rumble/Motor = `Motor` {:.2}\n",
-                f64::from(profile.tuning.rumble_percent)
-            ));
+            // The strength is its OWN key, not a number after the
+            // expression.
+            //
+            // ControlGroup::LoadConfig reads the strength from
+            // `<group><name>/Range` and reads everything on the binding
+            // line as the expression. And the expression parser ends with
+            //
+            //   if (Peek().type == TOK_EOF) return result;
+            //   return ParseResult::MakeErrorResult(Peek(), "Expected end
+            //                                              of expression.");
+            //
+            // so a trailing number is a SYNTAX ERROR and the whole binding
+            // is discarded, in silence, exactly the way an unresolvable
+            // control name is. `Rumble/Motor = `Motor` 100.00` has been
+            // written since 2.1 and has therefore never rumbled anything,
+            // on any pad, including an Xbox one.
+            let motor = profile.extras.get(Extra::RumbleMotor);
+            if !motor.is_empty() {
+                out.push_str(&format!("Rumble/Motor = {motor}\n"));
+                out.push_str(&format!(
+                    "Rumble/Motor/Range = {:.2}\n",
+                    f64::from(profile.tuning.rumble_percent)
+                ));
+            }
+            // Everything Dolphin's own window wrote that this model has no
+            // concept of, replayed exactly as it was found.
+            for (key, value) in &profile.carried {
+                out.push_str(&format!("{key} = {value}\n"));
+            }
             out.push('\n');
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod external_edit_tests {
+    use super::*;
+
+    fn identity(name: &str) -> DeviceIdentity {
+        DeviceIdentity {
+            guid: "030000004c050000cc09000000006800".into(),
+            serial: None,
+            name: name.into(),
+            family: DeviceFamily::from_name(name),
+        }
+    }
+
+    /// The complaint, as a test: a player opens Dolphin's own Controller
+    /// Settings, remaps a button, tightens the dead zone, calibrates the stick,
+    /// and sets two things the launcher has never heard of. All of it must be
+    /// there after the next launch.
+    #[test]
+    fn a_dolphin_remap_survives_the_next_launch() {
+        let mut profile = ControllerProfile::new(identity("Xbox Controller"), 1);
+        let ours = GcPadConfig::generate(std::slice::from_ref(&profile), |_| "XInput/0/Gamepad".into());
+
+        // What the player did in Dolphin, on top of what we wrote. Replaced a
+        // whole line at a time: a binding is a multi-name string like
+        // "`Button A`|`Cross`|`Button S`", so matching a prefix would edit the
+        // middle of one.
+        let theirs: String = ours
+            .lines()
+            .flat_map(|line| {
+                let replacement = match line.split_once(" = ").map(|(key, _)| key) {
+                    Some("Buttons/A") => "Buttons/A = `Button B`",
+                    Some("Main Stick/Dead Zone") => "Main Stick/Dead Zone = 5.00",
+                    Some("Main Stick/Calibration") => {
+                        "Main Stick/Calibration = 97.31 132.08 99.40 138.77 101.22 140.01 98.55 131.60"
+                    }
+                    Some("Triggers/Threshold") => {
+                        "Triggers/Threshold = 60.00\nButtons/Threshold = 40.00\nMain Stick/Modifier/Range = 50.0"
+                    }
+                    _ => line,
+                };
+                [replacement, "\n"]
+            })
+            .collect();
+
+        let mut profiles = [profile.clone()];
+        let adopted = adopt_external_edits(&theirs, &ours, &mut profiles);
+        assert!(!adopted.is_empty(), "the player changed things; we must notice");
+        profile = profiles.into_iter().next().unwrap();
+
+        assert_eq!(profile.mapping.get(GcInput::ButtonA), Some("`Button B`"), "their remap");
+        assert!(profile.overridden.contains(&GcInput::ButtonA), "recorded as their choice");
+        assert_eq!(profile.tuning.deadzone_percent, 5, "their dead zone");
+        assert_eq!(profile.tuning.trigger_threshold_percent, 60, "their threshold");
+        assert_eq!(
+            profile.calibration.get("Main Stick/Calibration").map(String::as_str),
+            Some("97.31 132.08 99.40 138.77 101.22 140.01 98.55 131.60"),
+            "their own stick measurement",
+        );
+        assert_eq!(profile.carried.get("Buttons/Threshold").map(String::as_str), Some("40.00"));
+        assert_eq!(profile.carried.get("Main Stick/Modifier/Range").map(String::as_str), Some("50.0"));
+
+        // And it all comes back out on the next launch.
+        let next = GcPadConfig::generate(std::slice::from_ref(&profile), |_| "XInput/0/Gamepad".into());
+        assert!(next.contains("Buttons/A = `Button B`"), "{next}");
+        assert!(next.contains("Main Stick/Dead Zone = 5.00"), "{next}");
+        assert!(next.contains("Triggers/Threshold = 60.00"), "{next}");
+        assert!(next.contains("Buttons/Threshold = 40.00"), "{next}");
+        assert!(next.contains("Main Stick/Modifier/Range = 50.0"), "{next}");
+        assert!(
+            next.contains("Main Stick/Calibration = 97.31 132.08"),
+            "a measured stick must never be re-squared:\n{next}"
+        );
+        // Still ours: the device line and the port layout.
+        assert!(next.contains("Device = XInput/0/Gamepad"), "{next}");
+    }
+
+    /// Adoption is driven by what WE wrote, not by what differs from the
+    /// shipping default. A file we wrote and nobody touched adopts nothing.
+    #[test]
+    fn a_file_nobody_touched_adopts_nothing() {
+        let profile = ControllerProfile::new(identity("Xbox Controller"), 1);
+        let ours = GcPadConfig::generate(std::slice::from_ref(&profile), |_| "XInput/0/Gamepad".into());
+        let mut profiles = [profile.clone()];
+        assert!(adopt_external_edits(&ours, &ours, &mut profiles).is_empty());
+        assert_eq!(profiles[0], profile, "nothing about the profile changed");
+    }
+
+    /// A pad the launcher never wrote a section for, whose bindings the player
+    /// set up entirely in Dolphin, is adopted rather than replaced.
+    #[test]
+    fn a_port_we_never_wrote_is_adopted_whole() {
+        let mut profiles = [ControllerProfile::new(identity("Wireless Controller"), 2)];
+        let theirs = "[GCPad2]\nDevice = WGInput/1/Controller\nButtons/A = Cross\nButtons/B = Circle\nMain Stick/Dead Zone = 12.00\n";
+        let adopted = adopt_external_edits(theirs, "", &mut profiles);
+        assert!(!adopted.is_empty());
+        assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("Cross"));
+        assert_eq!(profiles[0].tuning.deadzone_percent, 12);
     }
 }
 

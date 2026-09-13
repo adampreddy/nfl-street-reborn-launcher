@@ -1,0 +1,25 @@
+{
+  "schema": "nsr.game.v1",
+  "source": "dolphin",
+  "captured_at": "2026-08-05T04:58:39Z",
+  "teams": [{"name": "Falcons", "score": 36}, {"name": "Chargers", "score": 24}],
+  "style": [0, 0],
+  "sides_verified": false,
+  "per_player_matched": 14,
+  "players": [
+    {"name": "Tuli Tuipulotu", "team": "Chargers", "side": 0, "slot": 0, "digp": 21, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 1, "fumble_rec": 0, "tackles": 4, "sacks": 2, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Khalil Mack", "team": "Chargers", "side": 0, "slot": 1, "digp": 19, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Justin Herbert", "team": "Chargers", "side": 0, "slot": 2, "digp": 15, "stats": {"pass_td": 2, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 1, "fumble_rec": 0, "tackles": 2, "sacks": 0, "thrown_int": 0, "fumbles": 2}},
+    {"name": "Omarion Hampton", "team": "Chargers", "side": 0, "slot": 3, "digp": 12, "stats": {"pass_td": 0, "rush_td": 1, "rec_td": 1, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 1, "sacks": 0, "thrown_int": 0, "fumbles": 1}},
+    {"name": "Derwin James Jr.", "team": "Chargers", "side": 0, "slot": 4, "digp": 17, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 1, "fum_td": 0, "interceptions": 4, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 4, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Quentin Johnston", "team": "Chargers", "side": 0, "slot": 5, "digp": 18, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 1, "pick_six": 0, "fum_td": 0, "interceptions": 1, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 4, "sacks": 0, "thrown_int": 0, "fumbles": 1}},
+    {"name": "Donte Jackson", "team": "Chargers", "side": 0, "slot": 6, "digp": 16, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 2, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Michael Penix Jr.", "team": "Falcons", "side": 1, "slot": 0, "digp": 45, "stats": {"pass_td": 2, "rush_td": 0, "rec_td": 1, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 1, "fumble_rec": 0, "tackles": 2, "sacks": 2, "thrown_int": 5, "fumbles": 0}},
+    {"name": "Bijan Robinson", "team": "Falcons", "side": 1, "slot": 1, "digp": 47, "stats": {"pass_td": 0, "rush_td": 2, "rec_td": 1, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 2, "sacks": 1, "thrown_int": 0, "fumbles": 1}},
+    {"name": "Drake London", "team": "Falcons", "side": 1, "slot": 2, "digp": 40, "stats": {"pass_td": 1, "rush_td": 0, "rec_td": 1, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 0, "sacks": 0, "thrown_int": 0, "fumbles": 1}},
+    {"name": "Jessie Bates III", "team": "Falcons", "side": 1, "slot": 3, "digp": 37, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 1, "fumble_rec": 1, "tackles": 2, "sacks": 0, "thrown_int": 0, "fumbles": 1}},
+    {"name": "James Pearce Jr.", "team": "Falcons", "side": 1, "slot": 4, "digp": 44, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 1, "sacks": 1, "thrown_int": 0, "fumbles": 0}},
+    {"name": "A.J. Terrell Jr.", "team": "Falcons", "side": 1, "slot": 5, "digp": 48, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 1, "fumble_rec": 0, "tackles": 1, "sacks": 0, "thrown_int": 0, "fumbles": 0}},
+    {"name": "Jalon Walker", "team": "Falcons", "side": 1, "slot": 6, "digp": 49, "stats": {"pass_td": 0, "rush_td": 0, "rec_td": 0, "pick_six": 0, "fum_td": 0, "interceptions": 0, "forced_fumbles": 0, "fumble_rec": 0, "tackles": 4, "sacks": 1, "thrown_int": 0, "fumbles": 0}}
+  ]
+}

@@ -116,7 +116,7 @@ use serde_json::Value;
 
 use reborn_core::inventory::CancelSignal;
 use reborn_core::publish::journal::{self, Record, JOURNAL_SCHEMA};
-use reborn_core::publish::{Channel, Event, Outcome, Sink};
+use reborn_core::publish::{Channel, Event, Outcome, Progress, Sink};
 use reborn_core::Platform;
 
 use crate::settings;
@@ -164,6 +164,11 @@ pub struct OpState {
     /// finished with nothing to say.
     pub plan: Option<Value>,
     pub dry_run: bool,
+    /// How far the current step's transfer has come, from the last `Event`
+    /// that carried a `Progress`. Cleared when a step starts, kept once it
+    /// settles (a finished run reads as done of done). `None` for a step
+    /// that never reported bytes.
+    pub progress: Option<Progress>,
 }
 
 impl OpState {
@@ -175,6 +180,7 @@ impl OpState {
             summary: String::new(),
             plan: None,
             dry_run: false,
+            progress: None,
         }
     }
 }
@@ -250,7 +256,7 @@ fn page_name(op: &str) -> &str {
 /// polling `op_status` sees them live.
 ///
 /// Returns immediately, before `body` finishes: the caller (a
-/// `#[tauri::command]` function) is meant to return right after this call,
+/// `#[tauri::command(rename_all = "snake_case")]` function) is meant to return right after this call,
 /// and let the page poll `op_status` for progress. The only way this
 /// returns an `Err` is the concurrency refusal: an operation is already
 /// busy, named in the message.
@@ -314,6 +320,7 @@ fn run_operation_with_origin(
         state.lines.clear();
         state.summary.clear();
         state.dry_run = dry_run;
+        state.progress = None;
         // `plan` is deliberately left alone: see the module doc.
     }
     // A fresh operation starts with no registered cancel signal, so a
@@ -323,13 +330,32 @@ fn run_operation_with_origin(
     let op_owned = op.to_string();
     thread::spawn(move || {
         let mut sink = move |event: Event| {
+            // A progress line is a status whichever channel it rides on: the
+            // per-part upload line, for one, is not an error.
             let line = match event.channel {
                 Channel::Out => event.line,
+                Channel::Err if event.progress.is_some() => event.line,
                 Channel::Err => format!("ERROR: {}", event.line),
             };
-            shared().state.lock().expect("op state lock").lines.push(line);
+            let mut state = shared().state.lock().expect("op state lock");
+            state.lines.push(line);
+            if event.progress.is_some() {
+                state.progress = event.progress;
+            }
         };
-        let result = body(&mut sink);
+        // A panic inside a step must still settle the operation, or every
+        // page says "X is publishing" until the app is restarted.
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut sink))) {
+            Ok(result) => result,
+            Err(payload) => {
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "no detail".to_string());
+                Err(reborn_core::Error::PlainIo(std::io::Error::other(format!("the step stopped unexpectedly: {detail}"))))
+            }
+        };
         finish(&op_owned, step, dry_run, inputs, origin, result);
     });
 
@@ -376,21 +402,24 @@ fn finish(
             Err(e) => (Phase::Failed, "failed", e.to_string(), None),
         };
 
+    if summary.is_empty() {
+        let state = shared().state.lock().expect("op state lock");
+        summary = state.lines.last().cloned().unwrap_or_default();
+    }
+    // The journal first, then the phase: a page verifies the moment it sees
+    // Done, and Verify reads "the last done run" from the journal, so the
+    // record has to be there before the flip, not after it.
+    write_journal(page, dry_run, inputs, origin, journal_outcome, summary.clone(), value.clone());
     {
         let mut state = shared().state.lock().expect("op state lock");
-        if summary.is_empty() {
-            summary = state.lines.last().cloned().unwrap_or_default();
-        }
         state.phase = phase;
-        state.summary = summary.clone();
+        state.summary = summary;
         if step == Step::Plan {
-            state.plan = Some(value.clone().unwrap_or(Value::Null));
+            state.plan = Some(value.unwrap_or(Value::Null));
         }
     }
     // The operation has settled; nothing left to cancel.
     *shared().cancel.lock().expect("cancel lock") = None;
-
-    write_journal(page, dry_run, inputs, origin, journal_outcome, summary, value);
 }
 
 /// Pull `hashes`, `uploaded`, `verified` and `sequence` out of `value` by
@@ -477,7 +506,7 @@ fn parse_hashes(value: &Value) -> Vec<(String, String)> {
 }
 
 /// Where the current, or most recently finished, operation stands.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_status() -> OpState {
     shared().state.lock().expect("op state lock").clone()
 }
@@ -487,7 +516,7 @@ pub fn op_status() -> OpState {
 /// Refuses when nothing is running, and refuses, separately, when
 /// something is running but has not registered a cancel signal (see the
 /// module doc): either way nothing happens silently.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_cancel() -> Result<(), String> {
     let s = shared();
     let busy = s.state.lock().expect("op state lock").phase.is_busy();
@@ -499,13 +528,13 @@ pub fn op_cancel() -> Result<(), String> {
             signal.cancel();
             Ok(())
         }
-        None => Err("This step has not reached a point that can be cancelled yet.".to_string()),
+        None => Err("This step has not reached a point that can be canceled yet.".to_string()),
     }
 }
 
 /// Reset to `Idle`. Refuses while an operation is still busy, naming it,
 /// rather than clearing the state out from under a still-running body.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn op_clear() -> Result<(), String> {
     let mut state = shared().state.lock().expect("op state lock");
     if state.phase.is_busy() {
@@ -640,6 +669,33 @@ mod tests {
         assert_eq!(state.phase, Phase::Done);
         // The run step must not have touched what the plan step found.
         assert_eq!(state.plan, Some(serde_json::json!({"found": 3})));
+
+        reset();
+    }
+
+    #[test]
+    fn a_progress_event_lands_in_op_status_and_the_next_step_clears_it() {
+        let _guard = exclusive();
+        reset();
+        let dir = tempfile::tempdir().expect("tempdir");
+        run(dir.path(), "upload:run", false, Value::Null, |sink| {
+            sink(Event::out("Uploading").with_progress(0, 100, "Uploading"));
+            sink(Event::out("half"));
+            sink(Event::out("  a.bin").with_progress(60, 100, "Uploading"));
+            Ok(Outcome::Done(serde_json::json!({"summary": "Uploaded 1 object(s)."})))
+        })
+        .unwrap();
+        wait_until_settled();
+        let state = op_status();
+        assert_eq!(state.phase, Phase::Done);
+        let p = state.progress.expect("the last progress report is kept once the step settles");
+        assert_eq!((p.done, p.total, p.label.as_str()), (60, 100, "Uploading"));
+        // A line without progress leaves the last report in place.
+        assert_eq!(state.lines, vec!["Uploading", "half", "  a.bin"]);
+
+        run(dir.path(), "upload:verify", false, Value::Null, |_sink| Ok(Outcome::Described)).unwrap();
+        wait_until_settled();
+        assert!(op_status().progress.is_none(), "a new step starts with no bar");
 
         reset();
     }

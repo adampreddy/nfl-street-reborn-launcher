@@ -112,6 +112,25 @@ impl FileVerdict {
     }
 }
 
+/// Files inside a non-customizable component that the player is nevertheless
+/// meant to edit, so a content update or Repair must not download over them.
+///
+/// Deliberately a short, explicit list of prefixes rather than a broad rule.
+/// Widening it past ReShade's configuration and the Dolphin user template
+/// means a genuinely corrupt emulator binary or DLL stops being repaired,
+/// which trades a settings bug for a game that will not boot.
+///
+/// A missing file is still Missing and is still restored: this only changes
+/// what a CONTENT MISMATCH means.
+pub fn is_player_editable(relative: &str) -> bool {
+    let path = relative.replace('\\', "/");
+    let path = path.trim_start_matches("./");
+    path.eq_ignore_ascii_case("ReShade.ini")
+        || path.eq_ignore_ascii_case("NSRShaderlessMenu.ini")
+        || path.to_ascii_lowercase().starts_with("reshade-presets/")
+        || path.to_ascii_lowercase().starts_with("user/")
+}
+
 /// The outcome of verifying a whole component.
 #[derive(Debug, Clone)]
 pub struct VerifyReport {
@@ -219,6 +238,18 @@ impl<'a> Verifier<'a> {
                     return FileVerdict::UserModified;
                 }
             }
+        }
+        // Config the player is meant to edit, inside a component that is
+        // otherwise not theirs to touch.
+        //
+        // The runtime component is not customizable, and rightly so: a
+        // tampered emulator binary must be repaired. But it also ships
+        // ReShade's configuration, its presets and the Dolphin user template,
+        // which the player edits through the ReShade overlay during play.
+        // Without this, every runtime update and every press of Repair
+        // classified their tuning as corruption and downloaded over it.
+        if is_player_editable(relative) {
+            return FileVerdict::UserModified;
         }
         FileVerdict::Damaged { expected, actual }
     }

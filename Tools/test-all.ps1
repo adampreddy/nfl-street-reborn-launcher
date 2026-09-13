@@ -117,7 +117,7 @@ if ($Browser) {
 Write-Host "-- Installer inputs ---------------------------------------------" -ForegroundColor DarkGray
 $wizardFiles = @(
     "installer\windows\art\NSR.ico",
-    "installer\windows\art\welcome.bmp",
+    "installer\windows\art\launcher.bmp",
     "installer\windows\art\corner.bmp",
     "installer\windows\text\README.txt",
     "installer\windows\text\READMEAFTER.txt"

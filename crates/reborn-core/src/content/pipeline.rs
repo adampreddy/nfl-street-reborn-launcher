@@ -353,6 +353,17 @@ impl GamePatchResult {
     }
 }
 
+/// What replaying the custom soundtrack after an image rebuild did.
+#[derive(Debug)]
+pub enum SoundtrackResult {
+    /// The songs are back on the new image.
+    Replayed { slots: Vec<u8>, skipped: Vec<(u8, String)> },
+    /// The new image already carried them.
+    Unchanged,
+    /// It could not be replayed now; the sentence says why and what to do.
+    Refused(String),
+}
+
 /// What happened to the image after a roster landed.
 #[derive(Debug)]
 pub enum RosterResult {
@@ -411,6 +422,9 @@ impl RosterResult {
 }
 
 /// What a promotion did for one component.
+// The applied arm carries the receipt and three results; a Box would only
+// move the size onto the heap for a value built once per promotion.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum PromoteState {
     Applied {
@@ -421,6 +435,10 @@ pub enum PromoteState {
         /// component when its patch built a new image (the roster is
         /// re-applied to it).
         roster: Option<RosterResult>,
+        /// Present when a roster or game patch rebuilt the image and the
+        /// player has a custom soundtrack switched on: it is replayed onto
+        /// the new image, so an update never silently drops their songs.
+        soundtrack: Option<SoundtrackResult>,
     },
     /// Nothing was moved.
     Refused(PromotionRefusal),
@@ -661,10 +679,26 @@ impl<'a> Updater<'a> {
                         }
                         _ => (None, None),
                     };
+                    let image_changed = matches!(roster, Some(RosterResult::Applied(_)))
+                        || matches!(game_patch, Some(GamePatchResult::Applied(_)));
+                    // The component is already live and its receipt written
+                    // by now; a soundtrack that cannot be put back is a
+                    // problem to report, not a reason to call the whole
+                    // promotion failed and never record it as installed.
+                    let soundtrack = if image_changed {
+                        match self.apply_current_soundtrack() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!("the custom soundtrack was not put back after the update: {e}");
+                                Some(SoundtrackResult::Refused("Your custom soundtrack could not be put back after this update. Open Music and apply it again.".to_string()))
+                            }
+                        }
+                    } else { None };
                     PromoteState::Applied {
                         receipt,
                         game_patch,
                         roster,
+                        soundtrack,
                     }
                 }
                 Promoted::Refused(r) => PromoteState::Refused(r),
@@ -680,6 +714,33 @@ impl<'a> Updater<'a> {
             });
         }
         Ok(out)
+    }
+
+    /// Replay the custom soundtrack onto the booted image, when the player
+    /// has one switched on. `None` when there is nothing to replay.
+    ///
+    /// Called after a roster or game patch rebuilt the image, which puts the
+    /// disc's own songs back; without this the player's soundtrack would
+    /// vanish on every update. Slots whose audio is gone are skipped and
+    /// named, never dropped silently.
+    pub fn apply_current_soundtrack(&self) -> Result<Option<SoundtrackResult>> {
+        use crate::soundtrack::apply::{self as sapply, Outcome};
+        use crate::soundtrack::state::Soundtrack;
+        let root = self.data_root();
+        let st = Soundtrack::load(root)?;
+        if !st.enabled {
+            return Ok(None);
+        }
+        let base_pack = st.base_pack(root).ok().flatten();
+        let effective = st.effective(root, base_pack.as_ref(), false);
+        if Soundtrack::is_all_stock(&effective) {
+            return Ok(None);
+        }
+        Ok(Some(match sapply::apply(self.platform, root, &mut |_| {})? {
+            Outcome::Applied(a) => SoundtrackResult::Replayed { slots: a.slots_changed, skipped: a.skipped },
+            Outcome::Unchanged { .. } => SoundtrackResult::Unchanged,
+            Outcome::Refused(r) => SoundtrackResult::Refused(r.message()),
+        }))
     }
 
     /// Apply the roster that is live in `library/roster` to the image.
@@ -713,6 +774,7 @@ impl<'a> Updater<'a> {
             builder: &builder,
             textures_root: hook.textures_root.as_deref(),
             accept_warnings: true,
+            output: None,
         };
         Ok(match roster::apply(self.platform, &req)? {
             ApplyOutcome::Applied(r) => RosterResult::Applied(r),
@@ -1047,7 +1109,7 @@ mod tests {
         let run = updater.run(&quick(&[ComponentId::Runtime]), &ImageHook::default()).unwrap();
         let promoted = run.promote.unwrap();
         match &promoted.components[0].state {
-            PromoteState::Applied { receipt, roster, game_patch } => {
+            PromoteState::Applied { receipt, roster, game_patch, .. } => {
                 assert_eq!(receipt.previous.as_ref().unwrap().version, "1.0.0", "rollback is available");
                 assert!(roster.is_none() && game_patch.is_none(), "the image hooks run for their own components only");
             }
@@ -1272,5 +1334,70 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    /// The soundtrack replay after an image rebuild: nothing to do when the
+    /// switch is off or every slot is stock; otherwise the songs go back on.
+    #[test]
+    fn soundtrack_replays_onto_a_re_established_image() {
+        use crate::soundtrack::state::Soundtrack;
+        use crate::soundtrack::testing::{synthetic_disc, synthetic_pathfind, synthetic_stream, synthetic_template, SYN_PT};
+        use crate::soundtrack::{apply as sapply, pack, Slot};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pf = synthetic_pathfind(256);
+        let tpl = synthetic_template();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let iso = synthetic_disc(&src, &[("pathfind.dat", &pf), ("template.dat", &tpl)]);
+        let sha = crate::library::hash_file(&iso).unwrap();
+        let pristine_dir = crate::game_image::pristine_dir(root, sha.as_str());
+        std::fs::create_dir_all(&pristine_dir).unwrap();
+        let pristine = pristine_dir.join(crate::game_image::IMAGE_FILE);
+        std::fs::rename(&iso, &pristine).unwrap();
+        let platform = Platform::detect();
+        crate::game_image::establish(&platform, root, &pristine).unwrap();
+        let booted = crate::game_image::booted_path(root);
+        let size = std::fs::metadata(&pristine).unwrap().len() + 0x40000;
+
+        let origin = crate::origin::Origin::new("http://127.0.0.1:9/");
+        let verifier = crate::signing::Ed25519Verifier::embedded();
+        let updater = Updater::new(&platform, root, &origin, &verifier);
+
+        // nothing custom: nothing to replay
+        assert!(updater.apply_current_soundtrack().unwrap().is_none());
+
+        // a custom slot, applied
+        let blob: Vec<u8> = (0..40).flat_map(|_| synthetic_stream(SYN_PT, 4800, 512)).collect();
+        let pack_path = root.join("p.nsrmusic");
+        pack::write_pack(&pack_path, "P", "", "", &[pack::SongInput { slot: Slot::new(5).unwrap(), blob, title: "Five".into(), artist: String::new(), album: String::new() }]).unwrap();
+        sapply::stage_pack(root, &pack_path).unwrap();
+        sapply::set_enabled(root, true).unwrap();
+        match sapply::apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
+            sapply::Outcome::Applied(a) => assert_eq!(a.slots_changed, vec![5]),
+            other => panic!("{other:?}"),
+        }
+        let custom = crate::library::hash_file(&booted).unwrap();
+
+        // an update re-establishes the pristine image: the songs are gone
+        crate::game_image::establish(&platform, root, &pristine).unwrap();
+        assert_eq!(crate::library::hash_file(&booted).unwrap(), sha);
+
+        // the replay puts them back. The toy disc needs its toy size, so the
+        // test drives apply_with_size the way apply_current_soundtrack drives
+        // apply, and checks the wrapper's own decisions separately.
+        match sapply::apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
+            sapply::Outcome::Applied(a) => assert_eq!(a.slots_changed, vec![5]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(crate::library::hash_file(&booted).unwrap(), custom, "same bytes as before the update");
+
+        // the switch off means no replay
+        sapply::set_enabled(root, false).unwrap();
+        assert!(updater.apply_current_soundtrack().unwrap().is_none());
+        // (Driving the wrapper with a custom slot would repack the toy disc at
+        // the real 1.46 GB size; apply_with_size above covers that path.)
+        let _ = Soundtrack::load(root).unwrap();
     }
 }

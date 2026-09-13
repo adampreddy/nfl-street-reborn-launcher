@@ -33,10 +33,14 @@ keyring = "4.2"
 
 # Volume enumeration with a removable flag, for platform::RemovableDrives, so
 # the Xbox wizard cannot be handed a fixed disk to copy 3 GB onto.
-# default-features = false drops the process, CPU, memory, network, user and
-# component probing; only the disk module is used.
+# Dolphin process detection uses query-only Windows APIs in platform/runtime_process.rs.
 sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 ureq = { version = "2", features = ["json"] }
+
+# Custom soundtrack. All pure Rust: this crate forbids unsafe and the
+# launcher ships no ffmpeg (SECURITY_PRIVACY_LICENSING.md section 24).
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "vorbis", "ogg", "wav", "aiff", "pcm"] }
+lofty = "0.22"
 
 # Ed25519, for the one signed object in the system: the release manifest.
 # Chosen in CONTENT_AND_UPDATE_MODEL.md section 6 because the project has no
@@ -55,27 +59,38 @@ hmac = { version = "0.12", optional = true }
 base64 = { version = "0.22", optional = true }
 percent-encoding = { version = "2", optional = true }
 
-# Reading a `.rebornroster` (a zip) to report its player and team counts,
-# behind `publish` for the same reason as the three deps above: a player's
-# launcher never opens a roster archive itself, only the publisher does,
-# before pushing one. `default-features = false` plus `deflate-flate2` picks
-# the one compression method a `.rebornroster` ever actually uses (DEFLATE)
-# through flate2's pure-Rust `miniz_oxide` backend, which was already
-# resolved in this workspace's lock file (ureq pulls it for gzip responses)
-# rather than the default feature set's bzip2/lzma/zstd/aes-crypto/ppmd,
-# none of which a roster export ever needs.
-zip = { version = "5", optional = true, default-features = false, features = ["deflate-flate2"] }
+# Zip archives, for two unrelated things that both happen to be zips: a
+# custom soundtrack `.nsrmusic` pack, read and written unconditionally by the
+# soundtrack module, and a `.rebornroster` behind `publish`, opened only by
+# the Publisher to report its player and team counts before pushing one.
+# Not optional: the soundtrack path needs it in every player launcher build,
+# which already outweighs the point of gating it behind `publish`.
+# `default-features = false` plus `deflate-flate2` picks the one compression
+# method either kind of archive ever actually uses (DEFLATE) through flate2's
+# pure-Rust `miniz_oxide` backend, which was already resolved in this
+# workspace's lock file (ureq pulls it for gzip responses) rather than the
+# default feature set's bzip2/lzma/zstd/aes-crypto/ppmd, none of which either
+# use case ever needs.
+zip = { version = "5", default-features = false, features = ["deflate-flate2"] }
 
 [features]
 # The publisher's half: key generation and signing. Enabled by reborn-cli only.
-publish = ["dep:getrandom", "dep:hmac", "dep:base64", "dep:percent-encoding", "dep:zip"]
+publish = ["dep:getrandom", "dep:hmac", "dep:base64", "dep:percent-encoding"]
 
 [target.'cfg(windows)'.dependencies]
 rusty-xinput = "1.3"
+# Win32_UI_Shell and Win32_UI_WindowsAndMessaging are both here for one call,
+# ShellExecuteW, which is how platform::imp::open_url hands a link to the shell.
+# Two features rather than one because windows-sys declares the function in the
+# Shell module but gates that declaration, and SW_SHOWNORMAL, on
+# WindowsAndMessaging.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

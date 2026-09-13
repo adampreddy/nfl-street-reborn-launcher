@@ -110,11 +110,81 @@ out of the middle of your mod library. Launcher data now lives in
 `%APPDATA%\NFL Street Reborn Launcher`, and the supervisor refuses to start in a
 folder that looks like a 2.1 install.
 
+**2026-09-12.** The data root is `%APPDATA%\NFL Street Reborn` again, safely:
+before the supervisor lock, `layout::prepare_data_root` moves every 2.1 entry
+(JSGME's `MODS` entries included) into `Reborn 2.1\` by rename, and the
+supervisor refuses only a root where that could not finish. The composed
+texture tree lives in each Dolphin user folder now, so `mods/active` is gone.
+
 **Migration was copying something irreplaceable into a purgeable directory.**
 Screenshots were marked irreplaceable and copied to `cache`. A purge would have
 deleted exactly what migration had just rescued.
 
 ---
+
+## Custom soundtrack
+
+The 21 songs on the offline disc, replaced, shared, and reset. The Music page
+in the launcher drives the same commands. Every verb takes `--data-root <dir>`
+to work on a scratch root instead of the real one.
+
+```
+rebornctl music status                       the 21 slots, what is staged, the switch
+rebornctl music inspect <file> [--offline]   tags, length, and the online lookup, changing nothing
+rebornctl music lookup <words...>            look a song up online (iTunes, then MusicBrainz)
+rebornctl music add <file> --slot N [--title T --artist A --album L] [--offline]
+rebornctl music import <pack>                stage every song a .nsrmusic or .nsmp carries
+rebornctl music reset <slot>                 stage a slot back to the disc's own song
+rebornctl music details <slot> --title T     stage new banner text
+rebornctl music unstage <slot> | --all       drop staged changes
+rebornctl music apply                        one rebuild of the disc from the staged slots
+rebornctl music enable | disable             the switch; disable puts the pristine disc and the roster back
+rebornctl music export <out> --slots 3,7,21 --name N --author A
+rebornctl music write-tree --tree <root>     dev tree: write pathfind.dat + template.dat and stop
+```
+
+What `apply` does: reads the booted image's FST, splices the wanted songs into
+the pristine image's `pathfind.dat` (stock slots come from the pristine image,
+so a reset is exact), rewrites the PFDx position table, writes the 21 banner
+records into the booted image's `template.dat` (so the roster survives),
+streams a new ISO with a regenerated FST to `staging/music/NSR.iso.part`,
+reads it back, records its hash in `music/state.json`, and renames it over
+`library/offline/NSR.iso`. The pristine image under `library/imported` is never
+written. About 3 seconds on an SSD with the disc in the file cache; up to half
+a minute cold.
+
+`write-tree` is for the development root under `nflstreet2_clean`: it writes
+the two files into the tree and stops, so `tools/build_iso_fields.py` stays the
+only disc builder there (the build sync law).
+
+Songs longer than about 6:20 are refused; opus and wma files are refused with
+"convert it to MP3 first". The record lives at `music/soundtrack.json`;
+imported files are copied to `music/sources`, packs to `music/packs`, encoded
+blobs to `music/encoded`. Nothing under `music/` is ever deleted by repair.
+
+## The netplay copy of the game
+
+Netplay is lockstep: both sides run the same bytes. The offline image is the
+one a custom soundtrack rewrites, so netplay never boots it. It boots
+`library/online/NSR.iso`, which is the pristine game plus the roster and
+nothing else, rebuilt whenever a game patch or a roster push moves what it is
+made of.
+
+```
+rebornctl netplay-image                     what it was built from, and whether it is current
+rebornctl netplay-image --build             build or refresh it
+rebornctl netplay-image --build --builder <path to reborn-builder-cli.exe>
+```
+
+`source.json` beside the image records the pristine hash and the roster hash,
+so the freshness check is two small file reads rather than hashing 1.4 GB.
+Measured on the development machine: about 6 seconds to build with a 569
+player roster, and 0.2 seconds to confirm it is current. With no roster
+installed the image is a hardlink of the pristine one and costs no disk.
+
+The Online page starts netplay with this image, building it first if it has to.
+Textures are not part of it: Dolphin reads those from a folder at run time, so
+they can never make two players' discs differ.
 
 ## What is not here yet
 

@@ -199,12 +199,35 @@ pub fn newer(candidate: &str, current: &str) -> bool {
     if a_n != b_n {
         return a_n > b_n;
     }
-    // Same numbers: a release beats a pre-release; two pre-releases compare as text.
+    // Same numbers: a release beats a pre-release; two pre-releases compare
+    // piece by piece, numerically where both pieces are numbers, so that
+    // beta.10 follows beta.9 instead of sorting before beta.2 as text.
     match (a_pre, b_pre) {
         (None, Some(_)) => true,
         (Some(_), None) => false,
         (None, None) => false,
-        (Some(x), Some(y)) => x > y,
+        (Some(x), Some(y)) => prerelease_newer(&x, &y),
+    }
+}
+
+fn prerelease_newer(candidate: &str, current: &str) -> bool {
+    let mut a = candidate.split('.');
+    let mut b = current.split('.');
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return false,
+            (Some(_), None) => return true,
+            (None, Some(_)) => return false,
+            (Some(x), Some(y)) => {
+                if x == y {
+                    continue;
+                }
+                return match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(xn), Ok(yn)) => xn > yn,
+                    _ => x > y,
+                };
+            }
+        }
     }
 }
 
@@ -288,13 +311,50 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
     // which is what keeps {app} off the 2.1 data folder, and it also means
     // a silent upgrade lands in the DEFAULT folder rather than the one this
     // launcher runs from. A player who chose D:\Games would get a second
-    // copy there and a relaunch of the wrong one.
+    // copy there and a relaunch of the wrong one. The one root NOT restated
+    // is the retired default under %LOCALAPPDATA%\Programs: a launcher still
+    // running from there (beta.8 sent its own update there on 2026-09-11)
+    // lets the installer's default move it into the data root's `app`
+    // folder, where the installer also removes the Programs copy.
+    let local_programs = std::env::var_os("LOCALAPPDATA").map(|v| PathBuf::from(v).join("Programs"));
     if let Ok(root) = platform.paths.install_root() {
-        args.push(format!("/DIR={}", root.display()).into());
+        if let Some(switch) = dir_switch(&root, local_programs.as_deref()) {
+            args.push(switch);
+        }
     }
     let env = std::collections::BTreeMap::new();
     platform.processes.spawn(installer, &args, installer.parent(), &env)?;
     Ok(())
+}
+
+/// `/DIR=<root>` for the installer, or `None` when `root` sits under the
+/// retired `%LOCALAPPDATA%\Programs` default and the installer's own default
+/// should decide instead.
+pub fn dir_switch(root: &Path, local_programs: Option<&Path>) -> Option<std::ffi::OsString> {
+    if let Some(programs) = local_programs {
+        // Compared as lowercased text: Windows paths are case-insensitive
+        // and the two can differ in case (C:\Users\adam vs C:\Users\Adam).
+        let r = root.to_string_lossy().replace('/', "\\").to_lowercase();
+        let p = programs.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+        if r == p || r.starts_with(&format!("{p}\\")) {
+            return None;
+        }
+    }
+    // A launcher-era data root (`... Launcher[ Beta]\app`, before
+    // 2026-09-12) is retired the same way: not restated, so the installer's
+    // default puts the program in the new root's `app`, removes this folder,
+    // and the launcher adopts the data beside it at its first start. Restated,
+    // the installer would refuse it as an unsafe folder and the update would
+    // stop there.
+    let leaf_is_app = root.file_name().is_some_and(|n| n.eq_ignore_ascii_case("app"));
+    let parent_retired = root.parent().and_then(Path::file_name).is_some_and(|n| {
+        let n = n.to_string_lossy().to_lowercase();
+        n == "nfl street reborn launcher" || n == "nfl street reborn launcher beta"
+    });
+    if leaf_is_app && parent_retired {
+        return None;
+    }
+    Some(format!("/DIR={}", root.display()).into())
 }
 
 /// The switches [`apply`] passes, for the installer smoke test to mirror.
@@ -304,6 +364,30 @@ pub const APPLY_SWITCHES: [&str; 3] = ["/SILENT", "/NORESTART", "/RELAUNCH=1"];
 mod tests {
     use super::*;
     use crate::net::fake::FakeHttp;
+
+    #[test]
+    fn the_installer_is_told_the_folder_except_the_retired_programs_default() {
+        let programs = Path::new(r"C:\Users\Adam\AppData\Local\Programs");
+        let app = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Beta\app");
+        let custom = Path::new(r"D:\Games\Reborn");
+        let old = Path::new(r"C:\Users\Adam\AppData\Local\Programs\NFL Street Reborn Beta");
+        assert_eq!(dir_switch(app, Some(programs)).unwrap().to_string_lossy(), format!("/DIR={}", app.display()));
+        assert_eq!(dir_switch(custom, Some(programs)).unwrap().to_string_lossy(), format!("/DIR={}", custom.display()));
+        // A launcher still running from the retired default says nothing, so
+        // the installer's own default moves it into `app` and cleans up.
+        assert!(dir_switch(old, Some(programs)).is_none());
+        // Without a known Programs folder the root is always restated.
+        assert!(dir_switch(old, None).is_some());
+        // A launcher running from a Launcher-era data root (before
+        // 2026-09-12) says nothing too: the installer's default is the new
+        // root's `app`, and the launcher adopts the old root's data at its
+        // first start. Restated, the installer would refuse the folder.
+        let launcher_era = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher Beta\app");
+        assert!(dir_switch(launcher_era, Some(programs)).is_none());
+        assert!(dir_switch(launcher_era, None).is_none());
+        let launcher_era_stable = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Launcher\app");
+        assert!(dir_switch(launcher_era_stable, None).is_none());
+    }
 
     fn manifest(version: &str, sha: &str) -> String {
         format!(
@@ -317,6 +401,15 @@ mod tests {
         assert!(newer("3.10.0", "3.9.9"), "10 is more than 9, not less as text");
         assert!(newer("3.0.0", "3.0.0-beta.1"));
         assert!(newer("3.0.0-beta.2", "3.0.0-beta.1"));
+        // Pre-release pieces compare as numbers, not text: beta.10 > beta.9.
+        assert!(newer("3.0.1-beta.10", "3.0.1-beta.9"));
+        assert!(!newer("3.0.1-beta.9", "3.0.1-beta.10"));
+        assert!(!newer("3.0.1-beta.8", "3.0.1-beta.8"));
+        // The bug this guards against: a launcher whose crate says 3.1.0 must
+        // not be handed a build stamped 3.0.1-beta.8, and one stamped
+        // 3.0.1-beta.7 must be.
+        assert!(!newer("3.0.1-beta.8", "3.1.0"));
+        assert!(newer("3.0.1-beta.8", "3.0.1-beta.7"));
         assert!(!newer("3.0.0-beta.1", "3.0.0"));
         assert!(!newer("3.0.0", "3.0.0"));
         assert!(!newer("2.9.9", "3.0.0"));

@@ -19,7 +19,7 @@
 //! Read from the vault with `reborn_core::publish::vault::{r2_access,
 //! r2_secret}`, the same two accessors `history.rs`'s rollback upload
 //! already uses. Neither command below takes a credential as an argument:
-//! a `#[tauri::command]`'s arguments are exactly what a browser devtools
+//! a `#[tauri::command(rename_all = "snake_case")]`'s arguments are exactly what a browser devtools
 //! console sitting in front of this window could set to anything, and a
 //! secret has no business being something a page can pass in.
 //!
@@ -35,11 +35,9 @@
 //! to be showing right now.
 
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
-use reborn_core::manifest::Sha256Hex;
 use reborn_core::net::UreqHttp;
 use reborn_core::publish::upload::{self, Bucket, UploadRequest, Uploaded, UreqTransport};
 use reborn_core::publish::vault::{r2_access, r2_secret};
@@ -51,7 +49,7 @@ use crate::settings::Settings;
 
 /// Plan: what [`upload::plan_origin`] finds pending against the real
 /// bucket, right now. Writes nothing and sends nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn upload_plan() -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -62,7 +60,9 @@ pub fn upload_plan() -> Result<Value, String> {
 
     ops::run_operation("upload:plan", true, inputs, move |sink: Sink<'_>| -> reborn_core::Result<Outcome<Value>> {
         let transport = UreqTransport::new();
-        let plan = upload::plan_origin(&origin, &|key| head_len(&transport, &bucket, key))?;
+        let (already, how) = upload::already_on_bucket(&transport, &bucket)?;
+        sink(Event::out(how));
+        let plan = upload::plan_origin(&origin, &*already)?;
 
         if plan.is_empty() {
             let summary = format!("Nothing to upload: {public_base} already serves everything this origin holds.");
@@ -96,7 +96,7 @@ pub fn upload_plan() -> Result<Value, String> {
 /// Run: upload everything [`upload_plan`] would find pending. `dry_run`
 /// describes the plan and sends nothing, the same rule every other page's
 /// Run step follows.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn upload_run(dry_run: bool) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -107,7 +107,9 @@ pub fn upload_run(dry_run: bool) -> Result<Value, String> {
 
     ops::run_operation("upload:run", dry_run, inputs, move |sink: Sink<'_>| -> reborn_core::Result<Outcome<Value>> {
         let transport = UreqTransport::new();
-        let plan = upload::plan_origin(&origin, &|key| head_len(&transport, &bucket, key))?;
+        let (already, how) = upload::already_on_bucket(&transport, &bucket)?;
+        sink(Event::out(how));
+        let plan = upload::plan_origin(&origin, &*already)?;
 
         let http = UreqHttp::new(concat!("reborn-publisher/", env!("CARGO_PKG_VERSION")));
         let req = UploadRequest {
@@ -176,16 +178,3 @@ fn non_empty(s: &Option<String>) -> Option<String> {
     s.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it (or answered anything other than 2xx). A signed HEAD, the
-/// same request shape `plan_origin`'s own "already" callback expects.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}

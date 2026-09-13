@@ -43,6 +43,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub mod imp;
+#[cfg(windows)]
+pub(crate) mod runtime_process;
 
 /// Errors a platform seam can produce.
 #[derive(Debug, thiserror::Error)]
@@ -73,9 +75,341 @@ pub enum Error {
 
     #[error(transparent)]
     PlainIo(#[from] std::io::Error),
+
+    /// A refusal whose text is already a finished sentence for a player.
+    ///
+    /// # The shape this variant exists to make explicit
+    ///
+    /// Several modules refuse something with wording that was written for the
+    /// player and is complete as it stands: "Close Reborn Dolphin before
+    /// applying settings, then try again." is not a fault report, it is an
+    /// instruction. Those used to be carried in [`Error::PlainIo`], which is
+    /// transparent over an operating system error, so they were
+    /// indistinguishable from `os error 112` and
+    /// [`Error::player_message`] flattened them all to
+    /// [`SOMETHING_UNEXPECTED`]. The Settings page's open-the-emulator button
+    /// then answered "Something unexpected happened. Try again." to its single
+    /// most common failure, which is false advice: the emulator is open and
+    /// the player has to close it.
+    ///
+    /// So the distinction is a variant rather than a list of known strings.
+    /// Anything constructed with [`Error::player`] is a sentence somebody
+    /// wrote for a player, and reaches them unchanged; everything else is a
+    /// fault, and is summarized. A future refusal is carried through by using
+    /// the constructor, and cannot be silently flattened by not being on a
+    /// list.
+    ///
+    /// Put the wording in a named constant beside the code that refuses, and
+    /// hold it to the same rules as every other player-facing sentence: no
+    /// path, no status code, no internal name. That is not left to whoever
+    /// reads this: [`Error::player`] takes only a `&'static str`, so a
+    /// `format!` cannot reach it at all, and
+    /// `every_player_message_is_a_named_constant_that_reads_as_a_sentence`
+    /// reads every construction in the workspace and holds each constant to
+    /// the six sentence rules.
+    #[error("{0}")]
+    PlayerMessage(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Shown when an operation could not reach a file or folder it needs: a save
+/// or a settings file locked by something else, a permission problem, a full
+/// disk. The one thing a player can do about any of those is close whatever
+/// else might have it open, make room, and try again; naming the actual path
+/// would not help, because it is very often a folder inside this launcher's
+/// own data root that the player never chose and cannot usefully act on.
+pub const FILE_UNREACHABLE: &str =
+    "A file this launcher needs could not be read or written. Close anything else that might have it open, make sure the disk has room, and try again.";
+
+/// Shown for every other way a platform operation can fail. Nothing here
+/// distinguishes one cause from another for a player, and there is nothing
+/// different for them to do about any of them, so they collapse to this one
+/// sentence; the real detail still reaches a developer through
+/// [`Error::player_message`]'s own `tracing::warn!`.
+pub const SOMETHING_UNEXPECTED: &str = "Something unexpected happened. Try again.";
+
+impl Error {
+    /// A refusal whose wording is already the sentence the player should read.
+    ///
+    /// See [`Error::PlayerMessage`] for when this is the right constructor and
+    /// when it is not. In short: an instruction somebody wrote for a player,
+    /// never an operating system message and never a formatted fault.
+    ///
+    /// # Why this takes `&'static str` and not `impl Into<String>`
+    ///
+    /// Because what it is handed goes to a screen unchanged. It used to take
+    /// anything a `String` could be made from, so `Error::player(format!("could
+    /// not write {}: {e}", path.display()))` compiled, said nothing, and put a
+    /// path and an operating system error number in front of a player. Nothing
+    /// stopped it but a doc comment asking for a named constant, and a hundred
+    /// and ninety more sites are queued to be routed through this.
+    ///
+    /// A `&'static str` is a constant or a literal and cannot be a `format!`,
+    /// so the compiler now answers that at every call site. The scan named on
+    /// [`Error::PlayerMessage`] closes the rest of the gap: it rejects a
+    /// literal written at the call site as well, and holds each constant's
+    /// wording to the six sentence rules.
+    ///
+    /// A sentence that genuinely has to name something the player chose is not
+    /// what this is for. Give it its own variant, so the thing it interpolates
+    /// is typed and can be checked, rather than widening this back to any
+    /// string at all.
+    pub fn player(message: &'static str) -> Self {
+        Error::PlayerMessage(message.to_string())
+    }
+
+    /// A sentence a player can read, in place of this error's own `Display`.
+    ///
+    /// [`Error::Io`] displays as `io error at {path}: {source}`, and
+    /// [`Error::PlainIo`] carries the same operating system wording with no
+    /// path attached. Neither is vocabulary a player was ever taught, and a
+    /// permission problem or a full disk starting a game used to put a full
+    /// file path and text like `os error 112` on the Play page because a
+    /// caller wrote `.map_err(|e| e.to_string())`. This is the replacement,
+    /// once, so every caller gets the same two sentences instead of
+    /// repeating this decision at each call site.
+    ///
+    /// Only two categories, because a player can only act on two things
+    /// differently: a file or folder problem (close whatever has it open,
+    /// make room, try again) versus everything else (try again). The real
+    /// error still reaches a developer, through `tracing::warn!` here rather
+    /// than at each call site, so no caller has to remember to log it.
+    pub fn player_message(&self) -> &str {
+        match self {
+            // Already a sentence somebody wrote for a player. Nothing to
+            // summarize, nothing to log: this is not a fault, it is an answer.
+            Error::PlayerMessage(message) => message,
+            Error::Io { .. } | Error::NoHomeDirectory => {
+                tracing::warn!("could not reach a file or folder: {self}");
+                FILE_UNREACHABLE
+            }
+            Error::PlainIo(_) | Error::CredentialStore(_) | Error::NotImplemented { .. } => {
+                tracing::warn!("a platform operation failed: {self}");
+                SOMETHING_UNEXPECTED
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shape [`Error`] can take reads as a plain sentence through
+    /// [`Error::player_message`], mechanically rather than as a list of
+    /// expected strings, using the same six rules `identity.rs` established.
+    #[test]
+    fn every_platform_error_reads_as_a_plain_sentence() {
+        use crate::player_sentence::assert_player_safe;
+
+        let io = Error::Io {
+            path: PathBuf::from(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn\settings.json"),
+            source: std::io::Error::from_raw_os_error(112), // ERROR_DISK_FULL
+        };
+        assert_player_safe(io.player_message());
+
+        assert_player_safe(Error::NoHomeDirectory.player_message());
+
+        let plain = Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, "something odd"));
+        assert_player_safe(plain.player_message());
+
+        let credential = Error::CredentialStore("the vault refused: 0x8009000".to_string());
+        assert_player_safe(credential.player_message());
+
+        let not_implemented = Error::NotImplemented {
+            operation: "eject",
+            platform: "Windows",
+        };
+        assert_player_safe(not_implemented.player_message());
+
+        assert_player_safe(
+            Error::player(crate::runtime::CLOSE_EMULATOR_FIRST).player_message(),
+        );
+    }
+
+    /// A message that is already a finished player sentence survives.
+    ///
+    /// Two modules refuse something with wording written for the player:
+    /// [`crate::runtime::CLOSE_EMULATOR_FIRST`] and
+    /// [`crate::supervisor::OLDER_INSTALL_IN_THE_WAY`]. Both used to be
+    /// carried in [`Error::PlainIo`], which is transparent over an operating
+    /// system error, so [`Error::player_message`] could not tell them from
+    /// `os error 112` and replaced both with "Something unexpected happened.
+    /// Try again." The Settings page's open-the-emulator button then gave
+    /// false advice for its single most common failure: the emulator is
+    /// already open, and the player has to close it.
+    ///
+    /// The distinction is the variant, not the two strings. Anything built
+    /// with [`Error::player`] reaches the player unchanged, so the next person
+    /// who writes such a sentence is carried through by using the constructor
+    /// rather than by being added to a list; anything else is a fault and is
+    /// still summarized, which the second half asserts.
+    #[test]
+    fn a_message_that_is_already_a_player_sentence_survives() {
+        use crate::player_sentence::assert_player_safe;
+
+        for designed in [
+            crate::runtime::CLOSE_EMULATOR_FIRST,
+            crate::supervisor::OLDER_INSTALL_IN_THE_WAY,
+        ] {
+            assert_player_safe(designed);
+            assert_eq!(
+                Error::player(designed).player_message(),
+                designed,
+                "a sentence written for the player was flattened into a generic one"
+            );
+        }
+
+        // A sentence nobody in this crate has written yet is carried too. The
+        // shape is what decides, not a list of known strings.
+        let future = "The other player left before the game finished. Nothing was lost.";
+        assert_eq!(Error::player(future).player_message(), future);
+
+        // And the half that must not change: an operating system failure is
+        // still a fault, and is still summarized rather than shown.
+        let disk_full = Error::PlainIo(std::io::Error::from_raw_os_error(112));
+        assert_eq!(disk_full.player_message(), SOMETHING_UNEXPECTED);
+        let locked = Error::Io {
+            path: PathBuf::from(r"C:\Users\Adam\AppData\Roaming\settings.json"),
+            source: std::io::Error::from_raw_os_error(32),
+        };
+        assert_eq!(locked.player_message(), FILE_UNREACHABLE);
+    }
+
+    /// Every player sentence carried by [`Error::PlayerMessage`] is a named
+    /// constant, and every one of those constants reads as a plain sentence.
+    ///
+    /// [`Error::player`] hands its argument straight to a screen, unchanged
+    /// and unsummarized. That is the point of it, and it is also the hazard:
+    /// one `format!` in one careless call puts a path or an operating system
+    /// error number in front of a player, and nothing stopped it. The doc
+    /// comment asked for a named constant, which is a convention somebody has
+    /// to remember, and a convention is exactly what this variant was chosen
+    /// over a list of strings to avoid. There is recorded follow-up work
+    /// covering a hundred and ninety similar sites in other modules; that is
+    /// where the careless call gets written.
+    ///
+    /// So the rule is mechanical, in two halves:
+    ///
+    /// - nothing outside this file may name the variant, so the constructor is
+    ///   the only way to build one
+    /// - every argument to the constructor is a bare named constant: never a
+    ///   `format!`, never a `to_string()`, never a string literal written at
+    ///   the call site, never any other expression
+    ///
+    /// Then, because "it is a constant" says nothing about what the constant
+    /// says, each one is resolved to its text and held to the same six rules
+    /// every other player sentence is held to. That is thirteen constants
+    /// rather than the two an earlier test named by hand.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// Every file is read through [`crate::source_scan::production_only`],
+    /// which blanks EVERY `#[cfg(test)]` module rather than cutting at the
+    /// first one. This test is inside such a module, so the constructor calls
+    /// written in it, and the words `format!` and `to_string` above, are not
+    /// in what is searched. The scan also asserts it found constructions at
+    /// all, so a rename that makes it match nothing fails rather than passing
+    /// silently.
+    #[test]
+    fn every_player_message_is_a_named_constant_that_reads_as_a_sentence() {
+        use crate::source_scan::{closing_bracket, code_matches, code_only, const_str_value,
+            production_only, workspace_rust_files};
+
+        let files = workspace_rust_files();
+        assert!(
+            files.len() > 20,
+            "only {} source files were found, so this scan checked almost nothing",
+            files.len()
+        );
+
+        let mut constructions = 0usize;
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("a source file this test just listed");
+            let production = production_only(&text);
+            let code = code_only(&production);
+            let here = file.ends_with("platform/mod.rs") || file.ends_with("platform\\mod.rs");
+
+            if !here {
+                assert!(
+                    code_matches(&code, "PlayerMessage").is_empty(),
+                    "{} names the player-message variant directly, so it can build one without \
+                     going through the constructor that is checked below",
+                    file.display()
+                );
+            }
+
+            for at in code_matches(&code, "Error::player(") {
+                let open = at + "Error::player".len();
+                let close = closing_bracket(&code, open).unwrap_or_else(|| {
+                    panic!("an unclosed Error::player call in {}", file.display())
+                });
+                let argument = production[open + 1..close].trim();
+                constructions += 1;
+                let last = argument.rsplit("::").next().unwrap_or(argument);
+                let named_constant = !last.is_empty()
+                    && last
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && argument
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
+                assert!(
+                    named_constant,
+                    "a sentence a player reads is built out of an expression rather than a named \
+                     constant, in {}: Error::player({argument}). Anything but a constant can \
+                     carry a path or an operating system error number straight to a screen",
+                    file.display()
+                );
+                let value = const_str_value(last).unwrap_or_else(|| {
+                    panic!(
+                        "{} builds a player message from {last}, and no `const {last}: &str` \
+                         declaring its wording could be found to check",
+                        file.display()
+                    )
+                });
+                crate::player_sentence::assert_player_safe(&value);
+            }
+        }
+
+        // Twenty eight today, across three modules. The floor is well under
+        // that so a module legitimately dropping a refusal does not fail this,
+        // and well over zero so a rename that makes the scan match nothing
+        // does.
+        assert!(
+            constructions >= 10,
+            "only {constructions} player-message constructions were found, so this scan is not \
+             reading what it thinks it is reading"
+        );
+    }
+
+    /// A file or folder problem and an unexpected one read as two different
+    /// sentences, because they are the two things a player can act on
+    /// differently; everything else collapses to whichever of the two it is
+    /// closest to, rather than the launcher inventing a third choice with
+    /// nothing different to tell a player to do.
+    #[test]
+    fn a_file_problem_and_an_unexpected_one_are_told_apart() {
+        let io = Error::Io {
+            path: PathBuf::from("settings.json"),
+            source: std::io::Error::from_raw_os_error(5), // ERROR_ACCESS_DENIED
+        };
+        assert_eq!(io.player_message(), FILE_UNREACHABLE);
+        assert_eq!(Error::NoHomeDirectory.player_message(), FILE_UNREACHABLE);
+
+        let plain = Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, "x"));
+        assert_eq!(plain.player_message(), SOMETHING_UNEXPECTED);
+        assert_eq!(
+            Error::CredentialStore("x".to_string()).player_message(),
+            SOMETHING_UNEXPECTED
+        );
+        assert_eq!(
+            Error::NotImplemented { operation: "eject", platform: "Windows" }.player_message(),
+            SOMETHING_UNEXPECTED
+        );
+    }
+}
 
 /// Helper for the stub implementations.
 pub(crate) fn not_implemented<T>(operation: &'static str) -> Result<T> {
@@ -242,6 +576,13 @@ pub trait Paths: Send + Sync {
     /// Per-platform cache, safe to purge at any time.
     fn cache_root(&self) -> Result<PathBuf>;
 
+    /// The data root a build before 2026-09-12 used (`... Launcher[ Beta]`),
+    /// so a first start under the new name can adopt what is there. `None`
+    /// where no such folder was ever used (test fakes).
+    fn previous_data_root(&self) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
+
     /// The executable suffix, empty on Unix.
     fn exe_suffix(&self) -> &'static str;
 
@@ -275,7 +616,6 @@ pub enum DataDir {
     Runtime,
     ModsStaging,
     ModsPackages,
-    ModsActive,
     MusicSources,
     MusicPacks,
     /// Memory cards. Never deleted without a separate explicit confirmation.
@@ -307,7 +647,6 @@ impl DataDir {
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
-            DataDir::ModsActive => "mods/active",
             DataDir::MusicSources => "music/sources",
             DataDir::MusicPacks => "music/packs",
             DataDir::Saves => "saves",
@@ -336,7 +675,6 @@ impl DataDir {
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,
-        DataDir::ModsActive,
         DataDir::MusicSources,
         DataDir::MusicPacks,
         DataDir::Saves,
@@ -375,7 +713,6 @@ impl DataDir {
                 | DataDir::Downloads
                 | DataDir::Staging
                 | DataDir::LibraryWork
-                | DataDir::ModsActive
                 | DataDir::ModsStaging
         )
     }

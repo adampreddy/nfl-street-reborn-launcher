@@ -17,6 +17,10 @@ Object.assign(fixture, {
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
+ // A returning player: the launcher removed the 2.1 B/X swap and says so
+ // once, on the controller step (and on Controllers), nowhere else.
+ notices_pending: [{id:'bx-swap-undone',title:'X and B are back to normal',text:'NFL Street Reborn swaps X and B inside the game now, so the 2.1 controller swap is no longer needed and has been removed from your mapping: B is B and X is X.'}],
+ notice_dismiss: null,
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
 fixture.controls_options=[{slug:'xbox',label:'Xbox',suggested:true,describes:'A, B, X and Y prompts.',pack:'Xbox Controls'},{slug:'playstation',label:'PlayStation',suggested:false,describes:'Cross, circle, square and triangle prompts.',pack:'PS Controls'},{slug:'gamecube',label:'GameCube',describes:'Original game prompts.',pack:null}];
@@ -53,6 +57,7 @@ await context.addInitScript(data=>{
    localStorage.setItem('qa:settings',JSON.stringify(prefs));return {which:args.which,value:args.value};
   }
   if(cmd==='pick_path') return 'C:\\Games\\Reborn\\NSR.iso';
+  if(cmd==='notice_dismiss') {data.notices_pending=(data.notices_pending||[]).filter(n=>n.id!==args.id);return null;}
   if(cmd==='launch') return new Promise(resolve=>{data.session_active=true;window.__finishLaunch=r=>{data.session_active=false;resolve(r);};});
   if(cmd==='controls_set') {data.controls_current={profile:args.profile,label:args.profile,source:'settings'};return {label:args.profile,synced:{note:'Button prompts updated.'}};}
   if(cmd==='mods_toggle') {data.mod_packages.packages.forEach(p=>{if(p.id===args.id)p.active=args.on;else if(args.on&&p.id.startsWith('football'))p.active=false;});return {synced:true,note:'Mods updated.'};}
@@ -125,21 +130,61 @@ assert.equal(await page.getByRole('heading',{name:'Your controller',exact:true})
 await page.evaluate(()=>window.__pad.buttons[0]={pressed:false,value:0});
 await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),undefined);
 await page.getByRole('button',{name:'Test controller',exact:true}).click();
+// First run keeps the bindings behind "Customize controls" (the standard
+// layout is right for nearly everyone); a rebind starts by opening it.
+await page.getByText('Customize controls',{exact:true}).click();
 await page.getByRole('button',{name:'Assign A',exact:true}).click();
 await page.waitForTimeout(80);await page.evaluate(()=>window.__pad.buttons[3]={pressed:true,value:1});
 await page.getByText('A saved.',{exact:true}).waitFor();
 assert.equal(await page.evaluate(()=>window.__calls.find(c=>c.cmd==='setup_save_mapping').args.bindings['Buttons/A']),'`Button Y`');
 await page.evaluate(()=>window.__pad.buttons[3]={pressed:false,value:0});
 await page.evaluate(()=>window.__reject='setup_save_mapping');await page.getByRole('button',{name:'Assign A',exact:true}).click();
+// Typing a Dolphin input name is the fallback, folded away behind one line.
+await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
 await page.getByRole('textbox',{name:'A binding',exact:true}).fill('`Button X`');await page.getByRole('button',{name:'Use binding',exact:true}).click();
 await page.getByText('Test failure: setup_save_mapping',{exact:true}).waitFor();assert.match(await page.getByRole('button',{name:'Assign A',exact:true}).innerText(),/Button Y/);
 await page.evaluate(()=>window.__reject=null);
 await page.getByRole('button',{name:'Sticks',exact:true}).click();assert.equal(await page.locator('.compact-mappings button').count(),8);
 const stickRows=await page.locator('.compact-mappings button').allTextContents();assert.match(stickRows[0],/Left stick up/i);assert.match(stickRows[1],/Right stick up/i);await shot('onboarding-sticks');
 await page.getByRole('button',{name:'Buttons',exact:true}).click();
+// The small-window measurement is of what a first-run player sees: the
+// standard layout with the bindings folded away, not the opened grid.
+await page.getByText('Customize controls',{exact:true}).click();
+// The size first run actually runs at (setup_window_lock holds 1280x800):
+// no scrollbar on the controller step, folded or opened.
+await page.setViewportSize({width:1280,height:800});await page.waitForTimeout(200);
+const lockedSize=await page.evaluate(()=>{const main=document.querySelector('main');const parts=el=>Array.from(el.children).map(c=>`${c.tagName.toLowerCase()}${c.id?'#'+c.id:''}${c.className?'.'+String(c.className).split(' ')[0]:''}=${c.offsetHeight}`);return {scroll:main.scrollHeight,height:main.clientHeight,screenParts:parts(document.getElementById('screen'))};});
+console.log('controller layout at 1280x800 (folded)',JSON.stringify(lockedSize));assert.ok(lockedSize.scroll<=lockedSize.height,'the controller step must not scroll at 1280x800');
+await page.getByText('Customize controls',{exact:true}).click();await page.waitForTimeout(200);
+const openedSize=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight}));
+console.log('controller layout at 1280x800 (opened)',openedSize);assert.ok(openedSize.scroll<=openedSize.height,'the controller step must not scroll at 1280x800 with the bindings open');
+// The stage clips its overflow, so "no page scroll" is not enough: the Swap
+// and Restore buttons under the opened grid must be reachable, inside the
+// stage's box or inside a fold that scrolls on its own.
+const opened=await page.evaluate(()=>{const stage=document.querySelector('.setup-controller').getBoundingClientRect();const fold=document.querySelector('.customize-controls');const f=fold.getBoundingClientRect();const buttons=document.querySelector('.customize-controls .mapping-buttons').getBoundingClientRect();return {stageBottom:stage.bottom,foldBottom:f.bottom,buttonsBottom:buttons.bottom,foldScrolls:fold.scrollHeight>fold.clientHeight+1,foldOverflow:getComputedStyle(fold).overflowY};});
+console.log('opened bindings',opened);
+assert.ok(opened.foldBottom<=opened.stageBottom+1,'the opened fold must end inside the stage');
+assert.ok(opened.buttonsBottom<=opened.stageBottom+1||(opened.foldScrolls&&['auto','scroll'].includes(opened.foldOverflow)),'Swap and Restore must be inside the stage or inside a fold that scrolls');
+// The returning player's B/X notice sits in the intro line's slot on this
+// step: visible, the intro hidden, and the two size checks above already
+// ran with it on screen. Got it removes it and the intro comes back.
+const noticeBox=await page.evaluate(()=>{const n=document.querySelector('.setup-notices .notice.migration');const intro=n?.parentElement?.nextElementSibling;return n?{height:n.getBoundingClientRect().height,title:n.querySelector('strong')?.textContent,introHidden:intro?.hidden===true}:null;});
+console.log('controller step notice',noticeBox);assert.ok(noticeBox,'the B/X notice must be drawn on the controller step');assert.equal(noticeBox.title,'X and B are back to normal');assert.ok(noticeBox.introHidden,'the intro line gives its slot to the notice');
+await shot('onboarding-controller-1280');
+await page.getByRole('button',{name:'Got it',exact:true}).click();await page.waitForTimeout(100);
+assert.equal(await page.locator('.setup-notices .notice.migration').count(),0,'Got it removes the notice');
+assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.cmd==='notice_dismiss').at(-1)?.args?.id),'bx-swap-undone');
+assert.ok(await page.getByText('Test your inputs. Your controller can navigate the entire launcher once paired.',{exact:true}).isVisible(),'the intro line is back once the notice is gone');
+await page.getByText('Customize controls',{exact:true}).click();
 await page.setViewportSize({width:800,height:600});await shot('onboarding-controller-800');
 const layout=await page.evaluate(()=>({scroll:document.querySelector('main').scrollHeight,height:document.querySelector('main').clientHeight,width:document.documentElement.scrollWidth,inner:innerWidth}));
-console.log('controller layout',layout);assert.ok(layout.width<=layout.inner);assert.ok(layout.scroll<=layout.height,'controller workspace needs no scrolling at 800x600');
+console.log('controller layout',layout);assert.ok(layout.width<=layout.inner);
+// The launcher holds its window at 1280x800 for the whole of first run
+// (setup_window_lock), so 800x600 is a stress test, not a real case. The
+// page's own bottom bar overlaps main by 8px at this height whatever the
+// step shows (the same 8px with the bindings folded or open, the art at
+// 165px or 185px); everything the step draws is inside the card.
+assert.ok(layout.scroll<=layout.height+8,'controller workspace needs no scrolling at 800x600 beyond the shell bar overlap');
 await page.setViewportSize({width:1280,height:800});
 await page.goto(url+'/onboarding.html?stage=preparation');
 await page.getByRole('button',{name:/Edit Graphics/}).click();

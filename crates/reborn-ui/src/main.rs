@@ -23,10 +23,26 @@
 #![forbid(unsafe_code)]
 
 mod content_updates;
+mod music_page;
+mod remap;
 mod setup_tools;
+mod shell_tools;
+mod stats_view;
 mod dolphin_settings;
+mod live_settings;
 
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+
+/// The version this launcher believes it is: the one `build.ps1 -Version`
+/// stamped on the build, falling back to the crate version for a plain
+/// `cargo build`. Every version comparison and every user agent reads this,
+/// never `CARGO_PKG_VERSION` directly. The crate said 3.1.0 while every
+/// beta was stamped 3.0.1-beta.N, so `update_check` called each newer beta
+/// "up to date" and no launcher built after 2026-09-09 ever updated itself.
+pub fn launcher_version() -> &'static str {
+    reborn_core::build_version()
+}
 
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +69,7 @@ use reborn_core::onboarding::{
 use reborn_core::runtime::{GameBuild, GraphicsPreset};
 use reborn_core::session::{LaunchRequest, Launched, Session, UserDir};
 use reborn_core::stats::{Enqueued, EntryState, QueueEntry, StatsQueue};
-use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
+use reborn_core::supervisor::{SessionEnd, SessionIntent, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
 /// Where the launcher keeps things, and whether that is safe.
@@ -194,7 +210,7 @@ fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
         let scratch = p
             .paths
             .data_root()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.player_message().to_string())?
             .join(DataDir::Cache.relative());
         match reborn_core::devices::scan_via_runtime(&p, std::path::Path::new(&exe), &scratch) {
             Ok(scan) => return Ok(to_report(&scan, "runtime")),
@@ -405,6 +421,10 @@ struct LaunchResult {
     /// What happened to the match results Dolphin wrote. Absent when nothing
     /// started or when there were none, which is most sessions.
     stats_note: Option<String>,
+    /// What the memory cards said around the game: gear rows brought up to
+    /// date before it, in-game edits kept after it, or why a card was left
+    /// as it was. Absent when nothing started or when it was quiet.
+    cards_note: Option<String>,
 }
 
 fn preset_from(name: &str) -> GraphicsPreset {
@@ -445,6 +465,7 @@ async fn prepare_launch(
             build: GameBuild::Offline,
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
+            league_match: false,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -519,7 +540,7 @@ fn find_runtime_and_game_for(
             // Dolphin.ini's recorded default counts, so it is resolved here
             // the way a launch resolves it.
             let user = reborn_core::session::resolve_user_dir_for(platform, user_dir, Some(found.path()))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.player_message().to_string())?;
             let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
             let search = reborn_core::session::find_game_image(
                 found.path(),
@@ -586,7 +607,7 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     .ok()
                     .map(|d| d.explain()),
                 game_note: {
-                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?.game_path;
+                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
                     let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
                     if given.is_some() {
                         None
@@ -634,32 +655,47 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
 fn default_legacy_root(platform: &Platform) -> Option<PathBuf> {
     if let Ok(file) = reborn_core::settings::settings_path(platform) {
         if let Ok(settings) = reborn_core::settings::Settings::load(&file) {
-            if let Some(root) = settings.legacy_root { return Some(root); }
+            if let Some(root) = settings.legacy_root { if root.is_dir() { return Some(root); } }
         }
     }
-    let guess = platform
-        .paths
-        .data_root()
-        .ok()?
-        .parent()?
-        .join("NFL Street Reborn");
-    guess.is_dir().then_some(guess)
+    let data = platform.paths.data_root().ok()?;
+    // The 2.1 install tucked into the data root at first start, else the
+    // folder 2.1 used beside a launcher-named root (builds before 09-12).
+    if let Some(tucked) = reborn_core::layout::legacy_root(&data) { return Some(tucked); }
+    let guess = data.parent()?.join("NFL Street Reborn");
+    (guess.is_dir() && !reborn_core::layout::same_named(&guess, &data)).then_some(guess)
 }
 
 static LAUNCH_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-struct LaunchGuard;
+static GAME_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// All writers share exclusion, but only game launches are a game session.
+// Update adoption and settings writes must never make the UI report Dolphin open.
+struct LaunchGuard { session: bool }
 impl LaunchGuard {
     fn acquire() -> Result<Self, String> {
         LAUNCH_ACTIVE.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst).map_err(|_| "A game session is already active.".to_string())?;
-        Ok(Self)
+            std::sync::atomic::Ordering::SeqCst).map_err(|_| if session_active() {
+                "A game session is already active.".to_string()
+            } else {
+                "The launcher is applying changes. Please wait for them to finish.".to_string()
+            })?;
+        Ok(Self { session: false })
+    }
+    fn acquire_session() -> Result<Self, String> {
+        let mut guard = Self::acquire()?;
+        GAME_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+        guard.session = true;
+        Ok(guard)
     }
 }
 impl Drop for LaunchGuard {
-    fn drop(&mut self) { LAUNCH_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst); }
+    fn drop(&mut self) {
+        if self.session { GAME_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst); }
+        LAUNCH_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 #[tauri::command]
-fn session_active() -> bool { LAUNCH_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
+fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
 /// Start the game and answer when it stops.
 ///
@@ -675,9 +711,10 @@ async fn launch(
     fullscreen: bool,
     user_dir: Option<String>,
     mods_disabled: bool,
+    league_match: Option<bool>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = LaunchGuard::acquire()?;
+        let _guard = LaunchGuard::acquire_session()?;
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
@@ -696,9 +733,27 @@ async fn launch(
             build: GameBuild::Offline,
             mods_disabled,
             user_dir: chosen_user,
+            league_match: league_match.unwrap_or(false),
         };
 
-        match Session::run(&p, &req).map_err(|e| e.to_string())? {
+        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
+
+        // The guard, back, before anything reaches the network. `Session::run`
+        // has already given the single-instance lock back; this is the other
+        // half. A send is one request per queued game with the client's full
+        // timeout each, so a backlog against a slow or unreachable backend is
+        // minutes, and for all of those minutes the emulator has already
+        // exited while Play answers "A game session is already active", the
+        // Online page says to close the emulator, opening the emulator from
+        // Settings is refused and the command line retry is refused.
+        //
+        // Nothing is at risk in the gap: the captures are already in the queue
+        // on disk, and a second launch starting here would collect an empty
+        // folder and send the same queue, which is the send this one was going
+        // to do.
+        drop(_guard);
+
+        match launched {
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
                 user_dir_note: None,
@@ -710,6 +765,7 @@ async fn launch(
                 mods_note: None,
                 session_id: None,
                 stats_note: None,
+                cards_note: None,
             }),
             Launched::Finished {
                 end,
@@ -719,9 +775,17 @@ async fn launch(
                 user_dir,
                 mods,
                 session_id,
-                stats,
+                results,
+                cards,
                 ..
             } => {
+                // With the lock and the guard both back. Never surfaced as a
+                // failure: the game was played whatever the backend answered.
+                // Return the finished game immediately. Waiting for a slow
+                // upload here leaves Play's pending invoke labelled "Session
+                // active" even after the native session guard has been released.
+                let stats_note = results.background_note();
+                std::thread::spawn(move || { let _ = results.send(&p); });
                 let needs_recovery = end.needs_recovery();
                 let message = match &end {
                     SessionEnd::Exited { code: Some(0) } => {
@@ -754,7 +818,8 @@ async fn launch(
                     pads_authoritative,
                     mods_note: Some(mods.explain()),
                     session_id: Some(session_id),
-                    stats_note: stats.explain(),
+                    stats_note,
+                    cards_note: cards.explain(),
                 })
             }
         }
@@ -886,6 +951,10 @@ struct PackageEntryView {
     bytes: u64,
     /// True when `mods/activation.json` lists this exact id and version.
     active: bool,
+    /// The manifest's `kind`, when it declares one. "soundtrack" packages
+    /// carry a music pack instead of textures: switching one rebuilds the
+    /// disc rather than composing a tree.
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -922,6 +991,126 @@ struct ModLibraryView {
     /// Packages the controls profile owns, so a mods list does not offer them
     /// twice. Turning one of these on by hand would fight the controls setting.
     managed_by_controls: Vec<String>,
+}
+
+/// The manifest's `kind` field, read raw so composition's typed view need
+/// not know about it. Absent for every texture package.
+fn package_kind(dir: &Path) -> Option<String> {
+    let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    v.get("kind").and_then(|k| k.as_str()).map(str::to_string)
+}
+
+/// Soundtrack packages under `mods/packages`: schema `nsr.soundtrack-mod.v1`,
+/// one `.nsrmusic` (or an empty pack.json for the Reborn soundtrack, the
+/// disc's own) instead
+/// of textures. The composition loader refuses them by design, so they are
+/// read raw here, listed beside the texture packages, and switched through
+/// the soundtrack record rather than activation.json. Returns the entries and
+/// the `unreadable` list with their loader complaints removed.
+fn read_soundtrack_packages(root: &Path, unreadable: Vec<String>, data_root: &Path) -> (Vec<PackageEntryView>, Vec<String>) {
+    use reborn_core::soundtrack::state::{Base, Soundtrack};
+    let record = Soundtrack::load(data_root).ok();
+    let mut found = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let Ok(ids) = std::fs::read_dir(root) else { return (found, unreadable) };
+    for id_entry in ids.flatten() {
+        let Ok(versions) = std::fs::read_dir(id_entry.path()) else { continue };
+        for version_entry in versions.flatten() {
+            let dir = version_entry.path();
+            let Ok(raw) = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)) else { continue };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else { continue };
+            if v.get("schema").and_then(|x| x.as_str()) != Some("nsr.soundtrack-mod.v1") {
+                continue;
+            }
+            let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let (id, version) = (get("id"), get("version"));
+            if id.is_empty() || version.is_empty() {
+                continue;
+            }
+            let files = v.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+            let bytes: u64 = files.iter().filter_map(|f| f.get("bytes").and_then(|b| b.as_u64())).sum();
+            let has_songs = files.iter().any(|f| f.get("path").and_then(|p| p.as_str()).map(|p| p.ends_with(".nsrmusic")).unwrap_or(false));
+            // Active means "this is the soundtrack base": the package with a
+            // pack when the record names it, the one with no songs (the Reborn
+            // soundtrack, which is the disc's own) when the base is stock.
+            let active = match record.as_ref().map(|r| &r.base) {
+                Some(Base::Package { id: bid, version: bver, .. }) => *bid == id && *bver == version,
+                Some(Base::Stock) => !has_songs,
+                None => !has_songs,
+            };
+            found.push(PackageEntryView {
+                id,
+                version,
+                name: get("name"),
+                targets: Vec::new(),
+                conflict_group: Some("soundtrack".to_string()),
+                files: files.len(),
+                bytes,
+                active,
+                kind: Some("soundtrack".to_string()),
+            });
+            dirs.push(dir);
+        }
+    }
+    found.sort_by(|a, b| (a.id.as_str(), a.version.as_str()).cmp(&(b.id.as_str(), b.version.as_str())));
+    let unreadable = unreadable
+        .into_iter()
+        .filter(|line| !dirs.iter().any(|d| line.starts_with(&d.display().to_string())))
+        .collect();
+    (found, unreadable)
+}
+
+/// A soundtrack package switched on or off: set the soundtrack base and
+/// rebuild the disc now, under the launch guard. Returns the sentence to show.
+///
+/// A package whose pack carries no songs (the Reborn soundtrack, the disc's
+/// own) sets the base to stock, and so does switching any soundtrack package
+/// off.
+fn soundtrack_switch(data_root: &Path, dir: &Path, id: &str, version: &str, on: bool) -> Result<String, String> {
+    use reborn_core::soundtrack::state::{Base, Soundtrack};
+    let mut st = Soundtrack::load(data_root).map_err(|e| e.to_string())?;
+    let mut base = Base::Stock;
+    if on {
+        let raw = std::fs::read(dir.join(reborn_core::mods::PACKAGE_MANIFEST)).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        let file = v.get("files").and_then(|f| f.as_array()).and_then(|a| a.first()).and_then(|f| f.get("path")).and_then(|p| p.as_str()).unwrap_or("");
+        // Only a .nsrmusic payload is a pack; the Reborn package carries a
+        // bare pack.json with no songs, which means the disc's own soundtrack.
+        if file.ends_with(".nsrmusic") {
+            let pack_path = dir.join("files").join(file);
+            match reborn_core::soundtrack::pack::read_pack(&pack_path) {
+                Ok(p) if !p.manifest.songs.is_empty() => {
+                    let rel = pack_path.strip_prefix(data_root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| pack_path.to_string_lossy().into_owned());
+                    base = Base::Package { id: id.to_string(), version: version.to_string(), pack: rel };
+                }
+                Ok(_) => {}
+                Err(e) => return Err(format!("{id} could not be read as a soundtrack pack: {e}")),
+            }
+        }
+    }
+    // The record is what the rebuild reads, so it is written first; if the
+    // rebuild then fails, the previous record goes back, so Music never
+    // claims a soundtrack the disc does not carry.
+    let previous = Soundtrack::load(data_root).map_err(|e| e.to_string())?;
+    st.base = base;
+    if on {
+        st.enabled = true;
+    }
+    st.save(data_root).map_err(|e| e.to_string())?;
+    let outcome = match music_page::rebuild_now(data_root, &mut |_| {}) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            if let Err(back) = previous.save(data_root) {
+                eprintln!("the soundtrack record could not be put back: {back}");
+            }
+            return Err(e);
+        }
+    };
+    Ok(match outcome {
+        reborn_core::soundtrack::apply::Outcome::Refused(reborn_core::soundtrack::Refusal::NothingStaged) => "Your game plays its own soundtrack.".to_string(),
+        other => other.note(),
+    })
 }
 
 /// Enumerate `mods/packages/<id>/<version>/package.json`.
@@ -983,11 +1172,15 @@ fn read_package_library(root: &Path) -> (Vec<ModPackage>, Vec<String>) {
 async fn mod_packages() -> Result<ModLibraryView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
-        let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
-        let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
+        let root = reborn_core::mods::packages_root(&p).map_err(|e| e.player_message().to_string())?;
+        let activation_path =
+            reborn_core::mods::activation_path(&p).map_err(|e| e.player_message().to_string())?;
+        let activation =
+            Activation::load(&activation_path).map_err(|e| e.player_message().to_string())?;
 
         let (packages, unreadable) = read_package_library(&root);
+        let data_root = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+        let (soundtracks, unreadable) = read_soundtrack_packages(&root, unreadable, &data_root);
 
         // Per game, because exclusivity is a fact about a composed tree and two
         // packages that collide on one build may not both target another. Every
@@ -1001,6 +1194,13 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
             }
         }
         let mut exclusive: Vec<ExclusiveGroupView> = Vec::new();
+        if soundtracks.len() > 1 {
+            exclusive.push(ExclusiveGroupView {
+                members: soundtracks.iter().map(|s| s.id.clone()).collect(),
+                example_path: None,
+                computed: false,
+            });
+        }
         for game in &builds {
             for group in reborn_core::mods::exclusive_groups(&packages, game) {
                 let members: Vec<String> = group.members.iter().map(|m| m.to_string()).collect();
@@ -1045,7 +1245,9 @@ async fn mod_packages() -> Result<ModLibraryView, String> {
                         .active
                         .iter()
                         .any(|a| a.id == pkg.id && a.version == pkg.version),
+                    kind: package_kind(&root.join(pkg.id.as_str()).join(pkg.version.as_str())),
                 })
+                .chain(soundtracks)
                 .collect(),
             unreadable,
             activation: activation
@@ -1168,8 +1370,11 @@ fn compose_request(
     let game = GameId::parse(game).map_err(|e| e.to_string())?;
     let root = reborn_core::mods::packages_root(platform).map_err(|e| e.to_string())?;
     let loaded = load_packages(&root, packages)?;
-    let req =
-        ComposeRequest::in_data_root(platform, game.clone(), loaded).map_err(|e| e.to_string())?;
+    // The composed tree lives in the user folder a launch would use.
+    let exe = runtime_for(platform, None);
+    let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let user = reborn_core::session::resolve_user_dir_for(platform, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
+    let req = ComposeRequest::in_data_root(platform, game.clone(), user.path(), loaded).map_err(|e| e.to_string())?;
     Ok((game, req))
 }
 
@@ -1190,13 +1395,17 @@ struct ModSyncView {
     tree: Option<&'static str>,
     entries: u64,
     overlaid: u64,
-    /// "linked" or "already_linked". Absent when refused.
+    /// "composed_in_user_folder" or "left_alone". Absent when refused.
     link: Option<&'static str>,
     link_at: Option<String>,
     /// Where the folder that was at link_at went, when one was there. Nothing
     /// is deleted; a player renames it back to undo the link.
     moved_aside: Option<String>,
     composed_root: Option<String>,
+    /// Present when the package switched was a soundtrack: what the disc
+    /// rebuild did, in a sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    soundtrack_note: Option<String>,
 }
 
 fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackageView> {
@@ -1210,7 +1419,7 @@ fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackag
 }
 
 fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncView {
-    use reborn_core::mods::{SyncOutcome, TextureLink, TreeStep};
+    use reborn_core::mods::{SyncOutcome, TreeStep};
     let note = outcome.explain();
     match outcome {
         SyncOutcome::Refused(why) => ModSyncView {
@@ -1227,21 +1436,21 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             link_at: None,
             moved_aside: None,
             composed_root: None,
+            soundtrack_note: None,
         },
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
+                TreeStep::LeftAlone => ("left_alone", 0, 0),
                 TreeStep::AlreadyCurrent => ("already_current", 0, 0),
                 TreeStep::Rebuilt {
                     entries, overlaid, ..
                 } => ("rebuilt", *entries, *overlaid),
             };
-            let (link, link_at, moved_aside) = match &r.link {
-                TextureLink::LeftAlone { at } => ("left_alone", at.clone(), None),
-                TextureLink::AlreadyLinked { at, .. } => ("already_linked", at.clone(), None),
-                TextureLink::Linked {
-                    at, moved_aside, ..
-                } => ("linked", at.clone(), moved_aside.clone()),
-            };
+            // The composed tree IS the game's texture folder now; "link"
+            // stays in the view for the harness page that shows it.
+            let link = if matches!(r.tree, TreeStep::LeftAlone) { "left_alone" } else { "composed_in_user_folder" };
+            let link_at = r.composed_root.clone();
+            let moved_aside = r.moved_aside.clone();
             ModSyncView {
                 game: r.game.to_string(),
                 synced: true,
@@ -1256,6 +1465,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
                 link_at: Some(link_at.display().to_string()),
                 moved_aside: moved_aside.map(|p| p.display().to_string()),
                 composed_root: Some(r.composed_root.display().to_string()),
+            soundtrack_note: None,
             }
         }
     }
@@ -1273,7 +1483,7 @@ fn now_ms() -> u64 {
 /// The same call a launch makes, against the same user directory a launch
 /// would resolve, so what the Mods page shows as applied is what the next
 /// launch loads and not a parallel notion of it.
-fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
+pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
@@ -1283,7 +1493,7 @@ fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncVi
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
-    req.link_into_user_dir = preferences.manage_texture_folder.unwrap_or(true);
+    req.manage_user_texture_folder = preferences.manage_texture_folder.unwrap_or(true);
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
     Ok(sync_view(&game, outcome))
@@ -1321,6 +1531,34 @@ async fn mods_toggle(
         let id = ModId::parse(&id).map_err(|e| e.to_string())?;
         let version = PackageVersion::parse(&version).map_err(|e| e.to_string())?;
         let root = reborn_core::mods::packages_root(&p).map_err(|e| e.to_string())?;
+
+        // A soundtrack package changes the disc, not the texture tree, and is
+        // never listed in activation.json: the soundtrack record is its state.
+        let dir = root.join(id.as_str()).join(version.as_str());
+        if package_kind(&dir).as_deref() == Some("soundtrack") {
+            if !dir.join(reborn_core::mods::PACKAGE_MANIFEST).is_file() {
+                return Err(format!("{} is not an installed package, so it cannot be switched.", dir.display()));
+            }
+            let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+            let note = soundtrack_switch(&data_root, &dir, id.as_str(), version.as_str(), on)?;
+            return Ok(ModSyncView {
+                game: GameBuild::Offline.game_id().to_string(),
+                synced: true,
+                refusal: None,
+                note: note.clone(),
+                active: Vec::new(),
+                missing: Vec::new(),
+                tree: None,
+                entries: 0,
+                overlaid: 0,
+                link: None,
+                link_at: None,
+                moved_aside: None,
+                composed_root: None,
+                soundtrack_note: Some(note),
+            });
+        }
+
         let activation_path =
             reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
         let mut activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
@@ -1499,7 +1737,10 @@ async fn mods_unapply(game: String, confirm: bool) -> Result<ModUnapplyView, Str
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let game = GameId::parse(&game).map_err(|e| e.to_string())?;
-        let composed = reborn_core::mods::composed_root(&p, &game).map_err(|e| e.to_string())?;
+        let exe = runtime_for(&p, None);
+        let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let user = reborn_core::session::resolve_user_dir_for(&p, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
+        let composed = reborn_core::mods::composed_root(user.path(), &game);
         let activation_path = reborn_core::mods::activation_path(&p).map_err(|e| e.to_string())?;
         let activation = Activation::load(&activation_path).map_err(|e| e.to_string())?;
 
@@ -2904,6 +3145,7 @@ async fn onboarding_run_task(
                     // here is the bug that booted the game to factory defaults
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
+                    league_match: false,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -3250,6 +3492,17 @@ struct StatsEntryView {
     first_seen_ms: u64,
     last_error: Option<String>,
     session_id: Option<String>,
+    /// What the server said about a terminal result, such as "Recorded as
+    /// incomplete". Written to the entry and shown to nobody until fix wave 2:
+    /// it is the only place a player learns their game was counted with a
+    /// qualification, and the state alone says "sent and counted", which is
+    /// true and is not the whole truth.
+    note: Option<String>,
+    /// "online", "offline", "unknown", or absent for the folder older runtimes
+    /// wrote. Reported rather than kept internal: "unknown" is the launcher
+    /// saying it found a capture in a folder neither it nor the emulator agreed
+    /// on, and a naming drift between the two has to be visible somewhere.
+    capture_folder: Option<String>,
     captured_at: Option<String>,
     teams: Vec<String>,
     players: Option<usize>,
@@ -3258,12 +3511,14 @@ struct StatsEntryView {
     /// screen showing these values needs to be able to mark them suspect.
     sides_verified: Option<bool>,
     needs_review: Option<bool>,
-    flags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Default, PartialEq, Eq)]
 struct StatsQueueCounts {
-    /// What the next submission pass would actually try. Only `Queued` counts.
+    /// What the next submission pass would actually try: `Queued` and
+    /// `Stalled`. A pass puts stalled entries back before it starts, so they
+    /// are as waiting as anything else, and this is the only number the
+    /// settings panel shows.
     depth: usize,
     quarantined: usize,
     stalled: usize,
@@ -3284,6 +3539,35 @@ struct StatsQueueView {
     entries: Vec<StatsEntryView>,
 }
 
+/// One queue row, as a page reads it.
+///
+/// Its own function so it can be checked without a `Platform`, a real queue
+/// and a real disk: what a row says about a result is exactly the kind of
+/// thing that has to be testable.
+fn entry_view(e: &QueueEntry) -> StatsEntryView {
+    let (state, reason) = entry_state_label(&e.state);
+    StatsEntryView {
+        key: e.key.to_string(),
+        state,
+        reason,
+        attempts: e.attempts,
+        first_seen_ms: e.first_seen_ms,
+        last_error: e.last_error.clone(),
+        session_id: e.session_id.clone(),
+        note: e.note.clone(),
+        capture_folder: e.capture_folder.clone(),
+        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
+        teams: e
+            .summary
+            .as_ref()
+            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default(),
+        players: e.summary.as_ref().map(|s| s.players),
+        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
+        needs_review: e.summary.as_ref().map(|s| s.needs_review),
+    }
+}
+
 fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
     match state {
         EntryState::Queued => ("queued", None),
@@ -3297,11 +3581,15 @@ fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
 
 /// Count the queue by state.
 ///
-/// `depth` is the number of entries a submission pass would try, and it counts
-/// `Queued` and nothing else. `Held` means the server stored the result and a
-/// person will decide, which is a **success**: counting it as waiting is
-/// precisely the mistake that sent the uploader into a retry loop and produced
-/// a real outage on this project.
+/// `depth` is the number of entries a submission pass would try: `Queued` and
+/// `Stalled`. Stalled is in there because a pass puts stalled entries back
+/// before it starts, so they will be tried; leaving them out meant the one
+/// number a player sees read zero while real games sat undelivered.
+///
+/// `Held` is NOT in there. It means the server stored the result and a person
+/// will decide, which is a **success**: counting it as waiting is precisely
+/// the mistake that sent the uploader into a retry loop and produced a real
+/// outage on this project.
 fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
     let mut counts = StatsQueueCounts {
         total: entries.len(),
@@ -3311,7 +3599,10 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
         match entry.state {
             EntryState::Queued => counts.depth += 1,
             EntryState::Quarantined { .. } => counts.quarantined += 1,
-            EntryState::Stalled { .. } => counts.stalled += 1,
+            EntryState::Stalled { .. } => {
+                counts.stalled += 1;
+                counts.depth += 1;
+            }
             EntryState::Accepted => counts.accepted += 1,
             EntryState::Held { .. } => counts.held += 1,
             EntryState::Rejected { .. } => counts.rejected += 1,
@@ -3328,43 +3619,17 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
 async fn stats_queue() -> Result<StatsQueueView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let entries = queue.entries().map_err(|e| e.to_string())?;
-        let orphaned = queue.orphaned_payloads().map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
+        let entries = queue.entries().map_err(|e| e.player_message().to_string())?;
+        let orphaned = queue
+            .orphaned_payloads()
+            .map_err(|e| e.player_message().to_string())?;
 
         Ok(StatsQueueView {
             dir: queue.dir().display().to_string(),
             counts: queue_counts(&entries),
             orphaned_payloads: orphaned.len(),
-            entries: entries
-                .iter()
-                .map(|e| {
-                    let (state, reason) = entry_state_label(&e.state);
-                    StatsEntryView {
-                        key: e.key.to_string(),
-                        state,
-                        reason,
-                        attempts: e.attempts,
-                        first_seen_ms: e.first_seen_ms,
-                        last_error: e.last_error.clone(),
-                        session_id: e.session_id.clone(),
-                        captured_at: e.summary.as_ref().map(|s| s.captured_at.clone()),
-                        teams: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.teams.iter().map(|t| t.name.clone()).collect())
-                            .unwrap_or_default(),
-                        players: e.summary.as_ref().map(|s| s.players),
-                        sides_verified: e.summary.as_ref().map(|s| s.sides_verified),
-                        needs_review: e.summary.as_ref().map(|s| s.needs_review),
-                        flags: e
-                            .summary
-                            .as_ref()
-                            .map(|s| s.flags.clone())
-                            .unwrap_or_default(),
-                    }
-                })
-                .collect(),
+            entries: entries.iter().map(entry_view).collect(),
         })
     })
     .await
@@ -3381,6 +3646,14 @@ struct StatsIngestView {
     already_submitted: usize,
     /// Files that could not be read. These were left exactly where they were.
     unreadable: usize,
+    /// Whole folders that could not be listed, so nothing in them was looked
+    /// at. Counted apart from `unreadable` because how many results are in one
+    /// is exactly what was not established.
+    unreadable_folders: usize,
+    /// Results that were saved, whose file the emulator wrote could not be
+    /// removed afterwards. Nothing was lost; the file is read again next time
+    /// and the content key makes that a no-op.
+    source_kept: usize,
     /// One sentence per capture, from the core, so nothing here paraphrases a
     /// result the player will act on.
     messages: Vec<String>,
@@ -3412,14 +3685,16 @@ async fn stats_ingest(
         let p = Platform::detect();
         let from = reborn_core::stats::dolphin_capture_dir(Path::new(&user_dir));
 
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
+        let Startup::Owner(_lock) =
+            Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())?
+        else {
             return Err(already_running());
         };
 
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
         let results = queue
-            .ingest_from(&from, session_id.as_deref())
-            .map_err(|e| e.to_string())?;
+            .ingest_all(Path::new(&user_dir), session_id.as_deref())
+            .map_err(|e| e.player_message().to_string())?;
 
         let mut view = StatsIngestView {
             from: from.display().to_string(),
@@ -3428,6 +3703,8 @@ async fn stats_ingest(
             already_queued: 0,
             already_submitted: 0,
             unreadable: 0,
+            unreadable_folders: 0,
+            source_kept: 0,
             messages: results.iter().map(|r| r.message()).collect(),
         };
         for result in &results {
@@ -3437,6 +3714,8 @@ async fn stats_ingest(
                 Enqueued::AlreadyQueued(_) => view.already_queued += 1,
                 Enqueued::AlreadySubmitted { .. } => view.already_submitted += 1,
                 Enqueued::CouldNotRead { .. } => view.unreadable += 1,
+                Enqueued::FolderCouldNotBeRead { .. } => view.unreadable_folders += 1,
+                Enqueued::SourceKept { .. } => view.source_kept += 1,
             }
         }
         Ok(view)
@@ -3445,52 +3724,28 @@ async fn stats_ingest(
     .map_err(|e| e.to_string())?
 }
 
-/// Send everything queued to the league server.
-///
-/// Refuses, and names what is missing. `StatsQueue::submit_pending` takes a
-/// `Submitter`, and that trait is the whole network seam: the core holds no URL,
-/// no credential and no HTTP client, and nothing in this workspace implements
-/// it. Writing one here that always deferred would be worse than refusing,
-/// because the queue page would show a submission pass that ran and moved
-/// nothing.
+/// Send everything queued to the backend. No confirmation: sending is what the queue is for,
+/// and the server's idempotency makes a repeat harmless.
 #[tauri::command]
-async fn stats_submit(confirm: bool) -> Result<StatsSubmitView, String> {
-    confirmed(
-        confirm,
-        "stats_submit",
-        "upload every queued result, which cannot be taken back",
-    )?;
+async fn stats_submit() -> Result<StatsSubmitView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let Startup::Owner(_lock) = Supervisor::acquire(&p).map_err(|e| e.to_string())? else {
-            return Err(already_running());
-        };
-        let token = p
-            .credentials
-            .retrieve(reborn_core::league::TOKEN_ACCOUNT)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| {
-                "No league token is stored, so nothing was sent. Enter the token on the \
-                 Settings page; the results stay queued until then."
-                    .to_string()
-            })?;
-        let url = league_url(&p)?;
-        let http = http_client();
-        let sender = reborn_core::league::LeagueSubmitter::new(&http, url.clone(), token);
-        let queue = StatsQueue::open(&p).map_err(|e| e.to_string())?;
-        let report = queue.submit_pending(&sender, 5).map_err(|e| e.to_string())?;
-        Ok(StatsSubmitView {
-            url,
-            accepted: report.accepted.len(),
-            held: report.held.len(),
-            rejected: report.rejected.len(),
-            deferred: report.deferred.len(),
-            stalled: report.stalled.len(),
-            note: submit_note(&report),
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let url = backend_origin(&p)?;
+        let queue = StatsQueue::open(&p).map_err(|e| e.player_message().to_string())?;
+        // The lock is read from and given straight back: holding it across the
+        // send is what told a player pressing Play that another launcher was
+        // running, when the only thing running was this send.
+        let history = history_without_holding_the_lock(&p)?;
+        match reborn_core::backend::auto_submit(&p, &queue, &history)
+            .map_err(|e| e.player_message().to_string())?
+        {
+            reborn_core::backend::SendAttempt::NotSignedIn => Ok(StatsSubmitView { url, accepted: 0, held: 0, rejected: 0, deferred: 0, stalled: 0, note: "Sign in with Discord to send your results. They are kept until then.".to_string() }),
+            reborn_core::backend::SendAttempt::Sent(report) => Ok(StatsSubmitView {
+                url, accepted: report.accepted.len() + report.recorded.len(), held: report.held.len(), rejected: report.rejected.len(), deferred: report.deferred.len(), stalled: report.stalled.len(),
+                note: if report.waiting_for_sign_in { "The server no longer accepts this sign-in. Sign in again; nothing was lost.".to_string() } else { submit_note(&report) },
+            }),
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Serialize)]
@@ -3508,8 +3763,9 @@ struct StatsSubmitView {
 
 fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
     let mut parts = Vec::new();
-    if !r.accepted.is_empty() {
-        parts.push(format!("{} accepted", r.accepted.len()));
+    let accepted = r.accepted.len() + r.recorded.len();
+    if accepted > 0 {
+        parts.push(format!("{accepted} accepted"));
     }
     if !r.held.is_empty() {
         parts.push(format!("{} held for commissioner review", r.held.len()));
@@ -3521,7 +3777,12 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
         parts.push(format!("{} could not be delivered and stay queued", r.deferred.len()));
     }
     if !r.stalled.is_empty() {
-        parts.push(format!("{} out of attempts, still on disk", r.stalled.len()));
+        // Not "out of attempts, still on disk", which read like a dead end.
+        // The next send pass puts these back before it starts.
+        parts.push(format!(
+            "{} could not be delivered after several tries and will be tried again",
+            r.stalled.len()
+        ));
     }
     if parts.is_empty() {
         "Nothing was waiting to be sent.".to_string()
@@ -3530,18 +3791,8 @@ fn submit_note(r: &reborn_core::stats::SubmitReport) -> String {
     }
 }
 
-/// The league endpoint: the setting, or the site's ingest endpoint.
-fn league_url(p: &Platform) -> Result<String, String> {
-    let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
-    let settings = reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?;
-    Ok(settings
-        .league_ingest_url
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| reborn_core::league::DEFAULT_INGEST_URL.to_string()))
-}
-
 fn http_client() -> reborn_core::net::UreqHttp {
-    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", env!("CARGO_PKG_VERSION")))
+    reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{}", crate::launcher_version()))
 }
 
 /// Record whether the launcher may update on its own.
@@ -3669,8 +3920,8 @@ fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<P
     if let Some(value) = hint.filter(|v| !v.trim().is_empty()) {
         return Ok(Some(reborn_core::session::user_path(value)));
     }
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())?.user_dir)
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    Ok(reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())?.user_dir)
 }
 
 #[tauri::command]
@@ -3691,9 +3942,24 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
         "runtime" => dialog.pick_file().await,
         "memory_card" => dialog.add_filter("GameCube memory card", &["raw", "gcp"]).pick_file().await,
         "manifest" => dialog.add_filter("Component manifest", &["json"]).pick_file().await,
+        "audio" => dialog.set_title("Choose a song").add_filter("Audio", reborn_core::soundtrack::decode::EXTENSIONS).pick_file().await,
+        "pack" => dialog.set_title("Choose a soundtrack pack").add_filter("Soundtrack pack", &["nsrmusic", "nsmp"]).pick_file().await,
+        "save_pack" => dialog.set_title("Save a soundtrack pack").add_filter("Soundtrack pack", &["nsrmusic"]).set_file_name("my-soundtrack.nsrmusic").save_file().await,
         _ => return Err("Unknown file type".into()),
     };
     Ok(picked.map(|f| f.path().display().to_string()))
+}
+
+/// Several files at once, for adding a batch of songs to the soundtrack.
+/// Empty when the dialog was closed without a choice.
+#[tauri::command]
+async fn pick_paths(kind: String) -> Result<Vec<String>, String> {
+    let dialog = rfd::AsyncFileDialog::new();
+    let picked = match kind.as_str() {
+        "audio" => dialog.set_title("Choose songs").add_filter("Audio", reborn_core::soundtrack::decode::EXTENSIONS).pick_files().await,
+        _ => return Err("Unknown file type".into()),
+    };
+    Ok(picked.unwrap_or_default().iter().map(|f| f.path().display().to_string()).collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -3729,45 +3995,171 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Who the player is.
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Serialize)]
-struct CredentialSetView {
-    account: &'static str,
-    stored: bool,
-    /// The token's length, never the token.
-    length: usize,
+struct IdentityView {
+    signed_in: bool,
+    display_name: Option<String>,
+    player_id: Option<String>,
+    show_offline: Option<bool>,
+}
+#[derive(Debug, Serialize)]
+struct SignInStartView {
+    device_code: String,
+    user_code: String,
+    verify_url: String,
+    interval: u64,
+    /// Whether the shell took the link. `home.js` no longer draws anything
+    /// different either way, because it now shows the address in both cases,
+    /// so nothing on screen depends on this. It is still answered, and still
+    /// honest for the first time: the opener it replaced ran a file manager,
+    /// which always starts, so this used to be `true` even when what opened
+    /// was the player's Documents folder.
+    opened: bool,
+}
+#[derive(Debug, Serialize)]
+struct SignInPollView {
+    state: &'static str,
+    display_name: Option<String>,
 }
 
-/// Store the league token in the operating system's credential store.
+fn identity_view(file: Option<&reborn_core::identity::IdentityFile>) -> IdentityView {
+    match file {
+        Some(f) => IdentityView { signed_in: true, display_name: Some(f.player.display_name.clone()), player_id: Some(f.player.id.clone()), show_offline: Some(f.player.show_offline) },
+        None => IdentityView { signed_in: false, display_name: None, player_id: None, show_offline: None },
+    }
+}
+
+/// The backend: the setting, or the product origin.
 ///
-/// Never written to disk by the launcher, never logged, never echoed back:
-/// the view carries its length so a page can say something was stored.
-#[tauri::command]
-async fn stats_credential_set(token: String) -> Result<CredentialSetView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Err("the token is empty; nothing was stored".to_string());
-        }
-        let p = Platform::detect();
-        p.credentials
-            .store(reborn_core::league::TOKEN_ACCOUNT, &token)
-            .map_err(|e| e.to_string())?;
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: true, length: token.len() })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+/// The reading and the wording both live in `reborn_core::identity`, because
+/// its one failure is the launcher's own settings file refusing to open and
+/// that has to become a sentence rather than a path. This window has no
+/// logger to put the detail in; that module does.
+fn backend_origin(p: &Platform) -> Result<String, String> {
+    reborn_core::identity::origin(p).map_err(|e| e.to_string())
 }
 
-/// Remove the league token from the credential store.
+/// Read the session history, and give the launcher lock straight back.
+///
+/// # Why the lock cannot be held across a send
+///
+/// It is the single-instance lock. `Session::run` takes it and, failing, tells
+/// the player "Another launcher is already running. Close it first." Both send
+/// paths used to hold it for the whole network round trip, and a send is one
+/// request per queued game with a two minute timeout each. So a player who
+/// signed in and then pressed Play was told to close a launcher that does not
+/// exist, and their game did not start.
+///
+/// The history is what the send needs from it: a few lines off disk, read in
+/// microseconds. Two sends never overlapping is a separate promise, kept by
+/// `backend::auto_submit` itself rather than by whoever happens to hold this
+/// lock.
+fn history_without_holding_the_lock(
+    p: &Platform,
+) -> Result<Vec<reborn_core::supervisor::SessionRecord>, String> {
+    let Startup::Owner(sup) = Supervisor::acquire(p).map_err(|e| e.player_message().to_string())?
+    else {
+        return Err(already_running());
+    };
+    let history = sup.history().map_err(|e| e.player_message().to_string())?;
+    drop(sup);
+    Ok(history)
+}
+
+/// Send whatever is queued, without making anybody wait for it.
+///
+/// Its own thread on purpose. A send is one network round trip per queued
+/// game, each with the client's full timeout, so a backlog is minutes of
+/// waiting. Nothing about it belongs on the answer to a command a page is
+/// polling.
+///
+/// Nothing here is reported. The player already knows they signed in, and a
+/// send that could not happen leaves every result exactly where it was, to go
+/// out at the end of the next game or when they press Send results now.
+fn send_backlog_in_background() {
+    std::thread::spawn(|| {
+        let p = Platform::detect();
+        let Ok(queue) = StatsQueue::open(&p) else { return };
+        let Ok(history) = history_without_holding_the_lock(&p) else { return };
+        let _ = reborn_core::backend::auto_submit(&p, &queue, &history);
+    });
+}
+
 #[tauri::command]
-async fn stats_credential_forget() -> Result<CredentialSetView, String> {
+async fn identity_status() -> Result<IdentityView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let _ = p.credentials.delete(reborn_core::league::TOKEN_ACCOUNT);
-        Ok(CredentialSetView { account: reborn_core::league::TOKEN_ACCOUNT, stored: false, length: 0 })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Start a Discord sign-in and open the verify page in the default browser.
+#[tauri::command]
+async fn identity_sign_in_start() -> Result<SignInStartView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        let s = reborn_core::identity::start(&http, &origin, &reborn_core::identity::machine_label()).map_err(|e| e.to_string())?;
+        let opened = reborn_core::identity::open_in_browser(&p, &s.verify_url).is_ok();
+        Ok(SignInStartView { device_code: s.device_code, user_code: s.user_code, verify_url: s.verify_url, interval: s.interval.max(2), opened })
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Ask whether the browser step finished. On "done" the token is already in the vault.
+#[tauri::command]
+async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        match reborn_core::identity::poll(&http, &origin, &device_code).map_err(|e| e.to_string())? {
+            reborn_core::identity::Poll::Pending => Ok(SignInPollView { state: "pending", display_name: None }),
+            reborn_core::identity::Poll::Expired => Ok(SignInPollView { state: "expired", display_name: None }),
+            reborn_core::identity::Poll::Done { token, player } => {
+                let name = player.display_name.clone();
+                reborn_core::identity::save_signed_in(&p, &token, player, now_ms()).map_err(|e| e.to_string())?;
+                // The backlog goes out the moment a token exists, on its own
+                // thread. It used to go out here, so this command did not
+                // answer until every queued game had been posted: a network
+                // round trip each, with a two minute timeout each. The window
+                // polls on an interval, so the ticks that fired during that
+                // wait asked about a device code the server had already
+                // consumed, and the refusals they got landed on the screen
+                // beside the sign-in that had just succeeded.
+                send_backlog_in_background();
+                Ok(SignInPollView { state: "done", display_name: Some(name) })
+            }
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn identity_sign_out() -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::sign_out(&p, &http, &origin).map_err(|e| e.to_string())?;
+        Ok(identity_view(None))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn identity_set_show_offline(show: bool) -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        reborn_core::identity::set_show_offline(&p, &http, &origin, show).map_err(|e| e.to_string())?;
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
 }
 
 // ---------------------------------------------------------------------------
@@ -3803,7 +4195,7 @@ fn update_source_for(p: &Platform, given: Option<&str>) -> Result<String, String
 
 fn update_view(source: &str, check: &reborn_core::update::UpdateCheck) -> UpdateView {
     use reborn_core::update::UpdateCheck as C;
-    let current = env!("CARGO_PKG_VERSION").to_string();
+    let current = crate::launcher_version().to_string();
     let (state, latest, bytes, notes) = match check {
         C::UpToDate { latest, .. } => ("up_to_date", Some(latest.clone()), None, None),
         C::Available { latest, asset, notes, .. } => ("available", Some(latest.clone()), Some(asset.bytes), notes.clone()),
@@ -3820,7 +4212,7 @@ async fn update_check(source: Option<String>) -> Result<UpdateView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let source = update_source_for(&p, source.as_deref())?;
-        let check = reborn_core::update::check(&http_client(), &source, env!("CARGO_PKG_VERSION"));
+        let check = reborn_core::update::check(&http_client(), &source, crate::launcher_version());
         Ok(update_view(&source, &check))
     })
     .await
@@ -3837,27 +4229,46 @@ struct UpdateDownloadView {
     sha256: Option<String>,
 }
 
+static UPDATE_DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UPDATE_READY: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
+static CLOSE_PROMPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct DownloadGuard;
+impl Drop for DownloadGuard {
+    fn drop(&mut self) { UPDATE_DOWNLOADING.store(false, std::sync::atomic::Ordering::SeqCst); }
+}
+#[tauri::command]
+fn update_activity() -> serde_json::Value {
+    serde_json::json!({"downloading":UPDATE_DOWNLOADING.load(std::sync::atomic::Ordering::SeqCst),
+        "ready":UPDATE_READY.lock().unwrap_or_else(|e|e.into_inner()).clone()})
+}
+
 /// Download the newer installer into the downloads folder and verify it.
 /// Nothing is installed. A hash mismatch deletes the file and is an error.
 #[tauri::command]
 async fn update_download(source: Option<String>) -> Result<UpdateDownloadView, String> {
+    if UPDATE_DOWNLOADING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("An update is already downloading.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
+        let _download=DownloadGuard;
         let p = Platform::detect();
         let source = update_source_for(&p, source.as_deref())?;
         let http = http_client();
-        let check = reborn_core::update::check(&http, &source, env!("CARGO_PKG_VERSION"));
+        let check = reborn_core::update::check(&http, &source, crate::launcher_version());
         let view = update_view(&source, &check);
         let reborn_core::update::UpdateCheck::Available { asset, .. } = &check else {
             return Ok(UpdateDownloadView { check: view, path: None, bytes: 0, sha256: None });
         };
         let dir = p.data_dir(DataDir::Downloads).map_err(|e| e.to_string())?;
         let got = reborn_core::update::download(&http, asset, &dir).map_err(|e| e.to_string())?;
-        Ok(UpdateDownloadView {
+        let result=UpdateDownloadView {
             check: view,
             path: Some(got.path.display().to_string()),
             bytes: got.bytes,
             sha256: Some(got.sha256.as_str().to_string()),
-        })
+        };
+        *UPDATE_READY.lock().unwrap_or_else(|e|e.into_inner())=serde_json::to_value(&result).ok();
+        Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3917,26 +4328,80 @@ struct OpenRuntimeView {
 }
 
 /// Open the emulator itself, with no game, against the user folder a launch
-/// would use. For the player who wants Dolphin's own settings. Not a
-/// session: nothing is recorded and nothing waits for it.
+/// would use. For the player who wants Dolphin's own settings.
+///
+/// It IS a session. A player who opens the emulator here and then boots a game
+/// from Dolphin's own interface has played a game, and Dolphin writes a
+/// capture for it exactly as it does for a launch. This command used to spawn
+/// and return, holding nothing and waiting for nothing, so those captures were
+/// left on disk with no session that explained them: either never delivered,
+/// or picked up by a later offline session and stamped with an id, an exit
+/// reason and a league intent belonging to a game it did not produce.
+///
+/// So the record is written before the emulator starts, the lock and the guard
+/// are held for as long as it runs, and the results are collected and sent on
+/// the way out. That the launcher now reports a session as active for the
+/// whole time Dolphin is open is the correct answer to "is a game running",
+/// and it stops a second copy being started over the same memory card.
 #[tauri::command]
 async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Result<OpenRuntimeView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = LaunchGuard::acquire()?;
+        let guard = LaunchGuard::acquire_session()?;
         let p = Platform::detect();
         let exe = runtime_for(&p, runtime.as_deref()).ok_or_else(|| {
             "No emulator was found. Set its path on the Settings page.".to_string()
         })?;
         let chosen = selected_user_dir(&p,user_dir.as_deref())?;
         let user = reborn_core::session::resolve_user_dir_for(&p, chosen.as_deref(), Some(&exe))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.player_message().to_string())?;
         let args: Vec<std::ffi::OsString> = vec!["-u".into(), user.path().as_os_str().to_os_string()];
-        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e|e.to_string())?;
-        reborn_core::dolphin_preferences::resolve_portable_paths(user.path()).map_err(|e|e.to_string())?;
+        reborn_core::runtime::ensure_runtime_idle(&exe).map_err(|e| e.player_message().to_string())?;
+        reborn_core::dolphin_preferences::apply_path_law(user.path()).map_err(|e| e.player_message().to_string())?;
+
+        // The lock, then anything left unfinished, then the record. The same
+        // first steps as a launch, because this ends the same way: with a
+        // capture that has to belong to something.
+        let Startup::Owner(supervisor) = Supervisor::acquire(&p).map_err(|e| e.player_message().to_string())? else {
+            return Err(already_running());
+        };
+        let _ = supervisor.recover_unfinished().map_err(|e| e.player_message().to_string())?;
+        // Offline, and not a league match: nothing was asked, and the emulator
+        // is being opened on its own rather than pointed at a fixture. The
+        // folder Dolphin writes into still says whether the game was online.
+        let record = supervisor
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false }))
+            .map_err(|e| e.player_message().to_string())?;
+
         let env = std::collections::BTreeMap::new();
-        p.processes
-            .spawn(&exe, &args, exe.parent(), &env)
-            .map_err(|e| e.to_string())?;
+        let handle = match p.processes.spawn(&exe, &args, exe.parent(), &env) {
+            Ok(handle) => handle,
+            Err(e) => {
+                // Nothing ran, so the record is closed here instead of being
+                // found unfinished at the next launch and shown as a game
+                // that did not close properly.
+                let _ = supervisor.finish(record, &reborn_core::platform::ExitKind::Error { code: -1 });
+                return Err(e.player_message().to_string());
+            }
+        };
+        let user_path = user.path().to_path_buf();
+        std::thread::spawn(move || {
+            // Held across the wait and across the collection, which is what
+            // the lock is for: the queue and the session log are shared state.
+            let _guard = guard;
+            let exit = p.processes.wait(handle).ok();
+            let collected = reborn_core::session::finish_and_collect(&p, &supervisor, record, exit.as_ref(), &user_path);
+            // Both given back before the network work. A send is one request
+            // per queued game with the client's full timeout each, so against
+            // a slow or unreachable backend it is minutes, and for those
+            // minutes pressing Play said a game session was already active and
+            // the Online page said to close the emulator. The emulator had
+            // already exited: both were false.
+            drop(supervisor);
+            drop(_guard);
+            // Never surfaced: the window was told the emulator started, and a
+            // game that was played is not a failure however sending it went.
+            let _ = collected.send(&p);
+        });
         Ok(OpenRuntimeView { started: true, runtime: exe.display().to_string(), user_dir_note: user.explain() })
     })
     .await
@@ -3992,9 +4457,22 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
             take(user.path().join("Logs").join("dolphin.log"), "dolphin.log");
         }
 
+        // The launcher's own log, which is where every failure it decided not
+        // to show a player went. The bundle could only ever collect the
+        // emulator's, because until fix wave 4 the launcher did not have one.
+        let logs = data.join(DataDir::Logs.relative());
+        take(
+            logs.join(reborn_core::logging::LOG_FILE),
+            reborn_core::logging::LOG_FILE,
+        );
+        take(
+            logs.join(reborn_core::logging::PREVIOUS_LOG_FILE),
+            reborn_core::logging::PREVIOUS_LOG_FILE,
+        );
+
         // What the launcher itself knows, as text.
         let mut status = String::new();
-        status.push_str(&format!("launcher {}\n", env!("CARGO_PKG_VERSION")));
+        status.push_str(&format!("launcher {}\n", crate::launcher_version()));
         status.push_str(&format!("channel {}\n", reborn_core::Channel::detect().explain()));
         status.push_str(&format!("data root {}\n", data.display()));
         if let Some(exe) = &exe {
@@ -4023,90 +4501,6 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
 // Music
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct MusicSourceView {
-    /// Path relative to `music/sources`, always forward slashes, so the same
-    /// record reads the same way on every platform.
-    relative_path: String,
-    bytes: u64,
-    /// Always absent from a scan, and not a zero. Length needs a decoder, which
-    /// is the bundled FFmpeg and not this codebase, so nothing renders a running
-    /// time nobody measured.
-    duration_ms: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct MusicSourcesView {
-    dir: String,
-    files: Vec<MusicSourceView>,
-    total_bytes: u64,
-    /// How many stream slots the game's position table holds. A hard bound: a
-    /// slot number the table cannot hold is a disc that boots and plays garbage.
-    stream_slots: u8,
-}
-
-/// The audio the player has imported, off disk.
-///
-/// An absent directory is an empty list rather than an error: nothing imported
-/// yet is the normal state of a fresh install, and failing here would make the
-/// Music page unopenable before it has ever been used.
-#[tauri::command]
-async fn music_sources() -> Result<MusicSourcesView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let p = Platform::detect();
-        let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
-        let dir = reborn_core::music::sources_dir(&data_root);
-        let found = reborn_core::music::scan_sources(&dir).map_err(|e| e.to_string())?;
-
-        Ok(MusicSourcesView {
-            dir: dir.display().to_string(),
-            total_bytes: found.iter().map(|f| f.bytes).sum(),
-            files: found
-                .iter()
-                .map(|f| MusicSourceView {
-                    relative_path: f.relative_path.clone(),
-                    bytes: f.bytes,
-                    duration_ms: f.duration.map(|d| d.as_millis()),
-                })
-                .collect(),
-            stream_slots: reborn_core::music::STREAM_SLOTS,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Write a custom soundtrack into the offline image.
-///
-/// Refuses, from the core, and the message names the three things that are
-/// missing: the per-stream position table layout inside `pathfind.dat`, the
-/// EA-exact sample accounting, and the title, artist and album record layout in
-/// `template.dat`. Guessing any of them produces a disc that mounts, boots and
-/// plays silence, which is the worst kind of failure because it looks like
-/// success.
-///
-/// Exposed rather than omitted so a Music screen can print why the feature is
-/// not built. An empty state and a not-built state are different claims.
-#[tauri::command]
-async fn music_build_pack(confirm: bool) -> Result<String, String> {
-    confirmed(
-        confirm,
-        "music_build_pack",
-        "rewrite the offline game image with a new soundtrack",
-    )?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let order = reborn_core::music::TrackOrder::new();
-        match reborn_core::music::write_soundtrack(Path::new("."), &order) {
-            // Unreachable today. Left as a real branch rather than an
-            // unreachable!(), because the day the writer lands this command
-            // must return the hash it produced and not panic.
-            Ok(hash) => Ok(hash.to_string()),
-            Err(e) => Err(e.to_string()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
 
 // ---------------------------------------------------------------------------
 // Content and updates
@@ -4734,8 +5128,8 @@ async fn credential_stored(account: String) -> Result<CredentialView, String> {
 
 /// The paths a person set, or nothing, which means find them.
 fn saved_paths(platform: &Platform) -> Result<reborn_core::settings::Settings, String> {
-    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.to_string())?;
-    reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
+    let file = reborn_core::settings::settings_path(platform).map_err(|e| e.player_message().to_string())?;
+    reborn_core::settings::Settings::load(&file).map_err(|e| e.player_message().to_string())
 }
 
 /// What the shortcuts ask for.
@@ -4751,6 +5145,9 @@ enum Mode {
     Play,
     /// Open the folder holding the player's saves and textures.
     Folder,
+    /// An invite link a friend sent (`nflstreetreborn://join/<code>`): remember
+    /// the room code, then open the window on the Online page.
+    Join(String),
 }
 
 fn mode_from(args: impl Iterator<Item = String>) -> Mode {
@@ -4758,10 +5155,74 @@ fn mode_from(args: impl Iterator<Item = String>) -> Mode {
         match a.as_str() {
             "--play" => return Mode::Play,
             "--folder" => return Mode::Folder,
-            _ => {}
+            other => {
+                if let Some(code) = join_code_from(other) {
+                    return Mode::Join(code);
+                }
+            }
         }
     }
     Mode::Window
+}
+
+/// The room code inside an invite link, `nflstreetreborn://join/<code>`,
+/// as Windows hands it to the launcher when a friend's link is opened. The
+/// scheme is matched without regard to case; the code keeps its own. Only
+/// letters, digits and dashes count, so a link cannot smuggle anything else
+/// onto the Online page.
+fn join_code_from(arg: &str) -> Option<String> {
+    let arg = arg.trim().trim_matches('"');
+    let lower = arg.to_ascii_lowercase();
+    let rest = lower.strip_prefix("nflstreetreborn://join/")?;
+    let code: String = arg[arg.len() - rest.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    (!code.is_empty() && code.len() <= 64).then_some(code)
+}
+
+/// Where an invite's room code waits for the Online page: a small file in
+/// the data root, read and cleared by the page, so the window can open on
+/// Play as usual and still land the player in the right room.
+fn pending_join_path(platform: &Platform) -> Result<PathBuf, String> {
+    Ok(platform
+        .paths
+        .data_root()
+        .map_err(|e| e.to_string())?
+        .join(reborn_core::DataDir::Config.relative())
+        .join("pending-join.json"))
+}
+
+fn remember_pending_join(platform: &Platform, code: &str) -> Result<(), String> {
+    let path = pending_join_path(platform)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::json!({"code": code, "at": reborn_core::utc_now_iso()});
+    std::fs::write(&path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// The room code an invite link left behind, if any. Not cleared here: the
+/// Online page clears it once it has filled the form, so a page that only
+/// glanced (Play, deciding whether to redirect) does not lose it.
+#[tauri::command]
+async fn netplay_pending_join() -> Result<Option<serde_json::Value>, String> {
+    let path = pending_join_path(&Platform::detect())?;
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn netplay_pending_join_clear() -> Result<(), String> {
+    let path = pending_join_path(&Platform::detect())?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The launch a Play shortcut makes.
@@ -4797,10 +5258,20 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
+        league_match: false,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
-        Launched::Finished { minutes, .. } => Ok(format!("Session ended after {minutes:.0} minutes.")),
+        Launched::Finished { minutes, results, .. } => {
+            // The shortcut holds no launch guard and `Session::run` has given
+            // the lock back, so this is simply the send. Its report is not
+            // shown: this mode draws no window. Skipping it would leave the
+            // player's game sitting in the queue until they next opened the
+            // launcher, and the whole point of the shortcut is that they may
+            // not.
+            let _ = results.send(platform);
+            Ok(format!("Session ended after {minutes:.0} minutes."))
+        }
     }
 }
 
@@ -4883,12 +5354,18 @@ mod shortcut_tests {
     fn another_launch_is_refused_until_the_session_guard_is_released() {
         assert!(!session_active());
         {
-            let _guard = LaunchGuard::acquire().unwrap();
+            let _guard = LaunchGuard::acquire_session().unwrap();
             assert!(session_active());
             assert!(LaunchGuard::acquire().is_err());
         }
         assert!(!session_active());
-        assert!(LaunchGuard::acquire().is_ok());
+        {
+            let _update = LaunchGuard::acquire().unwrap();
+            assert!(!session_active(), "An update or settings write is not a running Dolphin session");
+            assert!(LaunchGuard::acquire_session().is_err(), "Writes still prevent a conflicting launch");
+        }
+        assert!(LaunchGuard::acquire_session().is_ok());
+        assert!(!session_active(), "A failed or completed launch releases the game state");
     }
 
     #[test]
@@ -4909,10 +5386,48 @@ mod shortcut_tests {
 }
 
 fn main() {
+    // The log, first, before anything can produce a warning worth keeping.
+    //
+    // Every module in the core answers a failure it will not show a player by
+    // sending the detail to `tracing::warn!`. Until this call existed there
+    // was no subscriber anywhere in the workspace, and a `tracing` event with
+    // no subscriber is dropped: the detail was not moved off the screen, it
+    // was deleted. It says nothing and it cannot fail a start.
+    reborn_core::logging::start(&Platform::detect());
+
+    // The data root, made ready before the lock, the seeding and the window:
+    // a 2.1 install at the root goes into its own subfolder and the data of
+    // a launcher named "Launcher" is adopted. Renames only; it says nothing
+    // and it cannot fail a start.
+    match reborn_core::layout::prepare_data_root(&Platform::detect()) {
+        Ok(prepared) => prepared.log(),
+        Err(why) => eprintln!("The data root could not be prepared: {why}"),
+    }
+
+    // A credential this product retired, taken off the machine. `nsr.league.ingest`
+    // was the bearer token Dolphin's own uploader posted with; the module that
+    // used it is gone, and this branch removed the commands that could forget
+    // it, so every installation that ever stored one would otherwise keep it in
+    // the Windows credential vault forever with no way to remove it from the
+    // product. It is a token this project has already had to rotate.
+    //
+    // Here rather than in a command, so it happens on every start including the
+    // two shortcut modes below, which return before any window exists. Best
+    // effort: it says nothing and it cannot fail a start.
+    reborn_core::identity::forget_retired_league_token(&Platform::detect());
+
     // The shortcuts, before any window exists. Both fall through to the
     // window when they cannot do their job, so a shortcut never does
     // nothing at all with nothing to show for it.
     match mode_from(std::env::args()) {
+        Mode::Join(code) => {
+            // Remembered, then the window opens as usual; Play sends the
+            // player straight on to Online, which fills in the room.
+            let p = Platform::detect();
+            if let Err(why) = remember_pending_join(&p, &code) {
+                eprintln!("Could not keep the invite's room code: {why}");
+            }
+        }
         Mode::Play => {
             let p = Platform::detect();
             match play_now(&p) {
@@ -4942,14 +5457,65 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. }=event {
+                let content=content_updates::close_state();
+                let downloading=UPDATE_DOWNLOADING.load(std::sync::atomic::Ordering::SeqCst)||content=="downloading";
+                if downloading||content=="installing" {
+                    api.prevent_close();
+                    if CLOSE_PROMPT.swap(true,std::sync::atomic::Ordering::SeqCst){return;}
+                    let app=window.app_handle().clone();
+                    std::thread::spawn(move|| {
+                        if content=="installing" {
+                            rfd::MessageDialog::new().set_title("Finishing your update")
+                                .set_description("An update is being installed. Keep the launcher open until it finishes.")
+                                .set_buttons(rfd::MessageButtons::Ok).show();
+                        } else {
+                            let answer=rfd::MessageDialog::new().set_title("An update is downloading")
+                                .set_description("Closing the launcher will interrupt this download. Keep the launcher open to finish the update.")
+                                .set_buttons(rfd::MessageButtons::OkCancelCustom("Keep downloading".into(),"Close launcher".into())).show();
+                            if answer==rfd::MessageDialogResult::Custom("Close launcher".into()) && content_updates::close_state()!="installing" {app.exit(0);}
+                        }
+                        CLOSE_PROMPT.store(false,std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
+            }
+        })
+        // One launcher window. A second start, most often an invite link
+        // clicked while this one is open, hands its arguments here and
+        // exits: the room code is kept and this window comes forward, and
+        // Play and Online read the code when the window gets focus.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(code) = args.iter().find_map(|a| join_code_from(a)) {
+                if let Err(why) = remember_pending_join(&Platform::detect(), &code) {
+                    eprintln!("Could not keep the invite's room code: {why}");
+                }
+            }
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             // Already here.
             dolphin_settings::netplay_open,
+            dolphin_settings::netplay_status,
+            dolphin_settings::netplay_action,
             dolphin_settings::dolphin_preferences,
             dolphin_settings::dolphin_preference_set,
             dolphin_settings::dolphin_saves_folder,
             setup_tools::setup_install_choice,
             setup_tools::setup_install_info,
+            shell_tools::setup_window_lock,
+            shell_tools::open_website,
+            shell_tools::uninstall_launcher,
+            shell_tools::update_progress,
+            shell_tools::notices_pending,
+            shell_tools::notice_dismiss,
+            netplay_pending_join,
+            netplay_pending_join_clear,
+            stats_view::stats_games,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,
             setup_tools::setup_graphics_options,
@@ -4959,6 +5525,9 @@ fn main() {
             setup_tools::setup_use_existing,
             setup_tools::controller_slots,
             setup_tools::controller_assign_player,
+            remap::remap_start,
+            remap::remap_detect,
+            remap::remap_stop,
             setup_tools::setup_controller_mapping,
             setup_tools::setup_save_mapping,
             paths,
@@ -5019,6 +5588,12 @@ fn main() {
             onboarding_start_over,
             // The Xbox wizard's drive picker.
             removable_drives,
+            // Who the player is.
+            identity_status,
+            identity_sign_in_start,
+            identity_sign_in_poll,
+            identity_sign_out,
+            identity_set_show_offline,
             // Captured results.
             stats_queue,
             stats_ingest,
@@ -5026,16 +5601,30 @@ fn main() {
             settings_set_path,
             settings_paths,
             pick_path,
-            stats_credential_set,
-            stats_credential_forget,
+            pick_paths,
             update_check,
             update_download,
+            update_activity,
             update_apply,
             open_runtime,
             diagnostic_bundle,
             // Custom soundtrack.
-            music_sources,
-            music_build_pack,
+            music_page::music_status,
+            music_page::music_inspect,
+            music_page::music_lookup,
+            music_page::music_stage_file,
+            music_page::music_stage_files,
+            music_page::music_move,
+            music_page::music_stage_stock,
+            music_page::music_stage_details,
+            music_page::music_unstage,
+            music_page::music_pack_preview,
+            music_page::music_stage_pack,
+            music_page::music_export,
+            music_page::music_set_enabled,
+            music_page::music_apply,
+            music_page::music_reset_all,
+            music_page::music_dismiss,
             // Installed versions and updates.
             content_installed,
             content_update,
@@ -5057,6 +5646,655 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of one command, from its signature to the start of the next
+    /// `#[tauri::command]`.
+    fn command_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let from = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+        &rest[..to]
+    }
+
+    /// The text of one item, from `start` to the first following `stop`.
+    ///
+    /// Like `command_body`, but for the free functions between commands,
+    /// which have no shared marker like `#[tauri::command]` to stop at. The
+    /// caller names the next item's own text instead.
+    fn body_until<'a>(source: &'a str, start: &str, stop: &str) -> &'a str {
+        let from = source
+            .find(start)
+            .unwrap_or_else(|| panic!("{start} is not in this file any more"));
+        let rest = &source[from..];
+        let to = rest
+            .find(stop)
+            .unwrap_or_else(|| panic!("{stop} is not in this file any more, or moved before {start}"));
+        &rest[..to]
+    }
+
+    /// A `spawn_blocking` command's body, with the trailing `.await` /
+    /// `map_err` that turns a `JoinError` into a string trimmed off.
+    ///
+    /// Every command built on `spawn_blocking` ends with that pair, and it
+    /// has nothing to do with `reborn_core::Error`: it only fires if the
+    /// closure itself panicked. Left in, it would satisfy any check for "no
+    /// more turning an error into raw text" by accident, on every command in
+    /// this file, whether or not the real fix was made.
+    fn inner_body(body: &str) -> &str {
+        &body[..body.find("\n    .await").unwrap_or(body.len())]
+    }
+
+    /// Every way of starting the emulator records a session and collects what
+    /// that session produced.
+    ///
+    /// Two commands start the emulator without going through `Session::run`:
+    /// the NetPlay dialog, which is the launcher's ONLY path to a
+    /// `GameStats\Online` capture, and the button that opens Dolphin on its
+    /// own. Both used to spawn and walk away. Every online game played through
+    /// the launcher was written to disk and then either never delivered or
+    /// adopted by the next offline session, which stamped it with an id, an
+    /// exit reason and a league intent from a game it did not produce.
+    ///
+    /// This reads the source of those two commands, because that is exactly
+    /// how the defect was found and exactly how it would come back: everything
+    /// compiled, the game started perfectly, and the wiring simply was not
+    /// there. What the collection then does with a real capture cannot be
+    /// observed without a real emulator and a real game, and a test that
+    /// pretended otherwise would be asserting nothing.
+    #[test]
+    fn every_way_of_starting_the_emulator_records_a_session_and_collects_it() {
+        for (name, body) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+            ),
+        ] {
+            assert!(
+                body.contains("Supervisor::acquire"),
+                "{name} starts the emulator without taking the launcher lock"
+            );
+            assert!(
+                body.contains("begin_with_intent"),
+                "{name} starts the emulator without writing down what the session is, \
+                 so anything it captures has no session that explains it"
+            );
+            assert!(
+                body.contains("finish_and_collect"),
+                "{name} never collects the results the session produced, so they sit \
+                 in Dolphin's folder until some later session adopts them"
+            );
+            // The collection has to happen inside the waiting thread, with the
+            // guard still held, the way Session::run keeps its lock across the
+            // same work.
+            let guard = body
+                .find("let _guard")
+                .expect("the waiting thread must take the launch guard");
+            let collect = body.find("finish_and_collect").expect("checked above");
+            assert!(
+                guard < collect,
+                "{name} collects results outside the guard that keeps a second \
+                 session from starting in the middle of it"
+            );
+        }
+    }
+
+    /// A sentence the server wrote about a player's own game has to reach them.
+    ///
+    /// `QueueEntry::note` is set by exactly one answer: `Recorded`, which is
+    /// the server saying it stored the result and counted it as incomplete
+    /// because the winner did not reach 36 points. It was written to the entry
+    /// and shown to nobody, and the row it belongs to says "sent and counted",
+    /// which is true and is not the whole truth.
+    ///
+    /// Kept rather than deleted, and surfaced: it is the only place a player
+    /// learns their game was counted with a qualification, and that is a fact
+    /// about a game they played.
+    #[test]
+    fn a_result_recorded_with_a_qualification_shows_what_the_server_said() {
+        let note = "Recorded as incomplete: the winner did not reach 36 points.";
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"a"),
+            state: EntryState::Accepted,
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: None,
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: Some(note.to_string()),
+            refusal_code: None,
+            summary: None,
+        };
+        assert_eq!(
+            entry_view(&entry).note.as_deref(),
+            Some(note),
+            "the one sentence the server wrote about this player's own game is stored and \
+             shown to nobody"
+        );
+    }
+
+    /// A queue row never carries this launcher's own flag codes out to a
+    /// page.
+    ///
+    /// `entry_view` used to copy `CaptureSummary::flags` (`"wrong-schema"`,
+    /// `"no-players"`, and so on) onto the row verbatim. Nothing renders
+    /// them as a message; they are internal vocabulary a player was never
+    /// taught, whether or not a page happens to print them today. The
+    /// meaningful signal for a player, whether a result needs a person to
+    /// look at it, is already on the row as `needs_review`, so the codes are
+    /// dropped rather than translated: there is nothing left worth adding a
+    /// vocabulary for.
+    #[test]
+    fn a_queue_row_never_carries_this_launchers_internal_flag_codes() {
+        let entry = QueueEntry {
+            key: CaptureKey::of_bytes(b"b"),
+            state: EntryState::Quarantined {
+                reason: QuarantineReason::FailedValidation {
+                    flags: vec![reborn_core::stats::codes::WRONG_SCHEMA.to_string()],
+                },
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: None,
+            last_error: None,
+            source_path: None,
+            session_id: None,
+            capture_folder: None,
+            note: None,
+            refusal_code: Some("hash-mismatch".to_string()),
+            summary: Some(reborn_core::stats::CaptureSummary {
+                captured_at: "2026-01-01T00:00:00Z".to_string(),
+                teams: Vec::new(),
+                players: 2,
+                sides_verified: false,
+                flags: vec![
+                    reborn_core::stats::codes::WRONG_SCHEMA.to_string(),
+                    reborn_core::stats::codes::NO_PLAYERS.to_string(),
+                ],
+                needs_review: true,
+            }),
+        };
+        let view = entry_view(&entry);
+        let json = serde_json::to_value(&view).expect("StatsEntryView serializes");
+        assert!(
+            json.get("flags").is_none(),
+            "a queue row still carries this launcher's own flag codes to a page: {json}"
+        );
+        assert_eq!(
+            view.needs_review,
+            Some(true),
+            "the meaningful signal a player can use has to survive removing the codes"
+        );
+        // The same rule for the server's vocabulary. `refusal_code` is kept on
+        // the entry for the person running `stats retry --apply`, at a command
+        // line; it is not a word a player was ever taught.
+        assert!(
+            !serde_json::to_string(&view).unwrap().contains("hash-mismatch"),
+            "the server's own word for a refusal reached a page: {json}"
+        );
+    }
+
+    /// A command must not declare a parameter it ignores.
+    ///
+    /// `stats_submit` took `confirm: Option<bool>` and threw it away on the
+    /// first line, while the harness row still sent `confirm: true` under a
+    /// description of behavior the command no longer had. A parameter that is
+    /// declared and ignored teaches a caller that the flag means something,
+    /// and the next person to read the page believes the description.
+    #[test]
+    fn stats_submit_declares_no_parameter_it_ignores() {
+        let body = command_body(include_str!("main.rs"), "async fn stats_submit");
+        let signature = &body[..body.find('{').unwrap_or(body.len())];
+        assert!(
+            !signature.contains("confirm"),
+            "stats_submit still takes a confirm it does not use: {signature}"
+        );
+        assert!(
+            !body.contains("let _ = confirm;"),
+            "stats_submit still throws away an argument it declared"
+        );
+    }
+
+    /// The retired league credential is actually taken off the machine.
+    ///
+    /// Naming it for removal in the core is half a fix. Something has to call
+    /// the removal, and the only thing every player runs is this window.
+    #[test]
+    fn every_start_of_the_launcher_forgets_the_retired_league_credential() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        // Bounded at the test module that follows, or this test's own text
+        // would satisfy it.
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            body.contains("forget_retired_league_token"),
+            "a token this project has already had to rotate stays in the credential vault \
+             forever, on every machine that ever stored one"
+        );
+    }
+
+    /// The lock and the guard go back before the network work, and the online
+    /// start waits for a lock that is about to be given back.
+    ///
+    /// Opening the emulator from Settings, and starting an online session,
+    /// held the launch guard and the single-instance lock across the whole
+    /// collect-and-send. A send is one request per queued game with the
+    /// client's full timeout each, so on a slow or unreachable backend that is
+    /// minutes. During it, pressing Play said a game session was already
+    /// active and the Online page said to close the emulator first. Both were
+    /// false: the emulator had already exited.
+    ///
+    /// The order that has to hold is collect, then give both back, then send.
+    /// Collecting is the part that needs the lock, because the queue and the
+    /// session log are shared state; sending needs neither.
+    ///
+    /// The second half: the online start took the plain `acquire`, so a lock
+    /// held for a moment by this launcher's own background work refused it
+    /// outright. The Play path was given the waiting acquire for exactly that
+    /// reason and this path was not.
+    ///
+    /// The third path is the one every player takes. `launch` is the Play
+    /// button. It holds the launch guard across the whole of `Session::run`,
+    /// and `Session::run` collected AND sent while still holding the
+    /// single-instance lock, so on the primary path both of those false
+    /// sentences were still being said for the length of a send. The two
+    /// commands above were the only ones fixed. Its markers differ because the
+    /// work is split across two crates: `Session::run` collects and hands the
+    /// lock back by returning, this command hands the guard back, and only
+    /// then does anything reach the network. What `Session::run` itself does
+    /// under the lock is held by
+    /// `reborn_core::session::tests::the_launch_gives_the_lock_back_before_the_network_work`.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `open_runtime` and `launch` are read with `command_body`, which stops
+    /// at the next `#[tauri::command]`, and `netplay_open` is read out of
+    /// `dolphin_settings.rs`, a different file from this one. All three slices
+    /// end thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn the_lock_and_the_guard_go_back_before_the_network_work() {
+        let launch_body = command_body(include_str!("main.rs"), "async fn launch(");
+        assert!(launch_body.find("std::thread::spawn(move ||").unwrap() < launch_body.find("results.send(&p)").unwrap(),
+            "A slow stats upload must not hold Play's invoke open after the emulator exits");
+        for (name, body, collects, releases) in [
+            (
+                "open_runtime",
+                command_body(include_str!("main.rs"), "async fn open_runtime"),
+                "finish_and_collect",
+                "drop(supervisor)",
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+                "finish_and_collect",
+                "drop(supervisor)",
+            ),
+            (
+                "launch",
+                command_body(include_str!("main.rs"), "async fn launch("),
+                "Session::run",
+                "drop(_guard)",
+            ),
+        ] {
+            let collect = body
+                .find(collects)
+                .unwrap_or_else(|| panic!("{name} no longer collects what the session produced"));
+            let release = body.find(releases).unwrap_or_else(|| {
+                panic!(
+                    "{name} never gives the single-instance lock and the launch guard back, so \
+                     every other screen is told a launcher is running for as long as the send \
+                     takes"
+                )
+            });
+            let send = body.find(".send(&p)").unwrap_or_else(|| {
+                panic!("{name} no longer sends what it collected, so results sit in the queue")
+            });
+            assert!(
+                collect < release,
+                "{name} gives the lock back before the results are safely collected"
+            );
+            assert!(
+                release < send,
+                "{name} holds the lock and the guard across the network work, so Play says a \
+                 game session is active and the Online page says to close an emulator that \
+                 has already exited"
+            );
+        }
+
+        let netplay = command_body(
+            include_str!("dolphin_settings.rs"),
+            "pub async fn netplay_open",
+        );
+        assert!(
+            netplay.contains("acquire_waiting"),
+            "starting an online session is still refused outright by a lock that is about to \
+             be given back"
+        );
+    }
+
+    /// Nothing the Play page or the Settings page can reach turns a core
+    /// error into raw text either.
+    ///
+    /// `home.js` renders what `devices` and `mod_packages` reject with, and
+    /// `settings.js` renders what the send button's `stats_submit` rejects
+    /// with. All four still stringified a `reborn_core::Error`, so a
+    /// permission problem reading the mods folder put a full path on the Play
+    /// card and a locked settings file put a path and an error number under
+    /// the send button.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// Each function's text is taken between two anchors that both appear in
+    /// production code, thousands of lines before this test, and `.find`
+    /// returns the first match, so the copies of those anchors in this test's
+    /// own arguments are never reached. The check then runs only over those
+    /// slices, never over the whole file. The trailing `.await` pair every
+    /// `spawn_blocking` command ends with is removed first: it converts a
+    /// `JoinError` from a panicked closure, not a core error, and left in it
+    /// would make this impossible to pass whether or not the fix was made.
+    #[test]
+    fn nothing_the_play_and_settings_pages_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        // Each stop is the next item's own first line, not a shared marker
+        // like `#[tauri::command]`: between two commands this file keeps free
+        // functions that belong to other pages, and stopping at the marker
+        // would drag them in and make the check fail on somebody else's code.
+        let bodies = [
+            (
+                "devices",
+                body_until(src, "async fn devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "read_devices",
+                body_until(src, "fn read_devices(", "
+#[tauri::command]
+fn sessions()"),
+            ),
+            (
+                "mod_packages",
+                body_until(src, "async fn mod_packages(", "
+struct ModPlanView {"),
+            ),
+            (
+                "stats_submit",
+                body_until(src, "async fn stats_submit(", "
+struct StatsSubmitView {"),
+            ),
+            (
+                "history_without_holding_the_lock",
+                body_until(
+                    src,
+                    "fn history_without_holding_the_lock(",
+                    "
+/// Send whatever is queued",
+                ),
+            ),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            let own = compact.replace(".await.map_err(|e|e.to_string())", "");
+            assert!(
+                !own.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text, so a \
+                 path and an operating system error number reach a page"
+            );
+            assert!(
+                own.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
+    }
+
+    /// Nothing the Online page can reach turns a core error into raw text.
+    ///
+    /// `online.js` renders what these commands reject with, verbatim. Five
+    /// call sites in `dolphin_settings.rs` stringified a
+    /// `reborn_core::Error` -- three of them added by fix wave 1 -- and the
+    /// raw `std::io::Error`s beside them did the same, so a settings file
+    /// another program had open, or a full disk, put a full path and an
+    /// operating system error number on the Online page.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// It scans `dolphin_settings.rs`, a different file from the one this test
+    /// lives in, so the patterns written below are not in what is searched at
+    /// all. That file's own inline test module is cut out as well, by the two
+    /// anchors below, so a future test added there cannot satisfy this either.
+    /// The trailing `.await` pair every `spawn_blocking` command ends with is
+    /// removed before the check: it converts a `JoinError` from a panicked
+    /// closure, which is not a core error, and left in it would make this
+    /// check impossible to pass whether or not the real fix was made.
+    #[test]
+    fn nothing_the_online_page_can_call_turns_a_core_error_into_raw_text() {
+        let src = include_str!("dolphin_settings.rs");
+        let before = &src[..src.find("\n#[cfg(test)]").expect("the inline test module moved")];
+        let after_at = src
+            .find("\n/// Start Dolphin with NetPlay configured")
+            .expect("netplay_open's doc comment moved");
+        let production = format!("{before}{}", &src[after_at..]);
+
+        let compact: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        let commands_only = compact.replace(".await.map_err(|e|e.to_string())", "");
+        assert!(
+            !commands_only.contains(".map_err(|e|e.to_string())"),
+            "the Online page still gets a core error's raw Display text, so a locked file \
+             or a full disk puts a path and an error number on the screen"
+        );
+        assert!(
+            !commands_only.contains("Err(e.to_string())"),
+            "the Online page still gets an operating system error's own wording"
+        );
+        assert!(
+            commands_only.contains("player_message"),
+            "no core error on this page is mapped to a sentence at all"
+        );
+    }
+
+    /// The launcher writes a log, and the diagnostic bundle can collect it.
+    ///
+    /// Three fix waves moved technical detail off the screens a player reads
+    /// and said it goes to the log. There was no log: 56 `tracing::warn!` call
+    /// sites and no subscriber anywhere in the workspace, and a `tracing`
+    /// event with no subscriber is dropped. So the detail was not moved, it
+    /// was deleted, and the bundle collected the emulator's log and could not
+    /// collect the launcher's, because there was not one.
+    ///
+    /// That a warning really reaches a file on disk is proved in
+    /// `reborn_core::logging`, against a real file. What is checked here is
+    /// the wiring this binary owns: the window starts the log before anything
+    /// can warn, and the bundle picks the file up.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text stops at the `#[cfg(test)]` that begins this module,
+    /// and `diagnostic_bundle`'s stops at the next `#[tauri::command]`. Both
+    /// cuts are before this test's own line, so the names written below are
+    /// never inside what is searched.
+    #[test]
+    fn the_launcher_writes_a_log_and_the_bundle_collects_it() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn main() {").expect("main is not in this file any more");
+        let rest = &src[from..];
+        let main_body = &rest[..rest.find("\n#[cfg(test)]").unwrap_or(rest.len())];
+        assert!(
+            main_body.contains("logging::start"),
+            "the window never starts a log, so every warning the core raises is dropped \
+             and the detail three fix waves moved off the screen is simply gone"
+        );
+
+        let bundle = command_body(src, "async fn diagnostic_bundle");
+        assert!(
+            bundle.contains("logging::LOG_FILE"),
+            "the bundle collects the emulator's log and not the launcher's, which is the \
+             only place the launcher's own failures are written down"
+        );
+        assert!(
+            bundle.contains("logging::PREVIOUS_LOG_FILE"),
+            "the bundle takes the live log and not the rolled one, so anything that \
+             happened before the log filled is left behind"
+        );
+    }
+
+    /// The launcher's own background send never makes Play refuse.
+    ///
+    /// Both send paths took the single-instance lock and held it for the whole
+    /// network round trip. `Session::run` takes the same lock, and failing, it
+    /// tells the player "Another launcher is already running. Close it first."
+    /// So a player who signed in and then pressed Play was told to close a
+    /// launcher that does not exist, and the game did not start. The client's
+    /// timeout is two minutes per request and a backlog is one request per
+    /// game, so the window was minutes wide.
+    ///
+    /// The two spawn paths fix wave 1 added, `open_runtime` and `netplay_open`,
+    /// hold the same lock, and they are deliberately not in this list: they
+    /// hold it while the emulator is actually open, which is exactly what the
+    /// lock is for and exactly what the message says.
+    #[test]
+    fn a_background_send_never_makes_play_refuse() {
+        let src = include_str!("main.rs");
+        for (name, body) in [
+            ("stats_submit", command_body(src, "async fn stats_submit")),
+            ("send_backlog_in_background", command_body(src, "fn send_backlog_in_background")),
+        ] {
+            assert!(
+                !body.contains("Supervisor::acquire"),
+                "{name} takes the launcher lock itself, so it holds it across the send and \
+                 Play refuses with a launcher that does not exist"
+            );
+            assert!(
+                body.contains("history_without_holding_the_lock"),
+                "{name} no longer reads the session history the one way that gives the \
+                 lock straight back"
+            );
+            assert!(
+                body.contains("auto_submit"),
+                "{name} no longer sends anything at all"
+            );
+        }
+    }
+
+    /// Signing in answers the window before the backlog goes out.
+    ///
+    /// `identity_sign_in_poll` used to save the sign-in and then send the whole
+    /// queue before it returned: one network round trip per game, each with the
+    /// client's full two minute timeout. The window polls this command on an
+    /// interval, so every tick that fired during that wait asked about a device
+    /// code the server had already consumed, and the refusals landed on the
+    /// screen beside the sign-in that had just succeeded.
+    #[test]
+    fn signing_in_answers_the_window_before_the_backlog_is_sent() {
+        let body = command_body(include_str!("main.rs"), "async fn identity_sign_in_poll");
+        assert!(
+            !body.contains("auto_submit"),
+            "the sign-in poll still sends the backlog before it answers, so the window \
+             keeps polling with a code the server has already taken"
+        );
+        assert!(
+            body.contains("send_backlog_in_background"),
+            "signing in no longer starts the backlog send at all"
+        );
+    }
+
+    /// No core error's raw `Display` reaches a player through the launch or
+    /// open-emulator path.
+    ///
+    /// `reborn_core::Error::Io` displays as `io error at {path}: {source}`,
+    /// and every one of these functions used to hand that straight to a
+    /// caller with `.map_err(|e| e.to_string())`: a permission problem or a
+    /// full disk starting a game put a full file path and an operating
+    /// system error number on the Play page, because `home.js` renders
+    /// whatever `launch`, `launch_check` and `open_runtime` hand back with no
+    /// wording of its own. `Error::player_message` lives in `reborn-core`,
+    /// not here, because the window has no logger to put the real detail in
+    /// (see `identity::origin`'s doc comment for the same reasoning); this
+    /// checks that every command on the path actually calls it, once, at the
+    /// boundary all of them share.
+    #[test]
+    fn launch_and_open_runtime_never_turn_a_core_error_into_raw_text() {
+        let src = include_str!("main.rs");
+        let bodies: [(&str, &str); 7] = [
+            (
+                "find_runtime_and_game",
+                body_until(src, "\nfn find_runtime_and_game(", "\nfn find_runtime_and_game_for("),
+            ),
+            (
+                "find_runtime_and_game_for",
+                body_until(src, "\nfn find_runtime_and_game_for(", "\n/// The emulator a hint resolves to"),
+            ),
+            (
+                "saved_paths",
+                body_until(src, "\nfn saved_paths(", "\n/// What the shortcuts ask for."),
+            ),
+            (
+                "selected_user_dir",
+                body_until(src, "\nfn selected_user_dir(", "\n#[tauri::command]\nasync fn settings_paths"),
+            ),
+            ("launch_check", inner_body(command_body(src, "async fn launch_check"))),
+            ("launch", inner_body(command_body(src, "async fn launch("))),
+            ("open_runtime", inner_body(command_body(src, "async fn open_runtime"))),
+        ];
+        for (name, body) in bodies {
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                !compact.contains(".map_err(|e|e.to_string())"),
+                "{name} still turns a core error straight into its raw Display text"
+            );
+        }
+        for name in [
+            "find_runtime_and_game_for",
+            "saved_paths",
+            "selected_user_dir",
+            "launch_check",
+            "launch",
+            "open_runtime",
+        ] {
+            let (_, body) = bodies.iter().find(|(n, _)| *n == name).expect("listed above");
+            assert!(
+                body.contains("player_message"),
+                "{name} no longer maps a core error to a sentence at all"
+            );
+        }
+    }
+
+    #[test]
+    fn an_invite_link_argument_yields_its_room_code_and_nothing_else() {
+        assert_eq!(join_code_from("nflstreetreborn://join/AB12CD"), Some("AB12CD".into()));
+        assert_eq!(join_code_from("NFLSTREETREBORN://join/ab-12"), Some("ab-12".into()));
+        assert_eq!(join_code_from("\"nflstreetreborn://join/AB12CD\""), Some("AB12CD".into()), "quoted, as Windows may pass it");
+        assert_eq!(join_code_from("nflstreetreborn://join/AB12CD/../x?y"), Some("AB12CD".into()), "only the code survives");
+        assert_eq!(join_code_from("nflstreetreborn://join/"), None);
+        assert_eq!(join_code_from("nflstreetreborn://host/AB12CD"), None);
+        assert_eq!(join_code_from("--play"), None);
+        assert!(matches!(mode_from(["x.exe".to_string(), "nflstreetreborn://join/Q1".to_string()].into_iter()), Mode::Join(c) if c == "Q1"));
+        assert!(matches!(mode_from(["x.exe".to_string()].into_iter()), Mode::Window));
+    }
+
+    #[test]
+    fn identity_view_from_a_file_and_from_nothing() {
+        let file = reborn_core::identity::IdentityFile {
+            player: reborn_core::identity::PlayerFacts { id: "p1".into(), display_name: "Adam".into(), avatar_hash: None, show_offline: true },
+            signed_in_at_ms: 1,
+        };
+        let v = identity_view(Some(&file));
+        assert!(v.signed_in);
+        assert_eq!(v.display_name.as_deref(), Some("Adam"));
+        assert_eq!(v.show_offline, Some(true));
+        let none = identity_view(None);
+        assert!(!none.signed_in && none.player_id.is_none());
+    }
 
     #[test]
     fn setup_image_rejects_missing_empty_directory_and_unreadable_content() {
@@ -5109,6 +6347,9 @@ mod tests {
             source_path: None,
             session_id: None,
             summary: None,
+            capture_folder: None,
+            note: None,
+            refusal_code: None,
         }
     }
 
@@ -5203,13 +6444,51 @@ mod tests {
                 reason: QuarantineReason::NoSession,
             }),
         ]);
-        assert_eq!(counts.depth, 2, "only Queued is what a pass would try");
+        assert_eq!(
+            counts.depth, 3,
+            "two queued and one stalled: a pass requeues a stall before it \
+             starts, so all three are what it would try"
+        );
         assert_eq!(counts.accepted, 1);
         assert_eq!(counts.held, 1);
         assert_eq!(counts.rejected, 1);
         assert_eq!(counts.stalled, 1);
         assert_eq!(counts.quarantined, 1);
         assert_eq!(counts.total, 7);
+    }
+
+    /// A stalled capture is a game that was played and has not been delivered.
+    /// The settings panel shows one number, "Waiting to send", and it read zero
+    /// while real games sat there, so nothing on any screen mentioned them.
+    #[test]
+    fn a_stalled_result_is_counted_as_waiting_because_the_next_pass_will_try_it() {
+        let counts = queue_counts(&[entry(EntryState::Stalled {
+            reason: "offline".to_string(),
+        })]);
+        assert_eq!(counts.depth, 1, "the player must be able to see it");
+        assert_eq!(counts.stalled, 1);
+    }
+
+    /// The send note said "Nothing was waiting to be sent" over a queue with
+    /// stalled games in it, which was false.
+    #[test]
+    fn the_send_note_never_says_nothing_was_waiting_when_something_was() {
+        let key = reborn_core::stats::CaptureKey::of_bytes(b"a game that was played");
+        let mut report = reborn_core::stats::SubmitReport::default();
+        report.stalled.push(key.clone());
+        let note = submit_note(&report);
+        assert!(
+            !note.contains("Nothing was waiting"),
+            "a stalled result IS waiting: {note}"
+        );
+        assert!(
+            note.contains("again"),
+            "and it must say it will be tried again: {note}"
+        );
+
+        report.stalled.clear();
+        report.deferred.push(key);
+        assert!(!submit_note(&report).contains("Nothing was waiting"));
     }
 
     /// A file the player customized must never appear in the repair set.

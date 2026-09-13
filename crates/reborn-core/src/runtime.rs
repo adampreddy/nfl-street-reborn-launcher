@@ -153,79 +153,45 @@ impl ConfigGenerator {
     /// it has no opinion about survives untouched. See [`crate::ini`].
     pub fn overlays(config: &LaunchConfig) -> BTreeMap<String, Overlay> {
         let mut out: BTreeMap<String, Overlay> = BTreeMap::new();
+        for file in ["Dolphin.ini", "GFX.ini", "Logger.ini"] {
+            out.insert(file.to_string(), crate::settings_law::locked_overlay(file));
+        }
 
-        let mut dolphin = Overlay::new();
+        // Fullscreen is not the launcher overriding a Dolphin setting: it is
+        // the player's own Play-page toggle, read back out of their launcher
+        // settings on the way in. Writing it carries out their instruction.
         set(
-            &mut dolphin,
+            out.get_mut("Dolphin.ini").unwrap(),
             "Display",
             "Fullscreen",
             bool_ini(config.fullscreen),
         );
-        // Analytics off explicitly rather than by omission. The privacy
-        // requirement is no telemetry, and an upstream default that changes
-        // should not quietly turn it on.
-        set(&mut dolphin, "Analytics", "Enabled", "False");
-        set(&mut dolphin, "Analytics", "PermissionAsked", "True");
-        // No error popups, ever. That is a standing product rule, and a panic
-        // handler is a popup.
-        set(&mut dolphin, "Interface", "UsePanicHandlers", "False");
-        set(&mut dolphin, "Interface", "ConfirmStop", "False");
-        // Reborn requires 64 MiB of emulated MEM1, regardless of imported preferences.
-        set(&mut dolphin, "Core", "RAMOverrideEnable", "True");
-        set(&mut dolphin, "Core", "MEM1Size", "67108864");
-        out.insert("Dolphin.ini".to_string(), dolphin);
-
-        let mut gfx = Overlay::new();
-        set(
-            &mut gfx,
-            "Settings",
-            "InternalResolution",
-            config.graphics.internal_resolution().to_string(),
-        );
-        set(
-            &mut gfx,
-            "Settings",
-            "MaxAnisotropy",
-            "4",
-        );
-        set(&mut gfx, "Settings", "ShaderCompilationMode", "2");
-        set(&mut gfx, "Settings", "WaitForShadersBeforeStarting", "True");
-        // EFB access must stay on. With it off the NFL Challenge portraits
-        // render black and that gets baked into the player's saves, which is
-        // not recoverable from the launcher side.
-        set(&mut gfx, "Hacks", "EFBAccessEnable", "True");
-        for (section,values) in Self::required_game_settings() {
-            if let Some(section)=section.strip_prefix("Video_"){gfx.entry(section.into()).or_default().extend(values);}
-            else{out.get_mut("Dolphin.ini").unwrap().entry(section).or_default().extend(values);}
-        }
-        out.insert("GFX.ini".to_string(), gfx);
 
         out
     }
 
-    /// Durable Reborn compatibility requirements, independent of graphics taste.
-    pub fn required_game_settings() -> Overlay {
-        let mut out=Overlay::new();
-        for (section,key,value) in [
-            ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
-            ("Video_Settings","InternalResolution","3"),("Video_Settings","MSAA","1"),("Video_Settings","SSAA","False"),
-            // Borderless fullscreen, not exclusive. Reported 2026-09-13: pressing Print Screen or F12 in
-            // fullscreen froze the game AND the whole desktop, task-manager-only recovery. Neither key is
-            // bound to anything in Reborn (Dolphin F12 = Undo Load State, ReShade screenshot = VK 55), so the
-            // trigger is an outside capture tool: Windows 11 gives Print Screen to the Snipping Tool overlay
-            // and Steam gives F12 to its own. Against a D3D11 EXCLUSIVE fullscreen swapchain that forces a
-            // display mode switch and device reset, and with BackendMultithreading plus ReShade hooked into
-            // the same swapchain it deadlocks with DWM blocked behind it, which is why the desktop dies too.
-            // Borderless removes the mode switch, so a capture overlay just composites.
-            ("Video_Settings","BorderlessFullscreen","True"),
-            // CacheHiresTextures = prefetch the whole HD pack decoded into RAM at boot. Measured 2026-09-11 on the
-            // 24 GB dev box: 12 GB private bytes, 384 MB free, 28 GB pagefile in use, and the game "running slow".
-            // The pack is BC7 DDS now (sub-millisecond loads), so on-demand is the requirement.
-            ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","False"),
-            ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
-            ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True")
-        ] { set(&mut out,section,key,value); }
+    /// The launcher's tuned defaults, to be applied with
+    /// [`crate::ini::IniDocument::merge_absent`] and never with `merge`. A
+    /// fresh user folder gets them; one where anybody has expressed a
+    /// preference keeps what it has.
+    pub fn seeded_overlays() -> BTreeMap<String, Overlay> {
+        let mut out: BTreeMap<String, Overlay> = BTreeMap::new();
+        for file in ["Dolphin.ini", "GFX.ini", "Logger.ini"] {
+            out.insert(file.to_string(), crate::settings_law::seeded_overlay(file));
+        }
         out
+    }
+
+
+    /// The Reborn requirements that go into the per-game layer.
+    ///
+    /// This is Dolphin's highest-precedence config layer: anything written here
+    /// cannot be changed in Dolphin's own GUI at all, so it carries the five
+    /// keys the game genuinely cannot run correctly without and nothing else.
+    /// Every taste key that used to live here is retired and pruned by
+    /// [`crate::settings_law::reconcile_once`]. See [`crate::settings_law`].
+    pub fn required_game_settings() -> Overlay {
+        crate::settings_law::locked_game_settings()
     }
 
     /// Produce every INI the runtime needs for this session.
@@ -285,11 +251,12 @@ impl ConfigGenerator {
     }
 
     fn logger_ini() -> String {
-        // Console and window logging off. The Xbox payload ships them on, which
-        // puts a log window in front of a player who never asked for one.
+        // Console, window, and file logging off. The Xbox payload ships them
+        // on, which puts a log window in front of a player who never asked
+        // for one, and file logging costs a disk write per line.
         "[Options]\n\
-         Verbosity = 2\n\
-         WriteToFile = True\n\
+         Verbosity = 1\n\
+         WriteToFile = False\n\
          WriteToConsole = False\n\
          WriteToWindow = False\n"
             .to_string()
@@ -355,6 +322,15 @@ impl RuntimePackager {
                 found.push(PackagingViolation {
                     path: format!("User/{name}"),
                     reason,
+                });
+            }
+        }
+
+        for dir in ["LeagueGameStats", "GameStats"] {
+            if user_dir.join(dir).is_dir() {
+                found.push(PackagingViolation {
+                    path: format!("User/{dir}"),
+                    reason: "captured match results inside the runtime package; they belong to a player",
                 });
             }
         }
@@ -475,17 +451,55 @@ impl SessionOutcome {
 
 #[cfg(test)]
 mod tests {
+    /// The requirements still win over live drift. Everything else does not.
+    ///
+    /// This replaces `mandatory_settings_override_live_drift_for_both_builds`,
+    /// which parsed this same fixture and asserted the launcher overwrote the
+    /// player's 4x internal resolution and 4x anti-aliasing. That assertion was
+    /// the bug, written down and defended: it is why a graphics change made in
+    /// Dolphin's own window did nothing.
     #[test]
-    fn mandatory_settings_override_live_drift_for_both_builds() {
+    fn only_locked_keys_override_live_drift() {
         use super::*;
         use crate::ini::IniDocument;
-        {
-            let mut doc=IniDocument::parse("[Core]\nSyncGPU=False\nCPUThread=False\n[Video_Settings]\nInternalResolution=4\nMSAA=0x00000004\n[Video_Hacks]\nEFBAccessEnable=False\n");
-            doc.merge(&ConfigGenerator::required_game_settings());
+        let mut doc=IniDocument::parse("[Core]\nSyncGPU=True\nCPUThread=False\n[Video_Settings]\nInternalResolution=4\nMSAA=0x00000004\n[Video_Hacks]\nEFBAccessEnable=False\nDeferEFBCopies=False\n");
+        doc.merge(&ConfigGenerator::required_game_settings());
 
-            for (section,keys) in ConfigGenerator::required_game_settings(){for(key,value)in keys{assert_eq!(doc.get(&section,&key),Some(value.as_str()));}}
-            assert_eq!(doc.get("Core","CPUThread"),Some("False"));
-            assert!(doc.merge(&ConfigGenerator::required_game_settings()).is_noop());
+        // The one graphics key the player does not get to break: with EFB
+        // access off the created-player portraits bake black into their save.
+        assert_eq!(doc.get("Video_Hacks","EFBAccessEnable"),Some("True"));
+
+        // Everything the player chose survives, including the settings this
+        // test used to assert were overwritten.
+        assert_eq!(doc.get("Video_Settings","InternalResolution"),Some("4"),"the player's resolution");
+        assert_eq!(doc.get("Video_Settings","MSAA"),Some("0x00000004"),"the player's anti-aliasing");
+        assert_eq!(doc.get("Core","SyncGPU"),Some("True"),"expensive, but theirs to spend");
+        assert_eq!(doc.get("Video_Hacks","DeferEFBCopies"),Some("False"),"a performance trade, theirs");
+        assert_eq!(doc.get("Core","CPUThread"),Some("False"),"the per-machine freeze workaround");
+
+        assert!(doc.merge(&ConfigGenerator::required_game_settings()).is_noop(),"a second launch changes nothing");
+    }
+
+    /// The per-game file is the layer Dolphin's own GUI cannot beat, so what
+    /// goes in it is exactly what the player must not be able to change.
+    #[test]
+    fn the_per_game_layer_carries_requirements_and_no_taste() {
+        use super::*;
+        let required = ConfigGenerator::required_game_settings();
+        for (section, key) in [
+            ("Video_Settings", "InternalResolution"),
+            ("Video_Settings", "MSAA"),
+            ("Video_Settings", "SSAA"),
+            ("Core", "SyncGPU"),
+            ("Core", "GFXBackend"),
+            ("Video_Hacks", "DeferEFBCopies"),
+            ("Video_Settings", "DumpTextures"),
+            ("Video_Enhancements", "ArbitraryMipmapDetection"),
+        ] {
+            assert!(
+                required.get(section).is_none_or(|s| !s.contains_key(key)),
+                "{section}/{key} is taste and must not be pinned where the Graphics window cannot beat it",
+            );
         }
     }
 
@@ -504,28 +518,6 @@ mod tests {
     /// workaround (it removes the GPU→CPU interrupt hand-off Dolphin loses), but
     /// it costs performance and is a per-machine call, so it is left to the
     /// user's own `GameSettings` and must survive a launcher session untouched.
-    /// Print Screen / F12 in fullscreen froze the game and the desktop (2026-09-13).
-    ///
-    /// Neither key is a Reborn binding. The freeze is an outside capture overlay
-    /// (Windows 11 owns Print Screen, Steam owns F12) hitting a D3D11 *exclusive*
-    /// fullscreen swapchain: the capture forces a mode switch and device reset, and
-    /// with ReShade and `BackendMultithreading` on the same swapchain it deadlocks
-    /// with DWM blocked behind it, which is why the whole PC hangs. Borderless has
-    /// no mode switch, so the overlay just composites. Because the launcher merges
-    /// these on every session prep, forcing `True` also repairs the INI already
-    /// sitting in every installed player's `User` folder.
-    #[test]
-    fn fullscreen_is_borderless_so_a_screenshot_overlay_cannot_deadlock_the_desktop() {
-        use super::*;
-        assert_eq!(
-            ConfigGenerator::required_game_settings()
-                .get("Video_Settings")
-                .and_then(|s| s.get("BorderlessFullscreen")),
-            Some(&"True".to_string()),
-            "BorderlessFullscreen must stay True: exclusive fullscreen + a capture overlay hard-hangs Windows",
-        );
-    }
-
     #[test]
     fn the_texture_prefetch_stays_off_and_single_core_is_left_to_the_user() {
         use super::*;
@@ -538,6 +530,61 @@ mod tests {
         assert!(
             required.get("Core").map_or(true, |s| !s.contains_key("CPUThread")),
             "the launcher must not force CPUThread: single core is the user's per-machine freeze workaround",
+        );
+        // Adam 2026-09-12: "We need ram override". The imported content depends on the 64 MB MEM1.
+        assert_eq!(
+            required.get("Core").and_then(|s| s.get("RAMOverrideEnable")),
+            Some(&"True".to_string()),
+            "the RAM override is required by the imported content and must not be dropped",
+        );
+        assert_eq!(
+            required.get("Core").and_then(|s| s.get("MEM1Size")),
+            Some(&"67108864".to_string()),
+            "MEM1 must stay 64 MB",
+        );
+    }
+
+    /// Both of these were forced for defensible reasons, and both are still
+    /// the player's to spend.
+    ///
+    /// `SyncGPU` was forced True on 09-05 to chase the 0-FPS freeze and the
+    /// 09-11 probe proved the freeze recurs with it on, so it bought nothing
+    /// and cost a lot of frames. `DeferEFBCopies` is a performance trade whose
+    /// forced value flipped between shipped builds, changing the game under
+    /// players who had chosen otherwise. The launcher seeds its preference in
+    /// the tuned template and does not weld either one in.
+    #[test]
+    fn sync_gpu_and_defer_efb_copies_belong_to_the_player() {
+        use super::*;
+        let required = ConfigGenerator::required_game_settings();
+        assert!(
+            required.get("Core").is_none_or(|s| !s.contains_key("SyncGPU")),
+            "SyncGPU is one of the most expensive options in Dolphin and never fixed the freeze; it is not the launcher's to pin",
+        );
+        assert!(
+            required.get("Video_Hacks").is_none_or(|s| !s.contains_key("DeferEFBCopies")),
+            "DeferEFBCopies is a performance trade, and its forced value already flipped under players once",
+        );
+    }
+
+    /// The graphics tier selects a ReShade preset. It has never varied internal
+    /// resolution in any shipped build, and it does not now: resolution is the
+    /// player's, offered in Settings and in Dolphin's own Graphics window.
+    #[test]
+    fn the_graphics_tier_does_not_decide_resolution() {
+        use super::*;
+        use crate::settings_law::{find, Owner};
+        for preset in [
+            GraphicsPreset::Performance,
+            GraphicsPreset::Balanced,
+            GraphicsPreset::Quality,
+            GraphicsPreset::Ultra,
+        ] {
+            assert_eq!(preset.internal_resolution(), 3, "the seed default, not a per-tier force");
+        }
+        assert_eq!(
+            find("GFX.ini", "Settings", "InternalResolution").map(|k| k.owner),
+            Some(Owner::Player),
         );
     }
 
@@ -624,6 +671,42 @@ mod tests {
         assert!(logger.contains("WriteToWindow = False"), "{logger}");
     }
 
+    /// The tuned defaults still reach a fresh install. They are seeded now
+    /// rather than forced, which is the whole difference: a new user folder
+    /// gets them, and a player who changes one afterwards keeps their change.
+    ///
+    /// This replaces `the_optimization_keys_are_generated_and_the_freeze_fix_is_kept`,
+    /// which asserted these same keys were in the per-launch override overlay.
+    #[test]
+    fn the_optimization_keys_are_seeded_not_forced() {
+        let cfg = LaunchConfig { build: GameBuild::Offline, graphics: GraphicsPreset::Balanced, fullscreen: true, game_path: "g.iso".into(), user_dir: "u".into(), match_context: None };
+        let forced = ConfigGenerator::overlays(&cfg);
+        let seeded = ConfigGenerator::seeded_overlays();
+
+        // Quiet logging is a default, and a tester who turns logging on keeps it.
+        assert_eq!(seeded["Logger.ini"]["Options"]["WriteToFile"], "False");
+        assert_eq!(seeded["Logger.ini"]["Options"]["Verbosity"], "1");
+        assert!(forced["Logger.ini"].is_empty(), "nothing about logging is forced");
+
+        // The modder's switches and the mipmap cost are the player's now.
+        for (section, key) in [("Settings","DumpTextures"),("Settings","DumpBaseTextures"),("Enhancements","ArbitraryMipmapDetection")] {
+            assert!(
+                forced["GFX.ini"].get(section).is_none_or(|s| !s.contains_key(key)),
+                "{section}/{key} must not be re-forced on every launch",
+            );
+        }
+        assert!(forced["Dolphin.ini"].get("General").is_none_or(|s| !s.contains_key("UseDiscordPresence")));
+
+        // The freeze fix itself is a requirement and stays forced: True
+        // prefetches the whole 9,115-file HD pack decoded into RAM (~12 GB
+        // measured 09-11) and starves the machine. That was the 3.0.0 "runs
+        // slow everywhere" report.
+        let g = ConfigGenerator::required_game_settings();
+        assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "False");
+        assert_eq!(g["Video_Settings"]["HiresTextures"], "True");
+        assert_eq!(g["Video_Hacks"]["EFBAccessEnable"], "True");
+    }
+
     /// The launcher writes config and never reads it back, so the Settings page
     /// stays the single source of truth. Two identical configs must therefore
     /// produce byte-identical output.
@@ -704,6 +787,14 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| v.reason.contains("land on a real fixture")));
+    }
+
+    #[test]
+    fn captured_results_inside_a_runtime_package_are_a_violation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("User").join("GameStats").join("Online")).unwrap();
+        let found = RuntimePackager::audit(dir.path()).unwrap();
+        assert!(found.iter().any(|v| v.path == "User/GameStats"), "{found:?}");
     }
 
     #[test]
@@ -815,17 +906,168 @@ mod tests {
     }
 }
 
+/// Shown when the emulator is open and something is about to write the files
+/// it has in memory.
+///
+/// A finished instruction rather than a fault report, so it is carried as
+/// [`crate::Error::player`] and reaches the player unchanged. It used to be an
+/// [`std::io::Error`] wrapped in `Error::PlainIo`, which is transparent over
+/// the operating system's own wording, so `Error::player_message` could not
+/// tell it from a full disk and answered "Something unexpected happened. Try
+/// again." That is false advice for the single most common failure of the
+/// Settings page's open-the-emulator button.
+pub const CLOSE_EMULATOR_FIRST: &str =
+    "Close Reborn Dolphin before applying settings, then try again.";
+const PROCESS_CHECK_UNAVAILABLE: &str =
+    "Windows could not check whether Reborn Dolphin is running. Try again.";
+
 /// Avoid Dolphin's in-memory settings overwriting configuration written during a session.
 pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
+    if runtime_is_running(exe)? { return Err(crate::Error::player(CLOSE_EMULATOR_FIRST)); }
+    Ok(())
+}
+
+/// A fresh OS snapshot of this executable. A different install with the same
+/// filename is not this runtime, and an inspection error is not proof it is open.
+pub fn runtime_is_running(exe: &Path) -> Result<bool> {
     #[cfg(windows)] {
-        use std::os::windows::process::CommandExt;
-        if exe.is_file() {
-            let target=exe.to_string_lossy().replace('/',"\\");
-            let canonical=std::fs::canonicalize(exe)?.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
-            let script="$ErrorActionPreference='Stop'; $running=@(Get-Process -Name $env:REBORN_PROCESS_NAME -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $env:REBORN_PROCESS_PATH -or $_.Path -eq $env:REBORN_PROCESS_CANONICAL}); if($running.Count -gt 0){'running'}";
-            let out=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",script]).env("REBORN_PROCESS_NAME",exe.file_stem().unwrap_or_default()).env("REBORN_PROCESS_PATH",target).env("REBORN_PROCESS_CANONICAL",canonical).creation_flags(0x08000000).output()?;
-            if !out.status.success() || String::from_utf8_lossy(&out.stdout).contains("running") {return Err(std::io::Error::other("Close Reborn Dolphin before applying settings, then try again.").into());}
+        if !exe.is_file() { return Ok(false); }
+        return crate::platform::runtime_process::is_running(exe).map_err(|error| {
+            tracing::warn!(%error, "Dolphin process detection failed after fallback");
+            crate::Error::player(PROCESS_CHECK_UNAVAILABLE)
+        });
+    }
+    #[cfg(not(windows))] { let _ = exe; Ok(false) }
+}
+
+#[cfg(all(test, windows))]
+mod process_detection_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn exact_runtime_detection_recovers_after_exit_and_ignores_another_install() {
+        struct Child(std::process::Child);
+        impl Drop for Child { fn drop(&mut self) { let _=self.0.kill(); let _=self.0.wait(); } }
+        let root=tempfile::tempdir().unwrap();
+        let (first, second)=(root.path().join("first"), root.path().join("second"));
+        std::fs::create_dir(&first).unwrap();std::fs::create_dir(&second).unwrap();
+        let (first, second)=(first.join("NSR Process Probe.exe"), second.join("NSR Process Probe.exe"));
+        let source=std::env::var_os("ComSpec").unwrap();
+        std::fs::copy(&source,&first).unwrap();std::fs::copy(&source,&second).unwrap();
+        assert!(!runtime_is_running(&first).unwrap());
+        let mut child=Child(std::process::Command::new(&first)
+            .args(["/D","/Q","/C","set /p REBORN_TEST_WAIT="])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).creation_flags(0x08000000).spawn().unwrap());
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(runtime_is_running(&first).unwrap(), "The actual child must be protected");
+        assert!(ensure_runtime_idle(&first).is_err());
+        assert!(!runtime_is_running(&second).unwrap(), "Another installation must not be blocked by its filename");
+        drop(child);
+        assert!(!runtime_is_running(&first).unwrap(), "Exited processes must not leave stale running state");
+        assert!(ensure_runtime_idle(&first).is_ok());
+    }
+}
+
+/// Seed a user folder from the runtime's template (`User` beside the
+/// emulator, staged by `crate::user_template`), file by file, never
+/// replacing one that exists. A folder a player has already run in keeps
+/// every edit; a folder the setup just created gets the whole baseline: the
+/// tuned INIs, the game settings and the shader lists. The session layers
+/// the launcher's required keys on afterwards, so those still win. Returns
+/// the files written, for the launch report.
+pub fn seed_user_from_template(runtime_exe: &Path, user_dir: &Path) -> Result<Vec<PathBuf>> {
+    let Some(template) = runtime_exe.parent().map(|d| d.join("User")) else {
+        return Ok(Vec::new());
+    };
+    if !template.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut written = Vec::new();
+    seed_dir(&template, user_dir, &mut written)?;
+    Ok(written)
+}
+
+fn seed_dir(from: &Path, to: &Path, written: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = std::fs::read_dir(from).map_err(|source| Error::Io { path: from.to_path_buf(), source })?;
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            seed_dir(&src, &dst, written)?;
+        } else if src.is_file() && !dst.exists() {
+            std::fs::create_dir_all(to).map_err(|source| Error::Io { path: to.to_path_buf(), source })?;
+            std::fs::copy(&src, &dst).map_err(|source| Error::Io { path: dst.clone(), source })?;
+            written.push(dst);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    fn runtime_with_template(dir: &Path) -> PathBuf {
+        let exe = dir.join("runtime").join("NFL Street Reborn Dolphin.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        for (rel, body) in [
+            ("User/Config/Dolphin.ini", "[Core]\nCPUThread = True\n"),
+            ("User/Config/GFX.ini", "[Settings]\nMSAA = 0x00000004\n"),
+            ("User/GameSettings/GN7E69.ini", "[Gecko]\n$Point Remover\n"),
+            ("User/Config/notes.txt", "not an ini"),
+            ("User/Cache/GN7E69.uidcache", "the shader list"),
+        ] {
+            let p = exe.parent().unwrap().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        exe
+    }
+
+    /// Everything the runtime ships as its template is the baseline: the
+    /// build's staging (crate::user_template) decides what ships, and the
+    /// seed copies it whole.
+    #[test]
+    fn a_new_user_folder_gets_every_template_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = runtime_with_template(dir.path());
+        let user = dir.path().join("dolphin-users").join("fresh-1");
+        let written = seed_user_from_template(&exe, &user).unwrap();
+        let mut names: Vec<String> = written
+            .iter()
+            .map(|p| p.strip_prefix(&user).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Cache/GN7E69.uidcache", "Config/Dolphin.ini", "Config/GFX.ini", "Config/notes.txt", "GameSettings/GN7E69.ini"]);
+        assert_eq!(std::fs::read_to_string(user.join("GameSettings/GN7E69.ini")).unwrap(), "[Gecko]\n$Point Remover\n");
+        assert_eq!(std::fs::read_to_string(user.join("Cache/GN7E69.uidcache")).unwrap(), "the shader list");
+    }
+
+    #[test]
+    fn a_folder_a_player_has_run_in_keeps_every_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = runtime_with_template(dir.path());
+        let user = dir.path().join("dolphin-users").join("theirs");
+        std::fs::create_dir_all(user.join("Config")).unwrap();
+        std::fs::write(user.join("Config/Dolphin.ini"), "[Core]\nCPUThread = False\n").unwrap();
+        let written = seed_user_from_template(&exe, &user).unwrap();
+        assert_eq!(std::fs::read_to_string(user.join("Config/Dolphin.ini")).unwrap(), "[Core]\nCPUThread = False\n");
+        assert_eq!(written.len(), 4, "the four files they did not have: {written:?}");
+        assert!(user.join("Config/GFX.ini").is_file());
+        assert!(user.join("GameSettings/GN7E69.ini").is_file());
+    }
+
+    #[test]
+    fn a_runtime_without_a_template_seeds_nothing_and_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("runtime").join("Dolphin.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        let user = dir.path().join("user");
+        assert!(seed_user_from_template(&exe, &user).unwrap().is_empty());
+        assert!(!user.exists(), "nothing to seed, nothing created");
+    }
 }

@@ -61,7 +61,11 @@ AppUpdatesURL={#AppURL}
 
 ; Program files, under the same Programs root the launcher uses, but its own
 ; folder: the two installers never share a directory.
-DefaultDirName={localappdata}\Programs\{#DirName}
+; One folder in Roaming, beside the launcher's own data, the way Adam
+; asked for on 2026-09-10: the program sits in its own `app` subfolder so
+; an uninstall (which removes only what it installed) cannot reach the
+; publisher's settings or journal beside it.
+DefaultDirName={userappdata}\NFL Street Reborn Launcher\publisher\app
 DefaultGroupName={#AppName}
 
 UsePreviousAppDir=no
@@ -172,4 +176,55 @@ begin
       mbConfirmation, MB_YESNO) = IDNO then
       Result := False;
   end;
+end;
+
+// The Publisher used to install under {localappdata}\Programs\Reborn
+// Publisher. With the same AppId and a new folder, that install would keep
+// its files while its uninstall entry was overwritten: an orphan with a
+// stale rebornctl.exe. Its own uninstaller runs first, the way the
+// launcher's installer does for its old program folder. Our own folder
+// only: below Programs, never Programs itself, and holding the Publisher.
+function PreviousProgramsInstall(): String;
+var
+  Key, Value, Programs: String;
+begin
+  Result := '';
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + ExpandConstant('{#AppId}') + '_is1';
+  if not RegQueryStringValue(HKCU, Key, 'UninstallString', Value) then
+    exit;
+  Value := RemoveQuotes(Trim(Value));
+  Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
+  if (Pos(Programs, Lowercase(Value)) = 1)
+     and (Lowercase(ExtractFileDir(Value)) + '\' <> Programs)
+     and FileExists(Value)
+     and FileExists(ExtractFileDir(Value) + '\{#PublisherExe}') then
+    Result := Value;
+end;
+
+procedure RemovePreviousProgramsInstall();
+var
+  Uninstaller: String;
+  Code: Integer;
+begin
+  Uninstaller := PreviousProgramsInstall();
+  if Uninstaller = '' then
+    exit;
+  Log('Removing the previous program folder first: ' + Uninstaller);
+  if not Exec(Uninstaller, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('The previous uninstaller could not be started; continuing.')
+  else
+    Log('The previous uninstaller finished with code ' + IntToStr(Code));
+  if DirExists(ExtractFileDir(Uninstaller)) then
+  begin
+    if DelTree(ExtractFileDir(Uninstaller), True, True, True) then
+      Log('Removed the leftover program folder ' + ExtractFileDir(Uninstaller))
+    else
+      Log('Could not remove everything under ' + ExtractFileDir(Uninstaller) + '; continuing.');
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    RemovePreviousProgramsInstall();
 end;

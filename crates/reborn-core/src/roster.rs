@@ -145,6 +145,14 @@ pub struct ApplyRequest<'a> {
     /// and shows the warnings; a build that stops on a warning nobody can
     /// see is a build nobody gets.
     pub accept_warnings: bool,
+    /// Write the result here instead of over the booted image.
+    ///
+    /// [`crate::online_image`] passes the netplay copy's path. That image is
+    /// derived and rebuilt from its own record, so a run with an output
+    /// override deliberately leaves the booted image and the rebuild record
+    /// alone: the record's whole job is to tell repair that the *booted*
+    /// image is the player's own work rather than damage.
+    pub output: Option<&'a Path>,
 }
 
 /// What an applied roster left behind.
@@ -296,6 +304,7 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
             Err(r) => return Ok(ApplyOutcome::Refused(r)),
         },
     };
+    let live = req.output.map(Path::to_path_buf).unwrap_or(live);
     let offline_dir = live.parent().map(Path::to_path_buf).unwrap_or(offline_dir);
     if live.exists() && platform.files.is_locked(&live) {
         return Ok(ApplyOutcome::Refused(ApplyRefusal::ImageInUse { path: live }));
@@ -375,6 +384,13 @@ pub fn apply(platform: &Platform, req: &ApplyRequest<'_>) -> Result<ApplyOutcome
     if before.as_ref() == Some(&after) {
         let _ = std::fs::remove_file(&out);
         return Ok(ApplyOutcome::Unchanged { image: live, sha256: after, report });
+    }
+
+    // An output override writes a derived image, which no repair path
+    // verifies against a manifest, so there is nothing to record: swap and go.
+    if req.output.is_some() {
+        platform.files.atomic_replace(&out, &live)?;
+        return Ok(ApplyOutcome::Applied(ApplyReceipt { image: live, before, after, report }));
     }
 
     // Record first, swap second; undo the record if the swap fails. See the
@@ -528,6 +544,7 @@ log: C:\\somewhere\\build-log.txt
                 builder,
                 textures_root: None,
                 accept_warnings: true,
+                output: None,
             }
         }
         assert!(matches!(

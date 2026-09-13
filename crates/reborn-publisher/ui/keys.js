@@ -6,8 +6,8 @@
 // this file ever holds a stored value longer than it takes to send it to
 // `vault_store`; a field is cleared the moment a store or forget settles.
 //
-// No plan/run/verify workflow lives here (this page never touches
-// `panel.js`): every command below either reads a fact or performs one
+// No job lives here (this page never touches `job.js`): every command
+// below either reads a fact or performs one
 // small, immediate action, so a button click calls a command and then
 // re-reads everything from scratch, the same way the rest of this app
 // treats a command's answer as the only truth on screen.
@@ -23,7 +23,7 @@ const screen = document.getElementById("screen");
 // submitted yet.
 let genDir = "";
 const vaultDrafts = { site_token: "", r2_access_key: "", r2_secret: "" };
-const settingsDrafts = { bucket_endpoint: "", bucket_name: "", public_base: "", launcher_manifest: "" };
+const settingsDrafts = { bucket_endpoint: "", bucket_name: "", public_base: "", launcher_manifest: "", drop_root: "" };
 let settingsDraftsSeeded = false;
 
 // One-shot feedback from the last action in each block, shown until the
@@ -245,8 +245,8 @@ function vaultBlock(answer) {
       storedFact("R2 secret access key", (state.r2_secret || {}).stored),
     ]),
     vaultFieldRow("site_token", "Site token", "the league site's API export token"),
-    vaultFieldRow("r2_access_key", "R2 access key id", "the bucket's write credentials, first half"),
-    vaultFieldRow("r2_secret", "R2 secret access key", "the bucket's write credentials, second half")
+    vaultFieldRow("r2_access_key", "R2 access key id", "the server's write credentials, first half"),
+    vaultFieldRow("r2_secret", "R2 secret access key", "the server's write credentials, second half")
   );
 
   return el("section", { class: "block" }, ...children);
@@ -336,6 +336,7 @@ function settingsBlock(answer) {
     settingsDrafts.bucket_name = s.bucket_name || "";
     settingsDrafts.public_base = s.public_base || "";
     settingsDrafts.launcher_manifest = s.launcher_manifest || "";
+    settingsDrafts.drop_root = s.drop_root || "";
     settingsDraftsSeeded = true;
   }
 
@@ -347,14 +348,15 @@ function settingsBlock(answer) {
   }
 
   children.push(
-    browseRow("Origin folder", "origin", s.origin),
+    browseRow("Published files (this computer's copy)", "origin", s.origin),
     browseRow("Signing key", "publisher_key", s.publisher_key),
     browseRow("Reborn Builder", "builder", s.builder),
     browseRow("xdelta3", "xdelta", s.xdelta),
-    textRow("Bucket endpoint", "bucket_endpoint", "the R2 endpoint URL, not a secret"),
-    textRow("Bucket name", "bucket_name"),
+    textRow("Server endpoint", "bucket_endpoint", "the R2 endpoint URL, not a secret"),
+    textRow("Server bucket name", "bucket_name"),
     textRow("Public base URL", "public_base"),
-    textRow("Launcher manifest URL", "launcher_manifest")
+    textRow("Launcher manifest URL", "launcher_manifest"),
+    textRow("Drop folders", "drop_root", "one subfolder per thing: textures\\GN7E69, runtime, mods\\packages")
   );
 
   return el("section", { class: "block" }, ...children);

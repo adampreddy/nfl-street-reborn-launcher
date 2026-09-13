@@ -2,7 +2,40 @@
 use std::path::Path;
 use crate::{ini::{IniDocument, Overlay}, platform::Result, runtime::GraphicsPreset};
 
-pub fn apply(runtime: &Path, preset: GraphicsPreset) -> Result<()> {
+/// The GameCube's native framebuffer, which internal resolution multiplies.
+const NATIVE: (u32, u32) = (640, 528);
+
+/// The `[DEPTH]` filter for a given internal resolution.
+///
+/// ReShade's depth detection is filtered to an exact buffer size, and the live
+/// `ReShade.ini` runs in exact-match mode (`UseAspectRatioHeuristics=4`). The
+/// shipped `User` template records what happens when the two disagree: the
+/// filter "matches nothing, and depth effects vanish". That is why internal
+/// resolution used to be pinned at 3 in the layer nothing could beat.
+///
+/// Deriving the filter is what lets the resolution belong to the player. It is
+/// not an improvement to the preset system, it is the precondition for the
+/// whole graphics half of this fix.
+pub fn depth_filter_for(internal_resolution: u8) -> (u32, u32) {
+    let multiplier = u32::from(internal_resolution.max(1));
+    (NATIVE.0 * multiplier, NATIVE.1 * multiplier)
+}
+
+/// The resolution the player is actually running at, read from their own
+/// `GFX.ini`. Falls back to the Reborn default when they have not set one.
+pub fn internal_resolution_of(user_dir: &Path) -> u8 {
+    std::fs::read_to_string(user_dir.join("Config/GFX.ini"))
+        .ok()
+        .and_then(|text| {
+            IniDocument::parse(&text)
+                .get("Settings", "InternalResolution")
+                .and_then(|v| v.trim().parse::<u8>().ok())
+        })
+        .filter(|r| (1..=8).contains(r))
+        .unwrap_or(3)
+}
+
+pub fn apply(runtime: &Path, preset: GraphicsPreset, internal_resolution: u8) -> Result<()> {
     if !cfg!(windows) { return Ok(()); }
     let Some(root) = runtime.parent() else { return Ok(()); };
     let config = root.join("ReShade.ini");
@@ -17,18 +50,55 @@ pub fn apply(runtime: &Path, preset: GraphicsPreset) -> Result<()> {
     let presets = root.join("reshade-presets");
     std::fs::create_dir_all(&presets)?;
     let selected = presets.join("Reborn Launcher.ini");
-    if std::fs::read_to_string(&selected).ok().as_deref() != Some(contents) {
+
+    // Write the tier's preset only while the file still matches what the
+    // launcher last wrote there.
+    //
+    // ReShade saves the player's in-overlay tuning straight back into this
+    // file, and the launcher pointed PresetPath at it, so every effect value a
+    // player adjusted was overwritten on the next launch. Worse, the bundled
+    // asset changes between releases, so a launcher update reverted every
+    // installed player's preset whether they had touched it or not.
+    let sidecar = presets.join("Reborn Launcher.ini.launcher-wrote");
+    let live = std::fs::read_to_string(&selected).ok();
+    let ours = std::fs::read_to_string(&sidecar).ok();
+    let untouched = match (&live, &ours) {
+        (None, _) => true,
+        (Some(live), Some(ours)) => live == ours,
+        // No sidecar yet: an install from before this existed. Adopt whatever
+        // is there as the player's rather than overwriting it once more.
+        (Some(_), None) => false,
+    };
+    if untouched && live.as_deref() != Some(contents) {
         std::fs::write(&selected, contents)?;
+        std::fs::write(&sidecar, contents)?;
+    } else if ours.is_none() {
+        // Record what is there so the next launch can tell ours from theirs.
+        if let Some(live) = &live { std::fs::write(&sidecar, live)?; }
     }
     let original = std::fs::read_to_string(&config)?;
     let backup = root.join("ReShade.ini.launcher-original");
     if !backup.exists() { std::fs::write(&backup, &original)?; }
     let mut doc = IniDocument::parse(&original);
     let mut overlay = Overlay::new();
-    let general = overlay.entry("GENERAL".into()).or_default();
+    // Which preset is active is the player's: the stage add-on writes it
+    // during play, and the launcher used to force it back on every launch.
+    // Only claimed when it is unset or names a file that is not there, which
+    // is the case a forced value genuinely fixes.
+    let mut seed = Overlay::new();
     for key in ["PresetPath", "StartupPresetPath"] {
-        general.insert(key.into(), selected.to_string_lossy().into_owned());
+        let names_a_missing_file = doc
+            .get("GENERAL", key)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .is_some_and(|v| !root.join(v.trim_start_matches(r".\").trim_start_matches("./")).exists() && !Path::new(v).exists());
+        if names_a_missing_file {
+            overlay.entry("GENERAL".into()).or_default().insert(key.into(), selected.to_string_lossy().into_owned());
+        } else {
+            seed.entry("GENERAL".into()).or_default().insert(key.into(), selected.to_string_lossy().into_owned());
+        }
     }
+    let general = overlay.entry("GENERAL".into()).or_default();
     // Restore the bundled search paths when leaving imported graphics.
     let baseline=IniDocument::parse(&std::fs::read_to_string(&backup)?);
     for key in ["EffectSearchPaths","TextureSearchPaths"] {if let Some(value)=baseline.get("GENERAL",key){general.insert(key.into(),value.into());}}
@@ -45,8 +115,15 @@ pub fn apply(runtime: &Path, preset: GraphicsPreset) -> Result<()> {
     // An empty technique list and disabled-effect skipping keep Off free of effects,
     // even when the game's shaderless-menu add-on toggles the global effect state.
     general.insert("SkipLoadingDisabledEffects".into(), "1".into());
-    overlay.entry("DEPTH".into()).or_default().extend([("FilterResolutionWidth".into(),"1920".into()),("FilterResolutionHeight".into(),"1584".into())]);
-    if !doc.merge(&overlay).is_noop() { std::fs::write(&config, doc.render())?; }
+    // Derived from the resolution the player is running at, not pinned to 3x.
+    let (width, height) = depth_filter_for(internal_resolution);
+    overlay.entry("DEPTH".into()).or_default().extend([
+        ("FilterResolutionWidth".into(), width.to_string()),
+        ("FilterResolutionHeight".into(), height.to_string()),
+    ]);
+    let mut changed = !doc.merge(&overlay).is_noop();
+    changed |= !doc.merge_absent(&seed).is_noop();
+    if changed { std::fs::write(&config, doc.render())?; }
     Ok(())
 }
 
@@ -73,6 +150,53 @@ fn manage_stage_presets(root: &Path, managed: bool) -> Result<()> {
     overlay.entry("Presets".into()).or_default().insert("Enabled".into(), value);
     if !doc.merge(&overlay).is_noop() { std::fs::write(file, doc.render())?; }
     Ok(())
+}
+
+#[cfg(test)]
+mod depth_filter_tests {
+    use super::*;
+
+    /// The precondition for internal resolution belonging to the player.
+    ///
+    /// ReShade's depth detection runs in exact-match mode, so the filter has
+    /// to be the buffer the game is actually rendering. Pinned at 1920x1584 it
+    /// matched only 3x, which is why 3x used to be forced in the layer nothing
+    /// could beat. If this test fails, resolution must go back to being forced
+    /// rather than shipping a build where changing it makes every depth-driven
+    /// effect silently disappear.
+    #[test]
+    fn the_reshade_depth_filter_follows_the_players_resolution() {
+        assert_eq!(depth_filter_for(1), (640, 528), "native");
+        assert_eq!(depth_filter_for(2), (1280, 1056));
+        assert_eq!(depth_filter_for(3), (1920, 1584), "what was hardcoded");
+        assert_eq!(depth_filter_for(4), (2560, 2112));
+        assert_eq!(depth_filter_for(6), (3840, 3168));
+        // A nonsense value must not produce a zero-sized filter, which would
+        // match nothing at all.
+        assert_eq!(depth_filter_for(0), (640, 528));
+    }
+
+    /// Read from the player's own GFX.ini, because that is now the only place
+    /// the resolution lives.
+    #[test]
+    fn the_resolution_comes_from_the_players_own_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Config")).unwrap();
+        assert_eq!(internal_resolution_of(dir.path()), 3, "no file: the Reborn default");
+
+        let gfx = dir.path().join("Config/GFX.ini");
+        std::fs::write(&gfx, "[Settings]\nInternalResolution = 4\n").unwrap();
+        assert_eq!(internal_resolution_of(dir.path()), 4);
+        assert_eq!(depth_filter_for(internal_resolution_of(dir.path())), (2560, 2112));
+
+        std::fs::write(&gfx, "[Settings]\nInternalResolution = 1\n").unwrap();
+        assert_eq!(internal_resolution_of(dir.path()), 1);
+
+        // Dolphin writes "0" for Auto, which is not a multiplier we can derive
+        // a filter from; fall back rather than compute a wrong one.
+        std::fs::write(&gfx, "[Settings]\nInternalResolution = 0\n").unwrap();
+        assert_eq!(internal_resolution_of(dir.path()), 3);
+    }
 }
 
 #[cfg(test)]
@@ -106,23 +230,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = dir.path().join("Dolphin.exe");
         std::fs::write(dir.path().join("ReShade.ini"), "[GENERAL]\nEffectSearchPaths=custom\n").unwrap();
-        apply(&runtime, GraphicsPreset::Balanced).unwrap();
+        apply(&runtime, GraphicsPreset::Balanced, 3).unwrap();
         let selected = dir.path().join("reshade-presets/Reborn Launcher.ini");
         let light = std::fs::read_to_string(&selected).unwrap();
         assert!(light.contains("Techniques=MXAO"));
-        apply(&runtime, GraphicsPreset::Quality).unwrap();
+        apply(&runtime, GraphicsPreset::Quality, 3).unwrap();
         assert_ne!(light, std::fs::read_to_string(&selected).unwrap());
-        apply(&runtime, GraphicsPreset::Performance).unwrap();
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
         assert_eq!(std::fs::read_to_string(&selected).unwrap(), "Techniques=\nTechniqueSorting=\n");
         let empty = dir.path().join("reshade-presets").join("disabled-effects");
         assert!(empty.is_dir());
         let off = IniDocument::parse(&std::fs::read_to_string(dir.path().join("ReShade.ini")).unwrap());
         assert_eq!(off.get("GENERAL", "EffectSearchPaths"), Some(empty.to_string_lossy().as_ref()));
-        apply(&runtime, GraphicsPreset::Balanced).unwrap();
+        apply(&runtime, GraphicsPreset::Balanced, 3).unwrap();
         let enabled = IniDocument::parse(&std::fs::read_to_string(dir.path().join("ReShade.ini")).unwrap());
         assert_eq!(enabled.get("GENERAL", "EffectSearchPaths"), Some("custom"));
-        apply(&runtime, GraphicsPreset::Performance).unwrap();
-        apply_imported(&runtime, "[GENERAL]\nPresetPath=previous.ini\n").unwrap();
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        apply_imported(&runtime, "[GENERAL]\nPresetPath=previous.ini\n", 3).unwrap();
         let imported = IniDocument::parse(&std::fs::read_to_string(dir.path().join("ReShade.ini")).unwrap());
         assert_eq!(imported.get("GENERAL", "EffectSearchPaths"), Some("custom"));
         assert_eq!(imported.get("GENERAL", "PresetPath"), Some("previous.ini"));
@@ -130,7 +254,7 @@ mod tests {
     }
 }
 
-pub fn apply_imported(runtime:&Path,settings:&str)->Result<()> {
+pub fn apply_imported(runtime:&Path,settings:&str,internal_resolution:u8)->Result<()> {
     let Some(root)=runtime.parent()else{return Ok(())};let file=root.join("ReShade.ini");if !file.exists(){return Ok(())}
     manage_stage_presets(root, false)?;
     let original=std::fs::read_to_string(&file)?;
@@ -143,6 +267,9 @@ pub fn apply_imported(runtime:&Path,settings:&str)->Result<()> {
             .unwrap_or_else(|| root.join("reshade-shaders/Shaders/**").to_string_lossy().into_owned());
         overlay.entry("GENERAL".into()).or_default().insert("EffectSearchPaths".into(), paths);
     }
-    let mut doc=IniDocument::parse(&std::fs::read_to_string(&file)?);overlay.entry("DEPTH".into()).or_default().extend([("FilterResolutionWidth".into(),"1920".into()),("FilterResolutionHeight".into(),"1584".into())]);
+    let mut doc=IniDocument::parse(&std::fs::read_to_string(&file)?);
+    // Derived, not pinned: see depth_filter_for.
+    let (width,height)=depth_filter_for(internal_resolution);
+    overlay.entry("DEPTH".into()).or_default().extend([("FilterResolutionWidth".into(),width.to_string()),("FilterResolutionHeight".into(),height.to_string())]);
     if !doc.merge(&overlay).is_noop(){std::fs::write(file,doc.render())?;}Ok(())
 }

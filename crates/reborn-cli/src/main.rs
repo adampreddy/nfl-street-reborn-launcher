@@ -65,7 +65,7 @@ use reborn_core::onboarding::{Environment, Next, Onboarding};
 use reborn_core::platform::VolumeKind;
 use reborn_core::runtime::{GameBuild, GraphicsPreset, RuntimePackager};
 use reborn_core::session::{build_gcpad, resolve_user_dir, LaunchRequest, Launched, Session};
-use reborn_core::stats::{dolphin_capture_dir, EntryState, StatsQueue};
+use reborn_core::stats::{capture_folders_on_disk, CaptureFolder, EntryState, QueueEntry, StatsQueue};
 use reborn_core::supervisor::{SessionEnd, Startup, Supervisor};
 use reborn_core::{DataDir, Platform};
 
@@ -108,6 +108,12 @@ enum Command {
         what: RosterCommand,
     },
 
+    /// Bring the memory cards' gear up to date with the installed roster, keeping in-game edits.
+    Cards {
+        #[command(subcommand)]
+        what: CardsCommand,
+    },
+
     /// The game update chain: apply what is installed to the pristine image.
     GamePatch {
         #[command(subcommand)]
@@ -128,6 +134,18 @@ enum Command {
     AuditRuntime {
         /// The runtime folder to inspect.
         path: PathBuf,
+    },
+
+    /// Stage the Dolphin user-folder template the runtime ships, from a
+    /// tuned User folder: Config and GameSettings INIs and the shader
+    /// lists, cleaned of anything personal. build.ps1 runs this.
+    RuntimeTemplate {
+        /// The tuned User folder.
+        #[arg(long)]
+        from: PathBuf,
+        /// The runtime's User folder to write.
+        #[arg(long)]
+        into: PathBuf,
     },
 
     /// Print the GCPadNew.ini the launcher would generate.
@@ -284,8 +302,24 @@ enum Command {
         apply: bool,
     },
 
-    /// The custom soundtrack: imported audio, the record, and what is missing.
-    Music,
+    /// The copy of the game netplay boots: the pristine game plus the roster,
+    /// never any custom music. Reports its state, and builds it with --build.
+    NetplayImage {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// Build or refresh it. Without this, nothing is written.
+        #[arg(long)]
+        build: bool,
+        /// The Builder's console build, needed only when a roster is installed.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+    },
+
+    /// The custom soundtrack: stage songs and packs, apply, share.
+    Music {
+        #[command(subcommand)]
+        what: MusicCommand,
+    },
 
     /// Installed component versions, and any update the last run left half done.
     Content {
@@ -380,6 +414,31 @@ enum RosterCommand {
 }
 
 #[derive(Subcommand, Debug)]
+enum CardsCommand {
+    /// Run the Reborn Builder's card-sync over every memory card in the Dolphin user folder.
+    Sync {
+        /// The .rebornroster. Defaults to the one the roster component installed.
+        #[arg(long)]
+        roster: Option<PathBuf>,
+        /// The Builder's console build. Found automatically when absent.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+        /// Use this data root instead of the real one. For tests.
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// The Dolphin user folder. Defaults to the one a launch would use.
+        #[arg(long)]
+        user_dir: Option<PathBuf>,
+        /// Record in-game edits only; write nothing to any card.
+        #[arg(long)]
+        harvest_only: bool,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum GamePatchCommand {
     /// Walk the installed chain from the pristine image to its newest build,
     /// re-establish the booted image, and re-apply the roster. The game
@@ -426,22 +485,6 @@ enum ModsCommand {
         #[arg(long, default_value = "1.0.0")]
         version: String,
         /// Carry the import out.
-        #[arg(long)]
-        apply: bool,
-    },
-
-    /// Point the emulator's texture folder at the composed tree.
-    ///
-    /// Composition builds a tree the emulator does not read. Without this the
-    /// mods are applied correctly and none of it reaches the game.
-    Link {
-        /// The build to link, for example GN7E69.
-        #[arg(long)]
-        game: String,
-        /// The Dolphin user folder. Defaults to the one a launch would use.
-        #[arg(long)]
-        user_dir: Option<PathBuf>,
-        /// Make the link. Without this, nothing is changed.
         #[arg(long)]
         apply: bool,
     },
@@ -502,8 +545,9 @@ enum StatsCommand {
 
     /// Take the captures Dolphin wrote into the queue.
     Ingest {
-        /// The folder Dolphin wrote them to. Defaults to LeagueGameStats inside
-        /// the user folder a launch would use.
+        /// Read one folder instead of all of them. Without this, every folder a
+        /// launch reads is swept: the mode folders inside GameStats, the folder
+        /// itself, and the folder older runtimes wrote.
         #[arg(long)]
         from: Option<PathBuf>,
         /// The launcher session that accounts for these results. Without it
@@ -554,6 +598,20 @@ fn main() -> std::process::ExitCode {
         default_hook(info);
     }));
 
+    // The same log the window writes, from the same place, so a person running
+    // a recovery command and a player pressing a button leave their detail in
+    // one file rather than in two or in none. It says nothing and it cannot
+    // fail a command.
+    reborn_core::logging::start(&Platform::detect());
+
+    // NOT `reborn_core::layout::prepare_data_root` here. The window runs it
+    // at its start, because the window is the product. This binary is also
+    // what every end-to-end script, the Publisher and the build run on a
+    // developer's PC, always against a scratch `--data-root`, and on
+    // 2026-09-12 a first version that prepared the REAL data root from here
+    // moved Adam's 2.1 folder aside in the middle of a test run. A command
+    // touches the real roots only when it is told to.
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
@@ -594,6 +652,14 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
         },
         Command::Migrate { from, apply } => migrate(&platform, from, apply),
         Command::AuditRuntime { path } => audit_runtime(&path),
+        Command::RuntimeTemplate { from, into } => {
+            let report = reborn_core::user_template::stage(&from, &into)?;
+            for p in &report.written {
+                println!("staged {}", p.display());
+            }
+            println!("{} file(s) staged into {}", report.written.len(), into.display());
+            Ok(OK)
+        }
         Command::Controller {
             runtime,
             out,
@@ -625,11 +691,6 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 version,
                 apply,
             } => mods_import(&platform, from, &build, &version, apply),
-            ModsCommand::Link {
-                game,
-                user_dir,
-                apply,
-            } => mods_link(&platform, &game, user_dir, apply),
             ModsCommand::Sync { game, user_dir } => mods_sync(&platform, &game, user_dir),
             ModsCommand::Apply {
                 id,
@@ -705,7 +766,8 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
             pin_url.as_deref(),
             apply,
         ),
-        Command::Music => music(&platform),
+        Command::Music { what } => music_command(&platform, what),
+        Command::NetplayImage { data_root, build, builder } => netplay_image(&platform, data_root.as_deref(), build, builder.as_deref()),
         Command::Content { apply } => content(&platform, apply),
         Command::Publish { what } => publish::run(what),
         Command::GamePatch { what } => match what {
@@ -736,6 +798,24 @@ fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
                 data_root.as_deref(),
                 textures.as_deref(),
                 yes,
+            ),
+        },
+        Command::Cards { what } => match what {
+            CardsCommand::Sync {
+                roster,
+                builder,
+                data_root,
+                user_dir,
+                harvest_only,
+                dry_run,
+            } => cards_sync(
+                &platform,
+                roster.as_deref(),
+                builder.as_deref(),
+                data_root.as_deref(),
+                user_dir.as_deref(),
+                harvest_only,
+                dry_run,
             ),
         },
     }
@@ -1179,6 +1259,7 @@ fn play(
         build: GameBuild::Offline,
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
+        league_match: false,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same
@@ -1276,12 +1357,19 @@ fn play(
             pads_authoritative,
             user_dir,
             mods,
-            stats,
+            results,
+            cards,
             ..
         } => {
+            // `Session::run` gave the single-instance lock back before it
+            // returned, so the send happens out here, holding nothing.
+            let stats = results.send(platform);
             println!("{}", user_dir.explain());
             println!("{}", mods.explain());
             if let Some(line) = stats.explain() {
+                println!("{line}");
+            }
+            if let Some(line) = cards.explain() {
                 println!("{line}");
             }
             for (port, device) in &pads {
@@ -1546,9 +1634,14 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
     let data = platform.paths.data_root()?;
     let mut out = Vec::new();
 
-    // The sibling of the launcher's own data root. platform::imp keeps those two
-    // names apart on purpose, and this is the other half of that decision: the
-    // folder the launcher must never write into is the folder migration reads.
+    // Since 2026-09-12 the stable data root is the folder 2.1 used, and a 2.1
+    // install found there is moved into `Reborn 2.1` inside it at first start
+    // (reborn_core::layout). That is where migration reads from.
+    let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
+    out.push(tucked.clone());
+
+    // The sibling of the launcher's own data root: where 2.1 sits beside a
+    // beta root, or beside a Launcher-era root from a build before 09-12.
     if let Some(parent) = data.parent() {
         out.push(parent.join("NFL Street Reborn"));
     }
@@ -1560,8 +1653,10 @@ fn legacy_candidates(platform: &Platform) -> reborn_core::Result<Vec<PathBuf>> {
 
     // A candidate that contains the data root, or sits inside it, would make
     // migration a copy of a tree onto itself. Dropped here rather than checked
-    // again at every call site.
-    out.retain(|c| !data.starts_with(c) && !c.starts_with(&data));
+    // again at every call site. The tucked folder is the one exception: it is
+    // inside the data root by design, and migration copies OUT of it into
+    // `dolphin-users`, never over it.
+    out.retain(|c| *c == tucked || (!data.starts_with(c) && !c.starts_with(&data)));
     Ok(out)
 }
 
@@ -2155,15 +2250,16 @@ fn mods_list(
 
     let textures = data.join(DataDir::LibraryTextures.relative());
     let (builds, _) = recognized_builds(&textures);
+    // The composed tree lives in the user folder a launch would use.
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
     println!();
     println!("Pristine trees under {}", textures.display());
+    println!("Composed trees under {}", user.path().join("Load").join("Textures").display());
     if builds.is_empty() {
         println!("  none, so there is nothing to compose over yet");
     }
     for build in &builds {
-        let composed = data
-            .join(DataDir::ModsActive.relative())
-            .join(build.as_str());
+        let composed = reborn_core::mods::composed_root(user.path(), build);
         let state = if !composed.exists() {
             "not composed".to_string()
         } else if composed.join(COMPOSED_MARKER).exists() {
@@ -2335,104 +2431,6 @@ fn pristine(
     Ok(OK)
 }
 
-/// Point the emulator's texture folder at the composed tree.
-///
-/// Dry by default, and the plan says exactly which folder would move where,
-/// because this changes the shape of a live install.
-fn mods_link(
-    platform: &Platform,
-    game: &str,
-    user_dir: Option<PathBuf>,
-    apply: bool,
-) -> reborn_core::Result<std::process::ExitCode> {
-    let game = match GameId::parse(game) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("--game: {e}");
-            return Ok(misuse());
-        }
-    };
-
-    // The folder a launch would actually use, so the link lands where the game
-    // will look rather than where a fresh directory would be made.
-    let user = reborn_core::session::resolve_user_dir(platform, user_dir.as_deref())?;
-    let composed = reborn_core::mods::composed_root(platform, &game)?;
-    let at = user
-        .path()
-        .join("Load")
-        .join("Textures")
-        .join(game.as_str());
-
-    println!("Build      {game}");
-    println!("User dir   {}", user.path().display());
-    println!("  {}", user.explain());
-    println!();
-    println!("Link       {}", at.display());
-    println!("        -> {}", composed.display());
-    println!();
-
-    if !composed.is_dir() {
-        println!("BLOCKED. Nothing was changed.");
-        println!();
-        println!("There is no composed tree yet. Run `mods apply` first, or the game");
-        println!("would be pointed at nothing and look like a broken install.");
-        return Ok(PROBLEM);
-    }
-
-    if at.exists() {
-        let existing = std::fs::symlink_metadata(&at)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if existing {
-            println!("It is already a link. Re-linking would only repoint it.");
-        } else {
-            let (files, _) = match std::fs::read_dir(&at) {
-                Ok(entries) => (entries.count(), 0u64),
-                Err(_) => (0, 0),
-            };
-            println!(
-                "That folder holds {files} entry(s) and would be RENAMED, not deleted."
-            );
-            println!("Nothing here removes a texture, so getting this wrong costs a rename.");
-        }
-        println!();
-    }
-
-    if !apply {
-        println!("Nothing was changed. Re-run with --apply to do it.");
-        return Ok(OK);
-    }
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    match reborn_core::mods::link_textures(user.path(), &game, &composed, now_ms)? {
-        reborn_core::mods::TextureLink::LeftAlone { at } => {
-            println!("Left alone: {}", at.display());
-            println!();
-            println!("Nothing was linked. This command only reports it; a launch reads the");
-            println!("setting and would leave the folder alone too.");
-        }
-        reborn_core::mods::TextureLink::AlreadyLinked { .. } => {
-            println!("Already pointing at the composed tree. Nothing was changed.");
-        }
-        reborn_core::mods::TextureLink::Linked { moved_aside, .. } => {
-            println!("Linked.");
-            if let Some(aside) = moved_aside {
-                println!();
-                println!("The folder that was there is now at:");
-                println!("  {}", aside.display());
-                println!();
-                println!("Nothing was deleted. Rename it back to undo this.");
-            }
-        }
-    }
-
-    Ok(OK)
-}
-
 /// Make the game load the active set. See `reborn_core::mods::sync_active`.
 fn mods_sync(
     platform: &Platform,
@@ -2478,14 +2476,10 @@ fn mods_sync(
                 };
                 println!("  {}@{}  {state}", entry.id, entry.version);
             }
-            if let reborn_core::mods::TextureLink::Linked {
-                moved_aside: Some(aside),
-                ..
-            } = &report.link
-            {
+            if let Some(aside) = &report.moved_aside {
                 println!();
                 println!("The folder that was there is now at {}.", aside.display());
-                println!("Nothing was deleted. Rename it back to undo the link.");
+                println!("Nothing was deleted. Rename it back to keep using it by hand.");
             }
             Ok(OK)
         }
@@ -2796,7 +2790,8 @@ fn mods_activation(
         }
     }
 
-    let request = ComposeRequest::in_data_root(platform, game_id, ordered)?;
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
+    let request = ComposeRequest::in_data_root(platform, game_id, user.path(), ordered)?;
     let composition = Composer::plan(platform, &request)?;
     let plan = match &composition {
         Composition::Refused(refusal) => {
@@ -2890,7 +2885,8 @@ fn mods_verify(
         }
     }
 
-    let request = ComposeRequest::in_data_root(platform, game_id, ordered)?;
+    let user = reborn_core::session::resolve_user_dir(platform, None)?;
+    let request = ComposeRequest::in_data_root(platform, game_id, user.path(), ordered)?;
     let composition = Composer::plan(platform, &request)?;
     let plan = match &composition {
         Composition::Refused(refusal) => {
@@ -3613,9 +3609,29 @@ fn describe_state(state: &EntryState) -> String {
         EntryState::Held { reason } => {
             format!("sent, and a person will decide. This is a success: {reason}")
         }
-        EntryState::Rejected { reason } => format!("refused for good, kept on disk: {reason}"),
-        EntryState::Stalled { reason } => format!("too many failed attempts: {reason}"),
+        EntryState::Rejected { reason } => format!(
+            "refused by the server and kept on disk. `stats retry --apply` puts it back: {reason}"
+        ),
+        EntryState::Stalled { reason } => {
+            format!("too many failed attempts; the next send pass puts it back: {reason}")
+        }
     }
+}
+
+/// The server's own word for why it refused this result, for the person who
+/// has to decide whether to put it back.
+///
+/// `describe_state` prints the sentence a player reads, which deliberately
+/// says nothing about which refusal it was. This tool's audience is a
+/// developer or a league operator at a command line, and a rejection is
+/// permanent: `stats retry --apply` is the documented way back, and without
+/// the code the person running it cannot tell a hash mismatch from a seat
+/// conflict.
+fn refusal_code_line(entry: &QueueEntry) -> Option<String> {
+    entry
+        .refusal_code
+        .as_deref()
+        .map(|code| format!("the server refused it with: {code}"))
 }
 
 /// Short form of a content key, for a line a person reads.
@@ -3639,6 +3655,9 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 short_key(&entry.key),
                 describe_state(&entry.state)
             );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
             match &entry.summary {
                 Some(summary) => {
                     let teams = summary
@@ -3665,6 +3684,13 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 // be described is shown as one that cannot be described.
                 None => println!("      The capture could not be read, so there is no box score."),
             }
+            // What the server said about a terminal result, such as "Recorded
+            // as incomplete". Stored on the entry and shown to nobody until fix
+            // wave 2: the state alone says "sent and counted", which is true
+            // and is not the whole truth.
+            if let Some(note) = &entry.note {
+                println!("      {note}");
+            }
             if entry.attempts > 0 {
                 println!("      {} failed attempt(s)", entry.attempts);
             }
@@ -3672,6 +3698,18 @@ fn stats_list(platform: &Platform) -> reborn_core::Result<std::process::ExitCode
                 println!("      session {session}");
             } else {
                 println!("      no session accounts for it");
+            }
+            // Named, so a naming drift between the emulator and the launcher
+            // is something a person reading this notices. "unknown" means the
+            // capture was found somewhere neither side agreed on, and the mode
+            // was recorded rather than guessed.
+            match entry.capture_folder.as_deref() {
+                Some(reborn_core::stats::UNKNOWN_MODE) => println!(
+                    "      found in a folder this launcher does not know, so its mode is \
+                     recorded as unknown rather than guessed"
+                ),
+                Some(mode) => println!("      {mode}"),
+                None => println!("      from the folder older runtimes wrote, so its mode is not known"),
             }
             if let Some(path) = &entry.source_path {
                 println!("      from {}", path.display());
@@ -3722,62 +3760,114 @@ fn stats_ingest(
     session: Option<&str>,
     apply: bool,
 ) -> reborn_core::Result<std::process::ExitCode> {
-    let dir = match from {
-        Some(p) => p,
+    let queue = StatsQueue::open(platform)?;
+
+    // With no --from, the same sweep a launch does: every folder a capture can
+    // be in. This used to default to the parent GameStats folder and call the
+    // single-folder ingest, and Dolphin writes into GameStats\Online and
+    // GameStats\Offline. The parent exists, so the command did not even report
+    // a missing folder. It found nothing, said there was nothing to do, and
+    // left the captures a person was looking for one level down.
+    let (user_dir, folders) = match &from {
+        Some(one) => (
+            None,
+            vec![CaptureFolder {
+                path: one.clone(),
+                mode: None,
+                // A person named this folder and had to add --apply, which
+                // says the source files are removed.
+                emulator_writes_here: true,
+            }],
+        ),
         None => {
             let user = resolve_user_dir(platform, None)?;
             println!("{}", user.explain());
-            dolphin_capture_dir(user.path())
+            let dirs = capture_folders_on_disk(user.path());
+            (Some(user.path().to_path_buf()), dirs)
         }
     };
-    let queue = StatsQueue::open(platform)?;
-    println!("Captures      {}", dir.display());
-    println!("Queue         {}", queue.dir().display());
 
-    if !dir.exists() {
-        println!();
-        println!("That folder does not exist, so Dolphin has not written a capture to");
-        println!("it. Nothing to do.");
-        return Ok(OK);
+    println!("Queue         {}", queue.dir().display());
+    for folder in &folders {
+        println!(
+            "Captures      {}{}{}",
+            folder.path.display(),
+            match folder.mode {
+                Some(m) => format!("  ({m})"),
+                None => String::new(),
+            },
+            // Said out loud, because "read but never emptied" is the whole
+            // difference between a folder the emulator owns and one somebody
+            // filled themselves.
+            if folder.emulator_writes_here {
+                ""
+            } else {
+                "  read only, nothing is removed from it"
+            }
+        );
     }
 
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|source| reborn_core::Error::Io {
-        path: dir.clone(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| reborn_core::Error::Io {
+    // What is there, per folder, so a person can see which folder a capture is
+    // actually sitting in rather than a single total.
+    let mut found: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    let mut missing = 0usize;
+    for folder in &folders {
+        let dir = &folder.path;
+        if !dir.exists() {
+            missing += 1;
+            continue;
+        }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|source| reborn_core::Error::Io {
             path: dir.clone(),
             source,
-        })?;
-        let path = entry.path();
-        let is_json = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("json"))
-            .unwrap_or(false);
-        if path.is_file() && is_json {
-            found.push(path);
+        })? {
+            let entry = entry.map_err(|source| reborn_core::Error::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+            if path.is_file() && is_json {
+                files.push(path);
+            }
+        }
+        files.sort();
+        if !files.is_empty() {
+            found.push((dir.clone(), files));
         }
     }
-    found.sort();
 
+    let total: usize = found.iter().map(|(_, f)| f.len()).sum();
     println!();
-    if found.is_empty() {
-        println!("No capture files there. Only *.json directly in that folder counts, so");
-        println!("uploaded.txt and the _previous folder are left alone by design.");
+    if total == 0 {
+        if missing == folders.len() {
+            println!("None of those folders exists, so Dolphin has not written a capture to");
+            println!("any of them. Nothing to do.");
+        } else {
+            println!("No capture files in any of those folders. Only *.json directly in a");
+            println!("folder counts, so uploaded.txt and the _previous folder are left alone");
+            println!("by design.");
+        }
         return Ok(OK);
     }
-    println!("{} capture file(s):", found.len());
-    let lines: Vec<String> = found
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.display().to_string())
-        })
-        .collect();
-    print_list("  ", &lines);
+    println!("{total} capture file(s):");
+    for (dir, files) in &found {
+        println!("  {}", dir.display());
+        let lines: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        print_list("    ", &lines);
+    }
 
     println!();
     match session {
@@ -3797,7 +3887,13 @@ fn stats_ingest(
         return Ok(OK);
     }
 
-    let results = queue.ingest_from(&dir, session)?;
+    // The same call a launch makes, so the recovery tool and the product can
+    // never disagree about which folders hold a game somebody played.
+    let results = match (&user_dir, &from) {
+        (Some(user), _) => queue.ingest_all(user, session)?,
+        (None, Some(one)) => queue.ingest_from(one, session)?,
+        (None, None) => unreachable!("one of the two is always set"),
+    };
     println!();
     let mut problem = false;
     for result in &results {
@@ -3808,7 +3904,9 @@ fn stats_ingest(
         if matches!(
             result,
             reborn_core::stats::Enqueued::CouldNotRead { .. }
+                | reborn_core::stats::Enqueued::FolderCouldNotBeRead { .. }
                 | reborn_core::stats::Enqueued::Quarantined(_)
+                | reborn_core::stats::Enqueued::SourceKept { .. }
         ) {
             problem = true;
         }
@@ -3818,33 +3916,88 @@ fn stats_ingest(
     Ok(if problem { PROBLEM } else { OK })
 }
 
+/// Put stalled AND refused results back in the queue.
+///
+/// Stalled entries are put back by every send pass on their own; this stays
+/// because it is how a person does it now rather than at the end of the next
+/// game.
+///
+/// Refused ones are the reason this command matters. A rejection writes a
+/// ledger row and nothing else in the launcher can undo it, so one server-side
+/// fault refusing a queue used to destroy every game in it permanently. This
+/// is the only way back, and it is deliberately a person typing a command:
+/// resending a considered refusal on a timer is the retry loop the whole
+/// design exists to prevent.
 fn stats_retry(platform: &Platform, apply: bool) -> reborn_core::Result<std::process::ExitCode> {
     let queue = StatsQueue::open(platform)?;
     let stalled = queue.stalled()?;
+    let refused: Vec<_> = queue
+        .entries()?
+        .into_iter()
+        .filter(|e| matches!(e.state, reborn_core::stats::EntryState::Rejected { .. }))
+        .collect();
     println!("Queue         {}", queue.dir().display());
     println!();
-    if stalled.is_empty() {
-        println!("Nothing is stalled.");
+    if stalled.is_empty() && refused.is_empty() {
+        println!("Nothing is stalled, and nothing was refused.");
         return Ok(OK);
     }
-    println!("{} stalled result(s):", stalled.len());
-    for entry in &stalled {
-        println!(
-            "  {}  {}",
-            short_key(&entry.key),
-            describe_state(&entry.state)
-        );
+    if !stalled.is_empty() {
+        println!("{} stalled result(s):", stalled.len());
+        for entry in &stalled {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+        }
+    }
+    if !refused.is_empty() {
+        if !stalled.is_empty() {
+            println!();
+        }
+        println!("{} refused result(s):", refused.len());
+        for entry in &refused {
+            println!(
+                "  {}  {}",
+                short_key(&entry.key),
+                describe_state(&entry.state)
+            );
+            if let Some(line) = refusal_code_line(entry) {
+                println!("      {line}");
+            }
+        }
+        println!();
+        println!("A refusal means the server looked at the result and did not store it,");
+        println!("so putting one back cannot duplicate anything. Results the server DID");
+        println!("store are never touched by this.");
     }
     if !apply {
         println!();
         println!("Nothing was changed. Re-run with --apply to put them back in the queue.");
         return Ok(PROBLEM);
     }
+    // The lock, for the rewrite. `requeue_rejected` reads the ledger, drops
+    // the rejection rows, writes a temporary file and renames it over the
+    // original, and an append landing between the read and the rename is
+    // inside the file that gets replaced. A ledger row is the only thing
+    // standing between a crash and a result being sent twice on a real
+    // fixture, so losing one is not acceptable. The appends come from a
+    // launcher running at the same time, and this is the lock that stops one
+    // existing -- the same lock every other piece of queue work takes.
+    let Startup::Owner(_lock) = Supervisor::acquire(platform)? else {
+        println!();
+        println!("Another launcher is running and owns this install. Close it and try again;");
+        println!("nothing was changed.");
+        return Ok(PROBLEM);
+    };
     let moved = queue.retry_stalled()?;
+    let unrefused = queue.requeue_rejected()?;
     println!();
     println!(
-        "{} result(s) put back in the queue, attempt counts reset.",
-        moved.len()
+        "{} stalled and {} refused result(s) put back in the queue, attempt counts reset.",
+        moved.len(),
+        unrefused.len()
     );
     println!("Nothing expires a stalled capture on its own: the game happened, so the");
     println!("only ways out are sending it or the player deleting it.");
@@ -4100,102 +4253,6 @@ fn inventory(
 
 /// The custom soundtrack: what the user imported, what is recorded, what is
 /// missing.
-fn music(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> {
-    let data = platform.paths.data_root()?;
-    let sources = reborn_core::music::sources_dir(&data);
-    let packs = reborn_core::music::packs_dir(&data);
-    let record = reborn_core::music::soundtrack_path(&data);
-
-    println!("Sources       {}", sources.display());
-    println!("Packs         {}", packs.display());
-    println!("Record        {}", record.display());
-
-    let imported = reborn_core::music::scan_sources(&sources)?;
-    println!();
-    if imported.is_empty() {
-        println!("No audio has been imported. That is what a fresh install looks like.");
-    } else {
-        let bytes: u64 = imported.iter().map(|s| s.bytes).sum();
-        println!(
-            "{} imported file(s), {} bytes:",
-            imported.len(),
-            thousands(bytes)
-        );
-        let lines: Vec<String> = imported
-            .iter()
-            .map(|s| format!("{} , {} bytes", s.relative_path, thousands(s.bytes)))
-            .collect();
-        print_list("  ", &lines);
-        println!("Running times are absent because measuring one needs a decoder, which");
-        println!("is the bundled FFmpeg and not this crate. A track list here shows no");
-        println!("duration rather than a guessed one.");
-    }
-
-    let pack_count = std::fs::read_dir(&packs)
-        .map(|entries| entries.flatten().filter(|e| e.path().is_file()).count())
-        .unwrap_or(0);
-    println!();
-    println!("{pack_count} file(s) in the packs directory.");
-
-    match reborn_core::music::SoundtrackState::load(&record)? {
-        None => {
-            println!();
-            println!("No soundtrack record, so no custom soundtrack has been applied. The");
-            println!("offline image should match its shipped hash.");
-        }
-        Some(state) => {
-            println!();
-            println!("Applied to    offline-content {}", state.base_version);
-            println!("Base artifact {}", state.base_artifact_sha256);
-            println!(
-                "Rebuilt image {}",
-                state
-                    .rebuilt_sha256
-                    .as_ref()
-                    .map(|h| h.to_string())
-                    // Absent is the honest state for edited but not built yet,
-                    // and it is what stops a half finished edit claiming an
-                    // image that does not exist.
-                    .unwrap_or_else(|| "not built yet".to_string())
-            );
-            println!("Slots filled  {}", state.order.len());
-
-            let report = state.verify(&data)?;
-            let skipped = report.skipped();
-            let present = report.present_user_slots();
-            println!(
-                "User audio    {} slot(s) present: {}",
-                present.len(),
-                present
-                    .iter()
-                    .map(u8::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            if report.is_fully_replayable() {
-                println!("Every slot can be replayed onto a fresh base.");
-            } else {
-                println!();
-                println!("{} slot(s) would be skipped on a rebuild:", skipped.len());
-                for (slot, why) in &skipped {
-                    println!("  slot {slot}: {why}");
-                }
-                println!("The row is kept either way. Dropping it would destroy the only");
-                println!("record of what the user wanted there.");
-            }
-        }
-    }
-
-    println!();
-    println!("Building a soundtrack is not implemented, and reborn-core says so with a");
-    println!("typed refusal rather than a guess. Three things are missing and none is");
-    println!("recorded anywhere in the repository: the per stream position entry layout");
-    println!("inside pathfind.dat, the sample accounting extend_slot_40big.py performs");
-    println!("when a slot grows, and the title, artist and album record layout in");
-    println!("template.dat. Guessing any of them yields a disc that boots and plays");
-    println!("silence, which is worse than a crash because it looks like success.");
-    Ok(OK)
-}
 
 // ---------------------------------------------------------------------------
 // Content
@@ -4422,6 +4479,7 @@ fn update_content(
             receipt: r,
             game_patch,
             roster,
+            ..
         } => {
             println!(
                 "Live          {} {}: {} file(s) swapped in, {} kept as yours",
@@ -4722,6 +4780,7 @@ fn roster_apply(
         builder: &builder_path,
         textures_root,
         accept_warnings: yes,
+        output: None,
     };
     match roster::apply(platform, &req)? {
         ApplyOutcome::Applied(r) => {
@@ -4751,6 +4810,7 @@ fn roster_apply(
                 }
             }
             println!("Recorded as a rebuilt image, so verification keeps it rather than re-downloading it.");
+            cards_after_roster_apply(platform, &root, data_root.is_some());
             Ok(OK)
         }
         ApplyOutcome::Unchanged { image, report, .. } => {
@@ -4761,12 +4821,124 @@ fn roster_apply(
                 thousands(report.players),
                 thousands(report.teams)
             );
+            cards_after_roster_apply(platform, &root, data_root.is_some());
             Ok(OK)
         }
         ApplyOutcome::Refused(r) => {
             println!();
             println!("Refused: {}", r.message());
             Ok(PROBLEM)
+        }
+    }
+}
+
+/// After `roster apply` on the real data root: the memory cards, brought up
+/// to date with the roster that is now in the image. Harmless when nothing
+/// changed: the Builder reports "unchanged". Not on a test root
+/// (`--data-root`): the cards a launch would use are the real ones, and a
+/// test roster must never be written into them.
+fn cards_after_roster_apply(platform: &Platform, root: &Path, test_root: bool) {
+    println!();
+    if test_root {
+        println!("Memory cards   not touched from a test data root.");
+        return;
+    }
+    let user = match resolve_user_dir(platform, None) {
+        Ok(u) => u,
+        Err(e) => {
+            println!("Memory cards   left as they were: no Dolphin user folder could be resolved ({e}).");
+            return;
+        }
+    };
+    match reborn_core::cards::after_apply(platform, root, user.path(), &tool_dirs()) {
+        Ok(outcome) => {
+            let lines = outcome.explain();
+            if lines.is_empty() {
+                println!("Memory cards   every card is up to date, and no new gear edits were found.");
+            }
+            for line in lines {
+                println!("Memory cards   {line}");
+            }
+        }
+        Err(e) => println!("Memory cards   could not be checked ({e}); they are as they were."),
+    }
+}
+
+/// Sync every memory card with the Builder's card-sync verb.
+fn cards_sync(
+    platform: &Platform,
+    roster: Option<&Path>,
+    builder: Option<&Path>,
+    data_root: Option<&Path>,
+    user_dir: Option<&Path>,
+    harvest_only: bool,
+    dry_run: bool,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::cards::{self, SyncOutcome, SyncRequest};
+    use reborn_core::roster::{self, ROSTER_FILE};
+
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    let roster_path = match roster {
+        Some(p) => p.to_path_buf(),
+        None => root.join(DataDir::LibraryRoster.relative()).join(ROSTER_FILE),
+    };
+    let builder_path = match builder {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let dirs = roster::builder_dirs(platform, &tool_dirs());
+            match roster::find_builder(platform, &dirs) {
+                Some(p) => p,
+                None => {
+                    println!("{}", cards::SyncRefusal::NoBuilder { looked: dirs }.message());
+                    return Ok(PROBLEM);
+                }
+            }
+        }
+    };
+    let user = match user_dir {
+        Some(p) => p.to_path_buf(),
+        None => resolve_user_dir(platform, None)?.path().to_path_buf(),
+    };
+    println!("Data root     {}", root.display());
+    println!("Roster        {}", roster_path.display());
+    println!("Builder       {}", builder_path.display());
+    println!("User folder   {}", user.display());
+    println!(
+        "Mode          {}",
+        if dry_run {
+            "dry run, nothing written"
+        } else if harvest_only {
+            "harvest only, cards not written"
+        } else {
+            "full sync"
+        }
+    );
+    println!();
+    let req = SyncRequest {
+        data_root: &root,
+        roster: &roster_path,
+        builder: &builder_path,
+        user_dir: &user,
+        harvest_only,
+        dry_run,
+    };
+    match cards::sync(platform, &req)? {
+        SyncOutcome::Refused(r) => {
+            println!("{}", r.message());
+            Ok(PROBLEM)
+        }
+        outcome => {
+            let lines = outcome.explain();
+            if lines.is_empty() {
+                println!("Every memory card is up to date, and no new gear edits were found.");
+            }
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(OK)
         }
     }
 }
@@ -4967,6 +5139,183 @@ mod tests {
         }
     }
 
+    /// The only recovery tool this product has must look where the emulator
+    /// actually writes.
+    ///
+    /// `stats ingest` defaulted to the parent `GameStats` folder and called the
+    /// single-folder ingest. Dolphin writes into `GameStats\Online` and
+    /// `GameStats\Offline`. The parent exists, so the command did not even
+    /// report a missing folder: it found nothing, printed "Nothing to do", and
+    /// left every real capture sitting one level down. That is the command a
+    /// person reaches for when the queue is stuck, and it could not find
+    /// anything at all.
+    ///
+    /// Its help text said it defaulted to `LeagueGameStats`, which had not been
+    /// true since the mode folders arrived, so the one place a person could
+    /// check what it was about to read was wrong too.
+    ///
+    /// Checked in two places, because the defect had two halves. The help text
+    /// is read from clap, which is what a person actually sees. The default
+    /// path is read from the source of the function, because it takes a
+    /// `Platform` and a resolved user directory and cannot be called in a test
+    /// without one; what has to be true is that the no-flag path reaches
+    /// `ingest_all` and the flag path still reaches the single-folder call.
+    /// Rewriting the ledger takes the lock the rest of the queue work takes.
+    ///
+    /// `requeue_rejected` reads the ledger, drops the rejection rows, writes a
+    /// temporary file and renames it over the original. An append landing
+    /// between the read and the rename is inside the file that gets replaced,
+    /// so it is lost -- and a ledger row is the only thing standing between a
+    /// crash and a result being sent twice on a real fixture.
+    ///
+    /// Nothing here can hold that window open on its own, because the appends
+    /// come from a launcher running at the same time. The single-instance lock
+    /// is what stops that launcher existing, and it is the lock every other
+    /// piece of queue work already takes.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The function's text is cut at the next item's own first line, which is
+    /// thousands of lines before this test, so the names below are never
+    /// inside what is searched.
+    #[test]
+    fn putting_results_back_takes_the_lock_the_rest_of_the_queue_work_takes() {
+        let src = include_str!("main.rs");
+        let from = src
+            .find("\nfn stats_retry(")
+            .expect("stats_retry is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest.find("\nfn stats_prune(").expect("stats_prune moved")];
+
+        let lock = body.find("Supervisor::acquire").unwrap_or_else(|| {
+            panic!(
+                "stats retry rewrites the ledger with no lock, so an append from a launcher \
+                 running at the same time is dropped on the rename"
+            )
+        });
+        // The call, not the name: the comment above the lock explains what
+        // `requeue_rejected` does, and searching for the bare name would find
+        // that comment first and always read as "the lock came too late".
+        let rewrite = body
+            .find("queue.requeue_rejected(")
+            .expect("stats retry no longer puts refused results back");
+        assert!(
+            lock < rewrite,
+            "the lock is taken after the ledger has already been rewritten"
+        );
+    }
+
+    /// The person who has to act on a refusal can see which refusal it was.
+    ///
+    /// A rejection is permanent, and `stats retry --apply` is the documented
+    /// way back. The row itself says only the sentence written for a player,
+    /// which deliberately does not name the refusal, so the operator was
+    /// retrying blind: a hash mismatch is worth investigating and a seat
+    /// conflict is worth waiting for the other player on, and they read the
+    /// same.
+    ///
+    /// This tool's audience is a developer or a league operator at a command
+    /// line, so the server's own vocabulary is exactly right here and exactly
+    /// wrong on the results screen.
+    #[test]
+    fn the_listing_shows_which_refusal_a_refused_result_got() {
+        let mut entry = QueueEntry {
+            key: reborn_core::stats::CaptureKey::of_bytes(b"a"),
+            state: EntryState::Rejected {
+                reason: "The server would not take this result.".into(),
+            },
+            attempts: 0,
+            first_seen_ms: 1,
+            last_attempt_ms: None,
+            finished_ms: Some(2),
+            last_error: Some("The server would not take this result.".into()),
+            source_path: None,
+            session_id: Some("s1".into()),
+            capture_folder: Some("offline".into()),
+            note: None,
+            refusal_code: Some("hash-mismatch".into()),
+            summary: None,
+        };
+        let line = refusal_code_line(&entry)
+            .expect("a refusal that carries a code has to say which refusal it was");
+        assert!(
+            line.contains("hash-mismatch"),
+            "the operator cannot tell one refusal from another: {line}"
+        );
+        // Nothing invented for a result that carries no code.
+        entry.refusal_code = None;
+        assert!(refusal_code_line(&entry).is_none());
+    }
+
+    /// The command line tool writes to the same log the window does.
+    ///
+    /// Every failure this tool decides not to print in full goes to
+    /// `tracing::warn!` in the core, and until fix wave 4 nothing in the
+    /// workspace subscribed, so those events were dropped. A person running a
+    /// recovery command is exactly the person who needs them.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// `fn main`'s text is cut at the `fn run(` that follows it, which is
+    /// thousands of lines before this test, so the name written below is never
+    /// inside what is searched.
+    #[test]
+    fn every_run_of_the_command_line_tool_writes_to_the_launchers_log() {
+        let src = include_str!("main.rs");
+        let body = {
+            let from = src
+                .find("\nfn main() -> std::process::ExitCode {")
+                .expect("main is not in this file any more");
+            let rest = &src[from..];
+            &rest[..rest.find("\nfn run(").expect("run is not in this file any more")]
+        };
+        assert!(
+            body.contains("logging::start"),
+            "rebornctl never starts a log, so every warning the core raises while it runs \
+             is dropped and the detail is gone"
+        );
+    }
+
+    #[test]
+    fn stats_ingest_defaults_to_every_folder_the_emulator_writes_to() {
+        let root = Cli::command();
+        let cmd = find(&root, &["stats", "ingest"]);
+        let from = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "from")
+            .expect("stats ingest has no --from any more");
+        let help = from
+            .get_help()
+            .map(|h| h.to_string())
+            .unwrap_or_default();
+        assert!(
+            !help.contains("LeagueGameStats"),
+            "the help still promises a folder the emulator has not written to for two \
+             releases: {help}"
+        );
+        assert!(
+            help.contains("one folder"),
+            "the help has to say --from narrows the sweep to one folder, because the \
+             default is now every folder: {help}"
+        );
+
+        let src = include_str!("main.rs");
+        let from_fn = src
+            .find("\nfn stats_ingest(")
+            .expect("stats_ingest is not in this file any more");
+        let rest = &src[from_fn..];
+        let body = &rest[..rest.find("\n/// Put stalled").unwrap_or(rest.len())];
+        assert!(
+            body.contains("ingest_all"),
+            "with no --from, stats ingest still reads one folder the emulator never \
+             writes to, so it can never find a stuck capture"
+        );
+        assert!(
+            body.contains("ingest_from"),
+            "--from no longer narrows the sweep to the one folder it names"
+        );
+    }
+
     /// Read-only subcommands must not grow an `--apply`, because a flag that
     /// does nothing teaches people to pass it everywhere.
     #[test]
@@ -5110,13 +5459,19 @@ mod tests {
     /// Migration reads the 2.1 folder and writes the data root. A candidate that
     /// is the data root, or holds it, would make migration a copy of a tree onto
     /// itself, with the launcher's own `mods/` sitting on the player's JSGME
-    /// `MODS/` on a case insensitive filesystem.
+    /// `MODS/` on a case insensitive filesystem. The one candidate inside the
+    /// data root is the tucked `Reborn 2.1` folder, which the launcher made by
+    /// moving the 2.1 entries out of the way first.
     #[test]
     fn no_migration_source_is_the_data_root() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
+        let tucked = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         for candidate in legacy_candidates(&platform).expect("candidates") {
             assert_ne!(candidate, data, "a candidate is the data root itself");
+            if candidate == tucked {
+                continue;
+            }
             assert!(
                 !data.starts_with(&candidate),
                 "{} holds the data root {}",
@@ -5137,21 +5492,18 @@ mod tests {
     /// This is the bug this list was widened to fix: the shipped build lives
     /// beside the launcher's data root, and only checking beside the install root
     /// meant `migrate` reported nothing to do on a machine holding 35,015 files
-    /// of it.
+    /// of it. Since 2026-09-12 the stable data root IS that folder and the 2.1
+    /// files are tucked into `Reborn 2.1` inside it, which comes first.
     #[test]
-    fn the_sibling_of_the_data_root_is_a_candidate() {
+    fn the_tucked_folder_inside_the_data_root_is_the_first_candidate() {
         let platform = Platform::detect();
         let data = platform.paths.data_root().expect("data root");
-        let expected = data
-            .parent()
-            .expect("the data root has a parent")
-            .join("NFL Street Reborn");
+        let expected = data.join(reborn_core::layout::LEGACY_SUBFOLDER);
         let candidates = legacy_candidates(&platform).expect("candidates");
+        assert_eq!(candidates.first(), Some(&expected), "{candidates:?}");
         assert!(
-            candidates.contains(&expected),
-            "{} is not among {:?}",
-            expected.display(),
-            candidates
+            !candidates.iter().any(|c| *c == data),
+            "the data root itself is never a migration source: {candidates:?}"
         );
     }
 
@@ -5273,4 +5625,525 @@ mod tests {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// music
+// ---------------------------------------------------------------------------
+
+#[derive(Subcommand, Debug)]
+enum MusicCommand {
+    /// The 21 slots as the disc has them, what is staged, and the switch.
+    Status {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage a pack (.nsrmusic or .nsmp): every song it carries goes to its slot.
+    Import {
+        pack: PathBuf,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage a slot back to the disc's own song.
+    Reset {
+        slot: u8,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Stage new banner text for a slot.
+    Details {
+        slot: u8,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Drop a staged change (or every staged change with --all).
+    Unstage {
+        slot: Option<u8>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Write a pack from slots as the disc has them now.
+    Export {
+        out: PathBuf,
+        /// Slots to include, for example 3,7,21.
+        #[arg(long, value_delimiter = ',')]
+        slots: Vec<u8>,
+        #[arg(long, default_value = "")]
+        name: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Turn the custom soundtrack on and rebuild the disc.
+    Enable {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Turn the custom soundtrack off and put the original disc back.
+    Disable {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Build the disc from the staged slots. One rebuild.
+    Apply {
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+        /// The Builder's console build, for putting the roster back on a revert.
+        #[arg(long)]
+        builder: Option<PathBuf>,
+    },
+    /// Read a file's tags and length, and look it up online when the tags are
+    /// missing. Changes nothing.
+    Inspect {
+        file: PathBuf,
+        /// Skip the online lookup.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Look a song up online by a typed query (iTunes, then MusicBrainz).
+    Lookup { query: Vec<String> },
+    /// Stage a song from a file into a slot. Details default to the file's
+    /// tags, then the best online match, then the file name.
+    Add {
+        file: PathBuf,
+        #[arg(long)]
+        slot: u8,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        /// Skip the online lookup.
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+    /// Build the NFL Street 1 soundtrack pack from the extracted disc files
+    /// (DolphinTool extract of the NFL Street (USA) image).
+    PackFromStreet1 {
+        /// The extracted disc's `files` directory (femusic.dat, template.dat).
+        #[arg(long)]
+        disc_files: PathBuf,
+        /// The pristine NFL Street 2 image; its pathfind.dat supplies the PT
+        /// headers each slot is encoded with.
+        #[arg(long)]
+        pristine_iso: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Build a pack from a game image's own soundtrack, copying its audio and
+    /// banner text without re-encoding. `--from` takes an ISO or a directory
+    /// holding pathfind.dat and template.dat (a DolphinTool extract).
+    PackFromImage {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "")]
+        name: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Write the soundtrack mod packages (Reborn, original, NFL Street 1) as a
+    /// mods/packages tree ready to publish.
+    SoundtrackPackages {
+        /// The .nsrmusic built by pack-from-street1.
+        #[arg(long)]
+        pack: PathBuf,
+        /// A pack of the retail NFL Street 2 songs (pack-from-image on a retail
+        /// disc), for the original package. Without it that package is not
+        /// written: the Reborn disc does not carry the 2004 songs.
+        #[arg(long)]
+        original: Option<PathBuf>,
+        #[arg(long)]
+        out_dir: PathBuf,
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+    },
+    /// Write the staged slots into a dev root tree (pathfind.dat, template.dat)
+    /// and stop, so tools/build_iso_fields.py stays the disc builder there.
+    WriteTree {
+        #[arg(long)]
+        tree: PathBuf,
+        #[arg(long)]
+        data_root: Option<PathBuf>,
+    },
+}
+
+fn music_root(platform: &Platform, data_root: Option<&Path>) -> reborn_core::Result<PathBuf> {
+    match data_root {
+        Some(p) => Ok(p.to_path_buf()),
+        None => platform.paths.data_root(),
+    }
+}
+
+fn music_http() -> reborn_core::net::UreqHttp {
+    reborn_core::net::UreqHttp::new(concat!("NFL Street Reborn Launcher/", env!("CARGO_PKG_VERSION")))
+}
+
+fn music_slot(n: u8) -> reborn_core::Result<reborn_core::soundtrack::Slot> {
+    reborn_core::soundtrack::Slot::new(n).map_err(Into::into)
+}
+
+fn music_progress(p: reborn_core::soundtrack::apply::Progress) {
+    use reborn_core::soundtrack::apply::Progress;
+    match p {
+        Progress::Reading => println!("Reading the disc"),
+        Progress::Splicing { slot } => println!("Splicing slot {slot}"),
+        Progress::Building { done, total } => {
+            if done == total || done % (256 << 20) < (4 << 20) {
+                println!("Building the disc: {} of {} MB", done >> 20, total >> 20);
+            }
+        }
+        Progress::Hashing => println!("Reading the new disc back"),
+    }
+}
+
+/// The pristine image's pathfind.dat and template.dat, for exports.
+fn music_pristine_files(root: &Path) -> reborn_core::Result<(Vec<u8>, Vec<u8>)> {
+    use reborn_core::soundtrack::{apply, gcm};
+    let (pristine, _) = apply::images(root)?;
+    let disc = gcm::Disc::open(&pristine)?;
+    Ok((disc.read_file("pathfind.dat")?, disc.read_file("template.dat")?))
+}
+
+fn music_rebuild(platform: &Platform, root: &Path, builder: Option<&Path>) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::content::pipeline::{ImageHook, Updater};
+    let origin = reborn_core::origin::Origin::new(reborn_core::origin::DEFAULT_ORIGIN);
+    let verifier = reborn_core::signing::Ed25519Verifier::embedded();
+    let updater = Updater::new(platform, root, &origin, &verifier);
+    let hook = ImageHook {
+        builder: builder.map(Path::to_path_buf),
+        xdelta: None,
+        extra_dirs: tool_dirs(),
+        textures_root: None,
+    };
+    let outcome = reborn_core::soundtrack::apply::apply_or_revert(platform, root, &updater, &hook, None, &mut music_progress)?;
+    println!();
+    println!("{}", outcome.note());
+    Ok(match outcome {
+        reborn_core::soundtrack::apply::Outcome::Refused(_) => PROBLEM,
+        _ => std::process::ExitCode::SUCCESS,
+    })
+}
+
+fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::soundtrack::state::{Base, Effective, Origin as SlotOrigin, Soundtrack};
+    use reborn_core::soundtrack::{apply, Slot};
+
+    match what {
+        MusicCommand::Status { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let st = Soundtrack::load(&root)?;
+            let base_pack = st.base_pack(&root).ok().flatten();
+            println!("Record        {}", reborn_core::soundtrack::state::soundtrack_path(&root).display());
+            println!("Switch        {}", if st.enabled { "on" } else { "off" });
+            match &st.base {
+                Base::Stock => println!("Base          the disc's own soundtrack"),
+                Base::Package { id, version, .. } => println!("Base          {id} {version}"),
+            }
+            println!(
+                "Rebuilt image {}",
+                st.rebuilt_sha256.as_deref().unwrap_or("not built yet (the disc plays its own songs)")
+            );
+            println!();
+            let applied = st.effective(&root, base_pack.as_ref(), false);
+            for slot in Slot::all() {
+                let line = match &applied[&slot] {
+                    Effective::Stock { text: None } => "original song".to_string(),
+                    Effective::Stock { text: Some(t) } => format!("original song, shown as {} , {}", t.title, t.artist),
+                    Effective::Blob { title, artist, origin, .. } => format!(
+                        "{title} , {artist}  [{}]",
+                        match origin {
+                            SlotOrigin::UserFile => "your file",
+                            SlotOrigin::Pack => "pack",
+                            SlotOrigin::BasePackage => "soundtrack mod",
+                            SlotOrigin::Original => "original song, moved",
+                        }
+                    ),
+                };
+                let pending = st.pending.get(&slot.get()).map(|e| match &e.source {
+                    reborn_core::soundtrack::state::Source::Stock if e.title.is_empty() => "staged: original song".to_string(),
+                    reborn_core::soundtrack::state::Source::StockFrom { slot: s } => format!("staged: the original song from slot {s} ({} , {})", e.title, e.artist),
+                    _ => format!("staged: {} , {}", e.title, e.artist),
+                });
+                match pending {
+                    Some(p) => println!("  slot {:>2}  {line}  ({p})", slot.get()),
+                    None => println!("  slot {:>2}  {line}", slot.get()),
+                }
+            }
+            if st.has_pending() {
+                println!();
+                println!("{} change(s) staged. Run: rebornctl music apply", st.pending.len());
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Import { pack, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let slots = apply::stage_pack(&root, &pack)?;
+            println!("Staged {} song(s) into slot(s) {:?}. Run: rebornctl music apply", slots.len(), slots);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Reset { slot, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::stage_stock(&root, music_slot(slot)?)?;
+            println!("Slot {slot} staged back to the disc's own song. Run: rebornctl music apply");
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Details { slot, title, artist, album, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::stage_details(&root, music_slot(slot)?, title.as_deref(), artist.as_deref(), album.as_deref())?;
+            println!("Slot {slot} details staged. Run: rebornctl music apply");
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Unstage { slot, all, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            if all {
+                let n = apply::unstage_all(&root)?;
+                println!("Dropped {n} staged change(s).");
+            } else if let Some(n) = slot {
+                let was = apply::unstage(&root, music_slot(n)?)?;
+                println!("{}", if was { format!("Slot {n} is no longer staged.") } else { format!("Slot {n} had nothing staged.") });
+            } else {
+                println!("Give a slot, or --all.");
+                return Ok(PROBLEM);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Export { out, slots, name, author, description, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            if slots.is_empty() {
+                println!("Give --slots, for example --slots 3,7,21.");
+                return Ok(PROBLEM);
+            }
+            let slots: Vec<Slot> = slots.into_iter().map(music_slot).collect::<reborn_core::Result<_>>()?;
+            let (pf, tpl) = music_pristine_files(&root)?;
+            let man = apply::export(&apply::ExportRequest {
+                data_root: &root,
+                pristine_pathfind: &pf,
+                pristine_template: &tpl,
+                slots: &slots,
+                out: &out,
+                name: &name,
+                author: &author,
+                description: &description,
+            })?;
+            println!("Wrote {} ({} song(s), {} bytes)", out.display(), man.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            for (slot, song) in &man.songs {
+                println!("  slot {slot:>2}: {} , {}", song.title, song.artist);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Enable { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::set_enabled(&root, true)?;
+            music_rebuild(platform, &root, None)
+        }
+        MusicCommand::Disable { data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            apply::set_enabled(&root, false)?;
+            music_rebuild(platform, &root, None)
+        }
+        MusicCommand::Apply { data_root, builder } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            music_rebuild(platform, &root, builder.as_deref())
+        }
+        MusicCommand::Inspect { file, offline } => {
+            let http = music_http();
+            let i = apply::inspect(if offline { None } else { Some(&http) }, &file)?;
+            println!("File      {}", file.display());
+            println!("Length    {}:{:02}{}", i.duration_ms / 60_000, (i.duration_ms / 1000) % 60, if i.too_long { "  (too long for a slot)" } else { "" });
+            println!("Tags      title {:?}, artist {:?}, album {:?}", i.tags.title, i.tags.artist, i.tags.album);
+            println!("Query     {}", i.query);
+            println!("Details   from {}", i.details_from);
+            let (t, a, l) = i.suggested();
+            println!("Suggested {t} , {a} , {l}");
+            for (k, c) in i.candidates.iter().enumerate() {
+                println!("  {:>2}. {} , {} , {}  [{}]", k + 1, c.title, c.artist, c.album, c.source);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Lookup { query } => {
+            let q = query.join(" ");
+            let http = music_http();
+            let found = apply::lookup_query(&http, &q, None);
+            if found.is_empty() {
+                println!("Nothing found for {q:?}.");
+            }
+            for (k, c) in found.iter().enumerate() {
+                println!("  {:>2}. {} , {} , {}  [{}]", k + 1, c.title, c.artist, c.album, c.source);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::Add { file, slot, title, artist, album, offline, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let slot = music_slot(slot)?;
+            let http = music_http();
+            let i = apply::inspect(if offline { None } else { Some(&http) }, &file)?;
+            if i.too_long {
+                println!("{}", reborn_core::soundtrack::Refusal::SongTooLong { seconds: i.duration_ms / 1000, limit_seconds: reborn_core::soundtrack::segments::slot_limit_hint() }.message());
+                return Ok(PROBLEM);
+            }
+            let (st, sa, sl) = i.suggested();
+            let stem = file.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            let title = title.unwrap_or(if st.is_empty() { stem.clone() } else { st });
+            let artist = artist.unwrap_or(sa);
+            let album = album.unwrap_or(sl);
+            println!("Details from {}: {title} , {artist} , {album}", i.details_from);
+            let (pf, _) = music_pristine_files(&root)?;
+            let entry = apply::stage_file(
+                &apply::FileRequest { data_root: &root, pristine_pathfind: &pf, path: &file, slot, title: &title, artist: &artist, album: &album },
+                &mut |k, n| {
+                    if k == 0 || k + 1 == n || k % 10 == 0 {
+                        println!("Encoding segment {} of {n}", k + 1);
+                    }
+                },
+            )?;
+            println!("Staged into slot {slot}: {} , {} ({}). Run: rebornctl music apply", entry.title, entry.artist, entry.duration_ms.map(|d| format!("{}:{:02}", d / 60_000, (d / 1000) % 60)).unwrap_or_default());
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::PackFromStreet1 { disc_files, pristine_iso, out } => {
+            use reborn_core::soundtrack::{gcm, street1};
+            let disc = gcm::Disc::open(&pristine_iso)?;
+            let pf = disc.read_file("pathfind.dat")?;
+            let report = street1::build_pack(&disc_files, &pf, &out, &mut |k, n| println!("Encoding song {} of {n}", k + 1))?;
+            println!();
+            for (slot, title, artist, ms) in &report.songs {
+                println!("  slot {slot:>2}: {title} , {artist}  {}:{:02}", ms / 60_000, (ms / 1000) % 60);
+            }
+            for (slot, title, why) in &report.skipped {
+                println!("  slot {slot:>2}: {title} SKIPPED: {why}");
+            }
+            println!("Wrote {} ({} songs, {} bytes)", out.display(), report.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            Ok(if report.songs.is_empty() { PROBLEM } else { std::process::ExitCode::SUCCESS })
+        }
+        MusicCommand::PackFromImage { from, out, name, author, description } => {
+            use reborn_core::soundtrack::{apply, gcm, Slot};
+            let (pf, tpl) = if from.is_dir() {
+                (std::fs::read(from.join("pathfind.dat"))?, std::fs::read(from.join("template.dat"))?)
+            } else {
+                let disc = gcm::Disc::open(&from)?;
+                (disc.read_file("pathfind.dat")?, disc.read_file("template.dat")?)
+            };
+            let all: Vec<Slot> = Slot::all().collect();
+            let man = apply::export_from_files(&pf, &tpl, &all, &out, &name, &author, &description)?;
+            println!("Wrote {} ({} songs, {} bytes)", out.display(), man.songs.len(), std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            for (slot, song) in &man.songs {
+                println!("  slot {slot:>2}: {} , {}", song.title, song.artist);
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::SoundtrackPackages { pack, original, out_dir, version } => {
+            use reborn_core::soundtrack::street1::{ORIGINAL_ID, REBORN_ID, STREET1_ID};
+            reborn_core::soundtrack::street1::write_packages(&pack, original.as_deref(), &out_dir, &version)?;
+            for id in [REBORN_ID, ORIGINAL_ID, STREET1_ID] {
+                let dir = out_dir.join(id).join(&version);
+                let state = if dir.join("package.json").is_file() {
+                    "written"
+                } else if id == ORIGINAL_ID {
+                    "not written (no --original pack)"
+                } else {
+                    "MISSING"
+                };
+                println!("{id}: {state}");
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        MusicCommand::WriteTree { tree, data_root } => {
+            let root = music_root(platform, data_root.as_deref())?;
+            let pf_path = tree.join("pathfind.dat");
+            let tpl_path = tree.join("template.dat");
+            let pf = std::fs::read(&pf_path)?;
+            let tpl = std::fs::read(&tpl_path)?;
+            let st = Soundtrack::load(&root)?;
+            let base_pack = st.base_pack(&root)?;
+            let effective = st.effective(&root, base_pack.as_ref(), true);
+            let built = apply::build_files(&pf, &tpl, &tpl, &effective, &mut music_progress)?;
+            let stamp = {
+                let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                format!("{}", secs)
+            };
+            for (path, bytes) in [(&pf_path, &built.pathfind), (&tpl_path, &built.template)] {
+                let bak = path.with_extension(format!("dat.bak_pre_music_{stamp}"));
+                if !bak.exists() {
+                    std::fs::copy(path, &bak)?;
+                    println!("backup -> {}", bak.display());
+                }
+                std::fs::write(path, bytes)?;
+                println!("wrote {} ({} bytes)", path.display(), bytes.len());
+            }
+            println!("Changed slot(s): {:?}. Now run: py -3 tools/build_iso_fields.py", built.changed);
+            for (slot, why) in &built.skipped {
+                println!("  slot {slot} left as the disc's own song: {why}");
+            }
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// netplay-image
+// ---------------------------------------------------------------------------
+
+fn netplay_image(
+    platform: &Platform,
+    data_root: Option<&Path>,
+    build: bool,
+    builder: Option<&Path>,
+) -> reborn_core::Result<std::process::ExitCode> {
+    use reborn_core::online_image::{ensure, freshness, online_path, wanted, Freshness, Outcome};
+    let root = match data_root {
+        Some(p) => p.to_path_buf(),
+        None => platform.paths.data_root()?,
+    };
+    println!("Image         {}", online_path(&root).display());
+    match wanted(&root)? {
+        None => println!("Built from    nothing yet: no imported game"),
+        Some(w) => {
+            println!("Built from    pristine {}", &w.pristine_sha256[..16.min(w.pristine_sha256.len())]);
+            println!(
+                "              roster   {}",
+                w.roster_sha256.as_ref().map(|r| r[..16.min(r.len())].to_string()).unwrap_or_else(|| "none installed".to_string())
+            );
+        }
+    }
+    match freshness(&root)? {
+        Freshness::Current => println!("State         up to date"),
+        Freshness::Missing => println!("State         not built yet"),
+        Freshness::Stale { have, .. } => println!(
+            "State         out of date (built from pristine {})",
+            &have.pristine_sha256[..16.min(have.pristine_sha256.len())]
+        ),
+    }
+    if !build {
+        println!();
+        println!("Nothing was written. Pass --build to build or refresh it.");
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    let dirs = reborn_core::roster::builder_dirs(platform, &tool_dirs());
+    let outcome = ensure(platform, &root, builder, &dirs)?;
+    println!();
+    println!("{}", outcome.note());
+    if let Some(path) = outcome.path() {
+        println!("{} ({} bytes)", path.display(), std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+    }
+    Ok(match outcome {
+        Outcome::Refused(_) => PROBLEM,
+        _ => std::process::ExitCode::SUCCESS,
+    })
 }

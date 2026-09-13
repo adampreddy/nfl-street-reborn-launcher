@@ -136,6 +136,7 @@ fn an_xbox_pad_still_gets_exactly_what_it_had() {
         "Button A", "Button B", "Button X", "Button Y", "Shoulder L", "Shoulder R", "Trigger L",
         "Trigger R", "Start", "Back", "Thumb L", "Thumb R", "Pad N", "Pad S", "Pad W", "Pad E",
         "Left X-", "Left X+", "Left Y-", "Left Y+", "Right X-", "Right X+", "Right Y-", "Right Y+",
+        "Motor",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -288,7 +289,7 @@ fn the_recorded_layout_is_exactly_what_the_hardware_reported() {
     let recorded = known_inputs("WGInput/0/PS5 Controller").expect("the PS5 pad is recorded");
     assert_eq!(
         recorded,
-        ps5().names(),
+        ps5().all_names(),
         "the recorded layout must match the measured capture exactly; \
          if the hardware report changed, recapture it, do not edit the table"
     );
@@ -305,4 +306,238 @@ fn the_recorded_layout_is_exactly_what_the_hardware_reported() {
     assert!(known_inputs("XInput/0/Gamepad").is_none());
     assert!(known_inputs("WGInput/0/Xbox One Game Controller").is_none());
     assert!(known_inputs("DInput/0/DualSense Wireless Controller").is_none());
+}
+
+
+#[test]
+fn the_exact_string_the_shipped_runtime_prints_is_recognised_end_to_end() {
+    use reborn_core::controller::DeviceFamily;
+    use reborn_core::devices::{known_inputs, Backend, Enumeration};
+
+    // Verbatim output of `--list-input-devices` from the runtime players
+    // already have, captured on Adam's PC with a DualSense over USB. This is
+    // the exact path a player is on today, so every link is checked against
+    // the real strings rather than against something plausible.
+    let shipped = "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller";
+    let scan: Enumeration = reborn_core::devices::parse_device_list(shipped);
+
+    let pads = scan.playable_pads();
+    assert_eq!(pads.len(), 1, "exactly one pad is offered, got {pads:?}");
+    let pad = pads[0];
+    assert_eq!(pad.device_string(), "WGInput/0/PS5 Controller");
+    assert_eq!(pad.backend, Backend::Other("WGInput".into()));
+    assert_eq!(
+        pad.family,
+        DeviceFamily::PlayStation,
+        "so the game shows PlayStation button art"
+    );
+
+    // The recorded layout is found for that exact string, and mapping it
+    // leaves nothing dead.
+    let available = known_inputs(&pad.device_string()).expect("recognised");
+    let (mapping, unmatched) = Mapping::auto_from(&available);
+    assert!(unmatched.is_empty());
+    assert!(mapping.unresolvable(&available).is_empty());
+    assert!(mapping.unbound().is_empty());
+}
+
+
+/// The literal file. Not the logic that builds it: the bytes that land on disk.
+#[test]
+fn the_generated_gcpad_file_is_live_on_a_ps5_pad() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::{known_inputs, parse_device_list};
+    use reborn_core::session::build_gcpad_for_slots;
+
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+    );
+    let pad = scan.playable_pads()[0].clone();
+    let available = known_inputs(&pad.device_string()).unwrap();
+    let profile = ControllerProfile::from_device(pad.identity(), 1, &available);
+
+    let (ini, assignment) = build_gcpad_for_slots(&scan, &[profile], None, None)
+        .expect("a pad is connected, so a file is produced");
+
+    eprintln!("---- GCPadNew.ini as written ----
+{ini}
+---- end ----");
+    assert_eq!(assignment.len(), 1);
+    assert_eq!(assignment[0], (1, "WGInput/0/PS5 Controller".to_string()));
+
+    // The device line, and every control, naming something this pad HAS.
+    for expected in [
+        "Device = WGInput/0/PS5 Controller",
+        "Buttons/A = `Cross`",
+        "Buttons/B = `Circle`",
+        "Buttons/X = `Square`",
+        "Buttons/Y = `Triangle`",
+        "Buttons/Z = `Bumper R`",
+        "Buttons/Start = `Menu`",
+        "D-Pad/Up = `Switch 0 N`",
+        "Triggers/L = `Trigger L`",
+        "Main Stick/Up = `Left Y+`",
+        // The three that are NOT GcInputs, and were hardcoded XInput names
+        // until the generated file itself was read. All three were dead.
+        "Triggers/L-Analog = `Bumper L`",
+        "Triggers/R-Analog = `Bumper R`",
+        "Rumble/Motor = `Motor L`",
+    ] {
+        assert!(ini.contains(expected), "the written file contains: {expected}
+{ini}");
+    }
+
+    // And none of the dead XInput names survive anywhere in it.
+    for dead in [
+        "`Button A`",
+        "`Shoulder R`",
+        "`Shoulder L`",
+        "`Pad N`",
+        "Rumble/Motor = `Motor` ",
+    ] {
+        assert!(!ini.contains(dead), "the written file must not contain {dead}
+{ini}");
+    }
+}
+
+/// The case the first fix got wrong, and that players actually hit.
+///
+/// A launcher can only learn a pad's control names from a runtime carrying
+/// --dump-device-inputs, and players keep the runtime they have until a content
+/// update reaches them. The first attempt covered that gap by matching the
+/// device NAME against a list, which failed the moment Windows called the pad
+/// something not on it: the pad was detected, offered, and completely dead.
+///
+/// The universal mapping needs no identification at all.
+#[test]
+fn an_unidentified_pad_still_works_because_the_binding_names_both_vocabularies() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::{Backend, DetectedDevice};
+    use reborn_core::controller::DeviceFamily;
+
+    let pad = ps5();
+    let available = pad.all_names();
+
+    // A pad the launcher knows NOTHING about: no dump, no recognised name.
+    let identity = DetectedDevice {
+        backend: Backend::Other("WGInput".into()),
+        id: 0,
+        // Deliberately a name no table would recognise. Sony's own HID product
+        // string is often exactly this.
+        name: "Wireless Controller".to_string(),
+        family: DeviceFamily::PlayStation,
+    }
+    .identity();
+    let profile = ControllerProfile::from_device(identity, 1, &[]);
+
+    // Every GameCube control resolves against the real pad, with no lookup.
+    for input in GcInput::ALL {
+        let binding = profile.mapping.get(*input).expect("bound");
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(
+            resolves,
+            "{input:?} is {binding}, and none of those exist on the pad"
+        );
+    }
+
+    // And the three that are not GcInputs.
+    for (label, binding) in [
+        ("analog L", profile.extras.analog_trigger_l.as_str()),
+        ("analog R", profile.extras.analog_trigger_r.as_str()),
+        ("rumble", profile.extras.rumble_motor.as_str()),
+    ] {
+        let resolves = binding
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{label} is {binding}, and none of those exist on the pad");
+    }
+
+    // The same binding is simultaneously correct for an Xbox pad, which is the
+    // whole point: `A|B` is max(A, B), and an unresolvable side is 0.
+    let xbox: Vec<String> = ["Button A", "Shoulder R", "Start", "Pad N", "Shoulder L", "Motor"]
+        .iter().map(|s| s.to_string()).collect();
+    for input in [GcInput::ButtonA, GcInput::ButtonZ, GcInput::Start, GcInput::DPadUp] {
+        let binding = profile.mapping.get(input).unwrap();
+        assert!(
+            binding.split('|').any(|p| xbox.iter().any(|x| x == Mapping::bare(p))),
+            "{input:?} is {binding}, which binds nothing on an Xbox pad"
+        );
+    }
+}
+
+/// The exact path a player is on today, proven without the hardware.
+///
+/// The pad this was captured from has gone back to its owner, so this cannot
+/// be re-run live. It does not need to be: the ONLY thing the old runtime can
+/// tell the launcher is the device list, and that string is recorded here
+/// verbatim. Everything after it is the real code. Each produced line is then
+/// checked against the captured hardware dump, which is what a pad plugged in
+/// would have reported.
+#[test]
+fn the_file_written_on_the_old_runtime_is_live_on_the_real_pad() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::parse_device_list;
+    use reborn_core::session::build_gcpad_for_slots;
+
+    // Verbatim --list-input-devices output, the whole of what a runtime without
+    // --dump-device-inputs can say.
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+    );
+    let pad = scan.playable_pads()[0].clone();
+
+    // No input list, because the old runtime cannot produce one.
+    let profile = ControllerProfile::from_device(pad.identity(), 1, &[]);
+    let (ini, _) = build_gcpad_for_slots(&scan, &[profile], None, None).expect("a file");
+    eprintln!("---- GCPadNew.ini on the OLD runtime ----
+{ini}---- end ----");
+
+    // What the pad really reports, captured while it was connected.
+    let available = ps5().all_names();
+
+    let mut checked = 0;
+    for line in ini.lines() {
+        let Some((key, value)) = line.split_once(" = ") else { continue };
+        // Only binding lines. The numeric settings are not expressions.
+        if !(key.starts_with("Buttons/")
+            || key.starts_with("Main Stick/")
+            || key.starts_with("C-Stick/")
+            || key.starts_with("D-Pad/")
+            || key.starts_with("Triggers/")
+            || key == "Rumble/Motor")
+            || key.contains("Calibration")
+            || key.contains("Dead Zone")
+            || key.contains("Threshold")
+            || key.contains("Range")
+        {
+            continue;
+        }
+
+        // A trailing token after the expression is a syntax error in Dolphin
+        // and silently discards the whole binding. Nothing may have one.
+        assert!(
+            !value.trim_end().ends_with(|c: char| c.is_ascii_digit()) || value.contains('`'),
+            "{key} = {value} has a bare trailing value"
+        );
+
+        let resolves = value
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{key} = {value}, and none of those exist on the real pad");
+        checked += 1;
+    }
+    assert!(checked >= 22, "expected every binding checked, saw {checked}");
+
+    // The strength is its own key now, never a number glued to the expression.
+    assert!(ini.contains("Rumble/Motor/Range = 100.00"), "{ini}");
+    assert!(!ini.contains("` 100.00"), "the old broken rumble form survives:
+{ini}");
 }

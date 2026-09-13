@@ -68,7 +68,7 @@ fn trust_role(public: &[u8; 32]) -> Option<&'static str> {
 
 /// Whether `publisher.key` and `rotation.key` exist, and whether the
 /// public key on disk matches one the shipped launcher trusts.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn keys_state() -> Result<Value, String> {
     let platform = Platform::detect();
     let settings_file = settings_path(&platform)?;
@@ -151,7 +151,7 @@ pub fn keys_state() -> Result<Value, String> {
 
 /// Generate `publisher.key` and `rotation.key` together, into `dir`.
 /// Refuses if either file already exists.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn keys_generate(dir: String) -> Result<Value, String> {
     let out_dir = PathBuf::from(dir.trim());
     if out_dir.as_os_str().is_empty() {
@@ -189,7 +189,7 @@ pub fn keys_generate(dir: String) -> Result<Value, String> {
 }
 
 /// The three vault fields: stored or missing, never the value.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn vault_state() -> Result<Value, String> {
     let platform = Platform::detect();
     let has_site = site_token(&platform).map_err(|e| e.to_string())?.is_some();
@@ -316,7 +316,7 @@ fn import_r2_from_rclone(platform: &Platform) -> Result<Value, String> {
 /// holding the secret to store, or `r2_import` (`value` ignored) to pull
 /// both R2 fields from `rclone.conf` in one step; see
 /// [`import_r2_from_rclone`].
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn vault_store(which: String, value: String) -> Result<Value, String> {
     let platform = Platform::detect();
 
@@ -344,7 +344,7 @@ pub fn vault_store(which: String, value: String) -> Result<Value, String> {
 }
 
 /// Forget one vault value.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn vault_forget(which: String) -> Result<Value, String> {
     let platform = Platform::detect();
     match which.as_str() {
@@ -362,7 +362,7 @@ pub fn vault_forget(which: String) -> Result<Value, String> {
 
 /// Open a file or folder picker for one settings field and save the chosen
 /// path into settings.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn settings_browse(which: String) -> Result<Value, String> {
     let dialog = rfd::FileDialog::new().set_title("Reborn Publisher");
     let picked: Option<PathBuf> = match which.as_str() {

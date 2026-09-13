@@ -1,7 +1,8 @@
 import {bridge,call,el,get,reason,markCurrent,wireCoreFold} from './shell.js';
+import {mountNotices} from './notices.js';
 let active=0,busy=false,workspace=null,state={pads:[],slots:[null,null,null,null]},problem='';
 const screen=document.getElementById('screen');
-document.body.dataset.controllerTesting='setup';
+delete document.body.dataset.controllerTesting;
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!workspace&&document.body.dataset.controllerTesting){event.preventDefault();event.stopImmediatePropagation();delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));}},true);
 const friendly=device=>{if(!device)return 'No controller';const parts=device.split('/');const name=parts.slice(2).join('/')||device;return `${name==='Gamepad'&&parts[0]==='XInput'?'Xbox controller':name} · ${Number(parts[1])+1||1}`;};
 const connected=device=>state.pads.some(p=>p.device_string===device);
@@ -20,17 +21,17 @@ async function refresh(){
  }catch(e){problem=reason(e);}finally{busy=false;draw();}
 }
 function draw(){
- workspace?.dispose?.();workspace=null;document.body.dataset.controllerTesting='setup';document.dispatchEvent(new Event('controller-test-state'));
+ workspace?.dispose?.();workspace=null;delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));
  const tabs=el('div',{class:'player-tabs',role:'tablist','aria-label':'Players'});
  for(let i=0;i<4;i++){
-  const device=state.slots[i];const tab=el('button',{type:'button',role:'tab',id:`player-tab-${i}`,'aria-selected':String(i===active),'aria-controls':'player-panel',tabindex:i===active?'0':'-1',onclick:()=>{if(busy)return;active=i;draw();document.getElementById(`player-tab-${i}`).focus({preventScroll:true});}},el('span',{text:`Player ${i+1}`}),el('small',{class:device?(connected(device)?'connected':'disconnected'):'',text:device?(connected(device)?friendly(device):'Disconnected'):'No controller'}));
+  const device=state.slots[i];const tab=el('button',{type:'button',role:'tab',id:`player-tab-${i}`,'aria-selected':String(i===active),'aria-controls':'player-panel',tabindex:'0',onclick:()=>{if(busy)return;active=i;draw();document.getElementById(`player-tab-${i}`).focus({preventScroll:true});}},el('span',{text:`Player ${i+1}`}),el('small',{class:device?(connected(device)?'connected':'disconnected'):'',text:device?(connected(device)?friendly(device):'Disconnected'):'No controller'}));
   tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||busy)return;event.preventDefault();active=event.key==='Home'?0:event.key==='End'?3:(i+(event.key==='ArrowRight'?1:3))%4;draw();document.getElementById(`player-tab-${active}`).focus({preventScroll:true});});tabs.append(tab);
  }
  const panel=el('section',{id:'player-panel',class:'player-panel',role:'tabpanel','aria-labelledby':`player-tab-${active}`});
  const select=el('select',{id:'player-device','aria-label':`Controller for Player ${active+1}`});select.append(el('option',{value:'',text:'No controller'}));
  for(const pad of state.pads){const other=state.slots.indexOf(pad.device_string);select.append(el('option',{value:pad.device_string,text:friendly(pad.device_string)+(other>=0&&other!==active?` (Player ${other+1})`: '')}));}
- const device=state.slots[active];if(device&&!connected(device))select.append(el('option',{value:device,text:friendly(device)+' — disconnected'}));select.value=device||'';
- const feedback=el('p',{class:'player-feedback',role:'status',text:problem||'Assignments and mappings are saved automatically. Changes apply when you next start the game.'});
+ const device=state.slots[active];if(device&&!connected(device))select.append(el('option',{value:device,text:friendly(device)+' (disconnected)'}));select.value=device||'';
+ const feedback=el('p',{class:'player-feedback',role:'status',text:problem||'Assignments and mappings save automatically, including during games and NetPlay.'});
  select.addEventListener('change',async()=>{if(busy)return;lock(true);try{const result=await call('controller_assign_player',{player:active+1,device:select.value||null,runtime:state.runtime});state.slots=result.slots;problem='';}catch(e){problem=reason(e);}finally{busy=false;draw();}});
  const scan=el('button',{type:'button',id:'scan-pads',text:'Scan again',onclick:refresh});
  panel.append(el('div',{class:'player-device'},el('label',{for:'player-device',text:'Input device'}),select,scan));
@@ -39,7 +40,9 @@ function draw(){
  const textures=el('select',{id:'player-textures','aria-label':'Button textures'});for(const option of state.options||[])textures.append(el('option',{value:option.slug,text:option.label}));textures.value=state.current?.profile||'gamecube';
  textures.addEventListener('change',async()=>{if(busy)return;lock(true);const previous=state.current?.profile;try{const result=await call('controls_set',{profile:textures.value,runtime:state.runtime});state.current={profile:textures.value};feedback.textContent=result.sync_note||'Button textures saved. They apply to all players.';}catch(e){textures.value=previous||'gamecube';feedback.textContent=reason(e);}finally{lock(false);}});
  panel.append(el('div',{class:'player-textures'},el('label',{for:'player-textures',text:'Button textures'}),textures,el('span',{text:'Shared by all four players.'})),feedback);
- screen.replaceChildren(tabs,panel);
+ const noticeHost=el('div',{class:'notices'},el('section',{class:'controller-mapping-note'},el('strong',{text:'B maps to B. X maps to X.'}),el('p',{text:'Older installs may have these reversed. Check the bindings below: B must use Button B, and X must use Button X. Only use the correction if they are reversed.'})));
+ screen.replaceChildren(noticeHost,tabs,panel);
+ if(bridge)mountNotices(noticeHost);
 }
 markCurrent();wireCoreFold();
 if(bridge)refresh();else{problem='Open Controllers from the launcher to connect your devices.';draw();}

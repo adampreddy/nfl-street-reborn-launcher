@@ -16,6 +16,10 @@ Object.assign(fixture, {
  session_active: false,
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
+ update_check: {state:'current',current:'3.0.0'},
+ update_activity: {downloading:false,ready:null},
+ content_status: {phase:'up_to_date',note:'Current'},
+ content_check: {phase:'up_to_date',note:'Current'},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
@@ -102,13 +106,15 @@ try {
   window.__pads=Array.from({length:4},(_,index)=>({id:'Xbox One (XInput STANDARD GAMEPAD)',index,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0}))}));
   Object.defineProperty(navigator,'getGamepads',{value:()=>window.__pads,configurable:true});
  });
+ assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),undefined,'Entering Controllers keeps navigation on');
+ await page.getByRole('button',{name:'Test controller',exact:true}).click();
  await page.getByRole('combobox',{name:'Controller to test'}).selectOption('2');
  assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
  await page.getByRole('button',{name:'Finish test',exact:true}).focus();
  const focusBefore=await page.evaluate(()=>document.activeElement.textContent);
  const scrollBefore=await page.evaluate(()=>document.getElementById('main').scrollTop);
  await page.waitForTimeout(100);
- await page.evaluate(()=>window.__pads.forEach(p=>{p.buttons.forEach(b=>{b.pressed=true;b.value=1;});p.axes=[1,1,1,1];}));
+ await page.evaluate(()=>window.__pads.forEach(p=>{p.buttons.forEach((b,i)=>{b.pressed=i!==8&&i!==9;b.value=b.pressed?1:0;});p.axes=[1,1,1,1];}));
  await page.waitForTimeout(300);
  assert.ok(page.url().endsWith('/controls.html'),'buttons and bumpers cannot navigate during testing');
  assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup','View + Menu cannot accidentally exit testing');
@@ -130,6 +136,8 @@ try {
  assert.equal(await page.evaluate(()=>window.__calls.find(c=>c.cmd==='setup_save_mapping').args.device),'XInput/2/Gamepad');
  await page.evaluate(()=>window.__pads.forEach(p=>p.buttons.forEach(b=>{b.pressed=false;b.value=0;})));
  await page.getByRole('button',{name:'Assign Left stick up',exact:true}).click();
+ // Typing a Dolphin input name is folded away behind one line; open it.
+ await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
  await page.getByRole('textbox',{name:'Left stick up binding'}).fill('`Left Y+`');
  await page.getByRole('button',{name:'Use binding',exact:true}).click();
  assert.match(await page.getByRole('button',{name:'Assign Left stick up',exact:true}).innerText(),/Left Y\+/);

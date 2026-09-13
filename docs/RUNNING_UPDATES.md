@@ -58,7 +58,8 @@ needs a server that runs code: the origin is a folder of static files.
 | **a brand new player's very first download** | not a component: `launcher/download.json` (Set page) points the site's download button at a zip of the spanned installer, the game-import bundle, the runtime and the texture pack. See 7d | the whole set, roughly 2 GB, once |
 | the launcher itself: a page, a button, a rule, this tool | a launcher release (Launcher page). The launcher checks `latest.json` on its own, downloads the installer, verifies its hash, runs it silently, exits so its files can be replaced, and the installer starts it again. The player does nothing. What YOU publish is the launcher-only installer (`build.ps1 -LauncherOnly`, one file) plus `latest.json`, both into the bucket's `launcher/` folder. See 7c | the installer, one file, about 37 MB |
 | which keys are trusted | a launcher release (Launcher page), as above | same |
-| memory cards, saves, a player's own soundtrack | never touched, by design | none |
+| **memory card gear** (a new person in a slot, a site gear change) | not a component: after every roster apply, before every game and after a content update that changed the image, each launcher runs the Reborn Builder's `card-sync` over the cards in its Dolphin user folder, in-game edits kept, a recovery copy under `recovery/cards` first; `rebornctl cards sync` by hand. Needs a roster whose export carries `history.json` | a few seconds, only when the card or the roster changed |
+| saves themselves, a player's own soundtrack | never touched, by design | none |
 | the Xbox copy | no update path, by decision; the wizard is a file mover | not applicable |
 
 The launcher path needs an installer that comes out as ONE file, because
@@ -495,6 +496,43 @@ as it was".
 `reborn-builder-cli.exe` has to ship beside Dolphin; today the launcher
 finds it in `<install>\tools`, beside the launcher, or in the 2.1 tools
 folder.
+
+### The memory cards
+
+The game keeps each player's gear in the profile save on the memory card,
+one row per player id, and overlays those rows on the disc's. So a roster
+that puts a new person in a slot leaves every member's card wearing the
+previous occupant's gear until the card itself is brought up to date.
+
+The launcher does that with the Builder's `card-sync` verb, over every
+`GC\MemoryCard*.raw` in the Dolphin user folder a launch uses:
+
+- after every `roster apply`, by the command line and by the window after
+  a content update that applied a roster or built a new image;
+- before every game, under the single-instance lock, so the cards the game
+  is about to open carry the installed roster (free when neither the card
+  nor the roster changed since the last run: both hashes are kept beside
+  the Builder's state under `library\roster\cards`);
+- after every game, harvest only: in-game gear edits are recorded and no
+  card byte is written;
+- at the end of "I already have Reborn", on the copied cards.
+
+A card the game holds open is refused, never written. Before the first
+write of a run the card is copied to `recovery\cards\<name>.<seconds>.bak`,
+newest three kept. Every outcome is a sentence on the Play page or in the
+update notice, never a popup. The Builder needs the roster update to carry
+`history.json` (the 2.1 floor and every gear change since); with an older
+export every profile the launcher never wrote is left as it was, and the
+sentence says so.
+
+By hand, or to look without writing:
+
+```
+rebornctl cards sync --dry-run
+rebornctl cards sync
+```
+
+Proof on this machine: `py -3 Tools\e2e-cards.py <a roster with history.json>`.
 
 ## 7b. Game updates: a new Reborn build
 

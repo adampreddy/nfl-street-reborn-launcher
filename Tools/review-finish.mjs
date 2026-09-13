@@ -34,6 +34,11 @@ const url=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({channel:process.env.REBORN_TEST_BROWSER || 'msedge',headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:800}});
 await context.addInitScript(data=>{
+ // This review edits update preferences directly. Keep the shared automatic
+ // notice postponed; check-update-notice.mjs covers its countdown and focus.
+ for(const [kind,version] of [['launcher','3.0.1'],['content',data.content_status?.release]]) {
+  if(version)sessionStorage.setItem(`update-choice:${kind}:${version}`,JSON.stringify({until:Date.now()+15*60*1000}));
+ }
  window.__calls=[]; window.__fixture=data;window.__events={};
  const stage=new URL(location.href).searchParams.get('stage');
  if(stage) {
@@ -46,13 +51,16 @@ await context.addInitScript(data=>{
   window.__calls.push({cmd,args});
   if(window.__delayCommand===cmd) await new Promise(resolve=>{window.__releaseDelayed=resolve;});
   if(window.__reject===cmd) throw new Error(window.__rejectMessage||('Test failure: '+cmd));
-  if(cmd==='dolphin_preferences') return {editable:true,user_dir:'C:/Reborn/User',values:{audio_backend:'Cubeb',volume:'100',muted:'False',audio_stretch:'False',audio_latency:'20',fullscreen:'True',always_on_top:'False',vsync:'False',show_fps:'False',show_ping:'False',borderless:'False',confirm_stop:'True',pause_unfocused:'False',osd_messages:'True',slot_a:'8',slot_b:'255',card_a:'',card_b:'',gci_a:'',gci_b:'',...JSON.parse(localStorage.getItem('qa:dolphin')||'{}')}};
+  if(cmd==='dolphin_preferences') return {editable:!data.session_active,live_editable:data.session_active?['volume','muted']:[],user_dir:'C:/Reborn/User',values:{audio_backend:'Cubeb',volume:'100',muted:'False',audio_stretch:'False',audio_latency:'20',fullscreen:'True',always_on_top:'False',vsync:'False',show_fps:'False',show_ping:'False',borderless:'False',confirm_stop:'True',pause_unfocused:'False',osd_messages:'True',slot_a:'8',slot_b:'255',card_a:'',card_b:'',gci_a:'',gci_b:'',...JSON.parse(localStorage.getItem('qa:dolphin')||'{}')}};
   if(cmd==='dolphin_preference_set'){const current=JSON.parse(localStorage.getItem('qa:dolphin')||'{}');current[args.key]=args.value;localStorage.setItem('qa:dolphin',JSON.stringify(current));return;}
-  if(cmd==='open_runtime'||cmd==='dolphin_saves_folder')return {started:true};
+  if(cmd==='open_runtime'){data.session_active=true;return {started:true};}
+  if(cmd==='dolphin_saves_folder')return {started:true};
   if(cmd==='update_policy_set'){data.update_policy={automatic:args.automatic,source:'settings'};return data.update_policy;}
   if(cmd==='update_check')return {state:'available',latest:'3.0.1',note:'A new version is available.',notes:'Improved controller support.'};
   if(cmd==='update_download')return {path:'C:/Reborn/update.exe',bytes:38000000};
-  if(cmd==='netplay_open'){data.session_active=true;return {started:true,mode:args.mode,game:'NSR.iso'};}
+  if(cmd==='netplay_open'){data.session_active=true;data.netplay_status={phase:'lobby',active:true,host:args.mode==='host',connection:args.connection,port:args.port,code:args.connection==='traversal'?'ABC12345':'',can_start:args.mode==='host',players:[{id:1,name:'Player One',status:'OK',ping:'0 ms'}],ports:[1,0,0,0]};return {started:true};}
+  if(cmd==='netplay_status')return data.netplay_status||{phase:'idle',active:false};
+  if(cmd==='netplay_action'){if(args.action==='leave'){data.session_active=false;data.netplay_status={phase:'closed',active:false};}if(args.action==='start'){data.netplay_status.phase='running';data.netplay_status.can_start=false;}if(args.action==='ports')data.netplay_status.ports=args.ports;return;}
   if(cmd==='settings_paths') return JSON.parse(localStorage.getItem('qa:settings')||'null')||data.settings_paths;
   if(cmd==='settings_set_path') {
    const prefs=JSON.parse(localStorage.getItem('qa:settings')||'null')||{...data.settings_paths};
@@ -139,24 +147,23 @@ try{
  await page.getByRole('button',{name:'Check for updates',exact:true}).click();await page.getByRole('button',{name:'Download 3.0.1',exact:true}).click();await page.getByRole('button',{name:'Install and restart',exact:true}).waitFor();
  await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-settings-updates.png')});
  await page.evaluate(()=>window.__fixture.content_status={phase:'checking',note:'Checking for content updates…'});await page.getByRole('button',{name:'Refresh settings',exact:true}).click();await page.getByRole('progressbar',{name:'Checking for updates'}).waitFor();
- await page.locator('#update-policy').focus();await page.evaluate(()=>window.__fixture.content_status={phase:'up_to_date',note:'Your content is up to date.'});await page.getByText('Your content is up to date.',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Verify and repair'}).isEnabled(),true);assert.equal(await page.evaluate(()=>document.activeElement.id),'update-policy');
+ await page.locator('#update-policy').focus();await page.evaluate(()=>window.__fixture.content_status={phase:'up_to_date',note:'Your content is up to date.'});await page.getByText('Your content is up to date.',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Verify and repair'}).isEnabled(),true);assert.equal(await page.evaluate(()=>document.activeElement.id),'update-policy',JSON.stringify(await page.evaluate(()=>({active:document.activeElement.outerHTML,dialogs:[...document.querySelectorAll('dialog[open]')].map(n=>n.textContent)}))));
  await page.setViewportSize({width:800,height:600});
  for(const tab of ['Graphics','Updates']){await page.getByRole('button',{name:tab,exact:true}).click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-settings-'+tab.toLowerCase()+'-800.png')});}
  await page.setViewportSize({width:1280,height:800});await page.getByRole('button',{name:'Graphics',exact:true}).click();
  await page.getByRole('button',{name:'Open Dolphin',exact:true}).click();assert.ok(await page.evaluate(()=>window.__calls.some(c=>c.cmd==='open_runtime')));assert.equal(await page.locator('#graphics-preset').isDisabled(),true);
- await page.goto(url+'/online.html');await page.getByRole('textbox',{name:'Player name'}).fill('Player One');await page.getByRole('textbox',{name:'Host code',exact:true}).fill('ABC12345');await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();await page.getByText('Your connection details are filled in. Click Connect.',{exact:true}).waitFor();
+ // The Online page: join, the lobby, leave, host, and a refused open that
+ // keeps what was typed. The full flow lives in check-online-restored.mjs.
+ await page.goto(url+'/online.html');await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
+ await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
  let args=await page.evaluate(()=>window.__calls.find(c=>c.cmd==='netplay_open').args);assert.equal(args.mode,'join');assert.equal(args.connection,'traversal');assert.equal(args.address,'ABC12345');
- assert.equal(await page.getByRole('button',{name:'Dolphin is open',exact:true}).isDisabled(),true);
- assert.equal(await page.getByRole('button',{name:'Host a game',exact:true}).isDisabled(),true);
- await page.evaluate(()=>{window.__fixture.session_active=false;document.dispatchEvent(new CustomEvent('session-state',{detail:false}));});
- await page.getByText('Dolphin is closed. You can start another session.',{exact:true}).waitFor();
- await page.getByRole('button',{name:'Host a game',exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'Host code',exact:true}).isVisible(),false);await page.getByRole('combobox',{name:'Connection',exact:true}).selectOption('direct');await page.getByRole('spinbutton',{name:'Port'}).fill('2626');await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();await page.getByText('Choose the Host tab, select your Reborn game, then click Host.',{exact:true}).waitFor();
  await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-online.png')});
- await page.evaluate(()=>{window.__fixture.session_active=false;document.dispatchEvent(new CustomEvent('session-state',{detail:false}));window.__reject='netplay_open';});
- await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();
- await page.getByText('Test failure: netplay_open',{exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).isEnabled(),true);
- assert.equal(await page.getByRole('textbox',{name:'Player name'}).inputValue(),'Player One');
+ await page.getByRole('button',{name:'Leave room',exact:true}).click();await page.getByRole('button',{name:'Join game',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Host a game',exact:true}).click();await page.getByLabel('Connection',{exact:true}).selectOption('direct');await page.getByLabel('Port',{exact:true}).fill('2626');
+ await page.evaluate(()=>{window.__reject='netplay_open';});
+ await page.getByRole('button',{name:'Create room',exact:true}).click();await page.getByText('Test failure: netplay_open',{exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Create room',exact:true}).isEnabled(),true);
+ assert.equal(await page.getByRole('textbox',{name:'Player name'}).inputValue(),'Player One');await page.evaluate(()=>{window.__reject=null;});
  await page.goto(url+'/controls.html');await page.waitForFunction(()=>typeof window.createControllerPreview==='function');
  for(const name of ['Xbox One','DualShock 4','DualSense']){
   await page.evaluate(name=>{const art=window.createControllerPreview(name);document.getElementById('screen').replaceChildren(art);window.__art=art;},name);

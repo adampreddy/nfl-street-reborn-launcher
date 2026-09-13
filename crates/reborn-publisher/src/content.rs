@@ -126,7 +126,7 @@ const ONLINE_GAME_ID: &str = "FR4N31";
 /// Plan: hash `folder`, and show the file count and total size, the
 /// release sequence before and after, and what a player already on the
 /// previous version of this component would fetch. Writes nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_plan(
     component: String,
     folder: String,
@@ -311,7 +311,7 @@ pub fn content_plan(
 /// unless `dry_run`), re-sign the release carrying every other pin
 /// forward, and upload. `dry_run` skips the component write, the release
 /// write, and the upload; it never reaches the network.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_run(
     component: String,
     folder: String,
@@ -346,6 +346,7 @@ pub fn content_run(
         "component": id.as_str(),
         "version": version,
         "folder": root.display().to_string(),
+        "game_id": game_id,
         "dry_run": dry_run,
     });
 
@@ -435,7 +436,7 @@ pub fn content_run(
         };
 
         let transport = UreqTransport::new();
-        let plan = build_upload_plan(&origin, id, &version, &transport, bucket)?;
+        let plan = build_upload_plan(&origin, id, &version, &transport, bucket, &mut relay)?;
         let http = UreqHttp::new(concat!("reborn-publisher/", env!("CARGO_PKG_VERSION")));
         let upload_req = UploadRequest {
             bucket,
@@ -477,7 +478,7 @@ pub fn content_run(
 /// Verify: read the bucket back fresh over HTTPS, and confirm it pins the
 /// version this page's last real (non-dry-run) publish of `component`
 /// signed, at the sequence it signed, with a signature that verifies.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_verify(component: String) -> Result<Value, String> {
     let id = parse_content_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -557,7 +558,7 @@ pub fn content_verify(component: String) -> Result<Value, String> {
 /// offered. [`content_plan`] and [`content_run`] run the exact same check
 /// (through [`lint_gate`]) before writing anything; this command exists so
 /// the page does not have to run a whole Plan just to ask the question.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn content_lint_runtime(folder: String) -> Result<Value, String> {
     let dir = PathBuf::from(folder.trim());
     if dir.as_os_str().is_empty() {
@@ -786,6 +787,7 @@ fn build_upload_plan(
     version: &str,
     transport: &dyn upload::Transport,
     bucket: &Bucket,
+    sink: Sink<'_>,
 ) -> reborn_core::Result<UploadPlan> {
     let mut plan = UploadPlan::new();
 
@@ -794,14 +796,19 @@ fn build_upload_plan(
     let component = Component::parse(&manifest_bytes)
         .map_err(|e| plain_err(format!("{} does not parse as a component manifest: {e}", manifest_local.display())))?;
 
+    // One listing, not one HEAD per file: a texture set is eight thousand.
+    // Said out loud either way: a bucket that would not list falls back to
+    // one request per key, and that is slow enough to look hung.
+    let (already, how) = upload::already_on_bucket(transport, bucket)?;
+    sink(reborn_core::publish::Event::out(how));
     let manifest_key = manifest_url(id, version);
-    if head_len(transport, bucket, &manifest_key) != Some(manifest_bytes.len() as u64) {
+    if already(&manifest_key) != Some(manifest_bytes.len() as u64) {
         let sha = Sha256Hex::from_bytes(&manifest_bytes);
         plan.manifest(manifest_key, manifest_local, manifest_bytes.len() as u64, sha);
     }
     for file in &component.files {
         let key = blob_path(&file.sha256);
-        if head_len(transport, bucket, &key) != Some(file.bytes) {
+        if already(&key) != Some(file.bytes) {
             let local = origin.join(&key);
             plan.blob(key, local, file.bytes, file.sha256.clone());
         }
@@ -818,19 +825,6 @@ fn build_upload_plan(
     Ok(plan)
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it (or answered anything other than 2xx). A signed HEAD, the
-/// same request shape `history.rs`'s own rollback upload uses.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), std::time::SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 fn plain_err(message: impl Into<String>) -> reborn_core::Error {
     reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, message.into()))
@@ -902,7 +896,7 @@ fn key_path(settings: &Settings) -> Result<PathBuf, String> {
 
 /// The R2 bucket this app uploads to, from settings plus the vault. See
 /// `history.rs`'s own copy of this helper for why credentials are read
-/// here rather than passed in as a command argument: a `#[tauri::command]`
+/// here rather than passed in as a command argument: a `#[tauri::command(rename_all = "snake_case")]`
 /// argument is exactly what a browser devtools console in front of this
 /// window could set to anything.
 fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {

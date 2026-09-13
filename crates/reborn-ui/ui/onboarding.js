@@ -2,10 +2,15 @@
 // Review can reopen reversible choices, then returns directly to the recap.
 
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
+// One size while first run is incomplete: every setup screen is laid out
+// for it, and a resized window put a scrollbar on the controller step.
+if (bridge) bridge.invoke("setup_window_lock", { locked: true }).catch(() => {});
 
 // A harness fakes document without querySelectorAll; the nav is not its concern.
 for (const a of typeof document.querySelectorAll === "function" ? document.querySelectorAll(".shell-nav a") : []) {
   if ((a.getAttribute("href") || "").toLowerCase() === "onboarding.html") a.classList.add("current");
+  // The keyboard reaches a link that pointer-events cannot stop.
+  if (a.classList.contains("setup-exit")) a.addEventListener("click", (e) => { if (moving) e.preventDefault(); });
 }
 
 function legacyRoot() {
@@ -102,7 +107,10 @@ async function prefetch(slug) {
   if(slug==='controls_profile'){let last;try{last=sessionStorage.getItem('setup:texture-controller');sessionStorage.setItem('setup:texture-controller',summary.controller||'');}catch(_){}if(last===(summary.controller||''))pending.profile ??= summary.controls_profile||undefined;}
   if(slug==='updates' && typeof summary.automatic_updates==='boolean') pending.automatic ??= summary.automatic_updates?'yes':'no';
   if (slug === "controller_setup" && !pending.pads) { await scanPads(); if(pending.pads?.list?.length===1) pending.port="0"; if(summary.controller){const i=pending.pads?.list?.findIndex(p=>p.device_string===summary.controller);if(i>=0)pending.port=String(i);}else if(summary.no_controller_because)pending.port="none"; }
-  if(slug==='game_verification'&&!pending.image)pending.image=installInfo?.mode==='fresh'?(/[\\/]library[\\/]imported[\\/]/.test(installation?.game||'')?installation.game:null):(installInfo?.games?.[0]||null);
+  // Migration boots the game the installer carries when there is one, never the old disc.
+  // A game already imported (the booted copy lives under library\offline, the
+  // pristine under library\imported) survives a restart of the wizard.
+  if(slug==='game_verification'&&!pending.image)pending.image=installInfo?.mode==='fresh'?(/[\\/]library[\\/](imported|offline)[\\/]/.test(installation?.game||'')?installation.game:null):(installInfo?.shipped_game||installInfo?.games?.[0]||null);
   if(slug==='game_verification')pending.installRoot ??= installInfo?.root;
   if (slug === "controls_profile" && !pending.controls) {
     try {
@@ -156,6 +164,34 @@ function fail(e) {
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
+
+// One-time notices the launcher owes a returning player, drawn on the
+// controller step. The backend decides what is pending and what it says
+// (notices_pending / notice_dismiss, the same two commands Controllers
+// uses); this only draws it and reports "Got it". `onShown` gets true when
+// a notice is on screen and false again once the last one is dismissed.
+async function mountSetupNotices(host, onShown) {
+  if (!bridge) return;
+  let list = [];
+  try { list = await bridge.invoke("notices_pending"); } catch (_) { return; }
+  if (!Array.isArray(list) || !list.length) return;
+  for (const notice of list) {
+    if (!notice || typeof notice.id !== "string") continue;
+    const box = el("section", "notice migration");
+    box.setAttribute("role", "status");
+    box.dataset.notice = notice.id;
+    const got = el("button", "notice-dismiss", "Got it");
+    got.type = "button";
+    got.onclick = async () => {
+      try { await bridge.invoke("notice_dismiss", { id: notice.id }); } catch (_) {}
+      box.remove();
+      if (!host.childElementCount && onShown) onShown(false);
+    };
+    box.append(el("strong", null, notice.title || ""), el("p", null, notice.text || ""), got);
+    host.append(box);
+  }
+  if (host.childElementCount && onShown) onShown(true);
+}
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -355,10 +391,39 @@ const SCREENS = {
     if (installInfo?.mode === "fresh") {
       const box=el('section','patch-card');
       const isPatched=()=>{try{return localStorage.getItem('setup:patched:'+pending.image)==='true';}catch(_){return false;}};
-      const status=el('p','import-status',pending.image?(isPatched()?'Game File Patched!':'Game File Imported!'):'Your original file stays untouched.');status.setAttribute('role','status');
-      const progress=el('progress','patch-progress');progress.max=100;progress.hidden=!pending.image;if(pending.image)progress.value=100;
-      const detail=el('p','note',pending.image?(isPatched()?'Patched and verified. Continue to your controller.':'Imported and ready. Continue to your controller.'):'ISO · RVZ · CISO · NKit ISO');
-      const browse=el('button',pending.image?'':'primary',pending.image?'Choose a different file':'Browse for NFL Street 2');
+      const isShipped=()=>{try{return localStorage.getItem('setup:shipped:'+pending.image)==='true';}catch(_){return false;}};
+      // What happened to the disc, in words. "Imported" alone read as "it is
+      // not patching at all" when the disc was simply already the newest build.
+      const outcomeWords=(outcome,label,note,patched)=>{
+        const build=label||'NSRV3';
+        switch(outcome){
+          case 'bundle':return ['Game File Patched!',`Your original NFL Street 2 disc was patched to ${build} and verified. Continue to your controller.`];
+          case 'patched':return ['Game File Patched!',`Your disc was updated to ${build} and verified. Continue to your controller.`];
+          case 'newest':return ['Game File Imported!',`This disc is already the newest Reborn build (${build}). Continue to your controller.`];
+          case 'unknown':return ['Game File Imported!',`This disc is not one Reborn recognizes, so it was kept exactly as it is.${note?' '+note:''} Continue to your controller.`];
+          default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
+        }
+      };
+      const storedWords=()=>{try{return outcomeWords(localStorage.getItem('setup:outcome:'+pending.image)||'',localStorage.getItem('setup:label:'+pending.image)||'',localStorage.getItem('setup:note:'+pending.image)||'',isPatched());}catch(_){return outcomeWords('', '', '', false);}};
+      const shipped=installInfo?.shipped_game||null;
+      const status=el('p','import-status',pending.image?(isShipped()?'NFL Street Reborn is ready':storedWords()[0]):shipped?'Preparing NFL Street Reborn…':'Your original file stays untouched.');status.setAttribute('role','status');
+      const progress=el('progress','patch-progress');progress.max=100;progress.hidden=!pending.image&&!shipped;if(pending.image)progress.value=100;
+      const detail=el('p','note',pending.image?(isShipped()?'Included with this install. Continue to your controller.':storedWords()[1]):shipped?'The game is included with this install. Keep the launcher open.':'ISO · RVZ · CISO · NKit ISO');
+      const browse=el('button',pending.image||shipped?'':'primary',pending.image||shipped?'Use a different game file':'Browse for NFL Street 2');
+      // The game the installer carries is imported by itself: no disc asked
+      // for. The button stays for a player who wants their own copy instead.
+      if(shipped&&!pending.image&&!pending.shippedStarted){
+        pending.shippedStarted=true;
+        setTimeout(async()=>{
+          if(moving)return;moving=true;browse.disabled=true;updateNav();progress.removeAttribute('value');
+          try{
+            const path=await call('setup_import_existing_game',{image:shipped});
+            pending.image=path;try{localStorage.setItem('setup:shipped:'+path,'true');localStorage.setItem('h:game',path);}catch(_){}
+            progress.value=100;box.classList.add('patch-complete');status.textContent='NFL Street Reborn is ready';detail.textContent='Included with this install. Continue to your controller.';
+          }catch(e){status.textContent='Your game could not be prepared';detail.textContent=String(e.message||e);progress.hidden=true;pending.shippedStarted=false;}
+          finally{moving=false;browse.disabled=false;updateNav();if(pending.image)document.getElementById('next').focus({preventScroll:true});}
+        },0);
+      }
       box.classList.toggle('patch-complete',!!pending.image);box.append(status,progress,detail,browse);
       browse.addEventListener('click',async()=>{
         if(moving)return;moving=true;browse.disabled=true;updateNav();let unlisten;
@@ -372,13 +437,14 @@ const SCREENS = {
           });
           const imported=await call('setup_import_game',{image});
           pending.image=typeof imported==='string'?imported:imported.path;
-          try{localStorage.setItem('setup:patched:'+pending.image,String(imported.patched===true));}catch(_){}
+          try{localStorage.setItem('setup:patched:'+pending.image,String(imported.patched===true));localStorage.setItem('setup:outcome:'+pending.image,String(imported.outcome||''));localStorage.setItem('setup:label:'+pending.image,String(imported.label||''));localStorage.setItem('setup:note:'+pending.image,String(imported.note||''));}catch(_){}
           try{localStorage.setItem('h:game',pending.image);}catch(_){}
-          progress.value=100;box.classList.add('patch-complete');status.textContent=isPatched()?'Game File Patched!':'Game File Imported!';detail.textContent=isPatched()?'Patched and verified. Continue to your controller.':'Imported and ready. Continue to your controller.';browse.textContent='Choose a different file';browse.className='';
+          const words=outcomeWords(imported.outcome||'',imported.label||'',imported.note||'',imported.patched===true);
+          progress.value=100;box.classList.add('patch-complete');status.textContent=words[0];detail.textContent=words[1];browse.textContent='Choose a different file';browse.className='';
         }catch(e){status.textContent='Your game could not be prepared';detail.textContent=String(e.message||e);progress.hidden=true;}
         finally{unlisten?.();moving=false;browse.disabled=false;updateNav();if(pending.image)document.getElementById('next').focus({preventScroll:true});}
       });
-      return {nodes:[el('p',null,'Choose your legally obtained copy of NFL Street 2 (USA) for GameCube.'),box],ready:()=>!!pending.image,nextLabel:pending.image?'Continue':'Continue',answer:()=>call('onboarding_confirm_game',{image:pending.image})};
+      return {nodes:[el('p',null,shipped?'NFL Street Reborn is included with this install.':'Choose your legally obtained copy of NFL Street 2 (USA) for GameCube.'),box],ready:()=>!!pending.image,nextLabel:pending.image?'Continue':'Continue',answer:()=>call('onboarding_confirm_game',{image:pending.image})};
     }
     const summary=el('section','detected-install');
     const header=el('div','detected-header');
@@ -388,7 +454,8 @@ const SCREENS = {
     const root=el('p','detected-path',pending.installRoot||'We couldn’t find an existing installation on this PC.');summary.append(root);
     const list=el('dl','detected-items');
     const row=(label,value,found)=>{const item=el('div','detected-item');item.append(el('dt',null,label));const detail=el('dd');const mark=el('span',found?'detected-check':'detected-missing',found?'✓':'—');mark.setAttribute('aria-hidden','true');detail.append(mark,el('span',null,value));item.append(detail);list.append(item);return detail.lastChild;};
-    const gameValue=row('Game file',pending.image?pending.image.split(/[\\/]/).pop():'No game found',!!pending.image);
+    const gameName=path=>path===installInfo?.shipped_game?'NFL Street Reborn (included)':path.split(/[\\/]/).pop();
+    const gameValue=row('Game file',pending.image?gameName(pending.image):'No game found',!!pending.image);
     const cards=installInfo?.memory_cards||[];
     row('Save data',cards.length?'Existing saves found':'No existing saves found',!!cards.length);
     row('Settings',installInfo?.settings_found?'Previous preferences found':'Use recommended defaults',!!installInfo?.settings_found);
@@ -402,10 +469,10 @@ const SCREENS = {
     const rescan=el('button',null,'Scan again');rescan.type='button';rescan.onclick=()=>runOverride(async()=>{pending={};await refresh('game_verification');});
     const locationActions=el('div','import-location-actions');locationActions.append(browse,rescan);fields.append(locationActions);
     const games=el('select');games.id='import-game';games.setAttribute('aria-label','Reborn game file');
-    for(const path of new Set([...(installInfo?.games||[]),...(pending.image?[pending.image]:[])])){const option=el('option',null,path.split(/[\\/]/).pop());option.value=path;games.append(option);}
+    for(const path of new Set([...(installInfo?.shipped_game?[installInfo.shipped_game]:[]),...(installInfo?.games||[]),...(pending.image?[pending.image]:[])])){const option=el('option',null,gameName(path));option.value=path;games.append(option);}
     if(!games.options.length){const option=el('option',null,'Choose a game file');option.value='';games.append(option);}
     if(pending.image)games.value=pending.image;
-    const updateGame=()=>{pending.image=games.value;gameValue.textContent=pending.image.split(/[\\/]/).pop()||'No game found';gameValue.previousSibling.className=pending.image?'detected-check':'detected-missing';gameValue.previousSibling.textContent=pending.image?'✓':'—';updateNav();};
+    const updateGame=()=>{pending.image=games.value;gameValue.textContent=pending.image?gameName(pending.image):'No game found';gameValue.previousSibling.className=pending.image?'detected-check':'detected-missing';gameValue.previousSibling.textContent=pending.image?'✓':'—';updateNav();};
     games.onchange=updateGame;
     const choose=el('button',null,'Browse for a game file');choose.type='button';choose.onclick=()=>runOverride(async()=>{const image=await call('pick_path',{kind:'game'});if(image){if(!Array.from(games.options).some(o=>o.value===image)){const option=el('option',null,image.split(/[\\/]/).pop());option.value=image;games.append(option);}games.value=image;updateGame();}});
     const gameLabel=el('label',null,'Game file');gameLabel.htmlFor=games.id;
@@ -443,7 +510,14 @@ const SCREENS = {
   },
 
   controller_setup: () => {
-    const nodes=[el('p',null,'Test your inputs. Your controller can navigate the entire launcher once paired.')];
+    // A returning player's notice (the 2.1 B/X swap the launcher removed
+    // from their mapping) takes the intro line's slot, so the step keeps its
+    // height and no scrollbar appears. Adam, 2026-09-11: on onboarding and
+    // Controllers only.
+    const notices=el('div','notices setup-notices');
+    const intro=el('p',null,'Test your inputs. Your controller can navigate the entire launcher once paired.');
+    const nodes=[notices,intro];
+    mountSetupNotices(notices,shown=>{intro.hidden=shown;});
     const toolbar=el('div','controller-picker');const select=el('select');select.setAttribute('aria-label','Your controller');
     const pads=pending.pads?.list||[];
     const placeholder=el('option',null,'Choose a controller');placeholder.value='';select.append(placeholder);
@@ -711,6 +785,12 @@ function updateNav() {
   next.disabled = moving || !current || !current.ready();
   next.textContent = moving ? "Please wait…" : reviewReturn ? "Save and return" : (current && current.nextLabel) || "Continue";
   hint.textContent = (current && current.hint) || "";
+
+  // Finish later waits too. Leaving mid-operation strands the work: the copy
+  // keeps running with no page listening, and the re-shown step is refused
+  // because a session is already active.
+  const exit = typeof document.querySelector === "function" ? document.querySelector(".setup-exit") : null;
+  if (exit) { exit.classList.toggle("disabled", moving); exit.setAttribute("aria-disabled", String(moving)); exit.tabIndex = moving ? -1 : 0; }
 
   // Back is asked, never assumed: the previous stage may be irreversible, in
   // which case there is no way back and the button should say so by being off.

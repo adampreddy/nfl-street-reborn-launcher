@@ -44,25 +44,44 @@ pub enum Channel {
     Err,
 }
 
+/// How far a long transfer has come, in bytes, so a window can draw a bar.
+/// Rides on an ordinary [`Event`] line (the line the CLI prints anyway), so
+/// a console sees exactly what it always saw and an app gets the numbers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    /// What is moving, in a few words: "Uploading", "Uploading part 3 of 9".
+    pub label: String,
+}
+
 /// One human line from a publishing operation, exactly as the CLI prints it.
 ///
 /// `#[non_exhaustive]`: nothing outside this module builds one with a struct
 /// literal (see [`Event::out`] and [`Event::err`]), and this makes that a
-/// compiler rule instead of a convention, so a progress field can be added
-/// later without a breaking change.
+/// compiler rule instead of a convention, which is what let `progress` be
+/// added without touching a single caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Event {
     pub channel: Channel,
     pub line: String,
+    /// Present on the lines that mark bytes moving; `None` on every other
+    /// line. A console ignores it; the Publisher window draws a bar from it.
+    pub progress: Option<Progress>,
 }
 
 impl Event {
     pub fn out(line: impl Into<String>) -> Self {
-        Self { channel: Channel::Out, line: line.into() }
+        Self { channel: Channel::Out, line: line.into(), progress: None }
     }
     pub fn err(line: impl Into<String>) -> Self {
-        Self { channel: Channel::Err, line: line.into() }
+        Self { channel: Channel::Err, line: line.into(), progress: None }
+    }
+    /// The same line, carrying how far a transfer has come.
+    pub fn with_progress(mut self, done: u64, total: u64, label: impl Into<String>) -> Self {
+        self.progress = Some(Progress { done, total, label: label.into() });
+        self
     }
 }
 

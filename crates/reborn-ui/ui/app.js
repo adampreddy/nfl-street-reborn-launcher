@@ -161,6 +161,7 @@ const FEATURES = [
           fullscreen: fullscreenValue,
           userDir: get("userDir"),
           modsDisabled: false,
+          leagueMatch: false,
         }),
       },
     ],
@@ -342,7 +343,7 @@ const FEATURES = [
       { cmd: "stats_queue", desc: "Captures waiting to be submitted" },
       {
         cmd: "stats_ingest",
-        desc: "Read LeagueGameStats into the queue",
+        desc: "Read every capture folder into the queue",
         write: true,
         confirm: true,
         inputs: [
@@ -360,30 +361,75 @@ const FEATURES = [
         ],
       },
       {
-        cmd: "stats_credential_set",
-        desc: "Store the league token in the OS credential store. Never shown again",
-        write: true,
-        inputs: [{ key: "token", placeholder: "bearer token" }],
-      },
-      { cmd: "stats_credential_forget", desc: "Remove the stored league token", write: true },
-      {
         cmd: "stats_submit",
-        desc: "Send the queue. Refuses unverified sides",
+        // No confirm box: the command takes no confirm, and sending is what
+        // the queue is for. The server answers a repeat as a duplicate, so a
+        // send that happens twice costs nothing.
+        desc: "Send everything queued. Results the server will not take are kept",
         write: true,
-        confirm: true,
       },
     ],
   },
   {
     group: "Music",
     items: [
-      { cmd: "music_sources", desc: "Imported tracks the launcher can see" },
+      { cmd: "music_status", desc: "The 21 slots, what is staged, the switch, and whether a rebuild is running" },
       {
-        cmd: "music_build_pack",
-        desc: "Build a pack. The binary table writer is a known gap",
-        write: true,
-        confirm: true,
+        cmd: "music_inspect",
+        desc: "A file's tags and length, with an online lookup when the tags are missing",
+        inputs: [{ key: "path", placeholder: "audio file path" }],
       },
+      {
+        cmd: "music_lookup",
+        desc: "Look a song up online by a typed query, ranked against a length when one is known",
+        inputs: [
+          { key: "query", placeholder: "artist and title" },
+          { key: "durationMs", placeholder: "length in ms, optional", number: true, optional: true },
+        ],
+      },
+      {
+        cmd: "music_stage_file",
+        desc: "Encode a file for a slot and stage it (runs in the background; poll music_status)",
+        write: true,
+        inputs: [
+          { key: "path", placeholder: "audio file path" },
+          { key: "slot", placeholder: "1-21", number: true },
+          { key: "title", placeholder: "title" },
+          { key: "artist", placeholder: "artist" },
+          { key: "album", placeholder: "album" },
+        ],
+      },
+      { cmd: "music_stage_stock", desc: "Stage a slot back to the original song", write: true, inputs: [{ key: "slot", placeholder: "1-21", number: true }] },
+      {
+        cmd: "music_stage_details",
+        desc: "Stage new banner text for a slot",
+        write: true,
+        inputs: [
+          { key: "slot", placeholder: "1-21", number: true },
+          { key: "title", placeholder: "title" },
+          { key: "artist", placeholder: "artist" },
+          { key: "album", placeholder: "album" },
+        ],
+      },
+      { cmd: "music_unstage", desc: "Drop a staged change (empty slot drops them all)", write: true, inputs: [{ key: "slot", placeholder: "1-21, or empty for all", number: true, optional: true }] },
+      { cmd: "music_pack_preview", desc: "What a pack would change, slot by slot", inputs: [{ key: "path", placeholder: ".nsrmusic or .nsmp path" }] },
+      { cmd: "music_stage_pack", desc: "Stage every song a pack carries", write: true, inputs: [{ key: "path", placeholder: ".nsrmusic or .nsmp path" }] },
+      {
+        cmd: "music_export",
+        desc: "Write a pack from slots as the disc has them",
+        write: true,
+        inputs: [
+          { key: "path", placeholder: "output .nsrmusic path" },
+          { key: "slots", placeholder: "3,7,21", list: true },
+          { key: "name", placeholder: "pack name" },
+          { key: "author", placeholder: "author" },
+          { key: "description", placeholder: "description" },
+        ],
+      },
+      { cmd: "music_set_enabled", desc: "Switch the custom soundtrack on or off and rebuild the disc", write: true, inputs: [{ key: "on", placeholder: "true|false", bool: true }] },
+      { cmd: "music_apply", desc: "Rebuild the disc from the staged slots. One rebuild", write: true, confirm: true },
+      { cmd: "music_reset_all", desc: "Forget every custom song and rebuild with the game's own soundtrack", write: true, confirm: true },
+      { cmd: "music_dismiss", desc: "Clear a finished or failed rebuild note" },
     ],
   },
   {

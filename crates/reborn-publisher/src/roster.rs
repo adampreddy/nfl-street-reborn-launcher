@@ -79,14 +79,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
 use reborn_core::content::pipeline::{CheckRequest, ComponentState, Depth, Updater, UPDATABLE};
 use reborn_core::content::{ContentService, InstalledVersion, Pointer, POINTER_SCHEMA};
 use reborn_core::inventory::{CancelSignal, ComponentId, ScanObserver};
-use reborn_core::manifest::{Component, Release, Sha256Hex};
+use reborn_core::manifest::{Component, Release};
 use reborn_core::net::{Http, UreqHttp};
 use reborn_core::origin::{Origin, RELEASE_FILE};
 use reborn_core::publish::roster::{publish_roster, read_counts, RosterRequest};
@@ -111,7 +110,7 @@ const SITE_EXPORT_URL: &str = "https://nflstreetreborn.com/rdatabase/api/downloa
 /// and after, and one sentence on what a player will see. Writes nothing;
 /// `resolve_source` may still fetch the site's export for real, since
 /// there is no way to know the counts without reading the bytes.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_plan(source: Value, version: String) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -220,7 +219,7 @@ pub fn roster_plan(source: Value, version: String) -> Result<Value, String> {
 /// pin forward, then upload through plan 2's whole-origin uploader.
 /// `dry_run` still fetches and checks (there is no way to publish a file
 /// that was never read), but writes nothing and sends nothing.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -297,7 +296,11 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
         };
 
         let transport = UreqTransport::new();
-        let plan = upload::plan_origin(&origin, &|key| head_len(&transport, bucket, key))?;
+        let (already, how) = upload::already_on_bucket(&transport, bucket)?;
+        // Said out loud: a bucket that would not list falls back to one
+        // request per key, and that is slow enough to look hung.
+        sink(Event::out(how));
+        let plan = upload::plan_origin(&origin, &*already)?;
         let http2 = UreqHttp::new(&user_agent());
         let upload_req = UploadRequest {
             bucket,
@@ -337,7 +340,7 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
 /// every other component at zero fetches. See this module's doc for how
 /// the seeding works. The scratch root lives under this machine's temp
 /// directory and is removed on every path out of this function.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn roster_verify() -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let public_base = settings.public_base.clone();
@@ -636,20 +639,6 @@ fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, Strin
     Ok(Bucket { endpoint, bucket: bucket_name, region: "auto".to_string(), access_key_id, secret_access_key })
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it. A signed HEAD, the same request shape `history.rs`'s own
-/// rollback upload and plan 2's `upload.rs` both use for the same
-/// `already` callback.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 fn plain_err(message: impl Into<String>) -> reborn_core::Error {
     reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, message.into()))

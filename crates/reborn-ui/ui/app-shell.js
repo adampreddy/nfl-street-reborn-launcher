@@ -6,7 +6,7 @@ const main = document.getElementById('main');
 const screen = document.getElementById('screen');
 const hints = document.getElementById('input-hints');
 let active = false, checking = false, lastFocus = null, contentFocus = null, selectEdit = null;
-let controllerMode = false, family = 'xbox', restorePending = false;
+let controllerMode = false, restorePending = false;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const scrollTargets = new Map();
 let scrollFrame = 0, scrollTime = 0;
@@ -14,12 +14,15 @@ function stopScrolling() {
   cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0; scrollTargets.clear();
 }
 function animateScroll(now) {
-  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
+  if (document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
   const dt = Math.min(40, now - (scrollTime || now - 16)); scrollTime = now;
   // One continuously retargeted curve, rather than restarting a browser smooth
   // scroll every time the D-pad repeats. Time-based damping works at any refresh rate.
   const blend = 1 - Math.exp(-dt / 65);
+  const modal = document.querySelector('dialog[open]');
   for (const [area, requested] of scrollTargets) {
+    // A modal owns scrolling while open; discard momentum on the page behind it.
+    if (!area.isConnected || area.matches('dialog:not([open])') || (modal && !modal.contains(area))) { scrollTargets.delete(area); continue; }
     const target = Math.max(0, Math.min(area.scrollHeight-area.clientHeight, requested));
     const distance = target-area.scrollTop;
     if (reducedMotion.matches || Math.abs(distance)<.7) { area.scrollTop=target; scrollTargets.delete(area); }
@@ -42,40 +45,51 @@ window.addEventListener('blur',stopScrolling);
 window.addEventListener('pagehide',stopScrolling);
 reducedMotion.addEventListener('change',stopScrolling);
 try { controllerMode = sessionStorage.getItem('reborn:input') === 'controller'; } catch (_) {}
-document.body.classList.toggle('gamepad-input', controllerMode);
+syncInputMode();
 
 function visible(n) {
   const modal=document.querySelector('dialog[open]');
-  return (!modal||modal.contains(n)) && n?.isConnected && !n.disabled && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
+  return (!modal||modal.contains(n)) && n?.isConnected && !n.disabled && n.getAttribute('aria-disabled') !== 'true' && n.tabIndex >= 0 && n.getClientRects().length > 0 &&
     !n.closest('[hidden],[inert]') && getComputedStyle(n).visibility !== 'hidden' &&
     !n.classList.contains('skip-link') && !n.closest('details.core:not([open])');
 }
 function reachable(root = document) { return [...root.querySelectorAll(selector)].filter(visible); }
 function identity(n) { return n.id ? `id:${n.id}` : [n.tagName,n.getAttribute('name'),n.value,n.getAttribute('href'),n.textContent?.trim()].join('|'); }
 function box(n) { return (n.closest('label.choice') || n).getBoundingClientRect(); }
-function renderHints() {
-  if (!hints) return;
-  if(document.body.classList.contains('page-setup')){
-    const pads=[...(navigator.getGamepads?.()||[])].filter(p=>p?.connected);
-    const pad=pads[0];if(!pad){hints.replaceChildren();delete hints.dataset.layout;return;}
-    const ps=/playstation|dualsense|dualshock|054c/i.test(pad.id);
-    const testing=!!document.body.dataset.controllerTesting;
-    const items=testing?[[ps?'▱':'▣',ps?'Share + Options':'View + Menu'],['↩','Finish test']]:[['✥','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back']];
-    const key=JSON.stringify(items);if(hints.dataset.layout===key)return;hints.dataset.layout=key;hints.replaceChildren(...items.map(([icon,label])=>{const row=document.createElement('span');row.className='hint-action';const glyph=document.createElement('span');glyph.className='hint-icon';glyph.textContent=icon;glyph.setAttribute('aria-hidden','true');row.append(glyph,document.createTextNode(" "+label));return row;}));return;
-  }
-  const ps = family === 'playstation';
-  const items = document.body.dataset.controllerTesting ? [[document.body.classList.contains('page-controls')?'Esc':ps?'Share + Options':'View + Menu','Finish test']] : controllerMode ? selectEdit
-    ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
-    : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']]
-    : [['Tab','Navigate'],['Enter','Select'],['Esc','Back']];
-  const key=JSON.stringify(items);if(hints.dataset.layout===key)return;hints.dataset.layout=key;
-  hints.replaceChildren(...items.map(([key,label])=>{const item=document.createElement('span');item.className='input-hint';const button=document.createElement('kbd');button.textContent=key;item.append(button,document.createTextNode(" "+label));return item;}));
-
+function syncInputMode() {
+  document.body.classList.toggle('gamepad-input', controllerMode);
+  // The skip link remains available to keyboard users, outside pad navigation.
+  document.querySelectorAll('.skip-link').forEach(n => { n.tabIndex = controllerMode ? -1 : 0; });
 }
+function connectedPads() {
+  try { return [...(navigator.getGamepads?.() || [])].filter(p => p?.connected); }
+  catch (_) { return []; }
+}
+function renderHints() {
+  const pad = connectedPads()[0];
+  document.body.classList.toggle('controller-connected', !!pad);
+  if (!hints) return;
+  if (!pad) { hints.replaceChildren(); delete hints.dataset.layout; return; }
+  const ps = /playstation|dualsense|dualshock|054c/i.test(pad.id);
+  const testing = !!document.body.dataset.controllerTesting;
+  const items = testing
+    ? [[document.body.classList.contains('page-controls') ? 'Esc' : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
+    : selectEdit ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
+    : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],...(document.body.classList.contains('page-setup') ? [] : [[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']])];
+  const key = JSON.stringify(items);
+  if (hints.dataset.layout === key) return;
+  hints.dataset.layout = key;
+  hints.replaceChildren(...items.map(([key,label]) => {
+    const item = document.createElement('span'); item.className = 'input-hint';
+    const button = document.createElement('kbd'); button.textContent = key;
+    item.append(button,document.createTextNode(' '+label)); return item;
+  }));
+}
+
 function mode(value) {
   if (controllerMode === value) { renderHints(); return; }
   controllerMode = value;
-  document.body.classList.toggle('gamepad-input',value);
+  syncInputMode();
   try { sessionStorage.setItem('reborn:input',value ? 'controller' : 'keyboard'); } catch (_) {}
   renderHints();
 }
@@ -86,7 +100,7 @@ function focus(n, reveal = true) {
   n.classList.add('pad-focus');
   if (reveal) {
     const target = n.closest('label.choice') || n;
-    const area = n.closest('.shell-nav') || main;
+    const area = n.closest('dialog[open]') || n.closest('.shell-nav') || main;
     const rect = target.getBoundingClientRect(), viewport = area.getBoundingClientRect();
     const top = viewport.top + 16, bottom = viewport.bottom - 16;
     const delta = rect.top < top ? rect.top-top : rect.bottom > bottom ? rect.bottom-bottom : 0;
@@ -99,6 +113,10 @@ function primary() {
 }
 document.addEventListener('focusin',e => {
   const n = e.target;
+  if (n.classList.contains('skip-link')) {
+    if (controllerMode) focus(primary(), false);
+    return;
+  }
   if (!n.matches(selector)) return;
   document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
   n.classList.add('pad-focus');
@@ -149,7 +167,7 @@ function move(direction) {
   // control should never steal focus from the next settings row.
   const items = reachable(inNav ? document.querySelector('.shell-nav') : main);
   const a = box(current), ax = a.x+a.width/2, ay = a.y+a.height/2;
-  const viewport = main.getBoundingClientRect();
+  const viewport = (current.closest('dialog[open]') || main).getBoundingClientRect();
   if (!inNav && (a.bottom < viewport.top || a.top > viewport.bottom)) {
     const onScreen = items.filter(n => { const b = box(n); return b.top >= viewport.top && b.bottom <= viewport.bottom; });
     if (onScreen.length) { focus(direction === 'up' ? onScreen.at(-1) : onScreen[0]); return; }
@@ -193,7 +211,7 @@ function activate() {
 }
 function back() {
   if (selectEdit) { endSelect(false); return; }
-  const modal=document.querySelector('dialog[open]');if(modal){modal.close();return;}
+  const modal=document.querySelector('dialog[open]');if(modal){if(modal.dispatchEvent(new Event('cancel',{cancelable:true})))modal.close();return;}
   const current = document.activeElement;
   const fold = current?.closest('details[open]') || document.querySelector('#game-options[open]');
   if (fold) {
@@ -227,18 +245,23 @@ async function sessionState() {
   checking = true;
   try {
     const next = await bridge.invoke('session_active');
-    if (next !== active) { active = next; document.dispatchEvent(new CustomEvent('session-state',{detail:active})); }
+    // Repeat authoritative snapshots so a page mounted after a transition,
+    // or a late initial read, cannot stay stuck on an old active value.
+    if (typeof next === 'boolean') {
+      active = next;
+      document.dispatchEvent(new CustomEvent('session-state',{detail:active}));
+    }
   } catch (_) {} finally { checking = false; }
 }
 if (bridge) { sessionState(); setInterval(sessionState,1500); }
 let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
 function poll(now) {
   requestAnimationFrame(poll);
-  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
+  if (document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
     previous = []; direction = null; lastFrame = 0; armed = false; return;
   }
-  let pads;
-  try { pads = [...(navigator.getGamepads?.() || [])]; } catch (_) { return; }
+  const pads = connectedPads();
+  if (document.body.classList.contains('controller-connected') !== !!pads.length) renderHints();
   const pad = pads.find(p => p?.connected && p.mapping === 'standard');
   if (!pad) { padId = null; previous = []; direction = null; lastFrame = 0; armed = false; return; }
   const id = `${pad.index}:${pad.id}`;
@@ -262,13 +285,15 @@ function poll(now) {
   const magnitude = Math.max(0,(Math.abs(rawScroll)-.22)/.78);
   const scroll = Math.sign(rawScroll)*magnitude*magnitude;
   if (d || scroll || buttons.some((_,i) => pressed(i))) {
-    family = /dualsense|dualshock|playstation|054c/i.test(pad.id) ? 'playstation' : 'xbox';
     mode(true);
     if (!visible(document.activeElement)) focus(primary());
   }
   if (d && (d !== direction || now >= nextRepeat)) { move(d); nextRepeat = now+(d !== direction ? 330 : 115); }
   direction = d;
-  if (scroll && !selectEdit) scrollToTarget(main,(scrollTargets.get(main) ?? main.scrollTop)+scroll*elapsed*1.35);
+  if (scroll && !selectEdit) {
+    const area = document.querySelector('dialog[open]') || main;
+    scrollToTarget(area,(scrollTargets.get(area) ?? area.scrollTop)+scroll*elapsed*1.35);
+  }
   if (pressed(4)) pageStep(-1);
   else if (pressed(5)) pageStep(1);
   else if (pressed(1)) back();
@@ -280,3 +305,4 @@ if (controllerMode) focus(primary());
 requestAnimationFrame(poll);
 window.addEventListener('gamepadconnected',() => {renderHints();document.dispatchEvent(new Event('refresh-devices'));});
 window.addEventListener('gamepaddisconnected',() => { armed = false; renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
+import './update-notice.js';

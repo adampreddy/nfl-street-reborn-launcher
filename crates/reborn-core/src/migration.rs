@@ -291,9 +291,18 @@ pub fn copy_tree_no_clobber(from: &Path, to: &Path) -> Result<u64> {
     copy_tree_with_progress(from,to,&mut |_|{})
 }
 pub fn copy_tree_with_progress(from:&Path,to:&Path,progress:&mut dyn FnMut(u64))->Result<u64>{
-    copy_tree_checked(from,to,&mut Vec::new(),progress)
+    copy_tree_excluding(from,to,&[],progress)
 }
-fn copy_tree_checked(from: &Path, to: &Path, ancestors: &mut Vec<PathBuf>, progress:&mut dyn FnMut(u64)) -> Result<u64> {
+/// As [`copy_tree_with_progress`], leaving out the subtrees named in
+/// `exclude` (paths relative to `from`, forward slashes, any case). Made for
+/// a 2.1 `User` folder: the 2 GB `Load/Textures` pack is not the player's
+/// progress, the installer ships the pack, and the composed folder is built
+/// from it.
+pub fn copy_tree_excluding(from:&Path,to:&Path,exclude:&[&str],progress:&mut dyn FnMut(u64))->Result<u64>{
+    let exclude:Vec<String>=exclude.iter().map(|e|e.trim_matches('/').to_lowercase()).collect();
+    copy_tree_checked(from,to,&mut Vec::new(),&exclude,"",progress)
+}
+fn copy_tree_checked(from: &Path, to: &Path, ancestors: &mut Vec<PathBuf>, exclude:&[String], relative:&str, progress:&mut dyn FnMut(u64)) -> Result<u64> {
     let mut copied = 0u64;
     if !from.is_dir() {
         return Ok(0);
@@ -321,9 +330,14 @@ fn copy_tree_checked(from: &Path, to: &Path, ancestors: &mut Vec<PathBuf>, progr
         })?;
         let src = entry.path();
         let dest = to.join(entry.file_name());
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if relative.is_empty() { name } else { format!("{relative}/{name}") };
+        if exclude.iter().any(|e| *e == rel.to_lowercase()) {
+            continue;
+        }
 
         if src.is_dir() {
-            copied += copy_tree_checked(&src, &dest, ancestors, progress)?;
+            copied += copy_tree_checked(&src, &dest, ancestors, exclude, &rel, progress)?;
         } else if dest.exists() {
             // Already there. Leave it alone and say nothing, because the
             // destination is authoritative once it exists.
@@ -490,6 +504,23 @@ mod tests {
             !plan.steps.iter().any(|s| s.what.contains("game image")),
             "1.5 GB the launcher already ships"
         );
+    }
+
+    #[test]
+    fn copying_can_leave_a_subtree_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("User");
+        for rel in ["GC/MemoryCardA.USA.raw", "Config/Dolphin.ini", "Load/Textures/GN7E69/a.dds", "Load/GraphicMods/x.txt"] {
+            let p = from.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"1").unwrap();
+        }
+        let to = dir.path().join("migrated");
+        let bytes = copy_tree_excluding(&from, &to, &["load/textures"], &mut |_| {}).unwrap();
+        assert_eq!(bytes, 3);
+        assert!(to.join("GC/MemoryCardA.USA.raw").is_file());
+        assert!(to.join("Load/GraphicMods/x.txt").is_file());
+        assert!(!to.join("Load/Textures").exists());
     }
 
     #[test]

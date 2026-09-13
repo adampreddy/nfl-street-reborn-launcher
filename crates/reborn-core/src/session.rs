@@ -33,11 +33,11 @@ use std::path::{Path, PathBuf};
 use crate::controller::{ControllerProfile, GcPadConfig};
 use crate::devices::{DeviceScanner, Enumeration};
 use crate::ini::IniDocument;
-use crate::platform::{DataDir, Error, Platform, Result};
+use crate::platform::{DataDir, Error, ExitKind, Platform, Result};
 use crate::runtime::{
     ConfigGenerator, GameBuild, GraphicsPreset, LaunchConfig, Launcher, SessionOutcome,
 };
-use crate::supervisor::{SessionEnd, Startup, Supervisor};
+use crate::supervisor::{SessionEnd, SessionRecord, Startup, Supervisor};
 
 /// What the caller asks for.
 #[derive(Debug, Clone)]
@@ -62,6 +62,9 @@ pub struct LaunchRequest {
     /// `GameSettings`, and none of the 27,025 files of their texture pack. The
     /// game booted to factory defaults with no save data visible.
     pub user_dir: Option<PathBuf>,
+    /// The player said this is a league match. Recorded in the session before Dolphin
+    /// starts; the backend forwards the game to the league site only when it is true.
+    pub league_match: bool,
 }
 
 /// Why a launch could not even be attempted.
@@ -98,7 +101,10 @@ impl Refusal {
 }
 
 /// What happened.
-#[derive(Debug, Clone)]
+// Not Clone: StatsAfterSession is not, and nothing in the workspace clones a
+// Launched value. A caller that needs to keep what happened should hold the
+// explained string, not the value itself.
+#[derive(Debug)]
 pub enum Launched {
     /// The game ran and stopped.
     Finished {
@@ -117,9 +123,31 @@ pub enum Launched {
         mods: ModsAtLaunch,
         /// The session record's id, which is what a capture is filed under.
         session_id: String,
-        /// What happened to the match results Dolphin wrote during the
-        /// session. Never fails a launch that already happened.
-        stats: StatsAfterSession,
+        /// The match results this session produced, already moved into the
+        /// queue and NOT yet sent.
+        ///
+        /// # Why the caller does the sending
+        ///
+        /// Collecting needs the single-instance lock; sending does not, and
+        /// sending is one request per queued game with the client's full
+        /// timeout each, so a backlog against a slow or unreachable backend is
+        /// minutes. `run` held the lock across both, and the caller holds a
+        /// launch guard across the whole of `run`, so for those minutes,
+        /// with the emulator already exited, pressing Play answered "A game
+        /// session is already active", the Online page said to close the
+        /// emulator first, opening the emulator from Settings was refused and
+        /// the command line retry was refused. All four were false.
+        ///
+        /// So `run` returns here with the lock given back, the caller gives
+        /// the guard back, and then calls [`SessionResults::send`].
+        ///
+        /// Nothing is at risk in between: the captures are already in the
+        /// queue on disk, and an unsent queue is picked up by the next send.
+        results: SessionResults,
+        /// What the memory cards said around the game: the full gear sync
+        /// before it opened them and the harvest of in-game edits after it
+        /// closed. Never a failed launch; see [`crate::cards::CardsAtSession`].
+        cards: crate::cards::CardsAtSession,
     },
     /// Nothing was started, and this is why.
     Refused(Refusal),
@@ -160,59 +188,108 @@ impl ModsAtLaunch {
 ///
 /// Its own type for the same reason as [`ModsAtLaunch`]: a failure here is
 /// reported, never turned into a failed launch of a game that already ran.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StatsAfterSession {
-    /// One entry per capture file found, including the ones refused.
-    Ingested(Vec<crate::stats::Enqueued>),
-    Failed(String),
+    /// One entry per capture file found, including the ones refused, and what sending did.
+    /// `sent` is None when nobody is signed in, so the entries wait.
+    Ingested {
+        enqueued: Vec<crate::stats::Enqueued>,
+        /// Set when collecting or sending hit a problem.
+        ///
+        /// Carried rather than returned, and never allowed to stop the other
+        /// half. Collection running before sending in one chain meant a single
+        /// undeletable file stopped everything being sent, on that session and
+        /// on every session after it, and the queue holds games from earlier
+        /// sessions that are still perfectly deliverable.
+        ///
+        /// A named failure and not a string: see [`StatsProblem`].
+        problem: Option<StatsProblem>,
+        sent: Option<crate::stats::SubmitReport>,
+    },
+    /// The queue itself could not be opened, so there was nowhere to collect
+    /// into and nothing to send from.
+    ///
+    /// It carries nothing. It used to carry `e.to_string()`, and
+    /// [`crate::Error::Io`] displays as `io error at {path}: {source}`, so a
+    /// full disk while writing the queue put a path out of the player's
+    /// roaming profile and `os error 112` into a value the window renders.
+    Failed,
 }
 
+/// Which half of the results step had a problem.
+///
+/// A named failure rather than a message, because the alternative was an
+/// `Option<String>` filled in with `e.to_string()` at the two places it is
+/// set. Every error type in this workspace formats itself for a developer --
+/// paths, error numbers, library wording -- and none of that may reach a
+/// player. Making the type unable to hold a string is a stronger guarantee
+/// than remembering not to put one in it, and the detail is not lost: it goes
+/// to `tracing::warn!` where the failure happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsProblem {
+    /// A capture folder could not be read, or a file could not be moved.
+    Collecting,
+    /// The results could not be sent this time.
+    Sending,
+}
+
+impl StatsProblem {
+    /// A sentence for a player.
+    pub fn message(self) -> &'static str {
+        match self {
+            StatsProblem::Collecting => {
+                "Some results could not be collected this time, so they are being kept where \
+                 they are. Nothing was lost, and the next game will pick them up."
+            }
+            StatsProblem::Sending => {
+                "Some results could not be sent this time, so they are being kept. Nothing was \
+                 lost, and they will be sent again."
+            }
+        }
+    }
+}
+
+/// Shown when the queue itself could not be opened: there was nowhere to
+/// collect into and nothing to send from. Nothing about the failure is in it,
+/// because nothing about the failure is a thing a player can act on.
+const RESULTS_NOT_COLLECTED: &str = "Match results could not be collected this time. Nothing was \
+     lost: they are still on disk and the next game will pick them up.";
+
 impl StatsAfterSession {
-    /// One line for a player. Silent when there was nothing to do, because
-    /// most sessions end without a finished match.
+    /// One line for a player. Silent when there was nothing to do.
     pub fn explain(&self) -> Option<String> {
         use crate::stats::Enqueued;
         match self {
-            StatsAfterSession::Failed(why) => {
-                Some(format!("Match results were not collected: {why}"))
-            }
-            StatsAfterSession::Ingested(results) if results.is_empty() => None,
-            StatsAfterSession::Ingested(results) => {
-                let queued = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Queued(_)))
-                    .count();
-                let held = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::Quarantined(_)))
-                    .count();
-                let known = results
-                    .iter()
-                    .filter(|r| {
-                        matches!(
-                            r,
-                            Enqueued::AlreadyQueued(_) | Enqueued::AlreadySubmitted { .. }
-                        )
-                    })
-                    .count();
-                let unread = results
-                    .iter()
-                    .filter(|r| matches!(r, Enqueued::CouldNotRead { .. }))
-                    .count();
-                let mut parts = Vec::new();
-                if queued > 0 {
-                    parts.push(format!("{queued} match result(s) queued for submission"));
+            StatsAfterSession::Failed => Some(RESULTS_NOT_COLLECTED.to_string()),
+            StatsAfterSession::Ingested { enqueued, problem, sent } => {
+                let found = enqueued.iter().filter(|e| matches!(e, Enqueued::Queued(_) | Enqueued::Quarantined(_))).count();
+                let mut parts: Vec<String> = Vec::new();
+                if found > 0 {
+                    parts.push(format!("{found} result{} recorded", if found == 1 { "" } else { "s" }));
                 }
-                if held > 0 {
-                    parts.push(format!("{held} held for review"));
+                match sent {
+                    // Only when there is nothing else to explain the silence.
+                    None if found > 0 && problem.is_none() => parts.push("waiting for sign-in".to_string()),
+                    None => {}
+                    Some(r) => {
+                        let n = r.accepted.len() + r.recorded.len();
+                        if n > 0 { parts.push(format!("{n} result{} sent", if n == 1 { "" } else { "s" })); }
+                        if !r.held.is_empty() { parts.push(format!("{} held for review", r.held.len())); }
+                        if !r.rejected.is_empty() { parts.push(format!("{} refused by the server", r.rejected.len())); }
+                        if !r.deferred.is_empty() || !r.stalled.is_empty() { parts.push(format!("{} could not be delivered yet", r.deferred.len() + r.stalled.len())); }
+                        if r.waiting_for_sign_in { parts.push("waiting for sign-in".to_string()); }
+                    }
                 }
-                if known > 0 {
-                    parts.push(format!("{known} already known"));
+                // Named, without any error text: the type cannot hold one.
+                match problem {
+                    Some(StatsProblem::Collecting) => parts.push("some could not be collected this time and are being kept".to_string()),
+                    Some(StatsProblem::Sending) => parts.push("some could not be sent this time and are being kept".to_string()),
+                    None => {}
                 }
-                if unread > 0 {
-                    parts.push(format!("{unread} could not be read and were left in place"));
-                }
-                Some(format!("{}.", parts.join(", ")))
+                // Labelled rather than bare. "1 result recorded, waiting for
+                // sign-in." starts with a numeral and reads as a fragment
+                // pasted onto the account card with no idea what it is about.
+                if parts.is_empty() { None } else { Some(format!("Match results: {}.", parts.join(", "))) }
             }
         }
     }
@@ -369,7 +446,12 @@ pub fn resolve_user_dir_for(
     if let Some(dir) = runtime_exe.and_then(Path::parent) {
         let beside = dir.join("User");
         let portable = dir.join("portable.txt").is_file();
-        if beside.is_dir() && (portable || user_dir_score(&beside) > 0) {
+        // The bundled runtime ships a `User` template (Config, GameSettings)
+        // for seeding new user folders; that must never count as the
+        // player's own folder, or a launch with no chosen folder would boot
+        // inside the runtime package. Only a memory card (score 100) or an
+        // explicit portable.txt makes a folder beside the emulator theirs.
+        if beside.is_dir() && (portable || user_dir_score(&beside) >= 100) {
             return Ok(UserDir::Portable(beside));
         }
     }
@@ -481,12 +563,51 @@ impl Session {
     pub fn prepare(platform: &Platform, req: &LaunchRequest) -> Result<WrittenConfig> {
         crate::runtime::ensure_runtime_idle(&req.runtime_exe)?;
         let prefs=crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
-        if let Some(text)=prefs.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_reshade.as_deref()) {
-            crate::reshade::apply_imported(&req.runtime_exe,text)?;
-        }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics})?;}
         let user = resolve_user_dir_for(platform, req.user_dir.as_deref(), Some(&req.runtime_exe))?;
         let user_dir = user.path().to_path_buf();
-        crate::dolphin_preferences::resolve_portable_paths(&user_dir)?;
+
+        // After the user folder is known, because the ReShade depth filter has
+        // to be derived from the resolution the player is actually running at.
+        // See reshade::depth_filter_for: with the filter pinned to one
+        // resolution, every depth-driven effect vanishes at any other.
+        let resolution = crate::reshade::internal_resolution_of(&user_dir);
+        if let Some(text)=prefs.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_reshade.as_deref()) {
+            crate::reshade::apply_imported(&req.runtime_exe,text,resolution)?;
+        }else{crate::reshade::apply(&req.runtime_exe, if prefs.graphics_override.as_ref().is_some_and(|o|o.label=="Previous settings"){GraphicsPreset::Performance}else{req.graphics}, resolution)?;}
+        // A folder the setup just created starts from the runtime's baseline,
+        // the Dolphin Adam tuned; one a player has run in keeps every edit.
+        // Before the path law strips path keys, so a relative path in the
+        // baseline goes the way any other would, and before the overlays,
+        // so the launcher's required keys still win.
+        let seeded = crate::runtime::seed_user_from_template(&req.runtime_exe, &user_dir)?;
+        crate::dolphin_preferences::apply_path_law(&user_dir)?;
+
+        // Undo what older builds welded into this install while the launcher
+        // had only one verb. One shot per install: it prunes the retired pins
+        // out of the per-game layer and puts the player's own values back where
+        // there is evidence of what they were. Un-forcing a key in source does
+        // nothing on its own, because a merge can add and update but never
+        // remove. See crate::settings_law::reconcile_once.
+        {
+            let mut ids = vec!["GN7E69", req.build.game_id()];
+            ids.sort();
+            ids.dedup();
+            match crate::settings_law::reconcile_once(platform, &user_dir, &ids) {
+                Ok(done) if !done.is_empty() => {
+                    tracing::info!(
+                        "settings law: pruned {} per-game pin(s), restored {}, repaired {}",
+                        done.pruned.len(),
+                        done.restored.len(),
+                        done.repaired.len()
+                    );
+                    let _ = crate::notices::add(platform, crate::notices::SETTINGS_ARE_YOURS);
+                }
+                Ok(_) => {}
+                // A repair that cannot run must never stop the player launching.
+                Err(error) => tracing::warn!("settings law: reconcile skipped: {error}"),
+            }
+        }
+
         let config_dir = user_dir.join("Config");
         std::fs::create_dir_all(&config_dir).map_err(|source| Error::Io {
             path: config_dir.clone(),
@@ -504,6 +625,7 @@ impl Session {
 
         let mut written = WrittenConfig {
             user_dir: user.clone(),
+            files: seeded,
             ..Default::default()
         };
 
@@ -522,24 +644,35 @@ impl Session {
         // real player's Dolphin.ini, including the paths to their own game
         // images. See crate::ini for the measurements.
         let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        let seeded_files = ConfigGenerator::seeded_overlays();
         for (name, mut overlay) in ConfigGenerator::overlays(&config) {
-            if name == "GFX.ini" {
-                let options = preferences.graphics_override.as_ref();
-                // Retain legacy visual choices, while the compatibility fixes below still win.
-                if options.is_some_and(|o|o.label=="Previous settings") {
-                    if let Some(section)=overlay.get_mut("Settings") { section.remove("MaxAnisotropy"); }
-                }
-                if let Some(previous)=options.filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_gfx.as_deref()) {
-                    let mut retained=crate::ini::Overlay::new();let mut section=String::new();
-                    for line in previous.lines(){let line=line.trim();if line.starts_with('[')&&line.ends_with(']'){section=line[1..line.len()-1].into();}else if !line.starts_with([';','#']){if let Some((key,value))=line.split_once('='){retained.entry(section.clone()).or_default().insert(key.trim().into(),value.trim().into());}}}
-                    for (section,keys) in overlay{retained.entry(section).or_default().extend(keys);}overlay=retained;
-                }
-                let section=overlay.entry("Settings".into()).or_default();
-                section.insert("InternalResolution".into(),"3".into());
-                section.insert("MSAA".into(),"1".into());
-                section.insert("SSAA".into(),"False".into());
-            }
+            // The player's own choices from the launcher's Settings page. These
+            // are merged rather than seeded because the player asked for them
+            // here, in this launcher, and expects pressing Play to apply them.
             for (section, keys) in crate::dolphin_preferences::overlay(&name,&preferences.emulator_preferences) { overlay.entry(section).or_default().extend(keys); }
+
+            // Everything below is applied with merge_absent: a default, never
+            // an override. A key already in the file keeps its value.
+            let mut seeded = seeded_files.get(&name).cloned().unwrap_or_default();
+
+            // "Previous settings" carries a migrating player's whole old
+            // GFX.ini forward. It seeds a fresh folder and never overrides what
+            // is already there, so a change they make afterwards is not
+            // reverted on every launch for the rest of the install's life.
+            if name == "GFX.ini" {
+                if let Some(previous)=preferences.graphics_override.as_ref().filter(|o|o.label=="Previous settings").and_then(|o|o.legacy_gfx.as_deref()) {
+                    let mut section=String::new();
+                    for line in previous.lines(){
+                        let line=line.trim();
+                        if line.starts_with('[')&&line.ends_with(']'){section=line[1..line.len()-1].into();}
+                        else if !line.starts_with([';','#']){
+                            if let Some((key,value))=line.split_once('='){
+                                seeded.entry(section.clone()).or_default().entry(key.trim().into()).or_insert_with(||value.trim().into());
+                            }
+                        }
+                    }
+                }
+            }
             let path = config_dir.join(&name);
 
             let existing = match std::fs::read_to_string(&path) {
@@ -567,8 +700,15 @@ impl Session {
             }
 
             let mut doc = IniDocument::parse(&existing);
-            crate::dolphin_preferences::preserve_existing(&name,&doc,&mut overlay);
-            let report = doc.merge(&overlay);
+            // Two verbs, in this order. `merge` for what the launcher decides
+            // and what the player set in the launcher; `merge_absent` for the
+            // tuned defaults, which fill a gap and never overwrite a choice.
+            // There is no third step restoring the player's value afterwards,
+            // because nothing above took it away. See crate::settings_law.
+            let mut report = doc.merge(&overlay);
+            let seeded_report = doc.merge_absent(&seeded);
+            report.added.extend(seeded_report.added);
+            report.sections_created.extend(seeded_report.sections_created);
 
             // Nothing to change means nothing to write. A launcher that
             // rewrites a config on every start looks like it is corrupting it.
@@ -662,17 +802,23 @@ impl Session {
                     .iter()
                     .find(|d| d.device == pad.device_string())
                 {
-                    Some(reported) => reported.names(),
-                    None => match crate::devices::known_inputs(&pad.device_string()) {
-                        Some(recorded) => {
-                            tracing::info!(
-                                "{}: the runtime cannot list inputs, using the recorded layout for this pad",
-                                pad.device_string()
-                            );
-                            recorded
-                        }
-                        None => continue,
-                    },
+                    Some(reported) => reported.all_names(),
+                    // The runtime is too old to list controls. Do NOT try to
+                    // guess the pad from its name: Windows names a DualSense
+                    // from its HID product string, which differs between
+                    // machines, and a pad whose name we failed to recognise
+                    // got dead bindings, which is the original bug again.
+                    //
+                    // A profile seeded here already carries the universal
+                    // mapping, which binds every vocabulary at once and needs
+                    // no identification at all. Leave it alone.
+                    None => {
+                        tracing::info!(
+                            "{}: the runtime cannot list controls, so the pad keeps the universal mapping",
+                            pad.device_string()
+                        );
+                        Vec::new()
+                    }
                 };
                 let key = pad.identity().profile_key();
                 match saved_profiles
@@ -718,44 +864,78 @@ impl Session {
                 }
             }
         }
+        // Adopt whatever the player changed in Dolphin's own Controller
+        // Settings before regenerating. The launcher keeps owning the Device
+        // line and the port layout, because a remembered device string that no
+        // longer matches binds nothing and Dolphin says nothing about it. It
+        // stops owning the bindings, the tuning and the calibration.
+        //
+        // The sidecar holds exactly the bytes the launcher wrote last time, so
+        // "what did somebody else change" is answerable without guessing.
+        let pad_path = config_dir.join("GCPadNew.ini");
+        let sidecar = pad_path.with_extension("ini.launcher-wrote");
+        let mut saved_profiles = saved_profiles;
+        if let Ok(live) = std::fs::read_to_string(&pad_path) {
+            let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
+            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles);
+            if !adopted.is_empty() {
+                tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
+                if let Ok(file) = crate::controller_profiles::path(platform) {
+                    for profile in &saved_profiles {
+                        let _ = crate::controller_profiles::save(&file, profile.clone());
+                    }
+                }
+            }
+        }
         let saved_profiles = saved_profiles;
         let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
         match build_gcpad_for_slots(&scan, &saved_profiles, preferences.primary_controller.as_deref(), preferences.controller_slots.as_ref()) {
             Some((ini, assignment)) => {
-                let path = config_dir.join("GCPadNew.ini");
-                // The pad file IS wholly owned by the launcher: it is
-                // regenerated from the live device list every launch by
-                // design, because a remembered device string that no longer
-                // matches binds nothing without saying so. Still recorded
-                // once before the first overwrite.
+                let path = pad_path;
+                // Recorded once before the launcher's first overwrite, for
+                // evidence. Never restored from automatically.
                 if let Ok(prev) = std::fs::read_to_string(&path) {
                     let original = path.with_extension("ini.launcher-original");
                     if !original.exists() && !prev.is_empty() {
                         let _ = std::fs::write(&original, &prev);
                     }
                 }
-                std::fs::write(&path, ini).map_err(|source| Error::Io {
+                std::fs::write(&path, &ini).map_err(|source| Error::Io {
                     path: path.clone(),
                     source,
                 })?;
+                // What we just wrote, so the next launch can tell our lines
+                // from theirs.
+                let _ = std::fs::write(&sidecar, &ini);
                 written.files.push(path);
                 written.pads = assignment;
-                let dolphin_file=config_dir.join("Dolphin.ini");
-                let dolphin_text = match std::fs::read_to_string(&dolphin_file) {
-                    Ok(text) => text,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(error) => return Err(error.into()),
-                };
-                let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
-                let overlay=controller_port_overlay(&written.pads);
-                if !dolphin_doc.merge(&overlay).is_noop(){
-                    std::fs::write(&dolphin_file,dolphin_doc.render())?;
-                    if !written.files.contains(&dolphin_file) { written.files.push(dolphin_file); }
-                }
                 written.no_controller = written.pads.is_empty();
-
             }
             None => written.no_controller = true,
+        }
+
+        // Dolphin.ini: the controller ports for the pads bound above, and a
+        // memory card when none is configured. Written only when something
+        // changes, and whether or not a pad was found: a keyboard player
+        // still needs somewhere to save.
+        let dolphin_file=config_dir.join("Dolphin.ini");
+        let dolphin_text = match std::fs::read_to_string(&dolphin_file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
+        let user_dir = config_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| config_dir.clone());
+        let card = memory_card_overlay(&dolphin_doc, &user_dir);
+        let mut changed = false;
+        if !written.no_controller {
+            let ports = controller_port_overlay(&dolphin_doc, &written.pads);
+            changed |= !dolphin_doc.merge(&ports).is_noop();
+        }
+        changed |= !dolphin_doc.merge(&card).is_noop();
+        if changed {
+            std::fs::write(&dolphin_file,dolphin_doc.render())?;
+            if !written.files.contains(&dolphin_file) { written.files.push(dolphin_file); }
         }
 
         Ok(written)
@@ -778,8 +958,12 @@ impl Session {
             }));
         }
 
-        // The lock, before anything is written or started.
-        let Startup::Owner(supervisor) = Supervisor::acquire(platform)? else {
+        // The lock, before anything is written or started, and waited for
+        // rather than refused outright. The launcher takes this same lock for
+        // its own background work; telling a player to close a launcher that
+        // does not exist, and not starting their game, is the worse answer.
+        // See [`Supervisor::acquire_waiting`].
+        let Startup::Owner(supervisor) = Supervisor::acquire_waiting(platform)? else {
             return Ok(Launched::Refused(Refusal::AlreadyRunning));
         };
         let _ = supervisor.recover_unfinished()?;
@@ -792,6 +976,12 @@ impl Session {
         // correctly and the game never saw it.
         let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled);
 
+        // The memory cards, brought up to date with the installed roster
+        // before the game opens them, under the lock and with the game not
+        // yet started. Free when nothing changed since the last full run.
+        // Never a reason not to start the game: a failure is a sentence.
+        let cards_before = crate::cards::before_session(platform, written.user_dir.path());
+
         let config = LaunchConfig {
             build: req.build,
             graphics: req.graphics,
@@ -802,23 +992,34 @@ impl Session {
             match_context: None,
         };
 
-        let record = supervisor.begin(req.build)?;
+        let record = supervisor.begin_with_intent(
+            req.build,
+            Some(crate::supervisor::SessionIntent { league_match: req.league_match }),
+        )?;
         let handle = Launcher::launch(platform, &req.runtime_exe, &config)?;
         let exit = platform.processes.wait(handle)?;
         let finished = supervisor.finish(record, &exit)?;
 
         // The match results, collected while the lock is still held and the
-        // session id is still in hand. Filed under this session so a capture
-        // can always be traced to the launch that produced it.
-        let stats = {
-            let capture_dir = crate::stats::dolphin_capture_dir(written.user_dir.path());
-            match crate::stats::StatsQueue::open(platform)
-                .and_then(|queue| queue.ingest_from(&capture_dir, Some(&finished.id)))
-            {
-                Ok(results) => StatsAfterSession::Ingested(results),
-                Err(e) => StatsAfterSession::Failed(e.to_string()),
-            }
-        };
+        // session id is still in hand. Collecting is the half that needs the
+        // lock: the queue and the session log are shared state, and a second
+        // launcher moving captures out of the same folder is the case the lock
+        // exists for.
+        let results = collect(platform, &supervisor, &finished.id, written.user_dir.path());
+
+        // The member's in-game gear edits, harvested off the memory cards
+        // while the lock is still held and the game is known to be closed.
+        // Nothing is written to a card here; the next full sync does that.
+        let cards_after = crate::cards::after_session(platform, written.user_dir.path());
+
+        // The lock, back, before this returns and before anything reaches the
+        // network. The caller still holds a launch guard across this whole
+        // call, so it gives that back too and then calls
+        // `SessionResults::send`. Held across the send, the two of them made
+        // four screens say something that was not true for as long as a
+        // backlog took to deliver. Nothing is dropped by returning early: the
+        // captures are already in the queue on disk.
+        drop(supervisor);
 
         let end = finished
             .end
@@ -833,9 +1034,187 @@ impl Session {
             user_dir: written.user_dir,
             mods,
             session_id: finished.id.clone(),
-            stats,
+            results,
+            cards: crate::cards::CardsAtSession { before: cards_before, after: Some(cards_after) },
         })
     }
+}
+
+/// The results of a finished session, collected and not yet sent.
+///
+/// # Why collecting and sending are two calls
+///
+/// Both have to happen and only one of them needs the lock. Collecting reads
+/// the emulator's folders into the queue and reads the session log, which are
+/// shared state and are exactly what the single-instance lock is for. Sending
+/// is one network round trip per queued game, each with the client's full
+/// timeout, so a backlog against a slow or unreachable backend is minutes.
+///
+/// Holding the lock and the launch guard across the send made four things the
+/// product says untrue for those minutes, with the emulator already exited:
+/// pressing Play answered "A game session is already active", the Online page
+/// answered "close the emulator first", opening the emulator from Settings was
+/// refused, and the command line retry was refused. So a caller holding them
+/// gives them back between these two calls.
+///
+/// Every path does this, the launch included. [`Session::run`] returns this
+/// value with the lock already given back, and its caller gives the launch
+/// guard back before calling [`send`](Self::send). There is deliberately no
+/// helper that does both in one call: one existed, the launch used it, and
+/// that is how the primary path kept doing this after the two secondary paths
+/// were fixed.
+///
+/// Nothing is at risk between the two calls. The captures are in the queue on
+/// disk by the end of [`collect`], and an unsent queue is picked up whole by
+/// the next send.
+#[derive(Debug)]
+pub struct SessionResults {
+    /// `None` when the queue would not open, which is the one failure that
+    /// really ends it: nowhere to collect into and nothing to send from.
+    queue: Option<crate::stats::StatsQueue>,
+    /// Read while the lock was still held, because it is the supervisor's own
+    /// log, and carried so the send needs nothing from the supervisor.
+    history: Vec<SessionRecord>,
+    enqueued: Vec<crate::stats::Enqueued>,
+    problem: Option<StatsProblem>,
+}
+
+impl SessionResults {
+    /// Explain local collection before a background upload has answered.
+    /// Do not claim delivery or a sign-in failure before contacting the service.
+    pub fn background_note(&self) -> Option<String> {
+        if self.queue.is_none() { return Some(RESULTS_NOT_COLLECTED.to_string()); }
+        if let Some(problem) = self.problem { return Some(problem.message().to_string()); }
+        let recorded = self.enqueued.iter().any(|entry| matches!(entry,
+            crate::stats::Enqueued::Queued(_) | crate::stats::Enqueued::Quarantined(_)));
+        recorded.then(|| "Match results are saved. View their sync status on Stats.".to_string())
+    }
+
+    /// Send what was collected, and everything else already queued.
+    ///
+    /// Needs no lock and no guard. Never returns an error: by the time this
+    /// runs the game has been played.
+    pub fn send(self, platform: &Platform) -> StatsAfterSession {
+        let SessionResults {
+            queue,
+            history,
+            enqueued,
+            mut problem,
+        } = self;
+        let Some(queue) = queue else {
+            return StatsAfterSession::Failed;
+        };
+
+        let sent = match crate::backend::auto_submit(platform, &queue, &history) {
+            Ok(crate::backend::SendAttempt::Sent(report)) => Some(report),
+            Ok(crate::backend::SendAttempt::NotSignedIn) => None,
+            Err(e) => {
+                tracing::warn!("results could not be sent: {e}");
+                problem.get_or_insert(StatsProblem::Sending);
+                None
+            }
+        };
+
+        StatsAfterSession::Ingested {
+            enqueued,
+            problem,
+            sent,
+        }
+    }
+}
+
+/// Collect the match results a session produced, without sending them.
+///
+/// Call it with the lock still held: the queue and the session log are shared
+/// state, and a second launcher collecting the same folder at the same time is
+/// the case the lock exists for. Then give the lock back and call
+/// [`SessionResults::send`].
+pub fn collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    session_id: &str,
+    user_dir: &Path,
+) -> SessionResults {
+    let queue = match crate::stats::StatsQueue::open(platform) {
+        Ok(queue) => queue,
+        // The detail goes to the log; the value a caller shows carries none of
+        // it.
+        Err(e) => {
+            tracing::warn!("the results queue could not be opened: {e}");
+            return SessionResults {
+                queue: None,
+                history: Vec::new(),
+                enqueued: Vec::new(),
+                problem: None,
+            };
+        }
+    };
+
+    // Collecting and sending are two jobs, not one chain. Collecting used to
+    // come first with a `?` on it, so a folder it could not finish stopped the
+    // send as well, and the queue holds games from earlier sessions that were
+    // still perfectly deliverable.
+    let (enqueued, mut problem) = match queue.ingest_all(user_dir, Some(session_id)) {
+        Ok(found) => (found, None),
+        Err(e) => {
+            tracing::warn!("results could not be collected from {}: {e}", user_dir.display());
+            (Vec::new(), Some(StatsProblem::Collecting))
+        }
+    };
+
+    // The last thing that needs the lock.
+    let history = match supervisor.history() {
+        Ok(history) => history,
+        Err(e) => {
+            tracing::warn!("the session log could not be read: {e}");
+            problem.get_or_insert(StatsProblem::Sending);
+            Vec::new()
+        }
+    };
+
+    SessionResults {
+        queue: Some(queue),
+        history,
+        enqueued,
+        problem,
+    }
+}
+
+/// Close a session whose emulator has stopped, then [`collect`].
+///
+/// The send is deliberately not part of this. The caller spawned the emulator
+/// itself and is holding the launch guard and the single-instance lock, and a
+/// send is minutes against a slow backend, so it gives both back and then
+/// calls [`SessionResults::send`].
+///
+/// For a caller that spawned the emulator itself and waited for it on its own
+/// thread, rather than going through [`Session::run`]. The session id comes
+/// from the record that was written *before* the emulator started, which is
+/// the whole point: where a result goes is decided at launch and written down,
+/// never worked out from the file afterwards.
+///
+/// `exit` is `None` when the wait itself failed. The record is then left open
+/// on purpose, so the next launch recovers it as
+/// [`SessionEnd::Interrupted`](crate::supervisor::SessionEnd::Interrupted),
+/// which is the truth. Guessing a clean exit here would put a fact on the
+/// envelope that nobody observed.
+///
+/// The collection runs either way. The game was played whether or not the
+/// launcher managed to write down how it ended.
+pub fn finish_and_collect(
+    platform: &Platform,
+    supervisor: &Supervisor,
+    record: SessionRecord,
+    exit: Option<&ExitKind>,
+    user_dir: &Path,
+) -> SessionResults {
+    let session_id = record.id.clone();
+    if let Some(exit) = exit {
+        // Reported through the session log on the next launch if it fails.
+        // Nothing here may stop the collection below.
+        let _ = supervisor.finish(record, exit);
+    }
+    collect(platform, supervisor, &session_id, user_dir)
 }
 
 /// Point this build at what `activation.json` says is on.
@@ -856,7 +1235,7 @@ fn sync_mods_for_launch(
         let game = crate::mods::GameId::parse(build.game_id())?;
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
-        req.link_into_user_dir = crate::settings::manage_texture_folder(&settings_file)?;
+        req.manage_user_texture_folder = crate::settings::manage_texture_folder(&settings_file)?;
         if disabled {
             req.active_override = Some(Vec::new());
         }
@@ -892,14 +1271,70 @@ pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], pr
         let mut profile=saved.iter().find(|p|p.identity.profile_key()==pad.identity().profile_key()).cloned().unwrap_or_else(||ControllerProfile::new(pad.identity(),index as u8+1));
         profile.port=index as u8+1;profiles.push(profile);assignment.push((index as u8+1,device.clone()));
     }
-    let mut ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
-    for port in 1..=4 {if !assignment.iter().any(|(p,_)|*p==port){ini.push_str(&format!("[GCPad{port}]\nDevice = \n\n"));}}
+    // No pad bound at all means there is nothing to say, and saying nothing
+    // means writing nothing. An empty GCPadNew.ini is indistinguishable from a
+    // broken pad, which is the invariant this crate already states for the
+    // other builder; it was never enforced on the path production uses.
+    if assignment.is_empty() {
+        return None;
+    }
+    let ini=GcPadConfig::generate(&profiles,|id|pads.iter().find(|p|p.identity().profile_key()==id.profile_key()).map(|p|p.device_string()).unwrap_or_default());
+    // A port with no pad this session gets NO section at all.
+    //
+    // This used to write `[GCPadN]\nDevice = ` for every unfilled port, which
+    // meant one launch with a pad asleep or reconnecting over Bluetooth wiped
+    // that player's bindings for good. An omitted section leaves whatever
+    // Dolphin already has; an empty Device line destroys it.
     Some((ini,assignment))
 }
 
-pub fn controller_port_overlay(assignment:&[(u8,String)])->crate::ini::Overlay {
+/// The memory card the game saves to. A fresh user folder seeded from the
+/// runtime template used to name no card at all (SlotA = 255), so the game
+/// could never save and the card gear sync had no card to bring up to date
+/// (Adam, 2026-09-12: "it didn't change the memory card"). Slot A becomes a
+/// raw memory card with NO path: Dolphin then uses its default,
+/// `<user>/GC/MemoryCardA.<region>.raw`, which is the path law
+/// (`dolphin_preferences::apply_path_law`). A card path the file names is the
+/// law's business: one inside a Dolphin user folder is removed for the
+/// default, one elsewhere is a player's own choice and stays. A working slot
+/// (a raw card, a folder of GCIs) is left as it is.
+pub fn memory_card_overlay(doc: &crate::ini::IniDocument, _user_dir: &Path) -> crate::ini::Overlay {
+    let mut overlay = crate::ini::Overlay::new();
+    let slot = doc.get("Core", "SlotA").map(str::trim).unwrap_or("");
+    if !(slot.is_empty() || slot == "255" || slot == "0") {
+        return overlay;
+    }
+    overlay.entry("Core".into()).or_default().insert("SlotA".into(), "1".into());
+    overlay
+}
+
+/// Turn ON the ports the launcher just bound a pad to. Never turn one off.
+///
+/// This used to write `SIDevice<n> = 0` for every port the launcher had not
+/// filled, on every launch. A pad asleep, reconnecting over Bluetooth, or
+/// simply unplugged for one session was enough to switch its port off, and it
+/// also destroyed a port a player had deliberately set to something the
+/// launcher has no concept of: a GameCube adapter (12), a GC keyboard (7).
+///
+/// Writing a port on is recoverable and visible. Writing one off is neither,
+/// so the launcher does not do it: `doc` is consulted and a port that already
+/// holds a value the launcher did not put there is left exactly as it is.
+pub fn controller_port_overlay(doc:&crate::ini::IniDocument,assignment:&[(u8,String)])->crate::ini::Overlay {
     let mut overlay=crate::ini::Overlay::new();
-    for index in 0..4 {overlay.entry("Core".into()).or_default().insert(format!("SIDevice{index}"),if assignment.iter().any(|(port,_)|*port==index+1){"6"}else{"0"}.into());}
+    for index in 0..4u8 {
+        if !assignment.iter().any(|(port,_)|*port==index+1) {
+            continue;
+        }
+        let key=format!("SIDevice{index}");
+        // Already a standard controller, or already something the player chose.
+        // Either way there is nothing to say.
+        match doc.get("Core",&key).map(str::trim) {
+            None | Some("") | Some("0") => {
+                overlay.entry("Core".into()).or_default().insert(key,"6".into());
+            }
+            Some(_) => {}
+        }
+    }
     overlay
 }
 
@@ -1155,7 +1590,7 @@ fn reconcile_controls(
 /// that looks completely correct in every message and matches nothing on
 /// disk, so the launcher refuses while printing the right path back:
 ///
-///   No Reborn Dolphin at "C:\\...\\Dolphin.exe". Set the runtime in Settings.
+///   No Reborn Dolphin at "C:\\...\\NFL Street Reborn Dolphin.exe". Set the runtime in Settings.
 ///
 /// That is a real refusal from a real session, and the emulator was there.
 /// The only clue was the quotes in the message, which read as punctuation.
@@ -1256,10 +1691,12 @@ impl Runtime {
 
 /// Anything that looks like a Dolphin executable in a directory.
 ///
-/// Matched by name rather than by a fixed filename, because the Reborn build
-/// ships as `NFL Street Reborn Dolphin.exe` in the 2.1 install and as
-/// `Dolphin.exe` in the launcher's own payload, and hardcoding either one makes
-/// the other invisible.
+/// Matched by name rather than by a fixed filename, because the fork is being
+/// renamed from `Dolphin.exe` to `NFL Street Reborn Dolphin.exe`, and a tree
+/// mid-update can hold both: an old copy left behind and the new one just
+/// unpacked beside it. When both are present the new name wins, because it is
+/// the one this launcher was built against; alphabetical order alone would
+/// pick the old `dolphin.exe`.
 fn dolphin_in(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut found: Vec<PathBuf> = entries
@@ -1276,8 +1713,12 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
                 && (name.ends_with(".exe") || !name.contains('.'))
         })
         .collect();
-    // Sorted so two candidates do not resolve differently between runs.
-    found.sort();
+    // The Reborn name wins over a stock name when both are present, which happens on a
+    // tree mid-update. Alphabetical order alone would pick "dolphin.exe".
+    found.sort_by_key(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+        (if name == "nfl street reborn dolphin.exe" { 0 } else { 1 }, name)
+    });
     found.into_iter().next()
 }
 
@@ -1382,6 +1823,188 @@ pub fn is_game_image(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player_sentence::assert_player_safe;
+
+    #[test]
+    fn background_sync_reports_collection_without_claiming_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let queue = crate::stats::StatsQueue::open_at(&root.path().join("queue"), crate::supervisor::SystemClock).unwrap();
+        let entry = queue.enqueue(b"{}", None, Some("local-session"), Some("offline")).unwrap();
+        let mut results = SessionResults { queue: Some(queue), history: vec![], enqueued: vec![entry], problem: None };
+        let note = results.background_note().unwrap();
+        assert!(note.contains("saved"));
+        assert!(!note.contains("sent") && !note.contains("sign-in"), "No network request has answered yet");
+        assert_player_safe(&note);
+        assert_eq!(results.queue.as_ref().unwrap().entries().unwrap().len(), 1, "The background handoff keeps queued data");
+        results.problem = Some(StatsProblem::Collecting);
+        assert_eq!(results.background_note().as_deref(), Some(StatsProblem::Collecting.message()));
+        results.queue = None;
+        assert_eq!(results.background_note().as_deref(), Some(RESULTS_NOT_COLLECTED));
+    }
+
+    /// A fresh user folder seeded from the runtime template has no memory
+    /// card at all (SlotA = 255); the launch turns slot A into a raw card
+    /// with no path, so Dolphin uses its default inside the user folder.
+    /// A working card choice is never touched.
+    #[test]
+    fn a_launch_gives_a_cardless_user_folder_a_memory_card_and_leaves_a_working_one_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path();
+        let none = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nSlotB = 255\n");
+        let overlay = memory_card_overlay(&none, user);
+        assert_eq!(overlay["Core"]["SlotA"], "1");
+        assert!(!overlay["Core"].contains_key("MemcardAPath"), "no path: Dolphin's default inside the user folder is the path law");
+        assert!(!overlay["Core"].contains_key("SlotB"), "slot B stays as it was");
+        // no [Core] section at all: the same card
+        assert_eq!(memory_card_overlay(&crate::ini::IniDocument::parse("[Display]\n"), user)["Core"]["SlotA"], "1");
+        // a folder of GCIs, or a raw card: nothing to change
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 8\n"), user).is_empty());
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 1\nMemcardAPath = C:/cards/A.raw\n"), user).is_empty());
+        // slot none with a card path named: the slot is turned on; the path is the path law's business
+        let doc = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nMemcardAPath = D:/cards/A.raw\n");
+        let on = memory_card_overlay(&doc, user);
+        assert_eq!(on["Core"]["SlotA"], "1");
+        assert!(!on["Core"].contains_key("MemcardAPath"));
+    }
+
+    /// The launch gives the single-instance lock back before the network work.
+    ///
+    /// This is the primary path: the Play button, every time. Two secondary
+    /// ways of starting the emulator were fixed to collect, give the lock and
+    /// the guard back, and only then send. `Session::run` was left calling
+    /// `collect_and_send`, which does both under the lock it is still holding.
+    ///
+    /// A send is one request per queued game with the client's full timeout
+    /// each, so a backlog against a slow or unreachable backend is minutes.
+    /// For all of those minutes, with the emulator already exited, pressing
+    /// Play answered "A game session is already active", the Online page said
+    /// to close the emulator first, opening the emulator from Settings was
+    /// refused, and `rebornctl stats retry` was refused. Every one of those was
+    /// false.
+    ///
+    /// Collecting stays under the lock and that is not negotiable: the session
+    /// id has to be in hand and no second launcher may be moving captures into
+    /// the same queue. Only the send moves out.
+    ///
+    /// # How this is bounded so it cannot find itself
+    ///
+    /// The slice runs from `pub fn run(` to the doc comment that introduces
+    /// [`SessionResults`], both of which are production text roughly eight
+    /// hundred lines above this module. `find` returns the first match, so the
+    /// copies of those markers inside this test are never reached, and the
+    /// searched text ends long before them. The stop marker matters: run one
+    /// item further and the slice swallows `SessionResults::send`, whose whole
+    /// job is the network call this test forbids.
+    #[test]
+    fn the_launch_gives_the_lock_back_before_the_network_work() {
+        let src = include_str!("session.rs");
+        let from = src
+            .find("    pub fn run(platform: &Platform, req: &LaunchRequest)")
+            .expect("Session::run is not in this file any more");
+        let rest = &src[from..];
+        let body = &rest[..rest
+            .find("\n/// The results of a finished session")
+            .expect("the SessionResults doc comment no longer follows Session::run")];
+
+        assert!(
+            !body.contains("collect_and_send"),
+            "Session::run still collects and sends in one call, with the single-instance lock \
+             held across the network work, so Play says a game session is active and the Online \
+             page says to close an emulator that has already exited"
+        );
+
+        let collect = body
+            .find("collect(platform, &supervisor")
+            .expect("Session::run no longer collects what the session produced under the lock");
+        let release = body.find("drop(supervisor)").unwrap_or_else(|| {
+            panic!(
+                "Session::run never gives the single-instance lock back before it returns, so \
+                 the caller cannot send outside it"
+            )
+        });
+        assert!(
+            collect < release,
+            "Session::run gives the lock back before the results are safely collected"
+        );
+
+        // And the send really is the caller's job now: nothing in the body
+        // reaches the backend.
+        for reaches_the_network in ["auto_submit", ".send(platform)", ".send(&p)"] {
+            assert!(
+                !body.contains(reaches_the_network),
+                "Session::run still does the network work itself, under the lock and under the \
+                 caller's launch guard"
+            );
+        }
+    }
+
+    /// The stats step has nowhere to put an error string.
+    ///
+    /// `collect_and_send` used to write `e.to_string()` into three places: the
+    /// `Failed` payload, and twice into `problem`. [`crate::Error::Io`] displays
+    /// as `io error at {path}: {source}`, so a full disk while writing the queue
+    /// put a path out of the player's roaming profile and `os error 112` into a
+    /// value the window renders. `explain()` happened to summarize those two
+    /// fields rather than repeat them, which is the only reason nobody had seen
+    /// it on screen; any caller that showed the payload, and the command line
+    /// tool is one line away from being one, would have.
+    ///
+    /// So the fix is the type and not the wording. `StatsAfterSession` now has
+    /// nowhere to put a string at all: the failure is named
+    /// ([`StatsProblem`]), the sentence is a constant, and the detail goes to
+    /// `tracing::warn!` where it is produced. This test holds both halves,
+    /// because "it happens not to be rendered today" is not a guarantee.
+    ///
+    /// `collect_and_send` itself is gone: the launch used it and that is how
+    /// the primary path kept sending under the lock. Its two halves,
+    /// `SessionResults::send` and `collect`, are what is scanned now, which is
+    /// strictly more code than the one-line wrapper ever held.
+    #[test]
+    fn a_stats_result_has_nowhere_to_put_an_error_string() {
+        let src = include_str!("session.rs");
+        // Both halves of what `collect_and_send` used to be, each bounded by
+        // the production text that follows it. All of it is hundreds of lines
+        // above this module, and `find` returns the first match, so this
+        // test's own text is never inside what is searched.
+        for (name, start, stop) in [
+            ("the send", "impl SessionResults {", "\n/// Collect the match results"),
+            ("the collection", "pub fn collect(", "\n/// Close a session"),
+        ] {
+            let from = src
+                .find(start)
+                .unwrap_or_else(|| panic!("{name} is not in this file any more"));
+            let rest = &src[from..];
+            let body = &rest[..rest
+                .find(stop)
+                .unwrap_or_else(|| panic!("{name} no longer ends where it did"))];
+            assert!(
+                !body.contains("e.to_string()"),
+                "{name} puts an error string on a value a player sees"
+            );
+        }
+
+        // Every sentence the type can produce, mechanically checked.
+        assert_player_safe(RESULTS_NOT_COLLECTED);
+        for problem in [StatsProblem::Collecting, StatsProblem::Sending] {
+            assert_player_safe(problem.message());
+        }
+        assert_player_safe(&StatsAfterSession::Failed.explain().expect("a failure says something"));
+
+        let mut report = crate::stats::SubmitReport::default();
+        report.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        report.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        report.rejected.push(crate::stats::CaptureKey::of_bytes(b"c"));
+        report.stalled.push(crate::stats::CaptureKey::of_bytes(b"d"));
+        report.waiting_for_sign_in = true;
+        for problem in [None, Some(StatsProblem::Collecting), Some(StatsProblem::Sending)] {
+            for sent in [None, Some(crate::stats::SubmitReport::default()), Some(report.clone())] {
+                let s = StatsAfterSession::Ingested { enqueued: Vec::new(), problem, sent };
+                if let Some(line) = s.explain() {
+                    assert_player_safe(&line);
+                }
+            }
+        }
+    }
 
     fn req(runtime: PathBuf, game: PathBuf) -> LaunchRequest {
         LaunchRequest {
@@ -1394,6 +2017,7 @@ mod tests {
             // Tests must never pick up whatever real install happens
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
+            league_match: false,
         }
     }
 
@@ -1571,6 +2195,62 @@ mod tests {
             found.file_name().unwrap(),
             "NFL Street Reborn Dolphin.exe"
         );
+    }
+
+    #[test]
+    fn the_new_exe_name_wins_when_both_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Dolphin.exe"), b"").unwrap();
+        std::fs::write(dir.path().join("NFL Street Reborn Dolphin.exe"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin.exe");
+    }
+
+    #[test]
+    fn explain_counts_sent_held_recorded_and_waiting() {
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        r.held.push(crate::stats::CaptureKey::of_bytes(b"b"));
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(r) };
+        let text = s.explain().unwrap();
+        assert!(text.contains("1 result sent"), "{text}");
+        assert!(text.contains("1 held for review"), "{text}");
+        let mut w = crate::stats::SubmitReport::default();
+        w.waiting_for_sign_in = true;
+        let s = StatsAfterSession::Ingested { enqueued: vec![], problem: None, sent: Some(w) };
+        assert!(s.explain().unwrap().contains("waiting for sign-in"));
+    }
+
+    /// Collecting and sending are two jobs. A problem in one is reported and
+    /// never stops the other, and neither is described to a player in the
+    /// words of an error: no path, no error number, no library.
+    ///
+    /// Both values used to be built from `e.to_string()`. They now cannot be:
+    /// `Failed` carries nothing and `problem` is a [`StatsProblem`]. What this
+    /// test still has to prove is the other half, that a problem in one job
+    /// never hides the other job's result.
+    #[test]
+    fn a_collection_problem_is_reported_without_showing_a_path_or_an_error_code() {
+        let s = StatsAfterSession::Failed;
+        let text = s.explain().expect("a failure has to say something");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
+        assert!(text.contains("Nothing was lost"), "{text}");
+
+        let mut r = crate::stats::SubmitReport::default();
+        r.accepted.push(crate::stats::CaptureKey::of_bytes(b"a"));
+        let s = StatsAfterSession::Ingested {
+            enqueued: vec![],
+            problem: Some(StatsProblem::Collecting),
+            sent: Some(r),
+        };
+        let text = s.explain().expect("a send that happened has to say so");
+        assert!(
+            text.contains("1 result sent"),
+            "the send must still have run and still be reported: {text}"
+        );
+        assert!(text.contains("being kept"), "the problem must be named: {text}");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(!text.contains(r"C:\"), "{text}");
     }
 
     #[test]

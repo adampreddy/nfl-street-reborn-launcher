@@ -72,7 +72,6 @@
 //! latter to search backward for the last record this page itself wrote.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
@@ -94,7 +93,7 @@ use crate::settings::Settings;
 /// The last `limit` journal records, newest first, plus how many lines of
 /// the journal could not be parsed. A journal with unreadable lines means
 /// history is incomplete; `skipped` is how the page knows to say so.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn history_list(limit: usize) -> Result<serde_json::Value, String> {
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -118,7 +117,7 @@ pub fn history_list(limit: usize) -> Result<serde_json::Value, String> {
 /// Every version of one component the origin still holds a manifest for,
 /// newest first, with which one (if any) the currently-signed release
 /// pins.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn history_versions(component: String) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -187,7 +186,7 @@ pub fn history_versions(component: String) -> Result<serde_json::Value, String> 
 /// Plan: the current pins against the proposed pins, and the bytes a player
 /// would fetch. Writes nothing; see the module doc for why this still
 /// calls `release` at `apply: false`.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_plan(component: String, version: String) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
@@ -258,7 +257,7 @@ pub fn rollback_plan(component: String, version: String) -> Result<serde_json::V
 /// Run: sign a release at the next sequence pinning the earlier version,
 /// and upload it. `dry_run` skips both the write and the upload; see the
 /// module doc's "Upload: scoped to what this rollback actually changes".
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result<serde_json::Value, String> {
     let id = parse_component(&component)?;
     let (platform, settings) = settings_and_platform()?;
@@ -309,7 +308,7 @@ pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result
         };
 
         let transport = UreqTransport::new();
-        let plan = build_upload_plan(&origin, id, &version, &transport, bucket)?;
+        let plan = build_upload_plan(&origin, id, &version, &transport, bucket, sink)?;
         let http = UreqHttp::new(concat!("reborn-publisher/", env!("CARGO_PKG_VERSION")));
         let upload_req = UploadRequest {
             bucket,
@@ -346,7 +345,7 @@ pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result
 /// Verify: fetch the actual hosted release fresh over HTTPS, check its
 /// signature, and confirm it pins the component and version the last
 /// rollback in this origin's journal signed, at the sequence it signed.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn rollback_verify() -> Result<serde_json::Value, String> {
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -581,6 +580,7 @@ fn build_upload_plan(
     version: &str,
     transport: &dyn upload::Transport,
     bucket: &Bucket,
+    sink: Sink<'_>,
 ) -> reborn_core::Result<UploadPlan> {
     let mut plan = UploadPlan::new();
 
@@ -589,14 +589,19 @@ fn build_upload_plan(
     let component = Component::parse(&manifest_bytes)
         .map_err(|e| plain_err(format!("{} does not parse as a component manifest: {e}", manifest_local.display())))?;
 
+    // One listing, not one HEAD per file: a texture set is eight thousand.
+    // Said out loud either way: a bucket that would not list falls back to
+    // one request per key, and that is slow enough to look hung.
+    let (already, how) = upload::already_on_bucket(transport, bucket)?;
+    sink(Event::out(how));
     let manifest_key = manifest_url(id, version);
-    if head_len(transport, bucket, &manifest_key) != Some(manifest_bytes.len() as u64) {
+    if already(&manifest_key) != Some(manifest_bytes.len() as u64) {
         let sha = Sha256Hex::from_bytes(&manifest_bytes);
         plan.manifest(manifest_key, manifest_local, manifest_bytes.len() as u64, sha);
     }
     for file in &component.files {
         let key = blob_path(&file.sha256);
-        if head_len(transport, bucket, &key) != Some(file.bytes) {
+        if already(&key) != Some(file.bytes) {
             let local = origin.join(&key);
             plan.blob(key, local, file.bytes, file.sha256.clone());
         }
@@ -615,19 +620,6 @@ fn build_upload_plan(
     Ok(plan)
 }
 
-/// The length the bucket already serves `key` at, or `None` when it does
-/// not have it (or answered anything other than 2xx). A signed HEAD, the
-/// same request shape `plan_origin`'s own "already" callback would issue.
-fn head_len(transport: &dyn upload::Transport, bucket: &Bucket, key: &str) -> Option<u64> {
-    let empty_sha = Sha256Hex::from_bytes(&[]);
-    let path = upload::object_path(bucket, key);
-    let req = upload::sign(bucket, "HEAD", &path, &[], &[], empty_sha.as_str(), SystemTime::now());
-    let reply = transport.send(&req, upload::Body::Empty).ok()?;
-    if !(200..300).contains(&reply.status) {
-        return None;
-    }
-    reply.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<u64>().ok())
-}
 
 fn plain_err(message: impl Into<String>) -> reborn_core::Error {
     reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::Other, message.into()))

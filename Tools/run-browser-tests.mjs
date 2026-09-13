@@ -172,10 +172,14 @@ await page.getByRole('combobox',{name:'Your controller',exact:true}).selectOptio
 assert.equal(await page.locator('#next').isEnabled(),true);
 await page.getByRole('button',{name:'Scan again'}).click();
 await page.getByRole('combobox',{name:'Your controller',exact:true}).selectOption('0');
+// First run keeps the bindings behind "Customize controls" since 2026-09-11.
+await page.getByText('Customize controls',{exact:true}).click();
 await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
 assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
 await page.screenshot({path:path.join(out,'reborn-setup-controller.png')});
 await page.getByRole('button',{name:'Assign A',exact:true}).click();
+// The typed input sits behind "Type a Dolphin input name instead" since 2026-09-11.
+await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
 await page.getByRole('textbox',{name:'A binding',exact:true}).fill('`Button Y`');
 await page.getByRole('button',{name:'Use binding',exact:true}).click();
 await page.getByRole('status').filter({hasText:'A saved.'}).waitFor();
@@ -219,8 +223,7 @@ await navPad(0);
 assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.cmd==='controls_set').length),0);
 await page.evaluate(()=>window.__navPad.buttons[0]={pressed:false,value:0});
 await page.waitForTimeout(60);
-await page.keyboard.press('Escape');
-await page.waitForTimeout(100);
+assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),undefined,'Controllers remains navigable on entry');
 // Bumper navigation causes a real document change. Release is irrelevant after navigation.
 await page.evaluate(()=>window.__navPad.buttons[5]={pressed:true,value:1});
 await page.waitForURL('**/online.html');await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Files & storage',exact:true}).waitFor();await page.getByRole('button',{name:'Files & storage',exact:true}).evaluate(n=>n.click());await page.getByLabel('Game image',{exact:true}).waitFor();
@@ -270,32 +273,34 @@ assert.deepEqual(await page.locator('.input-footer').boundingBox(),footerBefore,
 await page.emulateMedia({reducedMotion:'reduce'});
 assert.equal(await page.locator('.play').evaluate(n=>getComputedStyle(n).transitionDuration),'0s');
 await page.emulateMedia({reducedMotion:'no-preference'});
-// Both update channels share a quiet dock and open the actual Updates settings.
+// Updates stay in a shared dock across pages; manual mode opens a review first.
 await page.addInitScript(()=>{
  if(!new URL(location.href).searchParams.has('notice-test'))return;
- sessionStorage.removeItem('updates:checked');sessionStorage.removeItem('content:checked');
+ sessionStorage.removeItem('updates:last-auto-check');sessionStorage.removeItem('updates:latest');
  window.__fixture.update_check={state:'available',current:'3.0.0',latest:'3.0.1'};
- window.__fixture.content_status={phase:'available',download_bytes:4194304,note:'Content update ready.'};
+ window.__fixture.update_activity={downloading:false,ready:null};
+ window.__fixture.content_status={phase:'available',release:'content-2',download_bytes:4194304,note:'Content update ready.'};
 });
 await page.setViewportSize({width:800,height:560});
 await page.goto(url+'/index.html?notice-test');
-await page.waitForFunction(()=>document.querySelectorAll('#play-notices .update-notice').length===2);
-const notices=await page.locator('#play-notices .update-notice').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
-assert.ok(notices[0].bottom<=notices[1].top,'update notices do not overlap each other');
-assert.ok(notices[1].bottom<=await page.locator('.input-footer').evaluate(n=>n.getBoundingClientRect().top),'update notices fit above the input footer');
+await page.waitForFunction(()=>document.querySelectorAll('#update-center .update-card').length===2);
+await page.getByRole('button',{name:'Remind me later',exact:true}).click();
+await page.getByRole('button',{name:'Remind me later',exact:true}).waitFor();
+await page.getByRole('button',{name:'Remind me later',exact:true}).click();
+const notices=await page.locator('#update-center .update-card').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
+assert.ok(notices[0].bottom<=notices[1].top,'update cards do not overlap');
+assert.ok(notices[1].bottom<=560,'update cards stay inside the window');
 await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
-assert.ok(await page.locator('#play-now').evaluate(n=>n.getBoundingClientRect().bottom)<=notices[0].top,'updates do not cover Play');
-await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
-assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote'].includes(c.cmd))),false,'manual updates do not download or install');
+assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote'].includes(c.cmd))),false,'postponed updates do not download or install');
 await page.getByRole('button',{name:'View update',exact:true}).first().click();
-await page.getByRole('button',{name:'Updates',exact:true}).waitFor();
-assert.equal(await page.getByRole('button',{name:'Updates',exact:true}).getAttribute('aria-pressed'),'true');
+await page.getByRole('dialog',{name:'Launcher update',exact:true}).waitFor();
+await page.getByRole('button',{name:'Remind me later',exact:true}).click();
 await page.goto(url+'/index.html?missing');await page.getByRole('link',{name:'Set up your game',exact:true}).waitFor();
 assert.equal(await page.locator('#play-now').count(),0,'missing game offers setup instead of launch');
 await page.screenshot({path:path.join(out,'reborn-play-setup-800.png')});
 await page.setViewportSize({width:1280,height:800});
 await page.goto(url+'/controls.html');
-await page.getByRole('button',{name:'Finish test',exact:true}).waitFor();
+await page.getByRole('button',{name:'Test controller',exact:true}).waitFor();
 const families = await page.evaluate(() => ['Xbox One','DualSense (054c:0ce6)','DualShock 4','GameCube','Unknown USB device'].map(id => window.createControllerPreview(id).dataset.family));
 assert.deepEqual(families,['xbox','dualsense','playstation','gamecube','generic']);
 await page.goto(url+'/onboarding.html?stage=migration_offer');
@@ -313,3 +318,5 @@ await browser.close();server.close();
 await import('./review-players.mjs');
 
 await import('./review-finish.mjs');
+
+await import('./check-session-state.mjs');

@@ -20,10 +20,14 @@
 ;
 ; 1. DefaultDirName was {userappdata}\NFL Street Reborn, which made the install
 ;    root and the data root the same folder. The uninstaller then removed the
-;    folder holding the player's memory cards. Here {app} is under
-;    {localappdata}\Programs and the launcher's data root is under
-;    {userappdata}, on separate branches, so uninstall physically cannot reach
-;    saves.
+;    folder holding the player's memory cards. Here {app} is the `app`
+;    subfolder INSIDE the data root ({userappdata}\NFL Street Reborn[ Beta]\app
+;    since 2026-09-12; {userappdata}\NFL Street Reborn Launcher[ Beta]\app
+;    from beta.8; {localappdata}\Programs before that): the uninstaller
+;    empties that subfolder and nothing beside it, so it cannot reach saves,
+;    the game library or Dolphin's user folders. The stable data root is the
+;    folder 2.1 used; the launcher moves a 2.1 install found there into
+;    `Reborn 2.1` at its first start, and never deletes it.
 ;
 ; 2. UsePreviousAppDir was never set, so Inno defaulted it to YES. With the old
 ;    AppId retained, an upgrade looks up the previous install's recorded
@@ -70,6 +74,9 @@
   #define AppId   "{{7C3E9A5D-2B41-4F0E-9D6A-B8E1F2C4A9B3}"
   #define AppName "NFL Street Reborn Beta"
   #define DirName "NFL Street Reborn Beta"
+  ; The launcher's data root for this channel (reborn_core's PRODUCT plus
+  ; the channel suffix). The program installs into `app` inside it.
+  #define DataDir "NFL Street Reborn Beta"
 #elif Channel == "stable"
   ; The 2.1 AppId is kept ON PURPOSE. It is how an upgrade recognizes an
   ; existing install instead of leaving two entries in Programs and Features.
@@ -78,6 +85,10 @@
   #define AppId   "{{DCD6B9B9-11DE-4AC0-A7F5-256E7AC55A7E}"
   #define AppName "NFL Street Reborn"
   #define DirName "NFL Street Reborn"
+  ; The folder 2.1 used. Its uninstaller sits there under this same AppId
+  ; and is never run (see PreviousLauncherInstall); the launcher moves the
+  ; 2.1 files into `Reborn 2.1` inside it at first start.
+  #define DataDir "NFL Street Reborn"
 #else
   #error Channel must be "stable" or "beta"
 #endif
@@ -109,7 +120,12 @@ AppUpdatesURL={#AppURL}
 ; under LOCALAPPDATA\Programs, a different root from the APPDATA folder 2.1
 ; owns, so the plain name cannot collide with it. The application is the
 ; thing that carries the word, not its folder.
-DefaultDirName={localappdata}\Programs\{#DirName}
+; Since beta.8: the program lives in `app` INSIDE the launcher's data root,
+; so a player has one folder (Adam: "put everything in roaming like we used
+; to"). Note 1 still holds: {app} is a subfolder the uninstaller can empty,
+; never the data root itself, and InstallDirIsSafe below allows exactly this
+; one subfolder under a data root and refuses every other.
+DefaultDirName={userappdata}\{#DataDir}\app
 DefaultGroupName={#AppName}
 
 ; See note 2. Without these two an upgrade puts {app} back on the old data root.
@@ -166,7 +182,7 @@ WizardStyle=modern
 ; It lives in the repository rather than on one machine's Desktop, where the
 ; old script pointed and where no other checkout could find it.
 SetupIconFile=art\NSR.ico
-WizardImageFile=art\welcome.bmp
+WizardImageFile=art\launcher.bmp
 WizardSmallImageFile=art\corner.bmp
 
 ; The welcome page exists to show that art. Inno 6 hides it by default; 2.1
@@ -189,7 +205,7 @@ AlwaysRestart=no
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.17763
 
-UninstallDisplayName={#AppName} Launcher
+UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#LauncherExe}
 
 ; The 2.1 README pages, restored 2026-09-04.
@@ -234,7 +250,23 @@ Name: "foldericon"; Description: "Desktop shortcut to the folder the game is ins
 ; file needs no script change. The old script named NSR.iso explicitly, which
 ; meant a second image was silently not installed.
 Source: "{#Payload}\*"; DestDir: "{app}"; \
+  Excludes: "runtime\ReShade.ini,runtime\NSRShaderlessMenu.ini,runtime\reshade-presets\*"; \
   Flags: ignoreversion recursesubdirs createallsubdirs
+
+; ReShade's configuration and the effect presets, installed ONLY when they are
+; not already there.
+;
+; ReShade writes the player's in-overlay tuning straight back into these files.
+; Under the blanket ignoreversion above, re-running Setup - which players do to
+; repair an install - threw that tuning away every time. `onlyifdoesntexist`
+; keeps a fresh install correct and leaves an existing one alone. The launcher
+; restores any of these that goes missing.
+Source: "{#Payload}\runtime\ReShade.ini"; DestDir: "{app}\runtime"; \
+  Flags: onlyifdoesntexist skipifsourcedoesntexist
+Source: "{#Payload}\runtime\NSRShaderlessMenu.ini"; DestDir: "{app}\runtime"; \
+  Flags: onlyifdoesntexist skipifsourcedoesntexist
+Source: "{#Payload}\runtime\reshade-presets\*"; DestDir: "{app}\runtime\reshade-presets"; \
+  Flags: onlyifdoesntexist recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 ; Note what is NOT here.
 ;
@@ -279,14 +311,17 @@ Source: "{#Redist}\{#WebView2File}"; Flags: dontcopy
 
 [Icons]
 ; The Start menu gets all three; the desktop gets what was ticked.
-Name: "{group}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#LauncherExe}"
 Name: "{group}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--play"; Comment: "Start the game without opening the launcher"
 Name: "{group}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--folder"; Comment: "Open the folder the game is installed in"
-Name: "{group}\{cm:UninstallProgram,{#AppName} Launcher}"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
+; And one in the install folder itself, so a player who goes looking for
+; the program finds the way out beside it. Settings has a button for it too.
+Name: "{app}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
-Name: "{userdesktop}\{#AppName} Launcher"; Filename: "{app}\{#LauncherExe}"; \
+Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#LauncherExe}"; \
   Tasks: desktopicon
 Name: "{userdesktop}\Play {#AppName}"; Filename: "{app}\{#LauncherExe}"; \
   Parameters: "--play"; Comment: "Start the game without opening the launcher"; \
@@ -301,6 +336,26 @@ Name: "{userdesktop}\{#AppName} files"; Filename: "{app}\{#LauncherExe}"; \
 ; asks the launcher where the folder is rather than carrying a path decided
 ; at install time, because which folder that is depends on the emulator in
 ; use and on whether a 2.1 install is present.
+
+[Registry]
+; The invite link a host copies from the Online page:
+; nflstreetreborn://join/<code>. Opening one starts this launcher with the
+; link as its argument; it remembers the room code and lands the player on
+; Online with the room filled in. Per user (HKCU), the way everything else
+; here is, so no elevation. One key for both channels: the last install
+; wins it, and only the stable uninstall removes it, so removing a beta
+; that sat beside the stable launcher never breaks the stable one's links.
+#if Channel == "stable"
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: ""; ValueData: "URL:NFL Street Reborn invite"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"",0"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"" ""%1"""; Flags: uninsdeletekey
+#else
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: ""; ValueData: "URL:NFL Street Reborn invite"
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"",0"
+Root: HKCU; Subkey: "Software\Classes\nflstreetreborn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#LauncherExe}"" ""%1"""
+#endif
 
 [Run]
 ; Named in full on the Finish page: what is about to open is the launcher,
@@ -331,34 +386,136 @@ Filename: "{app}\{#LauncherExe}"; Flags: nowait; Check: RelaunchRequested
 // the line AFTER the comment rather than at the comment itself. Worth stating
 // once, because it cost a compile here.
 
-// The old 2.1 data root. If the install directory ever resolves here, the
-// uninstaller would delete the player's memory cards, and every reassurance at
-// the top of this file stops being true.
-function OldDataRoot(): String;
-begin
-  Result := ExpandConstant('{userappdata}\NFL Street Reborn');
-end;
-
+// The program lives INSIDE the data root, in its own `app` subfolder, so a
+// player finds everything in one place (Adam: "put everything in roaming like
+// we used to"). That subfolder, and only that subfolder, is a safe install
+// directory under a data root: the uninstaller removes what it installed
+// under `app` and cannot reach `library`, `saves` or `dolphin-users` beside
+// it. The data root itself, any other folder inside it, and the older
+// `Launcher` roots stay refused. Since 2026-09-12 the stable data root is
+// the folder 2.1 used; the launcher moves a 2.1 install found there into
+// `Reborn 2.1` at its first start, so `app` beside it is still safe.
 function InstallDirIsSafe(Dir: String): Boolean;
 var
-  Normalized, Old, Current, Beta: String;
+  Normalized, Own: String;
+  Roots: array[0..3] of String;
+  I: Integer;
 begin
   Normalized := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
-  Old := Lowercase(RemoveBackslashUnlessRoot(OldDataRoot()));
-  Current := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
-  Beta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
-  // Equal to it, or inside it. Both are fatal for the same reason.
-  Result := (Pos(Old + '\', Normalized + '\') <> 1)
-    and (Pos(Current + '\', Normalized + '\') <> 1)
-    and (Pos(Beta + '\', Normalized + '\') <> 1);
+  Own := Lowercase(ExpandConstant('{userappdata}\{#DataDir}\app'));
+  if Normalized = Own then
+  begin
+    Result := True;
+    exit;
+  end;
+  Roots[0] := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn'));
+  Roots[1] := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Beta'));
+  Roots[2] := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher'));
+  Roots[3] := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta'));
+  Result := True;
+  for I := 0 to 3 do
+    if Pos(Roots[I] + '\', Normalized + '\') = 1 then
+      Result := False;
+end;
+
+// A launcher built before 2026-09-12 self-updates with /DIR naming its own
+// program folder: {userappdata}\NFL Street Reborn Launcher[ Beta]\app, or a
+// folder under {localappdata}\Programs before beta.8. Those are refused by
+// InstallDirIsSafe, and a refused silent self-update would leave every
+// player on the old build for good. So a retired folder is redirected to
+// this channel's `app` here, before any page or check looks at it; the old
+// folder is then removed by RemovePreviousLauncherInstall and the launcher
+// adopts the data beside it at its first start. (The launcher itself stops
+// passing a retired folder from 2026-09-12 on; this is for the ones that
+// are already installed.)
+function RetiredProgramDir(Dir: String): Boolean;
+var
+  N, Programs: String;
+begin
+  N := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(Dir)));
+  Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
+  Result := (N = Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher\app')))
+    or (N = Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta\app')))
+    or ((Pos(Programs, N) = 1) and (N + '\' <> Programs));
+end;
+
+procedure InitializeWizard();
+begin
+  if RetiredProgramDir(WizardDirValue) then
+  begin
+    Log('Retired program folder ' + WizardDirValue + ' redirected to ' + ExpandConstant('{userappdata}\{#DataDir}\app'));
+    WizardForm.DirEdit.Text := ExpandConstant('{userappdata}\{#DataDir}\app');
+  end;
 end;
 
 function UnsafeInstallDirMessage(): String;
 begin
   Result := 'That folder contains NFL Street Reborn save data or settings.'
     + #13#10#13#10
-    + 'Choose a separate folder for the program, such as the default folder '
-    + 'under LocalAppData\Programs. Your existing files have not been changed.';
+    + 'Choose a separate folder for the program, such as the default `app` '
+    + 'folder. Your existing files have not been changed.';
+end;
+
+// A 3.0 build before beta.8 installed its program under
+// {localappdata}\Programs, and builds before 2026-09-12 under
+// {userappdata}\NFL Street Reborn Launcher[ Beta]\app. Left there, an
+// upgrade to the new location would strand up to 8 GB of shipped content
+// and a second uninstall entry. Those uninstallers remove only what they
+// installed (no [UninstallDelete] section), so running one silently first
+// is safe. The 2.1 uninstaller is registered under the same AppId as
+// stable, at {userappdata}\NFL Street Reborn\unins000.exe, and would
+// destroy saves: it has no reborn-launcher.exe beside it, so the check
+// below never picks it.
+function PreviousLauncherInstall(): String;
+var
+  Key, Value, Folder, Programs, OldStable, OldBeta: String;
+begin
+  Result := '';
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + ExpandConstant('{#AppId}') + '_is1';
+  if not RegQueryStringValue(HKCU, Key, 'UninstallString', Value) then
+    exit;
+  Value := RemoveQuotes(Trim(Value));
+  if not FileExists(Value) then
+    exit;
+  if not FileExists(ExtractFileDir(Value) + '\{#LauncherExe}') then
+    exit;
+  Folder := Lowercase(ExtractFileDir(Value));
+  Programs := Lowercase(ExpandConstant('{localappdata}\Programs\'));
+  OldStable := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher\app'));
+  OldBeta := Lowercase(ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta\app'));
+  // Our own program folder only: below Programs (never Programs itself), or
+  // exactly the old `app` folder of a launcher-named data root. The folder
+  // this install writes to is never removed here; Inno upgrades it in place.
+  if ((Pos(Programs, Folder) = 1) and (Folder + '\' <> Programs))
+     or (Folder = OldStable) or (Folder = OldBeta) then
+    Result := Value;
+end;
+
+procedure RemovePreviousLauncherInstall();
+var
+  Uninstaller: String;
+  Code: Integer;
+begin
+  Uninstaller := PreviousLauncherInstall();
+  if Uninstaller = '' then
+    exit;
+  Log('Removing the previous program folder first: ' + Uninstaller);
+  if not Exec(Uninstaller, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('The previous uninstaller could not be started; continuing.')
+  else
+    Log('The previous uninstaller finished with code ' + IntToStr(Code));
+  // What the launcher itself wrote beside the program (ReShade logs under
+  // runtime, for one) is not in the uninstall log, so the folder survives
+  // with a handful of files. It is our own old program folder, never a data
+  // root, so finish the job. The data beside it (library, saves,
+  // dolphin-users) is left for the launcher to adopt at its first start.
+  if DirExists(ExtractFileDir(Uninstaller)) then
+  begin
+    if DelTree(ExtractFileDir(Uninstaller), True, True, True) then
+      Log('Removed the leftover program folder ' + ExtractFileDir(Uninstaller))
+    else
+      Log('Could not remove everything under ' + ExtractFileDir(Uninstaller) + '; continuing.');
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -381,7 +538,11 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if not InstallDirIsSafe(ExpandConstant('{app}')) then
+  begin
     Result := UnsafeInstallDirMessage();
+    exit;
+  end;
+  RemovePreviousLauncherInstall();
 end;
 
 // WebView2 draws the launcher's window. It ships with Windows 11 and with any

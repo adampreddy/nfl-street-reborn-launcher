@@ -50,7 +50,9 @@ import argparse
 import hashlib
 import hmac
 import http.server
+import html
 import json
+import urllib.parse
 import re
 import sys
 import threading
@@ -253,6 +255,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with STORE.lock:
                 open_uploads = [{"key": v["key"], "upload_id": k} for k, v in STORE.multipart.items()]
             self._respond_json(200, {"open": open_uploads})
+            return
+        # ListObjectsV2: GET /<bucket>/?list-type=2&prefix=&max-keys=&continuation-token=
+        # A thousand keys a page, sorted, the way S3 and R2 answer. The
+        # continuation token is the last key of the page, which is all a
+        # token needs to be for a sorted listing.
+        params = urllib.parse.parse_qs(query)
+        if params.get("list-type") == ["2"]:
+            prefix = params.get("prefix", [""])[0]
+            max_keys = int(params.get("max-keys", ["1000"])[0])
+            after = params.get("continuation-token", [None])[0]
+            with STORE.lock:
+                keys = sorted(k for k in STORE.objects if k.startswith(prefix) and (after is None or k > after))
+                page = [(k, len(STORE.objects[k])) for k in keys[:max_keys]]
+            truncated = len(keys) > max_keys
+            body = ['<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>']
+            for k, n in page:
+                body.append(f"<Contents><Key>{html.escape(k)}</Key><Size>{n}</Size></Contents>")
+            body.append(f"<IsTruncated>{'true' if truncated else 'false'}</IsTruncated>")
+            if truncated:
+                body.append(f"<NextContinuationToken>{html.escape(page[-1][0])}</NextContinuationToken>")
+            body.append("</ListBucketResult>")
+            self._respond(200, "".join(body).encode("utf-8"))
             return
         key = self._key_from_path(path)
         if key is None:

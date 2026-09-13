@@ -3,7 +3,9 @@
 import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
 
 const state = {};
-const tabForHash = () => ({graphics:"Graphics",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1)] || "General";
+// What changed in each release, on the site. Opened in the browser.
+const PATCH_NOTES_URL = "https://nflstreetreborn.com/blog";
+const tabForHash = () => ({general:"General",graphics:"Graphics",display:"Display",audio:"Audio",saves:"Saves",updates:"Updates",files:"Files & storage"})[location.hash?.slice(1).toLowerCase()] || "General";
 let settingsTab=tabForHash();
 window.addEventListener?.("hashchange", () => { if (!busy) { settingsTab=tabForHash(); draw(); } });
 let problem = null;
@@ -27,7 +29,7 @@ async function load() {
     installation: call("setup_install_info"),
     paths: call("paths"),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
-    token: call("credential_stored", { account: "nsr.league.ingest" }),
+    identity: call("identity_status"),
     policy: call("update_policy"),
     queue: call("stats_queue"),
     content: call("content_status"),
@@ -177,7 +179,7 @@ function contentBlock() {
   else if(c.phase==='installed')actions.append(el('button',{type:'button',text:'Dismiss summary',disabled:busy,onclick:()=>act('Dismiss','content_dismiss',{},()=>{})}));
   else actions.append(el('button',{type:'button',text:working?'Working…':'Check game content',disabled:busy||working,onclick:()=>act('Check content','content_check',{depth:null},()=>{})}));
   sec.append(preferenceRow(labels[c.phase]||'Game content updates',c.note||'Keep your textures, game patches, roster, and Dolphin up to date.',actions));
-  if(working)sec.append(el('progress',{class:'settings-progress','aria-label':labels[c.phase]}));
+  if(working)sec.append(el('progress',{class:'settings-progress','aria-label':labels[c.phase],...(c.phase==='fetching'&&c.download_bytes?{value:String(Math.min(c.fetched_bytes||0,c.download_bytes)),max:String(c.download_bytes)}:{})}));
   const details=(c.components||[]).filter(x=>x&&['available','refused','problem'].includes(x.state));
   if(details.length){
     const list=el('ul',{class:'settings-update-details'});
@@ -206,7 +208,19 @@ function updatesBlock() {
   if(downloaded?.path)actions.append(el('button',{type:'button',class:'primary',text:'Install and restart',disabled:busy,onclick:()=>act('Install update','update_apply',{path:downloaded.path,confirm:true},r=>{update={...update,note:r.note};})}));
   else if(update?.state==='available')actions.append(el('button',{type:'button',class:'primary',text:`Download ${update.latest}`,disabled:busy,onclick:()=>act('Download update','update_download',{source:null},r=>{downloaded=r;if(r.check)update=r.check;})}));
   launcher.append(preferenceRow(downloaded?.path?'Ready to install':update?.state==='available'?`Version ${update.latest} available`:'Launcher updates',downloaded?.path?`Downloaded and verified · ${mb(downloaded.bytes)} MB. Restart the launcher to install.`:update?.note||'Check for a new launcher version. Your games and saves are preserved.',actions));
-  if(update?.notes)launcher.append(el('p',{class:'settings-release-notes',text:update.notes}));
+  // What changed lives on the site, not in a paragraph here.
+  actions.append(el('button',{type:'button',text:'Patch notes',onclick:()=>call('open_website',{url:PATCH_NOTES_URL}).catch(()=>{})}));
+  // The same row shape as "Launcher updates" above it, so it belongs to the
+  // page instead of floating under a note (Adam, 2026-09-11).
+  // Two presses, on purpose: one press on a pad, or a stray Enter, must not
+  // remove the launcher. The first arms the button for a few seconds and
+  // says so; the second does it.
+  const uninstall=el('button',{type:'button',text:'Uninstall…',disabled:busy,onclick:()=>{
+    if(uninstall.dataset.armed){act('Uninstall','uninstall_launcher',{confirm:true},()=>{});return;}
+    uninstall.dataset.armed='true';uninstall.textContent='Press again to remove';
+    setTimeout(()=>{if(!uninstall.isConnected)return;delete uninstall.dataset.armed;uninstall.textContent='Uninstall…';},8000);
+  }});
+  launcher.append(preferenceRow('Remove NFL Street Reborn','Removes the launcher and the game from this PC. Your saves stay.',uninstall));
   wrap.append(preferences,launcher,contentBlock());
   return wrap;
 }
@@ -237,51 +251,35 @@ function graphicsBlock(){
   return wrap;
 }
 
-function leagueBlock() {
-  const sec = el("section", { class: "block" }, el("h2", { text: "League results" }));
-  sec.append(el("p", { class: "note", text: "Send your recorded match results to the league. Your access token is stored securely in Windows." }));
-  const t = state.token;
-  const q = state.queue;
-  const rows = [];
-  rows.push(fact("Token", ok(t) ? (t.stored ? "stored" : "not stored") : null));
-  rows.push(fact("Waiting to send", ok(q) ? String(q.queued ?? q.pending ?? 0) : null));
-  sec.append(facts(rows));
-  const input = el("input", { type: "password", class: "wide", id: "league-token", placeholder: "Enter your league token", autocomplete: "off" });
-  const row = el("div", { class: "settings-row stack" }, el("label", { for: "league-token", class: "name", text: "League token" }), input);
-  const buttons = el("div", { class: "mod" });
-  buttons.append(el("button", { type: "button", text: "Store token", disabled: busy, onclick: () => { const v = input.value; input.value = ""; act("Store token", "stats_credential_set", { token: v }, (r) => { leagueSaid = "League token saved."; }); } }));
-  buttons.append(el("button", { type: "button", text: "Forget token", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Forget token", "stats_credential_forget", {}, () => { leagueSaid = "Token removed."; }) }));
-  buttons.append(el("button", { type: "button", class: "write", text: "Send results now", disabled: busy || !(ok(t) && t.stored), onclick: () => act("Send", "stats_submit", { confirm: true }, (r) => { leagueSaid = r.note; }) }));
-  sec.append(row, buttons);
-  if (leagueSaid) sec.append(el("div", { class: "said" }, el("p", { text: leagueSaid })));
-  return sec;
-}
 
 const preferenceGroups={
  General:[['confirm_stop','Confirm before stopping','Ask before closing a game.','bool'],['pause_unfocused','Pause when unfocused','Pause local play when you switch to another app.','bool'],['osd_messages','Game notifications','Show Dolphin messages over the game.','bool']],
- Graphics:[['vsync','V-Sync','Reduce screen tearing. May add a small amount of input delay.','bool'],['show_fps','Frame rate','Show a small frames-per-second counter.','bool']],
- Display:[['fullscreen','Start in fullscreen','Open the game in fullscreen mode.','bool'],['borderless','Borderless fullscreen','Switch between the game and other windows more easily.','bool'],['show_ping','Netplay ping','Show connection latency during online play.','bool'],['always_on_top','Keep game on top','Keep the game window above other windows.','bool']],
+ Graphics:[['internal_resolution','Internal resolution','How sharp the game renders. 3× is the Reborn default; lower it if the game runs slowly.','resolution'],['msaa','Anti-aliasing','Smooths edges. 4× is the Reborn default; lower it if the game stutters. Raising it softens the depth-based ReShade effects.','msaa'],['sync_gpu','Synchronize GPU thread','Off is faster. Turn it on only if you see graphical glitches.','bool'],['vsync','V-Sync','Reduce screen tearing. May add a small amount of input delay.','bool'],['show_fps','Frame rate','Show a small frames-per-second counter.','bool']],
+ Display:[['fullscreen','Start in fullscreen','Open the game in fullscreen mode.','bool'],['show_ping','Netplay ping','Show connection latency during online play.','bool'],['always_on_top','Keep game on top','Keep the game window above other windows.','bool']],
  Audio:[['audio_backend','Audio output','Default shares audio with other apps. Windows exclusive gives Dolphin sole use of the output device.','backend'],['volume','Game volume','Adjust Dolphin audio output.','range',0,100],['muted','Mute audio','Silence game audio without changing the volume.','bool'],['audio_stretch','Audio stretching','Smooth out audio during brief slowdowns.','bool'],['audio_latency','Audio buffer','Audio buffering in milliseconds. Raise it if sound crackles.','range',0,200]],
  Saves:[['slot_a','Memory Slot A','Choose where Player 1 saves game progress.','slot'],['card_a','Slot A memory card','Used when Slot A is set to Memory card. Leave blank for Dolphin’s default.','card'],['gci_a','Slot A save folder','Used when Slot A is set to GCI folder. Leave blank for the default folder.','folder'],['slot_b','Memory Slot B','An optional second card. Existing saves are kept when you change the type.','slot'],['card_b','Slot B memory card','Used when Slot B is set to Memory card.','card'],['gci_b','Slot B save folder','Used when Slot B is set to GCI folder.','folder']]
 };
 function dolphinBlock(){
  const group=el('section',{class:'preference-group'},el('h2',{text:settingsTab==='Saves'?'Memory cards & save data':settingsTab==='Graphics'?'Rendering':settingsTab}));
  if(!ok(state.dolphin)){group.append(el('p',{class:'partial',text:state.dolphin?.error||'Dolphin settings could not be read.'}));return el('div',{class:'settings-content'},group);}
- const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
+ const canEdit=key=>state.dolphin.editable!==false||(state.dolphin.live_editable||[]).includes(key);
+ const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:settingsTab==='Audio'&&(state.dolphin.live_editable||[]).length?'Volume and mute apply immediately, including during NetPlay. Other audio settings apply next time.':state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
  for(const [key,label,description,type,min,max] of preferenceGroups[settingsTab]||[]){
   if(key==='audio_latency'&&!['WASAPI (Exclusive Mode)','OpenAL'].includes(values.audio_backend))continue;
   if(values[key]===undefined){group.append(el('p',{class:'partial',text:label+' is unavailable. Refresh settings to try again.'}));continue;}
   const id='preference-'+key,area=el('div',{class:'preference-value'});let control;
   if(type==='backend'){control=el('select',{id});for(const [value,text] of [['Cubeb','Default (shared audio)'],['WASAPI (Exclusive Mode)','Windows exclusive']])control.append(el('option',{value,text}));if(!['Cubeb','WASAPI (Exclusive Mode)'].includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
   else if(type==='slot'){control=el('select',{id});for(const [value,text] of [['8','GCI folder'],['1','Memory card'],['255','Nothing']])control.append(el('option',{value,text}));if(!['8','1','255'].includes(values[key]))control.append(el('option',{value:values[key],text:'Current device ('+values[key]+')'}));control.value=values[key];}
+  else if(type==='resolution'){control=el('select',{id});for(const [value,text] of [['1','1× native (640×528)'],['2','2×'],['3','3× (Reborn default)'],['4','4×'],['5','5×'],['6','6×']])control.append(el('option',{value,text}));const n=String(parseInt(values[key])||3);if(!['1','2','3','4','5','6'].includes(n))control.append(el('option',{value:n,text:n+'×'}));control.value=n;}
+  else if(type==='msaa'){control=el('select',{id});for(const [value,text] of [['1','Off'],['2','2×'],['4','4×'],['8','8×']])control.append(el('option',{value,text}));const n=String(parseInt(values[key])||4);if(!['1','2','4','8'].includes(n))control.append(el('option',{value:n,text:n+'×'}));control.value=n;}
   else if(type==='bool')control=el('input',{id,type:'checkbox',checked:String(values[key]).toLowerCase()==='true'});
   else if(type==='range')control=el('input',{id,type:'range',min,max,step:1,value:values[key]});
   else control=el('input',{id,type:'text',value:values[key]||'',placeholder:'Use default'});
-  control.disabled=busy||state.dolphin.editable===false;area.append(control);
+  control.dataset.preferenceKey=key;control.disabled=busy||!canEdit(key);area.append(control);
   const output=type==='range'?el('output',{for:id,text:values[key]+(key==='volume'?'%':' ms')}):null;if(output){area.append(output);control.addEventListener('input',()=>output.textContent=control.value+(key==='volume'?'%':' ms'));}
-  const save=async()=>{if(busy)return;const hadFocus=document.activeElement===control;document.getElementById("screen").setAttribute("aria-busy","true");const previous=values[key],value=type==='bool'?String(control.checked):control.value;busy=true;group.querySelectorAll('input,select,button').forEach(n=>n.disabled=true);status.textContent='Saving…';try{await call('dolphin_preference_set',{runtime:get('runtime'),key,value});values[key]=value;status.textContent=label+' saved.';}catch(e){if(type==='bool')control.checked=String(previous).toLowerCase()==='true';else control.value=previous||'';if(output)output.textContent=control.value+(key==='volume'?'%':' ms');status.textContent=reason(e);}finally{busy=false;document.getElementById('screen').removeAttribute('aria-busy');group.querySelectorAll('input,select,button').forEach(n=>n.disabled=state.dolphin.editable===false);if(hadFocus)control.focus({preventScroll:true});if(key==='audio_backend'){draw();document.getElementById(id)?.focus({preventScroll:true});}}};
+  const save=async()=>{if(busy)return;const hadFocus=document.activeElement===control;document.getElementById("screen").setAttribute("aria-busy","true");const previous=values[key],value=type==='bool'?String(control.checked):control.value;busy=true;group.querySelectorAll('input,select,button').forEach(n=>n.disabled=true);status.textContent='Saving…';try{await call('dolphin_preference_set',{runtime:get('runtime'),key,value});values[key]=value;status.textContent=label+' saved.';}catch(e){if(type==='bool')control.checked=String(previous).toLowerCase()==='true';else control.value=previous||'';if(output)output.textContent=control.value+(key==='volume'?'%':' ms');status.textContent=reason(e);}finally{busy=false;document.getElementById('screen').removeAttribute('aria-busy');group.querySelectorAll('input,select,button').forEach(n=>n.disabled=!canEdit(n.dataset.preferenceKey));if(hadFocus)control.focus({preventScroll:true});if(key==='audio_backend'){draw();document.getElementById(id)?.focus({preventScroll:true});}}};
   control.addEventListener('change',save);
-  if(type==='card'||type==='folder'){area.append(el('button',{type:'button',text:'Browse','aria-label':'Browse '+label,disabled:control.disabled,onclick:async()=>{try{const picked=await call('pick_path',{kind:type==='card'?'memory_card':'folder'});if(picked){control.value=picked;await save();}}catch(e){status.textContent=reason(e);}}}));}
+  if(type==='card'||type==='folder'){area.append(el('button',{type:'button',text:'Browse','data-preference-key':key,'aria-label':'Browse '+label,disabled:control.disabled,onclick:async()=>{try{const picked=await call('pick_path',{kind:type==='card'?'memory_card':'folder'});if(picked){control.value=picked;await save();}}catch(e){status.textContent=reason(e);}}}));}
   group.append(el('div',{class:'preference-row'},el('div',{class:'preference-description'},el('label',{for:id,text:label}),el('p',{text:description})),area));
  }
  const wrap=el('div',{class:'settings-content'},status,group);
@@ -293,7 +291,7 @@ function draw() {
  const screen=document.getElementById('screen'),parts=[];
  if(problem)parts.push(refusal(problem));
  const status=el('p',{class:'settings-status',role:'status'});
- parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened. Close it before changing settings here.';state.dolphin&&(state.dolphin.editable=false);screen.querySelectorAll(".settings-content input,.settings-content select,.settings-content button").forEach(n=>n.disabled=true);}catch(e){status.textContent=reason(e);}}})),status);
+ parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened.';await refresh();}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
  if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
  parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);
@@ -308,6 +306,26 @@ async function refresh() {
   }
   draw();
 }
+
+// Dolphin can close while this page stays open, including when it was opened
+// outside the launcher. Refresh availability without rebuilding controls on
+// every poll or overwriting a volume slider the player is using.
+let pollingDolphin=false;
+async function refreshDolphinAvailability(){
+  if(pollingDolphin||busy||document.hidden||['Updates','Files & storage'].includes(settingsTab)||!state.dolphin)return;
+  pollingDolphin=true;
+  try{
+    const next=await call('dolphin_preferences',{runtime:get('runtime')});
+    if(busy||!next||['Updates','Files & storage'].includes(settingsTab))return;
+    const availability=value=>JSON.stringify([value.editable,value.live_editable,value.readonly_reason]);
+    const changed=availability(next)!==availability(state.dolphin);
+    state.dolphin=next;
+    if(changed){const focused=document.activeElement?.id;draw();if(focused)document.getElementById(focused)?.focus({preventScroll:true});}
+  }catch(_){/* A failed read is not evidence that Dolphin stopped. */}
+  finally{pollingDolphin=false;}
+}
+document.addEventListener('session-state',refreshDolphinAvailability);
+window.addEventListener('focus',refreshDolphinAvailability);
 
 // A content check or download can outlive the page that started it.
 // Update only its group so the preference being edited keeps its focus.

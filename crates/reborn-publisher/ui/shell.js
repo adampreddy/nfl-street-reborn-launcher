@@ -87,6 +87,31 @@ export function partial(text) {
   return el("p", { class: "partial", text });
 }
 
+/// The plain name of each thing players get, from the wire name the core
+/// uses (`reborn_core::inventory::ComponentId`). A name not listed is shown
+/// as it came.
+export const THING_NAMES = {
+  launcher: "Launcher",
+  runtime: "Runtime",
+  "offline-content": "Offline content",
+  "online-content": "Online content",
+  textures: "Textures",
+  mods: "Mods",
+  "controller-db": "Controller database",
+  roster: "Roster",
+  "game-patch": "Game patch",
+};
+
+export function thingName(id) {
+  return THING_NAMES[id] || String(id || "");
+}
+
+/// The same, lower case, for the middle of a sentence ("textures 1.2.1").
+export function thingWord(id) {
+  const name = thingName(id);
+  return name.charAt(0).toLowerCase() + name.slice(1);
+}
+
 /// Mark the nav link for the current page, by file name.
 export function markCurrent() {
   const here = (location.pathname.split("/").pop() || "index.html").toLowerCase();

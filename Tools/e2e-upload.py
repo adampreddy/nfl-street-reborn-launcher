@@ -27,6 +27,7 @@ What is proven, in order:
 """
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -153,6 +154,29 @@ def store_token(flag: str, value: str):
         run("publish", "token", flag, str(tmp))
     finally:
         tmp.unlink(missing_ok=True)
+
+
+# There is one vault, and the two R2 entries this script fills with fake
+# credentials are the ones the Publisher publishes with. Put the real ones
+# back from rclone.conf (the file the Publisher's own import reads) the
+# moment the run ends, pass or fail, so the next real publish is not
+# refused with a 403 (2026-09-11).
+RCLONE_CONF = Path(r"C:\Users\Adam\Reborn Keys\rclone.conf")
+
+
+def restore_real_r2():
+    if not RCLONE_CONF.is_file():
+        print(f"WARNING: {RCLONE_CONF} not found; the vault still holds the FAKE R2 credentials. Restore them with `rebornctl publish token`.")
+        return
+    text = RCLONE_CONF.read_text(encoding="utf-8")
+    access = re.search(r"^\s*access_key_id\s*=\s*(\S+)", text, re.M)
+    secret = re.search(r"^\s*secret_access_key\s*=\s*(\S+)", text, re.M)
+    if not (access and secret):
+        print("WARNING: rclone.conf has no access_key_id/secret_access_key; the vault still holds the FAKE R2 credentials.")
+        return
+    store_token("--r2-access-from-file", access.group(1))
+    store_token("--r2-secret-from-file", secret.group(1))
+    print("  ok  restored the real R2 credentials from rclone.conf")
 
 
 # -- building the origin ------------------------------------------------------
@@ -323,6 +347,10 @@ def main():
         print()
         print(f"PASS: {len(PASSED)} steps, origin at {ORIGIN}")
     finally:
+        try:
+            restore_real_r2()
+        except Exception as e:  # noqa: BLE001 - the warning is the point
+            print(f"WARNING: the real R2 credentials were not restored ({e}); the vault still holds the FAKE ones.")
         server.terminate()
         try:
             server.wait(timeout=5)

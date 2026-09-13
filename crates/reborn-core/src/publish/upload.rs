@@ -39,7 +39,7 @@ use crate::manifest::Sha256Hex;
 use crate::net::Http;
 use crate::origin::{blob_path, BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
 use crate::publish::journal::JOURNAL_FILE;
-use crate::publish::{err, io_err, out, refuse, thousands, Outcome, Sink, COMPONENTS_DIR};
+use crate::publish::{err, io_err, out, refuse, thousands, Event, Outcome, Sink, COMPONENTS_DIR};
 use crate::{Error, Result};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -873,7 +873,7 @@ fn complete_body(parts: &[(u32, String)]) -> String {
 /// discipline of remembering to check every early return by hand: nothing
 /// between "the upload id exists" and "the match below runs" can leave this
 /// function without going through the closure boundary first.
-fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, part_size: u64, attempts: u32, sink: Sink<'_>) -> Result<PutOutcome> {
+fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, part_size: u64, attempts: u32, done_before: u64, total: u64, sink: Sink<'_>) -> Result<PutOutcome> {
     let ranges = part_ranges(item.bytes, part_size);
 
     let now = now_for_signing()?;
@@ -916,7 +916,12 @@ fn put_multipart(transport: &dyn Transport, bucket: &Bucket, item: &UploadItem, 
                     item.key, bucket.bucket
                 )]));
             };
-            err!(sink, "    part {part_number} of {} uploaded, {} byte(s)", ranges.len(), thousands(*len));
+            // `done_before` + this object's bytes so far: the bar keeps
+            // moving through a large object instead of jumping at its end.
+            sink(
+                Event::err(format!("    part {part_number} of {} uploaded, {} byte(s)", ranges.len(), thousands(*len)))
+                    .with_progress(done_before + offset + len, total, format!("Uploading part {part_number} of {}", ranges.len())),
+            );
             parts.push((part_number, etag.to_string()));
         }
 
@@ -1077,19 +1082,26 @@ pub fn upload(transport: &dyn Transport, http: &dyn Http, req: &UploadRequest<'_
         return Ok(Outcome::Described);
     }
 
+    let total = plan.total_bytes();
     let mut uploaded_objects = 0u64;
     let mut uploaded_bytes = 0u64;
+    // The bar starts at zero before the first byte moves, so a window shows
+    // "0 of N" at once instead of nothing until the first object lands.
+    sink(Event::out(format!("Uploading     {} byte(s) in {} object(s)", thousands(total), thousands(plan.len() as u64))).with_progress(0, total, "Uploading"));
     for item in plan.items() {
         let outcome = if item.bytes < req.multipart_threshold {
             put_single(transport, req.bucket, item, req.attempts, sink)?
         } else {
-            put_multipart(transport, req.bucket, item, req.part_size, req.attempts, sink)?
+            put_multipart(transport, req.bucket, item, req.part_size, req.attempts, uploaded_bytes, total, sink)?
         };
         match outcome {
             PutOutcome::Done => {
                 uploaded_objects += 1;
                 uploaded_bytes += item.bytes;
-                out!(sink, "  {}  ({} byte(s))", item.key, thousands(item.bytes));
+                sink(
+                    Event::out(format!("  {}  ({} byte(s))", item.key, thousands(item.bytes)))
+                        .with_progress(uploaded_bytes, total, "Uploading"),
+                );
             }
             PutOutcome::Refused(lines) => return Ok(refuse(sink, &lines)),
         }
@@ -1937,6 +1949,42 @@ mod tests {
     }
 
     #[test]
+    fn progress_rides_on_the_lines_from_zero_to_the_total_through_every_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let part_size = 10u64;
+        let big = vec![7u8; (part_size * 2) as usize];
+        let big_from = dir.path().join("big.bin");
+        std::fs::write(&big_from, &big).unwrap();
+        let small_from = dir.path().join("small.bin");
+        std::fs::write(&small_from, b"one").unwrap();
+        let mut plan = UploadPlan::new();
+        plan.blob("blobs/by-hash/aa/big".to_string(), big_from, big.len() as u64, Sha256Hex::from_bytes(&big));
+        plan.blob("blobs/by-hash/bb/small".to_string(), small_from, 3, Sha256Hex::from_bytes(b"one"));
+        let total = plan.total_bytes();
+        assert_eq!(total, 23);
+
+        let bucket = test_upload_bucket();
+        let req = UploadRequest { multipart_threshold: 5, part_size, attempts: 1, ..default_request(&bucket, &plan) };
+        let transport = FakeTransport::new();
+        let http = FakeHttp::default();
+        let mut events = Vec::new();
+
+        let outcome = upload(&transport, &http, &req, &mut |e| events.push(e)).unwrap();
+
+        assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+        let progress: Vec<(u64, u64, String)> =
+            events.iter().filter_map(|e| e.progress.as_ref().map(|p| (p.done, p.total, p.label.clone()))).collect();
+        assert_eq!(progress.first().map(|p| (p.0, p.1)), Some((0, total)), "the bar starts at zero: {progress:?}");
+        assert!(progress.iter().all(|p| p.1 == total), "every report carries the same total: {progress:?}");
+        assert!(progress.contains(&(10, total, "Uploading part 1 of 2".to_string())), "{progress:?}");
+        assert!(progress.contains(&(20, total, "Uploading part 2 of 2".to_string())), "{progress:?}");
+        assert_eq!(progress.last().map(|p| p.0), Some(total), "the last report is the whole total: {progress:?}");
+        assert!(progress.windows(2).all(|w| w[0].0 <= w[1].0), "done never goes backwards: {progress:?}");
+        // Every progress report is also an ordinary line a console prints.
+        assert!(events.iter().filter(|e| e.progress.is_some()).all(|e| !e.line.is_empty()));
+    }
+
+    #[test]
     fn apply_false_sends_nothing_and_describes_every_object() {
         let dir = tempfile::tempdir().unwrap();
         let plan = small_plan(dir.path(), &[("blobs/by-hash/aa/aaaa", b"one"), ("blobs/by-hash/bb/bbbb", b"two")]);
@@ -2031,5 +2079,216 @@ mod tests {
             Outcome::Done(uploaded) => assert_eq!(uploaded, Uploaded::default()),
             other => panic!("expected Done with nothing uploaded, got {other:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the bucket already holds, in one pass.
+//
+// Every planner used to ask HEAD once per object to learn what was already
+// on the bucket. The origin holds sixteen thousand blobs, so a publish spent
+// ten minutes asking before it sent a byte, with nothing on screen: the
+// Publisher looked hung, twice on 2026-09-10. ListObjectsV2 answers a
+// thousand keys a page, so the same question is seventeen requests.
+
+/// Every key on the bucket under `prefix`, with its size. The inner `Err`
+/// says why the bucket would not list (the HTTP status and what it said:
+/// a token scoped to objects alone, a stand-in without the call), so the
+/// caller can fall back to asking per key and say why it is slow.
+pub fn list_keys(transport: &dyn Transport, bucket: &Bucket, prefix: &str) -> Result<std::result::Result<std::collections::HashMap<String, u64>, String>> {
+    let mut found = std::collections::HashMap::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut query: Vec<(&str, &str)> = vec![("list-type", "2"), ("max-keys", "1000"), ("prefix", prefix)];
+        if let Some(t) = token.as_deref() {
+            query.push(("continuation-token", t));
+        }
+        let path = format!("/{}/", bucket.bucket);
+        let req = sign(bucket, "GET", &path, &query, &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
+        // One request per thousand keys, asked for again on a 429, a 5xx or
+        // a dropped connection before the listing is given up on, the way
+        // every upload request is. A listing that fails after the component
+        // was written would otherwise fail the whole publish for one reset.
+        let reply = {
+            let mut attempt = 1u32;
+            loop {
+                match transport.send(&req, Body::Empty) {
+                    Ok(r) if (r.status == 429 || (500..600).contains(&r.status)) && attempt < 3 => {
+                        backoff(attempt);
+                        attempt += 1;
+                    }
+                    Ok(r) => break r,
+                    Err(_) if attempt < 3 => {
+                        backoff(attempt);
+                        attempt += 1;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        if !(200..300).contains(&reply.status) {
+            let said: String = String::from_utf8_lossy(&reply.body).chars().filter(|c| !c.is_control()).take(160).collect();
+            return Ok(Err(format!("HTTP {} {}", reply.status, said.trim())));
+        }
+        let xml = String::from_utf8_lossy(&reply.body);
+        for (key, size) in listed_objects(&xml) {
+            found.insert(key, size);
+        }
+        match continuation_token(&xml) {
+            Some(t) => token = Some(t),
+            None => return Ok(Ok(found)),
+        }
+    }
+}
+
+/// The size of one object on the bucket, by HEAD, or `None` when it is not
+/// there. The slow way; [`already_on_bucket`] uses it only as a fallback.
+pub fn head_length(transport: &dyn Transport, bucket: &Bucket, key: &str) -> Option<u64> {
+    let path = object_path(bucket, key);
+    let req = sign(bucket, "HEAD", &path, &[], &[], EMPTY_PAYLOAD_SHA256, std::time::SystemTime::now());
+    let reply = transport.send(&req, Body::Empty).ok()?;
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    reply
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse::<u64>().ok())
+}
+
+/// "Is this key on the bucket, and how long is it?" for the planners: one
+/// listing up front when the bucket allows it, a HEAD per key when it does
+/// not. The note says which, because the difference is ten minutes.
+#[allow(clippy::type_complexity)]
+pub fn already_on_bucket<'a>(
+    transport: &'a dyn Transport,
+    bucket: &'a Bucket,
+) -> Result<(Box<dyn Fn(&str) -> Option<u64> + 'a>, String)> {
+    match list_keys(transport, bucket, "")? {
+        Ok(found) => {
+            let note = format!("Listed        {} object(s) already on the bucket, in one pass.", thousands(found.len() as u64));
+            Ok((Box::new(move |key: &str| found.get(key).copied()), note))
+        }
+        Err(why) => Ok((
+            Box::new(move |key: &str| head_length(transport, bucket, key)),
+            format!("The bucket would not list its objects ({why}); asking about each one (slow)."),
+        )),
+    }
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+fn xml_text<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&close)? + start;
+    Some(&block[start..end])
+}
+
+/// `(key, size)` for every `<Contents>` entry of a ListObjectsV2 page.
+fn listed_objects(xml: &str) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Contents>") {
+        let after = &rest[start + "<Contents>".len()..];
+        let Some(end) = after.find("</Contents>") else { break };
+        let block = &after[..end];
+        if let (Some(key), Some(size)) = (xml_text(block, "Key"), xml_text(block, "Size").and_then(|s| s.trim().parse::<u64>().ok())) {
+            out.push((xml_unescape(key), size));
+        }
+        rest = &after[end + "</Contents>".len()..];
+    }
+    out
+}
+
+/// The token for the next page, when the page says there is one.
+fn continuation_token(xml: &str) -> Option<String> {
+    if xml_text(xml, "IsTruncated")?.trim() != "true" {
+        return None;
+    }
+    xml_text(xml, "NextContinuationToken").map(xml_unescape)
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A transport that answers each call from a script and records the URLs.
+    #[derive(Debug)]
+    struct Scripted {
+        replies: Mutex<Vec<Reply>>,
+        urls: Mutex<Vec<String>>,
+    }
+    impl Transport for Scripted {
+        fn send(&self, req: &SignedRequest, _body: Body<'_>) -> Result<Reply> {
+            self.urls.lock().unwrap().push(req.url.clone());
+            Ok(self.replies.lock().unwrap().remove(0))
+        }
+    }
+    fn bucket() -> Bucket {
+        Bucket {
+            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
+            bucket: "reborn-content".into(),
+            region: "auto".into(),
+            access_key_id: "AKIA".into(),
+            secret_access_key: "secret".into(),
+        }
+    }
+    fn page(entries: &[(&str, u64)], next: Option<&str>) -> Reply {
+        let mut xml = String::from("<?xml version=\"1.0\"?><ListBucketResult><Name>reborn-content</Name>");
+        for (k, n) in entries {
+            xml.push_str(&format!("<Contents><Key>{k}</Key><LastModified>x</LastModified><ETag>e</ETag><Size>{n}</Size></Contents>"));
+        }
+        match next {
+            Some(t) => xml.push_str(&format!("<IsTruncated>true</IsTruncated><NextContinuationToken>{t}</NextContinuationToken>")),
+            None => xml.push_str("<IsTruncated>false</IsTruncated>"),
+        }
+        xml.push_str("</ListBucketResult>");
+        Reply { status: 200, headers: vec![], body: xml.into_bytes() }
+    }
+
+    #[test]
+    fn a_listing_walks_every_page_and_reports_each_key_with_its_size() {
+        let t = Scripted {
+            replies: Mutex::new(vec![page(&[("blobs/by-hash/ab/abcd", 10), ("components/runtime-1.0.0.json", 20)], Some("tok&en=1")), page(&[("release.json", 30)], None)]),
+            urls: Mutex::new(vec![]),
+        };
+        let found = list_keys(&t, &bucket(), "").unwrap().expect("the bucket listed");
+        assert_eq!(found.len(), 3);
+        assert_eq!(found.get("blobs/by-hash/ab/abcd"), Some(&10));
+        assert_eq!(found.get("release.json"), Some(&30));
+        let urls = t.urls.lock().unwrap();
+        assert_eq!(urls.len(), 2, "one request per page");
+        assert!(urls[0].contains("/reborn-content/?") && urls[0].contains("list-type=2"), "{}", urls[0]);
+        assert!(urls[1].contains("continuation-token=tok%26en%3D1"), "the token travels back encoded: {}", urls[1]);
+    }
+
+    #[test]
+    fn a_bucket_that_refuses_to_list_yields_none_so_the_caller_falls_back() {
+        let t = Scripted { replies: Mutex::new(vec![Reply { status: 403, headers: vec![], body: b"AccessDenied".to_vec() }]), urls: Mutex::new(vec![]) };
+        assert!(list_keys(&t, &bucket(), "").unwrap().is_err());
+    }
+
+    #[test]
+    fn keys_with_xml_escapes_come_back_as_written() {
+        let objects = listed_objects("<Contents><Key>a &amp; b</Key><Size>1</Size></Contents>");
+        assert_eq!(objects, vec![("a & b".to_string(), 1)]);
+        assert_eq!(continuation_token("<IsTruncated>false</IsTruncated>"), None);
+    }
+
+    #[test]
+    fn already_on_bucket_answers_from_the_listing_and_says_so() {
+        let t = Scripted { replies: Mutex::new(vec![page(&[("release.json", 30)], None)]), urls: Mutex::new(vec![]) };
+        let b = bucket();
+        let (already, note) = already_on_bucket(&t, &b).unwrap();
+        assert!(note.starts_with("Listed        1 object(s)"), "{note}");
+        assert_eq!(already("release.json"), Some(30));
+        assert_eq!(already("missing"), None);
+        assert_eq!(t.urls.lock().unwrap().len(), 1, "no HEAD followed the listing");
     }
 }

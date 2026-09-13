@@ -17,9 +17,11 @@
 //
 //     node Tools/check-harness-args.mjs
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 
-const UI = "crates/reborn-ui/src/main.rs";
+// Every source file of the window crate: commands live in main.rs and in its
+// modules (content_updates.rs, music_page.rs).
+const UI_DIR = "crates/reborn-ui/src";
 const APP = "crates/reborn-ui/ui/app.js";
 
 // ---------------------------------------------------------------------------
@@ -95,7 +97,10 @@ function harness(src) {
 
 // ---------------------------------------------------------------------------
 
-const declared = rustCommands(readFileSync(UI, "utf8"));
+const declared = new Map();
+for (const name of readdirSync(UI_DIR).filter((n) => n.endsWith(".rs")).sort()) {
+  for (const [cmd, args] of rustCommands(readFileSync(`${UI_DIR}/${name}`, "utf8"))) declared.set(cmd, args);
+}
 const { FEATURES, buildArgs } = await harness(readFileSync(APP, "utf8"));
 const rows = FEATURES.flatMap((g) => g.items);
 

@@ -85,6 +85,20 @@ fn pairs(install_root: &Path, data_root: &Path, game_id: &str) -> Vec<(Component
             install_root.join(SHIPPED_CONTENT_DIR).join("textures").join(game_id),
             data(DataDir::LibraryTextures).join(game_id),
         ),
+        // The mod packs the installer carries, so the library is full on first
+        // run and the first check adopts them instead of fetching them.
+        (
+            ComponentId::Mods,
+            install_root.join(SHIPPED_CONTENT_DIR).join("mods").join("packages"),
+            data(DataDir::ModsPackages),
+        ),
+        // The game patch chain, so a disc imported during setup is moved to
+        // the newest build offline and the first check has nothing to fetch.
+        (
+            ComponentId::GamePatch,
+            install_root.join(SHIPPED_CONTENT_DIR).join("game-patch"),
+            data(DataDir::LibraryGamePatch),
+        ),
     ]
 }
 
@@ -126,7 +140,23 @@ fn mirror(platform: &Platform, from: &Path, to: &Path) -> Result<(usize, SeedHow
                 continue;
             }
             let dest = dest_dir.join(entry.file_name());
-            if platform.files.hardlink(&path, &dest).is_err() {
+            // Config the player edits is COPIED, never hardlinked.
+            //
+            // A hardlink makes the folder the launcher runs from and the
+            // content system's pristine tree the same bytes on disk, so a
+            // launch-time write to ReShade.ini or a preset reaches inside the
+            // managed tree and the next verify calls the managed tree damaged.
+            // Everything else stays linked: that is what keeps seeding a
+            // multi-gigabyte install close to free.
+            let editable = dest
+                .strip_prefix(to)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .is_some_and(|r| crate::library::is_player_editable(&r));
+            if editable {
+                let _ = std::fs::remove_file(&dest);
+                std::fs::copy(&path, &dest).map_err(|e| io(&dest, e))?;
+            } else if platform.files.hardlink(&path, &dest).is_err() {
                 let _ = std::fs::remove_file(&dest);
                 std::fs::copy(&path, &dest).map_err(|e| io(&dest, e))?;
                 how = SeedHow::Copied;
@@ -197,6 +227,8 @@ mod tests {
         put(install, "runtime/Sys/GC/font.bin", b"font");
         put(install, "content/textures/GN7E69/a.png", b"a");
         put(install, "content/textures/GN7E69/sub/b.png", b"b");
+        put(install, "content/mods/packages/jsgme.aqua-football/1.0.0/package.json", b"{}");
+        put(install, "content/game-patch/chain.json", b"{}");
     }
 
     #[test]
@@ -208,10 +240,12 @@ mod tests {
         install_with_both(&install);
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.len(), 2, "{r:?}");
-        assert_eq!(r.files(), 4);
+        assert_eq!(r.seeded.len(), 4, "{r:?}");
+        assert_eq!(r.files(), 6);
+        assert_eq!(std::fs::read(data.join("library/game-patch/chain.json")).unwrap(), b"{}");
         assert_eq!(std::fs::read(data.join("runtime/Sys/GC/font.bin")).unwrap(), b"font");
         assert_eq!(std::fs::read(data.join("library/textures/GN7E69/sub/b.png")).unwrap(), b"b");
+        assert_eq!(std::fs::read(data.join("mods/packages/jsgme.aqua-football/1.0.0/package.json")).unwrap(), b"{}");
         assert!(r.seeded.iter().all(|s| s.how == SeedHow::Linked), "same volume, so links: {r:?}");
 
         let again = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
@@ -230,7 +264,7 @@ mod tests {
         put(&data, "library/textures/GN7E69/mine.png", b"mine");
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime]);
+        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods, ComponentId::GamePatch]);
         assert!(!data.join("library/textures/GN7E69/a.png").exists(), "the player's tree was left alone");
         assert!(data.join("library/textures/GN7E69/mine.png").exists());
     }
