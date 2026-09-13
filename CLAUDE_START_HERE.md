@@ -1,5 +1,7 @@
 # Claude: Start Here
 
+> September 12, 2026: Adam requested a Codex-to-Claude handoff. Read [CODEX_TO_CLAUDE_HANDOFF.md](CODEX_TO_CLAUDE_HANDOFF.md) for the current stable launcher hotfix, actual integration worktree, verification, and delivery status. The discovery-stage description below is historical relative to this implementation work.
+
 ## NFL Street Reborn Launcher
 
 Read this file completely before taking any project action.

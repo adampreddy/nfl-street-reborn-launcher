@@ -89,6 +89,17 @@ const page=await context.newPage();
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 await page.goto(url);await page.getByRole('button',{name:'Play now'}).waitFor();await page.evaluate(()=>document.fonts.ready);
 await page.screenshot({path:path.join(out,'reborn-launcher-home.png')});
+assert.equal(await page.locator('#input-hints').evaluate(n=>getComputedStyle(n).visibility),'hidden','mouse navigation has no hints');
+const protection=await page.evaluate(()=>{
+ const img=document.querySelector('.play-wordmark img');
+ const drag=new Event('dragstart',{bubbles:true,cancelable:true});img.dispatchEvent(drag);
+ const menu=new Event('contextmenu',{bubbles:true,cancelable:true});img.dispatchEvent(menu);
+ const range=document.createRange();range.selectNodeContents(document.querySelector('.play-state'));getSelection().removeAllRanges();getSelection().addRange(range);
+ const selected=getSelection().toString();const clip=new DataTransfer();const copy=new ClipboardEvent('copy',{bubbles:true,cancelable:true,clipboardData:clip});document.dispatchEvent(copy);getSelection().removeAllRanges();
+ return {drag:drag.defaultPrevented,menu:menu.defaultPrevented,selected,copied:clip.getData('text/plain'),html:clip.getData('text/html')};
+});
+assert.ok(protection.drag&&protection.menu,'image drag and image context menu are blocked');assert.ok(protection.selected);assert.equal(protection.copied,protection.selected,'text still copies');assert.equal(protection.html,'','copy excludes image markup');
+
 await page.getByRole('button',{name:'Game details',exact:true}).click();
 await page.getByRole('dialog').getByRole('link',{name:/Graphics Balanced/}).click();
 await page.getByLabel('Graphics preset',{exact:true}).selectOption('quality');
@@ -270,26 +281,73 @@ assert.deepEqual(await page.locator('.input-footer').boundingBox(),footerBefore,
 await page.emulateMedia({reducedMotion:'reduce'});
 assert.equal(await page.locator('.play').evaluate(n=>getComputedStyle(n).transitionDuration),'0s');
 await page.emulateMedia({reducedMotion:'no-preference'});
-// Both update channels share a quiet dock and open the actual Updates settings.
+// Updates are reviewed and explicitly deferred before any installation begins.
 await page.addInitScript(()=>{
  if(!new URL(location.href).searchParams.has('notice-test'))return;
- sessionStorage.removeItem('updates:checked');sessionStorage.removeItem('content:checked');
- window.__fixture.update_check={state:'available',current:'3.0.0',latest:'3.0.1'};
- window.__fixture.content_status={phase:'available',download_bytes:4194304,note:'Content update ready.'};
+ sessionStorage.removeItem('content:checked');
+ window.__fixture.update_policy={automatic:true};
+ window.__fixture.update_check={state:'available',current:'3.0.0',latest:'3.0.1',bytes:2048,notes:'Launcher fixes\nImproved controller navigation'};
+ window.__fixture.content_status={phase:'available',release:'2.2 sequence 4',download_bytes:4194304,notes:'Roster changes\nNew soundtrack\n<img src=x onerror=alert(1)>',components:[{component:'roster',state:'available',offered:'2.2'}]};
+ const original=window.__TAURI__.core.invoke;
+ window.__TAURI__.core.invoke=async(cmd,args)=>{
+   const data=window.__fixture;
+   if(['content_fetch','content_promote','update_download','update_apply','content_dismiss'].includes(cmd)){
+     window.__calls.push({cmd,args});
+     if(cmd==='content_fetch')return data.content_status={...data.content_status,phase:'staged'};
+     if(cmd==='content_promote')return data.content_status={...data.content_status,phase:'installed',installed:{note:'Roster and soundtrack updated.'}};
+     if(cmd==='update_download')return {path:'C:/verified/update.exe'};
+     return {};
+   }
+   return original(cmd,args);
+ };
 });
 await page.setViewportSize({width:800,height:560});
 await page.goto(url+'/index.html?notice-test');
-await page.waitForFunction(()=>document.querySelectorAll('#play-notices .update-notice').length===2);
-const notices=await page.locator('#play-notices .update-notice').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
-assert.ok(notices[0].bottom<=notices[1].top,'update notices do not overlap each other');
-assert.ok(notices[1].bottom<=await page.locator('.input-footer').evaluate(n=>n.getBoundingClientRect().top),'update notices fit above the input footer');
-await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
-assert.ok(await page.locator('#play-now').evaluate(n=>n.getBoundingClientRect().bottom)<=notices[0].top,'updates do not cover Play');
-await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
-assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote'].includes(c.cmd))),false,'manual updates do not download or install');
-await page.getByRole('button',{name:'View update',exact:true}).first().click();
-await page.getByRole('button',{name:'Updates',exact:true}).waitFor();
-assert.equal(await page.getByRole('button',{name:'Updates',exact:true}).getAttribute('aria-pressed'),'true');
+await page.getByRole('dialog',{name:'An update is ready'}).waitFor();
+assert.match(await page.locator('.update-changes').innerText(),/Roster changes[\s\S]*New soundtrack[\s\S]*Improved controller navigation/);
+assert.equal(await page.locator('.update-changes img').count(),0,'release notes are text, never executable HTML');
+await page.screenshot({path:path.join(out,'reborn-update-dialog-800.png')});
+await page.keyboard.press('Escape');
+await page.reload();await page.locator('.update-card').waitFor();await page.waitForTimeout(1000);
+assert.equal(await page.getByRole('dialog').count(),0,'Escape defers the offer across page reloads');
+const card=await page.locator('.update-card').boundingBox();
+assert.ok(await page.locator('#play-now').evaluate(n=>n.getBoundingClientRect().bottom)<=card.y,'update card does not cover Play at minimum width');
+await page.locator('.update-card').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
+await page.getByRole('button',{name:'View update',exact:true}).click();await page.getByRole('button',{name:'Remind me later',exact:true}).click();
+assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote','update_apply'].includes(c.cmd))),false,'Remind me later defers even with automatic updates selected');
+await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'reborn-update-card.png')});
+await page.getByRole('button',{name:'View update',exact:true}).click();
+await page.evaluate(()=>document.dispatchEvent(new CustomEvent('session-state',{detail:true})));
+assert.equal(await page.getByRole('button',{name:'Update now',exact:true}).isDisabled(),true,'running game prevents install');
+await page.evaluate(()=>document.dispatchEvent(new CustomEvent('session-state',{detail:false})));
+await page.getByRole('button',{name:'Update now',exact:true}).click();
+await page.waitForFunction(()=>window.__calls.some(c=>c.cmd==='update_apply'));
+assert.deepEqual(await page.evaluate(()=>window.__calls.filter(c=>['content_fetch','content_promote','update_download','update_apply'].includes(c.cmd)).map(c=>c.cmd)),['content_fetch','content_promote','update_download','update_apply']);
+assert.equal(await page.evaluate(()=>window.__calls.find(c=>c.cmd==='content_promote').args.confirm),true);
+const autoPage=await context.newPage();
+await autoPage.addInitScript(()=>{
+ for(const k of Object.keys(sessionStorage))if(k.startsWith('reborn:update-'))sessionStorage.removeItem(k);
+ window.__fixture.update_policy={automatic:true};
+ window.__fixture.update_check={state:'up_to_date',current:'3.0.0'};
+ window.__fixture.content_status={phase:'available',release:'2.3 sequence 5',download_bytes:4096,notes:'Automatic update test',components:[]};
+ const interval=window.setInterval;window.setInterval=(fn,ms,...args)=>interval(fn,ms===1000?10:ms,...args);
+ const original=window.__TAURI__.core.invoke;
+ window.__TAURI__.core.invoke=async(cmd,args)=>{
+  if(cmd==='content_fetch'||cmd==='content_promote'){
+   window.__calls.push({cmd,args});return window.__fixture.content_status={...window.__fixture.content_status,phase:cmd==='content_fetch'?'staged':'installed',installed:{note:'Updated.'}};
+  }
+  return original(cmd,args);
+ };
+});
+await autoPage.goto(url+'/index.html');await autoPage.bringToFront();
+await autoPage.getByRole('dialog',{name:'An update is ready'}).waitFor();
+await autoPage.evaluate(()=>{window.__fixture.session_active=true;document.dispatchEvent(new CustomEvent('session-state',{detail:true}));});
+await autoPage.waitForTimeout(750);
+assert.equal(await autoPage.evaluate(()=>window.__calls.some(c=>c.cmd==='content_fetch')),false,'automatic countdown pauses while a game is active');
+await autoPage.evaluate(()=>{window.__fixture.session_active=false;document.dispatchEvent(new CustomEvent('session-state',{detail:false}));});
+await autoPage.waitForTimeout(750);await autoPage.waitForFunction(()=>window.__calls.some(c=>c.cmd==='content_promote'));
+assert.equal(await autoPage.evaluate(()=>window.__calls.filter(c=>c.cmd==='content_promote').length),1,'automatic update installs once after the countdown');
+await autoPage.close();await page.bringToFront();
 await page.goto(url+'/index.html?missing');await page.getByRole('link',{name:'Set up your game',exact:true}).waitFor();
 assert.equal(await page.locator('#play-now').count(),0,'missing game offers setup instead of launch');
 await page.screenshot({path:path.join(out,'reborn-play-setup-800.png')});

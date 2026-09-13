@@ -81,6 +81,7 @@ pub struct InstalledSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContentStatusView {
+    pub notes: Option<String>,
     /// "idle", "checking", "up_to_date", "available", "fetching", "staged",
     /// "installing", "installed", "problem".
     pub phase: &'static str,
@@ -98,6 +99,7 @@ pub struct ContentStatusView {
 /// check itself is out on loan to a fetch or a promotion.
 #[derive(Debug, Clone, Default)]
 struct Snapshot {
+    notes: Option<String>,
     release: Option<String>,
     components: Vec<ComponentView>,
     download_bytes: u64,
@@ -123,6 +125,7 @@ static HELD: Mutex<Held> = Mutex::new(Held {
     phase: Phase::Idle,
     origin: String::new(),
     snapshot: Snapshot {
+        notes: None,
         release: None,
         components: Vec::new(),
         download_bytes: 0,
@@ -178,6 +181,7 @@ fn view(h: &Held) -> ContentStatusView {
         Phase::Problem(m) => m.clone(),
     };
     ContentStatusView {
+        notes: s.notes.clone(),
         phase: h.phase.name(),
         origin: h.origin.clone(),
         release: s.release.clone(),
@@ -226,6 +230,7 @@ fn snapshot_of(check: &ContentCheck) -> Snapshot {
         })
         .collect();
     Snapshot {
+        notes: check.notes.clone(),
         release: Some(format!("{} sequence {}", check.release.version, check.release.sequence)),
         components,
         download_bytes: check.download_bytes(),
@@ -335,6 +340,7 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
     if !adoptable.is_empty() && !crate::session_active() {
         if let Ok(guard) = LaunchGuard::acquire() {
             let adopt = ContentCheck {
+                notes: check.notes.clone(),
                 origin: check.origin.clone(),
                 release: check.release.clone(),
                 signed_bytes: check.signed_bytes,

@@ -36,6 +36,7 @@ const browser=await chromium.launch({channel:process.env.REBORN_TEST_BROWSER || 
 const context=await browser.newContext({viewport:{width:1280,height:800}});
 await context.addInitScript(data=>{
  window.__calls=[]; window.__fixture=data;window.__events={};
+ if(new URL(location.href).searchParams.has('slow'))window.__delayCommand='devices';
  const stage=new URL(location.href).searchParams.get('stage');
  if(stage) {
   const stages=['welcome','game_verification','controller_setup','controls_profile','system_check','updates','preparation','completion'];
@@ -91,6 +92,11 @@ await context.addInitScript(data=>{
 
 const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
 try {
+ await page.goto(url+'/controls.html?slow');
+ await page.getByRole('tab',{name:'Player 1',exact:false}).waitFor({timeout:1000});
+ assert.equal(await page.locator('.player-tabs button').count(),4,'Render all player tabs before the device scan returns.');
+ assert.equal(await page.evaluate(()=>window.__calls.some(c=>c.cmd==='launch_check')),false,'Controllers must not wait on a game file check.');
+ await page.waitForFunction(()=>!!window.__releaseDelayed);await page.evaluate(()=>window.__releaseDelayed());
  await page.goto(url+'/controls.html');
  await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
  assert.equal(await page.getByRole('tab').count(),4);

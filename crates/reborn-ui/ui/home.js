@@ -34,6 +34,8 @@ async function load() {
     devices: call("devices", { runtime: get("runtime") }),
     mods: call("mod_packages"),
     controls: call("controls_current"),
+    slots: call("controller_slots"),
+    controlOptions: call("controls_options", {runtime:null}),
     home: call("home_state", { runtime: get("runtime"), legacyRoot: get("legacyRoot") }),
     progress: call("onboarding_progress", { legacyRoot: get("legacyRoot") }),
     paths: call("paths"),
@@ -169,8 +171,39 @@ function factsBlock() {
 }
 
 // The artwork is independent of the action bar and all transient messages.
-function openDetails() {
-  document.getElementById("game-details").showModal();
+async function openDetails() {
+  const dialog=document.getElementById("game-details");dialog.showModal();
+  try{state.mods=await call('mod_packages');dialog.querySelector('.play-mods')?.replaceWith(quickMods());}catch{}
+}
+
+function quickMods() {
+  const group=el('fieldset',{class:'play-mods'},el('legend',{text:'Mods'}));
+  const managed=state.mods?.managed_by_controls||[];
+  const packages=(state.mods?.packages||[]).filter(p=>!managed.includes(p.id)&&/football|soundtrack|music|audio/i.test(`${p.name} ${p.id}`));
+  const status=el('p',{class:'play-mods-status',role:'status'});
+  const choices=el('div',{class:'play-mods-choices'});
+  for(const p of packages){
+    const checkbox=el('input',{type:'checkbox',checked:!!p.active,disabled:busy||externalSession,'data-mod':p.id});
+    checkbox.addEventListener('change',async()=>{
+      const on=checkbox.checked;choices.querySelectorAll('input').forEach(n=>n.disabled=true);status.textContent='Saving mod selection…';
+      let saved=false;
+      try{
+        const result=await call('mods_toggle',{id:p.id,version:p.version,on,runtime:get('runtime')});
+        saved=true;state.mods=await call('mod_packages');
+        for(const input of choices.querySelectorAll('input'))input.checked=!!state.mods.packages?.find(mod=>mod.id===input.dataset.mod)?.active;
+        status.textContent=result?.synced===false?result.note||'Selection saved. The mod files could not be applied yet.':'Saved. Applies to your next game.';
+        status.setAttribute('role','status');
+      }catch(e){
+        try{state.mods=await call('mod_packages');for(const input of choices.querySelectorAll('input'))input.checked=!!state.mods.packages?.find(mod=>mod.id===input.dataset.mod)?.active;}
+        catch{if(!saved)checkbox.checked=!on;}
+        status.textContent=saved?'Saved, but the selection could not be refreshed. Reopen Game details to check it.':reason(e);status.setAttribute('role','alert');
+      }
+      finally{choices.querySelectorAll('input').forEach(n=>n.disabled=busy||externalSession);}
+    });
+    choices.append(el('label',{},el('span',{text:p.name||p.id}),checkbox));
+  }
+  if(!packages.length)choices.append(el('p',{class:'note',text:state.mods?.error?'Your mods could not be loaded. Reopen Game details to try again.':'No football or soundtrack mods installed.'}));
+  group.append(choices,status);return group;
 }
 
 function detailsDialog() {
@@ -184,9 +217,8 @@ function detailsDialog() {
   for (const [href, title, value] of [
     ["settings.html#graphics", "Graphics", graphicsLabel()],
     ["controls.html", "Controllers", pads ? `${pads.length} connected` : "Check devices"],
-    ["mods.html", "Mods", mods ? `${mods.length} selected` : "Manage mods"],
   ]) links.append(el("a", { href }, el("span", { text: title }), el("span", { class: "play-detail-value", text: value }), el("span", { text: "›", "aria-hidden": "true" })));
-  dialog.append(links);
+  dialog.append(links, quickMods());
   const message = problem || state.check?.error || state.check?.problem || result?.message;
   if (message) dialog.append(el("p", { class: "play-detail-message", text: message }));
   if (problem || state.check?.error || state.check?.problem || result?.needs_recovery) dialog.append(el("a", { class: "play-help", href: "recovery.html", text: "Troubleshoot this session" }));

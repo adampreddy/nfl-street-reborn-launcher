@@ -177,6 +177,7 @@ impl ComponentCheck {
 /// requested component.
 #[derive(Debug)]
 pub struct ContentCheck {
+    pub notes: Option<String>,
     pub origin: String,
     pub release: ReleaseTag,
     /// Length of the release manifest whose signature verified, for the
@@ -530,6 +531,7 @@ impl<'a> Updater<'a> {
         }
 
         Ok(ContentCheck {
+            notes: release.notes.clone(),
             origin: self.source.describe(),
             release: ReleaseTag {
                 version: release.version.clone(),

@@ -78,7 +78,7 @@ struct DirEntry {
     class: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct DeviceView {
     device_string: String,
     family: String,
@@ -87,7 +87,7 @@ struct DeviceView {
     set_aside: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct DeviceReport {
     pads: Vec<DeviceView>,
     other: Vec<DeviceView>,
@@ -178,10 +178,19 @@ fn to_report(scan: &Enumeration, source: &'static str) -> DeviceReport {
     }
 }
 
+// Short cache coalesces scans during navigation; an explicit rescan bypasses it.
+static DEVICE_CACHE:std::sync::Mutex<Option<(Option<String>,std::time::Instant,DeviceReport)>>=std::sync::Mutex::new(None);
 #[tauri::command]
-async fn devices(runtime: Option<String>) -> Result<DeviceReport, String> {
-    tauri::async_runtime::spawn_blocking(move || read_devices(runtime))
-        .await.map_err(|e| e.to_string())?
+async fn devices(runtime: Option<String>, force:Option<bool>) -> Result<DeviceReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime=runtime_for(&Platform::detect(),runtime.as_deref()).map(|p|p.to_string_lossy().into_owned());
+        let mut cache=DEVICE_CACHE.lock().map_err(|e|e.to_string())?;
+        if force!=Some(true) {
+            if let Some((key,at,report))=cache.as_ref(){if *key==runtime && at.elapsed().as_secs()<5{return Ok(report.clone());}}
+        }
+        let report=read_devices(runtime.clone())?;
+        *cache=Some((runtime,std::time::Instant::now(),report.clone()));Ok(report)
+    }).await.map_err(|e| e.to_string())?
 }
 
 fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
@@ -190,7 +199,7 @@ fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
     // Asking the runtime is the only authoritative answer. The built in scan
     // sees XInput and nothing else, which on a real machine misses the WGInput
     // backend entirely and would miss every PlayStation pad.
-    if let Some(exe) = runtime {
+    if let Some(exe) = runtime_for(&p, runtime.as_deref()) {
         let scratch = p
             .paths
             .data_root()
@@ -1317,6 +1326,7 @@ async fn mods_toggle(
     runtime: Option<String>,
 ) -> Result<ModSyncView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LaunchGuard::acquire()?;
         let p = Platform::detect();
         let id = ModId::parse(&id).map_err(|e| e.to_string())?;
         let version = PackageVersion::parse(&version).map_err(|e| e.to_string())?;
@@ -4945,6 +4955,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Already here.
             dolphin_settings::netplay_open,
+            dolphin_settings::netplay_status,
+            dolphin_settings::netplay_action,
             dolphin_settings::dolphin_preferences,
             dolphin_settings::dolphin_preference_set,
             dolphin_settings::dolphin_saves_folder,

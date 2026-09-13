@@ -48,6 +48,9 @@ export function log(what, value) {
 export async function call(cmd, args = {}) {
   if (!bridge) throw new Error("the launcher core is not attached. Open this page inside the launcher window.");
   const answer = await bridge.invoke(cmd, args);
+  if(['devices','controller_slots','controls_current','controls_options','launch_check'].includes(cmd)){
+    try{sessionStorage.setItem('reborn:controller-cache:'+cmd,JSON.stringify({at:Date.now(),value:answer}));}catch{}
+  }
   log(cmd, answer === undefined ? "ok" : answer);
   return answer;
 }

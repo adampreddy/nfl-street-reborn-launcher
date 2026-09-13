@@ -166,7 +166,7 @@ WizardStyle=modern
 ; It lives in the repository rather than on one machine's Desktop, where the
 ; old script pointed and where no other checkout could find it.
 SetupIconFile=art\NSR.ico
-WizardImageFile=art\welcome.bmp
+WizardImageFile=art\launcher.bmp
 WizardSmallImageFile=art\corner.bmp
 
 ; The welcome page exists to show that art. Inno 6 hides it by default; 2.1

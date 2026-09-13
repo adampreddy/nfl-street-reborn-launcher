@@ -122,6 +122,9 @@ pub enum ManifestError {
 /// The one signed object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
+    /// Published changelog, covered by the release signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     /// Must be exactly `nsr.release.v1`.
     pub schema: String,
 
@@ -478,4 +481,12 @@ mod tests {
         let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
         assert_eq!(c.total_bytes(), 1_459_978_240);
     }
+    #[test]
+    fn release_notes_are_optional_and_preserve_all_lines() {
+        let old = br#"{"schema":"nsr.release.v1","version":"2.1","sequence":1,"components":{}}"#;
+        assert!(Release::parse(old).unwrap().notes.is_none());
+        let new = br#"{"schema":"nsr.release.v1","version":"2.2","sequence":2,"notes":"Roster updates\nController fixes","components":{}}"#;
+        assert_eq!(Release::parse(new).unwrap().notes.as_deref(), Some("Roster updates\nController fixes"));
+    }
+
 }

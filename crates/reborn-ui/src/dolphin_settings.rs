@@ -11,16 +11,6 @@ fn config_user(p: &Platform, runtime: Option<&str>) -> Result<(PathBuf,PathBuf),
 fn read_ini(path:&Path)->Result<IniDocument,String>{
     match std::fs::read_to_string(path){Ok(s)=>Ok(IniDocument::parse(&s)),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(IniDocument::parse("")),Err(e)=>Err(e.to_string())}
 }
-// Old installations can have save/code synchronization disabled. A manual
-// session must begin with the same game state and deterministic settings.
-fn netplay_sync_overlay() -> Overlay {
-    let mut overlay = Overlay::new();
-    let net = overlay.entry("NetPlay".into()).or_default();
-    for key in ["SyncSaves", "SyncCodes", "StrictSettingsSync"] {
-        net.insert(key.into(), "True".into());
-    }
-    overlay
-}
 fn checked_value(field:&Field,value:&str)->Result<String,String>{
     if value.len()>2048||value.chars().any(char::is_control){return Err("Enter a valid setting value.".into());}
     match field.kind{
@@ -60,15 +50,10 @@ pub async fn dolphin_saves_folder(runtime:Option<String>)->Result<(),String>{
 mod tests {
     use super::*;
     #[test]
-    fn netplay_reenables_synchronization_without_replacing_save_locations() {
-        let mut doc = IniDocument::parse("[NetPlay]\nSyncSaves = False\nSyncCodes = False\nStrictSettingsSync = False\nNickname = Player\n[Core]\nMemcardAPath = C:/Saves/My.raw\nMEM1Size = 67108864\n");
-        doc.merge(&netplay_sync_overlay());
-        for key in ["SyncSaves", "SyncCodes", "StrictSettingsSync"] {
-            assert_eq!(doc.get("NetPlay", key), Some("True"));
-        }
-        assert_eq!(doc.get("NetPlay", "Nickname"), Some("Player"));
-        assert_eq!(doc.get("Core", "MemcardAPath"), Some("C:/Saves/My.raw"));
-        assert_eq!(doc.get("Core", "MEM1Size"), Some("67108864"));
+    fn online_cards_and_save_writes_are_session_only() {
+        let options=netplay_session_options("Player", "join", "direct", "127.0.0.1",2626);
+        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True"] { assert!(options.iter().any(|v|v==required)); }
+        assert!(options.iter().all(|v|!v.contains("MemcardAPath")&&!v.contains("MemcardBPath")));
     }
     #[test]fn settings_are_validated_and_protected(){assert!(FIELDS.iter().all(|f|!["InternalResolution","MSAA","SyncGPU","MEM1Size","RAMOverrideEnable","EFBAccessEnable"].contains(&f.key)));for id in ["volume","audio_latency"]{let f=FIELDS.iter().find(|f|f.id==id).unwrap();assert!(checked_value(f,"-1").is_err());assert!(checked_value(f,"999").is_err());assert!(checked_value(f,"20").is_ok());}let f=FIELDS.iter().find(|f|f.id=="muted").unwrap();assert_eq!(checked_value(f,"true").unwrap(),"True");assert!(checked_value(f,"true\n[Core]").is_err());}
     #[test]fn editing_one_setting_preserves_saves_and_unknown_keys(){let mut doc=IniDocument::parse("[Core]\nMemcardAPath = C:/Saves/My.raw\nSyncGPU = True\n[Custom]\nKeep = original\n[DSP]\nVolume = 100\n");let mut overlay=Overlay::new();overlay.entry("DSP".into()).or_default().insert("Volume".into(),"65".into());doc.merge(&overlay);assert_eq!(doc.get("Core","MemcardAPath"),Some("C:/Saves/My.raw"));assert_eq!(doc.get("Core","SyncGPU"),Some("True"));assert_eq!(doc.get("Custom","Keep"),Some("original"));assert_eq!(doc.get("DSP","Volume"),Some("65"));}
@@ -84,17 +69,93 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if mode=="join"&&(address.is_empty()||address.len()>253||!address.chars().all(|c|c.is_ascii_alphanumeric()||".:-_".contains(c))){return Err("Enter a valid host code or address.".into());}
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
+  // Fail before preparing settings when an older/custom runtime lacks the bridge.
+  if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
   let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?};
   let prepared=Session::prepare(&p,&req).map_err(|e|e.to_string())?;
-  let user=prepared.user_dir.path();let file=user.join("Config/Dolphin.ini");let mut doc=read_ini(&file)?;let mut overlay=netplay_sync_overlay();let net=overlay.entry("NetPlay".into()).or_default();
-  net.insert("Nickname".into(),nickname.into());net.insert("TraversalChoice".into(),connection.clone());net.insert("ConnectPort".into(),port.to_string());net.insert("HostPort".into(),port.to_string());
-  if mode=="join"{net.insert(if connection=="traversal"{"HostCode"}else{"Address"}.into(),address.into());}
-  // Make the chosen game discoverable in Dolphin's Host tab without replacing existing folders.
-  let count=doc.get("General","ISOPaths").and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(10000);
-  if let Some(parent)=game_path.parent(){let path=parent.display().to_string();if !(0..count).any(|i|doc.get("General",&format!("ISOPath{i}"))==Some(path.as_str())){let general=overlay.entry("General".into()).or_default();general.insert(format!("ISOPath{count}"),path);general.insert("ISOPaths".into(),(count+1).to_string());}}
-  doc.merge(&overlay);std::fs::write(&file,doc.render()).map_err(|e|e.to_string())?;
-  let args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string()];let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(|e|e.to_string())?;
-  std::thread::spawn(move||{let _guard=guard;let _=p.processes.wait(handle);});
+  let user=prepared.user_dir.path();
+  let directory=p.paths.data_root().map_err(|e|e.to_string())?.join("cache/netplay");
+  std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+  // Fixed, small bridge files are reused. Never duplicate a game, profile or card.
+  let path=directory.join("session.json");
+  for suffix in ["status","command"] { let _=std::fs::remove_file(path.with_extension(format!("json.{suffix}"))); }
+  std::fs::write(&path,serde_json::to_vec(&serde_json::json!({"game":game_path,"mode":mode})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+  std::fs::write(path.with_extension("json.alive"),b"alive").map_err(|e|e.to_string())?;
+  let mut args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string(),"--reborn-netplay-session".into(),path.as_os_str().to_os_string()];
+  for value in netplay_session_options(nickname,&mode,&connection,address,port) { args.push("-C".into());args.push(value.into()); }
+  let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(|e|e.to_string())?;
+  *NETPLAY.lock().map_err(|e|e.to_string())?=Some(NetplaySession{path:path.clone(),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
+  std::thread::spawn(move||{
+    let _guard=guard;
+    // The process seam's is_running only reports ownership of a handle.
+    // Wait for the actual child exit; keep the heartbeat on a separate thread.
+    let alive=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let heartbeat=alive.clone();
+    std::thread::spawn(move||{
+      while heartbeat.load(std::sync::atomic::Ordering::SeqCst) {
+        let _=std::fs::write(path.with_extension("json.alive"),b"alive");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+      }
+    });
+    let _=p.processes.wait(handle);
+    alive.store(false,std::sync::atomic::Ordering::SeqCst);
+    if let Ok(mut state)=NETPLAY.lock(){if let Some(session)=state.as_mut(){session.active=false;}}
+  });
   Ok(serde_json::json!({"started":true,"mode":mode,"game":game_path.file_name().unwrap_or_default().to_string_lossy()}))
  }).await.map_err(|e|e.to_string())?
+}
+
+
+struct NetplaySession { path:PathBuf, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
+static NETPLAY:std::sync::Mutex<Option<NetplaySession>>=std::sync::Mutex::new(None);
+
+// Command-line layers are never saved by Dolphin. Personal cards remain intact,
+// while hosts share the same card-free configuration with every participant.
+fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str,port:u16)->Vec<String>{
+ let mut values=vec![
+  "Dolphin.Core.SlotA=255".into(),"Dolphin.Core.SlotB=255".into(),
+  "Dolphin.NetPlay.SyncSaves=True".into(),"Dolphin.NetPlay.WriteSaveData=False".into(),
+  "Dolphin.NetPlay.SyncCodes=True".into(),"Dolphin.NetPlay.StrictSettingsSync=True".into(),
+  "Dolphin.NetPlay.UseIndex=False".into(),"Dolphin.Display.RenderToMain=False".into(),
+  "Dolphin.Analytics.PermissionAsked=True".into(),
+  format!("Dolphin.NetPlay.Nickname={nickname}"),format!("Dolphin.NetPlay.TraversalChoice={connection}"),
+  format!("Dolphin.NetPlay.ConnectPort={port}"),format!("Dolphin.NetPlay.HostPort={port}"),
+ ];
+ values.push(format!("Dolphin.NetPlay.{}={address}",if connection=="traversal"{"HostCode"}else{"Address"}));values
+}
+
+#[tauri::command]
+pub fn netplay_status()->Result<serde_json::Value,String>{
+ let mut state=NETPLAY.lock().map_err(|e|e.to_string())?;
+ let Some(session)=state.as_mut() else{return Ok(serde_json::json!({"phase":"idle","active":false}));};
+ if let Some(status)=std::fs::read(session.path.with_extension("json.status")).ok().and_then(|s|serde_json::from_slice::<serde_json::Value>(&s).ok()).filter(|s|s.is_object()) {session.last_status=status;}
+ let mut status=session.last_status.clone();
+ if !session.active && status["phase"]!="error" {status["phase"]="closed".into();}
+ if session.active && status["phase"]=="connecting" && session.started.elapsed().as_secs()>45 {status["phase"]="error".into();status["error"]="Dolphin did not open the room. Check that your Reborn Dolphin runtime supports launcher Netplay.".into();}
+ status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();Ok(status)
+}
+
+#[tauri::command]
+pub fn netplay_action(action:String,ports:Option<Vec<u8>>)->Result<(),String>{
+ if !["start","leave","ports"].contains(&action.as_str()){return Err("Unknown room action.".into());}
+ if action=="ports" && !ports.as_ref().is_some_and(|p|p.len()==4){return Err("Assign exactly four player slots.".into());}
+ let mut state=NETPLAY.lock().map_err(|e|e.to_string())?;
+ let session=state.as_mut().filter(|s|s.active).ok_or("The room is closed.")?;
+ session.sequence+=1;
+ let payload=serde_json::json!({"id":session.sequence,"action":action,"ports":ports});
+ let dest=session.path.with_extension("json.command");let temp=session.path.with_extension("json.command.tmp");
+ std::fs::write(&temp,serde_json::to_vec(&payload).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+ Platform::detect().files.atomic_replace(&temp,&dest).map_err(|e|e.to_string())
+}
+
+// Windows GUI binaries do not reliably expose --help on stdout. Read the exact
+// compiled CLI marker instead, with bounded memory and no emulator subprocess.
+fn supports_launcher_netplay(path:&Path)->Result<bool,String>{
+ use std::io::Read;
+ let mut file=std::fs::File::open(path).map_err(|e|e.to_string())?;
+ let marker=b"--reborn-netplay-session";let mut chunk=[0u8;65536];let mut pending=Vec::new();
+ loop{let count=file.read(&mut chunk).map_err(|e|e.to_string())?;if count==0{return Ok(false);}
+  pending.extend_from_slice(&chunk[..count]);if pending.windows(marker.len()).any(|w|w==marker){return Ok(true);}
+  let keep=pending.len().saturating_sub(marker.len()-1);pending.drain(..keep);
+ }
 }

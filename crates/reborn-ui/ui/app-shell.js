@@ -14,7 +14,7 @@ function stopScrolling() {
   cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0; scrollTargets.clear();
 }
 function animateScroll(now) {
-  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
+  if (document.hidden || !document.hasFocus() || (active&&!document.body.dataset.netplayLobby) || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) { stopScrolling(); return; }
   const dt = Math.min(40, now - (scrollTime || now - 16)); scrollTime = now;
   // One continuously retargeted curve, rather than restarting a browser smooth
   // scroll every time the D-pad repeats. Time-based damping works at any refresh rate.
@@ -55,6 +55,7 @@ function identity(n) { return n.id ? `id:${n.id}` : [n.tagName,n.getAttribute('n
 function box(n) { return (n.closest('label.choice') || n).getBoundingClientRect(); }
 function renderHints() {
   if (!hints) return;
+  if (!controllerMode || ![...(navigator.getGamepads?.()||[])].some(p=>p?.connected)) { hints.replaceChildren(); delete hints.dataset.layout; return; }
   if(document.body.classList.contains('page-setup')){
     const pads=[...(navigator.getGamepads?.()||[])].filter(p=>p?.connected);
     const pad=pads[0];if(!pad){hints.replaceChildren();delete hints.dataset.layout;return;}
@@ -193,7 +194,7 @@ function activate() {
 }
 function back() {
   if (selectEdit) { endSelect(false); return; }
-  const modal=document.querySelector('dialog[open]');if(modal){modal.close();return;}
+  const modal=document.querySelector('dialog[open]');if(modal){if(modal.dispatchEvent(new Event('cancel',{cancelable:true})))modal.close();return;}
   const current = document.activeElement;
   const fold = current?.closest('details[open]') || document.querySelector('#game-options[open]');
   if (fold) {
@@ -234,13 +235,13 @@ if (bridge) { sessionState(); setInterval(sessionState,1500); }
 let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
 function poll(now) {
   requestAnimationFrame(poll);
-  if (document.hidden || !document.hasFocus() || active || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
+  if (document.hidden || !document.hasFocus() || (active&&!document.body.dataset.netplayLobby) || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
     previous = []; direction = null; lastFrame = 0; armed = false; return;
   }
   let pads;
   try { pads = [...(navigator.getGamepads?.() || [])]; } catch (_) { return; }
   const pad = pads.find(p => p?.connected && p.mapping === 'standard');
-  if (!pad) { padId = null; previous = []; direction = null; lastFrame = 0; armed = false; return; }
+  if (!pad) { renderHints(); padId = null; previous = []; direction = null; lastFrame = 0; armed = false; return; }
   const id = `${pad.index}:${pad.id}`;
   const buttons = pad.buttons.map(b => b.pressed || b.value > .55);
   const axes = pad.axes || [];
@@ -268,7 +269,7 @@ function poll(now) {
   }
   if (d && (d !== direction || now >= nextRepeat)) { move(d); nextRepeat = now+(d !== direction ? 330 : 115); }
   direction = d;
-  if (scroll && !selectEdit) scrollToTarget(main,(scrollTargets.get(main) ?? main.scrollTop)+scroll*elapsed*1.35);
+  if (scroll && !selectEdit) { const area=document.querySelector('dialog[open] .update-changes')||document.querySelector('dialog[open]')||main; scrollToTarget(area,(scrollTargets.get(area) ?? area.scrollTop)+scroll*elapsed*1.35); }
   if (pressed(4)) pageStep(-1);
   else if (pressed(5)) pageStep(1);
   else if (pressed(1)) back();
@@ -279,4 +280,14 @@ renderHints();
 if (controllerMode) focus(primary());
 requestAnimationFrame(poll);
 window.addEventListener('gamepadconnected',() => {renderHints();document.dispatchEvent(new Event('refresh-devices'));});
-window.addEventListener('gamepaddisconnected',() => { armed = false; renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
+window.addEventListener('gamepaddisconnected',() => { armed = false; if(![...(navigator.getGamepads?.()||[])].some(p=>p?.connected))mode(false); renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
+
+// Artwork is presentation; error messages and file paths remain copyable text.
+const artwork = target => target instanceof Element && target.closest('img,svg,canvas,video');
+document.addEventListener('dragstart', event => { if (artwork(event.target)) event.preventDefault(); });
+document.addEventListener('contextmenu', event => { if (artwork(event.target)) event.preventDefault(); });
+document.addEventListener('copy', event => {
+  if (event.target instanceof Element && event.target.closest('input,textarea,[contenteditable=true]')) return;
+  const text = window.getSelection()?.toString() || '';
+  if (event.clipboardData) { event.preventDefault(); event.clipboardData.setData('text/plain',text); }
+});

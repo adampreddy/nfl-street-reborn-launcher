@@ -52,7 +52,9 @@ await context.addInitScript(data=>{
   if(cmd==='update_policy_set'){data.update_policy={automatic:args.automatic,source:'settings'};return data.update_policy;}
   if(cmd==='update_check')return {state:'available',latest:'3.0.1',note:'A new version is available.',notes:'Improved controller support.'};
   if(cmd==='update_download')return {path:'C:/Reborn/update.exe',bytes:38000000};
-  if(cmd==='netplay_open'){data.session_active=true;return {started:true,mode:args.mode,game:'NSR.iso'};}
+  if(cmd==='netplay_open'){data.session_active=true;data.netplay_status={phase:'lobby',active:true,host:args.mode==='host',connection:args.connection,port:args.port,code:args.connection==='traversal'?'ABC12345':'',can_start:args.mode==='host',players:[{id:1,name:'Player One',status:'OK',ping:'0 ms'}],ports:[1,0,0,0]};return {started:true};}
+  if(cmd==='netplay_status')return data.netplay_status||{phase:'idle',active:false};
+  if(cmd==='netplay_action'){if(args.action==='leave'){data.session_active=false;data.netplay_status={phase:'closed',active:false};}if(args.action==='start'){data.netplay_status.phase='running';data.netplay_status.can_start=false;}if(args.action==='ports')data.netplay_status.ports=args.ports;return;}
   if(cmd==='settings_paths') return JSON.parse(localStorage.getItem('qa:settings')||'null')||data.settings_paths;
   if(cmd==='settings_set_path') {
    const prefs=JSON.parse(localStorage.getItem('qa:settings')||'null')||{...data.settings_paths};
@@ -144,18 +146,26 @@ try{
  for(const tab of ['Graphics','Updates']){await page.getByRole('button',{name:tab,exact:true}).click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-settings-'+tab.toLowerCase()+'-800.png')});}
  await page.setViewportSize({width:1280,height:800});await page.getByRole('button',{name:'Graphics',exact:true}).click();
  await page.getByRole('button',{name:'Open Dolphin',exact:true}).click();assert.ok(await page.evaluate(()=>window.__calls.some(c=>c.cmd==='open_runtime')));assert.equal(await page.locator('#graphics-preset').isDisabled(),true);
- await page.goto(url+'/online.html');await page.getByRole('textbox',{name:'Player name'}).fill('Player One');await page.getByRole('textbox',{name:'Host code',exact:true}).fill('ABC12345');await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();await page.getByText('Your connection details are filled in. Click Connect.',{exact:true}).waitFor();
+ await page.goto(url+'/index.html');await page.getByRole('button',{name:'Game details',exact:true}).click();
+ await page.getByRole('checkbox',{name:'Black football',exact:true}).check();await page.getByText('Saved. Applies to your next game.',{exact:true}).waitFor();
+ assert.equal(await page.getByRole('checkbox',{name:'Red football',exact:true}).isChecked(),false);
+ assert.equal(await page.getByRole('checkbox',{name:'Black football',exact:true}).isChecked(),true);
+ assert.equal(await page.locator('#game-details a[href="mods.html"]').count(),0);
+ await page.screenshot({path:path.join(out,'finish-quick-mods.png')});
+ await page.goto(url+'/online.html');
+ await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
+ await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
  let args=await page.evaluate(()=>window.__calls.find(c=>c.cmd==='netplay_open').args);assert.equal(args.mode,'join');assert.equal(args.connection,'traversal');assert.equal(args.address,'ABC12345');
- assert.equal(await page.getByRole('button',{name:'Dolphin is open',exact:true}).isDisabled(),true);
- assert.equal(await page.getByRole('button',{name:'Host a game',exact:true}).isDisabled(),true);
- await page.evaluate(()=>{window.__fixture.session_active=false;document.dispatchEvent(new CustomEvent('session-state',{detail:false}));});
- await page.getByText('Dolphin is closed. You can start another session.',{exact:true}).waitFor();
- await page.getByRole('button',{name:'Host a game',exact:true}).click();assert.equal(await page.getByRole('textbox',{name:'Host code',exact:true}).isVisible(),false);await page.getByRole('combobox',{name:'Connection',exact:true}).selectOption('direct');await page.getByRole('spinbutton',{name:'Port'}).fill('2626');await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();await page.getByText('Choose the Host tab, select your Reborn game, then click Host.',{exact:true}).waitFor();
- await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-online.png')});
- await page.evaluate(()=>{window.__fixture.session_active=false;document.dispatchEvent(new CustomEvent('session-state',{detail:false}));window.__reject='netplay_open';});
- await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).click();
- await page.getByText('Test failure: netplay_open',{exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Continue in Dolphin',exact:true}).isEnabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Start game',exact:true}).count(),0);
+ await page.getByRole('button',{name:'Leave room',exact:true}).click();await page.getByRole('button',{name:'Join game',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Host a game',exact:true}).click();await page.getByLabel('Connection',{exact:true}).selectOption('direct');await page.getByLabel('Port',{exact:true}).fill('2626');await page.getByRole('button',{name:'Create room',exact:true}).click();await page.getByRole('heading',{name:'Ready when you are.',exact:true}).waitFor();
+ assert.equal(await page.locator('.netplay-slots select').count(),4);
+ await page.getByLabel('Player 2 assignment',{exact:true}).selectOption('1');await page.waitForFunction(()=>window.__fixture.netplay_status.ports[1]===1);
+ await page.screenshot({path:path.join(out,'finish-online.png')});
+ await page.getByRole('button',{name:'Start game',exact:true}).click();await page.getByRole('heading',{name:'Game in progress',exact:true}).waitFor();
+ await page.getByRole('button',{name:'End session',exact:true}).click();await page.getByRole('button',{name:'Create room',exact:true}).waitFor();
+ await page.evaluate(()=>window.__reject='netplay_open');await page.getByRole('button',{name:'Create room',exact:true}).click();await page.getByText('Test failure: netplay_open',{exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Create room',exact:true}).isEnabled(),true);
  assert.equal(await page.getByRole('textbox',{name:'Player name'}).inputValue(),'Player One');
  await page.goto(url+'/controls.html');await page.waitForFunction(()=>typeof window.createControllerPreview==='function');
  for(const name of ['Xbox One','DualShock 4','DualSense']){
@@ -168,5 +178,5 @@ try{
   await page.waitForTimeout(50);const after=await page.locator('#screen').screenshot();assert.ok(!before.equals(after),'A/Cross press changes rendered controller pixels for '+name);
  }
  for(const file of ['mods.html','settings.html','online.html']){await page.setViewportSize({width:800,height:600});await page.goto(url+'/'+file);await page.waitForTimeout(300);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),file+' has no horizontal overflow');await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-'+file.replace('.html','')+'-800.png')});}
- assert.deepEqual(errors,[]);console.log('PASS: mod cards/filtering/details/exclusivity, settings persistence and rollback, save locations, Dolphin handoff, manual netplay forms, controller pixel feedback across Xbox/DS4/DualSense, responsive pages.');
+ assert.deepEqual(errors,[]);console.log('PASS: mod cards/filtering/details/exclusivity, settings persistence and rollback, save locations, Dolphin handoff, launcher Netplay lobby/ports/start/leave, controller pixel feedback across Xbox/DS4/DualSense, responsive pages.');
 }finally{await browser.close();server.close();}

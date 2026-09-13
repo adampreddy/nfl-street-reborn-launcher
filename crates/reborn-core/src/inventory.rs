@@ -1219,6 +1219,7 @@ impl UnsignedReleaseBuilder {
         }
 
         let release = Release {
+            notes: None,
             schema: RELEASE_SCHEMA.to_string(),
             version: self.version,
             sequence: self.sequence,
