@@ -6142,7 +6142,7 @@ mod tests {
     #[test]
     fn setup_seeds_the_patch_chain_before_it_classifies_the_disc() {
         let body = command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game");
-        let seed = body.find("seed_game_patch").expect(
+        let seed = body.find("seed_game_patch(&p)").expect(
             "setup_import_game classifies the disc without ensuring the chain is on disk",
         );
         let classify = body.find("game_identity::identify").expect("the verdict call is gone");
@@ -6909,5 +6909,32 @@ struct StatsSubmitView {"),
         // never silently given a different glyph set than it asked for.
         let fallback = gamepad_contract(Some("dualshock".to_string())).expect("pure lookup");
         assert_ne!(fallback.family, "PlayStation controller");
+    }
+
+    /// Every command that can make an image the game Reborn boots has to ask
+    /// what that image is first. Three of them did not, and a disc nothing
+    /// recognized became the booted game wearing Reborn's textures. A fourth
+    /// door added later must fail here rather than reopen it quietly.
+    #[test]
+    fn every_writer_of_game_path_verifies_the_image() {
+        for (name, body) in [
+            (
+                "setup_import_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game"),
+            ),
+            (
+                "settings_set_path",
+                command_body(include_str!("main.rs"), "async fn settings_set_path"),
+            ),
+            (
+                "setup_migrate_install",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_migrate_install"),
+            ),
+        ] {
+            assert!(
+                body.contains("game_identity::identify"),
+                "{name} can make an image the booted game without ever asking what it is"
+            );
+        }
     }
 }
