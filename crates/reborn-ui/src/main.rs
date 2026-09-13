@@ -6037,6 +6037,20 @@ mod tests {
         );
     }
 
+    /// The patch chain has to be seeded before the disc is classified. Without
+    /// it `Chain::load` returns None, `classify` answers `Unconverted` for
+    /// anything, and a disc that converted perfectly is condemned as not a
+    /// Reborn build.
+    #[test]
+    fn setup_seeds_the_patch_chain_before_it_classifies_the_disc() {
+        let body = command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game");
+        let seed = body.find("seed_game_patch").expect(
+            "setup_import_game classifies the disc without ensuring the chain is on disk",
+        );
+        let classify = body.find("game_identity::identify").expect("the verdict call is gone");
+        assert!(seed < classify, "the chain must be seeded before the disc is classified");
+    }
+
     /// The lock and the guard go back before the network work, and the online
     /// start waits for a lock that is about to be given back.
     ///

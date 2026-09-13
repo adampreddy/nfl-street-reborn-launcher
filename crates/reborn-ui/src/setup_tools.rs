@@ -193,6 +193,14 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // checks except the ones that matter). Ask what actually landed and
         // let that override the outcome above rather than trust that patching
         // cleanly means the disc converted.
+        //
+        // The chain has to be on disk before we ask: patch_to_newest is the
+        // only other caller of seed_game_patch, and the bundle branch above
+        // never runs it, so a disc that just converted perfectly would find
+        // no chain.json here. A missing chain reads to identify() as "not a
+        // Reborn build" (Chain::load -> None -> classify's Unconverted), which
+        // would condemn the exact disc this whole feature exists to bless.
+        seed_game_patch(&p)?;
         let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
         let verdict=reborn_core::game_identity::identify(&data,&tool,&booted);
         let (outcome,label,note)=match &verdict {
