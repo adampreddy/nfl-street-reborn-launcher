@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 /// back because the game does the swap itself now.
 pub const BX_SWAP_UNDONE: &str = "bx-swap-undone";
 
+/// Older builds forced graphics and controller settings back on every launch,
+/// and pinned some of them in the per-game file where Dolphin's own windows
+/// could not beat them. The launcher has taken those back out.
+pub const SETTINGS_ARE_YOURS: &str = "settings-are-yours";
+
 fn file(platform: &Platform) -> Result<PathBuf> {
     Ok(platform.paths.data_root()?.join(DataDir::Config.relative()).join("notices.json"))
 }
@@ -41,6 +46,13 @@ pub fn dismiss(platform: &Platform, id: &str) -> Result<()> {
 /// id this build does not know, which a page then skips rather than shows.
 pub fn text(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
+        SETTINGS_ARE_YOURS => Some((
+            "Your settings are yours",
+            "NFL Street Reborn used to reset some emulator settings every time you pressed Play. \
+             It now keeps only the few the game needs to run correctly. Resolution, anti-aliasing, \
+             graphics backend, controller mapping and ReShade effects are yours to change, in the \
+             launcher or in Dolphin, and they stay changed.",
+        )),
         BX_SWAP_UNDONE => Some((
             "X and B are back to normal",
             "NFL Street Reborn swaps X and B inside the game now, so the 2.1 controller swap is no \

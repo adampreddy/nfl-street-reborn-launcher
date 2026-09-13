@@ -250,7 +250,23 @@ Name: "foldericon"; Description: "Desktop shortcut to the folder the game is ins
 ; file needs no script change. The old script named NSR.iso explicitly, which
 ; meant a second image was silently not installed.
 Source: "{#Payload}\*"; DestDir: "{app}"; \
+  Excludes: "runtime\ReShade.ini,runtime\NSRShaderlessMenu.ini,runtime\reshade-presets\*"; \
   Flags: ignoreversion recursesubdirs createallsubdirs
+
+; ReShade's configuration and the effect presets, installed ONLY when they are
+; not already there.
+;
+; ReShade writes the player's in-overlay tuning straight back into these files.
+; Under the blanket ignoreversion above, re-running Setup - which players do to
+; repair an install - threw that tuning away every time. `onlyifdoesntexist`
+; keeps a fresh install correct and leaves an existing one alone. The launcher
+; restores any of these that goes missing.
+Source: "{#Payload}\runtime\ReShade.ini"; DestDir: "{app}\runtime"; \
+  Flags: onlyifdoesntexist
+Source: "{#Payload}\runtime\NSRShaderlessMenu.ini"; DestDir: "{app}\runtime"; \
+  Flags: onlyifdoesntexist skipifsourcedoesntexist
+Source: "{#Payload}\runtime\reshade-presets\*"; DestDir: "{app}\runtime\reshade-presets"; \
+  Flags: onlyifdoesntexist recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 ; Note what is NOT here.
 ;

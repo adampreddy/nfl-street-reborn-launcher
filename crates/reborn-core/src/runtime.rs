@@ -153,98 +153,45 @@ impl ConfigGenerator {
     /// it has no opinion about survives untouched. See [`crate::ini`].
     pub fn overlays(config: &LaunchConfig) -> BTreeMap<String, Overlay> {
         let mut out: BTreeMap<String, Overlay> = BTreeMap::new();
+        for file in ["Dolphin.ini", "GFX.ini", "Logger.ini"] {
+            out.insert(file.to_string(), crate::settings_law::locked_overlay(file));
+        }
 
-        let mut dolphin = Overlay::new();
+        // Fullscreen is not the launcher overriding a Dolphin setting: it is
+        // the player's own Play-page toggle, read back out of their launcher
+        // settings on the way in. Writing it carries out their instruction.
         set(
-            &mut dolphin,
+            out.get_mut("Dolphin.ini").unwrap(),
             "Display",
             "Fullscreen",
             bool_ini(config.fullscreen),
         );
-        // Analytics off explicitly rather than by omission. The privacy
-        // requirement is no telemetry, and an upstream default that changes
-        // should not quietly turn it on.
-        set(&mut dolphin, "Analytics", "Enabled", "False");
-        set(&mut dolphin, "Analytics", "PermissionAsked", "True");
-        // No error popups, ever. That is a standing product rule, and a panic
-        // handler is a popup.
-        set(&mut dolphin, "Interface", "UsePanicHandlers", "False");
-        set(&mut dolphin, "Interface", "ConfirmStop", "False");
-        // Dolphin's own Discord presence is retired so the launcher can own presence later;
-        // two publishers for one account race on the local IPC socket.
-        set(&mut dolphin, "General", "UseDiscordPresence", "False");
-        // Reborn requires 64 MiB of emulated MEM1, regardless of imported preferences.
-        set(&mut dolphin, "Core", "RAMOverrideEnable", "True");
-        set(&mut dolphin, "Core", "MEM1Size", "67108864");
-        out.insert("Dolphin.ini".to_string(), dolphin);
-
-        let mut gfx = Overlay::new();
-        set(
-            &mut gfx,
-            "Settings",
-            "InternalResolution",
-            config.graphics.internal_resolution().to_string(),
-        );
-        set(
-            &mut gfx,
-            "Settings",
-            "MaxAnisotropy",
-            "4",
-        );
-        set(&mut gfx, "Settings", "ShaderCompilationMode", "2");
-        set(&mut gfx, "Settings", "WaitForShadersBeforeStarting", "True");
-        // EFB access must stay on. With it off the NFL Challenge portraits
-        // render black and that gets baked into the player's saves, which is
-        // not recoverable from the launcher side.
-        set(&mut gfx, "Hacks", "EFBAccessEnable", "True");
-        // Texture dumping was left on in the reference installs: a disk write per new texture.
-        set(&mut gfx, "Settings", "DumpTextures", "False");
-        set(&mut gfx, "Settings", "DumpBaseTextures", "False");
-        set(&mut gfx, "Settings", "DumpMipTextures", "False");
-        // Per-upload CPU cost that the HD pack makes pure waste.
-        set(&mut gfx, "Enhancements", "ArbitraryMipmapDetection", "False");
-        for (section,values) in Self::required_game_settings() {
-            if let Some(section)=section.strip_prefix("Video_"){gfx.entry(section.into()).or_default().extend(values);}
-            else{out.get_mut("Dolphin.ini").unwrap().entry(section).or_default().extend(values);}
-        }
-
-        // The freeze instrumentation left file logging on; it costs a write per line.
-        let mut logger = Overlay::new();
-        set(&mut logger, "Options", "WriteToFile", "False");
-        set(&mut logger, "Options", "Verbosity", "1");
-        set(&mut logger, "Options", "WriteToConsole", "False");
-        set(&mut logger, "Options", "WriteToWindow", "False");
-        out.insert("Logger.ini".to_string(), logger);
-
-        out.insert("GFX.ini".to_string(), gfx);
 
         out
     }
 
-    /// Durable Reborn compatibility requirements, independent of graphics taste.
-    pub fn required_game_settings() -> Overlay {
-        let mut out=Overlay::new();
-        for (section,key,value) in [
-            // SyncGPU serialises the CPU and GPU threads and is one of the most expensive options in Dolphin.
-            // It was forced True on 09-05 to chase the 0-FPS freeze; the 09-11 probe proved the freeze RECURS
-            // with SyncGPU=True (it is a lost PE_FINISH, which this cannot prevent), so it was pure cost.
-            // The tuned User template ships False. Forced False, not merely unforced, because every install
-            // already has True written into its INIs and only an explicit merge can put it back.
-            ("Core","SyncGPU","False"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
-            ("Video_Settings","InternalResolution","3"),("Video_Settings","SSAA","False"),
-            // CacheHiresTextures = prefetch the whole HD pack decoded into RAM at boot. Measured 2026-09-11 on the
-            // 24 GB dev box: 12 GB private bytes, 384 MB free, 28 GB pagefile in use, and the game "running slow".
-            // The pack is BC7 DDS now (sub-millisecond loads), so on-demand is the requirement.
-            ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","False"),
-            ("Video_Hacks","EFBAccessEnable","True"),
-            // DeferEFBCopies True is a performance win and is what the tuned template ships. EFB reads for
-            // the created-player portraits stay correct through EFBAccessEnable, which is separate.
-            ("Video_Hacks","DeferEFBCopies","True"),
-            ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True"),
-            ("Video_Settings","DumpTextures","False"),("Video_Settings","DumpBaseTextures","False"),("Video_Settings","DumpMipTextures","False"),
-            ("Video_Enhancements","ArbitraryMipmapDetection","False"),
-        ] { set(&mut out,section,key,value); }
+    /// The launcher's tuned defaults, to be applied with
+    /// [`crate::ini::IniDocument::merge_absent`] and never with `merge`. A
+    /// fresh user folder gets them; one where anybody has expressed a
+    /// preference keeps what it has.
+    pub fn seeded_overlays() -> BTreeMap<String, Overlay> {
+        let mut out: BTreeMap<String, Overlay> = BTreeMap::new();
+        for file in ["Dolphin.ini", "GFX.ini", "Logger.ini"] {
+            out.insert(file.to_string(), crate::settings_law::seeded_overlay(file));
+        }
         out
+    }
+
+
+    /// The Reborn requirements that go into the per-game layer.
+    ///
+    /// This is Dolphin's highest-precedence config layer: anything written here
+    /// cannot be changed in Dolphin's own GUI at all, so it carries the five
+    /// keys the game genuinely cannot run correctly without and nothing else.
+    /// Every taste key that used to live here is retired and pruned by
+    /// [`crate::settings_law::reconcile_once`]. See [`crate::settings_law`].
+    pub fn required_game_settings() -> Overlay {
+        crate::settings_law::locked_game_settings()
     }
 
     /// Produce every INI the runtime needs for this session.
@@ -504,17 +451,55 @@ impl SessionOutcome {
 
 #[cfg(test)]
 mod tests {
+    /// The requirements still win over live drift. Everything else does not.
+    ///
+    /// This replaces `mandatory_settings_override_live_drift_for_both_builds`,
+    /// which parsed this same fixture and asserted the launcher overwrote the
+    /// player's 4x internal resolution and 4x anti-aliasing. That assertion was
+    /// the bug, written down and defended: it is why a graphics change made in
+    /// Dolphin's own window did nothing.
     #[test]
-    fn mandatory_settings_override_live_drift_for_both_builds() {
+    fn only_locked_keys_override_live_drift() {
         use super::*;
         use crate::ini::IniDocument;
-        {
-            let mut doc=IniDocument::parse("[Core]\nSyncGPU=False\nCPUThread=False\n[Video_Settings]\nInternalResolution=4\nMSAA=0x00000004\n[Video_Hacks]\nEFBAccessEnable=False\n");
-            doc.merge(&ConfigGenerator::required_game_settings());
+        let mut doc=IniDocument::parse("[Core]\nSyncGPU=True\nCPUThread=False\n[Video_Settings]\nInternalResolution=4\nMSAA=0x00000004\n[Video_Hacks]\nEFBAccessEnable=False\nDeferEFBCopies=False\n");
+        doc.merge(&ConfigGenerator::required_game_settings());
 
-            for (section,keys) in ConfigGenerator::required_game_settings(){for(key,value)in keys{assert_eq!(doc.get(&section,&key),Some(value.as_str()));}}
-            assert_eq!(doc.get("Core","CPUThread"),Some("False"));
-            assert!(doc.merge(&ConfigGenerator::required_game_settings()).is_noop());
+        // The one graphics key the player does not get to break: with EFB
+        // access off the created-player portraits bake black into their save.
+        assert_eq!(doc.get("Video_Hacks","EFBAccessEnable"),Some("True"));
+
+        // Everything the player chose survives, including the settings this
+        // test used to assert were overwritten.
+        assert_eq!(doc.get("Video_Settings","InternalResolution"),Some("4"),"the player's resolution");
+        assert_eq!(doc.get("Video_Settings","MSAA"),Some("0x00000004"),"the player's anti-aliasing");
+        assert_eq!(doc.get("Core","SyncGPU"),Some("True"),"expensive, but theirs to spend");
+        assert_eq!(doc.get("Video_Hacks","DeferEFBCopies"),Some("False"),"a performance trade, theirs");
+        assert_eq!(doc.get("Core","CPUThread"),Some("False"),"the per-machine freeze workaround");
+
+        assert!(doc.merge(&ConfigGenerator::required_game_settings()).is_noop(),"a second launch changes nothing");
+    }
+
+    /// The per-game file is the layer Dolphin's own GUI cannot beat, so what
+    /// goes in it is exactly what the player must not be able to change.
+    #[test]
+    fn the_per_game_layer_carries_requirements_and_no_taste() {
+        use super::*;
+        let required = ConfigGenerator::required_game_settings();
+        for (section, key) in [
+            ("Video_Settings", "InternalResolution"),
+            ("Video_Settings", "MSAA"),
+            ("Video_Settings", "SSAA"),
+            ("Core", "SyncGPU"),
+            ("Core", "GFXBackend"),
+            ("Video_Hacks", "DeferEFBCopies"),
+            ("Video_Settings", "DumpTextures"),
+            ("Video_Enhancements", "ArbitraryMipmapDetection"),
+        ] {
+            assert!(
+                required.get(section).is_none_or(|s| !s.contains_key(key)),
+                "{section}/{key} is taste and must not be pinned where the Graphics window cannot beat it",
+            );
         }
     }
 
@@ -546,20 +531,6 @@ mod tests {
             required.get("Core").map_or(true, |s| !s.contains_key("CPUThread")),
             "the launcher must not force CPUThread: single core is the user's per-machine freeze workaround",
         );
-        // SyncGPU True serialises the CPU and GPU threads for a large frame-rate cost, and the 09-11
-        // freeze probe proved it does NOT prevent the 0-FPS hang it was added for. Players reported
-        // that cost as "performance issues", worst in netplay. The tuned template ships False.
-        assert_eq!(
-            required.get("Core").and_then(|s| s.get("SyncGPU")),
-            Some(&"False".to_string()),
-            "SyncGPU must stay False: True is a large performance cost and never prevented the freeze",
-        );
-        // A performance win the tuned template ships. Portrait EFB reads stay correct via EFBAccessEnable.
-        assert_eq!(
-            required.get("Video_Hacks").and_then(|s| s.get("DeferEFBCopies")),
-            Some(&"True".to_string()),
-            "DeferEFBCopies must stay True: it is what the tuned User template ships",
-        );
         // Adam 2026-09-12: "We need ram override". The imported content depends on the 64 MB MEM1.
         assert_eq!(
             required.get("Core").and_then(|s| s.get("RAMOverrideEnable")),
@@ -570,6 +541,50 @@ mod tests {
             required.get("Core").and_then(|s| s.get("MEM1Size")),
             Some(&"67108864".to_string()),
             "MEM1 must stay 64 MB",
+        );
+    }
+
+    /// Both of these were forced for defensible reasons, and both are still
+    /// the player's to spend.
+    ///
+    /// `SyncGPU` was forced True on 09-05 to chase the 0-FPS freeze and the
+    /// 09-11 probe proved the freeze recurs with it on, so it bought nothing
+    /// and cost a lot of frames. `DeferEFBCopies` is a performance trade whose
+    /// forced value flipped between shipped builds, changing the game under
+    /// players who had chosen otherwise. The launcher seeds its preference in
+    /// the tuned template and does not weld either one in.
+    #[test]
+    fn sync_gpu_and_defer_efb_copies_belong_to_the_player() {
+        use super::*;
+        let required = ConfigGenerator::required_game_settings();
+        assert!(
+            required.get("Core").is_none_or(|s| !s.contains_key("SyncGPU")),
+            "SyncGPU is one of the most expensive options in Dolphin and never fixed the freeze; it is not the launcher's to pin",
+        );
+        assert!(
+            required.get("Video_Hacks").is_none_or(|s| !s.contains_key("DeferEFBCopies")),
+            "DeferEFBCopies is a performance trade, and its forced value already flipped under players once",
+        );
+    }
+
+    /// The graphics tier selects a ReShade preset. It has never varied internal
+    /// resolution in any shipped build, and it does not now: resolution is the
+    /// player's, offered in Settings and in Dolphin's own Graphics window.
+    #[test]
+    fn the_graphics_tier_does_not_decide_resolution() {
+        use super::*;
+        use crate::settings_law::{find, Owner};
+        for preset in [
+            GraphicsPreset::Performance,
+            GraphicsPreset::Balanced,
+            GraphicsPreset::Quality,
+            GraphicsPreset::Ultra,
+        ] {
+            assert_eq!(preset.internal_resolution(), 3, "the seed default, not a per-tier force");
+        }
+        assert_eq!(
+            find("GFX.ini", "Settings", "InternalResolution").map(|k| k.owner),
+            Some(Owner::Player),
         );
     }
 
@@ -656,24 +671,40 @@ mod tests {
         assert!(logger.contains("WriteToWindow = False"), "{logger}");
     }
 
+    /// The tuned defaults still reach a fresh install. They are seeded now
+    /// rather than forced, which is the whole difference: a new user folder
+    /// gets them, and a player who changes one afterwards keeps their change.
+    ///
+    /// This replaces `the_optimization_keys_are_generated_and_the_freeze_fix_is_kept`,
+    /// which asserted these same keys were in the per-launch override overlay.
     #[test]
-    fn the_optimization_keys_are_generated_and_the_freeze_fix_is_kept() {
+    fn the_optimization_keys_are_seeded_not_forced() {
         let cfg = LaunchConfig { build: GameBuild::Offline, graphics: GraphicsPreset::Balanced, fullscreen: true, game_path: "g.iso".into(), user_dir: "u".into(), match_context: None };
-        let o = ConfigGenerator::overlays(&cfg);
-        assert_eq!(o["GFX.ini"]["Settings"]["DumpTextures"], "False");
-        assert_eq!(o["GFX.ini"]["Settings"]["DumpBaseTextures"], "False");
-        assert_eq!(o["GFX.ini"]["Enhancements"]["ArbitraryMipmapDetection"], "False");
-        assert_eq!(o["Dolphin.ini"]["General"]["UseDiscordPresence"], "False");
-        assert_eq!(o["Logger.ini"]["Options"]["WriteToFile"], "False");
-        assert_eq!(o["Logger.ini"]["Options"]["Verbosity"], "1");
+        let forced = ConfigGenerator::overlays(&cfg);
+        let seeded = ConfigGenerator::seeded_overlays();
+
+        // Quiet logging is a default, and a tester who turns logging on keeps it.
+        assert_eq!(seeded["Logger.ini"]["Options"]["WriteToFile"], "False");
+        assert_eq!(seeded["Logger.ini"]["Options"]["Verbosity"], "1");
+        assert!(forced["Logger.ini"].is_empty(), "nothing about logging is forced");
+
+        // The modder's switches and the mipmap cost are the player's now.
+        for (section, key) in [("Settings","DumpTextures"),("Settings","DumpBaseTextures"),("Enhancements","ArbitraryMipmapDetection")] {
+            assert!(
+                forced["GFX.ini"].get(section).is_none_or(|s| !s.contains_key(key)),
+                "{section}/{key} must not be re-forced on every launch",
+            );
+        }
+        assert!(forced["Dolphin.ini"].get("General").is_none_or(|s| !s.contains_key("UseDiscordPresence")));
+
+        // The freeze fix itself is a requirement and stays forced: True
+        // prefetches the whole 9,115-file HD pack decoded into RAM (~12 GB
+        // measured 09-11) and starves the machine. That was the 3.0.0 "runs
+        // slow everywhere" report.
         let g = ConfigGenerator::required_game_settings();
-        // False: forcing it True cost a lot of performance and never prevented the freeze (09-11 probe).
-        assert_eq!(g["Core"]["SyncGPU"], "False");
-        // Must stay False. True prefetches the whole 9,115-file HD pack decoded into RAM (~12 GB
-        // measured 09-11) and starves the machine; that was the 3.0.0 "runs slow everywhere" report.
         assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "False");
-        assert_eq!(g["Video_Settings"]["DumpTextures"], "False");
-        assert_eq!(g["Video_Enhancements"]["ArbitraryMipmapDetection"], "False");
+        assert_eq!(g["Video_Settings"]["HiresTextures"], "True");
+        assert_eq!(g["Video_Hacks"]["EFBAccessEnable"], "True");
     }
 
     /// The launcher writes config and never reads it back, so the Settings page

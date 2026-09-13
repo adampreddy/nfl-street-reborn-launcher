@@ -84,6 +84,7 @@ pub mod roster;
 pub mod runtime;
 pub mod reshade;
 pub mod session;
+pub mod settings_law;
 pub mod settings;
 pub mod signing;
 pub mod stats;

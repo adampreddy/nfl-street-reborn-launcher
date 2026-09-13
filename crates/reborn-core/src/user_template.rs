@@ -64,6 +64,7 @@ pub fn stage(from_user: &Path, into_user: &Path) -> Result<StageReport> {
                 ("Config", "dolphin.ini") => Some(sanitize_dolphin_ini),
                 ("Config", "gfx.ini") => Some(sanitize_gfx_ini),
                 ("Config", "qt.ini") => Some(sanitize_qt_ini),
+                ("GameSettings", _) => Some(sanitize_game_settings_ini),
                 _ => None,
             };
             match sanitizer {
@@ -84,6 +85,24 @@ pub fn stage(from_user: &Path, into_user: &Path) -> Result<StageReport> {
 /// Dolphin.ini without the analytics identity, the netplay identity, the
 /// disc keys and every path key (the path law), with slot A a memory card
 /// at Dolphin's default place and analytics off.
+/// Strip the retired pins out of a per-game template file.
+///
+/// `GameSettings/<game id>.ini` is Dolphin's highest-precedence layer, so a
+/// template that carries `MSAA = 1` or `InternalResolution = 3` makes those
+/// settings unchangeable in every install seeded from it, including installs
+/// created after the launcher stopped forcing them. The live install gets the
+/// same treatment once, from `settings_law::reconcile_once`; this is the other
+/// half, for folders that do not exist yet.
+///
+/// Gecko codes, ActionReplay blocks, comments and ordering are untouched.
+pub fn sanitize_game_settings_ini(text: &str) -> String {
+    let mut doc = crate::ini::IniDocument::parse(text);
+    for key in crate::settings_law::retired_game_settings() {
+        doc.remove(key.section, key.key);
+    }
+    doc.render()
+}
+
 pub fn sanitize_dolphin_ini(text: &str) -> String {
     let mut doc = crate::ini::IniDocument::parse(text);
     for (s, k) in [
@@ -97,6 +116,21 @@ pub fn sanitize_dolphin_ini(text: &str) -> String {
     }
     for (s, k) in crate::dolphin_preferences::path_law_removals(&doc, Path::new("")) {
         doc.remove(&s, &k);
+    }
+    // A shipped template carries NO disc paths, whatever they point at. This is
+    // stronger than the live path law on purpose: on a player's machine an
+    // absolute game folder somewhere else is their own choice and stays, but a
+    // template is built from one developer's install and must not carry that
+    // machine's paths to everybody else.
+    doc.remove("General", "ISOPaths");
+    for (s, k) in crate::dolphin_preferences::DISC_KEYS {
+        doc.remove(s, k);
+    }
+    // Keys older builds forced, which must not be born into a fresh install.
+    // Without this the template seeds MSAA = 1 and SyncGPU into every new user
+    // folder, and the launcher's own settings are inert from the first launch.
+    for key in crate::settings_law::KEYS.iter().filter(|k| k.retired) {
+        doc.remove(key.section, key.key);
     }
     let mut set = crate::ini::Overlay::new();
     set.entry("Core".into()).or_default().insert("SlotA".into(), "1".into());

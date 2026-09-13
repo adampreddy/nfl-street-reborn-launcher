@@ -123,12 +123,31 @@ mod tests {
         let doc=crate::ini::IniDocument::parse(&ini);
         for i in 0..4 {let section=format!("GCPad{}",i+1);assert_eq!(doc.get(&section,"Device"),slots[i].as_deref());assert_eq!(doc.get(&section,"Buttons/A"),Some(format!("`Player {} A`",i+1).as_str()));}
         assert_eq!(ports.len(),4);
-        let overlay=crate::session::controller_port_overlay(&ports);for i in 0..4 {assert_eq!(overlay["Core"][&format!("SIDevice{i}")],"6");}
+        let empty=crate::ini::IniDocument::parse("");
+        let overlay=crate::session::controller_port_overlay(&empty,&ports);for i in 0..4 {assert_eq!(overlay["Core"][&format!("SIDevice{i}")],"6");}
+
+        // A pad that is not plugged in this session. Its port is LEFT ALONE:
+        // the section keeps whatever it had and SIDevice is not zeroed.
+        //
+        // These two assertions used to say the opposite - that [GCPad2] was
+        // rewritten with an empty Device line and SIDevice1 set to "0". That
+        // is what switched off a player's second controller because the pad
+        // was asleep, and it destroyed a port deliberately set to a GameCube
+        // adapter. Omitting a section is always safe; writing an empty Device
+        // is not.
         let disconnected=Enumeration{devices:devices.into_iter().filter(|p|p.id!=1).collect(),not_searched:vec![]};
         let (ini,ports)=crate::session::build_gcpad_for_slots(&disconnected,&profiles,None,Some(&slots)).unwrap();
         assert_eq!(ports.iter().map(|(p,_)|*p).collect::<Vec<_>>(),vec![1,3,4]);
-        assert_eq!(crate::ini::IniDocument::parse(&ini).get("GCPad2","Device"),Some(""));
-        assert_eq!(crate::session::controller_port_overlay(&ports)["Core"]["SIDevice1"],"0");
+        let overlay=crate::session::controller_port_overlay(&empty,&ports);
+        assert!(!overlay["Core"].contains_key("SIDevice1"),"an absent pad must not switch its port off");
+        assert!(crate::ini::IniDocument::parse(&ini).get("GCPad2","Device").is_none_or(|d|!d.is_empty()),"never an empty Device line");
+
+        // A port the player set to something the launcher has no concept of
+        // (12 is a GameCube adapter) survives even when the launcher does bind
+        // a pad there.
+        let theirs=crate::ini::IniDocument::parse("[Core]\nSIDevice2 = 12\n");
+        let overlay=crate::session::controller_port_overlay(&theirs,&ports);
+        assert!(!overlay["Core"].contains_key("SIDevice2"),"the player's own port device stands");
     }
     #[test]
     fn explicit_slots_persist_and_never_bind_a_device_twice() {
@@ -138,7 +157,15 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();let file=dir.path().join("settings.json");settings.save(&file).unwrap();
         assert_eq!(crate::settings::Settings::load(&file).unwrap().controller_slots,Some(slots.clone()));
         let (_,ports)=crate::session::build_gcpad_for_slots(&Enumeration{devices:vec![device],not_searched:vec![]},&[],None,Some(&slots)).unwrap();assert_eq!(ports.len(),1);
-        let empty=[None,None,None,None];let (ini,ports)=crate::session::build_gcpad_for_slots(&Enumeration{devices:vec![],not_searched:vec![]},&[],None,Some(&empty)).unwrap();assert!(ports.is_empty());assert!(ini.contains("[GCPad4]"));
+        // No pad plugged in means NO FILE IS WRITTEN. This used to assert the
+        // opposite - that the builder still produced a file containing an
+        // empty [GCPad4] - which is how a launch with nothing connected
+        // overwrote a working GCPadNew.ini with four blank sections.
+        let empty=[None,None,None,None];
+        assert!(
+            crate::session::build_gcpad_for_slots(&Enumeration{devices:vec![],not_searched:vec![]},&[],None,Some(&empty)).is_none(),
+            "an empty pad file is indistinguishable from a broken pad; write nothing instead",
+        );
     }
     #[test]
     fn saved_mapping_survives_restart_and_selected_pad_becomes_player_one() {

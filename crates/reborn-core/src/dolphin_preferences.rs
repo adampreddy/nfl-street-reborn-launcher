@@ -12,7 +12,16 @@ pub const FIELDS: &[Field] = &[
     Field{id:"vsync",file:"GFX.ini",section:"Hardware",key:"VSync",default:"False",kind:"bool"},
     Field{id:"show_fps",file:"GFX.ini",section:"Settings",key:"ShowFPS",default:"False",kind:"bool"},
     // Anti-aliasing is the player's: 4x is the Reborn baseline (Adam, 2026-09-10), lower if the game stutters.
+    // Raising it softens the depth-driven ReShade effects, which the Settings page says next to the control.
     Field{id:"msaa",file:"GFX.ini",section:"Settings",key:"MSAA",default:"0x00000004",kind:"msaa"},
+    // Internal resolution, the single biggest performance lever and the one a
+    // player on a weak GPU is told to lower. It used to be pinned at 3 in the
+    // per-game layer, so neither this page nor Dolphin's own could change it.
+    // The ReShade depth filter is derived from it; see reshade::depth_filter_for.
+    Field{id:"internal_resolution",file:"GFX.ini",section:"Settings",key:"InternalResolution",default:"3",kind:"resolution"},
+    // Synchronize GPU thread: expensive, and it never prevented the freeze it
+    // was forced on for. The player decides whether to spend the frames.
+    Field{id:"sync_gpu",file:"Dolphin.ini",section:"Core",key:"SyncGPU",default:"False",kind:"bool"},
     Field{id:"show_ping",file:"GFX.ini",section:"Settings",key:"ShowNetPlayPing",default:"False",kind:"bool"},
     Field{id:"borderless",file:"GFX.ini",section:"Settings",key:"BorderlessFullscreen",default:"False",kind:"bool"},
     Field{id:"confirm_stop",file:"Dolphin.ini",section:"Interface",key:"ConfirmStop",default:"True",kind:"bool"},
@@ -61,7 +70,16 @@ pub fn apply_path_law(user: &std::path::Path) -> crate::platform::Result<()> {
  Ok(())
 }
 
-const ALWAYS_REMOVED:&[(&str,&str)]=&[("General","ISOPaths"),("General","ISOPath0"),("General","ISOPath1"),("General","ISOPath2"),("General","ISOPath3"),("Core","DefaultISO")];
+/// The disc keys. Removed only when they point at the launcher's own content,
+/// or are relative, or sit inside a Dolphin user folder.
+///
+/// These used to be removed unconditionally on every launch, and on every
+/// "Open Dolphin". That deleted the player's own game-list folders every time
+/// they added one - in the very dialog the launcher had just opened for them -
+/// and it deleted `Core/DefaultISO`, which `session::find_game_image` reads.
+/// The original reason still holds for a 2.1 Dolphin.ini pointing at an old
+/// install, and that is all this now covers.
+pub const DISC_KEYS:&[(&str,&str)]=&[("General","ISOPath0"),("General","ISOPath1"),("General","ISOPath2"),("General","ISOPath3"),("Core","DefaultISO")];
 const PATH_KEYS:&[(&str,&[&str])]=&[
  ("General",&["LoadPath","DumpPath","NANDRootPath","ResourcePackPath","WiiSDCardPath"]),
  ("Core",&["MemcardAPath","MemcardBPath","GCIFolderAPathOverride","GCIFolderBPathOverride","AgpCartAPath","AgpCartBPath"]),
@@ -72,7 +90,26 @@ const DOLPHIN_SUBFOLDERS:&[&str]=&["Load","Dump","ResourcePacks","GC","Wii","Sta
 /// Section and key of every pair the law removes from `doc`.
 pub fn path_law_removals(doc:&crate::ini::IniDocument,user:&std::path::Path)->Vec<(String,String)>{
  let mut out=Vec::new();
- for (section,key) in ALWAYS_REMOVED{ if doc.get(section,key).is_some(){out.push(((*section).to_string(),(*key).to_string()));} }
+ // A disc key goes only when it names something that is not the player's:
+ // a relative path, or one inside a Dolphin user folder (this one or the 2.1
+ // install it was copied from). An absolute path somewhere else is a folder
+ // they chose, and it stays.
+ for (section,key) in DISC_KEYS{
+  let Some(value)=doc.get(section,key) else{continue};
+  let normalized=value.trim().trim_matches('"').replace('\\',"/");
+  if normalized.is_empty(){out.push(((*section).to_string(),(*key).to_string()));continue;}
+  if !is_absolute(&normalized)||under(&normalized,user)||inside_another_dolphin_user_folder(&normalized){
+   out.push(((*section).to_string(),(*key).to_string()));
+  }
+ }
+ // The count of game-list folders is meaningless once any ISOPath is gone,
+ // and meaningful only alongside them.
+ if out.iter().any(|(s,k)|s=="General"&&k.starts_with("ISOPath"))
+  && !(0..4).any(|i|doc.get("General",&format!("ISOPath{i}")).is_some()&&!out.iter().any(|(s,k)|s=="General"&&k==&format!("ISOPath{i}")))
+  && doc.get("General","ISOPaths").is_some()
+ {
+  out.push(("General".to_string(),"ISOPaths".to_string()));
+ }
  for (section,keys) in PATH_KEYS{
   for key in *keys{
    let Some(value)=doc.get(section,key) else{continue};
@@ -126,10 +163,23 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
   let removed=keys(&path_law_removals(&doc,&user()));
   assert_eq!(removed,["General/LoadPath","General/DumpPath","Core/MemcardBPath"]);
  }
- #[test] fn the_default_iso_and_iso_paths_are_always_removed(){
-  let doc=crate::ini::IniDocument::parse("[General]\nISOPaths = 1\nISOPath0 = Games\n[Core]\nDefaultISO = C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\Games\\NSRV3.iso\n");
+ #[test] fn a_relative_disc_key_and_one_inside_a_dolphin_user_folder_are_removed(){
+  let doc=crate::ini::IniDocument::parse("[General]\nISOPaths = 1\nISOPath0 = Games\n[Core]\nDefaultISO = C:\\Users\\Adam\\AppData\\Roaming\\NFL Street Reborn\\dolphin-users\\old\\Games\\NSRV3.iso\n");
   let removed=keys(&path_law_removals(&doc,&user()));
-  assert_eq!(removed,["General/ISOPaths","General/ISOPath0","Core/DefaultISO"]);
+  assert_eq!(removed,["General/ISOPath0","Core/DefaultISO","General/ISOPaths"]);
+ }
+ /// A game folder the player added in Dolphin's own dialog survives.
+ ///
+ /// The law used to delete every ISOPath on every launch, and again on every
+ /// "Open Dolphin", so a folder added in the dialog the launcher had just
+ /// opened was gone before the player got back. It also deleted DefaultISO,
+ /// which session::find_game_image reads.
+ #[test] fn a_player_game_folder_added_in_dolphin_survives(){
+  let doc=crate::ini::IniDocument::parse("[General]\nISOPaths = 2\nISOPath0 = D:/Dumps\nISOPath1 = Games\n[Core]\nDefaultISO = D:/Dumps/NSRV3.iso\n");
+  let removed=keys(&path_law_removals(&doc,&user()));
+  assert_eq!(removed,["General/ISOPath1"],"only the relative one goes");
+  assert!(!removed.contains(&"General/ISOPaths".to_string()),"a surviving folder still needs its count");
+  assert!(!removed.contains(&"Core/DefaultISO".to_string()),"their own disc, and the launcher reads this key");
  }
  #[test] fn an_account_folder_called_user_is_not_a_dolphin_user_folder(){
   let doc=crate::ini::IniDocument::parse("[General]\nLoadPath = C:/Users/User/Documents/Dolphin Emulator/Load\n[Core]\nMemcardAPath = C:/Users/User/Documents/Dolphin Emulator/GC/MemoryCardA.USA.raw\n");
@@ -159,17 +209,32 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
  }
 }
 
-/// Dolphin can edit these preferences too. Its current values are authoritative;
-/// saved launcher values only restore preferences when the INI no longer has them.
-pub fn preserve_existing(file:&str,doc:&crate::ini::IniDocument,changes:&mut crate::ini::Overlay){
- for field in FIELDS.iter().filter(|f|f.file==file){if let Some(value)=doc.get(field.section,field.key){changes.entry(field.section.into()).or_default().insert(field.key.into(),value.into());}}
-}
+// `preserve_existing` lived here. It re-read the FIELDS keys out of the
+// player's INI and folded them back over the launcher's overlay, so a Dolphin
+// edit to one of those twenty-one keys survived. It was the only protection
+// any player setting had, and it could not be extended: it worked by letting
+// Dolphin's value win, which meant the launcher's own Settings page could
+// never apply anything it covered.
+//
+// It is gone because the launcher no longer writes a key it does not own. See
+// `crate::settings_law`: LOCKED is merged, SEEDED is merged only where the key
+// is absent, and PLAYER is never written at all. There is nothing left to
+// preserve against.
+
 #[cfg(test)] mod external_edit_tests {
- use super::*;
- #[test] fn dolphin_edits_win_without_weakening_reborn_compatibility(){
-  let doc=crate::ini::IniDocument::parse("[Display]\nFullscreen = False\n[Interface]\nConfirmStop = True\n[Core]\nMEM1Size = 25165824\n");
-  let prefs=std::collections::BTreeMap::from([("fullscreen".into(),"True".into()),("confirm_stop".into(),"False".into())]);
-  let mut changes=overlay("Dolphin.ini",&prefs);changes.entry("Core".into()).or_default().insert("MEM1Size".into(),"67108864".into());preserve_existing("Dolphin.ini",&doc,&mut changes);
-  assert_eq!(changes["Display"]["Fullscreen"],"False");assert_eq!(changes["Interface"]["ConfirmStop"],"True");assert_eq!(changes["Core"]["MEM1Size"],"67108864");
+
+ /// The compatibility requirements are still stated, and a player's edit to a
+ /// preference is no longer something the launcher has to defend against,
+ /// because nothing above it overwrote the key in the first place.
+ #[test] fn a_player_edit_stands_without_weakening_reborn_compatibility(){
+  let mut doc=crate::ini::IniDocument::parse("[Display]\nFullscreen = False\n[Interface]\nConfirmStop = True\n[Core]\nMEM1Size = 25165824\nSyncGPU = True\n[Settings]\nInternalResolution = 4\n");
+  let mut locked=crate::settings_law::locked_overlay("Dolphin.ini");
+  locked.entry("Core".into()).or_default().insert("MEM1Size".into(),"67108864".into());
+  doc.merge(&locked);
+  doc.merge_absent(&crate::settings_law::seeded_overlay("Dolphin.ini"));
+  assert_eq!(doc.get("Core","MEM1Size"),Some("67108864"),"the requirement wins");
+  assert_eq!(doc.get("Core","SyncGPU"),Some("True"),"the player's, untouched");
+  assert_eq!(doc.get("Settings","InternalResolution"),Some("4"),"the player's, untouched");
+  assert_eq!(doc.get("Interface","ConfirmStop"),Some("True"),"seeded False, but theirs is already set");
  }
 }

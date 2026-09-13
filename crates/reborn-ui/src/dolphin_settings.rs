@@ -39,6 +39,11 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
         "slot"=>if ["1","8","255"].contains(&value){Ok(value.into())}else{Err("Choose a supported memory card type.".into())},
         // Written the way Dolphin writes it, so the file reads the same whoever last saved it.
         "msaa"=>{let n=value.trim_start_matches("0x").trim_start_matches('0');let n=if n.is_empty(){"0"}else{n};if ["1","2","4","8"].contains(&n){Ok(format!("0x{:08x}",n.parse::<u32>().unwrap()))}else{Err("Choose 1×, 2×, 4× or 8× anti-aliasing.".into())}},
+        // 1x to 6x native. Capped at 6 because the ReShade depth filter is
+        // derived from this (reshade::depth_filter_for) and the buffers get
+        // very large; Auto (0) is refused for the same reason, since there is
+        // no multiplier to derive a filter from.
+        "resolution"=>{let n=value.trim().parse::<u8>().map_err(|_|"Choose a resolution.")?;if (1..=6).contains(&n){Ok(n.to_string())}else{Err("Choose a resolution from 1× to 6× native.".into())}},
         "card"|"folder"=>{if !value.is_empty(){let path=Path::new(value);if !path.is_absolute(){return Err("Choose an absolute path.".into());}if field.kind=="card"&&(!path.is_file()||!path.extension().is_some_and(|e|e.eq_ignore_ascii_case("raw")||e.eq_ignore_ascii_case("gcp"))){return Err("Choose an existing .raw or .gcp memory card.".into());}if field.kind=="folder"&&!path.is_dir(){return Err("Choose an existing save folder.".into());}}Ok(value.into())},
         _=>Err("Unknown setting.".into())
     }
@@ -124,7 +129,15 @@ mod tests {
         for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True"] { assert!(options.iter().any(|v|v==required)); }
         assert!(options.iter().all(|v|!v.contains("MemcardAPath")&&!v.contains("MemcardBPath")));
     }
-    #[test]fn settings_are_validated_and_protected(){assert!(FIELDS.iter().all(|f|!["InternalResolution","SyncGPU","MEM1Size","RAMOverrideEnable","EFBAccessEnable"].contains(&f.key)));let m=FIELDS.iter().find(|f|f.id=="msaa").unwrap();assert_eq!(checked_value(m,"4").unwrap(),"0x00000004");assert_eq!(checked_value(m,"0x00000002").unwrap(),"0x00000002");assert!(checked_value(m,"3").is_err());assert!(checked_value(m,"16").is_err());for id in ["volume","audio_latency"]{let f=FIELDS.iter().find(|f|f.id==id).unwrap();assert!(checked_value(f,"-1").is_err());assert!(checked_value(f,"999").is_err());assert!(checked_value(f,"20").is_ok());}let f=FIELDS.iter().find(|f|f.id=="muted").unwrap();assert_eq!(checked_value(f,"true").unwrap(),"True");assert!(checked_value(f,"true\n[Core]").is_err());}
+    /// Only the locked requirements are kept out of the player's hands.
+    ///
+    /// This assertion used to also forbid `InternalResolution` and `SyncGPU`,
+    /// which is why the launcher could not offer the two settings players most
+    /// often want to change. They are the player's now; see
+    /// `reborn_core::settings_law`. `MEM1Size`, `RAMOverrideEnable` and
+    /// `EFBAccessEnable` stay out, because the game does not run correctly
+    /// without them and the portrait damage is written into the player's save.
+    #[test]fn settings_are_validated_and_protected(){assert!(FIELDS.iter().all(|f|!["MEM1Size","RAMOverrideEnable","EFBAccessEnable","HiresTextures","CacheHiresTextures"].contains(&f.key)));let m=FIELDS.iter().find(|f|f.id=="msaa").unwrap();assert_eq!(checked_value(m,"4").unwrap(),"0x00000004");assert_eq!(checked_value(m,"0x00000002").unwrap(),"0x00000002");assert!(checked_value(m,"3").is_err());assert!(checked_value(m,"16").is_err());for id in ["volume","audio_latency"]{let f=FIELDS.iter().find(|f|f.id==id).unwrap();assert!(checked_value(f,"-1").is_err());assert!(checked_value(f,"999").is_err());assert!(checked_value(f,"20").is_ok());}let f=FIELDS.iter().find(|f|f.id=="muted").unwrap();assert_eq!(checked_value(f,"true").unwrap(),"True");assert!(checked_value(f,"true\n[Core]").is_err());}
     #[test]fn editing_one_setting_preserves_saves_and_unknown_keys(){let mut doc=IniDocument::parse("[Core]\nMemcardAPath = C:/Saves/My.raw\nSyncGPU = True\n[Custom]\nKeep = original\n[DSP]\nVolume = 100\n");let mut overlay=Overlay::new();overlay.entry("DSP".into()).or_default().insert("Volume".into(),"65".into());doc.merge(&overlay);assert_eq!(doc.get("Core","MemcardAPath"),Some("C:/Saves/My.raw"));assert_eq!(doc.get("Core","SyncGPU"),Some("True"));assert_eq!(doc.get("Custom","Keep"),Some("original"));assert_eq!(doc.get("DSP","Volume"),Some("65"));}
 }
 

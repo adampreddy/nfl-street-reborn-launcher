@@ -183,6 +183,43 @@ impl IniDocument {
         report
     }
 
+    /// Set the keys in `overlay`, but **only where the key is not already
+    /// there**. A key the file already carries is left exactly as it is,
+    /// whatever its value.
+    ///
+    /// This is how the launcher states a default without taking the key away
+    /// from the player. `merge` says "this value, always"; `merge_absent` says
+    /// "this value, if nobody has said otherwise". The difference is the whole
+    /// reason a player's graphics and controller choices used to be reverted on
+    /// every launch: the launcher had only the first verb.
+    ///
+    /// `MergeReport::updated` is therefore always empty. Nothing this function
+    /// does can overwrite a value.
+    pub fn merge_absent(&mut self, overlay: &Overlay) -> MergeReport {
+        let mut report = MergeReport::default();
+
+        for (section, keys) in overlay {
+            for (key, value) in keys {
+                let label = format!("{section}/{key}");
+                if self.get(section, key).is_some() {
+                    report.unchanged.push(label);
+                    continue;
+                }
+                if self.append_to_section(section, key, value) {
+                    report.added.push(label);
+                } else {
+                    self.create_section(section, key, value);
+                    if !report.sections_created.contains(section) {
+                        report.sections_created.push(section.clone());
+                    }
+                    report.added.push(label);
+                }
+            }
+        }
+
+        report
+    }
+
     /// Take one key out of one section. Everything else, comments and blank
     /// lines included, stays exactly as it was. Returns whether a pair was
     /// removed.
@@ -344,6 +381,51 @@ mod tests {
                 .insert(k.to_string(), v.to_string());
         }
         o
+    }
+
+    /// The verb that lets the launcher state a default without owning the key.
+    ///
+    /// A key already in the file keeps its value whatever that value is, and
+    /// the document is not rewritten at all. A key that is absent is added, so
+    /// a fresh install still gets the tuned default.
+    #[test]
+    fn merge_absent_never_updates_an_existing_key() {
+        let text = "[Settings]\r\nInternalResolution = 4\r\nMSAA = 0x00000008\r\n\r\n; mine\r\n[Hacks]\r\nDeferEFBCopies = False\r\n";
+        let mut doc = IniDocument::parse(text);
+        let report = doc.merge_absent(&overlay(&[
+            ("Settings", "InternalResolution", "3"),
+            ("Settings", "MSAA", "1"),
+            ("Hacks", "DeferEFBCopies", "True"),
+        ]));
+
+        assert!(report.updated.is_empty(), "merge_absent must never update: {report:?}");
+        assert!(report.added.is_empty(), "nothing was absent");
+        assert_eq!(
+            doc.render(),
+            text,
+            "a document where every key was already present must come back byte for byte"
+        );
+        assert_eq!(doc.get("Settings", "InternalResolution"), Some("4"));
+        assert_eq!(doc.get("Settings", "MSAA"), Some("0x00000008"));
+        assert_eq!(doc.get("Hacks", "DeferEFBCopies"), Some("False"));
+    }
+
+    /// The other half: an absent key is still seeded, so the launcher's tuned
+    /// defaults reach a fresh user folder.
+    #[test]
+    fn merge_absent_still_seeds_a_key_that_is_not_there() {
+        let mut doc = IniDocument::parse("[Settings]\nInternalResolution = 2\n");
+        let report = doc.merge_absent(&overlay(&[
+            ("Settings", "InternalResolution", "3"),
+            ("Settings", "MaxAnisotropy", "4"),
+            ("Enhancements", "ArbitraryMipmapDetection", "False"),
+        ]));
+
+        assert!(report.updated.is_empty());
+        assert_eq!(doc.get("Settings", "InternalResolution"), Some("2"), "the player's value stands");
+        assert_eq!(doc.get("Settings", "MaxAnisotropy"), Some("4"), "absent, so seeded");
+        assert_eq!(doc.get("Enhancements", "ArbitraryMipmapDetection"), Some("False"));
+        assert_eq!(report.sections_created, vec!["Enhancements".to_string()]);
     }
 
     /// The whole reason this module exists. A real Dolphin.ini has sections the
