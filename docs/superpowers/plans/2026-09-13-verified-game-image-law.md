@@ -848,45 +848,43 @@ git commit -m "fix: close the settings and migrate doors, and stop the wizard re
 ### Task 9: The guard test, so a fourth door cannot reopen this
 
 **Files:**
-- Modify: `crates/reborn-ui/src/main.rs` (test module near `:5711`)
+- Modify: `crates/reborn-ui/src/main.rs` (the existing `mod tests`)
 
 **Interfaces:**
-- Consumes: all prior tasks.
-- Produces: a test that fails if any future code writes `game_path` without verifying.
+- Consumes: everything from Tasks 5, 7 and 8.
+- Produces: a test that fails if any command that writes `settings.game_path` stops verifying first.
+
+**Design note.** An earlier draft of this task scanned every line containing `game_path=` and looked for `identify` within a 40-line window. That heuristic is fragile in both directions, and Task 7 proved the failure mode is real: a guard written that way matched the word `seed_game_patch` inside an explanatory comment rather than the executable call. Name the commands instead, and match on what each one must call.
 
 - [ ] **Step 1: Write the test**
 
+In `main.rs`'s existing `mod tests`:
+
 ```rust
-/// Every writer of `settings.game_path` has to ask what the image is first.
-/// Before this law, three of them did not, and a disc nothing recognized
-/// became the game Reborn booted, wearing Reborn's textures.
+/// Every command that can make an image the game Reborn boots has to ask
+/// what that image is first. Three of them did not, and a disc nothing
+/// recognized became the booted game wearing Reborn's textures. A fourth
+/// door added later must fail here rather than reopen it quietly.
 #[test]
 fn every_writer_of_game_path_verifies_the_image() {
-    for (name, src) in [
-        ("main.rs", include_str!("main.rs")),
-        ("setup_tools.rs", include_str!("setup_tools.rs")),
+    for (name, body) in [
+        (
+            "setup_import_game",
+            command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game"),
+        ),
+        (
+            "settings_set_path",
+            command_body(include_str!("main.rs"), "async fn settings_set_path"),
+        ),
+        (
+            "setup_migrate_install",
+            command_body(include_str!("setup_tools.rs"), "pub async fn setup_migrate_install"),
+        ),
     ] {
-        for (line_no, line) in src.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || !line.contains("game_path") {
-                continue;
-            }
-            // Only assignments, not reads.
-            if !line.contains("game_path=") && !line.contains("game_path =") {
-                continue;
-            }
-            let window: String = src
-                .lines()
-                .skip(line_no.saturating_sub(40))
-                .take(45)
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert!(
-                window.contains("game_identity::identify"),
-                "{name}:{} writes game_path without verifying the image first",
-                line_no + 1
-            );
-        }
+        assert!(
+            body.contains("game_identity::identify"),
+            "{name} can make an image the booted game without ever asking what it is"
+        );
     }
 }
 ```
@@ -894,9 +892,21 @@ fn every_writer_of_game_path_verifies_the_image() {
 - [ ] **Step 2: Run it**
 
 Run: `cargo test -p reborn-ui every_writer_of_game_path`
-Expected: PASS, because Tasks 7 and 8 added `identify` near all three writers. If it fails, the failing line number names the writer that still needs the call; add it rather than widening the window.
+Expected: PASS, because Tasks 7 and 8 added the calls. If it fails, the named command is the one still missing its check: add the call rather than loosening the test.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Tighten Task 7's seed guard**
+
+`setup_seeds_the_patch_chain_before_it_classifies_the_disc` currently does `body.find("seed_game_patch")`, which matches the word inside the explanatory comment above the call, not the call itself. Deleting the call while leaving the comment would keep the test green. Match the call:
+
+```rust
+    let seed = body.find("seed_game_patch(&p)").expect(
+        "setup_import_game classifies the disc without ensuring the chain is on disk",
+    );
+```
+
+Confirm it still passes, and confirm it now FAILS if the call is removed while the comment stays. Say in your report how you checked that.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add crates/reborn-ui/src/main.rs
