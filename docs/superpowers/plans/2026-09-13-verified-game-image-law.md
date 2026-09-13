@@ -12,7 +12,9 @@
 
 ## Global Constraints
 
-- Branch off `integration` in an isolated worktree. Do NOT work in `target/merge-tree` directly: it holds uncommitted Codex edits to `dolphin_preferences.rs`, `settings_law.rs`, `dolphin_settings.rs` and `settings.js`.
+- Work in the isolated worktree `target/game-image-law` on branch `verified-game-image-law`, cut from `integration` at 0e2d4c7. Do NOT work in `target/merge-tree` or the main checkout: both are shared with other sessions.
+- `library::hash_file(path) -> Result<Sha256Hex>` lives in `crate::library`, NOT `game_patch`. Call `.as_str()` for the hex.
+- `Chain::parse` (game_patch.rs:105), `Chain::{load,route,base,head}`, `Route` (unit variant `Unknown`), `Step` (pub fields incl. `label`), `CHAIN_FILE` and `component_root` are all already public.
 - Run `git status --short` immediately before any build. Never `git add -A`; stage explicit paths only.
 - Do not merge `main` into this branch. `main` is behind `integration`.
 - UI copy is US English. No em-dashes anywhere in code or copy.
@@ -235,7 +237,7 @@ pub mod game_identity;
 Run: `cargo test -p reborn-core game_identity`
 Expected: all six FAIL with `not implemented`.
 
-If `Chain::parse` does not exist, read `crates/reborn-core/src/game_patch.rs` for the constructor `Chain::load` uses and add a `parse(bytes: &[u8])` that `load` delegates to, so the fixture needs no temp file. Keep `load`'s behavior identical.
+`Chain::parse(bytes: &[u8]) -> Result<Chain>` already exists at `game_patch.rs:105`; the fixture needs no temp file and no new constructor.
 
 - [ ] **Step 4: Implement `classify`**
 
@@ -257,7 +259,7 @@ pub fn classify(chain: Option<&Chain>, game_id: &str, sha256: &str) -> Verdict {
             label: chain.label_for(sha256).unwrap_or_default(),
             at_head: false,
         },
-        Route::Unknown { .. } => Verdict::Unconverted,
+        Route::Unknown => Verdict::Unconverted,
     }
 }
 ```
@@ -272,7 +274,7 @@ pub fn label_for(&self, sha256: &str) -> Option<String> {
 }
 ```
 
-Match `Route::Unknown`'s real shape from `game_patch.rs`; if it is a unit variant, write `Route::Unknown =>`.
+`Route` is `Route<'a>` and `Unknown` is a UNIT variant, confirmed at `game_patch.rs:83-90`.
 
 - [ ] **Step 5: Run the tests and confirm they pass**
 
@@ -361,7 +363,7 @@ pub fn identify(data_root: &Path, tool: &Path, image: &Path) -> Verdict {
         Ok(id) => id,
         Err(reason) => return Verdict::Unreadable { reason },
     };
-    let sha256 = match crate::game_patch::hash_file(image) {
+    let sha256 = match crate::library::hash_file(image) {
         Ok(h) => h,
         Err(e) => return Verdict::Unreadable { reason: e.to_string() },
     };
@@ -371,7 +373,7 @@ pub fn identify(data_root: &Path, tool: &Path, image: &Path) -> Verdict {
 }
 ```
 
-Match `hash_file`'s real return type from `game_patch.rs:427`; if it returns a newtype, call `.as_str()` as that file does.
+`library::hash_file(path) -> Result<Sha256Hex>`; call `.as_str()` on it, as `game_patch.rs:427` does.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
@@ -510,7 +512,7 @@ In `launch`, between the `find_runtime_and_game_for` call (ends line 727) and `l
             reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?;
         let saved = reborn_core::settings::Settings::load(&settings_file)
             .map_err(|e| e.player_message().to_string())?;
-        let image_sha = reborn_core::game_patch::hash_file(&game_path)
+        let image_sha = reborn_core::library::hash_file(&game_path)
             .map(|h| h.as_str().to_string())
             .unwrap_or_default();
         let verified = match &verdict {
@@ -758,7 +760,7 @@ Replace the body of `settings_set_path` at `main.rs:3991`, for the `Game` case o
             match reborn_core::game_identity::identify(&data, &tool, &image) {
                 reborn_core::game_identity::Verdict::Unreadable { reason } => return Err(reason),
                 reborn_core::game_identity::Verdict::Unconverted => {
-                    let sha = reborn_core::game_patch::hash_file(&image)
+                    let sha = reborn_core::library::hash_file(&image)
                         .map(|h| h.as_str().to_string()).map_err(|e| e.to_string())?;
                     let mut saved = reborn_core::settings::Settings::load(&file)
                         .map_err(|e| e.player_message().to_string())?;
@@ -1018,7 +1020,7 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
         // The download and the patch chain must be the same build, or the
         // next game update has nothing to apply to.
         let _=app.emit("game-import-progress",serde_json::json!({"stage":"Verifying…","percent":96}));
-        let sha=reborn_core::game_patch::hash_file(&iso).map_err(|e|e.to_string())?;
+        let sha=reborn_core::library::hash_file(&iso).map_err(|e|e.to_string())?;
         let chain_path=reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE);
         let head=reborn_core::game_patch::Chain::load(&chain_path).ok().flatten()
             .and_then(|c|c.head().map(str::to_string))
