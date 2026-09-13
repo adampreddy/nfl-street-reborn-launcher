@@ -189,6 +189,8 @@ pub const KEYS: &[Key] = &[
         "No telemetry. Stated explicitly rather than left to an upstream default that could change and quietly turn it on."),
     locked("Dolphin.ini", "Analytics", "PermissionAsked", "True", &["True"],
         "Suppresses Dolphin's own analytics prompt, which is a popup the player never asked to see."),
+    locked("GFX.ini", "Settings", "BorderlessFullscreen", "True", &[],
+        "Exclusive fullscreen hard-hangs Windows, not just the game. Reported 2026-09-13: Print Screen or F12 in fullscreen froze the machine, task-manager-only recovery. Neither key is a Reborn binding, so the trigger is an outside capture overlay, and Windows 11 gives Print Screen to the Snipping Tool while Steam gives F12 to its own. Against a D3D11 exclusive swapchain the capture forces a display mode switch and device reset, and with BackendMultithreading and ReShade on that same swapchain it deadlocks with DWM blocked behind it. Borderless has no mode switch, so the overlay just composites. Locked rather than seeded because every affected player already has a GFX.ini, and a seeded key would never reach them."),
 
     // ------------------------------------------------------- RETIRED PER-GAME
     //
@@ -473,7 +475,7 @@ mod tests {
     /// so that adding to it means editing this test, which means saying out
     /// loud that the launcher is taking another setting away from the player.
     #[test]
-    fn the_locked_set_is_exactly_these_nine_keys_and_each_states_why() {
+    fn the_locked_set_is_exactly_these_eleven_keys_and_each_states_why() {
         let mut locked: Vec<_> = KEYS
             .iter()
             .filter(|k| k.owner == Owner::Locked)
@@ -492,6 +494,11 @@ mod tests {
             ("Dolphin.ini", "Interface", "UsePanicHandlers"),
             ("Dolphin.ini", "Analytics", "Enabled"),
             ("Dolphin.ini", "Analytics", "PermissionAsked"),
+            // Added 2026-09-13: exclusive fullscreen hard-hangs Windows when an
+            // outside capture overlay (Print Screen, Steam's F12) grabs the
+            // screen. Locked, not seeded, because every affected player already
+            // has a GFX.ini and a seeded key would never reach them.
+            ("GFX.ini", "Settings", "BorderlessFullscreen"),
         ];
         expected.sort();
 
@@ -579,6 +586,27 @@ mod tests {
     /// values genuinely moved between shipped builds. A single-value check
     /// would skip the installs stamped by the older ones.
     #[test]
+    /// Print Screen / F12 in fullscreen hard-hung the whole PC (2026-09-13).
+    ///
+    /// The fix only works if it reaches players who already have a `GFX.ini`,
+    /// which is all of them. `Seeded` writes only where the key is absent, so
+    /// this one has to be `Locked` or the hang survives the update. Confirmed
+    /// in the real renderer before shipping.
+    #[test]
+    fn borderless_fullscreen_is_locked_so_it_reaches_an_existing_install() {
+        let key = find("GFX.ini", "Settings", "BorderlessFullscreen")
+            .expect("BorderlessFullscreen must be declared");
+        assert!(
+            matches!(key.owner, Owner::Locked),
+            "seeded would skip every existing GFX.ini, which is every affected player",
+        );
+        assert_eq!(key.value, Some("True"));
+        assert_eq!(
+            locked_overlay("GFX.ini").get("Settings").and_then(|s| s.get("BorderlessFullscreen")),
+            Some(&"True".to_string()),
+        );
+    }
+
     fn the_forced_value_sets_cover_every_shipped_build() {
         let sync = find(GAME_SETTINGS, "Core", "SyncGPU").unwrap();
         assert!(sync.forced_values.contains(&"True"), "builds through 3.0.1 forced True");
