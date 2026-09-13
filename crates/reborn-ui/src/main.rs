@@ -713,6 +713,29 @@ fn may_play(verdict: &reborn_core::game_identity::Verdict, acknowledged: bool) -
     }
 }
 
+/// What choosing this image on the Settings page should do. Split out of
+/// `settings_set_path` so the decision is pinned by tests: silently widening
+/// it would let an image Reborn cannot vouch for become the booted game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathChoice {
+    /// Not a usable disc image. Refuse, and say why.
+    Refuse(String),
+    /// NFL Street 2 but not a Reborn build. Storable, but only as a
+    /// deliberate acknowledgment recorded against this exact image.
+    Acknowledge,
+    /// A build Reborn recognizes. Store the path and nothing more.
+    Store,
+}
+
+fn path_choice(verdict: &reborn_core::game_identity::Verdict) -> PathChoice {
+    use reborn_core::game_identity::Verdict;
+    match verdict {
+        Verdict::Unreadable { reason } => PathChoice::Refuse(reason.clone()),
+        Verdict::Unconverted => PathChoice::Acknowledge,
+        Verdict::RebornBuild { .. } | Verdict::Convertible | Verdict::DifferentGame { .. } => PathChoice::Store,
+    }
+}
+
 /// Start the game and answer when it stops.
 ///
 /// Runs on a blocking thread rather than the interface thread. The sequence has
@@ -4030,9 +4053,10 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
             let tool = std::env::current_exe().map_err(|e| e.to_string())?.parent().unwrap()
                 .join("game-import/DolphinTool.exe");
             let image = reborn_core::session::user_path(value.trim());
-            match reborn_core::game_identity::identify(&data, &tool, &image) {
-                reborn_core::game_identity::Verdict::Unreadable { reason } => return Err(reason),
-                reborn_core::game_identity::Verdict::Unconverted => {
+            let verdict = reborn_core::game_identity::identify(&data, &tool, &image);
+            match path_choice(&verdict) {
+                PathChoice::Refuse(reason) => return Err(reason),
+                PathChoice::Acknowledge => {
                     let sha = reborn_core::library::hash_file(&image)
                         .map(|h| h.as_str().to_string()).map_err(|e| e.to_string())?;
                     let mut saved = reborn_core::settings::Settings::load(&file)
@@ -4040,7 +4064,7 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
                     saved.unverified_game_ack = Some(sha);
                     saved.save(&file).map_err(|e| e.player_message().to_string())?;
                 }
-                _ => {}
+                PathChoice::Store => {}
             }
         }
         let stored = reborn_core::settings::set_path(&file, setting, &value).map_err(|e| e.to_string())?;
@@ -6029,6 +6053,62 @@ mod tests {
             ),
             Ok(false),
             "an image this launcher could not even read must never be treated as a Reborn build"
+        );
+    }
+
+    /// `path_choice` is Door 2's decision: what choosing an image on the
+    /// Settings page should do. Every verdict is pinned here so widening it
+    /// (or deleting the `Refuse` arm) compiles and passes everything else
+    /// while quietly letting an image Reborn cannot vouch for become the
+    /// booted game.
+    #[test]
+    fn path_choice_refuses_an_unreadable_image() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() }),
+            PathChoice::Refuse("truncated".to_string()),
+            "an Unreadable image that returns anything but Refuse would mean a file that is not \
+             a disc becomes the game Reborn tries to boot"
+        );
+    }
+
+    #[test]
+    fn path_choice_only_acknowledges_an_unconverted_disc() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Unconverted),
+            PathChoice::Acknowledge,
+            "an Unconverted disc that returns Store instead of Acknowledge would let a player's \
+             own modified NFL Street 2 become the settings game path with no record that it was \
+             ever an unverified choice, which is the acknowledgment Task 5's launch gate relies on"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_reborn_build_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }),
+            PathChoice::Store,
+            "a genuine Reborn build must be storable as the game path without demanding an \
+             acknowledgment it does not need"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_convertible_disc_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Convertible),
+            PathChoice::Store,
+            "an unmodified retail disc must be storable as the game path; setup, not Settings, is \
+             where it gets converted"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_different_game_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::DifferentGame { game_id: "GAFE01".to_string() }),
+            PathChoice::Store,
+            "a disc for a different game is named at the wizard, not blocked here; Settings must \
+             still be able to point at it"
         );
     }
 

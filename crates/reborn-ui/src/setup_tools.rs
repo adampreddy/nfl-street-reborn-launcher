@@ -462,6 +462,13 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
     }).await.map_err(|e|e.to_string())?
 }
+/// Whether a 2.1 installation's disc may be adopted as this install's game.
+/// Only a build Reborn recognizes, or an unmodified disc it can convert.
+/// Anything else goes to recovery rather than quietly becoming the game.
+fn may_adopt(verdict:&reborn_core::game_identity::Verdict)->bool{
+    verdict.is_reborn()||matches!(verdict,reborn_core::game_identity::Verdict::Convertible)
+}
+
 #[tauri::command]
 pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String)->Result<serde_json::Value,String>{
     let cards=tauri::async_runtime::spawn_blocking(move||->Result<Vec<String>,String>{
@@ -521,9 +528,7 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         const UNVERIFIED_MIGRATED_GAME:&str="The game file in your old installation isn't an NFL Street Reborn build, so it was not brought over. Choose your NFL Street 2 disc on the next step and Reborn will convert it.";
         let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
         let inherited=reborn_core::game_identity::identify(&data,&tool,&game);
-        // A 2.1 install's disc is adopted only if it is one of ours. Anything
-        // else goes to recovery rather than becoming this install's game.
-        let game=if inherited.is_reborn()||matches!(inherited,reborn_core::game_identity::Verdict::Convertible){game.clone()}else{return Err(UNVERIFIED_MIGRATED_GAME.to_string())};
+        let game=if may_adopt(&inherited){game.clone()}else{return Err(UNVERIFIED_MIGRATED_GAME.to_string())};
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
         saved.save(&file).map_err(|e|e.to_string())?;
@@ -609,5 +614,33 @@ fn rebase_user_paths(root:&Path,user:&Path)->Result<(),String>{
         assert_eq!(PathBuf::from(doc.get("Core","MemoryCardBPath").unwrap()),user.join("GC/B.raw"));
         assert_eq!(std::fs::read(&card).unwrap(),b"save data");
         std::fs::remove_dir_all(base).unwrap();
+    }
+}
+
+/// `may_adopt` is Door 3's decision: whether a 2.1 installation's disc may
+/// become this install's game. Every verdict is pinned here so widening the
+/// condition (or dropping the `Convertible` arm) compiles and passes
+/// everything else while quietly adopting an image Reborn cannot vouch for.
+#[cfg(test)] mod door3_tests {
+    use super::*;
+    #[test] fn may_adopt_refuses_an_unreadable_image() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::Unreadable{reason:"truncated".to_string()}),
+            "an Unreadable image that may_adopt accepted would mean a file that is not a disc becomes this install's game");
+    }
+    #[test] fn may_adopt_refuses_an_unconverted_disc() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::Unconverted),
+            "an Unconverted disc that may_adopt accepted would silently carry a player's own modified NFL Street 2 into this install as its game, with no acknowledgment ever recorded, which is exactly the disc this task's Task 1 tests exist to catch");
+    }
+    #[test] fn may_adopt_refuses_a_different_game() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::DifferentGame{game_id:"GAFE01".to_string()}),
+            "a disc for a different game entirely must never become this install's game just because a 2.1 folder pointed at it");
+    }
+    #[test] fn may_adopt_accepts_a_convertible_disc() {
+        assert!(may_adopt(&reborn_core::game_identity::Verdict::Convertible),
+            "an unmodified retail disc must be adoptable; refusing it would send every ordinary migration to recovery for no reason");
+    }
+    #[test] fn may_adopt_accepts_a_reborn_build() {
+        assert!(may_adopt(&reborn_core::game_identity::Verdict::RebornBuild{label:"3.0.2".to_string(),at_head:true}),
+            "a genuine Reborn build must be adoptable; refusing it would send every ordinary migration to recovery for no reason");
     }
 }
