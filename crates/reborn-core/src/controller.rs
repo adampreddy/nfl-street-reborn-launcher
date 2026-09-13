@@ -426,15 +426,22 @@ impl Extras {
     }
 
     /// Resolve all three from the names this device actually reports.
+    ///
+    /// Anything that cannot be resolved is left EMPTY, and an empty extra is
+    /// not written to the file at all. A pad with no rumble output should get
+    /// no `Rumble/Motor` line, not a line naming a motor it does not have:
+    /// the second is indistinguishable from the first while playing, and
+    /// indistinguishable from a bug while reading the file.
     pub fn from_device(available: &[String]) -> Self {
         let mut out = Self::default();
         for extra in Extra::ALL {
-            if let Some(name) = Mapping::extra_candidates(*extra)
+            let found = Mapping::extra_candidates(*extra)
                 .iter()
-                .find(|c| available.iter().any(|a| Mapping::bare(a) == **c))
-            {
-                out.set(*extra, Mapping::quote(name));
-            }
+                .find(|c| available.iter().any(|a| Mapping::bare(a) == **c));
+            out.set(
+                *extra,
+                found.map(|name| Mapping::quote(name)).unwrap_or_default(),
+            );
         }
         out
     }
@@ -449,7 +456,9 @@ impl Extras {
             .copied()
             .filter(|e| {
                 let bare = Mapping::bare(self.get(*e));
-                !available.iter().any(|a| Mapping::bare(a) == bare)
+                // Empty means "this pad has no such control and no line is
+                // written", which is a resolved state, not a broken one.
+                !bare.is_empty() && !available.iter().any(|a| Mapping::bare(a) == bare)
             })
             .collect()
     }
@@ -928,14 +937,17 @@ impl GcPadConfig {
             // the click; these are the travel, and without them a trigger held
             // part way reads as nothing. Present in the working install and
             // absent here until the two were compared.
-            out.push_str(&format!(
-                "Triggers/L-Analog = {}\n",
-                profile.extras.get(Extra::AnalogTriggerL)
-            ));
-            out.push_str(&format!(
-                "Triggers/R-Analog = {}\n",
-                profile.extras.get(Extra::AnalogTriggerR)
-            ));
+            // An empty extra means this pad has no such control. Write
+            // nothing rather than a line that cannot resolve.
+            for (key, extra) in [
+                ("Triggers/L-Analog", Extra::AnalogTriggerL),
+                ("Triggers/R-Analog", Extra::AnalogTriggerR),
+            ] {
+                let binding = profile.extras.get(extra);
+                if !binding.is_empty() {
+                    out.push_str(&format!("{key} = {binding}\n"));
+                }
+            }
 
             // Square gate calibration, the values Dolphin writes itself.
             // 141.42 is the diagonal, 100 * sqrt(2). Without these the stick
@@ -956,11 +968,14 @@ impl GcPadConfig {
                 "Triggers/Threshold = {:.2}\n",
                 f64::from(profile.tuning.trigger_threshold_percent)
             ));
-            out.push_str(&format!(
-                "Rumble/Motor = {} {:.2}\n",
-                profile.extras.get(Extra::RumbleMotor),
-                f64::from(profile.tuning.rumble_percent)
-            ));
+            let motor = profile.extras.get(Extra::RumbleMotor);
+            if !motor.is_empty() {
+                out.push_str(&format!(
+                    "Rumble/Motor = {} {:.2}\n",
+                    motor,
+                    f64::from(profile.tuning.rumble_percent)
+                ));
+            }
             out.push('\n');
         }
         out

@@ -24,6 +24,7 @@
 
 mod content_updates;
 mod music_page;
+mod remap;
 mod setup_tools;
 mod shell_tools;
 mod stats_view;
@@ -5524,6 +5525,9 @@ fn main() {
             setup_tools::setup_use_existing,
             setup_tools::controller_slots,
             setup_tools::controller_assign_player,
+            remap::remap_start,
+            remap::remap_detect,
+            remap::remap_stop,
             setup_tools::setup_controller_mapping,
             setup_tools::setup_save_mapping,
             paths,
