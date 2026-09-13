@@ -470,3 +470,74 @@ fn an_unidentified_pad_still_works_because_the_binding_names_both_vocabularies()
         );
     }
 }
+
+/// The exact path a player is on today, proven without the hardware.
+///
+/// The pad this was captured from has gone back to its owner, so this cannot
+/// be re-run live. It does not need to be: the ONLY thing the old runtime can
+/// tell the launcher is the device list, and that string is recorded here
+/// verbatim. Everything after it is the real code. Each produced line is then
+/// checked against the captured hardware dump, which is what a pad plugged in
+/// would have reported.
+#[test]
+fn the_file_written_on_the_old_runtime_is_live_on_the_real_pad() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::parse_device_list;
+    use reborn_core::session::build_gcpad_for_slots;
+
+    // Verbatim --list-input-devices output, the whole of what a runtime without
+    // --dump-device-inputs can say.
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+    );
+    let pad = scan.playable_pads()[0].clone();
+
+    // No input list, because the old runtime cannot produce one.
+    let profile = ControllerProfile::from_device(pad.identity(), 1, &[]);
+    let (ini, _) = build_gcpad_for_slots(&scan, &[profile], None, None).expect("a file");
+    eprintln!("---- GCPadNew.ini on the OLD runtime ----
+{ini}---- end ----");
+
+    // What the pad really reports, captured while it was connected.
+    let available = ps5().all_names();
+
+    let mut checked = 0;
+    for line in ini.lines() {
+        let Some((key, value)) = line.split_once(" = ") else { continue };
+        // Only binding lines. The numeric settings are not expressions.
+        if !(key.starts_with("Buttons/")
+            || key.starts_with("Main Stick/")
+            || key.starts_with("C-Stick/")
+            || key.starts_with("D-Pad/")
+            || key.starts_with("Triggers/")
+            || key == "Rumble/Motor")
+            || key.contains("Calibration")
+            || key.contains("Dead Zone")
+            || key.contains("Threshold")
+            || key.contains("Range")
+        {
+            continue;
+        }
+
+        // A trailing token after the expression is a syntax error in Dolphin
+        // and silently discards the whole binding. Nothing may have one.
+        assert!(
+            !value.trim_end().ends_with(|c: char| c.is_ascii_digit()) || value.contains('`'),
+            "{key} = {value} has a bare trailing value"
+        );
+
+        let resolves = value
+            .split('|')
+            .any(|part| available.iter().any(|a| Mapping::bare(a) == Mapping::bare(part)));
+        assert!(resolves, "{key} = {value}, and none of those exist on the real pad");
+        checked += 1;
+    }
+    assert!(checked >= 22, "expected every binding checked, saw {checked}");
+
+    // The strength is its own key now, never a number glued to the expression.
+    assert!(ini.contains("Rumble/Motor/Range = 100.00"), "{ini}");
+    assert!(!ini.contains("` 100.00"), "the old broken rumble form survives:
+{ini}");
+}

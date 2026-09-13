@@ -1203,11 +1203,27 @@ impl GcPadConfig {
                 "Triggers/Threshold = {:.2}\n",
                 f64::from(profile.tuning.trigger_threshold_percent)
             ));
+            // The strength is its OWN key, not a number after the
+            // expression.
+            //
+            // ControlGroup::LoadConfig reads the strength from
+            // `<group><name>/Range` and reads everything on the binding
+            // line as the expression. And the expression parser ends with
+            //
+            //   if (Peek().type == TOK_EOF) return result;
+            //   return ParseResult::MakeErrorResult(Peek(), "Expected end
+            //                                              of expression.");
+            //
+            // so a trailing number is a SYNTAX ERROR and the whole binding
+            // is discarded, in silence, exactly the way an unresolvable
+            // control name is. `Rumble/Motor = `Motor` 100.00` has been
+            // written since 2.1 and has therefore never rumbled anything,
+            // on any pad, including an Xbox one.
             let motor = profile.extras.get(Extra::RumbleMotor);
             if !motor.is_empty() {
+                out.push_str(&format!("Rumble/Motor = {motor}\n"));
                 out.push_str(&format!(
-                    "Rumble/Motor = {} {:.2}\n",
-                    motor,
+                    "Rumble/Motor/Range = {:.2}\n",
                     f64::from(profile.tuning.rumble_percent)
                 ));
             }
