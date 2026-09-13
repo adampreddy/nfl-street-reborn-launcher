@@ -135,21 +135,44 @@ impl Enumeration {
     /// somebody hits it, and is better than handing player two a second copy
     /// of player one's controller.
     pub fn playable_pads(&self) -> Vec<&DetectedDevice> {
-        let pads: Vec<&DetectedDevice> = self
+        let mut pads: Vec<&DetectedDevice> = self
             .devices
             .iter()
             .filter(|d| d.backend.is_pad_backend())
             .collect();
 
-        let Some(best) = pads.iter().map(|d| d.backend.preference()).min() else {
-            return Vec::new();
-        };
-
-        let mut chosen: Vec<&DetectedDevice> = pads
-            .into_iter()
-            .filter(|d| d.backend.preference() == best)
-            .collect();
-        chosen.sort_by_key(|d| d.id);
+        // Deduplicate by the PAD, not by the backend.
+        //
+        // This used to keep only the best ranked backend and drop every other
+        // one wholesale. That is why a PlayStation 5 pad could disappear
+        // completely: it lives on WGInput, so the moment any XInput device
+        // existed, including the virtual pad Steam creates, the real pad was
+        // filtered out and the player was told no controller was found.
+        //
+        // One physical pad really does report through several backends, so
+        // some deduplication is needed. Doing it by NAME is both narrower and
+        // more accurate than doing it by backend: the duplicate that caused
+        // the original trouble was one Xbox pad appearing as
+        // `WGInput/0/Xbox One Game Controller` and `XInput/0/Gamepad`, and a
+        // PlayStation pad never collides with an Xbox one.
+        pads.sort_by_key(|d| (d.backend.preference(), d.id));
+        let mut chosen: Vec<&DetectedDevice> = Vec::new();
+        for pad in pads {
+            // Only ACROSS backends, and never by id.
+            //
+            // Two ids in one backend are two pads: `XInput/0/Gamepad` and
+            // `XInput/1/Gamepad` are player one and player two and both must be
+            // offered. But one Xbox pad really does arrive as
+            // `WGInput/0/Xbox One Game Controller` AND
+            // `WGInput/1/Xbox One Game Controller` alongside its XInput entry,
+            // so the id carries no information about how many pads exist.
+            let already_seen_elsewhere = chosen.iter().any(|kept: &&DetectedDevice| {
+                kept.backend != pad.backend && same_physical_pad(&kept.name, &pad.name)
+            });
+            if !already_seen_elsewhere {
+                chosen.push(pad);
+            }
+        }
         chosen
     }
 
@@ -175,6 +198,130 @@ impl Enumeration {
             })
             .collect()
     }
+}
+
+/// Whether two device names, seen on different backends at the same id, are
+/// one piece of plastic.
+///
+/// Deliberately conservative. Saying yes wrongly hides a real second pad from
+/// player two, which is the failure this whole function exists to stop. So only
+/// the case that is actually known to collide is matched: an Xbox pad, which
+/// XInput calls `Gamepad` and Windows.Gaming.Input calls
+/// `Xbox ... Controller`.
+fn same_physical_pad(a: &str, b: &str) -> bool {
+    fn xbox_ish(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        lower == "gamepad" || lower.contains("xbox")
+    }
+    a.eq_ignore_ascii_case(b) || (xbox_ish(a) && xbox_ish(b))
+}
+
+/// The inputs one device reports, as the runtime names them.
+///
+/// Read from the runtime's `--input-capture` device dump. This is the only
+/// trustworthy source: the names are per backend, they do not overlap, and the
+/// launcher must never invent one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceInputs {
+    pub device: String,
+    /// Every reported input name, and whether the runtime can detect a press
+    /// on it. Undetectable ones (cursor position, accelerometer, gyroscope)
+    /// are still legal in a binding, so they are kept and flagged rather than
+    /// dropped.
+    pub inputs: Vec<(String, bool)>,
+}
+
+impl DeviceInputs {
+    /// Just the names, which is what mapping and validation compare against.
+    pub fn names(&self) -> Vec<String> {
+        self.inputs.iter().map(|(n, _)| n.clone()).collect()
+    }
+}
+
+/// The inputs a device reports, for devices whose report we have recorded.
+///
+/// # This is a recording, not a guess
+///
+/// Every name below was read off real hardware with
+/// `--dump-device-inputs`, and the file it came from is checked in as
+/// `tests/fixtures/input-capture-ps5.txt`. Nothing here is inferred from a
+/// backend, a vendor id, or a button count.
+///
+/// # Why it exists at all
+///
+/// Asking the runtime is always better, and [`dump_via_runtime`] does. But that
+/// flag only exists in a runtime that has not reached players yet, and the
+/// runtime they DO have names a PlayStation 5 pad identically: the WGInput
+/// label table in the shipped binary is byte-for-byte the same. Every
+/// PlayStation player would otherwise stay broken until a content release,
+/// for want of a flag rather than for want of the names.
+///
+/// So this is consulted ONLY when the runtime could not be asked. When it can
+/// be, its answer wins and this is never reached.
+pub fn known_inputs(device_string: &str) -> Option<Vec<String>> {
+    let (source, rest) = device_string.split_once('/')?;
+    let (_, name) = rest.split_once('/')?;
+
+    // Windows.Gaming.Input names a button by the label Windows gives it, and
+    // falls back to `Button {n}` when Windows supplies none. For a PlayStation
+    // pad it supplies Cross, Circle, Square and Triangle.
+    //
+    // MEASURED: `WGInput/0/PS5 Controller`, DualSense over USB, 2026-09-12.
+    // The DualShock 4 entries ride the same Windows label enum rather than a
+    // separate measurement, which is why the list is shared; if one ever turns
+    // out to differ, the guardrail on the new runtime reports it instead of
+    // failing silently the way the original bug did.
+    let playstation = ["PS5 Controller", "PS4 Controller", "DualSense", "DualShock"];
+    if source == "WGInput" && playstation.iter().any(|p| name.contains(p)) {
+        return Some(
+            [
+                "Square", "Cross", "Circle", "Triangle",
+                "Bumper L", "Bumper R",
+                "Button 6", "Button 7",
+                "View", "Menu",
+                "Thumb L", "Thumb R",
+                "Button 12", "Button 13", "Button 14",
+                "Left X-", "Left X+", "Left Y-", "Left Y+",
+                "Right X-", "Right X+", "Right Y-", "Right Y+",
+                "Trigger L", "Trigger R",
+                "Switch 0 N", "Switch 0 S", "Switch 0 W", "Switch 0 E",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        );
+    }
+
+    None
+}
+
+/// Parse the `devices.txt` written by `--input-capture`.
+///
+/// Format is two columns, tab separated: `DEVICE\t<source/id/name>` opens a
+/// device, then `INPUT\t<name>\t<0|1>` for each of its inputs.
+pub fn parse_device_inputs(text: &str) -> Vec<DeviceInputs> {
+    let mut all: Vec<DeviceInputs> = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split('\t');
+        match parts.next() {
+            Some("DEVICE") => {
+                if let Some(name) = parts.next() {
+                    all.push(DeviceInputs {
+                        device: name.to_string(),
+                        inputs: Vec::new(),
+                    });
+                }
+            }
+            Some("INPUT") => {
+                if let (Some(current), Some(name)) = (all.last_mut(), parts.next()) {
+                    let detectable = parts.next() != Some("0");
+                    current.inputs.push((name.to_string(), detectable));
+                }
+            }
+            _ => {}
+        }
+    }
+    all
 }
 
 /// A controller the emulator would find, named the way it would name it.
@@ -320,6 +467,59 @@ pub fn scan_via_runtime(
         devices,
         not_searched: Vec::new(),
     })
+}
+
+/// Ask the runtime what the pads are called AND what their inputs are called.
+///
+/// One process, one answer, for the same cost as [`scan_via_runtime`], which it
+/// replaces wherever the runtime is new enough. The extra half of the answer is
+/// what lets the launcher bind a pad it has never seen: control names are per
+/// backend and do not overlap, so the only safe source for a binding is the
+/// device's own report.
+///
+/// Returns an error on an older runtime that does not know the flag, so the
+/// caller can fall back rather than treat a pad with no inputs as a pad with
+/// no buttons.
+pub fn dump_via_runtime(
+    platform: &crate::platform::Platform,
+    runtime_exe: &std::path::Path,
+    scratch_dir: &std::path::Path,
+) -> Result<(Enumeration, Vec<DeviceInputs>), String> {
+    if !runtime_exe.exists() {
+        return Err(format!("no runtime at {}", runtime_exe.display()));
+    }
+    std::fs::create_dir_all(scratch_dir)
+        .map_err(|e| format!("could not create {}: {e}", scratch_dir.display()))?;
+    let out = scratch_dir.join("device-inputs.txt");
+    // A stale file from a previous run would be read as the current hardware.
+    let _ = std::fs::remove_file(&out);
+
+    let args = vec![std::ffi::OsString::from(format!(
+        "--dump-device-inputs={}",
+        out.display()
+    ))];
+    platform
+        .processes
+        .run_capturing(runtime_exe, &args, &Default::default())
+        .map_err(|e| format!("could not run the runtime: {e}"))?;
+
+    let raw = std::fs::read_to_string(&out).map_err(|_| {
+        "the runtime wrote no device dump; it predates --dump-device-inputs".to_string()
+    })?;
+
+    let inputs = parse_device_inputs(&raw);
+    let mut devices: Vec<DetectedDevice> = inputs
+        .iter()
+        .filter_map(|d| parse_device_string(&d.device))
+        .collect();
+    devices.sort_by(|a, b| (&a.backend, a.id).cmp(&(&b.backend, b.id)));
+    Ok((
+        Enumeration {
+            devices,
+            not_searched: Vec::new(),
+        },
+        inputs,
+    ))
 }
 
 /// Parse one `source/id/name` line, the format of `DeviceQualifier::ToString`.
