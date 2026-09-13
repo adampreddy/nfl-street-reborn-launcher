@@ -65,6 +65,7 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(25);
 
 /// A running capture session. Dropping it stops the runtime.
+#[derive(Debug)]
 pub struct Capture {
     dir: PathBuf,
     devices: Vec<DeviceInputs>,
