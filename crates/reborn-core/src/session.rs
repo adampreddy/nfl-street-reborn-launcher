@@ -752,7 +752,7 @@ impl Session {
                     .iter()
                     .find(|d| d.device == pad.device_string())
                 {
-                    Some(reported) => reported.names(),
+                    Some(reported) => reported.all_names(),
                     None => match crate::devices::known_inputs(&pad.device_string()) {
                         Some(recorded) => {
                             tracing::info!(

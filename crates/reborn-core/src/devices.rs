@@ -229,9 +229,20 @@ pub struct DeviceInputs {
     /// are still legal in a binding, so they are kept and flagged rather than
     /// dropped.
     pub inputs: Vec<(String, bool)>,
+    /// Output names, such as rumble motors. Bound by name exactly like an
+    /// input, and exactly as dead when the name is wrong.
+    pub outputs: Vec<String>,
 }
 
 impl DeviceInputs {
+    /// Inputs and outputs together, which is what the analog trigger and
+    /// rumble bindings must be checked against: the motor is an output.
+    pub fn all_names(&self) -> Vec<String> {
+        let mut all = self.names();
+        all.extend(self.outputs.iter().cloned());
+        all
+    }
+
     /// Just the names, which is what mapping and validation compare against.
     pub fn names(&self) -> Vec<String> {
         self.inputs.iter().map(|(n, _)| n.clone()).collect()
@@ -285,6 +296,10 @@ pub fn known_inputs(device_string: &str) -> Option<Vec<String>> {
                 "Right X-", "Right X+", "Right Y-", "Right Y+",
                 "Trigger L", "Trigger R",
                 "Switch 0 N", "Switch 0 S", "Switch 0 W", "Switch 0 E",
+                // Outputs. MEASURED: this pad has Motor L and Motor R and no
+                // plain `Motor`, which is what the generator used to hardcode.
+                // Rumble was dead here too.
+                "Motor L", "Motor R", "Trigger L", "Trigger R",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -309,7 +324,13 @@ pub fn parse_device_inputs(text: &str) -> Vec<DeviceInputs> {
                     all.push(DeviceInputs {
                         device: name.to_string(),
                         inputs: Vec::new(),
+                        outputs: Vec::new(),
                     });
+                }
+            }
+            Some("OUTPUT") => {
+                if let (Some(current), Some(name)) = (all.last_mut(), parts.next()) {
+                    current.outputs.push(name.to_string());
                 }
             }
             Some("INPUT") => {

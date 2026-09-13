@@ -136,6 +136,7 @@ fn an_xbox_pad_still_gets_exactly_what_it_had() {
         "Button A", "Button B", "Button X", "Button Y", "Shoulder L", "Shoulder R", "Trigger L",
         "Trigger R", "Start", "Back", "Thumb L", "Thumb R", "Pad N", "Pad S", "Pad W", "Pad E",
         "Left X-", "Left X+", "Left Y-", "Left Y+", "Right X-", "Right X+", "Right Y-", "Right Y+",
+        "Motor",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -288,7 +289,7 @@ fn the_recorded_layout_is_exactly_what_the_hardware_reported() {
     let recorded = known_inputs("WGInput/0/PS5 Controller").expect("the PS5 pad is recorded");
     assert_eq!(
         recorded,
-        ps5().names(),
+        ps5().all_names(),
         "the recorded layout must match the measured capture exactly; \
          if the hardware report changed, recapture it, do not edit the table"
     );
@@ -340,4 +341,65 @@ DInput/0/DualSense Wireless Controller";
     assert!(unmatched.is_empty());
     assert!(mapping.unresolvable(&available).is_empty());
     assert!(mapping.unbound().is_empty());
+}
+
+
+/// The literal file. Not the logic that builds it: the bytes that land on disk.
+#[test]
+fn the_generated_gcpad_file_is_live_on_a_ps5_pad() {
+    use reborn_core::controller::ControllerProfile;
+    use reborn_core::devices::{known_inputs, parse_device_list};
+    use reborn_core::session::build_gcpad_for_slots;
+
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+    );
+    let pad = scan.playable_pads()[0].clone();
+    let available = known_inputs(&pad.device_string()).unwrap();
+    let profile = ControllerProfile::from_device(pad.identity(), 1, &available);
+
+    let (ini, assignment) = build_gcpad_for_slots(&scan, &[profile], None, None)
+        .expect("a pad is connected, so a file is produced");
+
+    eprintln!("---- GCPadNew.ini as written ----
+{ini}
+---- end ----");
+    assert_eq!(assignment.len(), 1);
+    assert_eq!(assignment[0], (1, "WGInput/0/PS5 Controller".to_string()));
+
+    // The device line, and every control, naming something this pad HAS.
+    for expected in [
+        "Device = WGInput/0/PS5 Controller",
+        "Buttons/A = `Cross`",
+        "Buttons/B = `Circle`",
+        "Buttons/X = `Square`",
+        "Buttons/Y = `Triangle`",
+        "Buttons/Z = `Bumper R`",
+        "Buttons/Start = `Menu`",
+        "D-Pad/Up = `Switch 0 N`",
+        "Triggers/L = `Trigger L`",
+        "Main Stick/Up = `Left Y+`",
+        // The three that are NOT GcInputs, and were hardcoded XInput names
+        // until the generated file itself was read. All three were dead.
+        "Triggers/L-Analog = `Bumper L`",
+        "Triggers/R-Analog = `Bumper R`",
+        "Rumble/Motor = `Motor L`",
+    ] {
+        assert!(ini.contains(expected), "the written file contains: {expected}
+{ini}");
+    }
+
+    // And none of the dead XInput names survive anywhere in it.
+    for dead in [
+        "`Button A`",
+        "`Shoulder R`",
+        "`Shoulder L`",
+        "`Pad N`",
+        "Rumble/Motor = `Motor` ",
+    ] {
+        assert!(!ini.contains(dead), "the written file must not contain {dead}
+{ini}");
+    }
 }

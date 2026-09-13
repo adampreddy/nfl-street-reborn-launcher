@@ -310,6 +310,30 @@ impl Mapping {
             .collect()
     }
 
+    /// Bindings the pad file needs that are NOT GameCube inputs.
+    ///
+    /// The analog trigger travel and the rumble motor are written into
+    /// `GCPadNew.ini` alongside the twenty mapped controls, but they are not
+    /// `GcInput`s, so for a long time they sat hardcoded in the generator as
+    /// XInput names and were invisible to both the auto mapping and the
+    /// guardrail. On a PlayStation 5 pad all three were dead, and the file
+    /// still looked completely reasonable.
+    ///
+    /// MEASURED on a real DualSense 2026-09-12: the shoulders are `Bumper L`
+    /// and `Bumper R`, and the motors are `Motor L` and `Motor R`. There is no
+    /// `Shoulder L` and no `Motor` on that pad.
+    pub fn extra_candidates(extra: Extra) -> &'static [&'static str] {
+        match extra {
+            Extra::AnalogTriggerL => &["Shoulder L", "Bumper L"],
+            Extra::AnalogTriggerR => &["Shoulder R", "Bumper R"],
+            // One motor, not an expression combining both. `Motor L` is
+            // measured to exist and measured to resolve; a two motor
+            // expression would be an assumption about the parser that nothing
+            // here has checked.
+            Extra::RumbleMotor => &["Motor", "Motor L"],
+        }
+    }
+
     pub fn get(&self, input: GcInput) -> Option<&str> {
         self.0.get(&input).map(String::as_str)
     }
@@ -339,6 +363,95 @@ impl Mapping {
         }
         by_binding.retain(|_, inputs| inputs.len() > 1);
         by_binding
+    }
+}
+
+const MARKL: &str = "`Shoulder L`";
+const MARKR: &str = "`Shoulder R`";
+const MARKM: &str = "`Motor`";
+
+/// One of the three non-GameCube bindings the pad file also carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Extra {
+    AnalogTriggerL,
+    AnalogTriggerR,
+    RumbleMotor,
+}
+
+impl Extra {
+    pub const ALL: &'static [Extra] = &[
+        Extra::AnalogTriggerL,
+        Extra::AnalogTriggerR,
+        Extra::RumbleMotor,
+    ];
+}
+
+/// The resolved non-GameCube bindings for one pad.
+///
+/// Defaults to exactly what the generator used to hardcode, so an Xbox pad and
+/// every already saved profile keep the behaviour they had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extras {
+    pub analog_trigger_l: String,
+    pub analog_trigger_r: String,
+    pub rumble_motor: String,
+}
+
+impl Default for Extras {
+    fn default() -> Self {
+        Self {
+            analog_trigger_l: MARKL.to_string(),
+            analog_trigger_r: MARKR.to_string(),
+            rumble_motor: MARKM.to_string(),
+        }
+    }
+}
+
+impl Extras {
+    pub fn get(&self, extra: Extra) -> &str {
+        match extra {
+            Extra::AnalogTriggerL => &self.analog_trigger_l,
+            Extra::AnalogTriggerR => &self.analog_trigger_r,
+            Extra::RumbleMotor => &self.rumble_motor,
+        }
+    }
+
+    fn set(&mut self, extra: Extra, value: String) {
+        match extra {
+            Extra::AnalogTriggerL => self.analog_trigger_l = value,
+            Extra::AnalogTriggerR => self.analog_trigger_r = value,
+            Extra::RumbleMotor => self.rumble_motor = value,
+        }
+    }
+
+    /// Resolve all three from the names this device actually reports.
+    pub fn from_device(available: &[String]) -> Self {
+        let mut out = Self::default();
+        for extra in Extra::ALL {
+            if let Some(name) = Mapping::extra_candidates(*extra)
+                .iter()
+                .find(|c| available.iter().any(|a| Mapping::bare(a) == **c))
+            {
+                out.set(*extra, Mapping::quote(name));
+            }
+        }
+        out
+    }
+
+    /// Which of the three name a control this device does not have.
+    pub fn unresolvable(&self, available: &[String]) -> Vec<Extra> {
+        if available.is_empty() {
+            return Vec::new();
+        }
+        Extra::ALL
+            .iter()
+            .copied()
+            .filter(|e| {
+                let bare = Mapping::bare(self.get(*e));
+                !available.iter().any(|a| Mapping::bare(a) == bare)
+            })
+            .collect()
     }
 }
 
@@ -592,6 +705,13 @@ pub struct ControllerProfile {
     pub port: u8,
     pub mapping: Mapping,
     pub tuning: Tuning,
+    /// The analog trigger and rumble bindings, resolved for this device.
+    ///
+    /// Defaulted so every profile saved before this existed keeps the exact
+    /// behaviour it had.
+    #[serde(default)]
+    pub extras: Extras,
+
     /// Bindings the user changed away from the default.
     ///
     /// Tracked so the remap screen can show what is customized and offer to
@@ -607,6 +727,7 @@ impl ControllerProfile {
             port,
             mapping: Mapping::default_gamepad(),
             tuning: Tuning::default(),
+            extras: Extras::default(),
             overridden: Vec::new(),
         }
     }
@@ -636,7 +757,19 @@ impl ControllerProfile {
             }
         }
         if needs.is_empty() {
+            // Still not a no-op: the extras can be dead even when all twenty
+            // mapped controls resolve, which is exactly the PlayStation 5 case.
+            if !self.extras.unresolvable(available).is_empty() {
+                self.extras = Extras::from_device(available);
+            }
             return Vec::new();
+        }
+
+        // The analog triggers and the motor are bound by name too, and were
+        // dead on a PlayStation 5 pad for the same reason. Repaired on the
+        // same terms: only when the current name does not resolve.
+        if !self.extras.unresolvable(available).is_empty() {
+            self.extras = Extras::from_device(available);
         }
 
         let (workable, _) = Mapping::auto_from(available);
@@ -795,14 +928,14 @@ impl GcPadConfig {
             // the click; these are the travel, and without them a trigger held
             // part way reads as nothing. Present in the working install and
             // absent here until the two were compared.
-            out.push_str(
-                "Triggers/L-Analog = `Shoulder L`
-",
-            );
-            out.push_str(
-                "Triggers/R-Analog = `Shoulder R`
-",
-            );
+            out.push_str(&format!(
+                "Triggers/L-Analog = {}\n",
+                profile.extras.get(Extra::AnalogTriggerL)
+            ));
+            out.push_str(&format!(
+                "Triggers/R-Analog = {}\n",
+                profile.extras.get(Extra::AnalogTriggerR)
+            ));
 
             // Square gate calibration, the values Dolphin writes itself.
             // 141.42 is the diagonal, 100 * sqrt(2). Without these the stick
@@ -824,7 +957,8 @@ impl GcPadConfig {
                 f64::from(profile.tuning.trigger_threshold_percent)
             ));
             out.push_str(&format!(
-                "Rumble/Motor = `Motor` {:.2}\n",
+                "Rumble/Motor = {} {:.2}\n",
+                profile.extras.get(Extra::RumbleMotor),
                 f64::from(profile.tuning.rumble_percent)
             ));
             out.push('\n');

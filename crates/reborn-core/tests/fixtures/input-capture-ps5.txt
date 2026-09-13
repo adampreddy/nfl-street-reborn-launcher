@@ -197,6 +197,10 @@ INPUT	Switch 0 N	1
 INPUT	Switch 0 S	1
 INPUT	Switch 0 W	1
 INPUT	Switch 0 E	1
+OUTPUT	Motor L
+OUTPUT	Motor R
+OUTPUT	Trigger L
+OUTPUT	Trigger R
 DEVICE	DInput/0/DualSense Wireless Controller
 INPUT	Button 0	1
 INPUT	Button 1	1
