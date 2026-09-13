@@ -32,8 +32,8 @@
 //!   rolling `CredWriteW` through `windows-sys` would mean `unsafe` in this
 //!   crate, and a stored token is not worth spending that guarantee on.
 //! - `sysinfo` for volume enumeration. It is the safe crate that reports a
-//!   removable flag on all three platforms. The runtime check also uses its
-//!   process module to inspect executable paths without starting a shell.
+//!   removable flag on all three platforms. Dolphin detection is separately
+//!   implemented in runtime_process with query-only Windows access.
 //!
 //! # Why [`RemovableDrives::eject`] still refuses
 //!

@@ -1,5 +1,13 @@
 # Launch handoff, 2026-09-12
 
+Newest follow-up: the older-install launch refusal also incorrectly rejects retained
+User/Games folders in a configured launcher. See
+[2026-09-12-legacy-startup-guard.md](2026-09-12-legacy-startup-guard.md) for stable 3.0.3.
+
+Latest: stable 3.0.1 users on other PCs report a process-inspection error at startup.
+The 3.0.2 correction and verification limits are recorded in
+[2026-09-12-startup-process-check.md](2026-09-12-startup-process-check.md).
+
 Current follow-up: the launcher has moved to **stable**. The stuck Dolphin/session
 hotfix is documented in [2026-09-12-session-state-hotfix.md](2026-09-12-session-state-hotfix.md).
 The beta and release snapshot below describe earlier work.

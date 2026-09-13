@@ -33,9 +33,8 @@ keyring = "4.2"
 
 # Volume enumeration with a removable flag, for platform::RemovableDrives, so
 # the Xbox wizard cannot be handed a fixed disk to copy 3 GB onto.
-# Process enumeration also checks the exact Dolphin executable without shell
-# commands. Refreshes request executable paths only, not CPU/memory metrics.
-sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
+# Dolphin process detection uses query-only Windows APIs in platform/runtime_process.rs.
+sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 ureq = { version = "2", features = ["json"] }
 
 # Custom soundtrack. All pure Rust: this crate forbids unsafe and the
@@ -89,6 +88,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

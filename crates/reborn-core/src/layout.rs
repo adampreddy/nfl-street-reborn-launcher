@@ -93,7 +93,17 @@ pub fn prepare_data_root(platform: &Platform) -> Result<Prepared> {
 /// JSGME's `MODS` would skip it as a collision.
 pub fn prepare_at(data_root: &Path, previous_root: Option<&Path>) -> Result<Prepared> {
     let mut out = Prepared::default();
-    if crate::migration::LegacyInstall::detect(data_root).is_some() {
+    if configured_launcher_root(data_root) {
+        // A configured launcher may intentionally use top-level User/Games.
+        // Dolphin can also recreate User on exit. Never relocate these again:
+        // doing so invalidates saved paths and may hide the player's saves.
+        // Only the case-insensitive MODS/mods namespace needs separation.
+        if legacy_mod_entries(data_root)? {
+            let (tucked, blocked) = tuck_jsgme_mods(&data_root.join("MODS"), &data_root.join(LEGACY_SUBFOLDER).join("MODS"))?;
+            out.tucked = tucked;
+            out.blocked = blocked;
+        }
+    } else if crate::migration::LegacyInstall::detect(data_root).is_some() {
         let (tucked, blocked) = tuck_legacy(data_root)?;
         out.tucked = tucked;
         out.blocked = blocked;
@@ -113,6 +123,38 @@ pub fn prepare_at(data_root: &Path, previous_root: Option<&Path>) -> Result<Prep
         }
     }
     Ok(out)
+}
+
+/// An existing, readable launcher settings file distinguishes an established
+/// launcher from a raw 2.1 install. Missing files must not count: Settings::load
+/// intentionally returns defaults for those.
+fn configured_launcher_root(root: &Path) -> bool {
+    let settings = root.join(DataDir::Config.relative()).join("settings.json");
+    settings.is_file() && crate::settings::Settings::load(&settings).is_ok()
+}
+
+fn legacy_mod_entries(root: &Path) -> Result<bool> {
+    let mods = root.join("MODS");
+    let entries = match std::fs::read_dir(&mods) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(Error::Io { path: mods, source }),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io { path: mods.clone(), source })?;
+        if !LAUNCHER_MODS_ENTRIES.contains(&entry.file_name().to_string_lossy().to_lowercase().as_str()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Import detection is deliberately broad (User or Games). A launch refusal
+/// must instead distinguish a raw old installation from harmless retained data
+/// in an established launcher. Real shared MODS conflicts are still refused.
+pub fn legacy_blocks_launcher(root: &Path) -> Result<bool> {
+    if legacy_mod_entries(root)? { return Ok(true); }
+    Ok(!configured_launcher_root(root) && crate::migration::LegacyInstall::detect(root).is_some())
 }
 
 /// The files the launcher writes absolute paths into. Relative to the data
@@ -238,7 +280,7 @@ pub fn tuck_legacy(data_root: &Path) -> Result<Moves> {
 }
 
 /// What the launcher itself keeps directly under `mods`.
-const LAUNCHER_MODS_ENTRIES: &[&str] = &["packages", "staging", "activation.json"];
+const LAUNCHER_MODS_ENTRIES: &[&str] = &["packages", "staging", "active", "activation.json"];
 
 /// Move JSGME's entries out of a `MODS` folder into `into`, leaving the
 /// launcher's own entries. A folder with nothing left is removed, so the
@@ -383,6 +425,54 @@ mod tests {
         let p = prepare_at(&root, None).unwrap();
         assert!(p.tucked.is_empty());
         assert_eq!(names(&root), ["config", "somebody-elses-folder"]);
+    }
+
+    #[test]
+    fn configured_launcher_keeps_active_user_and_games_even_when_old_archive_has_the_same_names() {
+        let dir=tempfile::tempdir().unwrap(); let root=dir.path();
+        put(root,"User/GC/card.raw"); put(root,"Games/NSR.iso");
+        put(root,"Reborn 2.1/User/GC/card.raw"); put(root,"Reborn 2.1/Games/NSR.iso");
+        let mut settings=crate::settings::Settings::default();
+        settings.user_dir=Some(root.join("User"));
+        settings.game_path=Some(root.join("Games/NSR.iso"));
+        settings.save(&root.join("config/settings.json")).unwrap();
+        let before=std::fs::read(root.join("config/settings.json")).unwrap();
+        for _ in 0..2 {
+            let prepared=prepare_at(root,None).unwrap();
+            assert!(prepared.tucked.is_empty() && prepared.blocked.is_empty());
+            assert!(!legacy_blocks_launcher(root).unwrap());
+            assert!(root.join("User/GC/card.raw").is_file());
+            assert!(root.join("Games/NSR.iso").is_file());
+            assert!(root.join("Reborn 2.1/User/GC/card.raw").is_file());
+            assert_eq!(std::fs::read(root.join("config/settings.json")).unwrap(),before);
+        }
+    }
+
+    #[test]
+    fn actual_mod_namespace_conflicts_still_require_separation_in_a_configured_launcher() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        crate::settings::Settings::default().save(&root.join("config/settings.json")).unwrap();
+        put(root,"User/GC/card.raw"); put(root,"MODS/!BACKUP/original.dds");
+        put(root,"MODS/packages/current/package.json");
+        assert!(legacy_blocks_launcher(root).unwrap());
+        let prepared=prepare_at(root,None).unwrap();
+        assert!(prepared.blocked.is_empty());
+        assert!(!legacy_blocks_launcher(root).unwrap());
+        assert!(root.join("MODS/packages/current/package.json").is_file());
+        assert!(root.join("Reborn 2.1/MODS/!BACKUP/original.dds").is_file());
+        assert!(root.join("User/GC/card.raw").is_file());
+    }
+
+    #[test]
+    fn a_mod_backup_collision_preserves_both_copies_and_remains_protected() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        crate::settings::Settings::default().save(&root.join("config/settings.json")).unwrap();
+        put(root,"MODS/!BACKUP/new-original.dds");
+        put(root,"Reborn 2.1/MODS/!BACKUP/old-original.dds");
+        assert!(!prepare_at(root,None).unwrap().blocked.is_empty());
+        assert!(legacy_blocks_launcher(root).unwrap());
+        assert!(root.join("MODS/!BACKUP/new-original.dds").is_file());
+        assert!(root.join("Reborn 2.1/MODS/!BACKUP/old-original.dds").is_file());
     }
 
     #[test]

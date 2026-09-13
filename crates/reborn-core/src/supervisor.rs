@@ -224,9 +224,8 @@ const LOCK_FILE: &str = "launcher.lock";
 /// and replaced the whole thing with "Something unexpected happened. Try
 /// again." The folder is in the log; the player gets the part they can act on.
 pub const OLDER_INSTALL_IN_THE_WAY: &str =
-    "This folder still holds files from an older NFL Street Reborn that could \
-     not be moved out of the way. Close the older game and any of its tools, \
-     then open the launcher again.";
+    "Older installation files still overlap with the launcher's working folders. \
+     Restart the launcher to retry migration, or choose a separate installation folder.";
 
 /// How long a launch waits for a lock before it believes the refusal.
 ///
@@ -326,24 +325,19 @@ impl Supervisor {
         run_dir: &Path,
         clock: C,
     ) -> Result<Startup> {
-        // Refuse to run inside a 2.1 install that is still in the way.
-        //
-        // The stable data root IS 2.1's folder, and `crate::layout` moves a
-        // 2.1 install found there into `Reborn 2.1` before this lock is
-        // taken. When that could not finish (the old game still running
-        // holds a file), the launcher's `mods/` would be the player's JSGME
-        // `MODS/`, because Windows paths are case insensitive, and
-        // `mods/staging` is classed derived, so a cache purge could delete
-        // files out of a real mod library. So the case is refused, with the
-        // way forward: close the old game and start again.
+        // Protect an unprepared old install and actual MODS/mods collisions.
+        // Import detection alone is too broad here: a configured launcher can
+        // legitimately retain User/Games, and Dolphin may recreate User on exit.
+        // Their presence is not evidence of a failed move or a running game.
+        // layout also leaves these active paths in place on later startups.
         let data_root = run_dir.parent().unwrap_or(run_dir);
-        if crate::migration::LegacyInstall::detect(data_root).is_some() {
+        if crate::layout::legacy_blocks_launcher(data_root)? {
             // Which folder, to the log. The player is told what is wrong and
             // what to do; naming a folder they did not choose and cannot act
             // on is the raw technical text this product does not show.
             tracing::warn!(
-                "refusing to use {} for launcher data: it is an existing NFL Street \
-                 Reborn 2.1 install, and writing there could delete mods already in it",
+                "refusing to use {} for launcher data: unmigrated installation files \
+                 overlap with the launcher's working folders",
                 data_root.display()
             );
             return Err(Error::player(OLDER_INSTALL_IN_THE_WAY));
@@ -802,13 +796,25 @@ mod tests {
         );
         crate::player_sentence::assert_player_safe(shown);
         assert!(
-            shown.contains("Close the older game"),
+            shown.contains("Restart the launcher"),
             "no way forward given: {shown}"
         );
         assert!(
             !shown.contains(&legacy.display().to_string()),
             "the folder's full path reached the player: {shown}"
         );
+    }
+
+    #[test]
+    fn a_configured_launcher_can_acquire_with_retained_game_and_save_folders() {
+        let dir=tempfile::tempdir().unwrap(); let root=dir.path();
+        std::fs::create_dir_all(root.join("User/GC")).unwrap();
+        std::fs::create_dir_all(root.join("Games")).unwrap();
+        crate::settings::Settings::default().save(&root.join("config/settings.json")).unwrap();
+        assert!(matches!(Supervisor::acquire_at(&platform(),&root.join("cache"),SystemClock).unwrap(),Startup::Owner(_)));
+        // A real JSGME namespace collision still refuses even with settings present.
+        std::fs::create_dir_all(root.join("MODS/!INSTLOGS")).unwrap();
+        assert!(Supervisor::acquire_at(&platform(),&root.join("cache"),SystemClock).is_err());
     }
 
     /// The only routing fact the launcher itself asserts. `begin` must still
