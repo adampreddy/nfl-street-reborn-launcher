@@ -6,6 +6,8 @@
 //! their own NFL Street 2 with Reborn's texture pack over it, which is where
 //! "old names with new faces" came from.
 
+use std::path::Path;
+
 use crate::game_patch::{Chain, Route};
 
 /// The game ID every NFL Street 2 (USA) disc reports, Reborn's included.
@@ -56,6 +58,44 @@ pub fn classify(chain: Option<&Chain>, game_id: &str, sha256: &str) -> Verdict {
         },
         Route::Unknown => Verdict::Unconverted,
     }
+}
+
+/// The disc's game ID, read with DolphinTool. Moved here from
+/// `setup_tools::check_reborn_id` so one place knows how to ask.
+pub fn read_game_id(tool: &Path, image: &Path) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(tool);
+    cmd.arg("header").arg("-i").arg(image).arg("-j");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err("The game file could not be read.".to_string());
+    }
+    let header: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|_| "The game file could not be read.".to_string())?;
+    header["game_id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "The game file has no game ID.".to_string())
+}
+
+/// What this image is, end to end: its game ID, its hash, and the installed
+/// chain's opinion of it.
+pub fn identify(data_root: &Path, tool: &Path, image: &Path) -> Verdict {
+    let game_id = match read_game_id(tool, image) {
+        Ok(id) => id,
+        Err(reason) => return Verdict::Unreadable { reason },
+    };
+    let sha256 = match crate::library::hash_file(image) {
+        Ok(h) => h,
+        Err(e) => return Verdict::Unreadable { reason: e.to_string() },
+    };
+    let chain_path = crate::game_patch::component_root(data_root).join(crate::game_patch::CHAIN_FILE);
+    let chain = Chain::load(&chain_path).ok().flatten();
+    classify(chain.as_ref(), &game_id, sha256.as_str())
 }
 
 #[cfg(test)]
@@ -128,5 +168,17 @@ mod tests {
         let v = classify(None, DISC_ID, HEAD);
         assert_eq!(v, Verdict::Unconverted);
         assert!(!v.is_reborn());
+    }
+
+    #[test]
+    fn an_image_that_is_not_a_disc_is_unreadable_not_a_different_game() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image = dir.path().join("not-a-disc.iso");
+        std::fs::write(&image, b"this is not a gamecube disc").expect("write");
+        let missing_tool = dir.path().join("DolphinTool.exe");
+        match identify(dir.path(), &missing_tool, &image) {
+            Verdict::Unreadable { .. } => {}
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
     }
 }
