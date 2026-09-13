@@ -112,7 +112,7 @@ git commit -m "test: capture the unconverted-disc success bug"
 - Produces:
   - `pub enum Verdict { RebornBuild { label: String, at_head: bool }, Convertible, Unconverted, DifferentGame { game_id: String }, Unreadable { reason: String } }`
   - `pub fn classify(chain: Option<&Chain>, game_id: &str, sha256: &str) -> Verdict`
-  - `pub const DISC_ID: &str = "GN7E69";`
+  - `pub use crate::game_patch::DISC_ID;` (a re-export, NOT a second declaration: `game_patch::DISC_ID` already exists at `game_patch.rs:43` and `Chain::parse` gates on it at `:113`)
   - `impl Verdict { pub fn is_reborn(&self) -> bool }`
 
 - [ ] **Step 1: Write the failing tests**
@@ -131,7 +131,11 @@ Create `crates/reborn-core/src/game_identity.rs` with only the tests and the typ
 use crate::game_patch::{Chain, Route};
 
 /// The game ID every NFL Street 2 (USA) disc reports, Reborn's included.
-pub const DISC_ID: &str = "GN7E69";
+///
+/// Re-exported rather than redeclared: `Chain::parse` already refuses a
+/// chain whose `disc_id` is not this, so a second literal here could drift
+/// out of step with the one that gates the chain itself.
+pub use crate::game_patch::DISC_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -552,58 +556,90 @@ git commit -m "feat: verify the game image before Play boots it"
 
 ### Task 6: Switch Reborn's textures off for any image it did not verify
 
-The load-bearing half. Without it, "Play it anyway" reproduces the original symptom.
+The load-bearing half of the whole feature. Without it, "Play it anyway" reproduces the original symptom: Reborn's faces painted over someone else's roster.
 
 **Files:**
-- Modify: `crates/reborn-ui/src/main.rs` (`launch`, the `LaunchRequest` built at :728; and `:1496`)
+- Modify: `crates/reborn-core/src/session.rs:44` (`LaunchRequest`), `:1007` (call site), `:1253` (`sync_mods_for_launch` signature), `:1268` (the decision)
+- Modify: every `LaunchRequest { ... }` construction: `crates/reborn-ui/src/main.rs:460`, `:728`, `:3137`, `:5253`; `crates/reborn-cli/src/main.rs:1254`; `crates/reborn-core/examples/launch_smoke.rs:64`; `crates/reborn-core/src/session.rs:2040` (test helper)
 
 **Interfaces:**
-- Consumes: `verified` from Task 5.
-- Produces: `LaunchRequest.manage_user_texture_folder` is false whenever the booted image is not a Reborn build.
+- Consumes: the `verified` binding from Task 5.
+- Produces: `LaunchRequest.textures_allowed: bool`, ANDed into `SyncRequest.manage_user_texture_folder` at launch.
+
+**Ground truth, verified in this worktree.** `LaunchRequest` has NO `manage_user_texture_folder` field. The texture folder is decided inside `reborn-core`: `sync_mods_for_launch` (session.rs:1253) builds a `mods::SyncRequest` and sets `req.manage_user_texture_folder = crate::settings::manage_texture_folder(&settings_file)?` at session.rs:1268. It is called from session.rs:1007, where the `LaunchRequest` is in scope as `req`. So the verdict travels on `LaunchRequest` and is ANDed with the player's preference at that one point.
 
 - [ ] **Step 1: Write the failing test**
 
+In `crates/reborn-core/src/session.rs`'s test module:
+
 ```rust
+/// Reborn's art only ever paints a disc Reborn verified. A player who chose
+/// to play a modified NFL Street 2 anyway must see it as what it is, not
+/// wearing Reborn's faces over someone else's roster.
 #[test]
 fn an_unverified_image_never_gets_rebornes_texture_pack() {
-    let body = command_body(include_str!("main.rs"), "async fn launch(");
-    assert!(
-        body.contains("manage_user_texture_folder") && body.contains("verified"),
-        "launch does not gate the texture pack on whether the image verified, so a \
-         non-Reborn NFL Street 2 still boots wearing Reborn's faces"
-    );
+    assert!(!textures_for_launch(false, true), "an unverified image took the pack anyway");
+    assert!(!textures_for_launch(false, false), "an unverified image took the pack anyway");
+    assert!(textures_for_launch(true, true), "a verified image must still get the pack");
+    assert!(!textures_for_launch(true, false), "the player's own preference must still win");
 }
 ```
 
-- [ ] **Step 2: Run it and confirm it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
-Run: `cargo test -p reborn-ui an_unverified_image_never_gets`
-Expected: FAIL.
+Run: `cargo test -p reborn-core an_unverified_image_never_gets`
+Expected: FAIL, `textures_for_launch` not found.
 
 - [ ] **Step 3: Implement**
 
-Delete the `let _ = verified;` line from Task 5. After `Session::run`'s request is built, set the field on `req`. Because `LaunchRequest`'s literal at line 728 may not list the field, set it immediately after construction:
+Add the decision as its own named function in `session.rs`, so the rule is testable without a live launch:
 
 ```rust
-        let mut req = LaunchRequest { /* ... unchanged ... */ };
-        // Reborn's art only ever paints a disc Reborn verified. A player who
-        // chose to play a modified NFL Street 2 anyway sees it as what it is.
-        if !verified {
-            req.manage_user_texture_folder = false;
-        }
+/// Whether to point the emulator's texture folder at Reborn's composed tree.
+///
+/// Both must agree: the player has not opted out, AND the image is one
+/// Reborn verified as its own. The second half is why this is a function
+/// and not a settings read: an unverified disc wearing Reborn's faces is
+/// the "old names with new faces" confusion the launcher exists to prevent.
+fn textures_for_launch(image_verified: bool, player_wants_managed: bool) -> bool {
+    image_verified && player_wants_managed
+}
 ```
 
-Change `let req` to `let mut req`. Leave `main.rs:1496` (`req.manage_user_texture_folder = preferences.manage_texture_folder.unwrap_or(true);`) alone: the player preference still applies for verified images, and this only ever narrows it.
+Add the field to `LaunchRequest` (session.rs:44):
 
-- [ ] **Step 4: Run the tests and confirm they pass**
+```rust
+    /// Whether Reborn's texture pack may be pointed at this image. False for
+    /// a disc the launcher could not verify as a Reborn build.
+    pub textures_allowed: bool,
+```
 
-Run: `cargo test -p reborn-ui`
-Expected: all pass.
+Give `sync_mods_for_launch` a `textures_allowed: bool` parameter, and at session.rs:1268 replace the direct assignment with:
 
-- [ ] **Step 5: Commit**
+```rust
+        req.manage_user_texture_folder =
+            textures_for_launch(textures_allowed, crate::settings::manage_texture_folder(&settings_file)?);
+```
+
+At session.rs:1007 pass `req.textures_allowed`.
+
+- [ ] **Step 4: Set the field at every construction site**
+
+`crates/reborn-ui/src/main.rs:728` (the `launch` command from Task 5) sets `textures_allowed: verified`, and you delete the `let _ = verified;` line Task 5 left behind.
+
+Every other site sets `textures_allowed: true`, preserving today's behavior: main.rs:460, :3137, :5253, reborn-cli/src/main.rs:1254, examples/launch_smoke.rs:64, session.rs:2040.
+
+**Report back what main.rs:460, :3137 and :5253 actually are.** If any of them boots a game the same way `launch` does, it is a gap in the guarantee and the controller will rule on whether it needs the same gate. Do not gate them yourself in this task.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cargo test -p reborn-core session` then `cargo test -p reborn-core`
+Expected: all pass. `cargo check -p reborn-cli` and `cargo check --examples -p reborn-core` must also build, since adding a required field breaks every construction site that does not set it.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add crates/reborn-ui/src/main.rs
+git add crates/reborn-core/src/session.rs crates/reborn-ui/src/main.rs crates/reborn-cli/src/main.rs crates/reborn-core/examples/launch_smoke.rs
 git commit -m "feat: never paint Reborn textures on an image Reborn did not verify"
 ```
 
@@ -613,6 +649,7 @@ git commit -m "feat: never paint Reborn textures on an image Reborn did not veri
 
 **Files:**
 - Modify: `crates/reborn-ui/src/setup_tools.rs:166-195`
+- Test: `crates/reborn-ui/src/main.rs`, inside the existing `mod tests` at `:5647`
 
 **Interfaces:**
 - Consumes: `game_identity::{identify, Verdict}`.
@@ -620,7 +657,7 @@ git commit -m "feat: never paint Reborn textures on an image Reborn did not veri
 
 - [ ] **Step 1: Write the failing test**
 
-Add to the test module in `setup_tools.rs` (create one if absent, mirroring `main.rs`'s `command_body` helper):
+`setup_tools.rs` has no test module, and `command_body` is private to `main.rs`'s `mod tests` (main.rs:5647). Do NOT create a second test module or copy the helper: that duplication is exactly what the review rubric calls a defect. Put this test in `main.rs`'s existing `mod tests`, which already reads sibling files this way (see `command_body(include_str!("dolphin_settings.rs"), ...)` at main.rs:5715):
 
 ```rust
 #[test]
@@ -1188,6 +1225,89 @@ Expected: PASS.
 ```bash
 git add crates/reborn-ui/src/main.rs crates/reborn-ui/ui/home.js
 git commit -m "feat: show an unresolved badge when Play is on a disc Reborn did not verify"
+```
+
+---
+
+### Task 13: Gate every boot path, not just the Play button
+
+Added during execution. Task 6's implementer found that `launch` is not the only way a game boots, so the guarantee leaks around the gate Task 5 installed.
+
+**Files:**
+- Modify: `crates/reborn-ui/src/main.rs` (`play_now`, around `:5270`)
+- Modify: `crates/reborn-ui/src/dolphin_settings.rs` (`netplay_open`, around `:196`)
+- Test: `crates/reborn-ui/src/main.rs`, inside the existing `mod tests`
+
+**Interfaces:**
+- Consumes: `may_play(verdict, acknowledged) -> Result<bool, &'static str>` and `game_identity::identify`, both from Task 5.
+- Produces: no new interface. Two more call sites obey the existing rule.
+
+**Why this exists.** Verified in this worktree: `play_now` (`main.rs:5270`) is the desktop "Play NFL Street Reborn" shortcut. It builds a `LaunchRequest` and calls `Session::run` with `textures_allowed: true` and no verification anywhere in its body. A player who launches from the desktop icon, which is a shipped and prominent entry point, bypasses the launch gate completely and still gets Reborn's textures over an unverified disc. `netplay_open` (`dolphin_settings.rs:196`) has the same shape and additionally calls `sync_active_now`, which applies the texture pack from settings without consulting `textures_allowed` at all.
+
+- [ ] **Step 1: Write the failing test**
+
+In `main.rs`'s existing `mod tests`:
+
+```rust
+/// Every path that boots the game has to ask what the disc is, not just the
+/// Play button. The desktop shortcut is a shipped entry point, and a player
+/// who uses it must not slip past the gate that protects everyone else.
+#[test]
+fn every_boot_path_verifies_the_image() {
+    for (name, body) in [
+        ("launch", command_body(include_str!("main.rs"), "async fn launch(")),
+        ("play_now", inner_body(command_body(include_str!("main.rs"), "fn play_now"))),
+        (
+            "netplay_open",
+            command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+        ),
+    ] {
+        assert!(
+            body.contains("may_play"),
+            "{name} boots the game without asking whether the disc is a Reborn build"
+        );
+    }
+}
+```
+
+Match `inner_body`'s real signature; it already exists in that test module beside `command_body`.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `cargo test -p reborn-ui every_boot_path_verifies`
+Expected: FAIL naming `play_now` (and then `netplay_open`).
+
+- [ ] **Step 3: Gate `play_now`**
+
+Give it the same verdict-then-decide shape `launch` uses: resolve the DolphinTool path and the data root, call `game_identity::identify`, compute `acknowledged` lazily exactly as `launch` does, call `may_play`, propagate its `Err` as the function's error, and set `textures_allowed` from its `Ok` value instead of the hardcoded `true`.
+
+Do not duplicate the block by copy-paste. `launch` and `play_now` will then hold the same eight lines twice, which is the kind of duplication this project's review rubric treats as a defect. Extract the shared work into one helper next to `may_play`, for example:
+
+```rust
+/// The verdict for an image plus the player's standing acknowledgment, in
+/// the one shape every boot path needs. Returns the value for
+/// `LaunchRequest::textures_allowed`, or the refusal to show the player.
+fn verify_before_boot(p: &Platform, game_path: &Path) -> Result<bool, String> {
+    // identify, load settings, lazy hash for the ack, then may_play
+}
+```
+
+and call it from `launch`, `play_now` and `netplay_open`.
+
+- [ ] **Step 4: Gate `netplay_open`**
+
+Same call. Additionally, `netplay_open` calls `sync_active_now` before booting, which applies the texture pack without consulting the verdict. Pass the verified flag through so an unverified image does not get the pack there either, or move the `sync_active_now` call after the gate so a refusal happens first. Say in your report which you chose and why.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cargo test -p reborn-ui` and `cargo test -p reborn-core`
+Expected: all pass, including the new test and `launch`'s existing body assertions.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/reborn-ui/src/main.rs crates/reborn-ui/src/dolphin_settings.rs
+git commit -m "fix: gate every boot path, not just the Play button"
 ```
 
 ---
