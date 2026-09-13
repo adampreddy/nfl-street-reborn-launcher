@@ -140,7 +140,23 @@ fn mirror(platform: &Platform, from: &Path, to: &Path) -> Result<(usize, SeedHow
                 continue;
             }
             let dest = dest_dir.join(entry.file_name());
-            if platform.files.hardlink(&path, &dest).is_err() {
+            // Config the player edits is COPIED, never hardlinked.
+            //
+            // A hardlink makes the folder the launcher runs from and the
+            // content system's pristine tree the same bytes on disk, so a
+            // launch-time write to ReShade.ini or a preset reaches inside the
+            // managed tree and the next verify calls the managed tree damaged.
+            // Everything else stays linked: that is what keeps seeding a
+            // multi-gigabyte install close to free.
+            let editable = dest
+                .strip_prefix(to)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .is_some_and(|r| crate::library::is_player_editable(&r));
+            if editable {
+                let _ = std::fs::remove_file(&dest);
+                std::fs::copy(&path, &dest).map_err(|e| io(&dest, e))?;
+            } else if platform.files.hardlink(&path, &dest).is_err() {
                 let _ = std::fs::remove_file(&dest);
                 std::fs::copy(&path, &dest).map_err(|e| io(&dest, e))?;
                 how = SeedHow::Copied;
