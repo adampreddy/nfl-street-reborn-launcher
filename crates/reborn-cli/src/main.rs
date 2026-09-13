@@ -1260,6 +1260,7 @@ fn play(
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
         league_match: false,
+        textures_allowed: true,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same

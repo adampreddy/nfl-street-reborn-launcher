@@ -216,7 +216,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let game_path=match netplay_image(&p){Ok(Some(path))=>path,Ok(None)=>game_path,Err(e)=>return Err(e)};
   // Fail before preparing settings when an older/custom runtime lacks the bridge.
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
-  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false};
+  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures_allowed:true};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
   // The waiting acquire, the same one a launch takes. A lock this launcher's

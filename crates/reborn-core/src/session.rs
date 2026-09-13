@@ -65,6 +65,9 @@ pub struct LaunchRequest {
     /// The player said this is a league match. Recorded in the session before Dolphin
     /// starts; the backend forwards the game to the league site only when it is true.
     pub league_match: bool,
+    /// Whether Reborn's texture pack may be pointed at this image. False for
+    /// a disc the launcher could not verify as a Reborn build.
+    pub textures_allowed: bool,
 }
 
 /// Why a launch could not even be attempted.
@@ -1004,7 +1007,7 @@ impl Session {
         // builds the tree that list describes and points the emulator at it.
         // Before this call existed every profile switch wrote the list
         // correctly and the game never saw it.
-        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled);
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, req.textures_allowed);
 
         // The memory cards, brought up to date with the installed roster
         // before the game opens them, under the lock and with the game not
@@ -1247,6 +1250,16 @@ pub fn finish_and_collect(
     collect(platform, supervisor, &session_id, user_dir)
 }
 
+/// Whether to point the emulator's texture folder at Reborn's composed tree.
+///
+/// Both must agree: the player has not opted out, AND the image is one
+/// Reborn verified as its own. The second half is why this is a function
+/// and not a settings read: an unverified disc wearing Reborn's faces is
+/// the "old names with new faces" confusion the launcher exists to prevent.
+fn textures_for_launch(image_verified: bool, player_wants_managed: bool) -> bool {
+    image_verified && player_wants_managed
+}
+
 /// Point this build at what `activation.json` says is on.
 ///
 /// Every error is caught and carried, never propagated: see [`ModsAtLaunch`].
@@ -1256,6 +1269,7 @@ fn sync_mods_for_launch(
     build: GameBuild,
     user_dir: &Path,
     disabled: bool,
+    textures_allowed: bool,
 ) -> ModsAtLaunch {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1265,7 +1279,8 @@ fn sync_mods_for_launch(
         let game = crate::mods::GameId::parse(build.game_id())?;
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
-        req.manage_user_texture_folder = crate::settings::manage_texture_folder(&settings_file)?;
+        req.manage_user_texture_folder =
+            textures_for_launch(textures_allowed, crate::settings::manage_texture_folder(&settings_file)?);
         if disabled {
             req.active_override = Some(Vec::new());
         }
@@ -1855,6 +1870,17 @@ mod tests {
     use super::*;
     use crate::player_sentence::assert_player_safe;
 
+    /// Reborn's art only ever paints a disc Reborn verified. A player who chose
+    /// to play a modified NFL Street 2 anyway must see it as what it is, not
+    /// wearing Reborn's faces over someone else's roster.
+    #[test]
+    fn an_unverified_image_never_gets_rebornes_texture_pack() {
+        assert!(!textures_for_launch(false, true), "an unverified image took the pack anyway");
+        assert!(!textures_for_launch(false, false), "an unverified image took the pack anyway");
+        assert!(textures_for_launch(true, true), "a verified image must still get the pack");
+        assert!(!textures_for_launch(true, false), "the player's own preference must still win");
+    }
+
     #[test]
     fn background_sync_reports_collection_without_claiming_delivery() {
         let root = tempfile::tempdir().unwrap();
@@ -2048,6 +2074,7 @@ mod tests {
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
             league_match: false,
+            textures_allowed: true,
         }
     }
 

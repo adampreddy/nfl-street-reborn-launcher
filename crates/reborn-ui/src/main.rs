@@ -466,6 +466,7 @@ async fn prepare_launch(
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
             league_match: false,
+            textures_allowed: true,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -759,7 +760,6 @@ async fn launch(
                 .map(|h| saved.ack_matches(h.as_str()))
                 .unwrap_or(false);
         let verified = may_play(&verdict, acknowledged).map_err(str::to_string)?;
-        let _ = verified;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
@@ -769,6 +769,7 @@ async fn launch(
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
+            textures_allowed: verified,
         };
 
         let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
@@ -3181,6 +3182,7 @@ async fn onboarding_run_task(
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
                     league_match: false,
+                    textures_allowed: true,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -5294,6 +5296,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
         league_match: false,
+        textures_allowed: true,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
