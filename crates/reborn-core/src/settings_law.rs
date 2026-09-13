@@ -582,10 +582,6 @@ mod tests {
         assert!(overlay.get("Core").is_none_or(|s| !s.contains_key("SyncGPU")));
     }
 
-    /// The forced-value sets came from `git log -S` over runtime.rs, and the
-    /// values genuinely moved between shipped builds. A single-value check
-    /// would skip the installs stamped by the older ones.
-    #[test]
     /// Print Screen / F12 in fullscreen hard-hung the whole PC (2026-09-13).
     ///
     /// The fix only works if it reaches players who already have a `GFX.ini`,
@@ -607,6 +603,10 @@ mod tests {
         );
     }
 
+    /// The forced-value sets came from `git log -S` over runtime.rs, and the
+    /// values genuinely moved between shipped builds. A single-value check
+    /// would skip the installs stamped by the older ones.
+    #[test]
     fn the_forced_value_sets_cover_every_shipped_build() {
         let sync = find(GAME_SETTINGS, "Core", "SyncGPU").unwrap();
         assert!(sync.forced_values.contains(&"True"), "builds through 3.0.1 forced True");
