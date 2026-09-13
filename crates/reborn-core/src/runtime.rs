@@ -209,6 +209,15 @@ impl ConfigGenerator {
         for (section,key,value) in [
             ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
             ("Video_Settings","InternalResolution","3"),("Video_Settings","MSAA","1"),("Video_Settings","SSAA","False"),
+            // Borderless fullscreen, not exclusive. Reported 2026-09-13: pressing Print Screen or F12 in
+            // fullscreen froze the game AND the whole desktop, task-manager-only recovery. Neither key is
+            // bound to anything in Reborn (Dolphin F12 = Undo Load State, ReShade screenshot = VK 55), so the
+            // trigger is an outside capture tool: Windows 11 gives Print Screen to the Snipping Tool overlay
+            // and Steam gives F12 to its own. Against a D3D11 EXCLUSIVE fullscreen swapchain that forces a
+            // display mode switch and device reset, and with BackendMultithreading plus ReShade hooked into
+            // the same swapchain it deadlocks with DWM blocked behind it, which is why the desktop dies too.
+            // Borderless removes the mode switch, so a capture overlay just composites.
+            ("Video_Settings","BorderlessFullscreen","True"),
             // CacheHiresTextures = prefetch the whole HD pack decoded into RAM at boot. Measured 2026-09-11 on the
             // 24 GB dev box: 12 GB private bytes, 384 MB free, 28 GB pagefile in use, and the game "running slow".
             // The pack is BC7 DDS now (sub-millisecond loads), so on-demand is the requirement.
@@ -495,6 +504,28 @@ mod tests {
     /// workaround (it removes the GPU→CPU interrupt hand-off Dolphin loses), but
     /// it costs performance and is a per-machine call, so it is left to the
     /// user's own `GameSettings` and must survive a launcher session untouched.
+    /// Print Screen / F12 in fullscreen froze the game and the desktop (2026-09-13).
+    ///
+    /// Neither key is a Reborn binding. The freeze is an outside capture overlay
+    /// (Windows 11 owns Print Screen, Steam owns F12) hitting a D3D11 *exclusive*
+    /// fullscreen swapchain: the capture forces a mode switch and device reset, and
+    /// with ReShade and `BackendMultithreading` on the same swapchain it deadlocks
+    /// with DWM blocked behind it, which is why the whole PC hangs. Borderless has
+    /// no mode switch, so the overlay just composites. Because the launcher merges
+    /// these on every session prep, forcing `True` also repairs the INI already
+    /// sitting in every installed player's `User` folder.
+    #[test]
+    fn fullscreen_is_borderless_so_a_screenshot_overlay_cannot_deadlock_the_desktop() {
+        use super::*;
+        assert_eq!(
+            ConfigGenerator::required_game_settings()
+                .get("Video_Settings")
+                .and_then(|s| s.get("BorderlessFullscreen")),
+            Some(&"True".to_string()),
+            "BorderlessFullscreen must stay True: exclusive fullscreen + a capture overlay hard-hangs Windows",
+        );
+    }
+
     #[test]
     fn the_texture_prefetch_stays_off_and_single_core_is_left_to_the_user() {
         use super::*;
