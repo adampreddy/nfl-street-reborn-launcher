@@ -697,6 +697,10 @@ impl Drop for LaunchGuard {
 #[tauri::command]
 fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
+/// Shown when Play is pressed on an NFL Street 2 disc that is not a Reborn
+/// build. Worded as the fault it almost always is, not as a preference.
+const UNVERIFIED_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc. Repair it from the Settings page.";
+
 /// Start the game and answer when it stops.
 ///
 /// Runs on a blocking thread rather than the interface thread. The sequence has
@@ -725,6 +729,30 @@ async fn launch(
             legacy.as_deref(),
             chosen_user.as_deref(),
         )?;
+        // What we are about to boot, before we boot it. A disc that is not a
+        // Reborn build must never reach the emulator wearing Reborn's
+        // textures: that is what produced "old names with new faces".
+        let tool = std::env::current_exe()
+            .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
+            .parent()
+            .unwrap()
+            .join("game-import/DolphinTool.exe");
+        let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+        let verdict = reborn_core::game_identity::identify(&data, &tool, &game_path);
+        let settings_file =
+            reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?;
+        let saved = reborn_core::settings::Settings::load(&settings_file)
+            .map_err(|e| e.player_message().to_string())?;
+        let image_sha = reborn_core::library::hash_file(&game_path)
+            .map(|h| h.as_str().to_string())
+            .unwrap_or_default();
+        let verified = match &verdict {
+            reborn_core::game_identity::Verdict::Unconverted if !saved.ack_matches(&image_sha) => {
+                return Err(UNVERIFIED_GAME.to_string())
+            }
+            v => v.is_reborn(),
+        };
+        let _ = verified;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
@@ -5880,6 +5908,27 @@ mod tests {
             body.contains("forget_retired_league_token"),
             "a token this project has already had to rotate stays in the credential vault \
              forever, on every machine that ever stored one"
+        );
+    }
+
+    /// Play must know what the disc is before it boots it.
+    ///
+    /// Three commands wrote `settings.game_path` and none of them verified
+    /// it, so a player's own unconverted NFL Street 2 booted with Reborn's
+    /// texture pack over it: old names with new faces. `launch` is the one
+    /// path every player takes, so it is the one that has to ask.
+    #[test]
+    fn launch_verifies_the_image_before_starting_the_emulator() {
+        let body = command_body(include_str!("main.rs"), "async fn launch(");
+        let verify = body
+            .find("game_identity::identify")
+            .expect("launch boots game_path without ever asking what it is");
+        let request = body
+            .find("LaunchRequest {")
+            .expect("launch still builds a LaunchRequest");
+        assert!(
+            verify < request,
+            "launch must know what the image is before it builds the request that boots it"
         );
     }
 
