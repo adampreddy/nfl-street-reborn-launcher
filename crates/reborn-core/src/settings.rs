@@ -118,6 +118,12 @@ pub struct Settings {
     pub graphics_override: Option<GraphicsOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrated_texture_root: Option<PathBuf>,
+    /// The SHA-256 of the one image the player chose to play despite it not
+    /// being a Reborn build. Per image on purpose: this is an escape hatch
+    /// from a fault, not a preference, so it must not survive a swap to a
+    /// different image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unverified_game_ack: Option<String>,
 }
 
 /// Optional user-selected graphics values. Required game compatibility keys remain managed.
@@ -185,6 +191,7 @@ impl Default for Settings {
             emulator_preferences: Default::default(),
             graphics_override: None,
             migrated_texture_root: None,
+            unverified_game_ack: None,
         }
     }
 }
@@ -238,6 +245,11 @@ impl Settings {
             path: path.to_path_buf(),
             source,
         })
+    }
+
+    /// Whether this exact image is the one the player accepted.
+    pub fn ack_matches(&self, sha256: &str) -> bool {
+        self.unverified_game_ack.as_deref() == Some(sha256)
     }
 }
 
@@ -498,5 +510,14 @@ mod tests {
             Settings::load(&path).unwrap().backend_origin.as_deref(),
             Some("https://api.test")
         );
+    }
+
+    #[test]
+    fn acknowledging_one_unverified_image_does_not_acknowledge_another() {
+        let mut s = Settings::default();
+        assert!(!s.ack_matches("aa"), "nothing is acknowledged by default");
+        s.unverified_game_ack = Some("aa".into());
+        assert!(s.ack_matches("aa"));
+        assert!(!s.ack_matches("bb"), "the ack is per image, never a global mode");
     }
 }
