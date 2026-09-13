@@ -77,7 +77,14 @@ pub const GAME_SETTINGS: &str = "GameSettings";
 
 /// Bumped when [`reconcile_once`] needs to run again over installs it has
 /// already visited. The marker file holds the revision that last ran.
-pub const REVISION: u32 = 1;
+///
+/// 2 (2026-09-13): revision 1 pruned the per-game pins without reading the
+/// layer underneath, so `GFX.ini`'s `MSAA = 0x00000004` and
+/// `ArbitraryMipmapDetection = True` - values the pins had kept unreachable
+/// since the product shipped - became live on every install that reconciled.
+/// The installs that need the repair are exactly the ones revision 1 already
+/// visited, so fixing the table is only half of it; the marker has to move too.
+pub const REVISION: u32 = 2;
 
 /// Who decides a key's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,9 +131,13 @@ pub struct Key {
     /// is the launcher's, not the player's, and may be replaced. A live value
     /// outside it was chosen by somebody and is never touched.
     pub forced_values: &'static [&'static str],
-    /// Write this value once, where the restore had no evidence to work from.
-    /// For a key an old build welded in at a real cost, dropping the force is
-    /// not enough: the cost stays until something puts the right value back.
+    /// Write this value once, where the restore had no evidence it could
+    /// trust. For a key an old build welded in at a real cost, dropping the
+    /// force is not enough: the cost stays until something puts the right
+    /// value back. Declaring a repair also says the `.launcher-original`
+    /// snapshot is not to be believed when it merely repeats a value a shipped
+    /// build wrote, which for a key that sat under a per-game pin is the only
+    /// thing that snapshot can say.
     pub repair_once: Option<&'static str>,
     /// What breaks without this. Mandatory for `Locked`.
     pub why: &'static str,
@@ -229,20 +240,24 @@ pub const KEYS: &[Key] = &[
     with_ui(player("GFX.ini", "Settings", "InternalResolution", &["1", "3", "4", "6"],
         "The player's resolution. See reshade::depth_filter_for: the ReShade depth filter is derived from this value, so freeing it and deriving the filter are one change."),
         Ui { id: "internal_resolution", kind: "resolution", default: "3" }),
-    with_ui(player("GFX.ini", "Settings", "MSAA", &["1"],
-        "Anti-aliasing. 4x is the Reborn baseline (Adam, 2026-09-10), lower if the game stutters."),
-        Ui { id: "msaa", kind: "msaa", default: "0x00000004" }),
+    with_ui(with_repair(player("GFX.ini", "Settings", "MSAA", &["1", "4", "0x00000004"],
+        "Anti-aliasing, and the key that proves why a prune has to be read against the layer under it. 4x was called the Reborn baseline (Adam, 2026-09-10) but was never once in effect: every shipped build pinned MSAA = 1 into the per-game layer, which outranks GFX.ini, so the template's 4x sat underneath doing nothing for the life of the product. Revision 1 pruned the pin and woke it, and players reported the game dropping into the 30s with a full field on screen the same day - multisampling is billed per covered sample and per silhouette edge, and eight players on a field is mostly silhouette edge. 4x also resolves the depth buffer the ReShade presets sample, which is the artifact the shipped template warns about in the same breath. The repair puts the game back on the value it has always actually run at. Raising it from the Settings page works now, for the first time, and the page states what it costs. Both spellings are listed because Dolphin rewrites GFX.ini from memory on exit and normalises 0x00000004 to 4."),
+        "1"),
+        Ui { id: "msaa", kind: "msaa", default: "1" }),
     player("GFX.ini", "Settings", "SSAA", &["False"], "Supersampling."),
     player("GFX.ini", "Settings", "MaxAnisotropy", &["4"],
         "Anisotropic filtering. Note the launcher was writing this into [Settings], where Dolphin does not read it; Dolphin's own key is [Enhancements] MaxAnisotropy."),
     player("GFX.ini", "Enhancements", "MaxAnisotropy", &[],
         "Where Dolphin actually keeps anisotropic filtering. Never written by any shipped build, so there is no forced value to recognise."),
-    player("GFX.ini", "Settings", "ShaderCompilationMode", &["2"], "Shader compilation strategy: a stutter-versus-wait trade."),
+    with_repair(player("GFX.ini", "Settings", "ShaderCompilationMode", &["2", "0"],
+        "Shader compilation strategy, and the long-standing day-field slowdown. 2 is asynchronous ubershaders: any draw whose specialised shader is not compiled yet runs Dolphin's giant fallback shader instead, and the fallback is slowest exactly where the day fields live, in the sun-lit per-pixel lighting variants. If the compile queue never catches up the game sits on the fallback for the whole match: a flat low frame rate with no stutter, worse the more players are drawn. Predates ReShade entirely. The known-good User folder Adam kept for this (Reborn Installer/Files/Reborn Dolphin/User) differs from the shipped template in exactly this key, 0, which stalls to compile a new shader once and then always runs the fast one. WaitForShadersBeforeStarting stays True on purpose: with mode 0 it precompiles the cached shaders at boot, which only takes stutter out of play."),
+        "0"),
     player("GFX.ini", "Settings", "WaitForShadersBeforeStarting", &["True"], "Whether to wait at boot or stutter in play."),
     player("GFX.ini", "Settings", "DumpTextures", &["False"], "A modder's switch."),
     player("GFX.ini", "Settings", "DumpBaseTextures", &["False"], "A modder's switch."),
     player("GFX.ini", "Settings", "DumpMipTextures", &["False"], "A modder's switch."),
-    player("GFX.ini", "Enhancements", "ArbitraryMipmapDetection", &["False"], "A per-upload CPU cost, not a correctness requirement."),
+    with_repair(player("GFX.ini", "Enhancements", "ArbitraryMipmapDetection", &["False", "True"],
+        "A per-upload CPU cost, not a correctness requirement. The same shape as MSAA: the per-game pin held it off, the template underneath says True, and revision 1's prune woke it up. With CacheHiresTextures off the HD pack uploads during play, so the scan is paid mid-match for a pack whose mips are authored, which is what makes it waste. The repair puts it back off."), "False"),
     player("GFX.ini", "Hacks", "DeferEFBCopies", &["False", "True"], "A performance trade whose forced value flipped between shipped builds."),
     player("GFX.ini", "Hacks", "EFBToTextureEnable", &["True"], "An accuracy-versus-speed hack."),
     player("GFX.ini", "Hacks", "ImmediateXFBEnable", &["True"], "A latency trade."),
@@ -264,8 +279,9 @@ pub const KEYS: &[Key] = &[
     // own Backend dropdown cannot beat, which is the pin we just retired.
     // Dolphin.ini is where Dolphin's GUI writes, so a fresh install gets D3D
     // and a player who switches backend keeps the switch.
-    seeded("Dolphin.ini", "Core", "GFXBackend", "D3D", &["D3D"],
-        "ReShade's hook is dxgi.dll, so D3D is what the effects need. If the player picks another backend the choice is honored and the consequence is stated, not overridden."),
+    with_ui(seeded("Dolphin.ini", "Core", "GFXBackend", "D3D", &["D3D"],
+        "ReShade's hook is dxgi.dll, so D3D is what the effects need. If the player picks another backend the choice is honored and the consequence is stated, not overridden. Retiring the per-game pin said that out loud on 2026-09-13 and still left the player with no way to switch: the launcher boots Dolphin with -u/-e, and -b on top of that in fullscreen, so \"the player never sees Dolphin's own interface in an ordinary flow\" (runtime::Launcher::args). Freeing a key is not the same as offering it. This page is the only surface there is, so the key carries a Ui now."),
+        Ui { id: "video_backend", kind: "video_backend", default: "D3D" }),
     seeded("GFX.ini", "Hacks", "EFBAccessEnable", "True", &["True"],
         "The per-game layer locks this; seeding the global layer keeps a fresh install consistent without taking the key twice."),
     seeded("Logger.ini", "Options", "WriteToFile", "False", &["False"], "The freeze instrumentation left file logging on: a disk write per line."),
@@ -310,9 +326,13 @@ pub fn retired_game_settings() -> impl Iterator<Item = &'static Key> {
     KEYS.iter().filter(|k| k.file == GAME_SETTINGS && k.retired)
 }
 
-/// The player-owned keys the launcher's own Settings page offers.
-pub fn player_fields() -> impl Iterator<Item = &'static Key> {
-    KEYS.iter().filter(|k| k.owner == Owner::Player && k.ui.is_some())
+/// Every key the launcher's own Settings page offers, whatever class it sits
+/// in. `Seeded` belongs here as much as `Player` does, because seeding writes
+/// only where the key is absent and so never fights a control; the video
+/// backend is exactly that shape. Filtering on `Player` alone meant an offered
+/// key could be `Locked` elsewhere with the cross-check below never seeing it.
+pub fn offered_fields() -> impl Iterator<Item = &'static Key> {
+    KEYS.iter().filter(|k| k.ui.is_some())
 }
 
 /// Look a key up by where it lives.
@@ -380,11 +400,16 @@ impl Reconciled {
 ///    `.ini.launcher-original` snapshot taken before the launcher's first write
 ///    still exists, and the live value is one this launcher is known to have
 ///    forced, put the original value back. A live value outside
-///    [`Key::forced_values`] was chosen by somebody and is left alone.
-/// 3. **Repair.** Where the restore found no evidence, write
+///    [`Key::forced_values`] was chosen by somebody and is left alone. So is a
+///    snapshot value outside it - but a snapshot value *inside* it is the
+///    launcher's own template echoed back, not a preference, and on a key that
+///    names a repair it is discarded in favour of step 3.
+/// 3. **Repair.** Where the restore found no evidence it could trust, write
 ///    [`Key::repair_once`] if the key has one. Un-forcing a key does not undo
-///    what is already in the file, and `SyncGPU = True` costs frames in every
-///    install that a build through 3.0.1 ever touched.
+///    what is already in the file: `SyncGPU = True` costs frames in every
+///    install that a build through 3.0.1 ever touched, and `MSAA` has to land
+///    on the value the game actually ran at rather than the one the template
+///    had been carrying unreachably underneath the pin.
 ///
 /// This is a one-shot repair, not a policy. A player who afterwards puts
 /// `MSAA = 1` back into their own `GameSettings` file keeps it; a prune that
@@ -440,6 +465,26 @@ pub fn reconcile_in(user_dir: &Path, game_ids: &[&str]) -> Result<Reconciled> {
                 continue;
             }
             let mine = original.as_ref().and_then(|o| o.get(key.section, key.key)).map(str::trim).map(str::to_string);
+            // A snapshot value the launcher itself is known to have written is
+            // not evidence of a preference. `.ini.launcher-original` is a copy
+            // taken before the launcher's first *merge*, but the file it copies
+            // was already seeded whole from the shipped template, so for a key
+            // nobody could reach it can only echo that template back. It did:
+            // the 2026-09-13 report traced to `GFX.ini.launcher-original`
+            // carrying the same `MSAA = 0x00000004` as the live file, so the
+            // restore "found" the player's value, saw it already matched, and
+            // the repair never ran. Where a key names a repair, that is the
+            // value to land on; the snapshot only speaks when it says something
+            // no shipped build ever wrote, which is the same test the live
+            // value gets three lines above.
+            let mine = match mine {
+                Some(value)
+                    if key.repair_once.is_some() && key.forced_values.contains(&value.as_str()) =>
+                {
+                    None
+                }
+                other => other,
+            };
             let (value, bucket) = match mine {
                 Some(value) => (value, &mut out.restored),
                 None => match key.repair_once {
@@ -544,7 +589,7 @@ mod tests {
     /// and pinned to 1 in the per-game layer that outranks it.
     #[test]
     fn no_key_is_locked_in_one_place_and_offered_in_another() {
-        for field in player_fields() {
+        for field in offered_fields() {
             for locked in KEYS.iter().filter(|k| k.owner == Owner::Locked) {
                 assert!(
                     !(locked.section == field.section && locked.key == field.key),
@@ -649,6 +694,55 @@ mod tests {
         }
     }
 
+    /// The report behind the control: revision 1 retired the per-game
+    /// `GFXBackend` pin so that "a player whose driver works better on Vulkan
+    /// or OpenGL keeps that choice", and then nothing anywhere offered the
+    /// choice. `runtime::Launcher::args` boots Dolphin with `-u`/`-e`, and
+    /// `-b` on top in fullscreen, so Dolphin's own Graphics window is never on
+    /// screen in an ordinary flow: this page is the only surface a player has.
+    /// Freeing a key and offering it are two different jobs and only the first
+    /// one had been done.
+    ///
+    /// Offering a `Seeded` key is safe for exactly one reason, and the second
+    /// half of this test is that reason: seeding writes where the key is
+    /// absent and nowhere else, so it can never take the switch back.
+    #[test]
+    fn the_backend_is_offered_and_a_switch_survives_the_next_launch() {
+        let key = find("Dolphin.ini", "Core", "GFXBackend").expect("declared");
+        assert!(matches!(key.owner, Owner::Seeded), "a fresh install still has to land on D3D");
+        let ui = key.ui.expect("a key nothing offers is a key nobody can change");
+        assert_eq!(ui.id, "video_backend");
+        assert!(
+            crate::dolphin_preferences::FIELDS.iter().any(|f| {
+                f.id == ui.id && f.file == key.file && f.section == key.section && f.key == key.key
+            }),
+            "this table says the backend is offered, so the page that renders it has to agree",
+        );
+
+        // The player has switched to Vulkan. The next launch seeds and locks
+        // as it does on every launch.
+        let mut theirs = crate::ini::IniDocument::parse("[Core]\nGFXBackend = Vulkan\n");
+        theirs.merge(&locked_overlay("Dolphin.ini"));
+        theirs.merge_absent(&seeded_overlay("Dolphin.ini"));
+        assert_eq!(
+            theirs.get("Core", "GFXBackend"),
+            Some("Vulkan"),
+            "seeding took the player's switch back, which is the whole bug this module exists to stop",
+        );
+
+        // A fresh install, where nobody has said anything, still gets D3D.
+        let mut fresh = crate::ini::IniDocument::parse("[Core]\n");
+        fresh.merge_absent(&seeded_overlay("Dolphin.ini"));
+        assert_eq!(fresh.get("Core", "GFXBackend"), Some("D3D"));
+
+        // And the per-game layer must stay out of it, or the control is inert
+        // the same way the MSAA control was.
+        assert!(
+            locked_game_settings().get("Core").is_none_or(|s| !s.contains_key("GFXBackend")),
+            "pinned in the layer Dolphin's own GUI cannot beat is how this started",
+        );
+    }
+
     /// A per-game file shaped like the real one on this machine:
     /// `dolphin-users/migrated-1789249231540/GameSettings/GN7E69.ini`, which
     /// carries Gecko codes and an ActionReplay block above the pins, and a
@@ -729,6 +823,241 @@ mod tests {
             std::fs::read_to_string(dir.path().join("GameSettings/GN7E69.ini.launcher-original")).unwrap(),
             live_game_settings(),
         );
+    }
+
+    /// The shipped `GFX.ini`, as a player actually receives it: the tuned
+    /// template named by `build.ps1 -UserTemplate`, after
+    /// [`crate::user_template::sanitize_gfx_ini`], which turns the dump flags
+    /// and the FPS counter off and leaves "everything else, the anti-aliasing
+    /// and filtering included" at the tuned value. Checked on 2026-09-13
+    /// against `runtime/User/Config/GFX.ini` in the live install.
+    fn shipped_gfx_ini() -> &'static str {
+        "[Enhancements]\n\
+         ArbitraryMipmapDetection = True\n\
+         DisableCopyFilter = True\n\
+         ForceTrueColor = True\n\
+         ForceFiltering = True\n\
+         MaxAnisotropy = 3\n\
+         PostProcessingShader =\n\
+         [Hacks]\n\
+         BBoxEnable = False\n\
+         DeferEFBCopies = True\n\
+         EFBAccessEnable = True\n\
+         EFBEmulateFormatChanges = False\n\
+         EFBScaledCopy = True\n\
+         EFBToTextureEnable = True\n\
+         ImmediateXFBEnable = True\n\
+         SkipDuplicateXFBs = True\n\
+         XFBToTextureEnable = True\n\
+         [Hardware]\n\
+         VSync = True\n\
+         [Settings]\n\
+         BorderlessFullscreen = True\n\
+         BackendMultithreading = True\n\
+         CacheHiresTextures = True\n\
+         DumpBaseTextures = False\n\
+         DumpMipTextures = False\n\
+         EnableGPUTextureDecoding = True\n\
+         FastDepthCalc = True\n\
+         HiresTextures = True\n\
+         InternalResolution = 3\n\
+         InternalResolutionFrameDumps = False\n\
+         SaveTextureCacheToState = True\n\
+         ShaderCompilationMode = 2\n\
+         ShowFPS = False\n\
+         ShowNetPlayPing = True\n\
+         WaitForShadersBeforeStarting = True\n\
+         EnablePixelLighting = True\n\
+         MSAA = 0x00000004\n\
+         SSAA = False\n\
+         AspectRatio = 3\n\
+         DumpTextures = False\n\
+         MaxAnisotropy = 4\n"
+    }
+
+    /// The per-game section names, as `GameConfigLoader.cpp` maps them onto
+    /// `GFX.ini`'s.
+    fn base_section(section: &str) -> &str {
+        match section {
+            "Video_Settings" => "Settings",
+            "Video_Enhancements" => "Enhancements",
+            "Video_Hacks" => "Hacks",
+            other => other,
+        }
+    }
+
+    /// The value Dolphin would actually use, for the two layers an install
+    /// has. `Common/Config/Enums.h` orders the search `LocalGame` before
+    /// `Base`, so the per-game file wins wherever it has the key and
+    /// `GFX.ini` answers everywhere it does not.
+    fn effective(dir: &Path, section: &str, key: &str) -> Option<String> {
+        let game = std::fs::read_to_string(dir.join("GameSettings/GN7E69.ini")).unwrap_or_default();
+        let game_doc = crate::ini::IniDocument::parse(&game);
+        if let Some(value) = game_doc.get(section, key) {
+            return Some(value.trim().to_string());
+        }
+        let gfx = std::fs::read_to_string(dir.join("Config/GFX.ini")).unwrap_or_default();
+        let gfx_doc = crate::ini::IniDocument::parse(&gfx);
+        gfx_doc.get(base_section(section), key).map(|v| v.trim().to_string())
+    }
+
+    fn install() -> tempfile::TempDir {
+        let dir = user_dir_with(live_game_settings());
+        std::fs::write(dir.path().join("Config/GFX.ini"), shipped_gfx_ini()).unwrap();
+        dir
+    }
+
+    /// Taking a pin out is not a no-op on behavior. It hands the key to the
+    /// layer underneath, and the layer underneath is the shipped `GFX.ini`
+    /// template, which has been carrying values nobody re-examined precisely
+    /// because the pin made them unreachable.
+    ///
+    /// Reported by players on 2026-09-13, hours after the settings law went
+    /// out: "it doesn't stutter anymore, it is just a general complete
+    /// framerate drop into the 30s during play with everyone on screen." Both
+    /// halves of that sentence are this one pass. `SyncGPU = True` was pruned,
+    /// which is the stutter going away. `MSAA = 1` was pruned too, and the
+    /// template's `MSAA = 0x00000004` underneath it woke up, so every install
+    /// that reconciled switched 4x anti-aliasing on at once. Multisampling is
+    /// billed per covered sample and per silhouette edge, which is why it
+    /// reads as "with everyone on screen".
+    #[test]
+    fn a_prune_does_not_wake_the_value_the_pin_was_holding_down() {
+        let dir = install();
+
+        assert_eq!(
+            effective(dir.path(), "Video_Settings", "MSAA").as_deref(),
+            Some("1"),
+            "before: the pin holds anti-aliasing off, which is how the game has always run",
+        );
+
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            effective(dir.path(), "Video_Settings", "MSAA").as_deref(),
+            Some("1"),
+            "the prune turned 4x anti-aliasing on: the template's dead value became the live one",
+        );
+        assert_eq!(
+            effective(dir.path(), "Video_Enhancements", "ArbitraryMipmapDetection").as_deref(),
+            Some("False"),
+            "the same defect with a smaller bill: a per-upload CPU scan the pin was holding off",
+        );
+    }
+
+    /// The day-field slowdown that predates ReShade. The fix folder says mode 0;
+    /// every shipped install says mode 2; the repair has to carry one to the
+    /// other, on the file as a player actually has it.
+    #[test]
+    fn the_day_field_repair_lands_shader_compilation_on_synchronous() {
+        let dir = install();
+        assert_eq!(effective(dir.path(), "Video_Settings", "ShaderCompilationMode").as_deref(), Some("2"), "the shape every install is in today");
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+        assert_eq!(effective(dir.path(), "Video_Settings", "ShaderCompilationMode").as_deref(), Some("0"));
+        assert_eq!(effective(dir.path(), "Video_Settings", "WaitForShadersBeforeStarting").as_deref(), Some("True"), "left alone: with mode 0 it only precompiles at boot");
+    }
+
+    /// Dolphin rewrites `GFX.ini` from memory when it exits and normalises as
+    /// it writes, so the `0x00000004` the template shipped comes back as `4`
+    /// after the first session. The repair has to recognise the value in the
+    /// spelling the player's file is actually in, or it fires for nobody who
+    /// has already played.
+    #[test]
+    fn the_repair_recognises_the_spelling_dolphin_writes_back() {
+        let dir = install();
+        let path = dir.path().join("Config/GFX.ini");
+        std::fs::write(&path, shipped_gfx_ini().replace("MSAA = 0x00000004", "MSAA = 4")).unwrap();
+
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            effective(dir.path(), "Video_Settings", "MSAA").as_deref(),
+            Some("1"),
+            "Dolphin's own normalisation must not hide the value from the repair",
+        );
+    }
+
+    /// Against the live install on this machine, which is the one the report
+    /// came from. Revision 1 has already run here, so this folder is exactly
+    /// the shape revision 2 has to repair: the `MSAA = 1` pin already gone out
+    /// of `GameSettings`, and the woken `0x00000004` sitting in `GFX.ini`
+    /// where nobody chose it. Copied first, because a test does not get to
+    /// edit a player's configuration.
+    #[test]
+    fn the_repair_lands_on_the_live_install_on_this_machine_when_it_exists() {
+        let live = Path::new(
+            r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn\dolphin-users\migrated-1789249231540",
+        );
+        if !live.join("Config/GFX.ini").is_file() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["Config", "GameSettings"] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            for entry in std::fs::read_dir(live.join(sub)).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), dir.path().join(sub).join(entry.file_name())).unwrap();
+                }
+            }
+        }
+
+        let before = effective(dir.path(), "Video_Settings", "MSAA");
+        assert!(
+            matches!(before.as_deref(), Some("4" | "0x00000004")),
+            "this install is meant to be carrying the woken 4x; it says {before:?}",
+        );
+
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            effective(dir.path(), "Video_Settings", "MSAA").as_deref(),
+            Some("1"),
+            "the repair has to reach the real file, not just the fixture",
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("GameSettings/GN7E69.ini"))
+                .unwrap()
+                .contains("CPUThread = False"),
+            true,
+            "the player's own freeze workaround is not ours to touch",
+        );
+    }
+
+    /// The standing guard, so this class of bug cannot come back wearing a
+    /// different key. Every retired per-game pin is a value the launcher
+    /// chose; pruning it hands that key to whatever the shipped template put
+    /// in `GFX.ini`, which nobody has had reason to look at. Where the two
+    /// disagree the prune is a silent behavior change, and the only thing that
+    /// makes it safe is a `repair_once` saying where it should land.
+    #[test]
+    fn every_prune_that_changes_behavior_declares_where_it_lands() {
+        let template = crate::ini::IniDocument::parse(shipped_gfx_ini());
+
+        for pin in retired_game_settings() {
+            let section = base_section(pin.section);
+            let Some(under) = template.get(section, pin.key).map(str::trim) else { continue };
+            if pin.forced_values.contains(&under) {
+                continue; // the two layers agree; the prune changes nothing
+            }
+            let key = find("GFX.ini", section, pin.key).unwrap_or_else(|| {
+                panic!("{section}/{} is pruned but never declared in GFX.ini", pin.key)
+            });
+            assert!(
+                key.repair_once.is_some(),
+                "pruning {}/{} hands the key to the template's {under}, which is not a value the \
+                 pin ever had. Either the template is wrong or the key needs a repair_once.",
+                pin.section,
+                pin.key,
+            );
+            assert!(
+                key.forced_values.contains(&under),
+                "the repair for {section}/{} cannot fire: reconcile_in only replaces a live value \
+                 listed in forced_values, and the template's {under} is not in it",
+                pin.key,
+            );
+        }
     }
 
     /// A one-shot repair, not a standing policy. A player who puts a pin back

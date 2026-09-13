@@ -36,6 +36,13 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
         "bool"=>match value.to_lowercase().as_str(){"true"=>Ok("True".into()),"false"=>Ok("False".into()),_=>Err("Choose on or off.".into())},
         "volume"|"latency"=>{let n=value.parse::<u32>().map_err(|_|"Enter a whole number.")?;let max=if field.kind=="volume"{100}else{200};if n>max{return Err(format!("Choose a value from 0 to {max}."));}Ok(n.to_string())},
         "backend"=>if ["Cubeb","WASAPI (Exclusive Mode)"].contains(&value){Ok(value.into())}else{Err("Choose a supported audio output mode.".into())},
+        // Spelled exactly as Dolphin spells them: CONFIG_NAME in
+        // VideoBackends/*/VideoBackend.h. A name Dolphin does not recognise
+        // falls back to the default backend silently, so a typo here would
+        // look like the setting being ignored, which is the bug this control
+        // exists to fix. Null and Software Renderer are debugging backends
+        // that cannot play the game, so they are neither offered nor accepted.
+        "video_backend"=>if ["D3D","D3D12","Vulkan","OGL"].contains(&value){Ok(value.into())}else{Err("Choose a supported graphics backend.".into())},
         "slot"=>if ["1","8","255"].contains(&value){Ok(value.into())}else{Err("Choose a supported memory card type.".into())},
         // Written the way Dolphin writes it, so the file reads the same whoever last saved it.
         "msaa"=>{let n=value.trim_start_matches("0x").trim_start_matches('0');let n=if n.is_empty(){"0"}else{n};if ["1","2","4","8"].contains(&n){Ok(format!("0x{:08x}",n.parse::<u32>().unwrap()))}else{Err("Choose 1×, 2×, 4× or 8× anti-aliasing.".into())}},
@@ -121,6 +128,24 @@ mod tests {
             !shown.contains(char::from(92u8)) && !shown.contains('/'),
             "a file path reached the Online page: {shown}"
         );
+    }
+
+    /// Dolphin looks the backend up by name and falls back to its default
+    /// silently when the name is not one it knows, so a misspelling this door
+    /// let through would look exactly like the setting being ignored, which is
+    /// the complaint the control was added for. The four names are
+    /// `CONFIG_NAME` in `VideoBackends/*/VideoBackend.h`.
+    #[test]
+    fn the_graphics_backend_accepts_only_names_dolphin_knows() {
+        let field = FIELDS.iter().find(|f| f.id == "video_backend").expect("offered on the page");
+        for name in ["D3D", "D3D12", "Vulkan", "OGL"] {
+            assert_eq!(checked_value(field, name).as_deref(), Ok(name), "{name} is a real backend");
+        }
+        // Null and Software Renderer are real names and still refused: they
+        // are debugging backends that cannot play the game.
+        for refused in ["Null", "Software Renderer", "Direct3D 11", "d3d", "OpenGL", ""] {
+            assert!(checked_value(field, refused).is_err(), "{refused} must not reach Dolphin.ini");
+        }
     }
 
     #[test]
