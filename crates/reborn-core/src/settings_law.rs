@@ -514,6 +514,31 @@ mod tests {
         }
     }
 
+    /// The real cross-check: nothing the Settings page offers may be a key the
+    /// launcher forces.
+    ///
+    /// `dolphin_preferences::FIELDS` is the list the UI actually renders, and
+    /// it is maintained by hand, so it can drift from this table. It did:
+    /// `BorderlessFullscreen` was locked on 2026-09-13 to stop a whole-PC hang
+    /// while still being offered as a toggle defaulting to False, so switching
+    /// it off appeared to work and was forced back on the next launch. The
+    /// sibling test below only walks THIS table's `ui` rows, so it could not
+    /// see that. This one walks the list the player actually sees.
+    #[test]
+    fn nothing_the_settings_page_offers_is_a_key_the_launcher_forces() {
+        for field in crate::dolphin_preferences::FIELDS {
+            for locked in KEYS.iter().filter(|k| k.owner == Owner::Locked) {
+                assert!(
+                    !(locked.section == field.section && locked.key == field.key),
+                    "the Settings page offers {}/{} while the launcher forces it every launch: \
+                     a control that silently reverts is the bug this module exists to stop",
+                    field.section,
+                    field.key,
+                );
+            }
+        }
+    }
+
     /// A key cannot be both the launcher's and the player's. The old code had
     /// exactly this contradiction: MSAA was offered as a preference in GFX.ini
     /// and pinned to 1 in the per-game layer that outranks it.

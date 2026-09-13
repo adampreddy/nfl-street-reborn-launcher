@@ -23,7 +23,13 @@ pub const FIELDS: &[Field] = &[
     // was forced on for. The player decides whether to spend the frames.
     Field{id:"sync_gpu",file:"Dolphin.ini",section:"Core",key:"SyncGPU",default:"False",kind:"bool"},
     Field{id:"show_ping",file:"GFX.ini",section:"Settings",key:"ShowNetPlayPing",default:"False",kind:"bool"},
-    Field{id:"borderless",file:"GFX.ini",section:"Settings",key:"BorderlessFullscreen",default:"False",kind:"bool"},
+// `borderless` was here. BorderlessFullscreen became a LOCKED key on
+// 2026-09-13 because exclusive fullscreen hard-hangs Windows when an outside
+// capture overlay grabs the screen, so the launcher now forces it True on
+// every launch. Offering it as a toggle as well made the control a lie: the
+// player switched it off and it came back on the next launch, which is the
+// exact failure this whole module exists to stop. A key is the launcher's or
+// the player's, never both. See crate::settings_law.
     Field{id:"confirm_stop",file:"Dolphin.ini",section:"Interface",key:"ConfirmStop",default:"True",kind:"bool"},
     Field{id:"pause_unfocused",file:"Dolphin.ini",section:"Interface",key:"PauseOnFocusLost",default:"False",kind:"bool"},
     Field{id:"osd_messages",file:"Dolphin.ini",section:"Interface",key:"OnScreenDisplayMessages",default:"True",kind:"bool"},
