@@ -6014,6 +6014,29 @@ mod tests {
         );
     }
 
+    /// `setup_import_game` is Door 1: the first place a player's disc ever
+    /// reaches the launcher. `game_import::import_with_progress` already
+    /// verifies every file inside the disc and fails with a precise reason
+    /// (`"sys/main.dol does not match the supported USA release"`, say). That
+    /// reason used to hit `Err(_) =>` and be thrown away, so the player's raw
+    /// disc was imported verbatim and the wizard announced "Game File
+    /// Imported!" with a green progress bar. This is the bug the whole
+    /// project exists to fix.
+    #[test]
+    fn the_import_never_discards_why_a_disc_failed() {
+        let src = include_str!("setup_tools.rs");
+        let body = command_body(src, "pub async fn setup_import_game");
+        assert!(
+            !body.contains("Err(_) =>"),
+            "setup_import_game still throws away the verifier's reason, which is how an \
+             unconverted disc got reported as 'Game File Imported!'"
+        );
+        assert!(
+            body.contains("game_identity::identify"),
+            "setup_import_game does not ask what the disc actually is"
+        );
+    }
+
     /// The lock and the guard go back before the network work, and the online
     /// start waits for a lock that is about to be given back.
     ///

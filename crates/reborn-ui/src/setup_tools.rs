@@ -164,11 +164,11 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // Game ID is the sole content acceptance gate. Patch compatibility is
         // separate: preserve an existing/modified image if it cannot use this delta.
         check_reborn_id(&source)?;
-        let (output,patched)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
-            Ok(output)=>(output,true),
-            Err(_) => {
+        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
+            Ok(output)=>(output,true,None),
+            Err(reason) => {
                 let _=app.emit("game-import-progress",serde_json::json!({"stage":"Importing your game file...","percent":null}));
-                (import_existing(&p,&source)?,false)
+                (import_existing(&p,&source)?,false,Some(reason))
             }
         };
         let settings=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
@@ -188,6 +188,22 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
             let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
             (o.name().to_string(),o.applied().map(String::from),o.note().map(String::from))
         };
+        // A disc can patch clean and still not be a build Reborn recognizes as
+        // its own (a modified NFL Street 2 shares every byte the patcher
+        // checks except the ones that matter). Ask what actually landed and
+        // let that override the outcome above rather than trust that patching
+        // cleanly means the disc converted.
+        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
+        let verdict=reborn_core::game_identity::identify(&data,&tool,&booted);
+        let (outcome,label,note)=match &verdict {
+            reborn_core::game_identity::Verdict::DifferentGame{game_id}=>
+                ("different-game".to_string(),None,Some(format!("This is not NFL Street 2 (game ID {game_id}). Reborn's roster, textures and updates do not apply to it."))),
+            reborn_core::game_identity::Verdict::Unconverted=>
+                ("unconverted".to_string(),None,bundle_reason.clone().or_else(||Some("Reborn does not recognize this disc.".into()))),
+            reborn_core::game_identity::Verdict::Unreadable{reason}=>
+                ("unreadable".to_string(),None,Some(reason.clone())),
+            reborn_core::game_identity::Verdict::RebornBuild{..}|reborn_core::game_identity::Verdict::Convertible=>(outcome,label,note),
+        };
         let patched=patched||outcome=="patched";
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
@@ -195,7 +211,7 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
         // The pristine after the chain ran, not the one the import landed.
         let pristine=reborn_core::game_image::find_pristine(&data).map(|p|p.path).unwrap_or(output);
-        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note}))
+        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note,"reason":bundle_reason}))
     }).await.map_err(|e|e.to_string())?
 }
 
