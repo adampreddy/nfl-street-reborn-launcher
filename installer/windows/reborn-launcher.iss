@@ -262,7 +262,7 @@ Source: "{#Payload}\*"; DestDir: "{app}"; \
 ; keeps a fresh install correct and leaves an existing one alone. The launcher
 ; restores any of these that goes missing.
 Source: "{#Payload}\runtime\ReShade.ini"; DestDir: "{app}\runtime"; \
-  Flags: onlyifdoesntexist
+  Flags: onlyifdoesntexist skipifsourcedoesntexist
 Source: "{#Payload}\runtime\NSRShaderlessMenu.ini"; DestDir: "{app}\runtime"; \
   Flags: onlyifdoesntexist skipifsourcedoesntexist
 Source: "{#Payload}\runtime\reshade-presets\*"; DestDir: "{app}\runtime\reshade-presets"; \
