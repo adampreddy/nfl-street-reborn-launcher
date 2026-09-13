@@ -170,8 +170,15 @@ mod tests {
         assert!(!v.is_reborn());
     }
 
+    /// The tool is absent here, so this pins the spawn-failure path:
+    /// `identify` must not turn "I could not ask" into a verdict about the
+    /// disc. It does NOT prove anything about the image's bytes: `tool`
+    /// never runs, so `image` is never read by anything and this test would
+    /// pass just as well over a byte-perfect real GameCube ISO. Covering a
+    /// working tool that rejects genuinely bad disc data would need a
+    /// runnable stub DolphinTool, which is beyond this test.
     #[test]
-    fn an_image_that_is_not_a_disc_is_unreadable_not_a_different_game() {
+    fn a_missing_dolphin_tool_is_unreadable_not_a_different_game() {
         let dir = tempfile::tempdir().expect("temp dir");
         let image = dir.path().join("not-a-disc.iso");
         std::fs::write(&image, b"this is not a gamecube disc").expect("write");
