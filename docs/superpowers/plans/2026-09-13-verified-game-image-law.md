@@ -885,18 +885,38 @@ Add to the test module in `inventory.rs`:
 
 ```rust
 #[test]
-fn the_full_disc_is_a_component_but_never_a_default_one() {
-    assert_eq!(ComponentId::GameFull.name(), "game-full");
+fn the_full_disc_is_a_component_the_publisher_knows() {
+    assert_eq!(ComponentId::GameFull.as_str(), "game-full");
     assert!(
         ComponentId::ALL.contains(&ComponentId::GameFull),
-        "publishing needs to see it"
-    );
-    assert!(
-        !ComponentId::DEFAULT_RELEASE.contains(&ComponentId::GameFull),
-        "a normal install must never download 1.36 GB it does not need"
+        "publishing and name validation need to see it"
     );
 }
 ```
+
+And in `crates/reborn-core/src/publish/release.rs`, beside the existing
+carry-forward tests at `:449`:
+
+```rust
+/// Every other component is carried forward into the next release
+/// automatically. `game-full` must not be: it is 1.36 GB of recovery that a
+/// normal install never needs, and carrying it forward would put it in front
+/// of every player from the next release onward. Re-pin it deliberately or
+/// not at all.
+#[test]
+fn game_full_is_never_carried_forward_into_the_next_release() {
+    let existing = pinned(&[("roster", "2026.09.13"), ("game-full", "2026.09.13.3")]);
+    let next = carry_forward(&existing, &[]);
+    assert!(next.iter().any(|(n, _)| *n == "roster"), "ordinary pins carry");
+    assert!(
+        !next.iter().any(|(n, _)| *n == "game-full"),
+        "the full disc was carried into a release nobody asked it to be in"
+    );
+}
+```
+
+Match `pinned` and `carry_forward` to the real helper and function names in
+`release.rs`; the existing tests at `:449` and `:466` show both.
 
 - [ ] **Step 2: Run it and confirm it fails**
 
@@ -910,7 +930,7 @@ In `inventory.rs`, add to `ComponentId` after `GamePatch`:
 ```rust
     /// The complete head-build disc, 1,459,978,240 bytes. Recovery only, for
     /// a player whose own copy cannot be converted. Deliberately absent from
-    /// DEFAULT_RELEASE: a normal install never fetches it.
+    /// the release carry-forward: a normal install never fetches it.
     GameFull,
 ```
 
@@ -920,12 +940,14 @@ Add `ComponentId::GameFull` to `ALL`, and add to the name table at `:185`:
             ComponentId::GameFull => "game-full",
 ```
 
-Introduce `DEFAULT_RELEASE` as the existing set minus `GameFull`, and point the release assembler at it. Read `inventory.rs` for whichever constant currently drives release assembly and split it rather than adding a second source of truth.
+There is no default-release constant to split, and none should be invented. Verified in this worktree: `rebornctl publish release` pins components explicitly, one `--component NAME=VERSION` flag each (`crates/reborn-cli/src/publish.rs:76-96`), and `ComponentId::ALL` is used only for name validation and iteration. A component reaches a release solely by being pinned.
+
+So the guarantee lives in exactly one place: the carry-forward in `crates/reborn-core/src/publish/release.rs`, which re-pins every component from the current release into the next one. Exclude `game-full` there, so it can only ever enter a release by an explicit `--component game-full=<version>` on that release's own command line.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 Run: `cargo test -p reborn-core inventory`
-Expected: all pass. Existing tests that iterate `ALL` and expect nine components will need their count updated to ten; update them, do not weaken them.
+Expected: all pass. Existing tests that iterate `ALL` and expect nine components will need their count updated to ten; update them, do not weaken them. Run `cargo test -p reborn-core publish::release` as well as `inventory`.
 
 - [ ] **Step 5: Add the publish command**
 
@@ -1008,14 +1030,10 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
         let p=Platform::detect();
         let data=p.paths.data_root().map_err(|e|e.to_string())?;
         let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading NFL Street Reborn…","percent":0}));
-        let iso=reborn_core::content::fetch_component(
-            &p,
-            reborn_core::inventory::ComponentId::GameFull,
-            &|done,total|{
-                let percent=if total>0 {Some((95*done/total) as u8)} else {None};
-                let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading NFL Street Reborn…","percent":percent}));
-            },
-        ).map_err(|e|e.to_string())?;
+        let iso=fetch_game_full(&p,&|done,total|{
+            let percent=if total>0 {Some((95*done/total) as u8)} else {None};
+            let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading NFL Street Reborn…","percent":percent}));
+        })?;
 
         // The download and the patch chain must be the same build, or the
         // next game update has nothing to apply to.
@@ -1043,7 +1061,9 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
 
 Register it in the `tauri::generate_handler!` list in `main.rs` beside `setup_import_game`.
 
-Match `content::fetch_component`'s real name and signature by reading `crates/reborn-core/src/content.rs` for how `ComponentId::Textures` is resolved today, and use that exact call rather than inventing one. The progress callback shape is the only part that may differ.
+**`content::fetch_component` does not exist. Do not write it as shown above; `fetch_game_full` is a placeholder name for work you must design.** Verified in this worktree: the content engine resolves a component through an `UpdatePlan` plus `Engine::download(&self, plan, source: &dyn BlobSource)` (`crates/reborn-core/src/content.rs:1259`), with `installed`, `staging_dir`, `live_root` and `accept_component` around it; `crates/reborn-core/src/origin.rs` supplies the `BlobSource` and the signed release. `update_download` in `main.rs:4248` is the LAUNCHER self-updater and is NOT the path to copy.
+
+This step is therefore a design task, not transcription. Read `content.rs` and whichever UI command already installs a content component, and follow that existing path to resolve `ComponentId::GameFull` from the origin into a local file. Reuse it; do not build a second download stack. If after reading you judge that the existing path cannot fetch a component that is absent from the current release manifest, stop and report BLOCKED with what you found: that is a real design question and the controller will rule on it.
 
 - [ ] **Step 4: Add the button**
 
