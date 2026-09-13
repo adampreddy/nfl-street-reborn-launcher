@@ -622,15 +622,103 @@ impl Session {
         // Ask the runtime that is about to be launched. The built in scan sees
         // XInput only, which on a real machine misses an entire backend.
         let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());
-        let (scan, authoritative) =
-            match crate::devices::scan_via_runtime(platform, &req.runtime_exe, &scratch) {
-                Ok(s) => (s, true),
-                Err(_) => (DeviceScanner::scan(), false),
+        // Prefer the dump, which answers what the pads are called AND what
+        // their inputs are called, for the cost of the same single process.
+        // Fall back in order, because a pad list with no input list is still
+        // far better than no pad list.
+        let (scan, authoritative, device_inputs) =
+            match crate::devices::dump_via_runtime(platform, &req.runtime_exe, &scratch) {
+                Ok((scan, inputs)) => (scan, true, inputs),
+                Err(_) => match crate::devices::scan_via_runtime(platform, &req.runtime_exe, &scratch) {
+                    Ok(scan) => (scan, true, Vec::new()),
+                    Err(_) => (DeviceScanner::scan(), false, Vec::new()),
+                },
             };
         written.pads_authoritative = authoritative;
 
         crate::controller_profiles::adopt_migrated(platform, &scan)?;
-        let saved_profiles = crate::controller_profiles::load(&crate::controller_profiles::path(platform)?)?;
+        let mut saved_profiles = crate::controller_profiles::load(&crate::controller_profiles::path(platform)?)?;
+
+        // Bind every pad by the names IT reports.
+        //
+        // This is the fix for a PlayStation 5 pad being unusable. The shipping
+        // default is XInput vocabulary (`Button A`, `Shoulder R`, `Start`,
+        // `Pad N`). A PS5 pad on Windows never reaches XInput; it arrives on
+        // WGInput reporting `Cross`, `Bumper R`, `Menu`, `Switch 0 N`. Every
+        // button and the whole d-pad therefore resolved to nothing, in silence,
+        // which is why the workaround going around was DS4Windows: it
+        // manufactures a virtual Xbox pad, and an Xbox pad was the only thing
+        // this could bind.
+        //
+        // Seeding a profile for every connected pad also means the builders
+        // below never fall back to their own `ControllerProfile::new`, which
+        // still carries the XInput default.
+        {
+            for pad in scan.playable_pads() {
+                // Ask the runtime first. Fall back to a recorded device only
+                // when it could not be asked, which is any runtime older than
+                // --dump-device-inputs. See `devices::known_inputs`.
+                let available = match device_inputs
+                    .iter()
+                    .find(|d| d.device == pad.device_string())
+                {
+                    Some(reported) => reported.names(),
+                    None => match crate::devices::known_inputs(&pad.device_string()) {
+                        Some(recorded) => {
+                            tracing::info!(
+                                "{}: the runtime cannot list inputs, using the recorded layout for this pad",
+                                pad.device_string()
+                            );
+                            recorded
+                        }
+                        None => continue,
+                    },
+                };
+                let key = pad.identity().profile_key();
+                match saved_profiles
+                    .iter_mut()
+                    .find(|p| p.identity.profile_key() == key)
+                {
+                    Some(existing) => {
+                        let repaired = existing.repair_for(&available);
+                        if !repaired.is_empty() {
+                            tracing::info!(
+                                "{}: repaired {} binding(s) that named controls this pad does not have: {:?}",
+                                pad.device_string(),
+                                repaired.len(),
+                                repaired
+                            );
+                        }
+                    }
+                    None => {
+                        let seeded = crate::controller::ControllerProfile::from_device(
+                            pad.identity(),
+                            1,
+                            &available,
+                        );
+                        let dead = seeded.mapping.unresolvable(&available);
+                        if dead.is_empty() {
+                            tracing::info!(
+                                "{}: mapped from the pad's own input names",
+                                pad.device_string()
+                            );
+                        } else {
+                            // Numeric-only pads (DirectInput, SDL) report
+                            // `Button 7`, which means nothing without being
+                            // measured. Never guess: the remap wizard asks.
+                            tracing::warn!(
+                                "{}: {} control(s) could not be mapped from names alone and need the remap wizard: {:?}",
+                                pad.device_string(),
+                                dead.len(),
+                                dead
+                            );
+                        }
+                        saved_profiles.push(seeded);
+                    }
+                }
+            }
+        }
+        let saved_profiles = saved_profiles;
         let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
         match build_gcpad_for_slots(&scan, &saved_profiles, preferences.primary_controller.as_deref(), preferences.controller_slots.as_ref()) {
             Some((ini, assignment)) => {

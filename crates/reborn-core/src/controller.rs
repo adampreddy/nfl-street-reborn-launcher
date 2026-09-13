@@ -181,6 +181,136 @@ impl Mapping {
         Mapping(pairs.iter().map(|(k, v)| (*k, v.to_string())).collect())
     }
 
+    /// The names, in order of preference, that mean this GameCube input on a
+    /// real device.
+    ///
+    /// Every entry here was READ OFF A DEVICE, not guessed. The launcher is
+    /// never allowed to invent a control name, because a name that does not
+    /// exist on the target backend parses cleanly and binds nothing, with no
+    /// error anywhere. That is the whole PlayStation 5 bug.
+    ///
+    /// Three vocabularies appear, and they do not overlap:
+    ///
+    /// - **XInput** (`Button A`, `Shoulder R`, `Start`, `Pad N`). What the
+    ///   working install has always used, and what an Xbox pad reports.
+    /// - **WGInput with Windows button labels** (`Cross`, `Bumper R`, `Menu`,
+    ///   `Switch 0 N`). What a PlayStation 5 pad reports on Windows. Measured
+    ///   2026-09-12 from `WGInput/0/PS5 Controller`.
+    /// - **Numeric** (`Button 7`, `Axis Zr+`, `Hat 0 N`). What DirectInput and
+    ///   SDL report. Index order is NOT stable across pads, so nothing here
+    ///   claims to know what `Button 7` means. Those pads go to the remap
+    ///   wizard, which measures instead of guessing.
+    ///
+    /// Positions, not letters. GameCube B takes the pad's east face button,
+    /// which is Xbox B and PlayStation Circle. GameCube X takes the west one,
+    /// which is Xbox X and PlayStation Square. Pairing by letter would put
+    /// Circle on X and cross the player's thumb over.
+    pub fn candidates(input: GcInput) -> &'static [&'static str] {
+        use GcInput::*;
+        match input {
+            // Face buttons. South, east, west, north.
+            ButtonA => &["Button A", "Cross", "Button S"],
+            ButtonB => &["Button B", "Circle", "Button E"],
+            ButtonX => &["Button X", "Square", "Button W"],
+            ButtonY => &["Button Y", "Triangle", "Button N"],
+            // Z on the right shoulder, as the working install has it.
+            ButtonZ => &["Shoulder R", "Bumper R"],
+            // A PlayStation pad has no Start. Windows labels it Menu, which is
+            // the Options button, and that is the right home for it.
+            Start => &["Start", "Menu"],
+            MainStickUp => &["Left Y+"],
+            MainStickDown => &["Left Y-"],
+            MainStickLeft => &["Left X-"],
+            MainStickRight => &["Left X+"],
+            CStickUp => &["Right Y+"],
+            CStickDown => &["Right Y-"],
+            CStickLeft => &["Right X-"],
+            CStickRight => &["Right X+"],
+            TriggerL => &["Trigger L"],
+            TriggerR => &["Trigger R"],
+            // XInput calls the d-pad a pad. WGInput calls it switch zero.
+            DPadUp => &["Pad N", "Switch 0 N"],
+            DPadDown => &["Pad S", "Switch 0 S"],
+            DPadLeft => &["Pad W", "Switch 0 W"],
+            DPadRight => &["Pad E", "Switch 0 E"],
+        }
+    }
+
+    /// Strip the backticks Dolphin uses to quote a control name containing
+    /// spaces, so a stored binding can be compared to a reported input name.
+    pub fn bare(binding: &str) -> &str {
+        binding.trim().trim_matches('`')
+    }
+
+    /// Quote a control name the way Dolphin's expression parser expects.
+    ///
+    /// Always quoted. A bare name is only legal while it contains nothing the
+    /// parser treats as an operator, and `Switch 0 N` already contains spaces.
+    /// Quoting unconditionally removes a whole class of "it parsed but bound
+    /// nothing" that nobody would ever see reported.
+    pub fn quote(name: &str) -> String {
+        format!("`{name}`")
+    }
+
+    /// Build the best mapping this device can actually support, from the names
+    /// it reports, plus the inputs that could not be matched.
+    ///
+    /// The second half of the pair is the point. An empty list means the pad is
+    /// fully playable. A non-empty list is the exact set of controls the remap
+    /// wizard has to ask the player to press, and nothing else.
+    pub fn auto_from(available: &[String]) -> (Self, Vec<GcInput>) {
+        let mut mapping = Mapping(BTreeMap::new());
+        let mut unmatched = Vec::new();
+        for input in GcInput::ALL {
+            let found = Self::candidates(*input)
+                .iter()
+                .find(|candidate| available.iter().any(|a| Self::bare(a) == **candidate));
+            match found {
+                Some(name) => {
+                    mapping.set(*input, Self::quote(name));
+                }
+                None => unmatched.push(*input),
+            }
+        }
+        (mapping, unmatched)
+    }
+
+    /// Bindings that name a control this device does not have.
+    ///
+    /// THE GUARDRAIL. Dolphin accepts an unresolvable name in silence: the file
+    /// looks right, the device line is right, and the pad is dead. Checking
+    /// before the file is written is the only place this is catchable, and it
+    /// is how a repeat of the PlayStation 5 bug gets caught on the first
+    /// launch rather than in the Discord.
+    ///
+    /// An empty `available` means the device list could not be read at all, and
+    /// nothing is reported, because claiming every binding is broken on no
+    /// evidence would be worse than staying quiet.
+    pub fn unresolvable(&self, available: &[String]) -> Vec<GcInput> {
+        if available.is_empty() {
+            return Vec::new();
+        }
+        GcInput::ALL
+            .iter()
+            .copied()
+            .filter(|input| match self.get(*input) {
+                // An unbound input is already reported by `unbound`.
+                None => false,
+                Some(binding) => {
+                    let bare = Self::bare(binding);
+                    // Only a plain control name is checked. Anything with an
+                    // operator in it is a hand written expression, and this is
+                    // not an expression evaluator: it must not veto something
+                    // it cannot parse.
+                    if bare.contains(['|', '&', '!', '+', '^', '(', ')']) && !bare.ends_with('+') {
+                        return false;
+                    }
+                    !available.iter().any(|a| Self::bare(a) == bare)
+                }
+            })
+            .collect()
+    }
+
     pub fn get(&self, input: GcInput) -> Option<&str> {
         self.0.get(&input).map(String::as_str)
     }
@@ -480,6 +610,61 @@ impl ControllerProfile {
             tuning: Tuning::default(),
             overridden: Vec::new(),
         }
+    }
+
+    /// Replace bindings this device cannot resolve with ones it can, and
+    /// report what moved.
+    ///
+    /// A binding naming a control the device does not have is not a preference,
+    /// it is a dead key. Dolphin says nothing about it: the file parses, the
+    /// device line is right, and the button does nothing forever. So an
+    /// unresolvable binding is repaired even when the player set it by hand,
+    /// because leaving it would be honouring a choice that cannot work.
+    ///
+    /// A binding that DOES resolve is never touched, whatever it is. That is
+    /// what keeps this from quietly rearranging a working pad.
+    ///
+    /// Returns the inputs that were repaired, so the caller can say so rather
+    /// than changing the player's controls in silence.
+    pub fn repair_for(&mut self, available: &[String]) -> Vec<GcInput> {
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let mut needs: Vec<GcInput> = self.mapping.unresolvable(available);
+        for input in self.mapping.unbound() {
+            if !needs.contains(&input) {
+                needs.push(input);
+            }
+        }
+        if needs.is_empty() {
+            return Vec::new();
+        }
+
+        let (workable, _) = Mapping::auto_from(available);
+        let mut repaired = Vec::new();
+        for input in needs {
+            if let Some(binding) = workable.get(input) {
+                self.mapping.set(input, binding.to_string());
+                // No longer the player's choice, because their choice was a
+                // control this device does not have.
+                self.overridden.retain(|i| *i != input);
+                repaired.push(input);
+            }
+        }
+        repaired.sort();
+        repaired
+    }
+
+    /// A profile for a pad the launcher has never seen, built from the names
+    /// that pad actually reports.
+    ///
+    /// The plain `new` carries the XInput default, which is correct for an Xbox
+    /// pad and dead for a PlayStation one. This is what should be used whenever
+    /// the device's real input list is available.
+    pub fn from_device(identity: DeviceIdentity, port: u8, available: &[String]) -> Self {
+        let mut profile = Self::new(identity, port);
+        profile.repair_for(available);
+        profile
     }
 
     /// Rebind one input and remember that the user chose it.
