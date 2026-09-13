@@ -225,13 +225,21 @@ impl ConfigGenerator {
     pub fn required_game_settings() -> Overlay {
         let mut out=Overlay::new();
         for (section,key,value) in [
-            ("Core","SyncGPU","True"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
+            // SyncGPU serialises the CPU and GPU threads and is one of the most expensive options in Dolphin.
+            // It was forced True on 09-05 to chase the 0-FPS freeze; the 09-11 probe proved the freeze RECURS
+            // with SyncGPU=True (it is a lost PE_FINISH, which this cannot prevent), so it was pure cost.
+            // The tuned User template ships False. Forced False, not merely unforced, because every install
+            // already has True written into its INIs and only an explicit merge can put it back.
+            ("Core","SyncGPU","False"),("Core","RAMOverrideEnable","True"),("Core","MEM1Size","67108864"),("Core","GFXBackend","D3D"),
             ("Video_Settings","InternalResolution","3"),("Video_Settings","SSAA","False"),
             // CacheHiresTextures = prefetch the whole HD pack decoded into RAM at boot. Measured 2026-09-11 on the
             // 24 GB dev box: 12 GB private bytes, 384 MB free, 28 GB pagefile in use, and the game "running slow".
             // The pack is BC7 DDS now (sub-millisecond loads), so on-demand is the requirement.
             ("Video_Settings","HiresTextures","True"),("Video_Settings","CacheHiresTextures","False"),
-            ("Video_Hacks","EFBAccessEnable","True"),("Video_Hacks","DeferEFBCopies","False"),
+            ("Video_Hacks","EFBAccessEnable","True"),
+            // DeferEFBCopies True is a performance win and is what the tuned template ships. EFB reads for
+            // the created-player portraits stay correct through EFBAccessEnable, which is separate.
+            ("Video_Hacks","DeferEFBCopies","True"),
             ("Video_Hacks","EFBToTextureEnable","True"),("Video_Hacks","ImmediateXFBEnable","True"),("Video_Hacks","XFBToTextureEnable","True"),
             ("Video_Settings","DumpTextures","False"),("Video_Settings","DumpBaseTextures","False"),("Video_Settings","DumpMipTextures","False"),
             ("Video_Enhancements","ArbitraryMipmapDetection","False"),
@@ -538,6 +546,31 @@ mod tests {
             required.get("Core").map_or(true, |s| !s.contains_key("CPUThread")),
             "the launcher must not force CPUThread: single core is the user's per-machine freeze workaround",
         );
+        // SyncGPU True serialises the CPU and GPU threads for a large frame-rate cost, and the 09-11
+        // freeze probe proved it does NOT prevent the 0-FPS hang it was added for. Players reported
+        // that cost as "performance issues", worst in netplay. The tuned template ships False.
+        assert_eq!(
+            required.get("Core").and_then(|s| s.get("SyncGPU")),
+            Some(&"False".to_string()),
+            "SyncGPU must stay False: True is a large performance cost and never prevented the freeze",
+        );
+        // A performance win the tuned template ships. Portrait EFB reads stay correct via EFBAccessEnable.
+        assert_eq!(
+            required.get("Video_Hacks").and_then(|s| s.get("DeferEFBCopies")),
+            Some(&"True".to_string()),
+            "DeferEFBCopies must stay True: it is what the tuned User template ships",
+        );
+        // Adam 2026-09-12: "We need ram override". The imported content depends on the 64 MB MEM1.
+        assert_eq!(
+            required.get("Core").and_then(|s| s.get("RAMOverrideEnable")),
+            Some(&"True".to_string()),
+            "the RAM override is required by the imported content and must not be dropped",
+        );
+        assert_eq!(
+            required.get("Core").and_then(|s| s.get("MEM1Size")),
+            Some(&"67108864".to_string()),
+            "MEM1 must stay 64 MB",
+        );
     }
 
     use super::*;
@@ -634,7 +667,8 @@ mod tests {
         assert_eq!(o["Logger.ini"]["Options"]["WriteToFile"], "False");
         assert_eq!(o["Logger.ini"]["Options"]["Verbosity"], "1");
         let g = ConfigGenerator::required_game_settings();
-        assert_eq!(g["Core"]["SyncGPU"], "True");
+        // False: forcing it True cost a lot of performance and never prevented the freeze (09-11 probe).
+        assert_eq!(g["Core"]["SyncGPU"], "False");
         // Must stay False. True prefetches the whole 9,115-file HD pack decoded into RAM (~12 GB
         // measured 09-11) and starves the machine; that was the 3.0.0 "runs slow everywhere" report.
         assert_eq!(g["Video_Settings"]["CacheHiresTextures"], "False");
@@ -866,29 +900,13 @@ pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
 /// filename is not this runtime, and an inspection error is not proof it is open.
 pub fn runtime_is_running(exe: &Path) -> Result<bool> {
     #[cfg(windows)] {
-        use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
         if !exe.is_file() { return Ok(false); }
-        let normalize = |path: &Path| path.to_string_lossy().replace('/', "\\")
-            .trim_start_matches("\\\\?\\").to_lowercase();
-        let target = normalize(exe);
-        let canonical = normalize(&std::fs::canonicalize(exe)?);
-        let snapshot = System::new_with_specifics(RefreshKind::nothing()
-            .with_processes(ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet)));
-        let check_error = || crate::Error::player(PROCESS_CHECK_UNAVAILABLE);
-        if snapshot.processes().is_empty() { return Err(check_error()); }
-        let mut unreadable_match = false;
-        for process in snapshot.processes().values() {
-            if let Some(path) = process.exe() {
-                let path = normalize(path);
-                if path == target || path == canonical { return Ok(true); }
-            } else if process.name().to_string_lossy().eq_ignore_ascii_case(&exe.file_name().unwrap_or_default().to_string_lossy()) {
-                unreadable_match = true;
-            }
-        }
-        if unreadable_match { return Err(check_error()); }
+        return crate::platform::runtime_process::is_running(exe).map_err(|error| {
+            tracing::warn!(%error, "Dolphin process detection failed after fallback");
+            crate::Error::player(PROCESS_CHECK_UNAVAILABLE)
+        });
     }
-    #[cfg(not(windows))] let _ = exe;
-    Ok(false)
+    #[cfg(not(windows))] { let _ = exe; Ok(false) }
 }
 
 #[cfg(all(test, windows))]
