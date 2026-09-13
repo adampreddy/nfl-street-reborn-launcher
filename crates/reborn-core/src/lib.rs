@@ -59,6 +59,7 @@ pub mod notices;
 pub mod devices;
 pub mod gamepad;
 pub mod game_image;
+pub mod game_identity;
 pub mod game_import;
 pub mod game_patch;
 pub mod identity;
