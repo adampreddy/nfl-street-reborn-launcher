@@ -86,55 +86,144 @@ impl IniDocument {
         let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let trailing_newline = text.ends_with('\n');
 
-        let mut lines = Vec::new();
-        for raw in text.split_inclusive('\n') {
-            let stripped = raw.trim_end_matches(['\r', '\n']);
-            let trimmed = stripped.trim();
-
-            if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
-                lines.push(Line::Section {
-                    name: trimmed[1..trimmed.len() - 1].trim().to_string(),
-                    raw: stripped.to_string(),
-                });
-                continue;
-            }
-
-            // A comment must never be read as a pair, or a commented-out
-            // setting would be silently activated by a merge.
-            if trimmed.starts_with('#') || trimmed.starts_with(';') || trimmed.is_empty() {
-                lines.push(Line::Other(stripped.to_string()));
-                continue;
-            }
-
-            if let Some(eq) = stripped.find('=') {
-                let key = stripped[..eq].trim().to_string();
-                if !key.is_empty() {
-                    // Capture the separator exactly, so `a=b` stays `a=b`.
-                    let left_pad: String = stripped[..eq]
-                        .chars()
-                        .rev()
-                        .take_while(|c| c.is_whitespace())
-                        .collect();
-                    let right_pad: String = stripped[eq + 1..]
-                        .chars()
-                        .take_while(|c| c.is_whitespace())
-                        .collect();
-                    lines.push(Line::Pair {
-                        key,
-                        raw: stripped.to_string(),
-                        sep: format!("{left_pad}={right_pad}"),
-                    });
-                    continue;
-                }
-            }
-
-            lines.push(Line::Other(stripped.to_string()));
-        }
+        let lines = text
+            .split_inclusive('\n')
+            .map(|raw| Self::classify(raw.trim_end_matches(['\r', '\n'])))
+            .collect();
 
         Self {
             lines,
             newline: newline.to_string(),
             trailing_newline,
+        }
+    }
+
+    /// One line of text, read the way `parse` reads it.
+    fn classify(stripped: &str) -> Line {
+        let trimmed = stripped.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
+            return Line::Section {
+                name: trimmed[1..trimmed.len() - 1].trim().to_string(),
+                raw: stripped.to_string(),
+            };
+        }
+
+        // A comment must never be read as a pair, or a commented-out
+        // setting would be silently activated by a merge.
+        if trimmed.starts_with('#') || trimmed.starts_with(';') || trimmed.is_empty() {
+            return Line::Other(stripped.to_string());
+        }
+
+        if let Some(eq) = stripped.find('=') {
+            let key = stripped[..eq].trim().to_string();
+            if !key.is_empty() {
+                // Capture the separator exactly, so `a=b` stays `a=b`.
+                let left_pad: String = stripped[..eq]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_whitespace())
+                    .collect();
+                let right_pad: String = stripped[eq + 1..]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .collect();
+                return Line::Pair {
+                    key,
+                    raw: stripped.to_string(),
+                    sep: format!("{left_pad}={right_pad}"),
+                };
+            }
+        }
+
+        Line::Other(stripped.to_string())
+    }
+
+    /// Where one section's body sits: the index of its header, and the index
+    /// one past its last line. Blank lines that trail the body up to the next
+    /// header are the gap between sections, not part of the body.
+    fn section_span(&self, section: &str) -> Option<(usize, usize)> {
+        let start = self
+            .lines
+            .iter()
+            .position(|l| matches!(l, Line::Section { name, .. } if name == section))?;
+        let mut end = self.lines[start + 1..]
+            .iter()
+            .position(|l| matches!(l, Line::Section { .. }))
+            .map(|i| start + 1 + i)
+            .unwrap_or(self.lines.len());
+        while end > start + 1 && matches!(&self.lines[end - 1], Line::Other(s) if s.trim().is_empty()) {
+            end -= 1;
+        }
+        Some((start, end))
+    }
+
+    /// Every line inside one section, in order, without the header. Blank
+    /// lines and comments included, because they are part of the body and a
+    /// caller putting the body back should be able to put it back whole.
+    ///
+    /// Dolphin keeps its code lists (`[Gecko]`, `[ActionReplay]`,
+    /// `[OnFrame]`) as bare lines rather than `key = value` pairs, and this is
+    /// how those are read.
+    pub fn raw_lines(&self, section: &str) -> Vec<String> {
+        let Some((start, end)) = self.section_span(section) else {
+            return Vec::new();
+        };
+        self.lines[start + 1..end]
+            .iter()
+            .map(|l| match l {
+                Line::Section { raw, .. } | Line::Pair { raw, .. } | Line::Other(raw) => raw.clone(),
+            })
+            .collect()
+    }
+
+    /// Put a whole body under one section header, creating the section at the
+    /// end of the document when it is absent and removing it, header included,
+    /// when `lines` is empty. Nothing outside the section is touched. Returns
+    /// whether the document changed at all.
+    pub fn replace_raw_lines(&mut self, section: &str, lines: &[String]) -> bool {
+        match self.section_span(section) {
+            Some((start, end)) => {
+                if self.raw_lines(section) == lines {
+                    return false;
+                }
+                if lines.is_empty() {
+                    // The section goes, and so does the one blank line that
+                    // separated it from what came before, which is the gap a
+                    // create put there. The blanks after it stay: they are now
+                    // the gap before the next section.
+                    let from = if start > 0 && matches!(&self.lines[start - 1], Line::Other(s) if s.trim().is_empty()) {
+                        start - 1
+                    } else {
+                        start
+                    };
+                    self.lines.drain(from..end);
+                    return true;
+                }
+                // Keep the original header spelling when the section stays.
+                let replacement: Vec<Line> = std::iter::once(self.lines[start].clone())
+                    .chain(lines.iter().map(|l| Self::classify(l)))
+                    .collect();
+                self.lines.splice(start..end, replacement);
+                true
+            }
+            None => {
+                if lines.is_empty() {
+                    return false;
+                }
+                let needs_gap = !self.lines.is_empty()
+                    && !matches!(self.lines.last(), Some(Line::Other(s)) if s.trim().is_empty());
+                if needs_gap {
+                    self.lines.push(Line::Other(String::new()));
+                }
+                self.lines.push(Line::Section {
+                    name: section.to_string(),
+                    raw: format!("[{section}]"),
+                });
+                self.lines.extend(lines.iter().map(|l| Self::classify(l)));
+                self.trailing_newline = true;
+                true
+            }
         }
     }
 

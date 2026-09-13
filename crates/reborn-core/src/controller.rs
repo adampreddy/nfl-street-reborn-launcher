@@ -574,13 +574,17 @@ pub enum ControlsProfile {
     #[default]
     Xbox,
     PlayStation,
-    /// The game's own built-in art.
+    /// The game's own built-in art, and the game's own buttons.
     ///
-    /// The one profile that applies NOTHING, which is not a gap. The prompt
+    /// The one profile that applies NO pack, which is not a gap. The prompt
     /// textures are add-only: nothing on disk backs them up, because before a
     /// pack was applied there was no file there at all. So applying no pack does
     /// not restore anything, it uncovers what the disc always drew, and on a
     /// GameCube release that is GameCube buttons.
+    ///
+    /// It is also the profile that switches the disc's in-match X/B swap off
+    /// for that player, so a GameCube controller plays as it did on the
+    /// original game and in Reborn 2.1. See [`crate::gamecube_controls`].
     GameCube,
 }
 
@@ -612,7 +616,7 @@ impl ControlsProfile {
         match self {
             ControlsProfile::Xbox => "A, B, X and Y in the Xbox layout",
             ControlsProfile::PlayStation => "Cross, Circle, Square and Triangle",
-            ControlsProfile::GameCube => "The art the game itself was drawn with",
+            ControlsProfile::GameCube => "The game's own art and its original buttons, no X/B swap",
         }
     }
 
