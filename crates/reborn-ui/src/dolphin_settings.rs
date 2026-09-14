@@ -169,6 +169,39 @@ fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// Whether the netplay copy was derived from a build Reborn vouches for.
+///
+/// `game_identity::identify` cannot answer this about the file netplay boots.
+/// `library/online/NSR.iso` is Reborn's own derived artifact: the pristine
+/// image plus the installed roster, assembled by the Builder. The moment a
+/// roster is applied its bytes are deliberately not a node of the patch chain,
+/// so `identify` would route it to `Unconverted` and withhold Reborn's pack
+/// from every league player's online game, which is a worse answer than the
+/// one it replaces.
+///
+/// What IS chain-routable is the pristine it came from, and `source.json`
+/// records that hash beside the image. So the question is asked about the
+/// provenance: an online copy built from a Reborn build is Reborn's; one built
+/// from the player's own unconverted disc is not, however many rosters were
+/// applied on top of it. No hashing: the pristine's hash is its folder name.
+///
+/// False when nothing has been built or the record will not read, which is the
+/// fail-safe direction.
+fn netplay_copy_is_reborns_own(p:&Platform)->bool{
+  let Ok(data)=p.paths.data_root() else { return false };
+  let Some(source)=reborn_core::online_image::built_from(&data) else {
+    eprintln!("netplay: the online copy has no record of what it was built from, so Reborn's textures are withheld");
+    return false;
+  };
+  let chain_path=reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE);
+  let chain=reborn_core::game_patch::Chain::load(&chain_path).ok().flatten();
+  let verdict=reborn_core::game_identity::classify(chain.as_ref(),reborn_core::game_identity::DISC_ID,&source.pristine_sha256);
+  if !verdict.is_reborn() {
+    eprintln!("netplay: the online copy was built from an image Reborn does not recognize, so its textures are withheld");
+  }
+  verdict.is_reborn()
+}
+
 /// Start Dolphin with NetPlay configured, and record the session.
 ///
 /// The session record is written before the emulator starts and finished when
@@ -206,23 +239,38 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // asks what this image is before anything below applies the texture pack
   // or starts the emulator, so an unverified disc gets neither one here
   // either.
-  let verified=may_play_before_boot(&p,&game_path)?;
-  // The same texture sync Play runs: compose the active tree and point the
-  // Dolphin user folder at it. Netplay skipped it, so a player whose first
-  // launch was an online game got no textures at all (Adam, 2026-09-11:
-  // "No textures on launch"). Gated on the same verdict: a disc that only
-  // got this far because the player acknowledged it must not wear Reborn's
-  // texture pack here either. A sync problem is logged, not fatal: the room
-  // still opens and Play's own note explains the textures.
-  if verified {
-    if let Err(e)=crate::sync_active_now(&p,runtime.as_deref()) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
-  }
+  let chosen_disc_verified=may_play_before_boot(&p,&game_path)?;
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
   // netplay boots: reborn_core::online_image keeps a copy that is the
   // pristine game plus the roster and nothing else, and rebuilds it here
   // when a game patch or a roster push has moved it.
-  let game_path=match netplay_image(&p){Ok(Some(path))=>path,Ok(None)=>game_path,Err(e)=>return Err(e)};
+  //
+  // Resolved BEFORE the texture sync, not after, because these are the bytes
+  // the sync has to be judging. The gate above read the disc the player
+  // chose; this is the file the emulator is actually handed.
+  let online=match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)};
+  let verified=match &online{
+    Some(_)=>chosen_disc_verified&&netplay_copy_is_reborns_own(&p),
+    None=>chosen_disc_verified,
+  };
+  let game_path=online.unwrap_or(game_path);
+  // The same texture sync Play runs, and it runs UNCONDITIONALLY.
+  //
+  // It used to be wrapped in `if verified`, which is the exact boolean
+  // semantics this law exists to abolish: skipping the sync composes nothing
+  // and leaves whatever is already in Load/Textures/GN7E69 exactly where it
+  // is. For anybody who has ever booted successfully that is Reborn's entire
+  // pack, HiresTextures is a Locked True key, and netplay never calls
+  // Session::run, so the removal that protects every other path never ran
+  // here at all. A player could point Settings at their own disc, host a
+  // room, and watch Reborn's faces on somebody else's roster: the reported
+  // bug, through the product's own interface.
+  //
+  // Passing the verdict instead of gating the call is the whole fix. False
+  // now means Withhold, which takes the pack off, rather than "skip". A sync
+  // problem is logged, not fatal: the room still opens.
+  if let Err(e)=crate::sync_active_judged(&p,runtime.as_deref(),Some(verified)) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
   // Fail before preparing settings when an older/custom runtime lacks the bridge.
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
   let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures_allowed:verified};

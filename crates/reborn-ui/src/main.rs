@@ -1682,6 +1682,16 @@ struct ModSyncView {
     /// rebuild did, in a sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     soundtrack_note: Option<String>,
+    /// Present when Reborn's texture pack was taken off this game file, and
+    /// why, in a sentence for the player.
+    ///
+    /// A withheld sync is a successful sync: `synced` is true, nothing failed,
+    /// and the interface's only note channel was `synced == false`. So the
+    /// reason a player's entire HD pack had just been removed was computed and
+    /// then discarded. This is its own field rather than a `refusal` because a
+    /// refusal means nothing changed, and here a great deal did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    withheld_note: Option<String>,
 }
 
 fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackageView> {
@@ -1694,7 +1704,11 @@ fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackag
         .collect()
 }
 
-fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncView {
+fn sync_view(
+    game: &GameId,
+    outcome: reborn_core::mods::SyncOutcome,
+    withheld_because: Option<&'static str>,
+) -> ModSyncView {
     use reborn_core::mods::{SyncOutcome, TreeStep};
     let note = outcome.explain();
     match outcome {
@@ -1713,6 +1727,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             moved_aside: None,
             composed_root: None,
             soundtrack_note: None,
+            withheld_note: None,
         },
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
@@ -1747,6 +1762,11 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
                 moved_aside: moved_aside.map(|p| p.display().to_string()),
                 composed_root: Some(r.composed_root.display().to_string()),
             soundtrack_note: None,
+            // Only when the tree really was withheld. The decision knows the
+            // words; the report knows whether they apply.
+            withheld_note: matches!(r.tree, TreeStep::Withheld { .. })
+                .then(|| withheld_because.map(str::to_string))
+                .flatten(),
             }
         }
     }
@@ -1765,6 +1785,30 @@ fn now_ms() -> u64 {
 /// would resolve, so what the Mods page shows as applied is what the next
 /// launch loads and not a parallel notion of it.
 pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
+    sync_active_judged(p, runtime_hint, None)
+}
+
+/// The same sync, for a caller that already knows what the bytes it will boot
+/// are and cannot have them looked up.
+///
+/// Netplay is that caller, and the only one. It boots `library/online/NSR.iso`,
+/// a copy Reborn derives from the pristine plus the installed roster, so once
+/// a roster is applied those bytes are deliberately not a node of the patch
+/// chain: `game_identity::identify` would route Reborn's own artifact to
+/// `Unconverted` and withhold the pack from every league player's online game.
+/// See `online_image::built_from` for how that image is identified instead.
+///
+/// `already_judged` is NOT a way to skip the question. It is the answer to the
+/// question, asked about a different file, and it goes through exactly the same
+/// rule: `Some(false)` means `Withhold`, which REMOVES the composed tree. What
+/// must never come back is a caller that skips this function entirely when its
+/// own answer is false, because skipping composes nothing and leaves the whole
+/// pack in place, which is the bug this law exists to remove.
+pub(crate) fn sync_active_judged(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    already_judged: Option<bool>,
+) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
@@ -1780,10 +1824,53 @@ pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Resul
     // would put the pack back on an unverified disc the moment the player
     // toggled a mod or switched a controls profile, and Play would then find
     // it already there.
-    req.texture_policy = texture_policy_now(p, runtime_hint, &preferences);
+    let decision = match already_judged {
+        Some(verified) => TextureDecision::new(verified, &preferences, TEXTURES_WITHHELD_NOT_REBORN),
+        None => texture_policy_now(p, runtime_hint, &preferences),
+    };
+    req.texture_policy = decision.policy;
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
-    Ok(sync_view(&game, outcome))
+    Ok(sync_view(&game, outcome, decision.withheld_because))
+}
+
+/// Shown on the Mods page when Reborn's pack was taken off the game file
+/// because that file is not a Reborn build.
+const TEXTURES_WITHHELD_NOT_REBORN: &str = "Your game file is not NFL Street Reborn, so Reborn's texture pack was removed from it. Repair your game on the Settings page to put the pack back.";
+/// Shown when the launcher could not read the game file at all, so it could
+/// not tell whether the pack belongs on it.
+const TEXTURES_WITHHELD_UNCHECKED: &str = "Reborn could not check your game file, so its texture pack was removed until it can. Repair your game on the Settings page, or reinstall the launcher if this keeps happening.";
+
+/// What to do with the texture folder, and the sentence to say when the answer
+/// took the pack away.
+///
+/// The sentence travels with the decision because only the decision knows why.
+/// A withheld sync reported `synced: true` with its reason computed into
+/// `SyncReport::explain` and then thrown away, and `mods.js` shows a note only
+/// when `synced` is false, so a player whose DolphinTool was missing or
+/// quarantined lost their whole HD pack off a Mods page toggle with no message
+/// on any screen.
+struct TextureDecision {
+    policy: reborn_core::mods::TexturePolicy,
+    withheld_because: Option<&'static str>,
+}
+
+impl TextureDecision {
+    fn new(
+        image_verified: bool,
+        preferences: &reborn_core::settings::Settings,
+        because: &'static str,
+    ) -> Self {
+        let policy = reborn_core::session::texture_policy_for_launch(
+            image_verified,
+            preferences.manage_texture_folder.unwrap_or(true),
+        );
+        Self {
+            withheld_because: matches!(policy, reborn_core::mods::TexturePolicy::Withhold)
+                .then_some(because),
+            policy,
+        }
+    }
 }
 
 /// What the texture folder policy is right now, outside a launch.
@@ -1803,8 +1890,7 @@ fn texture_policy_now(
     p: &Platform,
     runtime_hint: Option<&str>,
     preferences: &reborn_core::settings::Settings,
-) -> reborn_core::mods::TexturePolicy {
-    let wants_managed = preferences.manage_texture_folder.unwrap_or(true);
+) -> TextureDecision {
     let image = find_runtime_and_game_for(
         p,
         runtime_hint,
@@ -1818,22 +1904,34 @@ fn texture_policy_now(
     // emulator is back, so it is the honest thing to judge.
     .ok()
     .or_else(|| preferences.game_path.clone().filter(|g| g.is_file()));
-    let verified = match image {
+    // "I could not ask" and "this is not ours" get the same policy and
+    // DIFFERENT words. The policy is the same because an image the launcher
+    // cannot read is one it cannot vouch for, and a missing DolphinTool is
+    // exactly the case where the disc may be perfectly bootable and perfectly
+    // foreign. The words differ because the two send the player to completely
+    // different repairs, and because somebody who loses an eight thousand file
+    // pack is owed the real reason.
+    let (verified, because) = match image {
         Some(image) => match verdict_now(p, &image) {
-            Ok(verdict) => verdict.is_reborn(),
+            Ok(verdict) if verdict.is_reborn() => (true, TEXTURES_WITHHELD_NOT_REBORN),
+            Ok(reborn_core::game_identity::Verdict::Unreadable { reason }) => {
+                eprintln!("could not read {}, so Reborn's textures are withheld: {reason}", image.display());
+                (false, TEXTURES_WITHHELD_UNCHECKED)
+            }
+            Ok(_) => (false, TEXTURES_WITHHELD_NOT_REBORN),
             Err(why) => {
                 eprintln!("could not identify {}, so Reborn's textures are withheld: {why}", image.display());
-                false
+                (false, TEXTURES_WITHHELD_UNCHECKED)
             }
         },
         None => {
             eprintln!("no game image resolved, so Reborn's textures are withheld until one is");
-            false
+            (false, TEXTURES_WITHHELD_UNCHECKED)
         }
     };
     // The decision itself is the launch's, not a second copy of it: one rule,
     // one place, unit-tested in `reborn_core::session`.
-    reborn_core::session::texture_policy_for_launch(verified, wants_managed)
+    TextureDecision::new(verified, preferences, because)
 }
 
 /// Make the game load what activation.json says.
@@ -1893,6 +1991,7 @@ async fn mods_toggle(
                 moved_aside: None,
                 composed_root: None,
                 soundtrack_note: Some(note),
+                withheld_note: None,
             });
         }
 
@@ -6089,12 +6188,29 @@ mod tests {
 
     /// The text of one command, from its signature to the start of the next
     /// `#[tauri::command]`.
+    /// # Why the slice stops at `#[cfg(test)]` as well
+    ///
+    /// It used to stop only at the next `#[tauri::command]`, so the LAST
+    /// command in a file had no stop marker at all and its "body" ran to end
+    /// of file, swallowing whatever test module followed. That is how
+    /// `setup_never_adopts_a_disc_that_is_not_a_reborn_build`'s third
+    /// assertion became incapable of failing: it scanned
+    /// `setup_migrate_install`, the last command in `setup_tools.rs`, and the
+    /// slice picked up `mod door3_tests`, which names `may_adopt` twelve more
+    /// times. Deleting the real gate left the assertion green.
+    ///
+    /// `code_only` cannot catch that one: it is slice-shaped, not
+    /// comment-shaped. The stop has to be right in the first place.
     fn command_body<'a>(source: &'a str, signature: &str) -> &'a str {
         let from = source
             .find(signature)
             .unwrap_or_else(|| panic!("{signature} is not in this file any more"));
         let rest = &source[from..];
-        let to = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+        let to = ["\n#[tauri::command]", "\n#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
         &rest[..to]
     }
 
@@ -6696,6 +6812,72 @@ mod tests {
         });
         assert_eq!(third, Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true });
         assert_eq!(calls.get(), 2, "a changed size must be treated as a possibly different file");
+    }
+
+    /// Taking a player's texture pack away is never silent.
+    ///
+    /// `identify` shells out to `game-import/DolphinTool.exe`. Missing, blocked
+    /// or quarantined, every verdict becomes `Unreadable`, the policy becomes
+    /// `Withhold`, and an ordinary Mods page toggle removes the whole composed
+    /// pack. The direction is right: a launcher that cannot read the image
+    /// cannot vouch for it, and a missing tool is exactly the case where the
+    /// disc may be perfectly bootable and perfectly foreign. The silence was
+    /// not: a withheld sync reports `synced: true`, and the interface's only
+    /// note channel was `synced == false`.
+    #[test]
+    fn a_withheld_texture_pack_always_says_why() {
+        use reborn_core::mods::TexturePolicy;
+        let mut preferences = reborn_core::settings::Settings::default();
+        preferences.manage_texture_folder = Some(true);
+
+        let unchecked = TextureDecision::new(false, &preferences, TEXTURES_WITHHELD_UNCHECKED);
+        assert_eq!(unchecked.policy, TexturePolicy::Withhold);
+        assert_eq!(
+            unchecked.withheld_because,
+            Some(TEXTURES_WITHHELD_UNCHECKED),
+            "the pack was removed and nothing anywhere said so"
+        );
+
+        let kept = TextureDecision::new(true, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(kept.policy, TexturePolicy::Manage);
+        assert_eq!(kept.withheld_because, None, "nothing was taken away, so there is nothing to explain");
+
+        // The author's folder is never touched, so there is nothing to report
+        // either. Saying "your pack was removed" there would be a lie.
+        preferences.manage_texture_folder = Some(false);
+        let authors = TextureDecision::new(false, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(authors.policy, TexturePolicy::LeaveAlone);
+        assert_eq!(authors.withheld_because, None);
+
+        assert_ne!(
+            TEXTURES_WITHHELD_NOT_REBORN, TEXTURES_WITHHELD_UNCHECKED,
+            "could not ask and not ours send the player to different repairs, so they cannot share one sentence"
+        );
+        for words in [TEXTURES_WITHHELD_NOT_REBORN, TEXTURES_WITHHELD_UNCHECKED] {
+            assert!(words.contains("Settings page"), "no way out is named: {words}");
+            assert!(!words.to_lowercase().contains("custom"), "a fault, never a preference: {words}");
+            assert!(!words.contains('\u{2014}'), "no em-dashes in player text: {words}");
+        }
+    }
+
+    /// ...and the sentence actually reaches the page.
+    #[test]
+    fn the_reason_a_pack_was_removed_reaches_the_mods_page() {
+        let view = code_only(body_until(include_str!("main.rs"), "\nfn sync_view(", "\nfn now_ms("));
+        // COUNTED, not merely present. The field name survives
+        // `withheld_note: None`, and the parameter name survives an unused
+        // parameter, so either as a presence check is a guard that passes while
+        // the reason is discarded. Two occurrences means the signature plus at
+        // least one real use.
+        assert!(
+            view.matches("withheld_because").count() >= 2,
+            "sync_view is handed the reason the pack went and then never uses it"
+        );
+        assert!(
+            code_only(include_str!("../ui/mods.js")).contains("withheld_note"),
+            "the Mods page never reads the reason, so a player who just lost their HD textures \
+             sees nothing at all"
+        );
     }
 
     /// Play does not pay for a full-disc SHA-256 on every press.
@@ -7692,49 +7874,103 @@ struct StatsSubmitView {"),
     }
 
     /// Every path that COMPOSES the texture pack has to ask what the image is,
-    /// not only the ones that boot it.
+    /// not only the ones that boot it, AND none of them may gate the sync on
+    /// the answer.
     ///
     /// `sync_active_now` set the folder policy from the player's preference
     /// alone, and it is reachable from the Mods page (`mods_sync`), the pack
     /// toggle (`mods_toggle`) and the controls-profile apply (`controls_set`).
     /// Any of those three composed Reborn's entire pack into the folder the
     /// emulator loads by game ID, on a machine whose disc the launch gate had
-    /// already refused. The gate then had nothing left to protect: the art was
-    /// in place before Play was ever pressed.
+    /// already refused.
+    ///
+    /// `netplay_open` was worse, and this test missed it first time round by
+    /// scanning only the two helpers. It wrapped the sync in `if verified`,
+    /// which is the boolean semantics this whole law exists to abolish: it
+    /// SKIPS the compose where the law requires the pack to be TAKEN AWAY, and
+    /// netplay never calls `Session::run`, so the removal that protects every
+    /// other path never ran there at all. So the call site is checked for
+    /// brace depth, not merely for presence: a sync nested one level deeper
+    /// than the gate above it is a sync inside a conditional.
     ///
     /// Every scanned body goes through `code_only` first, so a comment naming
-    /// the helper can never pass for a call to it.
+    /// the helper can never pass for a call to it, and so a brace inside a
+    /// comment cannot move the depth.
     #[test]
     fn every_composer_of_the_texture_pack_asks_what_the_image_is() {
         let src = include_str!("main.rs");
+        let entry = code_only(body_until(
+            src,
+            "\npub(crate) fn sync_active_now(",
+            "\n/// The same sync, for a caller",
+        ));
+        assert!(
+            entry.contains("sync_active_judged"),
+            "sync_active_now no longer shares one body with the judged path, so the two can drift"
+        );
         let sync = code_only(body_until(
             src,
-            "
-pub(crate) fn sync_active_now(",
-            "
-/// What the texture folder policy is right now",
+            "\npub(crate) fn sync_active_judged(",
+            "\n/// Shown on the Mods page when Reborn's pack",
         ));
         assert!(
             sync.contains("texture_policy_now"),
-            "sync_active_now composes the texture pack without ever asking what the image is"
+            "sync_active_judged composes the texture pack without ever asking what the image is"
         );
         let decide = code_only(body_until(
             src,
-            "
-fn texture_policy_now(",
-            "
-/// Make the game load what activation.json says.",
+            "\nfn texture_policy_now(",
+            "\n/// Make the game load what activation.json says.",
         ));
         assert!(
             decide.contains("verdict_now"),
             "texture_policy_now decides whether to paint Reborn's art without asking what the image is"
         );
+        let rule = code_only(body_until(
+            src,
+            "\nimpl TextureDecision {",
+            "\n/// What the texture folder policy is right now",
+        ));
         assert!(
-            decide.contains("texture_policy_for_launch"),
-            "texture_policy_now must apply the launch's own rule, not a second copy of it that can drift"
+            rule.contains("texture_policy_for_launch"),
+            "the texture decision must apply the launch's own rule, not a second copy that can drift"
+        );
+
+        // Netplay: present, and at the same brace depth as the gate, which is
+        // the closure's own statement level.
+        let netplay = code_only(command_body(
+            include_str!("dolphin_settings.rs"),
+            "pub async fn netplay_open",
+        ));
+        let depth_at = |needle: &str| -> i32 {
+            let at = netplay
+                .find(needle)
+                .unwrap_or_else(|| panic!("netplay_open no longer contains {needle}"));
+            netplay[..at].chars().fold(0, |d, c| match c {
+                '{' => d + 1,
+                '}' => d - 1,
+                _ => d,
+            })
+        };
+        assert!(
+            netplay.contains("netplay_copy_is_reborns_own"),
+            "netplay judges the disc the player chose and never the derived copy it actually \
+             boots, so the bytes handed to the emulator are the one thing nothing asked about"
+        );
+        let gate = depth_at("may_play_before_boot");
+        let sync_depth = depth_at("sync_active_judged");
+        assert!(
+            netplay.find("netplay_copy_is_reborns_own").unwrap() < netplay.find("sync_active_judged").unwrap(),
+            "netplay identifies the copy it boots only after the sync has already decided"
+        );
+        assert_eq!(
+            sync_depth, gate,
+            "netplay_open's texture sync sits {} level(s) deeper than its gate, so it is inside a \
+             conditional again: skipping the sync leaves Reborn's whole pack on a disc Reborn did \
+             not verify, and netplay never calls Session::run to remove it later",
+            sync_depth - gate
         );
     }
-
     /// Every command that can make an image the game Reborn boots has to ask
     /// what that image is first. Three of them did not, and a disc nothing
     /// recognized became the booted game wearing Reborn's textures. Two more
