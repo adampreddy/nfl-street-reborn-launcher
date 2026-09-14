@@ -240,10 +240,17 @@ impl ComponentId {
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
             ComponentId::Roster => Some(DataDir::LibraryRoster.relative()),
             ComponentId::GamePatch => Some(DataDir::LibraryGamePatch.relative()),
-            // Recovery lands the same place a player's own image already
-            // does, so a fetched disc becomes `game_path` with no rename and
-            // no separate tree of its own to manage.
-            ComponentId::GameFull => Some(DataDir::LibraryOffline.relative()),
+            // NOT `LibraryOffline`. That directory holds the BOOTED image
+            // (`crate::game_image::booted_path`), which a roster apply
+            // rewrites in place, and it is not what this component's
+            // manifest describes: a downloaded disc is a PRISTINE image
+            // (`crate::game_image` module doc), and pristine images live at
+            // `library/imported/<sha256>`, a path this method cannot express
+            // because it takes no version or hash. `library/game-full` is a
+            // neutral landing spot that collides with neither layer; turning
+            // a landed download into a pristine image is a separate, later
+            // step, not this component's install root.
+            ComponentId::GameFull => Some(DataDir::LibraryGameFull.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -1467,6 +1474,20 @@ mod tests {
         assert!(
             ComponentId::ALL.contains(&ComponentId::GameFull),
             "publishing and name validation need to see it"
+        );
+    }
+
+    /// The downloaded disc is a PRISTINE image, so it must never install into
+    /// the directory holding the booted one. The booted image is the mutable
+    /// layer: a roster apply rewrites it in place, and pointing the update
+    /// engine's staging and prior machinery at that path aims it at the file
+    /// the player is currently playing.
+    #[test]
+    fn the_full_disc_never_installs_over_the_booted_image() {
+        assert_ne!(
+            ComponentId::GameFull.install_root(),
+            Some(DataDir::LibraryOffline.relative()),
+            "game-full would install over the player's live game"
         );
     }
 

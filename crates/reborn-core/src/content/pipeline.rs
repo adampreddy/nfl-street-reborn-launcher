@@ -94,10 +94,12 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         ComponentId::Mods => Some(DataDir::ModsPackages),
         ComponentId::Roster => Some(DataDir::LibraryRoster),
         ComponentId::GamePatch => Some(DataDir::LibraryGamePatch),
-        // Matches `ComponentId::install_root`, even though `game-full` is not
-        // in `UPDATABLE`: recovery is resolved on demand by its own call
-        // path, never by this pipeline's automatic check/fetch/promote loop.
-        ComponentId::GameFull => Some(DataDir::LibraryOffline),
+        // Matches `ComponentId::install_root`: `LibraryGameFull`, never
+        // `LibraryOffline` (the BOOTED image a roster apply rewrites in
+        // place). Also not in `UPDATABLE`: recovery is resolved on demand by
+        // its own call path, never by this pipeline's automatic
+        // check/fetch/promote loop.
+        ComponentId::GameFull => Some(DataDir::LibraryGameFull),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }

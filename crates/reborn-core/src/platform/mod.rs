@@ -613,6 +613,15 @@ pub enum DataDir {
     /// The game-patch component: `chain.json` and the xdeltas between
     /// consecutive Reborn builds, applied to the pristine image.
     LibraryGamePatch,
+    /// The `game-full` recovery component: the downloaded copy of the
+    /// complete disc, before it becomes a pristine image. Deliberately its
+    /// own directory rather than `LibraryOffline`: that one holds the
+    /// BOOTED image (`crate::game_image::booted_path`), which a roster apply
+    /// rewrites in place, and pristine images live at
+    /// `library/imported/<sha256>` (`crate::game_image`). A downloaded disc
+    /// is neither of those until something promotes it, so its landing spot
+    /// must collide with neither.
+    LibraryGameFull,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -644,6 +653,7 @@ impl DataDir {
             DataDir::LibraryWork => "library/work",
             DataDir::LibraryRoster => "library/roster",
             DataDir::LibraryGamePatch => "library/game-patch",
+            DataDir::LibraryGameFull => "library/game-full",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -672,6 +682,7 @@ impl DataDir {
         DataDir::LibraryWork,
         DataDir::LibraryRoster,
         DataDir::LibraryGamePatch,
+        DataDir::LibraryGameFull,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,

@@ -21,6 +21,17 @@
 //! would publish whatever else is in that directory as part of this
 //! component. So [`stage`] hard-links (falling back to a copy) the one file
 //! this component ever has into a tree of its own.
+//!
+//! # Where it lands
+//!
+//! `ComponentId::GameFull`'s `install_root()` is `library/game-full`, not
+//! `library/offline`. `library/offline` holds the BOOTED image
+//! (`crate::game_image::booted_path`), which a roster apply rewrites in
+//! place, and pristine images live at `library/imported/<sha256>`
+//! (`crate::game_image` module doc). A downloaded disc is a pristine
+//! image, not a booted one, so its landing spot must collide with
+//! neither; turning a landed download into a pristine image is a later,
+//! separate step.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -34,9 +45,12 @@ use crate::publish::roster::Push;
 use crate::publish::{io_err, next_sequence, out, refuse, thousands, Outcome, Sink};
 use crate::Result;
 
-/// The file name the disc is published under: the same name the launcher
-/// already uses for a player's own image (`library/offline/NSR.iso`), so a
-/// fetched copy needs no rename to become `game_path`.
+/// The file name the disc is published under. Matches the name the booted
+/// image ships under (`crate::game_image::IMAGE_FILE`) so a later promotion
+/// step needs no rename, but this component's own install root is
+/// `library/game-full`, not the booted or pristine layer: see
+/// [`crate::inventory::ComponentId::install_root`]'s note on `GameFull` for
+/// why landing here is not the same as becoming the player's game.
 pub const ISO_FILE_NAME: &str = "NSR.iso";
 
 #[derive(Debug)]
