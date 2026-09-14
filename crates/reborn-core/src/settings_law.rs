@@ -196,6 +196,8 @@ pub const KEYS: &[Key] = &[
         "The same 64 MiB requirement, at the global layer."),
     locked("Dolphin.ini", "Interface", "UsePanicHandlers", "False",  &["False"],
         "A Dolphin panic handler is an error popup, and the standing product rule is no error popups, ever."),
+    locked("Dolphin.ini", "Interface", "SkipNKitWarning", "True", &["True"],
+        "Every image Reborn ships is an NKit disc, and Dolphin asks before booting one: a modal that stops the boot until somebody ticks a box and clicks OK. In an ordinary Play the player at least sees that window; in a Netplay session Dolphin's own main window is never shown, so the dialog sits behind the launcher unnoticed and that player never boots. The other player boots, finishes compiling shaders and then waits forever on a black screen for input that cannot arrive, which is what \"Netplay gets stuck on compiling shaders\" was. The warning is about a property of a disc the launcher itself built, so it is not a choice to put to the player."),
     locked("Dolphin.ini", "Analytics", "Enabled", "False", &["False"],
         "No telemetry. Stated explicitly rather than left to an upstream default that could change and quietly turn it on."),
     locked("Dolphin.ini", "Analytics", "PermissionAsked", "True", &["True"],
@@ -524,7 +526,7 @@ mod tests {
     /// so that adding to it means editing this test, which means saying out
     /// loud that the launcher is taking another setting away from the player.
     #[test]
-    fn the_locked_set_is_exactly_these_fifteen_keys_and_each_states_why() {
+    fn the_locked_set_is_exactly_these_sixteen_keys_and_each_states_why() {
         let mut locked: Vec<_> = KEYS
             .iter()
             .filter(|k| k.owner == Owner::Locked)
@@ -541,6 +543,10 @@ mod tests {
             ("Dolphin.ini", "Core", "RAMOverrideEnable"),
             ("Dolphin.ini", "Core", "MEM1Size"),
             ("Dolphin.ini", "Interface", "UsePanicHandlers"),
+            // Added 2026-09-13: both shipped images are NKit, so Dolphin
+            // opened its NKit warning before every boot and waited for a
+            // click the player could not find.
+            ("Dolphin.ini", "Interface", "SkipNKitWarning"),
             ("Dolphin.ini", "Analytics", "Enabled"),
             ("Dolphin.ini", "Analytics", "PermissionAsked"),
             // Added 2026-09-13: exclusive fullscreen hard-hangs Windows when an

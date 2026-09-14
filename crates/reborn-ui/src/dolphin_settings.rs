@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn online_cards_and_save_writes_are_session_only() {
         let options=netplay_session_options("Player", "join", "direct", "127.0.0.1",2626);
-        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True"] { assert!(options.iter().any(|v|v==required)); }
+        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True","Dolphin.Interface.SkipNKitWarning=True"] { assert!(options.iter().any(|v|v==required)); }
         assert!(options.iter().all(|v|!v.contains("MemcardAPath")&&!v.contains("MemcardBPath")));
     }
     /// Only the locked requirements are kept out of the player's hands.
@@ -323,7 +323,7 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
   "Dolphin.NetPlay.SyncSaves=True".into(),"Dolphin.NetPlay.WriteSaveData=False".into(),
   "Dolphin.NetPlay.SyncCodes=True".into(),"Dolphin.NetPlay.StrictSettingsSync=True".into(),
   "Dolphin.NetPlay.UseIndex=False".into(),"Dolphin.Display.RenderToMain=False".into(),
-  "Dolphin.Analytics.PermissionAsked=True".into(),
+  "Dolphin.Analytics.PermissionAsked=True".into(),"Dolphin.Interface.SkipNKitWarning=True".into(),
   format!("Dolphin.NetPlay.Nickname={nickname}"),format!("Dolphin.NetPlay.TraversalChoice={connection}"),
   format!("Dolphin.NetPlay.ConnectPort={port}"),format!("Dolphin.NetPlay.HostPort={port}"),
  ];
