@@ -650,6 +650,10 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
                 _=>"The downloaded game is not a Reborn build, so it was not installed and nothing was changed. Try again, and report it if it happens twice.".to_string(),
             });
         }
+        // Whether what was served is the chain's newest build. It need not be:
+        // the pin is published once and carried forward, so the disc can sit
+        // several game-patch builds behind by the time anybody downloads it.
+        let at_head=matches!(verdict,reborn_core::game_identity::Verdict::RebornBuild{at_head:true,..});
 
         // A second pass over the file, for the folder the pristine layer
         // names it by. `identify` hashes to answer what the disc is but does
@@ -659,6 +663,33 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
         let sha=reborn_core::library::hash_file(&landed).map_err(|e|e.to_string())?.as_str().to_string();
         let pristine=land_as_pristine(&p,&data,&landed,&sha)?;
         let booted=establish_booted(&p,&data,&pristine)?;
+
+        // Walk the downloaded disc to the chain head, exactly as both imports
+        // do. The check above asked the content engine for `game-full` and
+        // nothing else, so no game patch has moved this image, and the pin
+        // carrying forward into every later release is precisely what lets a
+        // disc published months ago be what a player receives today. Doing it
+        // here rather than leaving it to the automatic update loop keeps the
+        // ordering something this command decides rather than something it
+        // hopes for.
+        //
+        // Non-fatal, like both imports, and for a stronger reason here:
+        // `identify` has already proven this is a Reborn build, so a refusal
+        // cannot mean "a disc nothing recognizes". It means a missing
+        // xdelta3, a file held open, or a broken game-patch component, and
+        // none of those make what was just established unplayable. Failing
+        // would strand a player who has downloaded 1.36 GB behind a fault
+        // the ordinary game-patch update clears on its own, and every refusal
+        // in `game_patch::apply` leaves the image as it was. The card's words
+        // stay true either way: it says the game was downloaded and verified,
+        // never that it is the newest build.
+        let moved=patch_to_newest(&p,&|stage|say(stage,Some(98)))?;
+        if !at_head&&!matches!(moved,PatchOutcome::Applied(_)|PatchOutcome::UpToDate) {
+            eprintln!(
+                "the downloaded game is behind the newest build and could not be moved forward now: {}",
+                moved.note().unwrap_or("no delta tool or update chain is installed")
+            );
+        }
 
         let mut saved=reborn_core::settings::Settings::load(&settings_file).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());

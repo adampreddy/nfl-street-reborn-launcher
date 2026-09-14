@@ -7077,6 +7077,52 @@ struct StatsSubmitView {"),
         }
     }
 
+    /// Recovery has to end on the chain head, not merely on a genuine Reborn
+    /// build.
+    ///
+    /// The disc is published once and its pin is carried forward into every
+    /// later release, which is what keeps recovery from expiring. The price
+    /// is that by the time a player downloads it, it can be several
+    /// `game-patch` builds behind. The recovery command asks the content
+    /// engine for `game-full` and nothing else, so no patch moves that image
+    /// on its way in: the walk to the head has to be its own call, the way
+    /// both imports make it. Without it the wizard says "NFL Street Reborn is
+    /// ready" over a silently stale disc, which is the class of quiet
+    /// inconsistency this whole feature exists to prevent.
+    ///
+    /// What this can check is that the call is there and in the only order
+    /// that is correct: prove the download is genuine, put it in place, then
+    /// walk it forward. What it cannot check is that the walk arrives. That
+    /// needs a real chain, a real xdelta3 and a real 1.46 GB disc, and there
+    /// is no integration harness here for any of the three, so this does not
+    /// pretend otherwise. The arrival itself is proven in the core, by
+    /// `reborn_core::game_patch::tests::
+    /// apply_walks_every_step_verifies_each_and_leaves_one_pristine_and_a_booted_copy`,
+    /// which takes a mid-chain image to the head and asserts the booted copy
+    /// is the new build. That test is the behavior; this one is the wiring.
+    #[test]
+    fn recovery_walks_the_downloaded_disc_to_the_chain_head() {
+        let body = code_only(command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_download_reborn_game",
+        ));
+        let identify = body
+            .find("game_identity::identify")
+            .expect("the download becomes the game without anything asking what it is");
+        let establish = body
+            .find("establish_booted(")
+            .expect("the download never becomes the booted image");
+        let patch = body.find("patch_to_newest(").expect(
+            "a recovering player is left on whatever build the release happened to pin, \
+             while the wizard tells them the game is ready",
+        );
+        assert!(identify < establish, "an unchecked image becomes the game before it is checked");
+        assert!(
+            establish < patch,
+            "the walk to the head runs before the image it re-establishes over is in place"
+        );
+    }
+
     /// Recovery exists for the player whose own copy could not be converted.
     /// A disc that converted is already a Reborn build, so putting a 1.36 GB
     /// download in front of it would be offering a cure for a fault it does
