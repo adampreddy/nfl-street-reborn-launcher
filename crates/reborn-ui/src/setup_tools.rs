@@ -457,7 +457,15 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
     tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let pristine=import_existing(&p,&reborn_core::session::user_path(&image))?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;let game=establish_booted(&p,&data,&pristine)?;
         patch_to_newest(&p,&|_|{})?;
-        let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
+        // `patch_to_newest` returning `Unknown` is non-fatal to importing, but
+        // that must not make an unrecognized disc the booted game in silence:
+        // ask what actually landed and refuse, or record an acknowledgment,
+        // the same way every other writer of `settings.game_path` does.
+        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
+        let verdict=reborn_core::game_identity::identify(&data,&tool,&game);
+        let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
+        record_verdict(&file,&game,&verdict)?;
+        let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
     }).await.map_err(|e|e.to_string())?

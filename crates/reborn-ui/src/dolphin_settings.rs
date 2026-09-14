@@ -202,12 +202,21 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if mode=="join"&&(address.is_empty()||address.len()>253||!address.chars().all(|c|c.is_ascii_alphanumeric()||".:-_".contains(c))){return Err("Enter a valid host code or address.".into());}
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
+  // Boots through the same gate every other path does: `verify_before_boot`
+  // asks `may_play` what this image is before anything below applies the
+  // texture pack or starts the emulator, so an unverified disc gets neither
+  // one here either.
+  let verified=verify_before_boot(&p,&game_path)?;
   // The same texture sync Play runs: compose the active tree and point the
   // Dolphin user folder at it. Netplay skipped it, so a player whose first
   // launch was an online game got no textures at all (Adam, 2026-09-11:
-  // "No textures on launch"). A sync problem is logged, not fatal: the room
+  // "No textures on launch"). Gated on the same verdict: a disc that only
+  // got this far because the player acknowledged it must not wear Reborn's
+  // texture pack here either. A sync problem is logged, not fatal: the room
   // still opens and Play's own note explains the textures.
-  if let Err(e)=crate::sync_active_now(&p,runtime.as_deref()) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
+  if verified {
+    if let Err(e)=crate::sync_active_now(&p,runtime.as_deref()) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
+  }
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
   // netplay boots: reborn_core::online_image keeps a copy that is the
@@ -216,7 +225,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let game_path=match netplay_image(&p){Ok(Some(path))=>path,Ok(None)=>game_path,Err(e)=>return Err(e)};
   // Fail before preparing settings when an older/custom runtime lacks the bridge.
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
-  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures_allowed:true};
+  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures_allowed:verified};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
   // The waiting acquire, the same one a launch takes. A lock this launcher's
