@@ -581,6 +581,12 @@ struct LaunchCheck {
     /// "bundled", "legacy_install", or "chosen". Absent when none was found.
     runtime_kind: Option<&'static str>,
     game: Option<String>,
+    /// What this image is: "reborn", "convertible", "unconverted",
+    /// "different-game", or "unreadable". Absent only when no image was
+    /// found at all, which `problem` already explains. Tier 2 of the spec:
+    /// "unconverted" is the one value the Play page must show as a fault to
+    /// repair, never worded as a preference the player chose.
+    game_verdict: Option<String>,
     /// Why THIS image, in a sentence, so a wrong one is caught before the
     /// menu comes up. Absent when the image was given rather than found.
     game_note: Option<String>,
@@ -588,6 +594,58 @@ struct LaunchCheck {
     user_dir_note: Option<String>,
     /// Why a launch would refuse, in a sentence. Absent when ready.
     problem: Option<String>,
+}
+
+/// The wire value `game_verdict` reports for each `Verdict`, matching the
+/// strings `home.js` checks the Play card against.
+fn game_verdict_tag(verdict: &reborn_core::game_identity::Verdict) -> &'static str {
+    use reborn_core::game_identity::Verdict;
+    match verdict {
+        Verdict::RebornBuild { .. } => "reborn",
+        Verdict::Convertible => "convertible",
+        Verdict::Unconverted => "unconverted",
+        Verdict::DifferentGame { .. } => "different-game",
+        Verdict::Unreadable { .. } => "unreadable",
+    }
+}
+
+/// `game_identity::identify`'s cache key: the image's path, size, and
+/// modified time. Any change to one of these is a repair, a swapped disc, or
+/// a fresh install, and must invalidate the cache immediately.
+type GameVerdictKey = (PathBuf, u64, std::time::SystemTime);
+
+/// Reuses the last verdict for an unchanged image instead of calling
+/// `compute`, which stands in for `game_identity::identify`.
+///
+/// `launch_check` runs on every Play page load: at first paint, after every
+/// finished session, and on every device or session-state refresh (see
+/// `home.js`'s `load`/`refresh`). `identify` answers by hashing the whole
+/// disc image, upward of a gigabyte; calling it fresh on every one of those
+/// reads would make the launcher's single most common page pay a full-disc
+/// hash apiece for an answer that only changes when the file itself does.
+/// Keying on path, size and modified time buys that back: `compute` runs
+/// only on a genuine miss, so this can never answer with bytes it has not
+/// actually verified for the image now on disk. Takes the cache as an
+/// argument, and `compute` as a closure, rather than owning a `Verdict`
+/// static itself, so this is provable against a fake `compute` and does not
+/// need a multi-gigabyte fixture to test.
+fn cached_game_verdict(
+    cache: &std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>>,
+    key: GameVerdictKey,
+    compute: impl FnOnce() -> reborn_core::game_identity::Verdict,
+) -> reborn_core::game_identity::Verdict {
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_key, verdict)) = guard.as_ref() {
+            if *cached_key == key {
+                return verdict.clone();
+            }
+        }
+    }
+    let verdict = compute();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, verdict.clone()));
+    }
+    verdict
 }
 
 /// What a launch would use, without starting anything.
@@ -603,35 +661,55 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
         match find_runtime_and_game_for(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref(), chosen_user.as_deref()) {
-            Ok((found, image)) => Ok(LaunchCheck {
-                user_dir_note: reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path()))
-                    .ok()
-                    .map(|d| d.explain()),
-                game_note: {
-                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
-                    let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
-                    if given.is_some() {
-                        None
-                    } else {
-                        let user = reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
-                        let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-                        user.map(|u| {
-                            reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
-                                .explain()
-                        })
-                    }
-                },
-                ready: true,
-                runtime: Some(found.path().display().to_string()),
-                runtime_note: Some(found.explain()),
-                runtime_kind: Some(match found {
-                    reborn_core::session::Runtime::Bundled(_) => "bundled",
-                    reborn_core::session::Runtime::FromLegacyInstall(_) => "legacy_install",
-                    reborn_core::session::Runtime::Chosen(_) => "chosen",
-                }),
-                game: Some(image.display().to_string()),
-                problem: None,
-            }),
+            Ok((found, image)) => {
+                let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+                let tool = std::env::current_exe()
+                    .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
+                    .parent()
+                    .unwrap()
+                    .join("game-import/DolphinTool.exe");
+                static GAME_VERDICT_CACHE: std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>> =
+                    std::sync::Mutex::new(None);
+                let verdict = match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
+                    Ok((len, modified)) => cached_game_verdict(
+                        &GAME_VERDICT_CACHE,
+                        (image.clone(), len, modified),
+                        || reborn_core::game_identity::identify(&data, &tool, &image),
+                    ),
+                    Err(_) => reborn_core::game_identity::identify(&data, &tool, &image),
+                };
+                let game_verdict = Some(game_verdict_tag(&verdict).to_string());
+                Ok(LaunchCheck {
+                    user_dir_note: reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path()))
+                        .ok()
+                        .map(|d| d.explain()),
+                    game_note: {
+                        let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
+                        let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
+                        if given.is_some() {
+                            None
+                        } else {
+                            let user = reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
+                            let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+                            user.map(|u| {
+                                reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
+                                    .explain()
+                            })
+                        }
+                    },
+                    ready: true,
+                    runtime: Some(found.path().display().to_string()),
+                    runtime_note: Some(found.explain()),
+                    runtime_kind: Some(match found {
+                        reborn_core::session::Runtime::Bundled(_) => "bundled",
+                        reborn_core::session::Runtime::FromLegacyInstall(_) => "legacy_install",
+                        reborn_core::session::Runtime::Chosen(_) => "chosen",
+                    }),
+                    game: Some(image.display().to_string()),
+                    game_verdict,
+                    problem: None,
+                })
+            }
             Err(problem) => Ok(LaunchCheck {
                 game_note: None,
                 user_dir_note: None,
@@ -640,6 +718,7 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                 runtime_note: None,
                 runtime_kind: None,
                 game: None,
+                game_verdict: None,
                 problem: Some(problem),
             }),
         }
@@ -6191,6 +6270,90 @@ mod tests {
             PathChoice::Store,
             "a disc for a different game is named at the wizard, not blocked here; Settings must \
              still be able to point at it"
+        );
+    }
+
+    /// The Play page's badge must fire on exactly one verdict. A `Convertible`
+    /// or `DifferentGame` disc is Tier 1: allowed, merely noted elsewhere, and
+    /// must not wear the unresolved badge. A `RebornBuild` shows nothing at
+    /// all. Only `Unconverted` is the fault Tier 2 exists to surface.
+    #[test]
+    fn game_verdict_tag_flags_only_the_unconverted_case() {
+        use reborn_core::game_identity::Verdict;
+        assert_eq!(
+            game_verdict_tag(&Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }),
+            "reborn"
+        );
+        assert_eq!(game_verdict_tag(&Verdict::Convertible), "convertible");
+        assert_eq!(game_verdict_tag(&Verdict::Unconverted), "unconverted");
+        assert_eq!(
+            game_verdict_tag(&Verdict::DifferentGame { game_id: "GAFE01".to_string() }),
+            "different-game"
+        );
+        assert_eq!(
+            game_verdict_tag(&Verdict::Unreadable { reason: "truncated".to_string() }),
+            "unreadable"
+        );
+    }
+
+    /// `identify` hashes the whole disc image to answer, and `launch_check`
+    /// asks it on every Play page load. Without this cache, opening Play,
+    /// finishing a session, or toggling a controller would each pay a
+    /// full-disc hash for an answer that has not changed. `compute` stands in
+    /// for `identify` here precisely so this is provable without a
+    /// multi-gigabyte fixture: what matters is that an unchanged key never
+    /// calls it twice, and a changed one always calls it again.
+    #[test]
+    fn cached_game_verdict_only_recomputes_when_its_key_changes() {
+        use reborn_core::game_identity::Verdict;
+        let cache: std::sync::Mutex<Option<(GameVerdictKey, Verdict)>> = std::sync::Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        let key_a = (PathBuf::from("NSR.iso"), 100u64, epoch);
+
+        let first = cached_game_verdict(&cache, key_a.clone(), || {
+            calls.set(calls.get() + 1);
+            Verdict::Unconverted
+        });
+        assert_eq!(first, Verdict::Unconverted);
+        assert_eq!(calls.get(), 1, "the first look for a key must compute");
+
+        let second = cached_game_verdict(&cache, key_a.clone(), || {
+            calls.set(calls.get() + 1);
+            Verdict::RebornBuild { label: "should not win".to_string(), at_head: true }
+        });
+        assert_eq!(
+            second,
+            Verdict::Unconverted,
+            "an unchanged key must reuse the cached verdict, not the new closure's answer"
+        );
+        assert_eq!(calls.get(), 1, "an unchanged key must not recompute");
+
+        let key_b = (PathBuf::from("NSR.iso"), 101u64, epoch);
+        let third = cached_game_verdict(&cache, key_b, || {
+            calls.set(calls.get() + 1);
+            Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }
+        });
+        assert_eq!(third, Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true });
+        assert_eq!(calls.get(), 2, "a changed size must be treated as a possibly different file");
+    }
+
+    /// The spec's Tier 2 rule: a player who used the escape hatch has a
+    /// standing reminder on the Play page, worded as a fault, never as a
+    /// preference they chose.
+    #[test]
+    fn the_play_page_can_tell_the_player_their_game_is_not_reborn() {
+        let body = command_body(include_str!("main.rs"), "async fn launch_check");
+        assert!(
+            body.contains("game_identity::identify"),
+            "launch_check never asks what the game is, so the Play page cannot show \
+             that the player is on a disc Reborn did not verify"
+        );
+        let home = include_str!("../ui/home.js");
+        assert!(home.contains("game_verdict"), "the Play page ignores the verdict");
+        assert!(
+            !home.contains("Custom game"),
+            "Tier 2 must never be worded as a preference the player chose"
         );
     }
 
