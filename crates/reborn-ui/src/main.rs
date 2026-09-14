@@ -5828,6 +5828,18 @@ mod tests {
         &body[..body.find("\n    .await").unwrap_or(body.len())]
     }
 
+    /// A body with its comment lines removed, so a guard can only be satisfied
+    /// by executable text. Four guards in this feature were satisfiable by a
+    /// comment that merely named the thing they were checking for; the code
+    /// under test is what a guard must see, never the prose beside it.
+    fn code_only(body: &str) -> String {
+        body.lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Every way of starting the emulator records a session and collects what
     /// that session produced.
     ///
@@ -6992,6 +7004,14 @@ struct StatsSubmitView {"),
     /// assertion pass on `play_now`'s name whether or not `play_now` itself
     /// asks `may_play` anything. `body_until` with `open_game_folder`'s own
     /// signature as the stop is what keeps this reading only `play_now`.
+    ///
+    /// Every scanned body is run through `code_only` before the assertion.
+    /// `may_play_before_boot`, the shared helper every one of these calls,
+    /// contains `may_play` as a literal prefix of its own name, so a comment
+    /// that merely names the helper (`// ... may_play_before_boot ...`)
+    /// satisfies `.contains("may_play")` exactly as well as the call does.
+    /// `code_only` strips every line that starts with `//` first, so only the
+    /// call itself, never prose beside it, can pass this.
     #[test]
     fn every_boot_path_verifies_the_image() {
         for (name, body) in [
@@ -7006,7 +7026,7 @@ struct StatsSubmitView {"),
             ),
         ] {
             assert!(
-                body.contains("may_play"),
+                code_only(body).contains("may_play"),
                 "{name} boots the game without asking whether the disc is a Reborn build"
             );
         }
@@ -7016,6 +7036,11 @@ struct StatsSubmitView {"),
     /// what that image is first. Three of them did not, and a disc nothing
     /// recognized became the booted game wearing Reborn's textures. Two more
     /// doors found later must fail here rather than reopen it quietly.
+    ///
+    /// Every scanned body is run through `code_only` before the assertion, for
+    /// the same reason `every_boot_path_verifies_the_image` does: a comment
+    /// naming `game_identity::identify` must not be able to stand in for the
+    /// call itself.
     #[test]
     fn every_writer_of_game_path_verifies_the_image() {
         for (name, body) in [
@@ -7041,7 +7066,7 @@ struct StatsSubmitView {"),
             ),
         ] {
             assert!(
-                body.contains("game_identity::identify"),
+                code_only(body).contains("game_identity::identify"),
                 "{name} can make an image the booted game without ever asking what it is"
             );
         }
