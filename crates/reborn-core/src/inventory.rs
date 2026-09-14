@@ -156,8 +156,11 @@ pub enum ComponentId {
     /// against 1.46 GB for the image itself.
     GamePatch,
     /// The complete head-build disc, 1,459,978,240 bytes. Recovery only, for
-    /// a player whose own copy cannot be converted. Deliberately absent from
-    /// the release carry-forward: a normal install never fetches it.
+    /// a player whose own copy cannot be converted. It is pinned and carried
+    /// forward like every other component, so recovery does not expire; what
+    /// keeps a normal install from ever fetching it is
+    /// [`crate::content::pipeline::UPDATABLE`], which does not list it, so
+    /// only the recovery command asks for it and only on a button press.
     GameFull,
 }
 

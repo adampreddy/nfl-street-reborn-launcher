@@ -177,9 +177,11 @@ pub enum PublishCommand {
         apply: bool,
     },
     /// Publish the `game-full` recovery component: the head build's complete
-    /// disc, for a player whose own copy cannot be converted. Never carried
-    /// forward into a later release on its own; re-run this for every
-    /// release that should still offer it.
+    /// disc, for a player whose own copy cannot be converted. Carried forward
+    /// into later releases like every other pin, so recovery does not expire;
+    /// re-run this only when the disc itself changes. A normal install still
+    /// never downloads it: nothing but the launcher's recovery button ever
+    /// asks for this component.
     GameFull {
         /// The complete built disc. Must hash to the game-patch chain's
         /// current head.

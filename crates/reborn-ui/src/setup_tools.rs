@@ -529,15 +529,17 @@ fn land_as_pristine(p:&Platform,data:&Path,landed:&Path,sha:&str)->Result<PathBu
 ///
 /// # Why this goes through the ordinary content pipeline
 ///
-/// `game-full` is 1.36 GB that a normal install must never fetch, and what
-/// keeps that true is two exclusions rather than a download stack of its
-/// own. `pipeline::UPDATABLE` does not list it, so the automatic
-/// check/fetch/promote loop never asks for it even from a release that pins
-/// it; and the publisher's `republish_pinning` never carries it forward, so
-/// it is only ever in a release somebody pinned it into deliberately.
+/// `game-full` is 1.36 GB that a normal install must never fetch, and one
+/// exclusion is what keeps that true, not a download stack of its own:
+/// `pipeline::UPDATABLE` does not list it, so the automatic
+/// check/fetch/promote loop never asks for it however many releases pin it.
 /// Naming it here, on a button press, is the only way it is fetched at all.
-/// A release that does not pin it answers `NotCarried`, which is a sentence
-/// for the player rather than a fault.
+///
+/// It is otherwise an ordinary pinned component and carries forward into
+/// every later release, so recovery stays available to the player who needs
+/// it long after the release that published the disc. An earlier design kept
+/// it out of the carry-forward instead, which gated nothing (a pin is a line
+/// of JSON) and quietly retired recovery on the next ordinary publish.
 ///
 /// # Why landing the file is not the end of it
 ///
@@ -572,7 +574,14 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
         // report a game file that is no longer there as installed.
         let check=updater.check(&CheckRequest{components:&[ComponentId::GameFull],depth:Depth::Verify}).map_err(|e|e.to_string())?;
         match &check.component(ComponentId::GameFull).ok_or("The Reborn game download could not be looked up.")?.state {
-            ComponentState::NotCarried=>return Err("The Reborn game download is not being offered right now. Check for updates on the Settings page, then try again.".into()),
+            // Still reachable, and kept: an origin that has never published
+            // the disc carries no pin for it, which covers a mirror, a
+            // `content_origin` set in settings, and the product's own origin
+            // before the first `rebornctl publish game-full` ever runs. What
+            // it no longer means is "try again in a moment": now that the pin
+            // carries forward, this state does not clear itself, so the words
+            // say so and ask for it to be reported.
+            ComponentState::NotCarried=>return Err("Your update source is not offering NFL Street Reborn, so there is nothing to download and nothing was changed. The download is meant to always be available, so please report this.".into()),
             ComponentState::NotUpdatable=>return Err("This build of the launcher cannot download the Reborn game.".into()),
             ComponentState::Problem(why)=>return Err(why.clone()),
             ComponentState::Refused(r)=>return Err(r.message()),

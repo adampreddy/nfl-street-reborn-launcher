@@ -1030,14 +1030,18 @@ mod tests {
     /// `game-full` is recovery: 1.36 GB a normal install never needs, for the
     /// player whose own copy could not be converted. It is resolved through
     /// this pipeline like every other component, and what keeps it away from
-    /// everybody else is not a second code path but two exclusions.
+    /// everybody else is not a second code path but one exclusion, here:
+    /// `UPDATABLE` does not list it, so the automatic check/fetch/promote
+    /// loop the window runs at startup never asks for it however many
+    /// releases pin it.
     ///
-    /// The first is here: `UPDATABLE` does not list it, so the automatic
-    /// check/fetch/promote loop the window runs at startup never asks for it
-    /// even when the release pins it. The second is in the publisher
-    /// (`publish::release::republish_pinning` never carries it forward). Both
-    /// have to hold, and this pins the first one against the check that a
-    /// caller naming it explicitly still works.
+    /// This is the whole gate, which is why it is asserted beside the check
+    /// that a caller naming the component explicitly still works. The
+    /// publisher deliberately does carry the pin forward
+    /// (`publish::release::tests::
+    /// the_full_disc_carries_forward_so_recovery_does_not_expire`): keeping
+    /// it out of later releases gated nothing, because a pin is a line of
+    /// JSON, and it quietly retired recovery on the next ordinary publish.
     #[test]
     fn game_full_is_recovery_the_automatic_loop_never_asks_for() {
         assert!(
@@ -1086,9 +1090,14 @@ mod tests {
 
     /// A release that does not pin `game-full` cannot be talked into serving
     /// it: the pin is the only door, and without one the answer is
-    /// `NotCarried`. That is a sentence for the player ("the download is not
-    /// being offered right now"), not a fault, and it is the case the
-    /// recovery command has to word rather than propagate.
+    /// `NotCarried`, not an error.
+    ///
+    /// Reachable, and so worth pinning, even though the publisher now carries
+    /// the pin forward: an origin that has never published the disc has no
+    /// pin to carry. That covers a mirror, an origin set in settings, and the
+    /// product's own origin before the first `publish game-full` runs. The
+    /// recovery command turns this into a sentence for the player rather than
+    /// propagating it.
     #[test]
     fn game_full_is_not_carried_by_a_release_that_does_not_pin_it() {
         let dir = tempfile::tempdir().unwrap();

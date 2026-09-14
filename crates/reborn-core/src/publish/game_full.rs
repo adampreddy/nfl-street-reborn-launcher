@@ -2,15 +2,26 @@
 //! staged and pinned so a player whose own copy cannot be converted can
 //! download a working game instead of being stranded.
 //!
-//! # Why this never rides along with an ordinary release
+//! # Why being in the release costs a player nothing
 //!
-//! Every other component [`crate::publish::release::republish_pinning`]
-//! carries forward automatically from the release already served. `game-full`
-//! does not: that function skips it by name in its carry-forward loop, so the
-//! only way it reaches a release is a caller of THIS module naming it on that
-//! release's own command line, the same way `rebornctl publish game-full`
-//! does. See the test at `crate::publish::release::tests::
-//! game_full_is_never_carried_forward_into_the_next_release` for the proof.
+//! This component is pinned like any other, and
+//! [`crate::publish::release::republish_pinning`] carries it forward into
+//! every later release like any other. That is deliberate, and it was not
+//! always so: the pin was once skipped in the carry-forward loop, on the
+//! theory that it kept 1.36 GB away from a normal install. It did not. A pin
+//! is a line of JSON; what decides who downloads the full disc is
+//! [`crate::content::pipeline::UPDATABLE`], which does not list `game-full`,
+//! so the launcher's automatic check/fetch/promote loop never asks for it
+//! however many releases pin it. Only the recovery command names it, and
+//! only when a player presses the button. See
+//! `crate::content::pipeline::tests::
+//! game_full_is_recovery_the_automatic_loop_never_asks_for`.
+//!
+//! What the exclusion did buy was silent expiry: the pin vanished from the
+//! next ordinary release, so recovery quietly stopped being offered to the
+//! player it exists for. `crate::publish::release::tests::
+//! the_full_disc_carries_forward_so_recovery_does_not_expire` guards against
+//! that returning.
 //!
 //! # Why the stage is a fresh tree of exactly one file
 //!
@@ -98,9 +109,11 @@ pub fn refuse_if_not_chain_head(iso_sha: &str, chain_head: &str) -> std::result:
 /// pinned by name.
 ///
 /// The release step goes through [`republish_pinning`] like every other
-/// component publisher in this module family, which is precisely what keeps
-/// `game-full` off of every LATER release: that function never carries it
-/// forward on its own.
+/// component publisher in this module family, and this pin then carries
+/// forward into later releases like every other, so recovery stays available
+/// to a player long after the release that published it. Keeping the full
+/// disc away from a normal install is
+/// [`crate::content::pipeline::UPDATABLE`]'s job, not this one's.
 pub fn stage(req: &GameFullRequest<'_>, observer: &dyn ScanObserver, sink: Sink<'_>) -> Result<Outcome<Push>> {
     let (iso, version, origin, apply) = (req.iso, req.version, req.origin, req.apply);
 
