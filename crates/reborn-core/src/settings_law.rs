@@ -284,10 +284,14 @@ pub const KEYS: &[Key] = &[
         Ui { id: "video_backend", kind: "video_backend", default: "D3D" }),
     seeded("GFX.ini", "Hacks", "EFBAccessEnable", "True", &["True"],
         "The per-game layer locks this; seeding the global layer keeps a fresh install consistent without taking the key twice."),
-    seeded("Logger.ini", "Options", "WriteToFile", "False", &["False"], "The freeze instrumentation left file logging on: a disk write per line."),
-    seeded("Logger.ini", "Options", "Verbosity", "1", &["1"], "As WriteToFile."),
-    seeded("Logger.ini", "Options", "WriteToConsole", "False", &["False"], "As WriteToFile."),
-    seeded("Logger.ini", "Options", "WriteToWindow", "False", &["False"], "As WriteToFile."),
+    locked("Logger.ini", "Options", "WriteToFile", "False", &["False"],
+        "A shipped build must not write a debug log. The 2026-09 freeze instrumentation turned Dolphin's file logger on at Verbosity 4 and nothing turned it back off: measured on the dev install 2026-09-13, dolphin.log was 21.3 MB over 154,693 lines in a day, and every one of those lines is a synchronous disk write on the emulation thread. It costs most where the game is busiest, which is a full field of players, and it is one of the differences between this build and a stock Dolphin, which defaults the file logger off."),
+    locked("Logger.ini", "Options", "Verbosity", "1", &["1", "4"],
+        "The same instrumentation left Verbosity at 4, which is what makes the file logger expensive rather than merely on. Locked with it, because turning the writes off while leaving the verbosity would leave the next build one flag away from the same bill."),
+    locked("Logger.ini", "Options", "WriteToConsole", "False", &["False"],
+        "As WriteToFile. A console sink on a GUI build has no reader and still costs the format and the write."),
+    locked("Logger.ini", "Options", "WriteToWindow", "False", &["False"],
+        "As WriteToFile. The log window is not shown in an ordinary launch, so the sink only costs."),
 ];
 
 fn overlay_for(file: &str, owner: Owner) -> Overlay {
@@ -520,7 +524,7 @@ mod tests {
     /// so that adding to it means editing this test, which means saying out
     /// loud that the launcher is taking another setting away from the player.
     #[test]
-    fn the_locked_set_is_exactly_these_eleven_keys_and_each_states_why() {
+    fn the_locked_set_is_exactly_these_fifteen_keys_and_each_states_why() {
         let mut locked: Vec<_> = KEYS
             .iter()
             .filter(|k| k.owner == Owner::Locked)
@@ -544,6 +548,17 @@ mod tests {
             // screen. Locked, not seeded, because every affected player already
             // has a GFX.ini and a seeded key would never reach them.
             ("GFX.ini", "Settings", "BorderlessFullscreen"),
+            // Added 2026-09-13, for exactly the reason the line above states and
+            // for want of anybody applying it here the first time. These four
+            // were SEEDED, and seeding writes only where a key is absent: the
+            // freeze instrumentation had already set all four on every install
+            // that ran it, so the seed reached none of them. dolphin.log was
+            // still 21.3 MB a day later, a synchronous write per line at
+            // Verbosity 4, on the emulation thread.
+            ("Logger.ini", "Options", "WriteToFile"),
+            ("Logger.ini", "Options", "Verbosity"),
+            ("Logger.ini", "Options", "WriteToConsole"),
+            ("Logger.ini", "Options", "WriteToWindow"),
         ];
         expected.sort();
 
