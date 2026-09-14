@@ -78,13 +78,18 @@ pub const GAME_SETTINGS: &str = "GameSettings";
 /// Bumped when [`reconcile_once`] needs to run again over installs it has
 /// already visited. The marker file holds the revision that last ran.
 ///
+/// 3 (2026-09-14): revision 2 wrote `ShaderCompilationMode = 0` into every
+/// install. Blocking shader compilation on a cache the same release had just
+/// invalidated is what players reported as a multi-second stall at every snap,
+/// so the repair now lands on 2 and has to run again over the same installs.
+///
 /// 2 (2026-09-13): revision 1 pruned the per-game pins without reading the
 /// layer underneath, so `GFX.ini`'s `MSAA = 0x00000004` and
 /// `ArbitraryMipmapDetection = True` - values the pins had kept unreachable
 /// since the product shipped - became live on every install that reconciled.
 /// The installs that need the repair are exactly the ones revision 1 already
 /// visited, so fixing the table is only half of it; the marker has to move too.
-pub const REVISION: u32 = 2;
+pub const REVISION: u32 = 3;
 
 /// Who decides a key's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,8 +257,8 @@ pub const KEYS: &[Key] = &[
     player("GFX.ini", "Enhancements", "MaxAnisotropy", &[],
         "Where Dolphin actually keeps anisotropic filtering. Never written by any shipped build, so there is no forced value to recognise."),
     with_repair(player("GFX.ini", "Settings", "ShaderCompilationMode", &["2", "0"],
-        "Shader compilation strategy, and the long-standing day-field slowdown. 2 is asynchronous ubershaders: any draw whose specialised shader is not compiled yet runs Dolphin's giant fallback shader instead, and the fallback is slowest exactly where the day fields live, in the sun-lit per-pixel lighting variants. If the compile queue never catches up the game sits on the fallback for the whole match: a flat low frame rate with no stutter, worse the more players are drawn. Predates ReShade entirely. The known-good User folder Adam kept for this (Reborn Installer/Files/Reborn Dolphin/User) differs from the shipped template in exactly this key, 0, which stalls to compile a new shader once and then always runs the fast one. WaitForShadersBeforeStarting stays True on purpose: with mode 0 it precompiles the cached shaders at boot, which only takes stutter out of play."),
-        "0"),
+        "Shader compilation strategy. REVERTED to 2 on 2026-09-14 after shipping 0 on 09-13. 0 is Synchronous: the video thread BLOCKS until a specialised shader finishes compiling. 2 is Asynchronous Ubershaders: it never blocks, drawing with a general fallback shader until the specialised one is ready. The case for 0 was a day-field measurement on the dev box, which has had a warm shader cache for weeks. A player does not. Worse, the cache filename embeds a hash of the graphics host config (ShaderGenCommon.cpp GetDiskShaderCacheFileName, bits.msaa and friends), so a settings change silently opens an EMPTY cache rather than migrating the old one - and 3.0.9 changed settings and the compilation mode in the same release. A snap submits a step of around 366 new draws with new pipeline states all at once; under 0 with a cold cache that is a wall of blocking compiles. Players reported exactly that five hours after 3.0.9 went out: a multi-second drop at the hike, lasting until the throw, then a clean 60 once compiled, every play. Blocking the frame is never the right default for a player whose cache we just invalidated."),
+        "2"),
     player("GFX.ini", "Settings", "WaitForShadersBeforeStarting", &["True"], "Whether to wait at boot or stutter in play."),
     player("GFX.ini", "Settings", "DumpTextures", &["False"], "A modder's switch."),
     player("GFX.ini", "Settings", "DumpBaseTextures", &["False"], "A modder's switch."),
@@ -966,16 +971,31 @@ mod tests {
         );
     }
 
-    /// The day-field slowdown that predates ReShade. The fix folder says mode 0;
-    /// every shipped install says mode 2; the repair has to carry one to the
-    /// other, on the file as a player actually has it.
+    /// Shader compilation never blocks the frame.
+    ///
+    /// This test asserted the opposite for one day. Revision 2 shipped
+    /// `ShaderCompilationMode = 0` on the strength of a measurement taken on a
+    /// box with a warm shader cache, and players - whose caches the same
+    /// release invalidated, because the cache filename embeds the graphics host
+    /// config - got a blocking compile at every snap instead. An install that
+    /// revision 2 already stamped with 0 has to be carried back to 2, which is
+    /// what revision 3 is for.
     #[test]
-    fn the_day_field_repair_lands_shader_compilation_on_synchronous() {
+    fn the_repair_never_leaves_shader_compilation_blocking_the_frame() {
         let dir = install();
-        assert_eq!(effective(dir.path(), "Video_Settings", "ShaderCompilationMode").as_deref(), Some("2"), "the shape every install is in today");
-        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+        // The shape revision 2 left behind: 0 in the player's own GFX.ini.
+        let gfx = dir.path().join("Config/GFX.ini");
+        let text = std::fs::read_to_string(&gfx).unwrap().replace("ShaderCompilationMode = 2", "ShaderCompilationMode = 0");
+        std::fs::write(&gfx, text).unwrap();
         assert_eq!(effective(dir.path(), "Video_Settings", "ShaderCompilationMode").as_deref(), Some("0"));
-        assert_eq!(effective(dir.path(), "Video_Settings", "WaitForShadersBeforeStarting").as_deref(), Some("True"), "left alone: with mode 0 it only precompiles at boot");
+
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            effective(dir.path(), "Video_Settings", "ShaderCompilationMode").as_deref(),
+            Some("2"),
+            "0 blocks the video thread on a shader miss; a player with a cold cache stalls at every snap",
+        );
     }
 
     /// Dolphin rewrites `GFX.ini` from memory when it exits and normalises as
@@ -1132,7 +1152,13 @@ mod tests {
 
         let gfx = crate::ini::IniDocument::parse(&std::fs::read_to_string(config.join("GFX.ini")).unwrap());
         assert_eq!(gfx.get("Settings", "InternalResolution"), Some("4"), "live value was ours; theirs restored");
-        assert_eq!(gfx.get("Settings", "ShaderCompilationMode"), Some("0"), "live value was ours; theirs restored");
+        // Was Some("0") until 2026-09-14. Once a key names a repair, a snapshot
+        // value that is itself one of OUR forced values is not evidence of a
+        // preference - and 0 became one of ours when revision 2 shipped it. The
+        // ambiguity is real and it is resolved deliberately in favour of the
+        // repair, because 0 blocks the video thread on a shader miss and we do
+        // not get to guess that a player chose that.
+        assert_eq!(gfx.get("Settings", "ShaderCompilationMode"), Some("2"), "a snapshot value we ourselves shipped falls through to the repair");
         assert_eq!(gfx.get("Settings", "MaxAnisotropy"), Some("16"), "16 was never a value we wrote, so it is theirs");
 
         // No .launcher-original for Dolphin.ini, so there is nothing to
