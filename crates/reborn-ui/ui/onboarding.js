@@ -318,6 +318,9 @@ export const outcomeWords=(outcome,label,note,patched)=>{
     case 'different-game':return ['This is not NFL Street 2',`${note?note+' ':''}Reborn's roster, textures and updates do not apply to it.`];
     case 'unreadable':return ['Your game file could not be read',note||'Choose an NFL Street 2 (USA) disc image.'];
     case 'unknown':case 'no-chain':return ["Your game file isn't NFL Street Reborn",'Reborn could not confirm this disc is one of its builds, so it was left exactly as it is. Repair it before playing.'];
+    // Recovery: the complete game came from Reborn itself, so there is no
+    // disc of the player's to report on.
+    case 'downloaded':return ['NFL Street Reborn is ready','The complete Reborn game was downloaded and verified. Continue to your controller.'];
     default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
   }
 };
@@ -407,6 +410,10 @@ const SCREENS = {
       const isPatched=()=>{try{return localStorage.getItem('setup:patched:'+pending.image)==='true';}catch(_){return false;}};
       const isShipped=()=>{try{return localStorage.getItem('setup:shipped:'+pending.image)==='true';}catch(_){return false;}};
       const storedWords=()=>{try{return outcomeWords(localStorage.getItem('setup:outcome:'+pending.image)||'',localStorage.getItem('setup:label:'+pending.image)||'',localStorage.getItem('setup:note:'+pending.image)||'',isPatched());}catch(_){return outcomeWords('', '', '', false);}};
+      // The two endings a player cannot go on from: a disc Reborn could not
+      // convert, and one it could not read. Nothing else, and in particular
+      // never a disc that converted.
+      const blocked=()=>{try{return ['unconverted','unreadable'].includes(localStorage.getItem('setup:outcome:'+pending.image)||'');}catch(_){return false;}};
       const shipped=installInfo?.shipped_game||null;
       const status=el('p','import-status',pending.image?(isShipped()?'NFL Street Reborn is ready':storedWords()[0]):shipped?'Preparing NFL Street Reborn…':'Your original file stays untouched.');status.setAttribute('role','status');
       const progress=el('progress','patch-progress');progress.max=100;progress.hidden=!pending.image&&!shipped;if(pending.image)progress.value=100;
@@ -427,6 +434,32 @@ const SCREENS = {
         },0);
       }
       box.classList.toggle('patch-complete',!!pending.image);box.append(status,progress,detail,browse);
+      // The way out for a player whose own copy cannot be converted: the
+      // complete built game, downloaded. The button is built every draw
+      // because the import that decides whether it is needed has not run
+      // yet, so what decides whether anyone sees it is this one guard. It
+      // joins the card only while the disc is one we could not convert or
+      // could not read, and leaves again the moment that stops being true.
+      const recover=el('button','primary','Download the Reborn game (1.36 GB)');recover.type='button';
+      const syncRecovery=()=>{if(blocked()){if(recover.parentNode!==box)box.append(recover);}else recover.remove();};
+      syncRecovery();
+      recover.addEventListener('click',async()=>{
+        if(moving)return;moving=true;recover.disabled=true;browse.disabled=true;updateNav();let unlisten;
+        try{
+          box.classList.remove('patch-complete');status.textContent='Downloading NFL Street Reborn…';detail.textContent='Keep the launcher open. This is a large download.';progress.hidden=false;progress.removeAttribute('value');
+          if(window.__TAURI__?.event?.listen) unlisten=await window.__TAURI__.event.listen('game-import-progress',e=>{
+            const data=e.payload;status.textContent=typeof data==='string'?data:data.stage;
+            if(typeof data.percent==='number'){progress.value=data.percent;progress.setAttribute('aria-label',`Downloading the game: ${data.percent}%`);detail.textContent=`${data.percent}% complete`;}
+            else {progress.removeAttribute('value');detail.textContent='Keep the launcher open. This is a large download.';}
+          });
+          const path=await call('setup_download_reborn_game');
+          pending.image=path;
+          try{localStorage.setItem('setup:patched:'+path,'false');localStorage.setItem('setup:outcome:'+path,'downloaded');localStorage.setItem('setup:label:'+path,'');localStorage.setItem('setup:note:'+path,'');localStorage.setItem('h:game',path);}catch(_){}
+          const words=outcomeWords('downloaded','','',false);
+          progress.value=100;box.classList.add('patch-complete');status.textContent=words[0];detail.textContent=words[1];browse.textContent='Use a different game file';browse.className='';
+        }catch(e){status.textContent='The Reborn game could not be downloaded';detail.textContent=String(e.message||e);progress.hidden=true;}
+        finally{unlisten?.();moving=false;recover.disabled=false;browse.disabled=false;updateNav();syncRecovery();if(pending.image&&!blocked())document.getElementById('next').focus({preventScroll:true});}
+      });
       browse.addEventListener('click',async()=>{
         if(moving)return;moving=true;browse.disabled=true;updateNav();let unlisten;
         try {
@@ -444,9 +477,8 @@ const SCREENS = {
           const words=outcomeWords(imported.outcome||'',imported.label||'',imported.note||'',imported.patched===true);
           progress.value=100;box.classList.add('patch-complete');status.textContent=words[0];detail.textContent=words[1];browse.textContent='Choose a different file';browse.className='';
         }catch(e){status.textContent='Your game could not be prepared';detail.textContent=String(e.message||e);progress.hidden=true;}
-        finally{unlisten?.();moving=false;browse.disabled=false;updateNav();if(pending.image)document.getElementById('next').focus({preventScroll:true});}
+        finally{unlisten?.();moving=false;browse.disabled=false;updateNav();syncRecovery();if(pending.image&&!blocked())document.getElementById('next').focus({preventScroll:true});}
       });
-      const blocked=()=>{try{return ['unconverted','unreadable'].includes(localStorage.getItem('setup:outcome:'+pending.image)||'');}catch(_){return false;}};
       return {nodes:[el('p',null,shipped?'NFL Street Reborn is included with this install.':'Choose your legally obtained copy of NFL Street 2 (USA) for GameCube.'),box],ready:()=>!!pending.image&&!blocked(),nextLabel:'Continue',answer:()=>call('onboarding_confirm_game',{image:pending.image})};
     }
     const summary=el('section','detected-install');

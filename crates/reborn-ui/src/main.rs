@@ -5664,6 +5664,7 @@ fn main() {
             setup_tools::setup_save_graphics_options,
             setup_tools::setup_hardware_info,
             setup_tools::setup_import_game,
+            setup_tools::setup_download_reborn_game,
             setup_tools::setup_use_existing,
             setup_tools::controller_slots,
             setup_tools::controller_assign_player,
@@ -7064,11 +7065,57 @@ struct StatsSubmitView {"),
                 "onboarding_confirm_game",
                 command_body(include_str!("main.rs"), "async fn onboarding_confirm_game"),
             ),
+            (
+                "setup_download_reborn_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_download_reborn_game"),
+            ),
         ] {
             assert!(
                 code_only(body).contains("game_identity::identify"),
                 "{name} can make an image the booted game without ever asking what it is"
             );
         }
+    }
+
+    /// Recovery exists for the player whose own copy could not be converted.
+    /// A disc that converted is already a Reborn build, so putting a 1.36 GB
+    /// download in front of it would be offering a cure for a fault it does
+    /// not have.
+    ///
+    /// The button object is built every time the screen draws, because the
+    /// import that decides whether it is needed has not run yet when the
+    /// screen is first assembled. So what decides whether a player ever sees
+    /// it is not whether it is built but whether it is ever put into the
+    /// card, and that is what this pins: every line that appends it has to
+    /// ask `blocked()`, the helper whose set is `unconverted` and
+    /// `unreadable` and nothing else.
+    ///
+    /// `code_only` strips `//` lines first, exactly as the guard tests above
+    /// do, so a comment mentioning recovery beside an unguarded append
+    /// cannot satisfy this.
+    #[test]
+    fn the_recovery_download_is_offered_only_for_a_disc_we_could_not_convert() {
+        let src = code_only(include_str!("../ui/onboarding.js"));
+        assert!(
+            src.contains("setup_download_reborn_game"),
+            "no recovery is offered, so a player whose disc cannot convert is stranded"
+        );
+        assert!(
+            src.contains("['unconverted','unreadable'].includes("),
+            "the blocked set moved, so this no longer pins who recovery is offered to"
+        );
+        let mut appended = 0;
+        for (n, line) in src.lines().enumerate() {
+            if line.contains("recover") && line.contains(".append(") {
+                appended += 1;
+                assert!(
+                    line.contains("blocked()"),
+                    "onboarding.js line {} puts the recovery download in the card without asking \
+                     whether the disc is one we could not convert: {line}",
+                    n + 1
+                );
+            }
+        }
+        assert_eq!(appended, 1, "the recovery button joins the card in one place, guarded once");
     }
 }

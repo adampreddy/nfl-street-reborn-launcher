@@ -1027,6 +1027,84 @@ mod tests {
         data_root.join(install_dir(id).unwrap().relative()).join(rel)
     }
 
+    /// `game-full` is recovery: 1.36 GB a normal install never needs, for the
+    /// player whose own copy could not be converted. It is resolved through
+    /// this pipeline like every other component, and what keeps it away from
+    /// everybody else is not a second code path but two exclusions.
+    ///
+    /// The first is here: `UPDATABLE` does not list it, so the automatic
+    /// check/fetch/promote loop the window runs at startup never asks for it
+    /// even when the release pins it. The second is in the publisher
+    /// (`publish::release::republish_pinning` never carries it forward). Both
+    /// have to hold, and this pins the first one against the check that a
+    /// caller naming it explicitly still works.
+    #[test]
+    fn game_full_is_recovery_the_automatic_loop_never_asks_for() {
+        assert!(
+            !UPDATABLE.contains(&ComponentId::GameFull),
+            "the automatic update loop would fetch 1.36 GB of recovery on every install"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let platform = Platform::detect();
+        let src = origin(
+            1,
+            vec![
+                runtime_v1(),
+                built(ComponentId::GameFull, "2026.09.13.3", 1, vec![("NSR.iso", b"a whole disc")]),
+            ],
+        );
+        let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
+
+        let automatic = updater.check(&quick(&UPDATABLE)).unwrap();
+        assert!(
+            automatic.component(ComponentId::GameFull).is_none(),
+            "the ordinary update loop put the recovery disc in front of a player who never asked"
+        );
+
+        // Asked for by name, it resolves: the release pins it, so the engine
+        // accepts its manifest and plans it like anything else.
+        let check = updater.check(&quick(&[ComponentId::GameFull])).unwrap();
+        let plan = check
+            .component(ComponentId::GameFull)
+            .unwrap()
+            .plan()
+            .expect("recovery is available on demand");
+        assert_eq!(plan.version(), "2026.09.13.3");
+        assert!(updater.fetch(&check).unwrap().all_staged());
+        assert!(updater.promote(&check, &ImageHook::default()).unwrap().all_applied());
+
+        // It lands in `library/game-full`, not on the booted image and not in
+        // the pristine layer. Turning the landed file into a pristine image is
+        // a separate step, which is what makes that layering safe.
+        let landed = live(dir.path(), ComponentId::GameFull, "NSR.iso");
+        assert_eq!(std::fs::read(&landed).unwrap(), b"a whole disc");
+        assert_eq!(landed, dir.path().join("library").join("game-full").join("NSR.iso"));
+        assert!(!dir.path().join("library").join("offline").join("NSR.iso").exists());
+        assert!(!dir.path().join("library").join("imported").exists());
+    }
+
+    /// A release that does not pin `game-full` cannot be talked into serving
+    /// it: the pin is the only door, and without one the answer is
+    /// `NotCarried`. That is a sentence for the player ("the download is not
+    /// being offered right now"), not a fault, and it is the case the
+    /// recovery command has to word rather than propagate.
+    #[test]
+    fn game_full_is_not_carried_by_a_release_that_does_not_pin_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = Platform::detect();
+        let src = origin(1, vec![runtime_v1()]);
+        let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
+
+        let check = updater.check(&quick(&[ComponentId::GameFull])).unwrap();
+        assert!(matches!(
+            check.component(ComponentId::GameFull).unwrap().state,
+            ComponentState::NotCarried
+        ));
+        assert!(!check.has_updates());
+        assert!(check.problems().is_empty(), "not being offered recovery is not a fault");
+    }
+
     #[test]
     fn a_check_reports_every_state_by_name_and_sums_what_is_to_fetch() {
         let dir = tempfile::tempdir().unwrap();
