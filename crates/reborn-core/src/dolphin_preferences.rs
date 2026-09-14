@@ -11,9 +11,15 @@ pub const FIELDS: &[Field] = &[
     Field{id:"always_on_top",file:"Dolphin.ini",section:"Display",key:"KeepWindowOnTop",default:"False",kind:"bool"},
     Field{id:"vsync",file:"GFX.ini",section:"Hardware",key:"VSync",default:"False",kind:"bool"},
     Field{id:"show_fps",file:"GFX.ini",section:"Settings",key:"ShowFPS",default:"False",kind:"bool"},
-    // Anti-aliasing is the player's: 4x is the Reborn baseline (Adam, 2026-09-10), lower if the game stutters.
-    // Raising it softens the depth-driven ReShade effects, which the Settings page says next to the control.
-    Field{id:"msaa",file:"GFX.ini",section:"Settings",key:"MSAA",default:"0x00000004",kind:"msaa"},
+    // Anti-aliasing is the player's. The default is off, which is not a new
+    // opinion: every shipped build pinned MSAA = 1 in the per-game layer, so
+    // off is what the game has always actually run at and 4x never once took
+    // effect. Offering 4x as the default here handed players a setting nobody
+    // had ever played on; it went live with the 2026-09-13 prune and cost them
+    // a third of their frame rate with a full field on screen. Raising it
+    // works now, and also softens the depth-driven ReShade effects, which the
+    // Settings page says next to the control. See crate::settings_law.
+    Field{id:"msaa",file:"GFX.ini",section:"Settings",key:"MSAA",default:"1",kind:"msaa"},
     // Internal resolution, the single biggest performance lever and the one a
     // player on a weak GPU is told to lower. It used to be pinned at 3 in the
     // per-game layer, so neither this page nor Dolphin's own could change it.
@@ -22,6 +28,14 @@ pub const FIELDS: &[Field] = &[
     // Synchronize GPU thread: expensive, and it never prevented the freeze it
     // was forced on for. The player decides whether to spend the frames.
     Field{id:"sync_gpu",file:"Dolphin.ini",section:"Core",key:"SyncGPU",default:"False",kind:"bool"},
+    // The video backend. The settings law retired the per-game pin on
+    // 2026-09-13 so that "a player whose driver works better on Vulkan or
+    // OpenGL keeps that choice", and then nothing offered the choice. Players
+    // reported the same day that they cannot change their backend, and they
+    // could not: the launcher boots Dolphin with -u/-e, plus -b in fullscreen,
+    // so Dolphin's own Graphics window is never on screen in an ordinary flow.
+    // This page is the only surface a player has. See crate::settings_law.
+    Field{id:"video_backend",file:"Dolphin.ini",section:"Core",key:"GFXBackend",default:"D3D",kind:"video_backend"},
     Field{id:"show_ping",file:"GFX.ini",section:"Settings",key:"ShowNetPlayPing",default:"False",kind:"bool"},
 // `borderless` was here. BorderlessFullscreen became a LOCKED key on
 // 2026-09-13 because exclusive fullscreen hard-hangs Windows when an outside

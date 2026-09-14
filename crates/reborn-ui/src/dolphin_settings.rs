@@ -36,6 +36,13 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
         "bool"=>match value.to_lowercase().as_str(){"true"=>Ok("True".into()),"false"=>Ok("False".into()),_=>Err("Choose on or off.".into())},
         "volume"|"latency"=>{let n=value.parse::<u32>().map_err(|_|"Enter a whole number.")?;let max=if field.kind=="volume"{100}else{200};if n>max{return Err(format!("Choose a value from 0 to {max}."));}Ok(n.to_string())},
         "backend"=>if ["Cubeb","WASAPI (Exclusive Mode)"].contains(&value){Ok(value.into())}else{Err("Choose a supported audio output mode.".into())},
+        // Spelled exactly as Dolphin spells them: CONFIG_NAME in
+        // VideoBackends/*/VideoBackend.h. A name Dolphin does not recognise
+        // falls back to the default backend silently, so a typo here would
+        // look like the setting being ignored, which is the bug this control
+        // exists to fix. Null and Software Renderer are debugging backends
+        // that cannot play the game, so they are neither offered nor accepted.
+        "video_backend"=>if ["D3D","D3D12","Vulkan","OGL"].contains(&value){Ok(value.into())}else{Err("Choose a supported graphics backend.".into())},
         "slot"=>if ["1","8","255"].contains(&value){Ok(value.into())}else{Err("Choose a supported memory card type.".into())},
         // Written the way Dolphin writes it, so the file reads the same whoever last saved it.
         "msaa"=>{let n=value.trim_start_matches("0x").trim_start_matches('0');let n=if n.is_empty(){"0"}else{n};if ["1","2","4","8"].contains(&n){Ok(format!("0x{:08x}",n.parse::<u32>().unwrap()))}else{Err("Choose 1×, 2×, 4× or 8× anti-aliasing.".into())}},
@@ -123,10 +130,28 @@ mod tests {
         );
     }
 
+    /// Dolphin looks the backend up by name and falls back to its default
+    /// silently when the name is not one it knows, so a misspelling this door
+    /// let through would look exactly like the setting being ignored, which is
+    /// the complaint the control was added for. The four names are
+    /// `CONFIG_NAME` in `VideoBackends/*/VideoBackend.h`.
+    #[test]
+    fn the_graphics_backend_accepts_only_names_dolphin_knows() {
+        let field = FIELDS.iter().find(|f| f.id == "video_backend").expect("offered on the page");
+        for name in ["D3D", "D3D12", "Vulkan", "OGL"] {
+            assert_eq!(checked_value(field, name).as_deref(), Ok(name), "{name} is a real backend");
+        }
+        // Null and Software Renderer are real names and still refused: they
+        // are debugging backends that cannot play the game.
+        for refused in ["Null", "Software Renderer", "Direct3D 11", "d3d", "OpenGL", ""] {
+            assert!(checked_value(field, refused).is_err(), "{refused} must not reach Dolphin.ini");
+        }
+    }
+
     #[test]
     fn online_cards_and_save_writes_are_session_only() {
         let options=netplay_session_options("Player", "join", "direct", "127.0.0.1",2626);
-        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True"] { assert!(options.iter().any(|v|v==required)); }
+        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True","Dolphin.Interface.SkipNKitWarning=True"] { assert!(options.iter().any(|v|v==required)); }
         assert!(options.iter().all(|v|!v.contains("MemcardAPath")&&!v.contains("MemcardBPath")));
     }
     /// Only the locked requirements are kept out of the player's hands.
@@ -355,7 +380,7 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
   "Dolphin.NetPlay.SyncSaves=True".into(),"Dolphin.NetPlay.WriteSaveData=False".into(),
   "Dolphin.NetPlay.SyncCodes=True".into(),"Dolphin.NetPlay.StrictSettingsSync=True".into(),
   "Dolphin.NetPlay.UseIndex=False".into(),"Dolphin.Display.RenderToMain=False".into(),
-  "Dolphin.Analytics.PermissionAsked=True".into(),
+  "Dolphin.Analytics.PermissionAsked=True".into(),"Dolphin.Interface.SkipNKitWarning=True".into(),
   format!("Dolphin.NetPlay.Nickname={nickname}"),format!("Dolphin.NetPlay.TraversalChoice={connection}"),
   format!("Dolphin.NetPlay.ConnectPort={port}"),format!("Dolphin.NetPlay.HostPort={port}"),
  ];

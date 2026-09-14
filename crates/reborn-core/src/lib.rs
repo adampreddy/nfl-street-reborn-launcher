@@ -62,6 +62,7 @@ pub mod game_image;
 pub mod game_identity;
 pub mod game_import;
 pub mod game_patch;
+pub mod gamecube_controls;
 pub mod identity;
 pub mod ini;
 pub mod inventory;

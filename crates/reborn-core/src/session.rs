@@ -762,6 +762,27 @@ impl Session {
         );
 
         }
+
+        // The GameCube profile plays the game the GameCube way: the disc's
+        // in-match X/B swap is switched off for that player through Dolphin's
+        // per-game patch list, and switched back on for every other profile.
+        // Offline game only; see crate::gamecube_controls for the netplay rule.
+        {
+            let wanted = crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
+            let mut ids = vec!["GN7E69", req.build.game_id()];
+            ids.sort();
+            ids.dedup();
+            let applied = crate::gamecube_controls::apply(&user_dir, &ids, wanted)?;
+            for path in applied.files_written {
+                tracing::info!(
+                    "gamecube controls: {} {}",
+                    if applied.carried { "no X/B swap written to" } else { "disc behaviour restored in" },
+                    path.display()
+                );
+                written.keys_set += 1;
+                written.files.push(path);
+            }
+        }
         // Ask the runtime that is about to be launched. The built in scan sees
         // XInput only, which on a real machine misses an entire backend.
         let scratch = platform.paths.data_root()?.join(DataDir::Cache.relative());

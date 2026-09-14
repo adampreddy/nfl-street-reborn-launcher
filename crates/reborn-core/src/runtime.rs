@@ -373,18 +373,25 @@ impl Launcher {
         // -u is a portable user directory, so the launcher's generated config
         // is the one that applies and a system-wide Dolphin install is left
         // alone. -e boots the image directly, with no game list in between.
-        let mut args: Vec<OsString> = vec![
+        //
+        // -b is batch mode: no Dolphin window behind the game, and the process
+        // ends when the game does. It is passed on every launch, windowed or
+        // not. It used to be passed only in fullscreen, and that is how a
+        // player could close their game and still have Reborn Dolphin running:
+        // stopping emulation in a windowed session dropped them back to
+        // Dolphin's own main window instead of ending the process, so the
+        // launcher went on reporting a session in progress and every settings
+        // write was refused with `CLOSE_EMULATOR_FIRST` until they found that
+        // window and closed it. Whether the game is fullscreen is a
+        // Dolphin.ini key (`[Display] Fullscreen`, written by
+        // `ConfigGenerator`), never this flag.
+        vec![
             "-u".into(),
             config.user_dir.clone().into_os_string(),
             "-e".into(),
             config.game_path.clone().into_os_string(),
-        ];
-
-        if config.fullscreen {
-            args.push("-b".into());
-        }
-
-        args
+            "-b".into(),
+        ]
     }
 
     /// Environment for the child process.
@@ -683,10 +690,28 @@ mod tests {
         let forced = ConfigGenerator::overlays(&cfg);
         let seeded = ConfigGenerator::seeded_overlays();
 
-        // Quiet logging is a default, and a tester who turns logging on keeps it.
-        assert_eq!(seeded["Logger.ini"]["Options"]["WriteToFile"], "False");
-        assert_eq!(seeded["Logger.ini"]["Options"]["Verbosity"], "1");
-        assert!(forced["Logger.ini"].is_empty(), "nothing about logging is forced");
+        // Quiet logging is FORCED, not seeded, since 2026-09-13.
+        //
+        // This assertion used to read the other way, and it was wrong in the
+        // way that matters: it pinned the value the fix needed to change, so
+        // the suite stayed green while every install shipped with Dolphin's
+        // file logger on at Verbosity 4. Seeding writes only where a key is
+        // ABSENT, and the freeze instrumentation had already set all four
+        // Logger keys on every machine that ran it, so the seed reached none
+        // of them. Measured on the dev install the day this was found:
+        // dolphin.log 21.3 MB, 154,693 lines, one synchronous write per line
+        // on the emulation thread, worst where the game is busiest.
+        //
+        // "A tester who turns logging on keeps it" was the intent, and it is
+        // not worth a shipped build writing a log nobody reads. If a tester
+        // needs logging, the launcher should offer it as a control rather
+        // than leave it on for everyone.
+        assert!(
+            seeded.get("Logger.ini").is_none_or(|f| f.is_empty()),
+            "logging is locked now, so nothing about it is merely seeded",
+        );
+        assert_eq!(forced["Logger.ini"]["Options"]["WriteToFile"], "False");
+        assert_eq!(forced["Logger.ini"]["Options"]["Verbosity"], "1");
 
         // The modder's switches and the mipmap cost are the player's now.
         for (section, key) in [("Settings","DumpTextures"),("Settings","DumpBaseTextures"),("Enhancements","ArbitraryMipmapDetection")] {
@@ -728,6 +753,29 @@ mod tests {
             joined.iter().any(|a| a.ends_with("NSR.iso")),
             "the image must be booted directly, not chosen from a game list: {joined:?}"
         );
+    }
+
+    /// Stopping the game must end the process, whether or not it was
+    /// fullscreen.
+    ///
+    /// Batch mode used to be tied to `config.fullscreen`. A windowed session
+    /// therefore returned the player to Dolphin's own main window when they
+    /// stopped the game: Reborn Dolphin stayed running, the launcher went on
+    /// waiting on it and reporting a session in progress, and the Settings
+    /// page refused every write with [`CLOSE_EMULATOR_FIRST`] until the player
+    /// found that window and closed it.
+    #[test]
+    fn every_launch_is_batch_mode_so_closing_the_game_closes_the_emulator() {
+        for fullscreen in [true, false] {
+            let mut c = config();
+            c.fullscreen = fullscreen;
+            let args: Vec<String> = Launcher::args(&c).iter().map(|a| a.to_string_lossy().into()).collect();
+            assert!(
+                args.contains(&"-b".to_string()),
+                "a {} launch left Dolphin's own window behind the game: {args:?}",
+                if fullscreen { "fullscreen" } else { "windowed" }
+            );
+        }
     }
 
     /// The single most important thing this module must not do.
