@@ -149,9 +149,40 @@ fn matches_runtime(exe: &Path, entries: &[Entry], mut query: impl FnMut(u32) -> 
     Ok(false)
 }
 
+/// Whether this exact program file is held the way Windows holds a running
+/// program's image.
+///
+/// The fallback for a candidate this launcher is not allowed to inspect.
+/// `QueryFullProcessImageNameW` needs PROCESS_QUERY_LIMITED_INFORMATION, and a
+/// process at a higher integrity level or under another account refuses it, so
+/// a single unreadable process named `Dolphin.exe` used to turn the whole
+/// answer into an error. That error is not neutral: the Settings page goes
+/// read only on it and every write on it fails, which is the same dead end as
+/// a false "close Dolphin first" (Adam's launcher log, 2026-09-13T08:05Z, pid
+/// 11516, "Access is denied"). Windows maps a running image with no write
+/// sharing, so asking for write access to this one file answers the question
+/// that matters, about this runtime only, with no process rights at all.
+/// Nothing is written: the handle is opened and dropped, and the open neither
+/// creates nor truncates.
+fn image_in_use(exe: &Path) -> io::Result<bool> {
+    match std::fs::OpenOptions::new().write(true).open(exe) {
+        Ok(_) => Ok(false),
+        Err(error) if error.raw_os_error()==Some(ERROR_SHARING_VIOLATION as i32) => Ok(true),
+        // A read-only file, or one this account may not write, says nothing
+        // either way. The caller keeps the denial it already had.
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn is_running(exe: &Path) -> io::Result<bool> {
     let entries=entries_with_fallback(snapshot,tasklist)?;
-    matches_runtime(exe,&entries,image_path)
+    match matches_runtime(exe,&entries,image_path) {
+        Ok(found) => Ok(found),
+        Err(denied) => {
+            tracing::warn!(%denied,"A candidate Dolphin could not be inspected; asking the image file instead");
+            image_in_use(exe).map_err(|_| denied)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +219,29 @@ mod tests {
             assert!(parse_tasklist(text.as_bytes()).is_err());
         }
     }
+    /// A process this launcher may not inspect must not cost the player their
+    /// Settings page. The file the runtime runs from is evidence no privilege
+    /// is needed to read.
+    #[test]
+    fn an_uninspectable_candidate_falls_back_to_the_image_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir=tempfile::tempdir().unwrap();
+        let exe=dir.path().join("Dolphin.exe");
+        std::fs::write(&exe,b"MZ").unwrap();
+        assert!(!image_in_use(&exe).unwrap(),"a file nothing holds is not a running program");
+        let held=std::fs::OpenOptions::new().write(true).share_mode(0).open(&exe).unwrap();
+        assert!(image_in_use(&exe).unwrap(),"a file held the way Windows holds a running image reads as in use");
+        drop(held);
+        assert!(!image_in_use(&exe).unwrap(),"the lock must not outlive the holder");
+        assert_eq!(std::fs::read(&exe).unwrap(),b"MZ","the probe must never write to the program it asks about");
+        // The real thing, both ways round: this test process is running from
+        // its own image, and a denied candidate that is not this runtime
+        // leaves the runtime editable.
+        assert!(image_in_use(&std::env::current_exe().unwrap()).unwrap());
+        assert!(matches_runtime(&exe,&[row(10,"Dolphin.exe")],|_|denied()).is_err());
+        assert!(!is_running(&exe).unwrap(),"another account's Dolphin is not this one");
+    }
+
     #[test]
     fn real_fallback_listing_and_limited_query_find_this_process() {
         let exe=std::env::current_exe().unwrap();
