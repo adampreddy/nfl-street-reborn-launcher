@@ -355,6 +355,14 @@ const FEATURES = [
         cmd: "settings_set_path",
         desc: "Record a path on disk, where the shortcuts read it. Empty clears it",
         write: true,
+        // Pinned false, the way launch pins leagueMatch: the key has to be
+        // present for serde even to read it as absent, and this is the one
+        // argument the harness must never vary. True is the player pressing
+        // "Play it anyway" on a disc that is not a Reborn build, and that
+        // choice belongs to the confirmed dialog on the Settings page, not to
+        // a developer box. False here means an unconverted image comes back as
+        // the choice to make, which is what every caller but that dialog gets.
+        args: () => ({ acknowledgeUnverified: false }),
         inputs: [
           { key: "which", placeholder: "runtime|game|user_dir" },
           { key: "value", placeholder: "path, or empty to clear" },
