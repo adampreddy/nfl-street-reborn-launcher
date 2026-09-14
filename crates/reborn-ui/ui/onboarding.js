@@ -292,7 +292,18 @@ function installationPanel() {
         const value = await call("pick_path", {kind});
         if (value) {
           if(which === "legacy_root") await call("setup_use_existing", {root:value});
-          else await call("settings_set_path", {which, value});
+          else {
+            const stored = await call("settings_set_path", {which, value});
+            // Nothing was stored, because the file is NFL Street 2 but not a
+            // Reborn build. The wizard has its own repair one screen away, so
+            // this says what is wrong rather than offering the escape hatch
+            // here: the acknowledgment belongs to the Settings page, behind a
+            // choice the player is actually shown.
+            if (stored && stored.unverified) {
+              panel.appendChild(el("div", "refusal", stored.unverified.headline + " " + stored.unverified.detail));
+              return;
+            }
+          }
           try { localStorage.setItem("h:" + (which === "legacy_root" ? "legacyRoot" : which), value); } catch (_) {}
           pending = {};
         }
@@ -318,6 +329,11 @@ export const outcomeWords=(outcome,label,note,patched)=>{
     case 'different-game':return ['This is not NFL Street 2',`${note?note+' ':''}Reborn's roster, textures and updates do not apply to it.`];
     case 'unreadable':return ['Your game file could not be read',note||'Choose an NFL Street 2 (USA) disc image.'];
     case 'unknown':case 'no-chain':return ["Your game file isn't NFL Street Reborn",'Reborn could not confirm this disc is one of its builds, so it was left exactly as it is. Repair it before playing.'];
+    // Verified as a Reborn build, but the update step could not run. That is a
+    // patch failure, not a verdict on the disc, and saying "isn't NFL Street
+    // Reborn" about a disc Reborn just recognized is how three surfaces ended
+    // up disagreeing about one file.
+    case 'not-updated':return ['Your game is ready',`This is an NFL Street Reborn build. The update to the newest version could not be applied right now, and the launcher will try again after setup.${note?' '+note:''}`];
     // Recovery: the complete game came from Reborn itself, so there is no
     // disc of the player's to report on.
     case 'downloaded':return ['NFL Street Reborn is ready','The complete Reborn game was downloaded and verified. Continue to your controller.'];
@@ -413,7 +429,12 @@ const SCREENS = {
       // The two endings a player cannot go on from: a disc Reborn could not
       // convert, and one it could not read. Nothing else, and in particular
       // never a disc that converted.
-      const blocked=()=>{try{return ['unconverted','unreadable'].includes(localStorage.getItem('setup:outcome:'+pending.image)||'');}catch(_){return false;}};
+      // A disc Reborn could not end up vouching for. 'unknown' and 'no-chain'
+      // join the list now that a genuine Reborn build whose patch step merely
+      // refused is reported as 'not-updated' instead: what is left on these
+      // two is a disc that is not a Reborn build, which is exactly what the
+      // recovery download exists for.
+      const blocked=()=>{try{return ['unconverted','unreadable','unknown','no-chain'].includes(localStorage.getItem('setup:outcome:'+pending.image)||'');}catch(_){return false;}};
       const shipped=installInfo?.shipped_game||null;
       const status=el('p','import-status',pending.image?(isShipped()?'NFL Street Reborn is ready':storedWords()[0]):shipped?'Preparing NFL Street Reborn…':'Your original file stays untouched.');status.setAttribute('role','status');
       const progress=el('progress','patch-progress');progress.max=100;progress.hidden=!pending.image&&!shipped;if(pending.image)progress.value=100;

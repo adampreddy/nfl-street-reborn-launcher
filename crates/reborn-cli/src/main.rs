@@ -1225,6 +1225,48 @@ fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> 
     }
 }
 
+/// Whether this image may boot from the command line, and whether Reborn may
+/// treat it as its own.
+///
+/// The window's `may_play_before_boot`, transcribed onto the paths a console
+/// build has: `game_identity::find_tool` looks beside the installed program
+/// and beside this executable for the bundled DolphinTool, and the standing
+/// acknowledgment is read from the same settings file the window writes it to,
+/// so a player who took "Play it anyway" in Settings is not asked twice.
+///
+/// A tool it cannot find, or a disc it cannot read, comes back `Unreadable`,
+/// which is not `Unconverted`, so it boots with Reborn's art withheld rather
+/// than refusing. That is the fail-safe direction: a developer still gets
+/// their game, and nothing of Reborn's is painted on an image nothing checked.
+#[allow(clippy::type_complexity)]
+fn may_play_before_boot(
+    platform: &Platform,
+    image: &std::path::Path,
+) -> reborn_core::Result<std::result::Result<bool, &'static str>> {
+    let here = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    let mut extra = Vec::new();
+    if let Some(dir) = here {
+        extra.push(dir.join(reborn_core::game_patch::BUNDLE_DIR));
+        extra.push(dir);
+    }
+    let tool = reborn_core::game_identity::find_tool(platform, &extra).unwrap_or_default();
+    let data = platform.paths.data_root()?;
+    let verdict = reborn_core::game_identity::identify(&data, &tool, image);
+    let settings_file = reborn_core::settings::settings_path(platform)?;
+    let saved = reborn_core::settings::Settings::load(&settings_file)?;
+    let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
+        && match reborn_core::library::hash_file(image) {
+            Ok(h) => saved.ack_matches(h.as_str()),
+            Err(e) => {
+                eprintln!("could not hash {} to check the acknowledgment: {e}", image.display());
+                false
+            }
+        };
+    Ok(reborn_core::game_identity::may_play(&verdict, acknowledged))
+}
+
 /// Boot the game and stay with it until it exits.
 ///
 /// This is Play Now with no UI in front of it. It does the same three things
@@ -1251,7 +1293,7 @@ fn play(
         }
     };
 
-    let req = LaunchRequest {
+    let mut req = LaunchRequest {
         runtime_exe: runtime.to_path_buf(),
         game_path: iso.to_path_buf(),
         graphics,
@@ -1260,7 +1302,10 @@ fn play(
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
         league_match: false,
-        textures_allowed: true,
+        // Answered below, by the gate, before anything boots. `Session::prepare`
+        // never reads this field (only `Session::run` composes the texture
+        // tree), so a dry run does not need the whole-disc hash the gate costs.
+        textures_allowed: false,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same
@@ -1342,6 +1387,23 @@ fn play(
         println!();
         println!("Dry run. Nothing was launched.");
         return Ok(OK);
+    }
+
+    // The same gate the window applies, for the same reason, and after the dry
+    // run so that writing configuration does not pay for a whole-disc hash.
+    // This subcommand ships in the product: it built its request with
+    // `textures_allowed: true` and asked nothing, so a disc the Play button
+    // refuses booted from here wearing Reborn's faces over somebody else's
+    // roster. `may_play` is the window's own rule, imported, not restated.
+    req.textures_allowed = match may_play_before_boot(platform, iso)? {
+        Ok(verified) => verified,
+        Err(why) => {
+            eprintln!("{why}");
+            return Ok(PROBLEM);
+        }
+    };
+    if !req.textures_allowed {
+        println!("Reborn's textures are withheld: this image is not a build Reborn verified as its own.");
     }
 
     println!("Starting. This process stays until the game exits.");
@@ -5053,6 +5115,41 @@ fn content(platform: &Platform, apply: bool) -> reborn_core::Result<std::process
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// The same stripper the window's guard tests use: comment lines out,
+    /// so prose naming a call can never stand in for the call.
+    fn code_only(body: &str) -> String {
+        body.lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `rebornctl play` is a shipped boot path and has to ask what the disc is.
+    ///
+    /// It built a `LaunchRequest` with `textures_allowed: true` and verified
+    /// nothing, so a disc the Play button refuses booted from here wearing
+    /// Reborn's faces over somebody else's roster. The window's three boot
+    /// paths are pinned by a test of exactly this shape; this is the fourth.
+    #[test]
+    fn play_asks_what_the_disc_is_before_it_boots_it() {
+        let src = include_str!("main.rs");
+        let from = src.find("\nfn play(\n").expect("fn play is not in this file any more");
+        let rest = &src[from..];
+        let to = rest
+            .find("Session::run(")
+            .expect("fn play no longer starts the session, or was reordered");
+        let body = code_only(&rest[..to]);
+        assert!(
+            body.contains("may_play_before_boot"),
+            "rebornctl play boots the game without asking whether the disc is a Reborn build"
+        );
+        assert!(
+            !body.contains("textures_allowed: true"),
+            "rebornctl play still claims an unverified disc as Reborn's own"
+        );
+    }
 
     /// Every subcommand that writes, by the path a person types.
     ///

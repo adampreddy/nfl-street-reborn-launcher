@@ -629,6 +629,45 @@ type GameVerdictKey = (PathBuf, u64, std::time::SystemTime);
 /// argument, and `compute` as a closure, rather than owning a `Verdict`
 /// static itself, so this is provable against a fake `compute` and does not
 /// need a multi-gigabyte fixture to test.
+/// The one cache, shared by every reader.
+///
+/// It used to be a `static` inside `launch_check`, which meant `launch_check`
+/// was the only caller that could ever hit it. `may_play_before_boot` ran
+/// `identify` fresh, so every Play press paid a SHA-256 over a 1.46 GB file
+/// before the emulator started, for an answer the Play page had computed
+/// moments earlier off the same bytes. Hoisted here, the Play page's read,
+/// the launch gate, and the texture decision all share one answer per version
+/// of one file.
+static GAME_VERDICT_CACHE: std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>> =
+    std::sync::Mutex::new(None);
+
+/// What the image at `image` is, through [`GAME_VERDICT_CACHE`].
+///
+/// The cache key is the path, the size and the modified time, so a repair, a
+/// swapped disc or a fresh install invalidates it immediately and this can
+/// never answer with bytes it has not verified for the file now on disk.
+fn verdict_now(p: &Platform, image: &Path) -> Result<reborn_core::game_identity::Verdict, String> {
+    let tool = std::env::current_exe()
+        .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
+        .parent()
+        .unwrap()
+        .join("game-import/DolphinTool.exe");
+    let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+    Ok(match std::fs::metadata(image).and_then(|m| Ok((m.len(), m.modified()?))) {
+        Ok((len, modified)) => cached_game_verdict(
+            &GAME_VERDICT_CACHE,
+            (image.to_path_buf(), len, modified),
+            || reborn_core::game_identity::identify(&data, &tool, image),
+        ),
+        // No metadata means no cache key. Ask anyway: a missing key is a
+        // reason to work harder, never a reason to skip the question.
+        Err(e) => {
+            eprintln!("could not read {} to key the verdict cache: {e}", image.display());
+            reborn_core::game_identity::identify(&data, &tool, image)
+        }
+    })
+}
+
 fn cached_game_verdict(
     cache: &std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>>,
     key: GameVerdictKey,
@@ -668,8 +707,6 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     .parent()
                     .unwrap()
                     .join("game-import/DolphinTool.exe");
-                static GAME_VERDICT_CACHE: std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>> =
-                    std::sync::Mutex::new(None);
                 let verdict = match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
                     Ok((len, modified)) => cached_game_verdict(
                         &GAME_VERDICT_CACHE,
@@ -777,20 +814,55 @@ impl Drop for LaunchGuard {
 #[tauri::command]
 fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
+/// Tier 2's wording, in the one place every surface reads it from.
+///
+/// The spec gives these two sentences verbatim, and they are a fault to
+/// repair rather than a preference somebody chose. Never the word "custom",
+/// on any surface, for this state.
+const UNVERIFIED_GAME_HEADLINE: &str = "Your game file isn't NFL Street Reborn.";
+const UNVERIFIED_GAME_DETAIL: &str = "This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc.";
+/// The primary action. Repair comes first everywhere it is offered.
+const REPAIR_ACTION: &str = "Repair my game";
+/// The escape hatch. Secondary, never the default, never a mode.
+const PLAY_ANYWAY_ACTION: &str = "Play it anyway";
+
 /// Shown when Play is pressed on an NFL Street 2 disc that is not a Reborn
 /// build. Worded as the fault it almost always is, not as a preference.
-const UNVERIFIED_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc. Repair it from the Settings page.";
+///
+/// Re-exported from `reborn_core::game_identity` rather than declared here:
+/// `rebornctl play` boots the game too and has to refuse with the same words.
+use reborn_core::game_identity::UNVERIFIED_GAME;
+
+/// Shown when setup is handed a disc that is not a Reborn build. Setup has a
+/// real repair one button away, so it names it rather than sending anybody to
+/// another page.
+const UNVERIFIED_SETUP_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. Reborn can download the complete game for you, or you can choose a different file.";
+
+/// Whether the caller has a confirmed Tier 2 choice standing behind it.
+///
+/// An enum rather than a `bool` on purpose. `record_verdict` used to write the
+/// acknowledgment the instant any caller classified an image as `Unconverted`,
+/// with nothing asked and nothing shown, which enrolled a player in an escape
+/// hatch they were never offered and made the launch gate's refusal
+/// unreachable on that route. A named value cannot be passed by accident the
+/// way a positional `true` can, and it forces every new caller to state which
+/// of the two it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    /// Nobody has been asked. The only value a caller may use by default.
+    NotAsked,
+    /// The player was shown the Tier 2 choice, with Repair primary, and
+    /// pressed "Play it anyway" for this exact image.
+    PlayItAnyway,
+}
 
 /// Whether Play may boot this image, and whether Reborn may treat it as its
-/// own. Split out of `launch` so the fail-safe direction is pinned by tests:
-/// an inverted condition here would otherwise compile and pass everything
-/// while letting an unverified disc boot wearing Reborn's faces.
-fn may_play(verdict: &reborn_core::game_identity::Verdict, acknowledged: bool) -> Result<bool, &'static str> {
-    match verdict {
-        reborn_core::game_identity::Verdict::Unconverted if !acknowledged => Err(UNVERIFIED_GAME),
-        v => Ok(v.is_reborn()),
-    }
-}
+/// own. The rule itself lives in `reborn_core::game_identity` so that
+/// `rebornctl play`, which also ships and also boots the game, applies the
+/// same one. The fail-safe direction is pinned by tests in both crates: an
+/// inverted condition would otherwise compile and pass everything while
+/// letting an unverified disc boot wearing Reborn's faces.
+use reborn_core::game_identity::may_play;
 
 /// What choosing this image on the Settings page should do. Split out of
 /// `settings_set_path` so the decision is pinned by tests: silently widening
@@ -828,9 +900,17 @@ fn record_verdict(
     settings_file: &Path,
     image: &Path,
     verdict: &reborn_core::game_identity::Verdict,
+    consent: Consent,
 ) -> Result<(), String> {
     match path_choice(verdict) {
         PathChoice::Refuse(reason) => Err(reason),
+        // Nobody asked, so nobody consented. The acknowledgment is the
+        // player's deliberate escape hatch and it is only ever written on the
+        // call a confirmed dialog makes; every other caller is refused with
+        // the fault, which is what sends them to a repair.
+        PathChoice::Acknowledge if consent == Consent::NotAsked => {
+            Err(UNVERIFIED_SETUP_GAME.to_string())
+        }
         PathChoice::Acknowledge => {
             let sha = reborn_core::library::hash_file(image)
                 .map(|h| h.as_str().to_string())
@@ -860,21 +940,31 @@ fn record_verdict(
 /// them from holding the same eight lines three times, quietly drifting
 /// apart the next time one of them changes.
 fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<bool, String> {
-    let tool = std::env::current_exe()
-        .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
-        .parent()
-        .unwrap()
-        .join("game-import/DolphinTool.exe");
-    let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
-    let verdict = reborn_core::game_identity::identify(&data, &tool, game_path);
+    // Through the cache. `identify` answers by hashing the whole disc image,
+    // and this runs on every single Play press, on a file the Play page has
+    // usually just asked about. The key is path, size and modified time, so
+    // a repaired or swapped disc still pays the hash exactly once.
+    let verdict = verdict_now(p, game_path)?;
     let settings_file =
         reborn_core::settings::settings_path(p).map_err(|e| e.player_message().to_string())?;
     let saved = reborn_core::settings::Settings::load(&settings_file)
         .map_err(|e| e.player_message().to_string())?;
     let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
-        && reborn_core::library::hash_file(game_path)
-            .map(|h| saved.ack_matches(h.as_str()))
-            .unwrap_or(false);
+        && match reborn_core::library::hash_file(game_path) {
+            Ok(h) => saved.ack_matches(h.as_str()),
+            // Said out loud rather than swallowed. A player stuck in a repair
+            // loop reports "it keeps telling me to repair", and without this
+            // line there is nothing anywhere that distinguishes "the disc is
+            // genuinely not acknowledged" from "the acknowledgment could not
+            // be checked because the file would not read".
+            Err(e) => {
+                eprintln!(
+                    "could not hash {} to check the unverified-game acknowledgment: {e}",
+                    game_path.display()
+                );
+                false
+            }
+        };
     may_play(&verdict, acknowledged).map_err(str::to_string)
 }
 
@@ -1627,6 +1717,7 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
                 TreeStep::LeftAlone => ("left_alone", 0, 0),
+                TreeStep::Withheld { .. } => ("withheld", 0, 0),
                 TreeStep::AlreadyCurrent => ("already_current", 0, 0),
                 TreeStep::Rebuilt {
                     entries, overlaid, ..
@@ -1634,7 +1725,11 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             };
             // The composed tree IS the game's texture folder now; "link"
             // stays in the view for the harness page that shows it.
-            let link = if matches!(r.tree, TreeStep::LeftAlone) { "left_alone" } else { "composed_in_user_folder" };
+            let link = match r.tree {
+                TreeStep::LeftAlone => "left_alone",
+                TreeStep::Withheld { .. } => "withheld",
+                _ => "composed_in_user_folder",
+            };
             let link_at = r.composed_root.clone();
             let moved_aside = r.moved_aside.clone();
             ModSyncView {
@@ -1679,10 +1774,66 @@ pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Resul
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
-    req.manage_user_texture_folder = preferences.manage_texture_folder.unwrap_or(true);
+    // The same two questions a launch asks, in the same order, and for the
+    // same reason. This is not a launch, but it composes into exactly the
+    // folder a launch boots against, so a sync that only read the preference
+    // would put the pack back on an unverified disc the moment the player
+    // toggled a mod or switched a controls profile, and Play would then find
+    // it already there.
+    req.texture_policy = texture_policy_now(p, runtime_hint, &preferences);
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
     Ok(sync_view(&game, outcome))
+}
+
+/// What the texture folder policy is right now, outside a launch.
+///
+/// `sync_active_now` runs from the Mods page, the pack toggle and the
+/// controls-profile apply. All three compose into the emulator's user folder,
+/// which is the folder Play boots against, so all three have to answer the
+/// question Play answers: is the image this machine would boot one Reborn
+/// verified as its own.
+///
+/// Fails toward withholding. An image the launcher cannot resolve or cannot
+/// read is not an image it can vouch for, and the cost of being wrong that
+/// way is a rebuild on the next successful launch. The cost of being wrong
+/// the other way is Reborn's faces on somebody else's roster, which is the
+/// report this whole law comes from.
+fn texture_policy_now(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    preferences: &reborn_core::settings::Settings,
+) -> reborn_core::mods::TexturePolicy {
+    let wants_managed = preferences.manage_texture_folder.unwrap_or(true);
+    let image = find_runtime_and_game_for(
+        p,
+        runtime_hint,
+        None,
+        default_legacy_root(p).as_deref(),
+        preferences.user_dir.as_deref(),
+    )
+    .map(|(_, image)| image)
+    // A missing emulator stops the search above without saying anything
+    // about the disc. The saved path is what a launch would boot once the
+    // emulator is back, so it is the honest thing to judge.
+    .ok()
+    .or_else(|| preferences.game_path.clone().filter(|g| g.is_file()));
+    let verified = match image {
+        Some(image) => match verdict_now(p, &image) {
+            Ok(verdict) => verdict.is_reborn(),
+            Err(why) => {
+                eprintln!("could not identify {}, so Reborn's textures are withheld: {why}", image.display());
+                false
+            }
+        },
+        None => {
+            eprintln!("no game image resolved, so Reborn's textures are withheld until one is");
+            false
+        }
+    };
+    // The decision itself is the launch's, not a second copy of it: one rule,
+    // one place, unit-tested in `reborn_core::session`.
+    reborn_core::session::texture_policy_for_launch(verified, wants_managed)
 }
 
 /// Make the game load what activation.json says.
@@ -2857,7 +3008,12 @@ async fn onboarding_confirm_game(
         let tool = std::env::current_exe().map_err(|e| e.to_string())?.parent().unwrap()
             .join("game-import/DolphinTool.exe");
         let verdict = reborn_core::game_identity::identify(&data, &tool, &game);
-        record_verdict(&file, &game, &verdict)?;
+        // `Consent::NotAsked`, always. This step is a Continue button at the
+        // end of the wizard, and a Continue button is not consent to play a
+        // disc Reborn could not convert. An unconverted image is refused here
+        // and the player is sent back to the import screen, which has the
+        // download that actually repairs it.
+        record_verdict(&file, &game, &verdict, Consent::NotAsked)?;
         // Persist before advancing so a failed save leaves this step available to retry.
         reborn_core::settings::set_path(&file, reborn_core::settings::PathSetting::Game, &game.to_string_lossy())
             .map_err(|e| e.to_string())?;
@@ -4174,8 +4330,40 @@ async fn pick_paths(kind: String) -> Result<Vec<String>, String> {
 struct PathSetView {
     which: String,
     /// What was stored, cleaned. Absent when the box was emptied, which
-    /// means the launcher finds it again.
+    /// means the launcher finds it again, and absent when `unverified` is
+    /// present, because then nothing was stored at all.
     value: Option<String>,
+    /// Present when the chosen image is NFL Street 2 but not a Reborn build,
+    /// and nothing was written. The page owes the player the Tier 2 choice
+    /// before anything is: Repair first, "Play it anyway" second.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unverified: Option<UnverifiedGameView>,
+}
+
+/// The Tier 2 choice, as the page has to draw it.
+///
+/// The words come from the backend rather than from the page so that the
+/// launch refusal, the Play badge and this dialog cannot drift into three
+/// different descriptions of one disc.
+#[derive(Debug, Serialize)]
+struct UnverifiedGameView {
+    headline: &'static str,
+    detail: &'static str,
+    /// The primary action's label. Repair is always primary.
+    repair: &'static str,
+    /// The secondary action's label. An escape hatch, never a mode.
+    play_anyway: &'static str,
+}
+
+impl UnverifiedGameView {
+    fn new() -> Self {
+        Self {
+            headline: UNVERIFIED_GAME_HEADLINE,
+            detail: UNVERIFIED_GAME_DETAIL,
+            repair: REPAIR_ACTION,
+            play_anyway: PLAY_ANYWAY_ACTION,
+        }
+    }
 }
 
 /// Record one of the three paths a person can override.
@@ -4183,8 +4371,17 @@ struct PathSetView {
 /// Kept on disk rather than in the window alone, so the Play and files
 /// shortcuts resolve the same emulator, image and folder the Play button
 /// does. An empty value clears it.
+///
+/// `acknowledge_unverified` is set ONLY by a confirmed Tier 2 dialog that
+/// showed the player the choice and took "Play it anyway". It is absent
+/// everywhere else, and an unconverted image is then handed back as a choice
+/// to make rather than quietly acknowledged.
 #[tauri::command]
-async fn settings_set_path(which: String, value: String) -> Result<PathSetView, String> {
+async fn settings_set_path(
+    which: String,
+    value: String,
+    acknowledge_unverified: Option<bool>,
+) -> Result<PathSetView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use reborn_core::settings::PathSetting;
         let setting = match which.as_str() {
@@ -4202,10 +4399,31 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
                 .join("game-import/DolphinTool.exe");
             let image = reborn_core::session::user_path(value.trim());
             let verdict = reborn_core::game_identity::identify(&data, &tool, &image);
-            record_verdict(&file, &image, &verdict)?;
+            // The choice is the player's to make, so it is put to them before
+            // anything is written. Answering here without asking is how a
+            // player who simply pointed the box at their own disc ended up
+            // enrolled in an escape hatch nobody had offered them, and it is
+            // also what made the launch gate's refusal unreachable on this
+            // route: the acknowledgment was already on file by the time Play
+            // asked about it.
+            let consent = if acknowledge_unverified == Some(true) {
+                Consent::PlayItAnyway
+            } else {
+                Consent::NotAsked
+            };
+            if consent == Consent::NotAsked
+                && matches!(path_choice(&verdict), PathChoice::Acknowledge)
+            {
+                return Ok(PathSetView {
+                    which,
+                    value: None,
+                    unverified: Some(UnverifiedGameView::new()),
+                });
+            }
+            record_verdict(&file, &image, &verdict, consent)?;
         }
         let stored = reborn_core::settings::set_path(&file, setting, &value).map_err(|e| e.to_string())?;
-        Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()) })
+        Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()), unverified: None })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6222,6 +6440,148 @@ mod tests {
     /// (or deleting the `Refuse` arm) compiles and passes everything else
     /// while quietly letting an image Reborn cannot vouch for become the
     /// booted game.
+    /// The Tier 2 acknowledgment is only ever written by a confirmed choice.
+    ///
+    /// `record_verdict` used to write `unverified_game_ack` the instant any
+    /// caller classified an image as `Unconverted`, with nothing asked and
+    /// nothing shown. A player who simply pointed the Settings box at their
+    /// own disc was enrolled in an escape hatch they were never offered, and
+    /// the launch gate's refusal became unreachable on that route, because the
+    /// acknowledgment was already on file by the time Play looked.
+    #[test]
+    fn an_unconverted_image_is_never_acknowledged_without_being_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let image = dir.path().join("theirs.iso");
+        std::fs::write(&image, b"NFL Street 2, but somebody else's").unwrap();
+        let verdict = reborn_core::game_identity::Verdict::Unconverted;
+
+        let refused = record_verdict(&file, &image, &verdict, Consent::NotAsked);
+        assert!(
+            refused.is_err(),
+            "an unconverted image was accepted with nobody asked: {refused:?}"
+        );
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file).unwrap().unverified_game_ack,
+            None,
+            "the acknowledgment was written without the player ever being offered the choice"
+        );
+
+        record_verdict(&file, &image, &verdict, Consent::PlayItAnyway)
+            .expect("a confirmed choice must be honoured");
+        let sha = reborn_core::library::hash_file(&image).unwrap();
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file)
+                .unwrap()
+                .unverified_game_ack
+                .as_deref(),
+            Some(sha.as_str()),
+            "a confirmed choice must be recorded against this exact image"
+        );
+    }
+
+    /// Consent cannot manufacture an acknowledgment for a verdict that has
+    /// nothing to acknowledge, and cannot talk past a refusal.
+    #[test]
+    fn consent_only_applies_to_the_verdict_that_asks_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let image = dir.path().join("reborn.iso");
+        std::fs::write(&image, b"a Reborn build").unwrap();
+
+        record_verdict(
+            &file,
+            &image,
+            &reborn_core::game_identity::Verdict::RebornBuild {
+                label: "3.0.2".to_string(),
+                at_head: true,
+            },
+            Consent::PlayItAnyway,
+        )
+        .unwrap();
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file).unwrap().unverified_game_ack,
+            None,
+            "a build Reborn recognizes must never carry an acknowledgment"
+        );
+
+        assert!(
+            record_verdict(
+                &file,
+                &image,
+                &reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() },
+                Consent::PlayItAnyway,
+            )
+            .is_err(),
+            "consent must not talk an unreadable file past the refusal"
+        );
+    }
+
+    /// Exactly one place writes the acknowledgment, and it is the one that
+    /// takes a `Consent`.
+    ///
+    /// Read through `code_only` over all three window source files, so a
+    /// comment mentioning the field cannot stand in for a write of it.
+    ///
+    /// The needle is assembled with `concat!` rather than written out, because
+    /// a test that greps its own source for a literal it contains counts
+    /// itself and can then never reach zero, which is one of the ways the
+    /// guard tests on this branch turned out to be incapable of failing.
+    #[test]
+    fn nothing_but_a_confirmed_choice_writes_the_unverified_acknowledgment() {
+        const GRANT: &str = concat!("unverified_game_ack", " = Some");
+        let writes: usize = [
+            include_str!("main.rs"),
+            include_str!("setup_tools.rs"),
+            include_str!("dolphin_settings.rs"),
+        ]
+        .into_iter()
+        .map(|src| code_only(src).matches(GRANT).count())
+        .sum();
+        assert_eq!(
+            writes, 1,
+            "the Tier 2 acknowledgment must be written in exactly one place, the one that takes a Consent"
+        );
+        assert!(
+            code_only(body_until(
+                include_str!("main.rs"),
+                "\nfn record_verdict(",
+                "\n/// The verdict for an image plus the player's standing acknowledgment",
+            ))
+            .contains("Consent::NotAsked"),
+            "record_verdict must turn the un-asked case away rather than write an acknowledgment"
+        );
+    }
+
+    /// The Tier 2 words the player is shown are the spec's words, and they
+    /// never frame the state as something the player preferred.
+    #[test]
+    fn the_tier_two_choice_reads_as_a_fault_to_repair() {
+        let view = UnverifiedGameView::new();
+        assert_eq!(view.headline, "Your game file isn't NFL Street Reborn.");
+        assert!(view.detail.starts_with("This is NFL Street 2, but not a Reborn build"));
+        assert!(view.detail.contains("setup couldn't convert your disc"));
+        assert_eq!(view.repair, "Repair my game");
+        assert_eq!(view.play_anyway, "Play it anyway");
+        for word in [
+            view.headline,
+            view.detail,
+            view.repair,
+            view.play_anyway,
+            UNVERIFIED_GAME,
+            UNVERIFIED_SETUP_GAME,
+        ] {
+            assert!(
+                !word.to_lowercase().contains("custom"),
+                "this is a fault to repair, never a preference: {word}"
+            );
+            assert!(!word.contains('\u{2014}'), "no em-dashes in player text: {word}");
+        }
+        // The launch refusal and the dialog have to describe one disc.
+        assert!(UNVERIFIED_GAME.starts_with(UNVERIFIED_GAME_HEADLINE));
+        assert!(UNVERIFIED_GAME.contains(UNVERIFIED_GAME_DETAIL));
+    }
+
     #[test]
     fn path_choice_refuses_an_unreadable_image() {
         assert_eq!(
@@ -6336,6 +6696,141 @@ mod tests {
         });
         assert_eq!(third, Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true });
         assert_eq!(calls.get(), 2, "a changed size must be treated as a possibly different file");
+    }
+
+    /// Play does not pay for a full-disc SHA-256 on every press.
+    ///
+    /// `may_play_before_boot` called `identify` uncached, on a 1.46 GB file,
+    /// on every Play, while `cached_game_verdict` sat one function away being
+    /// used by `launch_check` alone. The cache key is path, size and modified
+    /// time, so this cannot answer with bytes it has not verified for the file
+    /// now on disk.
+    ///
+    /// Also pins that the acknowledgment's hash failure is said out loud. It
+    /// was `.unwrap_or(false)`, which turns "the file would not read" into "the
+    /// player never acknowledged it" and makes a repair loop undiagnosable.
+    #[test]
+    fn the_launch_gate_reuses_the_verdict_instead_of_rehashing_the_whole_disc() {
+        let src = include_str!("main.rs");
+        let gate = code_only(body_until(
+            src,
+            "\nfn may_play_before_boot(",
+            "\n/// Start the game and answer when it stops.",
+        ));
+        assert!(
+            gate.contains("verdict_now"),
+            "the launch gate identifies the image without going through the cache"
+        );
+        assert!(
+            !gate.contains("game_identity::identify"),
+            "every Play press pays a full-disc SHA-256 for an answer the Play page already has"
+        );
+        assert!(
+            gate.contains("eprintln!"),
+            "a failure to hash the image for the acknowledgment check is swallowed, so a repair \
+             loop cannot be told apart from a disc nobody acknowledged"
+        );
+        let cached = code_only(body_until(src, "\nfn verdict_now(", "\nfn cached_game_verdict("));
+        assert!(
+            cached.contains("cached_game_verdict"),
+            "verdict_now is not actually a cache, so nothing it fronts is cached"
+        );
+    }
+
+    /// Setup adopts a disc by one rule, whichever screen asked.
+    ///
+    /// `setup_migrate_install` refused an inherited `Unconverted` disc while
+    /// the wizard's review-screen Edit button, one click away, routed the
+    /// identical disc through `setup_import_existing_game` into an
+    /// acknowledgment nobody was asked for. The rule kept is the stricter one,
+    /// `may_adopt`'s: setup never adopts a disc that is not a Reborn build,
+    /// because setup has a real repair (the full download) one button away.
+    #[test]
+    fn setup_never_adopts_a_disc_that_is_not_a_reborn_build() {
+        for (name, body) in [
+            (
+                "setup_import_existing_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_existing_game"),
+            ),
+            (
+                "onboarding_confirm_game",
+                command_body(include_str!("main.rs"), "async fn onboarding_confirm_game"),
+            ),
+        ] {
+            assert!(
+                code_only(body).contains("Consent::NotAsked"),
+                "{name} can still acknowledge a disc that is not a Reborn build without asking anybody"
+            );
+        }
+        assert!(
+            code_only(command_body(
+                include_str!("setup_tools.rs"),
+                "pub async fn setup_migrate_install"
+            ))
+            .contains("may_adopt"),
+            "the migrate door stopped applying the adoption rule"
+        );
+    }
+
+    /// A disc Reborn DID recognize is never accused of not being one.
+    ///
+    /// `patch_to_newest` answering `unknown` or `no-chain` says the patch step
+    /// refused, not that the disc is somebody else's. Passed through unchanged
+    /// it made the wizard render "Your game file isn't NFL Street Reborn" over
+    /// a verified Reborn build, while Continue stayed enabled and the Play
+    /// badge stayed silent: three surfaces disagreeing about one file.
+    #[test]
+    fn a_patch_that_did_not_run_is_reported_as_a_patch_failure() {
+        let import = code_only(command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_import_game",
+        ));
+        assert!(
+            import.contains("\"not-updated\""),
+            "a verified Reborn build whose patch step refused still reports the verdict's own \
+             wording, which the wizard renders as \"Your game file isn't NFL Street Reborn\""
+        );
+        let wizard = include_str!("../ui/onboarding.js");
+        assert!(
+            wizard.contains("case 'not-updated'"),
+            "the wizard has no words for a patch that did not run, so it falls through to success"
+        );
+        assert!(
+            wizard.contains("'unconverted','unreadable','unknown','no-chain'"),
+            "the wizard still lets a disc it could not recognize past Continue with no recovery offered"
+        );
+    }
+
+    /// Every refusal points somewhere that can actually repair the fault.
+    ///
+    /// `UNVERIFIED_GAME` and the Play card's badge both send the player to
+    /// `settings.html#files`, which offered a path box, a Browse button and
+    /// nothing else. The only real repair, `setup_download_reborn_game`, lived
+    /// solely inside the setup wizard, so a refused player reached a dead end.
+    #[test]
+    fn the_page_every_refusal_points_at_can_repair_the_fault() {
+        assert!(
+            UNVERIFIED_GAME.contains("Settings page"),
+            "the launch refusal no longer names where to go"
+        );
+        let home = include_str!("../ui/home.js");
+        assert!(
+            home.contains("settings.html#files"),
+            "the Play badge no longer sends the player to the files page"
+        );
+        let settings = include_str!("../ui/settings.js");
+        assert!(
+            settings.contains("setup_download_reborn_game"),
+            "the page every refusal points at still cannot repair anything"
+        );
+        assert!(
+            settings.contains(UNVERIFIED_GAME_HEADLINE),
+            "the files page never says what is wrong with the game file"
+        );
+        assert!(
+            settings.contains("acknowledgeUnverified"),
+            "the files page cannot offer the Tier 2 choice, so nothing can ever grant it"
+        );
     }
 
     /// The spec's Tier 2 rule: a player who used the escape hatch has a
@@ -7196,6 +7691,50 @@ struct StatsSubmitView {"),
         }
     }
 
+    /// Every path that COMPOSES the texture pack has to ask what the image is,
+    /// not only the ones that boot it.
+    ///
+    /// `sync_active_now` set the folder policy from the player's preference
+    /// alone, and it is reachable from the Mods page (`mods_sync`), the pack
+    /// toggle (`mods_toggle`) and the controls-profile apply (`controls_set`).
+    /// Any of those three composed Reborn's entire pack into the folder the
+    /// emulator loads by game ID, on a machine whose disc the launch gate had
+    /// already refused. The gate then had nothing left to protect: the art was
+    /// in place before Play was ever pressed.
+    ///
+    /// Every scanned body goes through `code_only` first, so a comment naming
+    /// the helper can never pass for a call to it.
+    #[test]
+    fn every_composer_of_the_texture_pack_asks_what_the_image_is() {
+        let src = include_str!("main.rs");
+        let sync = code_only(body_until(
+            src,
+            "
+pub(crate) fn sync_active_now(",
+            "
+/// What the texture folder policy is right now",
+        ));
+        assert!(
+            sync.contains("texture_policy_now"),
+            "sync_active_now composes the texture pack without ever asking what the image is"
+        );
+        let decide = code_only(body_until(
+            src,
+            "
+fn texture_policy_now(",
+            "
+/// Make the game load what activation.json says.",
+        ));
+        assert!(
+            decide.contains("verdict_now"),
+            "texture_policy_now decides whether to paint Reborn's art without asking what the image is"
+        );
+        assert!(
+            decide.contains("texture_policy_for_launch"),
+            "texture_policy_now must apply the launch's own rule, not a second copy of it that can drift"
+        );
+    }
+
     /// Every command that can make an image the game Reborn boots has to ask
     /// what that image is first. Three of them did not, and a disc nothing
     /// recognized became the booted game wearing Reborn's textures. Two more
@@ -7296,8 +7835,11 @@ struct StatsSubmitView {"),
     /// screen is first assembled. So what decides whether a player ever sees
     /// it is not whether it is built but whether it is ever put into the
     /// card, and that is what this pins: every line that appends it has to
-    /// ask `blocked()`, the helper whose set is `unconverted` and
-    /// `unreadable` and nothing else.
+    /// ask `blocked()`, the helper whose set is every outcome that leaves the
+    /// player without a Reborn build. `unknown` and `no-chain` joined that set
+    /// once a genuine Reborn build whose patch step merely refused started
+    /// being reported as `not-updated` instead: what is left on those two is a
+    /// disc that is not a Reborn build, which is what recovery is for.
     ///
     /// `code_only` strips `//` lines first, exactly as the guard tests above
     /// do, so a comment mentioning recovery beside an unguarded append
@@ -7310,7 +7852,7 @@ struct StatsSubmitView {"),
             "no recovery is offered, so a player whose disc cannot convert is stranded"
         );
         assert!(
-            src.contains("['unconverted','unreadable'].includes("),
+            src.contains("['unconverted','unreadable','unknown','no-chain'].includes("),
             "the blocked set moved, so this no longer pins who recovery is offered to"
         );
         let mut appended = 0;

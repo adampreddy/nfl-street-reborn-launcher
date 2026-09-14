@@ -2560,12 +2560,33 @@ pub struct SyncRequest {
     /// game loads the pristine tree once, and the player's selection is
     /// still there for the next launch.
     pub active_override: Option<Vec<ActivePackage>>,
-    /// Whether the launcher manages the emulator's texture folder.
-    ///
-    /// False composes nothing and leaves `Load/Textures/<game>` completely
-    /// alone, which is what someone who authors textures needs: theirs is
-    /// the source of truth.
-    pub manage_user_texture_folder: bool,
+    /// What the launcher may do with the emulator's texture folder.
+    pub texture_policy: TexturePolicy,
+}
+
+/// What the launcher may do with `Load/Textures/<game>`.
+///
+/// Three states, not two, because "do not compose" and "take the pack away"
+/// are opposite intentions that a single boolean used to have to carry.
+/// [`TexturePolicy::LeaveAlone`] means somebody else owns that folder;
+/// [`TexturePolicy::Withhold`] means the folder is ours and the image about
+/// to boot is not, so what is in it has to go. A boolean shared between them
+/// answered "leave it exactly as it is" to both questions, which is right
+/// for the author and is precisely the "old names with new faces" bug for
+/// the unverified disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TexturePolicy {
+    /// Compose the active set into it. The normal case.
+    Manage,
+    /// A texture author owns that folder: nothing is composed, and nothing
+    /// in it is touched or removed. Theirs is the source of truth.
+    LeaveAlone,
+    /// The image this is for is not one Reborn verified as its own, so
+    /// Reborn's art must not be painted on it. A composed tree already there
+    /// is removed, which is the only way the pack actually stops loading:
+    /// `HiresTextures` is a locked setting and Dolphin loads whatever sits
+    /// under the booted game's ID.
+    Withhold,
 }
 
 impl SyncRequest {
@@ -2582,7 +2603,7 @@ impl SyncRequest {
             pristine_identity: pristine_identity(platform, &game),
             game,
             active_override: None,
-            manage_user_texture_folder: true,
+            texture_policy: TexturePolicy::Manage,
         })
     }
 }
@@ -2592,6 +2613,10 @@ impl SyncRequest {
 pub enum TreeStep {
     /// Not composed, on purpose: the folder is managed by hand.
     LeftAlone,
+    /// Not composed, and what Reborn had composed there was taken away,
+    /// because the image this sync was for is not one Reborn verified.
+    /// `removed` is false when there was nothing of ours there to remove.
+    Withheld { removed: bool },
     /// It already matched the active set, so it was left alone.
     ///
     /// This is the common case, and it is what makes syncing on every launch
@@ -2646,6 +2671,11 @@ impl SyncReport {
         let count = self.active.len() - self.missing.len();
         let tree = match &self.tree {
             TreeStep::LeftAlone => "left alone, because the launcher was asked not to manage it".to_string(),
+            TreeStep::Withheld { removed } => if *removed {
+                "removed, because this game file is not an NFL Street Reborn build".to_string()
+            } else {
+                "not composed, because this game file is not an NFL Street Reborn build".to_string()
+            },
             TreeStep::AlreadyCurrent => "already in place".to_string(),
             TreeStep::Rebuilt { entries, .. } => format!("rebuilt, {entries} entries"),
         };
@@ -2709,16 +2739,56 @@ pub fn sync_active(
         None => Activation::load(&req.activation_file)?.active,
     };
 
-    if !req.manage_user_texture_folder {
-        // The author's folder: nothing is composed and nothing is touched.
-        return Ok(SyncOutcome::Done(Box::new(SyncReport {
-            game: req.game.clone(),
-            composed_root: req.composed_root.clone(),
-            active,
-            missing: Vec::new(),
-            tree: TreeStep::LeftAlone,
-            moved_aside: None,
-        })));
+    match req.texture_policy {
+        TexturePolicy::LeaveAlone => {
+            // The author's folder: nothing is composed and nothing is touched.
+            //
+            // This is checked BEFORE Withhold on purpose. Somebody who turned
+            // the launcher's management off has asserted that the contents of
+            // that folder are theirs, and Reborn does not delete out of a
+            // folder it was told not to manage. The composed marker is not
+            // proof the tree is free of their work either: an author who
+            // started from Reborn's pack and edited files in place still has
+            // the marker sitting next to their edits. Adam lost a folder to a
+            // delete like that once, and the launcher is not going to add a
+            // second one to enforce a rule the player has already overridden
+            // in the only way the launcher offers.
+            return Ok(SyncOutcome::Done(Box::new(SyncReport {
+                game: req.game.clone(),
+                composed_root: req.composed_root.clone(),
+                active,
+                missing: Vec::new(),
+                tree: TreeStep::LeftAlone,
+                moved_aside: None,
+            })));
+        }
+        TexturePolicy::Withhold => {
+            // Not our image, so not our art on it. Removing the composed tree
+            // is the only thing that actually switches the pack off: Dolphin
+            // has `HiresTextures` locked on and loads whatever is filed under
+            // the booted disc's game ID, so composing nothing this time would
+            // leave every previously composed player exactly as broken.
+            //
+            // `Composer::discard` is reused rather than a second removal
+            // written here: it removes only a directory carrying our own
+            // marker, or an empty one, and refuses anything else with a
+            // sentence. A refusal is carried out as a refusal, never as an
+            // error, because the tree standing is a state the caller has to
+            // be able to show rather than a failure that should stop a launch.
+            if let Some(refusal) = foreign_tree_refusal(&req.composed_root)? {
+                return Ok(SyncOutcome::Refused(refusal.message()));
+            }
+            let removed = Composer::discard(lock, &req.composed_root)?;
+            return Ok(SyncOutcome::Done(Box::new(SyncReport {
+                game: req.game.clone(),
+                composed_root: req.composed_root.clone(),
+                active,
+                missing: Vec::new(),
+                tree: TreeStep::Withheld { removed },
+                moved_aside: None,
+            })));
+        }
+        TexturePolicy::Manage => {}
     }
 
     let mut packages = Vec::new();
@@ -4314,7 +4384,7 @@ mod tests {
             old_composed_root: Some(fx.composed.clone()),
             pristine_identity: None,
             active_override: None,
-            manage_user_texture_folder: true,
+            texture_policy: TexturePolicy::Manage,
         }
     }
 
@@ -4522,7 +4592,7 @@ mod tests {
         write(&theirs.join("mine.dds"), b"a texture I am working on");
 
         let mut req = sync_request(&fx, &user_dir);
-        req.manage_user_texture_folder = false;
+        req.texture_policy = TexturePolicy::LeaveAlone;
         let report = done(sync_active(&p, &guard, &req, 1).unwrap());
 
         assert_eq!(report.tree, TreeStep::LeftAlone, "nothing is composed into a folder the author owns");
@@ -4534,6 +4604,103 @@ mod tests {
         );
         assert!(!theirs.join(BALL).exists(), "and nothing of ours may appear in it");
         assert!(report.explain().contains("left alone"), "{}", report.explain());
+    }
+
+    /// Withholding has to TAKE THE PACK AWAY, not merely decline to rebuild it.
+    ///
+    /// This is the finding the whole law turned on. `manage_user_texture_folder
+    /// = false` was reused to mean "this image is not ours", and all it does is
+    /// return early leaving `Load/Textures/GN7E69` exactly as it was. For any
+    /// player who has ever booted successfully, exactly as it was IS the whole
+    /// composed pack, and Dolphin loads it by game ID with `HiresTextures`
+    /// locked on. So the test composes first, the way a real player's first
+    /// good boot does, and only then asks what a withheld sync leaves behind.
+    #[test]
+    fn withholding_removes_the_pack_a_previous_launch_composed() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let composed = user_dir.join("Load").join("Textures").join("GN7E69");
+
+        let package = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(package.id.clone(), package.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+
+        // A good boot: the pack is composed into the user folder.
+        let mut req = sync_request(&fx, &user_dir);
+        let first = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert!(matches!(first.tree, TreeStep::Rebuilt { .. }), "{:?}", first.tree);
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the purple football");
+
+        // Then the player points Reborn at a disc it cannot vouch for.
+        req.texture_policy = TexturePolicy::Withhold;
+        let withheld = done(sync_active(&p, &guard, &req, 2).unwrap());
+
+        assert_eq!(
+            withheld.tree,
+            TreeStep::Withheld { removed: true },
+            "a withheld sync must report that it took the tree away"
+        );
+        assert!(
+            !composed.exists(),
+            "Reborn's texture pack is still at {} for Dolphin to paint on a disc that is not ours",
+            composed.display()
+        );
+        assert!(
+            withheld.explain().contains("not an NFL Street Reborn build"),
+            "{}",
+            withheld.explain()
+        );
+    }
+
+    /// Withholding never destroys somebody else's folder.
+    ///
+    /// The removal is `Composer::discard`, which only ever removes a tree
+    /// carrying our own marker or an empty one. A folder of the player's own
+    /// textures sitting at the composed path is refused with a sentence and
+    /// left standing, rather than deleted to enforce the rule.
+    #[test]
+    fn withholding_refuses_rather_than_delete_a_folder_that_is_not_ours() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let theirs = user_dir.join("Load").join("Textures").join("GN7E69");
+        let guard = lock(&p, &fx);
+        write(&theirs.join("mine.dds"), b"a texture I am working on");
+
+        let mut req = sync_request(&fx, &user_dir);
+        req.texture_policy = TexturePolicy::Withhold;
+        let outcome = sync_active(&p, &guard, &req, 1).unwrap();
+
+        assert!(
+            matches!(outcome, SyncOutcome::Refused(_)),
+            "a foreign tree must be refused, not deleted: {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(theirs.join("mine.dds")).unwrap(),
+            b"a texture I am working on",
+            "their folder must be exactly as they left it"
+        );
+    }
+
+    /// Withholding on a machine that never composed anything is not an error.
+    #[test]
+    fn withholding_with_nothing_composed_is_quiet() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let guard = lock(&p, &fx);
+        let mut req = sync_request(&fx, &user_dir);
+        req.texture_policy = TexturePolicy::Withhold;
+        let report = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert_eq!(report.tree, TreeStep::Withheld { removed: false });
     }
 
     #[test]

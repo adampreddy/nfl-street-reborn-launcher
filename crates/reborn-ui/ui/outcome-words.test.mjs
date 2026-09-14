@@ -41,3 +41,24 @@ test('a missing patch chain must not be reported as success', () => {
     `a missing chain reported success: ${headline}`
   );
 });
+
+// A disc Reborn recognized, whose patch step refused or could not run, is a
+// patch failure and not a verdict on the disc. Passed through as 'unknown' or
+// 'no-chain' it rendered "Your game file isn't NFL Street Reborn" over a
+// build Reborn had just verified, with Continue enabled and the Play badge
+// silent: three surfaces disagreeing about one file.
+test('a verified Reborn build whose update did not run is not accused of being someone else\'s disc', () => {
+  const [headline, detail] = outcomeWords('not-updated', '', 'The update could not be applied right now.', false);
+  assert.ok(
+    !headline.includes("isn't NFL Street Reborn"),
+    `a verified Reborn build was told it is not one: ${headline}`
+  );
+  assert.ok(
+    detail.includes('NFL Street Reborn build'),
+    `the words never say the disc is fine: ${detail}`
+  );
+  assert.ok(
+    detail.includes('could not be applied'),
+    `the words never say what actually failed: ${detail}`
+  );
+});

@@ -39,6 +39,41 @@ impl Verdict {
     }
 }
 
+/// Shown when Play is pressed on an NFL Street 2 disc that is not a Reborn
+/// build. Worded as the fault it almost always is, never as a preference.
+pub const UNVERIFIED_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc. Repair it from the Settings page.";
+
+/// Whether this image may boot, and whether Reborn may treat it as its own.
+///
+/// `Ok(true)` means boot it AND paint Reborn's textures on it. `Ok(false)`
+/// means boot it with Reborn's art withheld. `Err` means do not boot it.
+///
+/// Lives here, beside the verdict, rather than in the window, because the
+/// window is not the only thing that boots the game: `rebornctl play` ships in
+/// the product and built a `LaunchRequest` with `textures_allowed: true` and
+/// no verification at all. A second copy of these four lines over there is
+/// exactly how the two would come to disagree.
+pub fn may_play(verdict: &Verdict, acknowledged: bool) -> Result<bool, &'static str> {
+    match verdict {
+        Verdict::Unconverted if !acknowledged => Err(UNVERIFIED_GAME),
+        v => Ok(v.is_reborn()),
+    }
+}
+
+/// The bundled DolphinTool, looked for the way `find_xdelta` looks for
+/// xdelta3: beside the installed program first, then in whatever extra
+/// directories the caller knows about (its own program folder, usually).
+pub fn find_tool(platform: &crate::platform::Platform, extra: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    let name = format!("DolphinTool{}", platform.paths.exe_suffix());
+    let mut dirs = Vec::new();
+    if let Ok(install) = platform.paths.install_root() {
+        dirs.push(install.join(crate::game_patch::BUNDLE_DIR));
+        dirs.push(install);
+    }
+    dirs.extend(extra.iter().cloned());
+    dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file())
+}
+
 pub fn classify(chain: Option<&Chain>, game_id: &str, sha256: &str) -> Verdict {
     if game_id != DISC_ID {
         return Verdict::DifferentGame { game_id: game_id.to_string() };

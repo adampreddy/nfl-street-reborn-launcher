@@ -1250,14 +1250,40 @@ pub fn finish_and_collect(
     collect(platform, supervisor, &session_id, user_dir)
 }
 
-/// Whether to point the emulator's texture folder at Reborn's composed tree.
+/// What to do with the emulator's texture folder.
 ///
-/// Both must agree: the player has not opted out, AND the image is one
-/// Reborn verified as its own. The second half is why this is a function
-/// and not a settings read: an unverified disc wearing Reborn's faces is
-/// the "old names with new faces" confusion the launcher exists to prevent.
-fn textures_for_launch(image_verified: bool, player_wants_managed: bool) -> bool {
-    image_verified && player_wants_managed
+/// Public because a launch is not the only thing that composes into it: the
+/// Mods page, the pack toggle and the controls-profile apply all write the
+/// same folder a launch boots against, and a second copy of this rule for
+/// them is exactly how the two would drift apart.
+///
+/// Three answers, not two, and the order of the two refusals is the whole
+/// point of the function:
+///
+/// 1. A player who turned the launcher's management off owns that folder.
+///    That wins outright, over everything below it. Reborn composes nothing
+///    and removes nothing, which is what a texture author needs and what the
+///    setting has always promised.
+/// 2. Otherwise, an image Reborn did not verify as its own gets
+///    [`TexturePolicy::Withhold`]: the composed tree is taken away rather
+///    than merely not rebuilt. Not rebuilding is what a boolean could
+///    express, and it is not enough, because the pack is already sitting in
+///    the user folder for anybody who has ever booted successfully and
+///    Dolphin loads it by game ID for whatever `GN7E69` disc turns up. That
+///    is exactly the "old names with new faces" report this law comes from.
+/// 3. Otherwise, compose normally.
+pub fn texture_policy_for_launch(
+    image_verified: bool,
+    player_wants_managed: bool,
+) -> crate::mods::TexturePolicy {
+    use crate::mods::TexturePolicy;
+    if !player_wants_managed {
+        TexturePolicy::LeaveAlone
+    } else if !image_verified {
+        TexturePolicy::Withhold
+    } else {
+        TexturePolicy::Manage
+    }
 }
 
 /// Point this build at what `activation.json` says is on.
@@ -1279,8 +1305,8 @@ fn sync_mods_for_launch(
         let game = crate::mods::GameId::parse(build.game_id())?;
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
-        req.manage_user_texture_folder =
-            textures_for_launch(textures_allowed, crate::settings::manage_texture_folder(&settings_file)?);
+        req.texture_policy =
+            texture_policy_for_launch(textures_allowed, crate::settings::manage_texture_folder(&settings_file)?);
         if disabled {
             req.active_override = Some(Vec::new());
         }
@@ -1873,12 +1899,48 @@ mod tests {
     /// Reborn's art only ever paints a disc Reborn verified. A player who chose
     /// to play a modified NFL Street 2 anyway must see it as what it is, not
     /// wearing Reborn's faces over someone else's roster.
+    ///
+    /// The unverified answer is `Withhold`, not `LeaveAlone`. `LeaveAlone`
+    /// composes nothing and leaves the folder exactly as it is, and for
+    /// everyone who has ever booted successfully "exactly as it is" means
+    /// Reborn's whole pack still sitting there under `GN7E69` for Dolphin to
+    /// load. Asserting the variant, rather than a boolean that used to carry
+    /// both meanings, is what keeps the two from collapsing back together.
     #[test]
     fn an_unverified_image_never_gets_rebornes_texture_pack() {
-        assert!(!textures_for_launch(false, true), "an unverified image took the pack anyway");
-        assert!(!textures_for_launch(false, false), "an unverified image took the pack anyway");
-        assert!(textures_for_launch(true, true), "a verified image must still get the pack");
-        assert!(!textures_for_launch(true, false), "the player's own preference must still win");
+        use crate::mods::TexturePolicy;
+        assert_eq!(
+            texture_policy_for_launch(false, true),
+            TexturePolicy::Withhold,
+            "an unverified image must have the pack actively taken away, not merely not rebuilt"
+        );
+        assert_eq!(
+            texture_policy_for_launch(true, true),
+            TexturePolicy::Manage,
+            "a verified image must still get the pack"
+        );
+    }
+
+    /// The author's folder wins over the withholding rule.
+    ///
+    /// Somebody who turned management off asserted that the contents of
+    /// `Load/Textures/<game>` are theirs. Withholding removes a tree, and
+    /// removing out of a folder the player has claimed is a worse failure
+    /// than the one it would prevent: the composed marker is not proof the
+    /// tree is free of their own edits.
+    #[test]
+    fn the_authors_folder_is_never_taken_away_even_on_an_unverified_image() {
+        use crate::mods::TexturePolicy;
+        assert_eq!(
+            texture_policy_for_launch(false, false),
+            TexturePolicy::LeaveAlone,
+            "an author's folder must never be removed, whatever the disc is"
+        );
+        assert_eq!(
+            texture_policy_for_launch(true, false),
+            TexturePolicy::LeaveAlone,
+            "the player's own preference must still win"
+        );
     }
 
     #[test]

@@ -210,6 +210,15 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
                 ("unconverted".to_string(),None,bundle_reason.clone().or_else(||Some("Reborn does not recognize this disc.".into()))),
             reborn_core::game_identity::Verdict::Unreadable{reason}=>
                 ("unreadable".to_string(),None,Some(reason.clone())),
+            // A disc Reborn DOES recognize, whose patch step refused or could
+            // not run. `outcome` is "unknown" or "no-chain" then, and the
+            // wizard renders both of those as "Your game file isn't NFL Street
+            // Reborn" while Continue stays enabled and the Play badge stays
+            // silent: three surfaces disagreeing about one file, and two of
+            // them wrong. A patch that did not run is a patch failure, so it
+            // gets patch-failure words rather than the verdict's vocabulary.
+            reborn_core::game_identity::Verdict::RebornBuild{label:build,..} if outcome=="unknown"||outcome=="no-chain" =>
+                ("not-updated".to_string(),Some(build.clone()).filter(|b|!b.is_empty()),note),
             reborn_core::game_identity::Verdict::RebornBuild{..}|reborn_core::game_identity::Verdict::Convertible=>(outcome,label,note),
         };
         let patched=patched||outcome=="patched";
@@ -464,7 +473,11 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
         let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
         let verdict=reborn_core::game_identity::identify(&data,&tool,&game);
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
-        record_verdict(&file,&game,&verdict)?;
+        // `Consent::NotAsked`, the same rule `may_adopt` applies to an
+        // inherited 2.1 disc one click away: setup never adopts a disc that is
+        // not a Reborn build. It has a real repair (the full download) right
+        // there, so the honest answer is the fault, not a silent escape hatch.
+        record_verdict(&file,&game,&verdict,crate::Consent::NotAsked)?;
         let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
