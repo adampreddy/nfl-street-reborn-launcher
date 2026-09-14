@@ -1239,9 +1239,15 @@ git commit -m "feat: show an unresolved badge when Play is on a disc Reborn did 
 
 ---
 
-### Task 13: Gate every boot path, not just the Play button
+### Task 13: Close every remaining path, boot and write
 
-Added during execution. Task 6's implementer found that `launch` is not the only way a game boots, so the guarantee leaks around the gate Task 5 installed.
+Added during execution and then widened. Two separate reviews found paths my plan missed: `launch` is not the only way a game boots, and there are five writers of `settings.game_path`, not the three the spec named.
+
+**The five writers, verified in this worktree.** Gated already: `setup_import_game` (Task 7), `settings_set_path` (Task 8), `setup_migrate_install` (Task 8). NOT gated:
+- `setup_import_existing_game` (`setup_tools.rs:456`) calls `import_existing` then `patch_to_newest`, then writes `saved.game_path` unconditionally. `patch_to_newest` returning `Unknown` is non-fatal, so an unrecognized disc still becomes the game.
+- `onboarding_confirm_game` (`main.rs:2681`) goes through `checked_setup_image`, which calls only `check_reborn_id` (the weak game-ID-only gate), then calls `reborn_core::settings::set_path(PathSetting::Game, ...)` directly, bypassing the `path_choice` gating that `settings_set_path` wraps it with.
+
+Both are reachable from the wizard's own "Edit" action (`onboarding.js:622` sets `reviewReturn`, `:491` calls both).
 
 **Files:**
 - Modify: `crates/reborn-ui/src/main.rs` (`play_now`, around `:5270`)
@@ -1308,16 +1314,28 @@ and call it from `launch`, `play_now` and `netplay_open`.
 
 Same call. Additionally, `netplay_open` calls `sync_active_now` before booting, which applies the texture pack without consulting the verdict. Pass the verified flag through so an unverified image does not get the pack there either, or move the `sync_active_now` call after the gate so a refusal happens first. Say in your report which you chose and why.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 5: Gate the two remaining writers**
+
+`setup_import_existing_game` (`setup_tools.rs:456`) and `onboarding_confirm_game` (`main.rs:2681`) both make an image the booted game after only `check_reborn_id`, which passes any disc whose header says `GN7E69`, modified or not.
+
+Give each the same treatment its sibling already has. `setup_import_existing_game` should classify what it landed and refuse or record an acknowledgment the way `settings_set_path` does via `path_choice`. `onboarding_confirm_game` should not call `settings::set_path` directly past the gating; route it through the same decision.
+
+Preserve the wizard's flow: `onboarding_confirm_game` is on the normal happy path at the end of setup, where the image was already verified by `setup_import_game`. Re-verifying there must not turn a good install into a refusal. If re-running `identify` on the already-verified image is wasteful or risky, reuse the recorded outcome instead, and say in your report which you chose and why.
+
+- [ ] **Step 6: Extend the writer guard to all five**
+
+Task 9 added `every_writer_of_game_path_verifies_the_image` naming three commands. Add `setup_import_existing_game` and `onboarding_confirm_game` to that list so all five are covered. The test must pass once Step 5 lands.
+
+- [ ] **Step 7: Run the tests**
 
 Run: `cargo test -p reborn-ui` and `cargo test -p reborn-core`
-Expected: all pass, including the new test and `launch`'s existing body assertions.
+Expected: all pass, including both guard tests and `launch`'s existing body assertions.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crates/reborn-ui/src/main.rs crates/reborn-ui/src/dolphin_settings.rs
-git commit -m "fix: gate every boot path, not just the Play button"
+git add crates/reborn-ui/src/main.rs crates/reborn-ui/src/dolphin_settings.rs crates/reborn-ui/src/setup_tools.rs
+git commit -m "fix: close every remaining path that can make an image the booted game"
 ```
 
 ---
