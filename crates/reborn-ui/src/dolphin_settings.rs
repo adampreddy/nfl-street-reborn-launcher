@@ -202,11 +202,11 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if mode=="join"&&(address.is_empty()||address.len()>253||!address.chars().all(|c|c.is_ascii_alphanumeric()||".:-_".contains(c))){return Err("Enter a valid host code or address.".into());}
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
-  // Boots through the same gate every other path does: `verify_before_boot`
-  // asks `may_play` what this image is before anything below applies the
-  // texture pack or starts the emulator, so an unverified disc gets neither
-  // one here either.
-  let verified=verify_before_boot(&p,&game_path)?;
+  // Boots through the same gate every other path does: `may_play_before_boot`
+  // asks what this image is before anything below applies the texture pack
+  // or starts the emulator, so an unverified disc gets neither one here
+  // either.
+  let verified=may_play_before_boot(&p,&game_path)?;
   // The same texture sync Play runs: compose the active tree and point the
   // Dolphin user folder at it. Netplay skipped it, so a player whose first
   // launch was an online game got no textures at all (Adam, 2026-09-11:

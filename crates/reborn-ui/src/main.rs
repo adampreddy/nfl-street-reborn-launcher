@@ -756,12 +756,47 @@ fn record_verdict(
             let sha = reborn_core::library::hash_file(image)
                 .map(|h| h.as_str().to_string())
                 .map_err(|e| e.to_string())?;
-            let mut saved = reborn_core::settings::Settings::load(settings_file).map_err(|e| e.to_string())?;
+            let mut saved = reborn_core::settings::Settings::load(settings_file)
+                .map_err(|e| e.player_message().to_string())?;
             saved.unverified_game_ack = Some(sha);
-            saved.save(settings_file).map_err(|e| e.to_string())
+            saved.save(settings_file).map_err(|e| e.player_message().to_string())
         }
         PathChoice::Store => Ok(()),
     }
+}
+
+/// The verdict for an image plus the player's standing acknowledgment, in
+/// the one shape every boot path needs. Returns the value for
+/// `LaunchRequest::textures_allowed`, or the refusal to show the player.
+///
+/// Named for the question it answers, `may_play`, rather than for what it
+/// does internally: the guard tests that pin every boot path grep for that
+/// name, and a helper called something else would let a caller stop asking
+/// it while every text scan kept passing on the strength of this doc comment
+/// alone. `launch` (this file), `play_now` (this file) and `netplay_open`
+/// (`dolphin_settings.rs`) each resolve their own runtime and image
+/// differently, but once an image is chosen, ask `game_identity::identify`
+/// what it is, then ask `may_play` whether it may boot and wear Reborn's
+/// textures, is identical every time. Splitting it out here is what keeps
+/// them from holding the same eight lines three times, quietly drifting
+/// apart the next time one of them changes.
+fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<bool, String> {
+    let tool = std::env::current_exe()
+        .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
+        .parent()
+        .unwrap()
+        .join("game-import/DolphinTool.exe");
+    let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+    let verdict = reborn_core::game_identity::identify(&data, &tool, game_path);
+    let settings_file =
+        reborn_core::settings::settings_path(p).map_err(|e| e.player_message().to_string())?;
+    let saved = reborn_core::settings::Settings::load(&settings_file)
+        .map_err(|e| e.player_message().to_string())?;
+    let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
+        && reborn_core::library::hash_file(game_path)
+            .map(|h| saved.ack_matches(h.as_str()))
+            .unwrap_or(false);
+    may_play(&verdict, acknowledged).map_err(str::to_string)
 }
 
 /// Start the game and answer when it stops.
@@ -795,7 +830,7 @@ async fn launch(
         // What we are about to boot, before we boot it. A disc that is not a
         // Reborn build must never reach the emulator wearing Reborn's
         // textures: that is what produced "old names with new faces".
-        let verified = verify_before_boot(&p, &game_path)?;
+        let verified = may_play_before_boot(&p, &game_path)?;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
@@ -898,37 +933,6 @@ async fn launch(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// The verdict for an image plus the player's standing acknowledgment, in
-/// the one shape every boot path needs. Returns the value for
-/// `LaunchRequest::textures_allowed`, or the refusal to show the player.
-///
-/// Every path that can start the emulator resolves its own runtime and image
-/// differently: `launch` takes hints from the window, `play_now` trusts what
-/// was last saved, `netplay_open` swaps in its own pristine copy afterward.
-/// But once an image is chosen, what to do with it, ask `game_identity::identify`
-/// what it is, then ask `may_play` whether it may boot and wear Reborn's
-/// textures, is identical every time. Splitting it out here is what keeps
-/// `launch` and `play_now` from holding the same eight lines twice, quietly
-/// drifting apart the next time one of them changes.
-fn verify_before_boot(p: &Platform, game_path: &Path) -> Result<bool, String> {
-    let tool = std::env::current_exe()
-        .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
-        .parent()
-        .unwrap()
-        .join("game-import/DolphinTool.exe");
-    let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
-    let verdict = reborn_core::game_identity::identify(&data, &tool, game_path);
-    let settings_file =
-        reborn_core::settings::settings_path(p).map_err(|e| e.player_message().to_string())?;
-    let saved = reborn_core::settings::Settings::load(&settings_file)
-        .map_err(|e| e.player_message().to_string())?;
-    let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
-        && reborn_core::library::hash_file(game_path)
-            .map(|h| saved.ack_matches(h.as_str()))
-            .unwrap_or(false);
-    may_play(&verdict, acknowledged).map_err(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -5375,7 +5379,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
     // The desktop shortcut is a shipped entry point like any other: a disc
     // that is not a Reborn build must not boot from here wearing Reborn's
     // textures just because it skipped the window Play is drawn in.
-    let verified = verify_before_boot(platform, &game_path)?;
+    let verified = may_play_before_boot(platform, &game_path)?;
 
     // The preset the player chose, or first run's answer. Never a guess: a
     // shortcut that quietly boots at a different resolution than the Play
@@ -6028,15 +6032,17 @@ mod tests {
     /// texture pack over it: old names with new faces. `launch` is the one
     /// path every player takes, so it is the one that has to ask.
     ///
-    /// Looks for `verify_before_boot`, not the raw `game_identity::identify`
+    /// Looks for `may_play_before_boot`, not the raw `game_identity::identify`
     /// call it wraps: that call moved into the shared helper `launch`,
     /// `play_now` and `netplay_open` all call now, so it no longer sits
-    /// inline here. The invariant this pins is unchanged, only its name.
+    /// inline here. The helper is defined before `launch`, so only the call
+    /// site itself is inside the text this test reads; the invariant this
+    /// pins is unchanged, only its name.
     #[test]
     fn launch_verifies_the_image_before_starting_the_emulator() {
         let body = command_body(include_str!("main.rs"), "async fn launch(");
         let verify = body
-            .find("verify_before_boot")
+            .find("may_play_before_boot")
             .expect("launch boots game_path without ever asking what it is");
         let request = body
             .find("LaunchRequest {")
@@ -6977,11 +6983,23 @@ struct StatsSubmitView {"),
     /// Every path that boots the game has to ask what the disc is, not just the
     /// Play button. The desktop shortcut is a shipped entry point, and a player
     /// who uses it must not slip past the gate that protects everyone else.
+    ///
+    /// `play_now` is a plain `fn`, not a `#[tauri::command]`, so
+    /// `command_body`'s attribute-based stop does not bound it: unbounded, its
+    /// "body" would run past `open_game_folder` and everything else until the
+    /// next real command, hundreds of lines away, including this very test
+    /// module's own `may_play_*` unit tests -- which would make this
+    /// assertion pass on `play_now`'s name whether or not `play_now` itself
+    /// asks `may_play` anything. `body_until` with `open_game_folder`'s own
+    /// signature as the stop is what keeps this reading only `play_now`.
     #[test]
     fn every_boot_path_verifies_the_image() {
         for (name, body) in [
             ("launch", command_body(include_str!("main.rs"), "async fn launch(")),
-            ("play_now", inner_body(command_body(include_str!("main.rs"), "fn play_now"))),
+            (
+                "play_now",
+                body_until(include_str!("main.rs"), "\nfn play_now(", "\nfn open_game_folder("),
+            ),
             (
                 "netplay_open",
                 command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
