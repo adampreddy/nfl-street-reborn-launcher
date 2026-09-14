@@ -280,6 +280,17 @@ pub fn republish_pinning(req: &CarryForward<'_>, sink: Sink<'_>) -> Result<Outco
             if pinned_name == name {
                 continue;
             }
+            // `game-full` is 1.36 GB of recovery almost nobody needs. Every
+            // other component carries forward automatically here, which is
+            // exactly what would put the full disc in front of every player
+            // from the next release onward if it were ever left served. It
+            // never carries: the only way it reaches a release is `req.id`
+            // being `GameFull` on THIS call, handled below by the explicit
+            // push after this loop, the same door every other component's
+            // deliberate re-pin already uses.
+            if pinned_name == ComponentId::GameFull.as_str() {
+                continue;
+            }
             let manifest = origin.join(pinned.url.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
             let bytes = std::fs::read(&manifest).map_err(|e| io_err(&manifest, e))?;
             let component = Component::parse(&bytes).map_err(|e| {
@@ -460,6 +471,53 @@ mod tests {
         let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
         assert_eq!((s.version.as_str(), s.sequence), ("3.0.0", 4));
         assert!(lines.iter().any(|l| l.contains("pinning roster=2026.09.06, runtime=1.0.2")), "{lines:?}");
+    }
+
+    /// Every other component is carried forward into the next release
+    /// automatically. `game-full` must not be: it is 1.36 GB of recovery that
+    /// a normal install never needs, and carrying it forward would put it in
+    /// front of every player from the next release onward. Re-pin it
+    /// deliberately or not at all.
+    ///
+    /// Adapted from the brief's sketch (`pinned`/`carry_forward` helpers) to
+    /// this file's real shape: a signed release built with `world`/`publish`/
+    /// `sign`, then a second `republish_pinning` call whose own pin is some
+    /// other component, so the only way `game-full` could reappear is by
+    /// being carried forward.
+    #[test]
+    fn game_full_is_never_carried_forward_into_the_next_release() {
+        let w = world();
+        publish(&w, ComponentId::Roster, "2026.09.13", 1, &[("roster.rebornroster", b"PK")]);
+        publish(&w, ComponentId::GameFull, "2026.09.13.3", 1, &[("NSR.iso", b"disc")]);
+        assert!(sign(
+            &w,
+            "3.0.0",
+            1,
+            &[pin(ComponentId::Roster, "2026.09.13"), pin(ComponentId::GameFull, "2026.09.13.3")],
+            true,
+        )
+        .0
+        .is_done());
+
+        // Republish some unrelated component. If the carry-forward loop does
+        // not single out game-full, it comes along for free here.
+        publish(&w, ComponentId::Runtime, "1.0.3", 1, &[("a.txt", b"alpha\n")]);
+        let mut lines = Vec::new();
+        let req = CarryForward {
+            origin: &w.origin, id: ComponentId::Runtime, version: "1.0.3",
+            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+        };
+        let outcome = republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap();
+        let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
+        assert_eq!((s.version.as_str(), s.sequence), ("3.0.0", 2));
+        assert!(
+            lines.iter().any(|l| l.contains("pinning roster=2026.09.13, runtime=1.0.3")),
+            "ordinary pins carry: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("game-full")),
+            "the full disc was carried into a release nobody asked it to be in: {lines:?}"
+        );
     }
 
     #[test]

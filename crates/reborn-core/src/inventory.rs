@@ -155,6 +155,10 @@ pub enum ComponentId {
     /// applied to the player's pristine image. About a megabyte per build,
     /// against 1.46 GB for the image itself.
     GamePatch,
+    /// The complete head-build disc, 1,459,978,240 bytes. Recovery only, for
+    /// a player whose own copy cannot be converted. Deliberately absent from
+    /// the release carry-forward: a normal install never fetches it.
+    GameFull,
 }
 
 impl ComponentId {
@@ -169,6 +173,7 @@ impl ComponentId {
         ComponentId::ControllerDb,
         ComponentId::Roster,
         ComponentId::GamePatch,
+        ComponentId::GameFull,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -183,6 +188,7 @@ impl ComponentId {
             ComponentId::ControllerDb => "controller-db",
             ComponentId::Roster => "roster",
             ComponentId::GamePatch => "game-patch",
+            ComponentId::GameFull => "game-full",
         }
     }
 
@@ -234,6 +240,10 @@ impl ComponentId {
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
             ComponentId::Roster => Some(DataDir::LibraryRoster.relative()),
             ComponentId::GamePatch => Some(DataDir::LibraryGamePatch.relative()),
+            // Recovery lands the same place a player's own image already
+            // does, so a fetched disc becomes `game_path` with no rename and
+            // no separate tree of its own to manage.
+            ComponentId::GameFull => Some(DataDir::LibraryOffline.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -1451,12 +1461,21 @@ mod tests {
         assert_eq!(ComponentId::parse("Runtime"), None, "names are exact");
     }
 
+    #[test]
+    fn the_full_disc_is_a_component_the_publisher_knows() {
+        assert_eq!(ComponentId::GameFull.as_str(), "game-full");
+        assert!(
+            ComponentId::ALL.contains(&ComponentId::GameFull),
+            "publishing and name validation need to see it"
+        );
+    }
+
     /// The whole reason `customizable` exists. If a second component were ever
     /// marked customizable, repair would stop treating tampering with it as
     /// damage, and the online image is trusted by matchmaking precisely because
     /// it is not customizable.
     #[test]
-    fn exactly_one_of_the_seven_components_is_customizable() {
+    fn exactly_one_component_is_customizable() {
         let customizable: Vec<&str> = ComponentId::ALL
             .iter()
             .filter(|id| id.is_customizable())
