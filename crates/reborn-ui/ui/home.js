@@ -365,6 +365,18 @@ function draw() {
       el("span", { text: "Not a Reborn build" }),
       el("a", { class: "play-warning-repair", href: "settings.html#files", text: "Repair" })));
   }
+  // The player's own test for a right pack is "can I see stuff, and what
+  // version is it". This is that answer, read straight off the folder the
+  // launch will actually use, not asked about separately.
+  if (state.check?.pack) {
+    const pack = state.check.pack;
+    if (pack.reachable) {
+      controls.append(el("p", { class: "note", text: pack.version ? `Texture pack ${pack.version}` : "Texture pack loaded" }));
+    } else {
+      controls.append(el("div", { class: "play-warning", role: "status" },
+        el("span", { text: "Texture pack not loading" })));
+    }
+  }
   controls.append(identityCard());
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });
