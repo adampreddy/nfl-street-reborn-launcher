@@ -655,18 +655,48 @@ type GameVerdictKey = (PathBuf, u64, std::time::SystemTime);
 static GAME_VERDICT_CACHE: std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>> =
     std::sync::Mutex::new(None);
 
+/// The bundled DolphinTool, found the one way `game_identity::find_tool`
+/// defines it: beside the installed program, then beside the program
+/// itself, then whatever extra directory the caller adds. Nine call sites
+/// across this crate used to hardcode `<exe dir>/game-import/DolphinTool.exe`
+/// instead of calling `find_tool`, so a tool sitting in `find_tool`'s second
+/// search directory (the install root itself, not its `game-import`
+/// subfolder) read as missing here. A missing tool makes
+/// `game_identity::identify` return `Unreadable`, which the texture policy
+/// treats as `Withhold` and deletes the player's composed HD pack, silently,
+/// on every launch and every Mods-page action until the tool reappears.
+///
+/// The extra directory passed here, the folder holding whichever executable
+/// is actually running, exists because `install_root` is not guaranteed to
+/// be that folder: it falls back to a fixed per-channel path when the
+/// running exe has no `reborn-launcher.exe` beside it (a test binary, or a
+/// companion tool run from elsewhere). `patch_to_newest` extends
+/// `xdelta_dirs` the same way for the identical reason; this mirrors it.
+fn dolphin_tool_path(p: &Platform) -> Option<PathBuf> {
+    let extra: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .map(|dir| vec![dir.join(reborn_core::game_patch::BUNDLE_DIR)])
+        .unwrap_or_default();
+    reborn_core::game_identity::find_tool(p, &extra)
+}
+
+/// The `Verdict::Unreadable` reason to use when `dolphin_tool_path` finds
+/// nothing. Never substitute a path that does not exist just to keep a call
+/// site's types the same: that is exactly the bug this constant replaces.
+const DOLPHIN_TOOL_MISSING: &str =
+    "The tool used to read this game file could not be found. Reinstall NFL Street Reborn to restore it.";
+
 /// What the image at `image` is, through [`GAME_VERDICT_CACHE`].
 ///
 /// The cache key is the path, the size and the modified time, so a repair, a
 /// swapped disc or a fresh install invalidates it immediately and this can
 /// never answer with bytes it has not verified for the file now on disk.
 fn verdict_now(p: &Platform, image: &Path) -> Result<reborn_core::game_identity::Verdict, String> {
-    let tool = std::env::current_exe()
-        .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
-        .parent()
-        .unwrap()
-        .join("game-import/DolphinTool.exe");
     let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+    let Some(tool) = dolphin_tool_path(p) else {
+        return Ok(reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() });
+    };
     Ok(match std::fs::metadata(image).and_then(|m| Ok((m.len(), m.modified()?))) {
         Ok((len, modified)) => cached_game_verdict(
             &GAME_VERDICT_CACHE,
@@ -716,18 +746,16 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
         match find_runtime_and_game_for(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref(), chosen_user.as_deref()) {
             Ok((found, image)) => {
                 let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
-                let tool = std::env::current_exe()
-                    .map_err(|_| "The launcher's own program folder could not be found.".to_string())?
-                    .parent()
-                    .unwrap()
-                    .join("game-import/DolphinTool.exe");
-                let verdict = match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
-                    Ok((len, modified)) => cached_game_verdict(
-                        &GAME_VERDICT_CACHE,
-                        (image.clone(), len, modified),
-                        || reborn_core::game_identity::identify(&data, &tool, &image),
-                    ),
-                    Err(_) => reborn_core::game_identity::identify(&data, &tool, &image),
+                let verdict = match dolphin_tool_path(&p) {
+                    None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+                    Some(tool) => match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
+                        Ok((len, modified)) => cached_game_verdict(
+                            &GAME_VERDICT_CACHE,
+                            (image.clone(), len, modified),
+                            || reborn_core::game_identity::identify(&data, &tool, &image),
+                        ),
+                        Err(_) => reborn_core::game_identity::identify(&data, &tool, &image),
+                    },
                 };
                 let game_verdict = Some(game_verdict_tag(&verdict).to_string());
                 // Resolved once and reused for user_dir_note, game_note and
@@ -3134,9 +3162,10 @@ async fn onboarding_confirm_game(
         // reaffirms that verdict, so a good install is never turned into a
         // refusal by asking twice.
         let data = p.paths.data_root().map_err(|e| e.to_string())?;
-        let tool = std::env::current_exe().map_err(|e| e.to_string())?.parent().unwrap()
-            .join("game-import/DolphinTool.exe");
-        let verdict = reborn_core::game_identity::identify(&data, &tool, &game);
+        let verdict = match dolphin_tool_path(&p) {
+            Some(tool) => reborn_core::game_identity::identify(&data, &tool, &game),
+            None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+        };
         // `Consent::NotAsked`, always. This step is a Continue button at the
         // end of the wizard, and a Continue button is not consent to play a
         // disc Reborn could not convert. An unconverted image is refused here
@@ -4524,10 +4553,11 @@ async fn settings_set_path(
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
         if matches!(setting, PathSetting::Game) && !value.trim().is_empty() {
             let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
-            let tool = std::env::current_exe().map_err(|e| e.to_string())?.parent().unwrap()
-                .join("game-import/DolphinTool.exe");
             let image = reborn_core::session::user_path(value.trim());
-            let verdict = reborn_core::game_identity::identify(&data, &tool, &image);
+            let verdict = match dolphin_tool_path(&p) {
+                Some(tool) => reborn_core::game_identity::identify(&data, &tool, &image),
+                None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+            };
             // The choice is the player's to make, so it is put to them before
             // anything is written. Answering here without asking is how a
             // player who simply pointed the box at their own disc ended up
@@ -6282,6 +6312,24 @@ mod tests {
             .filter(|l| !l.starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// One rule in one place. The UI hardcoded this path seven times while
+    /// `find_tool` sat public and unused, and a tool in the directory this
+    /// missed reads as `Unreadable`, which now withholds and deletes the
+    /// player's texture pack.
+    #[test]
+    fn nothing_hardcodes_the_dolphin_tool_path() {
+        for (name, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("setup_tools.rs", include_str!("setup_tools.rs")),
+        ] {
+            let code = code_only(src);
+            assert!(
+                !code.contains(concat!("game-import/", "DolphinTool")),
+                "{name} hardcodes the tool path instead of calling find_tool"
+            );
+        }
     }
 
     /// Every way of starting the emulator records a session and collects what

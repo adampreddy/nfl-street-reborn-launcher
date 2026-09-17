@@ -201,8 +201,10 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // Reborn build" (Chain::load -> None -> classify's Unconverted), which
         // would condemn the exact disc this whole feature exists to bless.
         seed_game_patch(&p)?;
-        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
-        let verdict=reborn_core::game_identity::identify(&data,&tool,&booted);
+        let verdict=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&booted),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
         let (outcome,label,note)=match &verdict {
             reborn_core::game_identity::Verdict::DifferentGame{game_id}=>
                 ("different-game".to_string(),None,Some(format!("This is not NFL Street 2 (game ID {game_id}). Reborn's roster, textures and updates do not apply to it."))),
@@ -408,7 +410,7 @@ fn legacy_games(root:&Path)->Vec<String>{
     games.sort_by_key(|p|(!p.to_ascii_lowercase().ends_with("nsr.iso"),p.clone()));games
 }
 pub(super) fn check_reborn_id(source:&Path)->Result<(),String>{
-    let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
+    let tool=dolphin_tool_path(&Platform::detect()).ok_or_else(||DOLPHIN_TOOL_MISSING.to_string())?;
     let mut cmd=std::process::Command::new(tool);cmd.arg("header").arg("-i").arg(source).arg("-j");
     #[cfg(windows)]{use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);}
     let out=cmd.output().map_err(|e|e.to_string())?;
@@ -470,8 +472,10 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
         // that must not make an unrecognized disc the booted game in silence:
         // ask what actually landed and refuse, or record an acknowledgment,
         // the same way every other writer of `settings.game_path` does.
-        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
-        let verdict=reborn_core::game_identity::identify(&data,&tool,&game);
+        let verdict=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&game),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
         // `Consent::NotAsked`, the same rule `may_adopt` applies to an
         // inherited 2.1 disc one click away: setup never adopts a disc that is
@@ -655,8 +659,10 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
         // an image never quietly becomes the booted game. So this refuses
         // rather than recording an acknowledgment: nobody chose this file.
         say("Checking the download…",Some(94));
-        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
-        let verdict=reborn_core::game_identity::identify(&data,&tool,&landed);
+        let verdict=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&landed),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
         if !verdict.is_reborn() {
             return Err(match &verdict {
                 reborn_core::game_identity::Verdict::Unreadable{reason}=>format!("The downloaded game could not be read: {reason} Nothing was changed."),
@@ -781,8 +787,10 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-graphics.json"),serde_json::to_vec_pretty(&options).unwrap()).map_err(|e|e.to_string())?;
         const UNVERIFIED_MIGRATED_GAME:&str="The game file in your old installation isn't an NFL Street Reborn build, so it was not brought over. Choose your NFL Street 2 disc on the next step and Reborn will convert it.";
-        let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
-        let inherited=reborn_core::game_identity::identify(&data,&tool,&game);
+        let inherited=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&game),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
         let game=if may_adopt(&inherited){game.clone()}else{return Err(UNVERIFIED_MIGRATED_GAME.to_string())};
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
