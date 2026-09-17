@@ -1238,6 +1238,14 @@ fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> 
 /// which is not `Unconverted`, so it boots with Reborn's art withheld rather
 /// than refusing. That is the fail-safe direction: a developer still gets
 /// their game, and nothing of Reborn's is painted on an image nothing checked.
+///
+/// Calls `identify_booted`, not `identify`: `image` is the booted image,
+/// `library/offline/NSR.iso`, and a roster apply deliberately rewrites it
+/// (see `reborn_core::game_image`'s module header). Hashing it directly
+/// called every rostered player's own disc `Unconverted` and refused `play`
+/// here exactly as it did in the window; `identify_booted` falls back to
+/// the pristine's provenance when the booted image's own hash is not a
+/// chain node, the same fix `verdict_now` carries in `reborn-ui`.
 #[allow(clippy::type_complexity)]
 fn may_play_before_boot(
     platform: &Platform,
@@ -1253,7 +1261,7 @@ fn may_play_before_boot(
     }
     let tool = reborn_core::game_identity::find_tool(platform, &extra).unwrap_or_default();
     let data = platform.paths.data_root()?;
-    let verdict = reborn_core::game_identity::identify(&data, &tool, image);
+    let verdict = reborn_core::game_identity::identify_booted(&data, &tool, image);
     let settings_file = reborn_core::settings::settings_path(platform)?;
     let saved = reborn_core::settings::Settings::load(&settings_file)?;
     let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)

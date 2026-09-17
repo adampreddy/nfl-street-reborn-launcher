@@ -692,6 +692,16 @@ const DOLPHIN_TOOL_MISSING: &str =
 /// The cache key is the path, the size and the modified time, so a repair, a
 /// swapped disc or a fresh install invalidates it immediately and this can
 /// never answer with bytes it has not verified for the file now on disk.
+///
+/// Calls `identify_booted`, not `identify`: `image` here is the booted
+/// image, `library/offline/NSR.iso`, and a roster apply deliberately
+/// rewrites it (see `game_image`'s module header). Hashing it against the
+/// chain the way a freshly-imported candidate is hashed called every
+/// rostered player's own game "not NFL Street Reborn", refused Play, and
+/// deleted their HD texture pack. `identify_booted` tries the same hash
+/// first and only falls back to provenance (which pristine this was
+/// established from) when that fails, so an install with no roster yet is
+/// unaffected.
 fn verdict_now(p: &Platform, image: &Path) -> Result<reborn_core::game_identity::Verdict, String> {
     let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
     let Some(tool) = dolphin_tool_path(p) else {
@@ -701,13 +711,13 @@ fn verdict_now(p: &Platform, image: &Path) -> Result<reborn_core::game_identity:
         Ok((len, modified)) => cached_game_verdict(
             &GAME_VERDICT_CACHE,
             (image.to_path_buf(), len, modified),
-            || reborn_core::game_identity::identify(&data, &tool, image),
+            || reborn_core::game_identity::identify_booted(&data, &tool, image),
         ),
         // No metadata means no cache key. Ask anyway: a missing key is a
         // reason to work harder, never a reason to skip the question.
         Err(e) => {
             eprintln!("could not read {} to key the verdict cache: {e}", image.display());
-            reborn_core::game_identity::identify(&data, &tool, image)
+            reborn_core::game_identity::identify_booted(&data, &tool, image)
         }
     })
 }
@@ -746,15 +756,20 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
         match find_runtime_and_game_for(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref(), chosen_user.as_deref()) {
             Ok((found, image)) => {
                 let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+                // `identify_booted`, not `identify`: `image` here is the
+                // booted image the Play button would actually launch, and a
+                // roster apply deliberately rewrites it (see `verdict_now`,
+                // which this mirrors so the Play page and the launch gate
+                // never disagree about the same file).
                 let verdict = match dolphin_tool_path(&p) {
                     None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
                     Some(tool) => match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
                         Ok((len, modified)) => cached_game_verdict(
                             &GAME_VERDICT_CACHE,
                             (image.clone(), len, modified),
-                            || reborn_core::game_identity::identify(&data, &tool, &image),
+                            || reborn_core::game_identity::identify_booted(&data, &tool, &image),
                         ),
-                        Err(_) => reborn_core::game_identity::identify(&data, &tool, &image),
+                        Err(_) => reborn_core::game_identity::identify_booted(&data, &tool, &image),
                     },
                 };
                 let game_verdict = Some(game_verdict_tag(&verdict).to_string());
