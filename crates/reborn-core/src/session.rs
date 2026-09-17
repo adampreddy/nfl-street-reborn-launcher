@@ -1834,13 +1834,52 @@ pub fn resolve_runtime(
 ) -> std::result::Result<Runtime, Vec<PathBuf>> {
     let mut looked = Vec::new();
 
+    // The managed runtime, `<data root>/runtime`, is where the content pipeline
+    // installs every runtime update, and it has to be searched FIRST.
+    //
+    // It was searched last, which is to say never. The installer lays a copy
+    // down beside the launcher at `<data root>/app/runtime`; `content::seed`
+    // mirrors that into `<data root>/runtime` by hardlink on first run, so the
+    // two are briefly the same bytes on disk; and from then on every update
+    // writes the managed copy through `atomic_replace`, which is a rename. A
+    // rename gives the destination a NEW inode and quietly severs the link. The
+    // trees drift from that moment, and this function kept answering with the
+    // installer's copy.
+    //
+    // The consequence was total: no runtime component update has reached the
+    // emulator that actually runs since the install that created it. Measured
+    // on the dev box 2026-09-14 - the running exe was 18,508,800 bytes while
+    // the component had installed 18,516,992, and runtime 1.2.2's
+    // `Sys/GameSettings` fix, the one that frees the video backend, had reached
+    // nobody. Players were still reporting the backend stuck on Direct3D 11
+    // with the fix live on the bucket.
+    let managed = platform.data_dir(crate::platform::DataDir::Runtime).ok();
+    let data_root = managed.as_ref().and_then(|m| m.parent()).map(|p| p.to_path_buf());
+
     // An explicit choice wins, so a developer or a Linux player is not
     // overruled. It is still reported as chosen, never as supported.
+    //
+    // But only when it points somewhere the launcher does not manage. An
+    // ordinary install's saved `runtime_exe` names the installer's copy inside
+    // the data root, and honouring THAT is precisely how updates were ignored:
+    // it is not a choice anybody made, it is a path the launcher wrote down
+    // for itself.
     if let Some(path) = chosen {
+        let ours = data_root.as_ref().is_some_and(|root| path.starts_with(root));
         if path.is_file() {
-            return Ok(Runtime::Chosen(path.to_path_buf()));
+            if !ours {
+                return Ok(Runtime::Chosen(path.to_path_buf()));
+            }
+        } else {
+            looked.push(path.to_path_buf());
         }
-        looked.push(path.to_path_buf());
+    }
+
+    if let Some(dir) = &managed {
+        looked.push(dir.clone());
+        if let Some(found) = dolphin_in(dir) {
+            return Ok(Runtime::Bundled(found));
+        }
     }
 
     // Beside the launcher's own executable, which is where the installer puts
@@ -2438,6 +2477,47 @@ mod tests {
         }
     }
 
+    /// The bug that made every runtime update invisible to the emulator.
+    ///
+    /// An ordinary install saves `runtime_exe` pointing at the INSTALLER's copy,
+    /// `<data root>/app/runtime`. The content pipeline installs updates into the
+    /// MANAGED copy, `<data root>/runtime`. The two start as the same bytes
+    /// (content::seed hardlinks the mirror on first run) and drift the moment an
+    /// update lands, because `atomic_replace` renames a staged file over the
+    /// destination and a rename makes a new inode.
+    ///
+    /// So the saved path must not win. It is not a choice a person made; it is a
+    /// path the launcher wrote down for itself, and honouring it meant runtime
+    /// 1.2.2's `Sys/GameSettings` fix reached nobody while sitting live on the
+    /// bucket.
+    ///
+    /// Machine-dependent by design: there is no way to fake a data root through
+    /// `Platform::detect()`, so this proves itself against the real install when
+    /// there is one and stands aside when there is not.
+    #[test]
+    fn a_saved_path_inside_the_data_root_never_beats_the_managed_runtime() {
+        let platform = Platform::detect();
+        let Ok(managed) = platform.data_dir(crate::platform::DataDir::Runtime) else { return };
+        let Some(found) = dolphin_in(&managed) else { return };
+        let Some(data_root) = managed.parent() else { return };
+
+        let installer_copy = data_root
+            .join("app")
+            .join("runtime")
+            .join(found.file_name().expect("the emulator has a file name"));
+        if !installer_copy.is_file() {
+            return;
+        }
+
+        let runtime = resolve_runtime(&platform, Some(&installer_copy), None)
+            .expect("the managed runtime is right there");
+        assert_eq!(
+            runtime,
+            Runtime::Bundled(found),
+            "the saved installer path won over the managed copy, which is the tree every update lands in",
+        );
+    }
+
     #[test]
     fn a_failed_search_names_every_place_it_looked() {
         // The refusal this replaces said the install was incomplete and stopped,
@@ -2448,6 +2528,14 @@ mod tests {
         let empty_legacy = dir.path().join("legacy");
         std::fs::create_dir_all(&empty_legacy).unwrap();
 
+        // On a machine that HAS a Reborn install, the managed runtime at
+        // <data root>/runtime is a real answer and the search rightly succeeds.
+        // That became true on 2026-09-14, when the managed copy started being
+        // searched at all; before it, this function could not see the only tree
+        // updates ever reach. Nothing to prove about the failure listing here.
+        if resolve_runtime(&platform, Some(&missing), Some(&empty_legacy)).is_ok() {
+            return;
+        }
         let looked = resolve_runtime(&platform, Some(&missing), Some(&empty_legacy))
             .expect_err("nothing should have been found");
         assert!(

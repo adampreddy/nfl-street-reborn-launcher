@@ -109,12 +109,30 @@ pub fn apply(runtime: &Path, preset: GraphicsPreset, internal_resolution: u8) ->
         let empty = presets.join("disabled-effects");
         std::fs::create_dir_all(&empty)?;
         general.insert("EffectSearchPaths".into(), empty.to_string_lossy().into_owned());
+    } else if let Some(staged) = stage_active_effects(root, contents) {
+        // Every other tier gets the same treatment, for the same reason.
+        general.insert("EffectSearchPaths".into(), staged.to_string_lossy().into_owned());
     } else if baseline.get("GENERAL", "EffectSearchPaths").is_none() {
         general.insert("EffectSearchPaths".into(), root.join("reshade-shaders/Shaders/**").to_string_lossy().into_owned());
     }
     // An empty technique list and disabled-effect skipping keep Off free of effects,
     // even when the game's shaderless-menu add-on toggles the global effect state.
     general.insert("SkipLoadingDisabledEffects".into(), "1".into());
+    // Where ReShade keeps the compiled effects it does not want to build twice.
+    //
+    // Forced, because this is a machine's own path and the shipped ReShade.ini
+    // carried a developer's: `C:\Users\Adam\AppData\Local\Temp\ReShade`, a
+    // directory no player has. A cache that cannot be written is a cache that
+    // never hits, so every launch recompiled from nothing. Unset is no better:
+    // ReShade then falls back to the system temp directory, which Windows
+    // clears on its own schedule and takes the cache with it.
+    //
+    // Beside the runtime rather than inside it, so a runtime update replaces
+    // the emulator without also throwing away the player's compiled effects.
+    if let Some(cache) = root.parent().map(|d| d.join("cache/reshade")) {
+        let _ = std::fs::create_dir_all(&cache);
+        general.insert("IntermediateCachePath".into(), cache.to_string_lossy().into_owned());
+    }
     // Derived from the resolution the player is running at, not pinned to 3x.
     let (width, height) = depth_filter_for(internal_resolution);
     overlay.entry("DEPTH".into()).or_default().extend([
@@ -125,6 +143,113 @@ pub fn apply(runtime: &Path, preset: GraphicsPreset, internal_resolution: u8) ->
     changed |= !doc.merge_absent(&seed).is_noop();
     if changed { std::fs::write(&config, doc.render())?; }
     Ok(())
+}
+
+/// The effect files a preset's `Techniques` line actually turns on.
+///
+/// Read straight from the text rather than through `IniDocument`, because a
+/// preset keeps these at the top of the file with no section header above them.
+fn enabled_effects(preset: &str) -> Vec<String> {
+    preset
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Techniques="))
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|technique| technique.rsplit('@').next())
+                .map(str::trim)
+                .filter(|name| name.ends_with(".fx"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The file names an effect includes, without their directories.
+fn includes_of(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("#include"))
+        .filter_map(|rest| {
+            let rest = rest.trim();
+            let close = match rest.chars().next()? { '"' => '"', '<' => '>', _ => return None };
+            let rest = &rest[1..];
+            let name = &rest[..rest.find(close)?];
+            Some(name.rsplit(['/', '\\']).next()?.to_owned())
+        })
+        .collect()
+}
+
+/// Every `.fx` and `.fxh` under the bundled shader tree, by file name.
+fn shader_index(dir: &Path, found: &mut std::collections::HashMap<String, std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() { shader_index(&path, found); continue; }
+        let is_shader = path.extension().is_some_and(|e| e == "fx" || e == "fxh");
+        if let (true, Some(name)) = (is_shader, path.file_name().and_then(|n| n.to_str())) {
+            found.entry(name.to_owned()).or_insert(path);
+        }
+    }
+}
+
+/// Stage only the effects a preset enables, plus the headers they include,
+/// into one flat directory, and return it for `EffectSearchPaths`.
+///
+/// `EffectSearchPaths` is a glob. `reshade-shaders/Shaders/**` hands ReShade
+/// all 87 bundled effects to enumerate whichever tier is active, so Quality and
+/// Ultra paid ~80 file loads to turn on ten techniques. That is the "80 files
+/// compiling" a player watches on a cold cache, and in Netplay every other
+/// player waits at the boot barrier while they do it. `SkipLoadingDisabledEffects`
+/// does not contain it - the launcher already had to hand Performance an empty
+/// directory to get the same effect - so the search path has to.
+///
+/// `None` whenever anything is missing, which leaves the bundled glob in place:
+/// a staging problem must cost a player some load time, never their effects.
+fn stage_active_effects(root: &Path, preset: &str) -> Option<std::path::PathBuf> {
+    let shaders = root.join("reshade-shaders/Shaders");
+    if !shaders.is_dir() { return None; }
+    let wanted = enabled_effects(preset);
+    if wanted.is_empty() { return None; }
+    let mut index = std::collections::HashMap::new();
+    shader_index(&shaders, &mut index);
+
+    // Resolve the effects and everything they include before touching disk, so
+    // a name this tree does not carry cannot leave a half-built directory.
+    let mut staged: Vec<&std::path::PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = wanted.clone();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name.clone()) { continue; }
+        let Some(source) = index.get(&name) else {
+            // A missing effect means this preset does not belong to this tree.
+            // A missing header is not in the tree at all, so the glob would not
+            // have found it either: skip it and let the compiler report it.
+            if wanted.contains(&name) { return None; }
+            continue;
+        };
+        staged.push(source);
+        if let Ok(text) = std::fs::read_to_string(source) { queue.extend(includes_of(&text)); }
+    }
+
+    // Rebuilt only when the set changes. Restaging on every launch would rewrite
+    // the paths ReShade hashes into its effect cache and cost the player the
+    // very recompile this exists to avoid.
+    let directory = root.join("reshade-shaders/active");
+    let mut names: Vec<&str> = seen.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    let manifest = directory.join(".staged");
+    let wanted_manifest = names.join("\n");
+    if std::fs::read_to_string(&manifest).ok().as_deref() == Some(wanted_manifest.as_str()) {
+        return Some(directory);
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).ok()?;
+    for source in staged {
+        std::fs::copy(source, directory.join(source.file_name()?)).ok()?;
+    }
+    std::fs::write(&manifest, &wanted_manifest).ok()?;
+    Some(directory)
 }
 
 // The menu gate must remain active, but stage switching must not replace the
@@ -272,4 +397,93 @@ pub fn apply_imported(runtime:&Path,settings:&str,internal_resolution:u8)->Resul
     let (width,height)=depth_filter_for(internal_resolution);
     overlay.entry("DEPTH".into()).or_default().extend([("FilterResolutionWidth".into(),width.to_string()),("FilterResolutionHeight".into(),height.to_string())]);
     if !doc.merge(&overlay).is_noop(){std::fs::write(file,doc.render())?;}Ok(())
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    /// A tree shaped like the bundled one: the enabled effects sit in
+    /// subdirectories, their headers sit above them, and far more effects are
+    /// present than any preset turns on.
+    fn tree(root: &Path) {
+        let shaders = root.join("reshade-shaders/Shaders");
+        for dir in ["qUINT", "NFLStreetReborn", "PD80"] {
+            std::fs::create_dir_all(shaders.join(dir)).unwrap();
+        }
+        std::fs::write(shaders.join("ReShade.fxh"), "// shared\n").unwrap();
+        std::fs::write(shaders.join("ReShadeUI.fxh"), "// shared ui\n").unwrap();
+        std::fs::write(shaders.join("qUINT/qUINT_common.fxh"), "// qUINT\n").unwrap();
+        std::fs::write(shaders.join("qUINT/qUINT_mxao.fx"), "#include \"ReShade.fxh\"\n#include \"qUINT_common.fxh\"\n").unwrap();
+        std::fs::write(shaders.join("NFLStreetReborn/NSR_DepthInk.fx"), "#include \"ReShadeUI.fxh\"\n").unwrap();
+        // The 70-odd nobody enabled.
+        for n in 0..70 { std::fs::write(shaders.join(format!("PD80/PD80_{n:02}.fx")), "// unused\n").unwrap(); }
+    }
+
+    const PRESET: &str = "Techniques=MXAO@qUINT_mxao.fx,NSR_DepthInk@NSR_DepthInk.fx\nTechniqueSorting=MXAO@qUINT_mxao.fx\n";
+
+    /// The whole point: what ReShade is handed to enumerate is the enabled set
+    /// and its headers, not every effect that happens to be bundled.
+    #[test]
+    fn staging_hands_reshade_only_what_the_preset_turns_on() {
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path());
+        let staged = stage_active_effects(dir.path(), PRESET).expect("staged");
+        let mut names: Vec<String> = std::fs::read_dir(&staged).unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n != ".staged")
+            .collect();
+        names.sort();
+        assert_eq!(names, [
+            "NSR_DepthInk.fx", "ReShade.fxh", "ReShadeUI.fxh",
+            "qUINT_common.fxh", "qUINT_mxao.fx",
+        ], "only the enabled effects and the headers they include");
+        assert_eq!(names.iter().filter(|n| n.ends_with(".fx")).count(), 2, "72 effects present, 2 staged");
+    }
+
+    /// A staging problem must cost load time, never a player's effects.
+    #[test]
+    fn a_preset_this_tree_cannot_satisfy_keeps_the_bundled_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path());
+        assert!(stage_active_effects(dir.path(), "Techniques=X@NotHere.fx\n").is_none());
+        assert!(stage_active_effects(dir.path(), "Techniques=\n").is_none(), "an empty preset is Performance's job, not staging's");
+    }
+
+    /// Restaging would rewrite the paths ReShade hashes into its effect cache,
+    /// which is the recompile this exists to prevent.
+    #[test]
+    fn an_unchanged_set_is_not_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path());
+        let staged = stage_active_effects(dir.path(), PRESET).unwrap();
+        let marker = staged.join("qUINT_mxao.fx");
+        let before = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        assert_eq!(stage_active_effects(dir.path(), PRESET).unwrap(), staged);
+        assert_eq!(std::fs::metadata(&marker).unwrap().modified().unwrap(), before, "the same set must not be recopied");
+    }
+    /// The shipped `ReShade.ini` carried a developer's own cache directory, so
+    /// no player's cache could ever be written, let alone hit.
+    #[test]
+    fn the_effect_cache_lands_somewhere_the_player_can_write() {
+        if !cfg!(windows) { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let theirs = r"C:\Users\SomeoneElse\AppData\Local\Temp\ReShade";
+        std::fs::write(
+            runtime.join("ReShade.ini"),
+            format!("[GENERAL]\nIntermediateCachePath={theirs}\n"),
+        ).unwrap();
+        apply(&runtime.join("Dolphin.exe"), GraphicsPreset::Balanced, 3).unwrap();
+        let live = std::fs::read_to_string(runtime.join("ReShade.ini")).unwrap();
+        let cache = IniDocument::parse(&live).get("GENERAL", "IntermediateCachePath").unwrap().to_owned();
+        assert!(!cache.contains("SomeoneElse"), "a developer's path must not survive: {cache}");
+        assert_eq!(std::path::Path::new(&cache), dir.path().join("cache/reshade"));
+        assert!(std::path::Path::new(&cache).is_dir(), "and it must exist to be written to");
+        // Beside the runtime, so replacing the emulator keeps the compiled effects.
+        assert!(!cache.starts_with(runtime.to_string_lossy().as_ref()));
+    }
+
 }
