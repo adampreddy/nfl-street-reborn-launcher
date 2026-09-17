@@ -63,10 +63,11 @@ Read on `integration` in `target/merge-tree`, 2026-09-17.
 - The composed texture path is reached by a directory junction naming the
   composed root by path (`mods.rs:2121`, `mods.rs:3931`). A junction is the
   thing that silently stops resolving when a folder moves.
-- `<runtime>\Sys\GameSettings\GN7.ini` is the GlobalGame layer and beats both
-  `Dolphin.ini` and `GFX.ini`, where the launcher writes everything. Any
-  claim about an effective Dolphin setting that reads only the launcher's own
-  files is unsound.
+- `<runtime>\Sys\GameSettings\GN7.ini` is the GlobalGame layer and beats
+  `Dolphin.ini` and `GFX.ini`, which are Base. It does NOT beat
+  `<user dir>/GameSettings/<id>.ini`, which is LocalGame and is where
+  `settings_law` puts its locked keys. So a claim about an effective Dolphin
+  setting is unsound only if it reads Dolphin.ini or GFX.ini alone.
 
 ### Both open questions, now resolved, and they simplify the design
 
@@ -104,7 +105,7 @@ PackReachability {
     composed_user_dir: PathBuf,// what the compose targeted
     textures_dir: PathBuf,     // <launch_user_dir>/Load/Textures/GN7E69
     reachable: bool,           // resolves AND contains files
-    hires_enabled: bool,       // in the layer that wins, not the one we wrote
+    hires_enabled: bool,       // read from LocalGame, the layer that wins
     installed_version: Option<String>,
     pinned_version: Option<String>,
 }
@@ -153,9 +154,9 @@ rather than police it.
 - Unit tests for the probe against a fabricated user folder: reachable,
   missing directory, present-but-empty, broken junction, and a load path that
   disagrees with where the launcher composed.
-- A test that the probe reads the GlobalGame layer, not the launcher's own
-  files, for `HiresTextures`. This is the assertion that would have caught the
-  runtime bug's shape.
+- A test that the probe compares the launch user dir against the composed one
+  and fails when they differ. This is the assertion that would have caught the
+  runtime bug's shape, and it is the most valuable test in the set.
 - A test that repair is attempted and re-probed before the result is reported.
 - A test that a successful repair produces no player-facing message.
 - Guard tests in this repo must use `code_only()` before asserting, and each
