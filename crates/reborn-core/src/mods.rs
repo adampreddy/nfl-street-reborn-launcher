@@ -1486,6 +1486,43 @@ pub fn pristine_identity(platform: &Platform, game: &GameId) -> Option<String> {
     Some(format!("{}#{}", pointer.current.version, pointer.current.sequence))
 }
 
+/// Whether the texture pack Dolphin will read is actually there, and which
+/// version it is.
+///
+/// The player's question is "do my textures load". This answers exactly that
+/// and nothing more: no hashing, and no walk beyond finding one entry. The
+/// pack is 27,000 files and 2.83 GB of it is oversized upscales, so anything
+/// that reads it in full would be paid on a path the player waits on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackStatus {
+    /// `<user dir>/Load/Textures/<gameid>`, the folder Dolphin reads.
+    pub textures_dir: PathBuf,
+    /// It resolves and holds at least one entry. A broken junction does not
+    /// resolve; an empty folder loads nothing.
+    pub reachable: bool,
+    /// It carries the launcher's marker, so it is the tree we composed
+    /// rather than a folder someone else put there.
+    pub composed_by_us: bool,
+    /// What the textures content pointer says is installed.
+    pub version: Option<String>,
+}
+
+/// Answers "will the pack load, and which version is it" for the folder
+/// Dolphin actually reads, given the same user directory the launch will
+/// pass with `-u`.
+pub fn pack_status(platform: &Platform, user_dir: &Path, game: &GameId) -> PackStatus {
+    let textures_dir = composed_root(user_dir, game);
+    let reachable = std::fs::read_dir(&textures_dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    PackStatus {
+        composed_by_us: textures_dir.join(COMPOSED_MARKER).is_file(),
+        version: pristine_identity(platform, game),
+        textures_dir,
+        reachable,
+    }
+}
+
 /// `mods/packages/`, the validated payloads.
 pub fn packages_root(platform: &Platform) -> Result<PathBuf> {
     platform.data_dir(DataDir::ModsPackages)
@@ -4273,6 +4310,52 @@ mod tests {
         write(&at.join(COMPOSED_MARKER), b"{}");
         assert_eq!(prepare_texture_folder(&at, 44).unwrap(), None);
         assert!(at.join(COMPOSED_MARKER).is_file());
+    }
+
+    /// The player's question is "do my textures load", and the honest answer
+    /// is whether the folder Dolphin reads exists and has files in it. A
+    /// folder that resolves but is empty loads nothing, so it is not
+    /// reachable.
+    #[test]
+    fn a_missing_or_empty_texture_folder_is_not_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = game();
+        let user = dir.path().join("user");
+        let p = Platform::detect();
+
+        // Nothing there at all.
+        let absent = pack_status(&p, &user, &game);
+        assert!(!absent.reachable, "an absent folder cannot load textures");
+
+        // Present but empty: resolves, loads nothing.
+        let composed = composed_root(&user, &game);
+        std::fs::create_dir_all(&composed).unwrap();
+        let empty = pack_status(&p, &user, &game);
+        assert!(!empty.reachable, "an empty folder loads no textures");
+        assert_eq!(empty.textures_dir, composed, "it must name the folder Dolphin reads");
+
+        // One file is enough to load something.
+        write(&composed.join("tex1_x.png"), b"not really a png");
+        let full = pack_status(&p, &user, &game);
+        assert!(full.reachable, "a folder with files in it loads textures");
+    }
+
+    /// A tree the launcher composed carries its marker. A folder the player
+    /// or another tool put there does not, and saying so is how the Play
+    /// page can tell "your pack" from "someone else's folder".
+    #[test]
+    fn a_folder_we_did_not_compose_is_reported_as_not_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = game();
+        let user = dir.path().join("user");
+        let p = Platform::detect();
+        let composed = composed_root(&user, &game);
+        write(&composed.join("tex1_x.png"), b"x");
+
+        assert!(!pack_status(&p, &user, &game).composed_by_us);
+
+        write(&composed.join(COMPOSED_MARKER), b"{}");
+        assert!(pack_status(&p, &user, &game).composed_by_us);
     }
 
     #[cfg(unix)]
