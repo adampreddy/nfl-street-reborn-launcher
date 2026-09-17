@@ -592,8 +592,22 @@ struct LaunchCheck {
     game_note: Option<String>,
     /// Which user folder the launch would boot against, and why.
     user_dir_note: Option<String>,
+    /// Whether the texture pack will load, and which version. Absent when no
+    /// user directory could be resolved, in which case there is nothing to
+    /// report about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack: Option<PackView>,
     /// Why a launch would refuse, in a sentence. Absent when ready.
     problem: Option<String>,
+}
+
+/// What the Play card shows about the texture pack: whether it will load,
+/// and which version, straight from [`reborn_core::mods::PackStatus`].
+#[derive(Debug, Serialize)]
+struct PackView {
+    reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
 }
 
 /// The wire value `game_verdict` reports for each `Verdict`, matching the
@@ -716,19 +730,23 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     Err(_) => reborn_core::game_identity::identify(&data, &tool, &image),
                 };
                 let game_verdict = Some(game_verdict_tag(&verdict).to_string());
+                // Resolved once and reused for user_dir_note, game_note and
+                // pack below, rather than asking resolve_user_dir_for again
+                // for each: the point of this check is to report on the one
+                // directory the launch will actually use, not on whichever
+                // directory a fresh resolve happens to land on.
+                let resolved_user_dir =
+                    reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
                 Ok(LaunchCheck {
-                    user_dir_note: reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path()))
-                        .ok()
-                        .map(|d| d.explain()),
+                    user_dir_note: resolved_user_dir.as_ref().map(|d| d.explain()),
                     game_note: {
                         let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
                         let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
                         if given.is_some() {
                             None
                         } else {
-                            let user = reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
                             let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-                            user.map(|u| {
+                            resolved_user_dir.as_ref().map(|u| {
                                 reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
                                     .explain()
                             })
@@ -744,6 +762,17 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     }),
                     game: Some(image.display().to_string()),
                     game_verdict,
+                    // Absent when no user directory could be resolved, in
+                    // which case there is nothing to report about: the pack
+                    // is answered against the same directory the launch will
+                    // actually pass with `-u`, never a freshly re-resolved
+                    // one.
+                    pack: GameId::parse(GameBuild::Offline.game_id()).ok().and_then(|g| {
+                        resolved_user_dir.as_ref().map(|dir| {
+                            let status = reborn_core::mods::pack_status(&p, dir.path(), &g);
+                            PackView { reachable: status.reachable, version: status.version }
+                        })
+                    }),
                     problem: None,
                 })
             }
@@ -756,6 +785,7 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                 runtime_kind: None,
                 game: None,
                 game_verdict: None,
+                pack: None,
                 problem: Some(problem),
             }),
         }
@@ -7031,6 +7061,28 @@ mod tests {
         assert!(
             !home.contains("Custom game"),
             "Tier 2 must never be worded as a preference the player chose"
+        );
+    }
+
+    /// The player's own test for whether their pack is right is "can I see
+    /// stuff, and what version is it". Neither was on any screen, so the
+    /// answer lived only in a support conversation. `launch_check` already
+    /// runs on every Play page load, so it is where the answer belongs.
+    ///
+    /// `home.js` already contains the bare substring "pack" (`mod_packages`,
+    /// `m.packages`), so this checks for the actual property access the Play
+    /// card would need to read, not the bare word.
+    #[test]
+    fn the_play_page_can_tell_the_player_which_pack_is_loading() {
+        let body = code_only(command_body(include_str!("main.rs"), "async fn launch_check"));
+        assert!(
+            body.contains("pack_status"),
+            "launch_check does not ask whether the texture pack will load"
+        );
+        let home = code_only(include_str!("../ui/home.js"));
+        assert!(
+            home.contains("check?.pack") || home.contains("check.pack"),
+            "the Play page does not show the pack's state"
         );
     }
 
