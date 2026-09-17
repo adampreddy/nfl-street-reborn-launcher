@@ -68,15 +68,28 @@ Read on `integration` in `target/merge-tree`, 2026-09-17.
   claim about an effective Dolphin setting that reads only the launcher's own
   files is unsound.
 
-### Not verified yet
+### Both open questions, now resolved, and they simplify the design
 
-- The precise resolution order the launcher uses for `LoadPath` at launch, and
-  whether `resolve_portable_paths` runs before or after the layer that wins is
-  consulted. The implementation must establish this from the code rather than
-  assume it.
-- Whether `HiresTextures` is currently pinned in `GN7.ini`. Memory records
-  `GFXBackend`, `SyncGPU`, `MSAA` and `InternalResolution` pinned there; the
-  texture key is not recorded either way.
+Verified 2026-09-17, and each correction removes work:
+
+- **`HiresTextures` already wins.** `settings_law.rs:194` locks it to `True`
+  in `GAME_SETTINGS`, and `GAME_SETTINGS` is
+  `<user dir>/GameSettings/<game id>.ini` (`settings_law.rs:73-76`), which is
+  Dolphin's LocalGame layer. LocalGame beats the shipped
+  `Sys/GameSettings/GN7.ini` GlobalGame layer. The earlier note that GN7.ini
+  beats where the launcher writes is true of `Dolphin.ini` and `GFX.ini`, which
+  are the Base layer, and false of GameSettings. So this needs a cheap
+  assertion, not a resolver.
+- **There is no `LoadPath` to resolve.** `resolve_portable_paths` does not
+  exist in this tree; that name came from a stale note. `LoadPath` is stripped
+  by `user_template.rs:228`, so Dolphin falls back to its own default,
+  `<user dir>/Load`, relative to whatever the launcher passes with `-u`. No
+  absolute path is stored, so none can drift. Stripping it was the fix.
+
+**Therefore the real failure shape is the runtime bug's exact twin:** the pack
+is composed into one user directory and the launch passes `-u` pointing at
+another. Nothing compares the two. That, not path resolution, is what this
+spec must check.
 
 ## Design
 
@@ -87,8 +100,9 @@ will the pack load, and which version is it.
 
 ```
 PackReachability {
-    load_path: PathBuf,        // the path Dolphin will actually use
-    textures_dir: PathBuf,     // <load_path>/Textures/GN7E69
+    launch_user_dir: PathBuf,  // what -u will pass
+    composed_user_dir: PathBuf,// what the compose targeted
+    textures_dir: PathBuf,     // <launch_user_dir>/Load/Textures/GN7E69
     reachable: bool,           // resolves AND contains files
     hires_enabled: bool,       // in the layer that wins, not the one we wrote
     installed_version: Option<String>,
@@ -99,12 +113,16 @@ PackReachability {
 Four checks, all cheap. No directory walk beyond "does it contain files", no
 hashing.
 
-1. **Resolve the load path as Dolphin will**, honoring the GlobalGame layer.
-   The launcher's idea of the path and Dolphin's must be the same object, not
-   two strings that look alike. This is the check the runtime bug needed.
-2. **Prove `<load_path>/Textures/GN7E69` is reachable**: it resolves (a broken
-   junction does not) and it is non-empty.
-3. **Prove `HiresTextures` is effectively on** in the winning layer.
+1. **Prove the launch's user directory is the one the pack was composed
+   into.** The launch resolves a user dir and passes it with `-u`; the compose
+   targeted a user dir too. Compare them as the same object, not as two
+   strings that look alike. This is the runtime bug's shape, and it is the
+   check that matters most.
+2. **Prove `<user dir>/Load/Textures/GN7E69` is reachable**: it resolves (a
+   broken junction does not) and it is non-empty.
+3. **Assert `HiresTextures` is on in the LocalGame layer.** Already locked
+   there, so this is a cheap confirmation that catches a regression rather
+   than a resolver that recomputes Dolphin's layering.
 4. **Read the installed pack version and the version the signed release
    pins.** A manifest read, not a content walk.
 
