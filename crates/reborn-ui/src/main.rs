@@ -7086,6 +7086,29 @@ mod tests {
         );
     }
 
+    /// `open_runtime` is deliberately unrestricted: it hands the player
+    /// Dolphin's own UI, and Reborn's texture pack is keyed by game ID, so
+    /// any NFL Street 2 disc booted there picks up Reborn's faces. That is
+    /// the last remaining route to "old names with new faces". Adam's
+    /// decision is to name it, not police it, so the fix is wording, not a
+    /// gate.
+    #[test]
+    fn opening_dolphin_directly_says_its_textures_apply_to_any_disc() {
+        let settings = code_only(include_str!("../ui/settings.js"));
+        assert!(
+            settings.contains("Reborn's textures apply to any NFL Street 2 disc"),
+            "the Dolphin toolbar never says its textures follow the game ID, not the disc, \
+             so a player who opens another copy there gets no warning before seeing Reborn's players"
+        );
+        let recovery = code_only(include_str!("../ui/recovery.js"));
+        assert!(
+            recovery.contains("Reborn's textures apply to any NFL Street 2 disc"),
+            "the recovery page's own Open Dolphin row still says nothing about textures \
+             following the game ID rather than the disc, and a player there is already \
+             troubleshooting a look that does not match what they expect"
+        );
+    }
+
     /// `setup_import_game` is Door 1: the first place a player's disc ever
     /// reaches the launcher. `game_import::import_with_progress` already
     /// verifies every file inside the disc and fails with a precise reason
