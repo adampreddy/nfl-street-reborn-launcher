@@ -1430,6 +1430,131 @@ pub fn shipped_pristine_root(platform: &Platform, game: &GameId) -> Option<PathB
     candidate.is_dir().then_some(candidate)
 }
 
+/// The directory to hand the Builder's `--textures` flag.
+///
+/// The Builder documents that flag as "Reborn Dolphin's Load/Textures
+/// folder" and appends the game id itself, so a caller that passes an
+/// already qualified pack root gets the id twice:
+/// `library/textures/GN7E69/GN7E69/`. Every roster apply did exactly that
+/// until 2026-09-17, which left 460 portraits one level too deep on every
+/// install that had applied a roster.
+///
+/// It stayed invisible because Dolphin scans the game-id tree recursively, so
+/// the misplaced portraits still loaded. What Dolphin actually did was log
+/// "One or more textures at path '...' were already inserted" and drop one of
+/// each duplicate pair, arbitrarily. While the pairs hold the same bytes that
+/// costs only disk. The pair has to differ exactly once -- the next textures
+/// update that replaces a portrait at the correct level -- for the stale
+/// nested copy to win and the player to see the old face.
+///
+/// [`pristine_root`] is game-id-qualified on every branch but one: a saved
+/// `migrated_texture_root` is whatever the player's 2.1 install used. So the
+/// trailing component is stripped only when it really is the game id, and an
+/// unqualified root is passed through for the Builder to qualify itself.
+pub fn builder_textures_arg(platform: &Platform, game: &GameId) -> Result<PathBuf> {
+    Ok(strip_trailing_game_id(&pristine_root(platform, game)?, game))
+}
+
+/// `root` without a trailing `<gameid>` component, or `root` unchanged when it
+/// does not end in one.
+fn strip_trailing_game_id(root: &Path, game: &GameId) -> PathBuf {
+    let ends_in_id = root.file_name().and_then(|n| n.to_str()) == Some(game.as_str());
+    match (ends_in_id, root.parent()) {
+        (true, Some(parent)) => parent.to_path_buf(),
+        _ => root.to_path_buf(),
+    }
+}
+
+/// What [`heal_nested_game_folder`] found and did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Healed {
+    /// Nested files deleted because the same bytes already sat at the right
+    /// level. Nothing was lost.
+    pub duplicates: usize,
+    /// Nested files deleted because a DIFFERENT file held that texture name at
+    /// the right level. The right-level file is the one a manifest lists, so it
+    /// wins; the nested one was a stale Builder write that no manifest knows.
+    pub superseded: Vec<String>,
+    /// Nested files moved up, because nothing at the right level had them.
+    /// These are real content and deleting them would have lost it.
+    pub moved: Vec<String>,
+}
+
+impl Healed {
+    pub fn is_empty(&self) -> bool {
+        self.duplicates == 0 && self.superseded.is_empty() && self.moved.is_empty()
+    }
+}
+
+/// Repair a texture tree that has a copy of its own game-id folder inside it.
+///
+/// `root` ends in the game id (`.../GN7E69`), so the folder to fold away is
+/// `root/GN7E69`. Each file in it is deleted when the same bytes are already at
+/// the right level, and MOVED UP otherwise -- never pruned on sight. On the
+/// install this was found on, 459 of 460 were byte-identical duplicates and one
+/// was a portrait that existed nowhere else, so a prune would have lost it.
+///
+/// Does nothing, cheaply, when there is no such folder. See
+/// [`builder_textures_arg`] for what put it there.
+pub fn heal_nested_game_folder(root: &Path) -> Result<Healed> {
+    let Some(leaf) = root.file_name().map(|n| n.to_os_string()) else {
+        return Ok(Healed::default());
+    };
+    let nested = root.join(&leaf);
+    if !nested.is_dir() {
+        return Ok(Healed::default());
+    }
+    let listing = walk(&nested)?;
+    let mut healed = Healed::default();
+    for file in &listing.files {
+        let wrong = join_relative(&nested, &file.relative);
+        let right = join_relative(root, &file.relative);
+        if right.is_file() {
+            if same_bytes(&wrong, &right)? {
+                healed.duplicates += 1;
+            } else {
+                healed.superseded.push(file.relative.clone());
+            }
+            std::fs::remove_file(&wrong).map_err(|source| Error::Io { path: wrong, source })?;
+            continue;
+        }
+        if let Some(parent) = right.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source| Error::Io { path: parent.to_path_buf(), source })?;
+        }
+        std::fs::rename(&wrong, &right).map_err(|source| Error::Io { path: wrong, source })?;
+        healed.moved.push(file.relative.clone());
+    }
+    // Whatever is left is empty directories, and an unsupported entry (a
+    // symlink, a device) is left exactly where it is for a human to look at.
+    remove_empty_dirs(&nested)?;
+    Ok(healed)
+}
+
+fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
+    let left = std::fs::metadata(a).map_err(|source| Error::Io { path: a.to_path_buf(), source })?;
+    let right = std::fs::metadata(b).map_err(|source| Error::Io { path: b.to_path_buf(), source })?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    Ok(crate::library::hash_file(a)? == crate::library::hash_file(b)?)
+}
+
+/// Remove `dir` and every directory under it, bottom up, stopping at the first
+/// one that still holds something.
+fn remove_empty_dirs(dir: &Path) -> Result<()> {
+    let entries = std::fs::read_dir(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            remove_empty_dirs(&entry.path())?;
+        }
+    }
+    // Not an error: a leftover file is a deliberate stop, not a failure.
+    let _ = std::fs::remove_dir(dir);
+    Ok(())
+}
+
 /// Whether a content update has installed the textures component for this
 /// game id into the data root.
 ///
@@ -1995,6 +2120,29 @@ impl Composer {
             return Ok(Composition::Refused(ComposeRefusal::NoPristineTree {
                 path: req.pristine_root.clone(),
             }));
+        }
+        // Fold away a copy of the game-id folder written inside the pack
+        // itself before anything reads the pack, so a plan is made from the
+        // real file list and the composed tree stops carrying the duplicates.
+        // Both trees get it: the pristine is where the Builder wrote them, the
+        // composed tree is where an earlier compose already copied them. A
+        // failure here is logged, not fatal -- a pack with the extra folder
+        // still composes, it just keeps costing what it costs.
+        for tree in [&req.pristine_root, &req.composed_root] {
+            match heal_nested_game_folder(tree) {
+                Ok(healed) if healed.is_empty() => {}
+                Ok(healed) => tracing::info!(
+                    "texture pack layout repaired in {}: {} duplicate(s) removed, {}                      moved up to the right level, {} superseded by the file already there",
+                    tree.display(),
+                    healed.duplicates,
+                    healed.moved.len(),
+                    healed.superseded.len(),
+                ),
+                Err(e) => tracing::warn!(
+                    "the nested game-id folder in {} could not be folded away ({e});                      composing with it in place",
+                    tree.display()
+                ),
+            }
         }
         let pristine = PristineTree::open(&req.pristine_root)?;
         let listing = pristine.list()?;
@@ -2894,6 +3042,96 @@ mod tests {
 
     fn game() -> GameId {
         GameId::parse("GN7E69").unwrap()
+    }
+
+    // --- the nested game-id folder: a pack root with a copy of itself inside
+    //
+    // What put it there: the Builder's --textures flag wants Dolphin's
+    // Load/Textures folder and appends the game id, but four call sites passed
+    // the already qualified pack root. See mods::builder_textures_arg.
+
+    #[test]
+    fn strip_trailing_game_id_removes_only_a_real_game_id() {
+        let g = game();
+        // Qualified: the Builder would double it, so hand it the parent.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/data/library/textures/GN7E69"), &g),
+            PathBuf::from("/data/library/textures")
+        );
+        // Not qualified (a saved migrated_texture_root): pass it through and
+        // let the Builder qualify it itself.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/old/Reborn 2.1/User/Load/Textures"), &g),
+            PathBuf::from("/old/Reborn 2.1/User/Load/Textures")
+        );
+        // A different game id is not this game's id.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/data/library/textures/LG4P76"), &g),
+            PathBuf::from("/data/library/textures/LG4P76")
+        );
+    }
+
+    #[test]
+    fn heal_deletes_duplicates_moves_real_content_and_drops_the_nested_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        // Byte-identical at both levels: the nested one is pure waste.
+        write(&root.join("dup.png"), b"the same portrait");
+        write(&root.join("GN7E69").join("dup.png"), b"the same portrait");
+        // Nowhere else on disk: this is the one a prune would have lost.
+        write(&root.join("GN7E69").join("only-here.png"), b"a portrait that ships nowhere");
+        // A subdirectory inside the nested folder is folded too.
+        write(&root.join("GN7E69").join("sub").join("deep.png"), b"deep");
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert_eq!(healed.duplicates, 1);
+        assert_eq!(healed.superseded, Vec::<String>::new());
+        let mut moved = healed.moved.clone();
+        moved.sort();
+        assert_eq!(moved, vec!["only-here.png".to_string(), "sub/deep.png".to_string()]);
+        assert!(!root.join("GN7E69").exists(), "the nested folder is gone");
+        assert_eq!(std::fs::read(root.join("dup.png")).unwrap(), b"the same portrait");
+        assert_eq!(
+            std::fs::read(root.join("only-here.png")).unwrap(),
+            b"a portrait that ships nowhere"
+        );
+        assert_eq!(std::fs::read(root.join("sub").join("deep.png")).unwrap(), b"deep");
+    }
+
+    #[test]
+    fn heal_keeps_the_right_level_file_when_the_nested_copy_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        // The right-level file is what a manifest lists, so it wins. The
+        // nested one is a stale Builder write no manifest knows about, and
+        // leaving it is what makes a later update show the OLD face.
+        write(&root.join("face.png"), b"the new face, from the manifest");
+        write(&root.join("GN7E69").join("face.png"), b"the old face");
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert_eq!(healed.duplicates, 0);
+        assert_eq!(healed.superseded, vec!["face.png".to_string()]);
+        assert!(healed.moved.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("face.png")).unwrap(),
+            b"the new face, from the manifest"
+        );
+        assert!(!root.join("GN7E69").exists());
+    }
+
+    #[test]
+    fn heal_does_nothing_to_a_correctly_laid_out_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        lay_pristine(&root);
+        let before = walk(&root).unwrap().files;
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert!(healed.is_empty());
+        assert_eq!(walk(&root).unwrap().files, before);
     }
 
     fn write(path: &Path, bytes: &[u8]) {

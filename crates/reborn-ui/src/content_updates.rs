@@ -315,9 +315,11 @@ pub(crate) fn image_hook(p: &Platform, settings: &reborn_core::settings::Setting
     if let Ok(appdata) = std::env::var("APPDATA") {
         extra_dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));
     }
+    // The Builder appends the game id itself, so this is the pack root's
+    // PARENT. See mods::builder_textures_arg.
     let textures_root = reborn_core::mods::GameId::parse("GN7E69")
         .ok()
-        .and_then(|game| reborn_core::mods::pristine_root(p, &game).ok());
+        .and_then(|game| reborn_core::mods::builder_textures_arg(p, &game).ok());
     ImageHook {
         builder: None,
         xdelta: None,

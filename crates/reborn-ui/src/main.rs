@@ -6321,6 +6321,50 @@ mod tests {
     /// by executable text. Four guards in this feature were satisfiable by a
     /// comment that merely named the thing they were checking for; the code
     /// under test is what a guard must see, never the prose beside it.
+    /// The Builder's `--textures` flag wants Dolphin's `Load/Textures` folder
+    /// and appends the game id itself. `mods::pristine_root` already ends in
+    /// the game id, so handing it over writes the pack's own game-id folder
+    /// inside the pack: `library/textures/GN7E69/GN7E69/`. That is what put
+    /// 460 portraits one level too deep on every install that had applied a
+    /// roster, and Dolphin hid it by scanning recursively while silently
+    /// dropping one of each duplicate pair.
+    ///
+    /// `mods::builder_textures_arg` is the only correct source for that path.
+    #[test]
+    fn no_roster_apply_hands_the_builder_a_game_qualified_texture_path() {
+        for (name, body) in [
+            (
+                "image_hook",
+                body_until(
+                    include_str!("content_updates.rs"),
+                    "pub(crate) fn image_hook",
+                    "fn run_check",
+                ),
+            ),
+            (
+                "establish_booted",
+                body_until(
+                    include_str!("setup_tools.rs"),
+                    "fn establish_booted",
+                    "pub async fn setup_import_existing_game",
+                ),
+            ),
+        ] {
+            let code = code_only(body);
+            assert!(
+                code.contains("builder_textures_arg"),
+                "{name} does not take the Builder's textures path from \
+                 mods::builder_textures_arg"
+            );
+            assert!(
+                !code.contains("pristine_root"),
+                "{name} hands the Builder a game-id-qualified pack root, so the \
+                 Builder will qualify it a second time and portraits land in \
+                 library/textures/GN7E69/GN7E69/"
+            );
+        }
+    }
+
     fn code_only(body: &str) -> String {
         body.lines()
             .map(str::trim_start)

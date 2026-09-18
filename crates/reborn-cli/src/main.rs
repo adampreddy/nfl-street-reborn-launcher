@@ -4530,7 +4530,8 @@ fn update_content(
     // real texture tree.
     let textures_root = match (id, data_root) {
         (ComponentId::Roster | ComponentId::GamePatch, None) => {
-            Some(reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?)
+            // The pack root's PARENT: the Builder appends the game id.
+            Some(reborn_core::mods::builder_textures_arg(platform, &GameId::parse("GN7E69")?)?)
         }
         _ => None,
     };
@@ -4830,7 +4831,8 @@ fn roster_apply(
         // A test root: never write portraits into a real tree by default.
         (None, Some(_)) => None,
         (None, None) => {
-            textures_owned = reborn_core::mods::pristine_root(platform, &GameId::parse("GN7E69")?)?;
+            // The pack root's PARENT: the Builder appends the game id.
+            textures_owned = reborn_core::mods::builder_textures_arg(platform, &GameId::parse("GN7E69")?)?;
             Some(textures_owned.as_path())
         }
     };
