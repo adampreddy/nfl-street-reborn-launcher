@@ -1531,6 +1531,25 @@ pub fn heal_nested_game_folder(root: &Path) -> Result<Healed> {
     Ok(healed)
 }
 
+/// Say what a heal did, or why it could not. Never fatal: a pack that still
+/// has the nested folder composes, it just keeps paying for it.
+fn report_heal(tree: &Path, outcome: Result<Healed>) {
+    match outcome {
+        Ok(healed) if healed.is_empty() => {}
+        Ok(healed) => tracing::info!(
+            "texture pack layout repaired in {}: {} duplicate(s) removed, {} moved up to the right level, {} superseded by the file already there",
+            tree.display(),
+            healed.duplicates,
+            healed.moved.len(),
+            healed.superseded.len(),
+        ),
+        Err(e) => tracing::warn!(
+            "the nested game-id folder in {} could not be folded away ({e}); composing with it in place",
+            tree.display()
+        ),
+    }
+}
+
 fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
     let left = std::fs::metadata(a).map_err(|source| Error::Io { path: a.to_path_buf(), source })?;
     let right = std::fs::metadata(b).map_err(|source| Error::Io { path: b.to_path_buf(), source })?;
@@ -2121,29 +2140,12 @@ impl Composer {
                 path: req.pristine_root.clone(),
             }));
         }
-        // Fold away a copy of the game-id folder written inside the pack
-        // itself before anything reads the pack, so a plan is made from the
-        // real file list and the composed tree stops carrying the duplicates.
-        // Both trees get it: the pristine is where the Builder wrote them, the
-        // composed tree is where an earlier compose already copied them. A
-        // failure here is logged, not fatal -- a pack with the extra folder
-        // still composes, it just keeps costing what it costs.
-        for tree in [&req.pristine_root, &req.composed_root] {
-            match heal_nested_game_folder(tree) {
-                Ok(healed) if healed.is_empty() => {}
-                Ok(healed) => tracing::info!(
-                    "texture pack layout repaired in {}: {} duplicate(s) removed, {}                      moved up to the right level, {} superseded by the file already there",
-                    tree.display(),
-                    healed.duplicates,
-                    healed.moved.len(),
-                    healed.superseded.len(),
-                ),
-                Err(e) => tracing::warn!(
-                    "the nested game-id folder in {} could not be folded away ({e});                      composing with it in place",
-                    tree.display()
-                ),
-            }
-        }
+        // Fold away a copy of the pack's own game-id folder written inside the
+        // pack, before anything reads the pack, so the plan is made from the
+        // real file list. See `heal_nested_game_folder` for what put it there.
+        // A failure is logged, not fatal: a pack with the extra folder still
+        // composes, it just keeps costing what it costs.
+        report_heal(&req.pristine_root, heal_nested_game_folder(&req.pristine_root));
         let pristine = PristineTree::open(&req.pristine_root)?;
         let listing = pristine.list()?;
         if !listing.unsupported.is_empty() {
@@ -2164,6 +2166,13 @@ impl Composer {
         if let Some(refusal) = foreign_tree_refusal(&req.composed_root)? {
             return Ok(Composition::Refused(refusal));
         }
+
+        // Now that the tree is known to be one the launcher composed, the same
+        // repair applies to it: an earlier compose copied the nested folder
+        // across, and that is the copy Dolphin actually reads. Deliberately
+        // after the check above and never before it -- a folder the launcher
+        // did not compose is the player's, and this would have written into it.
+        report_heal(&req.composed_root, heal_nested_game_folder(&req.composed_root));
 
         let conflicts = detect_conflicts(&req.packages, &req.game);
         let (hard, soft): (Vec<Conflict>, Vec<Conflict>) =
@@ -3119,6 +3128,32 @@ mod tests {
             b"the new face, from the manifest"
         );
         assert!(!root.join("GN7E69").exists());
+    }
+
+    /// The repair writes into the composed tree, so it must happen only after
+    /// the tree has been shown to be one the launcher composed. Placed before
+    /// that check, as it first was, it deleted and moved files inside a folder
+    /// the very next line refuses to touch: the player's own.
+    #[test]
+    fn a_texture_folder_the_launcher_did_not_compose_is_never_repaired() {
+        let p = Platform::detect();
+        let fx = fixture();
+        // No marker: this folder is somebody's own. Give it the same nested
+        // game-id folder the repair exists for, holding a file that would be
+        // deleted as a duplicate if the repair ever ran here.
+        write(&fx.composed.join("theirs.dds"), b"their own texture");
+        write(
+            &fx.composed.join("GN7E69").join("theirs.dds"),
+            b"their own texture",
+        );
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+
+        assert!(matches!(r, ComposeRefusal::ForeignComposedTree { .. }));
+        assert!(
+            fx.composed.join("GN7E69").join("theirs.dds").is_file(),
+            "the repair reached into a folder the launcher did not compose"
+        );
     }
 
     #[test]
