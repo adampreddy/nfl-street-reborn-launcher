@@ -264,7 +264,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // asks what this image is before anything below applies the texture pack
   // or starts the emulator, so an unverified disc gets neither one here
   // either.
-  let chosen_disc_verified=may_play_before_boot(&p,&game_path)?;
+  let chosen_disc=may_play_before_boot(&p,&game_path)?;
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
   // netplay boots: reborn_core::online_image keeps a copy that is the
@@ -275,9 +275,18 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // the sync has to be judging. The gate above read the disc the player
   // chose; this is the file the emulator is actually handed.
   let online=match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)};
-  let verified=match &online{
-    Some(_)=>chosen_disc_verified&&netplay_copy_is_reborns_own(&p),
-    None=>chosen_disc_verified,
+  // The file the emulator is handed, not the one the player picked. A netplay
+  // copy that is not Reborn's own is a ruling on the bytes about to boot, so
+  // it turns a verified disc into NotReborn. A chosen disc nobody could read
+  // stays Unknown: the copy says nothing about a question that was never
+  // answered, and the pack is left alone rather than taken.
+  let standing=match &online{
+    Some(_)=>match chosen_disc{
+      reborn_core::game_identity::ImageStanding::Reborn if netplay_copy_is_reborns_own(&p)=>reborn_core::game_identity::ImageStanding::Reborn,
+      reborn_core::game_identity::ImageStanding::Reborn=>reborn_core::game_identity::ImageStanding::NotReborn,
+      other=>other,
+    },
+    None=>chosen_disc,
   };
   let game_path=online.unwrap_or(game_path);
   // The same texture sync Play runs, and it runs UNCONDITIONALLY.
@@ -292,13 +301,13 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // room, and watch Reborn's faces on somebody else's roster: the reported
   // bug, through the product's own interface.
   //
-  // Passing the verdict instead of gating the call is the whole fix. False
-  // now means Withhold, which takes the pack off, rather than "skip". A sync
-  // problem is logged, not fatal: the room still opens.
-  if let Err(e)=crate::sync_active_judged(&p,runtime.as_deref(),Some(verified)) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
+  // Passing the verdict instead of gating the call is the whole fix.
+  // NotReborn now means Withhold, which takes the pack off, rather than
+  // "skip". A sync problem is logged, not fatal: the room still opens.
+  if let Err(e)=crate::sync_active_judged(&p,runtime.as_deref(),Some(standing)) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
   // Fail before preparing settings when an older/custom runtime lacks the bridge.
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
-  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures_allowed:verified};
+  let req=LaunchRequest{runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures:standing};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
   // The waiting acquire, the same one a launch takes. A lock this launcher's

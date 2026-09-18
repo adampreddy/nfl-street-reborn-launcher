@@ -1250,7 +1250,7 @@ fn sessions(platform: &Platform) -> reborn_core::Result<std::process::ExitCode> 
 fn may_play_before_boot(
     platform: &Platform,
     image: &std::path::Path,
-) -> reborn_core::Result<std::result::Result<bool, &'static str>> {
+) -> reborn_core::Result<std::result::Result<reborn_core::game_identity::ImageStanding, &'static str>> {
     let here = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf));
@@ -1313,7 +1313,7 @@ fn play(
         // Answered below, by the gate, before anything boots. `Session::prepare`
         // never reads this field (only `Session::run` composes the texture
         // tree), so a dry run does not need the whole-disc hash the gate costs.
-        textures_allowed: false,
+        textures: reborn_core::game_identity::ImageStanding::Unknown,
     };
 
     // A dry run writes the configuration and starts nothing, which is the same
@@ -1399,19 +1399,25 @@ fn play(
 
     // The same gate the window applies, for the same reason, and after the dry
     // run so that writing configuration does not pay for a whole-disc hash.
-    // This subcommand ships in the product: it built its request with
-    // `textures_allowed: true` and asked nothing, so a disc the Play button
+    // This subcommand ships in the product: it built its request with its
+    // textures claimed and asked nothing, so a disc the Play button
     // refuses booted from here wearing Reborn's faces over somebody else's
     // roster. `may_play` is the window's own rule, imported, not restated.
-    req.textures_allowed = match may_play_before_boot(platform, iso)? {
-        Ok(verified) => verified,
+    req.textures = match may_play_before_boot(platform, iso)? {
+        Ok(standing) => standing,
         Err(why) => {
             eprintln!("{why}");
             return Ok(PROBLEM);
         }
     };
-    if !req.textures_allowed {
-        println!("Reborn's textures are withheld: this image is not a build Reborn verified as its own.");
+    match req.textures {
+        reborn_core::game_identity::ImageStanding::NotReborn => println!(
+            "Reborn's textures are withheld: this image is not a build Reborn verified as its own."
+        ),
+        reborn_core::game_identity::ImageStanding::Unknown => println!(
+            "Reborn could not read this image, so whatever textures are already in place are left alone."
+        ),
+        reborn_core::game_identity::ImageStanding::Reborn => {}
     }
 
     println!("Starting. This process stays until the game exits.");
@@ -5138,7 +5144,7 @@ mod tests {
 
     /// `rebornctl play` is a shipped boot path and has to ask what the disc is.
     ///
-    /// It built a `LaunchRequest` with `textures_allowed: true` and verified
+    /// It built a `LaunchRequest` with its textures claimed and verified
     /// nothing, so a disc the Play button refuses booted from here wearing
     /// Reborn's faces over somebody else's roster. The window's three boot
     /// paths are pinned by a test of exactly this shape; this is the fourth.
@@ -5155,10 +5161,20 @@ mod tests {
             body.contains("may_play_before_boot"),
             "rebornctl play boots the game without asking whether the disc is a Reborn build"
         );
-        assert!(
-            !body.contains("textures_allowed: true"),
-            "rebornctl play still claims an unverified disc as Reborn's own"
-        );
+        // What must never come back is the REQUEST claiming a standing, which
+        // is what this did. Naming the variant elsewhere is fine and now
+        // happens on purpose: `play` prints a different line per standing, so
+        // a bare `contains("ImageStanding::Reborn")` failed on the message
+        // rather than on the fault.
+        for claimed in [
+            "textures: reborn_core::game_identity::ImageStanding::Reborn",
+            "textures: ImageStanding::Reborn",
+        ] {
+            assert!(
+                !body.contains(claimed),
+                "rebornctl play still claims an unverified disc as Reborn's own"
+            );
+        }
     }
 
     /// Every subcommand that writes, by the path a person types.

@@ -466,7 +466,8 @@ async fn prepare_launch(
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
             league_match: false,
-            textures_allowed: true,
+            // Prepare composes nothing, so there is nothing to claim.
+            textures: reborn_core::game_identity::ImageStanding::Unknown,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -999,7 +1000,7 @@ fn record_verdict(
 
 /// The verdict for an image plus the player's standing acknowledgment, in
 /// the one shape every boot path needs. Returns the value for
-/// `LaunchRequest::textures_allowed`, or the refusal to show the player.
+/// `LaunchRequest::textures`, or the refusal to show the player.
 ///
 /// Named for the question it answers, `may_play`, rather than for what it
 /// does internally: the guard tests that pin every boot path grep for that
@@ -1012,7 +1013,7 @@ fn record_verdict(
 /// textures, is identical every time. Splitting it out here is what keeps
 /// them from holding the same eight lines three times, quietly drifting
 /// apart the next time one of them changes.
-fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<bool, String> {
+fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<reborn_core::game_identity::ImageStanding, String> {
     // Through the cache. `identify` answers by hashing the whole disc image,
     // and this runs on every single Play press, on a file the Play page has
     // usually just asked about. The key is path, size and modified time, so
@@ -1072,7 +1073,7 @@ async fn launch(
         // What we are about to boot, before we boot it. A disc that is not a
         // Reborn build must never reach the emulator wearing Reborn's
         // textures: that is what produced "old names with new faces".
-        let verified = may_play_before_boot(&p, &game_path)?;
+        let standing = may_play_before_boot(&p, &game_path)?;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
@@ -1082,7 +1083,7 @@ async fn launch(
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
-            textures_allowed: verified,
+            textures: standing,
         };
 
         let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
@@ -1873,14 +1874,14 @@ pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Resul
 ///
 /// `already_judged` is NOT a way to skip the question. It is the answer to the
 /// question, asked about a different file, and it goes through exactly the same
-/// rule: `Some(false)` means `Withhold`, which REMOVES the composed tree. What
+/// rule: `Some(NotReborn)` means `Withhold`, which REMOVES the composed tree. What
 /// must never come back is a caller that skips this function entirely when its
 /// own answer is false, because skipping composes nothing and leaves the whole
 /// pack in place, which is the bug this law exists to remove.
 pub(crate) fn sync_active_judged(
     p: &Platform,
     runtime_hint: Option<&str>,
-    already_judged: Option<bool>,
+    already_judged: Option<reborn_core::game_identity::ImageStanding>,
 ) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
@@ -1898,7 +1899,7 @@ pub(crate) fn sync_active_judged(
     // toggled a mod or switched a controls profile, and Play would then find
     // it already there.
     let decision = match already_judged {
-        Some(verified) => TextureDecision::new(verified, &preferences, TEXTURES_WITHHELD_NOT_REBORN),
+        Some(standing) => TextureDecision::new(standing, &preferences, TEXTURES_WITHHELD_NOT_REBORN),
         None => texture_policy_now(p, runtime_hint, &preferences),
     };
     req.texture_policy = decision.policy;
@@ -1910,9 +1911,6 @@ pub(crate) fn sync_active_judged(
 /// Shown on the Mods page when Reborn's pack was taken off the game file
 /// because that file is not a Reborn build.
 const TEXTURES_WITHHELD_NOT_REBORN: &str = "Your game file is not NFL Street Reborn, so Reborn's texture pack was removed from it. Repair your game on the Settings page to put the pack back.";
-/// Shown when the launcher could not read the game file at all, so it could
-/// not tell whether the pack belongs on it.
-const TEXTURES_WITHHELD_UNCHECKED: &str = "Reborn could not check your game file, so its texture pack was removed until it can. Repair your game on the Settings page, or reinstall the launcher if this keeps happening.";
 
 /// What to do with the texture folder, and the sentence to say when the answer
 /// took the pack away.
@@ -1930,12 +1928,12 @@ struct TextureDecision {
 
 impl TextureDecision {
     fn new(
-        image_verified: bool,
+        standing: reborn_core::game_identity::ImageStanding,
         preferences: &reborn_core::settings::Settings,
         because: &'static str,
     ) -> Self {
         let policy = reborn_core::session::texture_policy_for_launch(
-            image_verified,
+            standing,
             preferences.manage_texture_folder.unwrap_or(true),
         );
         Self {
@@ -1954,11 +1952,12 @@ impl TextureDecision {
 /// question Play answers: is the image this machine would boot one Reborn
 /// verified as its own.
 ///
-/// Fails toward withholding. An image the launcher cannot resolve or cannot
-/// read is not an image it can vouch for, and the cost of being wrong that
-/// way is a rebuild on the next successful launch. The cost of being wrong
-/// the other way is Reborn's faces on somebody else's roster, which is the
-/// report this whole law comes from.
+/// Two directions of being wrong, and they are not symmetric. Painting
+/// Reborn's art on somebody else's roster is the report this law comes from.
+/// Taking an eight thousand file pack off a disc that was fine is the report
+/// the law then produced. So withholding is reserved for an image that was
+/// read and ruled out, and an image that could not be read or could not be
+/// resolved leaves the pack exactly as it is.
 fn texture_policy_now(
     p: &Platform,
     runtime_hint: Option<&str>,
@@ -1977,34 +1976,31 @@ fn texture_policy_now(
     // emulator is back, so it is the honest thing to judge.
     .ok()
     .or_else(|| preferences.game_path.clone().filter(|g| g.is_file()));
-    // "I could not ask" and "this is not ours" get the same policy and
-    // DIFFERENT words. The policy is the same because an image the launcher
-    // cannot read is one it cannot vouch for, and a missing DolphinTool is
-    // exactly the case where the disc may be perfectly bootable and perfectly
-    // foreign. The words differ because the two send the player to completely
-    // different repairs, and because somebody who loses an eight thousand file
-    // pack is owed the real reason.
-    let (verified, because) = match image {
+    // "I could not ask" and "this is not ours" are different answers and no
+    // longer get the same policy. A missing DolphinTool is exactly the case
+    // where the disc may be perfectly bootable and perfectly fine, and it used
+    // to cost the player their whole pack.
+    let standing = match image {
         Some(image) => match verdict_now(p, &image) {
-            Ok(verdict) if verdict.is_reborn() => (true, TEXTURES_WITHHELD_NOT_REBORN),
+            Ok(verdict) if verdict.is_reborn() => reborn_core::game_identity::ImageStanding::Reborn,
             Ok(reborn_core::game_identity::Verdict::Unreadable { reason }) => {
-                eprintln!("could not read {}, so Reborn's textures are withheld: {reason}", image.display());
-                (false, TEXTURES_WITHHELD_UNCHECKED)
+                eprintln!("could not read {}, so Reborn's textures are left exactly as they are: {reason}", image.display());
+                reborn_core::game_identity::ImageStanding::Unknown
             }
-            Ok(_) => (false, TEXTURES_WITHHELD_NOT_REBORN),
+            Ok(_) => reborn_core::game_identity::ImageStanding::NotReborn,
             Err(why) => {
-                eprintln!("could not identify {}, so Reborn's textures are withheld: {why}", image.display());
-                (false, TEXTURES_WITHHELD_UNCHECKED)
+                eprintln!("could not identify {}, so Reborn's textures are left exactly as they are: {why}", image.display());
+                reborn_core::game_identity::ImageStanding::Unknown
             }
         },
         None => {
-            eprintln!("no game image resolved, so Reborn's textures are withheld until one is");
-            (false, TEXTURES_WITHHELD_UNCHECKED)
+            eprintln!("no game image resolved, so Reborn's textures are left exactly as they are");
+            reborn_core::game_identity::ImageStanding::Unknown
         }
     };
     // The decision itself is the launch's, not a second copy of it: one rule,
     // one place, unit-tested in `reborn_core::session`.
-    TextureDecision::new(verified, preferences, because)
+    TextureDecision::new(standing, preferences, TEXTURES_WITHHELD_NOT_REBORN)
 }
 
 /// Make the game load what activation.json says.
@@ -3682,7 +3678,8 @@ async fn onboarding_run_task(
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
                     league_match: false,
-                    textures_allowed: true,
+                    // Prepare composes nothing, so there is nothing to claim.
+                    textures: reborn_core::game_identity::ImageStanding::Unknown,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -5850,7 +5847,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
     // The desktop shortcut is a shipped entry point like any other: a disc
     // that is not a Reborn build must not boot from here wearing Reborn's
     // textures just because it skipped the window Play is drawn in.
-    let verified = may_play_before_boot(platform, &game_path)?;
+    let standing = may_play_before_boot(platform, &game_path)?;
 
     // The preset the player chose, or first run's answer. Never a guess: a
     // shortcut that quietly boots at a different resolution than the Play
@@ -5871,7 +5868,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
         league_match: false,
-        textures_allowed: verified,
+        textures: standing,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
@@ -6659,7 +6656,7 @@ mod tests {
     fn may_play_lets_an_acknowledged_unconverted_disc_boot_but_not_as_reborns_own() {
         assert_eq!(
             may_play(&reborn_core::game_identity::Verdict::Unconverted, true),
-            Ok(false),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
             "a player who already accepted this exact mismatch may still play, but Reborn must \
              not start treating the disc as one of its own builds just because it was allowed \
              through once"
@@ -6673,7 +6670,7 @@ mod tests {
                 &reborn_core::game_identity::Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true },
                 false,
             ),
-            Ok(true),
+            Ok(reborn_core::game_identity::ImageStanding::Reborn),
             "a genuine Reborn build must boot and be offered Reborn's textures and updates"
         );
     }
@@ -6682,7 +6679,7 @@ mod tests {
     fn may_play_does_not_claim_a_convertible_disc_as_reborns_own() {
         assert_eq!(
             may_play(&reborn_core::game_identity::Verdict::Convertible, false),
-            Ok(false),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
             "an unconverted retail disc must not be treated as a Reborn build before setup has \
              actually converted it, even though it is allowed to boot"
         );
@@ -6695,21 +6692,24 @@ mod tests {
                 &reborn_core::game_identity::Verdict::DifferentGame { game_id: "GAFE01".to_string() },
                 false,
             ),
-            Ok(false),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
             "a disc for a different game entirely must never be treated as a Reborn build or \
              receive its texture pack"
         );
     }
 
+    /// An image that could not be read is not a ruling on the image. It must
+    /// not be claimed as Reborn's, and it must not cost the player their pack:
+    /// `Unknown` is the only answer that does neither.
     #[test]
-    fn may_play_does_not_claim_an_unreadable_image() {
+    fn may_play_neither_claims_nor_condemns_an_unreadable_image() {
         assert_eq!(
             may_play(
                 &reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() },
                 false,
             ),
-            Ok(false),
-            "an image this launcher could not even read must never be treated as a Reborn build"
+            Ok(reborn_core::game_identity::ImageStanding::Unknown),
+            "an image this launcher could not even read was ruled on anyway"
         );
     }
 
@@ -6976,50 +6976,60 @@ mod tests {
         assert_eq!(calls.get(), 2, "a changed size must be treated as a possibly different file");
     }
 
-    /// Taking a player's texture pack away is never silent.
+    /// Taking a player's texture pack away is never silent, and never done on
+    /// a question that was not answered.
     ///
-    /// `identify` shells out to `game-import/DolphinTool.exe`. Missing, blocked
-    /// or quarantined, every verdict becomes `Unreadable`, the policy becomes
-    /// `Withhold`, and an ordinary Mods page toggle removes the whole composed
-    /// pack. The direction is right: a launcher that cannot read the image
-    /// cannot vouch for it, and a missing tool is exactly the case where the
-    /// disc may be perfectly bootable and perfectly foreign. The silence was
-    /// not: a withheld sync reports `synced: true`, and the interface's only
-    /// note channel was `synced == false`.
+    /// `identify` shells out to `game-import/DolphinTool.exe`. Missing,
+    /// blocked or quarantined, every verdict became `Unreadable`, the policy
+    /// became `Withhold`, and an ordinary Mods page toggle removed the whole
+    /// composed pack. That direction was wrong: a launcher that could not read
+    /// the image had ruled out nothing, and it cost players packs of eight
+    /// thousand files over a tool that was not there. "Missing textures" is
+    /// the report it produced. Not knowing now leaves the pack alone.
     #[test]
-    fn a_withheld_texture_pack_always_says_why() {
+    fn a_pack_is_taken_only_on_an_answer_and_never_silently() {
         use reborn_core::mods::TexturePolicy;
         let mut preferences = reborn_core::settings::Settings::default();
         preferences.manage_texture_folder = Some(true);
 
-        let unchecked = TextureDecision::new(false, &preferences, TEXTURES_WITHHELD_UNCHECKED);
-        assert_eq!(unchecked.policy, TexturePolicy::Withhold);
+        // Read and ruled out: the one case that removes the pack, with words.
+        let ruled_out =
+            TextureDecision::new(reborn_core::game_identity::ImageStanding::NotReborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(ruled_out.policy, TexturePolicy::Withhold);
         assert_eq!(
-            unchecked.withheld_because,
-            Some(TEXTURES_WITHHELD_UNCHECKED),
+            ruled_out.withheld_because,
+            Some(TEXTURES_WITHHELD_NOT_REBORN),
             "the pack was removed and nothing anywhere said so"
         );
 
-        let kept = TextureDecision::new(true, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        // Never answered. Nothing is known, so nothing is done.
+        let unknown = TextureDecision::new(reborn_core::game_identity::ImageStanding::Unknown, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(
+            unknown.policy,
+            TexturePolicy::LeaveAlone,
+            "an image the launcher could not read still cost the player their texture pack"
+        );
+        assert_eq!(
+            unknown.withheld_because, None,
+            "nothing was taken away, so there is nothing to explain"
+        );
+
+        let kept = TextureDecision::new(reborn_core::game_identity::ImageStanding::Reborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
         assert_eq!(kept.policy, TexturePolicy::Manage);
-        assert_eq!(kept.withheld_because, None, "nothing was taken away, so there is nothing to explain");
+        assert_eq!(kept.withheld_because, None);
 
         // The author's folder is never touched, so there is nothing to report
         // either. Saying "your pack was removed" there would be a lie.
         preferences.manage_texture_folder = Some(false);
-        let authors = TextureDecision::new(false, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        let authors =
+            TextureDecision::new(reborn_core::game_identity::ImageStanding::NotReborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
         assert_eq!(authors.policy, TexturePolicy::LeaveAlone);
         assert_eq!(authors.withheld_because, None);
 
-        assert_ne!(
-            TEXTURES_WITHHELD_NOT_REBORN, TEXTURES_WITHHELD_UNCHECKED,
-            "could not ask and not ours send the player to different repairs, so they cannot share one sentence"
-        );
-        for words in [TEXTURES_WITHHELD_NOT_REBORN, TEXTURES_WITHHELD_UNCHECKED] {
-            assert!(words.contains("Settings page"), "no way out is named: {words}");
-            assert!(!words.to_lowercase().contains("custom"), "a fault, never a preference: {words}");
-            assert!(!words.contains('\u{2014}'), "no em-dashes in player text: {words}");
-        }
+        let words = TEXTURES_WITHHELD_NOT_REBORN;
+        assert!(words.contains("Settings page"), "no way out is named: {words}");
+        assert!(!words.to_lowercase().contains("custom"), "a fault, never a preference: {words}");
+        assert!(!words.contains('\u{2014}'), "no em-dashes in player text: {words}");
     }
 
     /// ...and the sentence actually reaches the page.

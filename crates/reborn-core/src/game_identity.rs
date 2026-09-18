@@ -43,20 +43,50 @@ impl Verdict {
 /// build. Worded as the fault it almost always is, never as a preference.
 pub const UNVERIFIED_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc. Repair it from the Settings page.";
 
-/// Whether this image may boot, and whether Reborn may treat it as its own.
+/// What is known about the image that is about to boot, as far as Reborn's own
+/// art is concerned.
 ///
-/// `Ok(true)` means boot it AND paint Reborn's textures on it. `Ok(false)`
-/// means boot it with Reborn's art withheld. `Err` means do not boot it.
+/// Three states and not a `bool`, because "this is not a Reborn build" and "I
+/// could not tell what this is" call for opposite actions and a `bool` had to
+/// pick one. It picked withhold, which DELETES the composed pack (that is the
+/// only thing that switches it off; Dolphin loads whatever is filed under the
+/// booted disc's game ID whether or not a launch composed it). So a missing
+/// DolphinTool or a disc held open for a moment cost the player their whole
+/// texture pack, and "missing textures" is the report that came back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageStanding {
+    /// Verified as a Reborn build. Reborn's art belongs on it.
+    Reborn,
+    /// Verified as something else: a disc Reborn could not convert and the
+    /// player chose to play anyway, a retail disc, another game. Reborn's art
+    /// has to come off, because it is art for a roster this disc does not have.
+    NotReborn,
+    /// Not determined. The image could not be read at all, which says nothing
+    /// about the image and everything about the tool or the moment. Nothing is
+    /// known, so nothing is done: whatever the player has is left alone.
+    Unknown,
+}
+
+/// Whether this image may boot, and what Reborn then knows about it.
+///
+/// `Err` means do not boot it. Otherwise the standing says what to do with
+/// Reborn's art: see [`ImageStanding`], and `session::texture_policy_for_launch`
+/// for the one place that turns it into an action.
 ///
 /// Lives here, beside the verdict, rather than in the window, because the
 /// window is not the only thing that boots the game: `rebornctl play` ships in
-/// the product and built a `LaunchRequest` with `textures_allowed: true` and
-/// no verification at all. A second copy of these four lines over there is
+/// the product and built a `LaunchRequest` with its textures claimed and no
+/// verification at all. A second copy of these four lines over there is
 /// exactly how the two would come to disagree.
-pub fn may_play(verdict: &Verdict, acknowledged: bool) -> Result<bool, &'static str> {
+pub fn may_play(verdict: &Verdict, acknowledged: bool) -> Result<ImageStanding, &'static str> {
     match verdict {
         Verdict::Unconverted if !acknowledged => Err(UNVERIFIED_GAME),
-        v => Ok(v.is_reborn()),
+        // Asked and not answered. Refusing to boot over this would strand a
+        // player whose disc is fine, and withholding would take their pack
+        // for the same non-reason.
+        Verdict::Unreadable { .. } => Ok(ImageStanding::Unknown),
+        v if v.is_reborn() => Ok(ImageStanding::Reborn),
+        _ => Ok(ImageStanding::NotReborn),
     }
 }
 

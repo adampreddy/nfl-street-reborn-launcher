@@ -65,9 +65,11 @@ pub struct LaunchRequest {
     /// The player said this is a league match. Recorded in the session before Dolphin
     /// starts; the backend forwards the game to the league site only when it is true.
     pub league_match: bool,
-    /// Whether Reborn's texture pack may be pointed at this image. False for
-    /// a disc the launcher could not verify as a Reborn build.
-    pub textures_allowed: bool,
+    /// What the launcher knows about this image, which decides what happens
+    /// to Reborn's texture pack. Only `Session::run` reads it;
+    /// `Session::prepare` composes nothing, so a prepare-only caller has
+    /// nothing to claim and passes `Unknown`.
+    pub textures: crate::game_identity::ImageStanding,
 }
 
 /// Why a launch could not even be attempted.
@@ -1028,7 +1030,7 @@ impl Session {
         // builds the tree that list describes and points the emulator at it.
         // Before this call existed every profile switch wrote the list
         // correctly and the game never saw it.
-        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, req.textures_allowed);
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, req.textures);
 
         // The memory cards, brought up to date with the installed roster
         // before the game opens them, under the lock and with the game not
@@ -1294,16 +1296,23 @@ pub fn finish_and_collect(
 ///    is exactly the "old names with new faces" report this law comes from.
 /// 3. Otherwise, compose normally.
 pub fn texture_policy_for_launch(
-    image_verified: bool,
+    standing: crate::game_identity::ImageStanding,
     player_wants_managed: bool,
 ) -> crate::mods::TexturePolicy {
+    use crate::game_identity::ImageStanding;
     use crate::mods::TexturePolicy;
     if !player_wants_managed {
-        TexturePolicy::LeaveAlone
-    } else if !image_verified {
-        TexturePolicy::Withhold
-    } else {
-        TexturePolicy::Manage
+        return TexturePolicy::LeaveAlone;
+    }
+    match standing {
+        ImageStanding::Reborn => TexturePolicy::Manage,
+        ImageStanding::NotReborn => TexturePolicy::Withhold,
+        // Withholding DELETES the pack, so it is reserved for an image the
+        // launcher actually read and actually ruled out. Not knowing is not a
+        // ruling: a missing DolphinTool or a disc held open for a moment must
+        // not cost the player the texture pack they already have. Leaving it
+        // alone keeps whatever is composed exactly as it is.
+        ImageStanding::Unknown => TexturePolicy::LeaveAlone,
     }
 }
 
@@ -1316,7 +1325,7 @@ fn sync_mods_for_launch(
     build: GameBuild,
     user_dir: &Path,
     disabled: bool,
-    textures_allowed: bool,
+    textures: crate::game_identity::ImageStanding,
 ) -> ModsAtLaunch {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1327,7 +1336,7 @@ fn sync_mods_for_launch(
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
         req.texture_policy =
-            texture_policy_for_launch(textures_allowed, crate::settings::manage_texture_folder(&settings_file)?);
+            texture_policy_for_launch(textures, crate::settings::manage_texture_folder(&settings_file)?);
         if disabled {
             req.active_override = Some(Vec::new());
         }
@@ -1967,17 +1976,41 @@ mod tests {
     /// load. Asserting the variant, rather than a boolean that used to carry
     /// both meanings, is what keeps the two from collapsing back together.
     #[test]
-    fn an_unverified_image_never_gets_rebornes_texture_pack() {
+    fn an_image_ruled_out_never_gets_rebornes_texture_pack() {
         use crate::mods::TexturePolicy;
+        use crate::game_identity::ImageStanding;
         assert_eq!(
-            texture_policy_for_launch(false, true),
+            texture_policy_for_launch(ImageStanding::NotReborn, true),
             TexturePolicy::Withhold,
-            "an unverified image must have the pack actively taken away, not merely not rebuilt"
+            "an image ruled out must have the pack actively taken away, not merely not rebuilt"
         );
         assert_eq!(
-            texture_policy_for_launch(true, true),
+            texture_policy_for_launch(ImageStanding::Reborn, true),
             TexturePolicy::Manage,
             "a verified image must still get the pack"
+        );
+    }
+
+    /// The other direction of being wrong, and the one the law itself caused.
+    ///
+    /// While this took a `bool`, "I could not read the image" and "this image
+    /// is not ours" were the same value, so a missing DolphinTool or a disc
+    /// held open for a moment removed the player's whole composed pack. That
+    /// is where "missing textures" came from. Withholding is a ruling and
+    /// needs an answer; not knowing must cost the player nothing.
+    #[test]
+    fn an_image_that_could_not_be_read_costs_the_player_nothing() {
+        use crate::mods::TexturePolicy;
+        use crate::game_identity::ImageStanding;
+        assert_eq!(
+            texture_policy_for_launch(ImageStanding::Unknown, true),
+            TexturePolicy::LeaveAlone,
+            "a question that was never answered took the player's texture pack away"
+        );
+        assert_ne!(
+            texture_policy_for_launch(ImageStanding::Unknown, true),
+            texture_policy_for_launch(ImageStanding::NotReborn, true),
+            "not knowing and ruling out have collapsed back into one answer"
         );
     }
 
@@ -1991,16 +2024,14 @@ mod tests {
     #[test]
     fn the_authors_folder_is_never_taken_away_even_on_an_unverified_image() {
         use crate::mods::TexturePolicy;
-        assert_eq!(
-            texture_policy_for_launch(false, false),
-            TexturePolicy::LeaveAlone,
-            "an author's folder must never be removed, whatever the disc is"
-        );
-        assert_eq!(
-            texture_policy_for_launch(true, false),
-            TexturePolicy::LeaveAlone,
-            "the player's own preference must still win"
-        );
+        use crate::game_identity::ImageStanding;
+        for standing in [ImageStanding::NotReborn, ImageStanding::Reborn, ImageStanding::Unknown] {
+            assert_eq!(
+                texture_policy_for_launch(standing, false),
+                TexturePolicy::LeaveAlone,
+                "an author's folder must never be touched, whatever the disc is: {standing:?}"
+            );
+        }
     }
 
     #[test]
@@ -2196,7 +2227,7 @@ mod tests {
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
             league_match: false,
-            textures_allowed: true,
+            textures: crate::game_identity::ImageStanding::Reborn,
         }
     }
 

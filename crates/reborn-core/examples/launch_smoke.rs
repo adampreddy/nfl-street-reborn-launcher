@@ -72,7 +72,7 @@ fn main() {
         // machine would boot against.
         user_dir: None,
         league_match: false,
-        textures_allowed: true,
+        textures: reborn_core::game_identity::ImageStanding::Reborn,
     };
 
     // First prove the preparation half on its own, so a failure here is not
