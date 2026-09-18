@@ -6365,6 +6365,31 @@ mod tests {
         }
     }
 
+    /// A disc that is NFL Street 2 but not a build Reborn can convert is not
+    /// something the player can do anything about, so setup fixes it rather
+    /// than reporting it. Before this, `setup_import_game` saved the disc as
+    /// the game, told the wizard "Your game file isn't NFL Street Reborn", and
+    /// left the launch gate to refuse it: a dead end with no way out inside
+    /// the wizard.
+    #[test]
+    fn an_unconvertible_disc_recovers_itself_instead_of_reporting_a_dead_end() {
+        let body = command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_import_game",
+        );
+        let code = code_only(body);
+        assert!(
+            code.contains("download_reborn_game"),
+            "setup_import_game can end on a disc it knows is not Reborn without \
+             ever trying to get the player a disc that is"
+        );
+        assert!(
+            code.contains("outcome==") && code.contains("unconverted"),
+            "nothing in setup_import_game keys recovery to the one verdict it \
+             is for, so it either never runs or runs on discs it should not"
+        );
+    }
+
     fn code_only(body: &str) -> String {
         body.lines()
             .map(str::trim_start)

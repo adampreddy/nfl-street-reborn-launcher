@@ -335,8 +335,12 @@ export const outcomeWords=(outcome,label,note,patched)=>{
     // up disagreeing about one file.
     case 'not-updated':return ['Your game is ready',`This is an NFL Street Reborn build. The update to the newest version could not be applied right now, and the launcher will try again after setup.${note?' '+note:''}`];
     // Recovery: the complete game came from Reborn itself, so there is no
-    // disc of the player's to report on.
-    case 'downloaded':return ['NFL Street Reborn is ready','The complete Reborn game was downloaded and verified. Continue to your controller.'];
+    // disc of the player's to report on. The note is what setup did and why,
+    // present when recovery ran because a chosen disc would not convert, and
+    // absent when the player asked for the download outright. It has to be
+    // shown either way: it is the only place the player is told their own
+    // file was left alone.
+    case 'downloaded':return ['NFL Street Reborn is ready',note?note+' Continue to your controller.':'The complete Reborn game was downloaded and verified. Continue to your controller.'];
     default:return patched?['Game File Patched!','Patched and verified. Continue to your controller.']:['Game File Imported!','Imported and ready. Continue to your controller.'];
   }
 };

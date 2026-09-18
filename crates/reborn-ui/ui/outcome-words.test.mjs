@@ -62,3 +62,28 @@ test('a verified Reborn build whose update did not run is not accused of being s
     `the words never say what actually failed: ${detail}`
   );
 });
+
+// Recovery runs by itself when a chosen disc will not convert, so the only
+// place the player learns their own file was left alone is this note. The
+// 'downloaded' case used a fixed sentence and threw the note away.
+test('a disc that could not be converted is told what setup did instead', () => {
+  const note = 'Reborn could not convert the game file you chose, so it downloaded and verified the Reborn game for you. Your own file was not changed.';
+  const [headline, detail] = outcomeWords('downloaded', '', note, false);
+  assert.ok(headline.includes('ready'), `recovery did not report success: ${headline}`);
+  assert.ok(
+    detail.includes('Your own file was not changed'),
+    `the player is never told their disc was left alone: ${detail}`
+  );
+});
+
+test('a download nobody had to be rescued from still reads as a plain success', () => {
+  const [, detail] = outcomeWords('downloaded', '', '', false);
+  assert.ok(
+    detail.includes('downloaded and verified'),
+    `the plain download lost its words: ${detail}`
+  );
+  assert.ok(
+    !detail.includes('could not convert'),
+    `a plain download blames a disc nobody chose: ${detail}`
+  );
+});
