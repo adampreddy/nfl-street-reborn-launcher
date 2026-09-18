@@ -6091,7 +6091,9 @@ fn music_command(platform: &Platform, what: MusicCommand) -> reborn_core::Result
             let http = music_http();
             let i = apply::inspect(if offline { None } else { Some(&http) }, &file)?;
             println!("File      {}", file.display());
-            println!("Length    {}:{:02}{}", i.duration_ms / 60_000, (i.duration_ms / 1000) % 60, if i.too_long { "  (too long for a slot)" } else { "" });
+            let cap = reborn_core::soundtrack::segments::slot_limit_hint();
+            let over = format!("  (longer than the {}:{:02} the game fits in a slot)", cap / 60, cap % 60);
+            println!("Length    {}:{:02}{}", i.duration_ms / 60_000, (i.duration_ms / 1000) % 60, if i.too_long { over.as_str() } else { "" });
             println!("Tags      title {:?}, artist {:?}, album {:?}", i.tags.title, i.tags.artist, i.tags.album);
             println!("Query     {}", i.query);
             println!("Details   from {}", i.details_from);

@@ -16,8 +16,24 @@ use crate::platform::{Error, Result};
 /// Historical floor: never place files earlier than old builds expect.
 pub const FILES_START: u64 = 0x328000;
 pub const ALIGN: u64 = 0x800;
-/// A full GameCube disc.
+/// A full GameCube disc. A rebuilt image keeps this size whenever the files
+/// fit it, so a soundtrack that shrinks back to the disc's own songs rebuilds
+/// to the disc's own size.
 pub const DISC_SIZE: u64 = 0x57058000;
+
+/// The most a rebuilt image may grow past the size it started at: room for a
+/// whole 21-slot soundtrack at the per-segment ceiling, so no soundtrack the
+/// editor can build reaches it and the ceiling stays a guard rather than a
+/// budget.
+///
+/// Growing at all is safe because Dolphin does not require a GameCube image
+/// to be exactly `DISC_SIZE`: `DVDInterface::GetDiscEndOffset` returns
+/// `MINI_DVD_SIZE` only while the image is that size or smaller, and reports
+/// `SL_DVD_SIZE` for anything bigger, so reads past the old end resolve. The
+/// alternative is refusing the player's song, because the shipped disc has
+/// 675,840 bytes of slack: about 26 seconds of audio for all 21 slots.
+pub const MAX_GROWTH: u64 =
+    crate::soundtrack::SONG_SLOTS as u64 * crate::soundtrack::SEGMENTS_PER_SONG as u64 * crate::soundtrack::SEGMENT_CEILING as u64;
 const CHUNK: usize = 4 << 20;
 
 pub fn align(x: u64) -> u64 {
@@ -167,9 +183,19 @@ pub fn repack(
 /// Returns the SHA-256 of what was written.
 /// How many bytes past `disc_size` the disc would end with `replacements`
 /// in place of the files of the same names: zero when it fits. The same
-/// layout arithmetic as [`repack_with_size`], so a soundtrack that is too
-/// big is refused with a number before any image is written.
+/// layout arithmetic as [`repack_with_size`], so the shortfall is a number
+/// before any image is written. A rebuild grows the image to cover a
+/// shortfall rather than refusing it; this is what measures how far past the
+/// growth ceiling a soundtrack the editor could not build would be.
 pub fn overflow_with(disc: &Disc, replacements: &BTreeMap<String, Vec<u8>>, disc_size: u64) -> u64 {
+    end_with(disc, replacements).saturating_sub(disc_size)
+}
+
+/// The byte the files end at with `replacements` in place: the smallest an
+/// image can be and still hold them. The same layout walk
+/// `repack_with_size` writes with, so the two cannot disagree about whether
+/// a rebuild fits.
+pub fn end_with(disc: &Disc, replacements: &BTreeMap<String, Vec<u8>>) -> u64 {
     let fst_off = align(disc.dol_offset + disc.dol_len);
     let total = disc.files.len() as u32 + 1;
     let strtab_len: u64 = disc.files.iter().map(|f| f.name.len() as u64 + 1).sum();
@@ -180,7 +206,7 @@ pub fn overflow_with(disc: &Disc, replacements: &BTreeMap<String, Vec<u8>>, disc
         let size = replacements.get(&f.name).map(|d| d.len() as u64).unwrap_or(f.size);
         cur = align(cur) + size;
     }
-    cur.saturating_sub(disc_size)
+    cur
 }
 
 pub fn repack_with_size(
@@ -335,6 +361,29 @@ mod tests {
         let names: Vec<String> = re.files.iter().map(|f| f.name.clone()).collect();
         assert_eq!(names, ["a.dat", "pathfind.dat", "z.dat"]);
         assert_eq!(std::fs::metadata(&out).unwrap().len(), disc_size_of(&iso) + 0x2000);
+    }
+
+    /// `end_with` answers how big an image has to be, which is what lets a
+    /// rebuild grow to fit rather than refuse. It is the same walk
+    /// `repack_with_size` lays the files out with, so the two never disagree.
+    #[test]
+    fn the_end_of_the_files_says_how_big_the_image_must_be() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = synthetic_disc(dir.path(), &[("a.dat", b"aaaa"), ("pathfind.dat", b"pppppppp"), ("z.dat", b"z")]);
+        let disc = Disc::open(&iso).unwrap();
+        let as_is = end_with(&disc, &BTreeMap::new());
+        let mut rep = BTreeMap::new();
+        rep.insert("pathfind.dat".to_string(), vec![0x42u8; 0x1801]);
+        let grown = end_with(&disc, &rep);
+        assert!(grown > as_is, "a bigger pathfind.dat ends further out: {grown} vs {as_is}");
+        // an image of exactly `end_with` holds the files, one byte less does not
+        let out = dir.path().join("fits.iso");
+        repack_with_size(&disc, &rep, &out, align(grown), &mut |_, _| {}).unwrap();
+        assert_eq!(Disc::open(&out).unwrap().read_file("pathfind.dat").unwrap(), rep["pathfind.dat"]);
+        assert!(repack_with_size(&disc, &rep, &dir.path().join("no.iso"), grown - 1, &mut |_, _| {}).is_err());
+        // and it is exactly what the overflow is measured against
+        assert_eq!(overflow_with(&disc, &rep, grown), 0);
+        assert_eq!(overflow_with(&disc, &rep, grown - 10), 10);
     }
 
     #[test]

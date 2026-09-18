@@ -13,13 +13,86 @@ use crate::platform::{Error, Result};
 use crate::soundtrack::{asf, ea_xa};
 use crate::soundtrack::{slot_first_stream, Refusal, Slot, SAMPLE_RATE, SEGMENTS_PER_SONG, SEGMENT_CEILING, STREAM_COUNT};
 
-/// What the refusal message quotes as the ceiling. The real bound is the
-/// per-segment byte ceiling, which depends on how well the audio compresses;
-/// about 6:20 for typical music at 24 kHz.
-pub const LIMIT_SECONDS_HINT: u64 = 380;
+/// The longest PT header the shipped disc carries, measured across all 876
+/// of its streams on 2026-09-18: 40 bytes on 857 of them, 36 on 18, 32 on
+/// one. The header is the only per-slot term in a segment's size, so the
+/// longest one gives a cap every slot can honour.
+pub const SHIPPED_PT_LEN: usize = 40;
 
+/// Bytes one channel of `samples` encodes to, and how many SCDl blocks it
+/// takes, by the cycle `ea_xa::encode_channel_blocks` walks: 28 samples to a
+/// frame, 58 frames in the first block, then six 57-frame blocks and one
+/// 58-frame block repeating, and a 57-frame block carries one pad byte. The
+/// first block opens with three 61-byte PCM frames to seed the decoder's
+/// history; every other frame is 15-byte ADPCM. EA-XA is fixed rate, so this
+/// is exact and does not depend on the audio.
+fn channel_bytes(samples: usize) -> (usize, usize) {
+    const PCM_FRAME: usize = 61;
+    const ADPCM_FRAME: usize = 15;
+    const PCM_FRAMES: usize = 3;
+    let mut pos = 0usize;
+    let mut block = 0usize;
+    let mut bytes = 0usize;
+    while pos < samples {
+        let capacity = if block == 0 || (block - 1) % 7 == 6 { 58 } else { 57 };
+        let wanted = (samples - pos).div_ceil(28);
+        bytes += if block == 0 {
+            // the first block always writes its three PCM frames, even for a
+            // clip shorter than that; `chunk28` pads the tail with zeros
+            let frames = wanted.clamp(PCM_FRAMES, capacity);
+            pos += frames * 28;
+            PCM_FRAMES * PCM_FRAME + (frames - PCM_FRAMES) * ADPCM_FRAME
+        } else {
+            let frames = wanted.min(capacity);
+            pos += frames * 28;
+            frames * ADPCM_FRAME + usize::from(capacity == 57)
+        };
+        block += 1;
+    }
+    (bytes, block)
+}
+
+/// The exact size of one encoded segment: what `encode_stereo_stream` writes
+/// for `samples` per channel under a `pt_len`-byte PT header, before the
+/// allotment is rounded up to a 0x800 multiple.
+pub fn segment_bytes(samples: usize, pt_len: usize) -> usize {
+    let (per_channel, blocks) = channel_bytes(samples);
+    // SCHl + PT, SCCl, SCEl, then per block an SCDl header of 8 + 12 over
+    // both channels' frames
+    let overhead = 8 + pt_len + 12 + 8;
+    overhead + blocks * 20 + 2 * per_channel
+}
+
+/// The most 24 kHz samples a slot can hold: the largest per-segment sample
+/// count whose allotment still stays under `SEGMENT_CEILING`, times the 40
+/// segments. The bound is the game's stream ring buffer, which no amount of
+/// room on the disc changes.
+pub fn slot_sample_limit(pt_len: usize) -> usize {
+    // segment_bytes is monotonic in samples, so the largest that fits is a
+    // bisection away; a segment can never hold more samples than bytes
+    let mut low = 0usize;
+    let mut high = SEGMENT_CEILING;
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        if segment_bytes(mid, pt_len).div_ceil(0x800) * 0x800 < SEGMENT_CEILING {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    // whole frames only: a segment is written 28 samples at a time
+    (low / 28) * 28 * SEGMENTS_PER_SONG
+}
+
+/// The same bound in whole seconds, which is what a refusal quotes.
+pub fn slot_limit_seconds(pt_len: usize) -> u64 {
+    slot_sample_limit(pt_len) as u64 / u64::from(SAMPLE_RATE)
+}
+
+/// The cap for the disc the launcher ships, for the page and the CLI, which
+/// name a length before any slot is chosen.
 pub fn slot_limit_hint() -> u64 {
-    LIMIT_SECONDS_HINT
+    slot_limit_seconds(SHIPPED_PT_LEN)
 }
 
 fn invalid(msg: String) -> Error {
@@ -89,7 +162,8 @@ pub fn encode_slot(left: &[i16], right: &[i16], pt_headers: &[Vec<u8>], on: &mut
     if target >= SEGMENT_CEILING {
         return Err(Refusal::SongTooLong {
             seconds: (total as u64) / u64::from(SAMPLE_RATE),
-            limit_seconds: slot_limit_hint(),
+            // the cap for the header this slot actually carries, not a guess
+            limit_seconds: slot_limit_seconds(pt_headers[0].len()),
         }
         .into());
     }
@@ -122,6 +196,37 @@ mod tests {
     use super::*;
     use crate::soundtrack::testing::{write_wav_24k, SYN_PT};
     use std::path::{Path, PathBuf};
+
+    /// The length cap a refusal quotes is the encoder's own bound, walked
+    /// rather than guessed. The old 380-second hint turned away songs that
+    /// fit and was only ever "about" right (2026-09-18).
+    #[test]
+    fn the_slot_length_cap_is_the_encoders_own_bound() {
+        // the prediction is the size the encoder actually writes
+        for samples in [28usize, 84, 1624, 1652, 3220, 45_000, 117_920, 230_000] {
+            let ch = vec![0i16; samples];
+            let written = ea_xa::encode_stereo_stream(&ch, &ch, SYN_PT, None).len();
+            assert_eq!(segment_bytes(samples, SYN_PT.len()), written, "{samples} samples");
+        }
+        // a song of exactly the cap encodes; the next whole frame over does not
+        let cap = slot_sample_limit(SYN_PT.len());
+        let pts: Vec<Vec<u8>> = (0..SEGMENTS_PER_SONG).map(|_| SYN_PT.to_vec()).collect();
+        let at = vec![0i16; cap];
+        assert!(encode_slot(&at, &at, &pts, &mut |_, _| {}).is_ok(), "{cap} samples is the cap");
+        let over = vec![0i16; cap + SEGMENTS_PER_SONG * 28];
+        assert!(encode_slot(&over, &over, &pts, &mut |_, _| {}).is_err(), "past the cap is refused");
+    }
+
+    /// What the page and the CLI quote, for the header the shipped disc
+    /// actually uses. It has to be a length a player recognises as a song.
+    #[test]
+    fn the_quoted_cap_is_a_plausible_song_length() {
+        let secs = slot_limit_hint();
+        assert!((360..=420).contains(&secs), "{secs} seconds is not about six minutes");
+        // never longer than what the widest header on the disc can hold, so
+        // the number quoted is one every slot can honour
+        assert!(slot_limit_seconds(SHIPPED_PT_LEN) <= slot_limit_seconds(32));
+    }
 
     /// Run by hand against the real disc: how are the disc's own segments
     /// laid out? Per stream of one slot: the bytes from SCHl to the end of
@@ -288,7 +393,10 @@ mod tests {
         let pts: Vec<Vec<u8>> = (0..SEGMENTS_PER_SONG).map(|_| SYN_PT.to_vec()).collect();
         let err = encode_slot(&left, &right, &pts, &mut |_, _| {}).unwrap_err();
         let m = err.to_string();
-        assert!(m.contains("7:00") && m.contains("6:20"), "{m}");
+        let cap = slot_limit_seconds(SYN_PT.len());
+        let quoted = format!("{}:{:02}", cap / 60, cap % 60);
+        assert!(m.contains("7:00"), "the song's own length: {m}");
+        assert!(m.contains(&quoted), "the cap this slot really has ({quoted}): {m}");
     }
 
     /// Oracle 3: the Rust blob carries the same audio as extend_slot_40big.py's.

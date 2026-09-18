@@ -470,7 +470,8 @@ pub async fn music_stage_files(paths: Vec<String>, start_slot: u8) -> Result<Mus
                 let p = Path::new(path);
                 let looked = apply::inspect(Some(&http), p).map_err(|e| e.to_string())?;
                 if looked.too_long {
-                    return Err(format!("longer than {} seconds", segments::slot_limit_hint()));
+                    let cap = segments::slot_limit_hint();
+                    return Err(format!("longer than the {}:{:02} the game fits in a slot", cap / 60, cap % 60));
                 }
                 let (title, artist, album) = looked.suggested();
                 let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
