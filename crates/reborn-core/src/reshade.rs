@@ -5,6 +5,54 @@ use crate::{ini::{IniDocument, Overlay}, platform::Result, runtime::GraphicsPres
 /// The GameCube's native framebuffer, which internal resolution multiplies.
 const NATIVE: (u32, u32) = (640, 528);
 
+/// ReShade's injector. Dolphin finds it beside the executable before the system's own.
+const INJECTOR: &str = "dxgi.dll";
+/// Where Performance keeps the injector while ReShade is out of the runtime.
+const PARKED_INJECTOR: &str = "dxgi.dll.performance-off";
+
+/// Carried by a Dolphin fork whose field/HUD split does nothing without ReShade.
+///
+/// Byte-identical to `kInertWithoutReShade` in the fork's `NflsUiSplit.cpp`.
+/// An older fork runs its whole boundary pass when the add-on is missing: it
+/// resamples the field through a display-sized target and back, which is the
+/// scanline round trip. Taking ReShade out from under one of those would make
+/// Performance look worse rather than run faster.
+const INERT_WITHOUT_RESHADE: &[u8] = b"NSR-UISPLIT-INERT-WITHOUT-RESHADE";
+
+fn inert_without_reshade(runtime: &Path) -> bool {
+    std::fs::read(runtime).is_ok_and(|exe| {
+        exe.windows(INERT_WITHOUT_RESHADE.len()).any(|w| w == INERT_WITHOUT_RESHADE)
+    })
+}
+
+/// Put ReShade's injector back, or take it out of the runtime.
+///
+/// An empty preset is not ReShade off. ReShade is still in the process: every
+/// Direct3D call goes through its wrappers, the menu add-on hooks every
+/// render-target bind, and its depth tracking watches every draw, all of which
+/// grows with what is on screen. Renaming the injector means Windows loads its
+/// own `dxgi.dll` and ReShade never starts.
+///
+/// A Repair or a runtime update restores the file, because the manifest lists
+/// it; the next Performance launch parks the fresh copy again.
+fn set_injector(root: &Path, loaded: bool) -> Result<()> {
+    let live = root.join(INJECTOR);
+    let parked = root.join(PARKED_INJECTOR);
+    if loaded {
+        if !parked.is_file() { return Ok(()); }
+        if live.is_file() {
+            // Repaired or updated while parked: the parked copy is the stale one.
+            std::fs::remove_file(&parked)?;
+        } else {
+            std::fs::rename(&parked, &live)?;
+        }
+    } else if live.is_file() {
+        // Replaces any older parked copy with what the last update delivered.
+        std::fs::rename(&live, &parked)?;
+    }
+    Ok(())
+}
+
 /// The `[DEPTH]` filter for a given internal resolution.
 ///
 /// ReShade's depth detection is filtered to an exact buffer size, and the live
@@ -142,7 +190,10 @@ pub fn apply(runtime: &Path, preset: GraphicsPreset, internal_resolution: u8) ->
     let mut changed = !doc.merge(&overlay).is_noop();
     changed |= !doc.merge_absent(&seed).is_noop();
     if changed { std::fs::write(&config, doc.render())?; }
-    Ok(())
+    // Last, so the empty preset above is still what an older fork gets: on one
+    // of those ReShade has to stay loaded for its split to stand down.
+    let off = matches!(preset, GraphicsPreset::Performance) && inert_without_reshade(runtime);
+    set_injector(root, !off)
 }
 
 /// The effect files a preset's `Techniques` line actually turns on.
@@ -377,11 +428,93 @@ mod tests {
         assert_eq!(imported.get("GENERAL", "PresetPath"), Some("previous.ini"));
         assert_eq!(std::fs::read_to_string(dir.path().join("ReShade.ini.launcher-original")).unwrap(), "[GENERAL]\nEffectSearchPaths=custom\n");
     }
+
+    /// A runtime laid out like the shipped one: the fork, ReShade's injector
+    /// beside it, and ReShade's own config.
+    fn runtime_with(dir: &Path, fork_is_inert: bool) -> std::path::PathBuf {
+        let exe = dir.join("NFL Street Reborn Dolphin.exe");
+        let marker: &[u8] = if fork_is_inert { INERT_WITHOUT_RESHADE } else { b"an older fork" };
+        std::fs::write(&exe, [b"MZ\0\0".as_slice(), marker, b"\0\0".as_slice()].concat()).unwrap();
+        std::fs::write(dir.join("ReShade.ini"), "[GENERAL]\n").unwrap();
+        std::fs::write(dir.join(INJECTOR), "reshade").unwrap();
+        exe
+    }
+
+    /// Performance is ReShade out of the process, not ReShade with an empty preset.
+    #[test]
+    fn performance_takes_reshade_out_of_the_runtime_and_every_other_tier_puts_it_back() {
+        if !cfg!(windows) { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with(dir.path(), true);
+        let injector = dir.path().join(INJECTOR);
+        let parked = dir.path().join(PARKED_INJECTOR);
+
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        assert!(!injector.exists(), "Windows must load its own dxgi.dll, so ReShade never starts");
+        assert_eq!(std::fs::read_to_string(&parked).unwrap(), "reshade", "kept, not deleted");
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        assert!(!injector.exists() && parked.is_file(), "a second launch changes nothing");
+
+        for tier in [GraphicsPreset::Balanced, GraphicsPreset::Quality, GraphicsPreset::Ultra] {
+            apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+            apply(&runtime, tier, 3).unwrap();
+            assert_eq!(std::fs::read_to_string(&injector).unwrap(), "reshade", "{tier:?} needs ReShade");
+            assert!(!parked.exists());
+        }
+
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        apply_imported(&runtime, "[GENERAL]\nPresetPath=previous.ini\n", 3).unwrap();
+        assert!(injector.is_file(), "imported settings are ReShade settings");
+    }
+
+    /// An older fork resamples the field when ReShade is missing, so under one
+    /// of those Performance stays what it was: ReShade loaded, nothing enabled.
+    #[test]
+    fn an_older_fork_keeps_reshade_loaded_on_performance() {
+        if !cfg!(windows) { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with(dir.path(), false);
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        assert!(dir.path().join(INJECTOR).is_file());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("reshade-presets/Reborn Launcher.ini")).unwrap(),
+            "Techniques=\nTechniqueSorting=\n",
+        );
+
+        // Rolled back from a newer runtime with the injector parked.
+        std::fs::rename(dir.path().join(INJECTOR), dir.path().join(PARKED_INJECTOR)).unwrap();
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        assert!(dir.path().join(INJECTOR).is_file(), "the rollback must get ReShade back");
+    }
+
+    /// Repair and runtime updates restore the injector, because the manifest
+    /// lists it. What they delivered is the copy to keep.
+    #[test]
+    fn a_repaired_injector_replaces_the_parked_one() {
+        if !cfg!(windows) { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with(dir.path(), true);
+        let injector = dir.path().join(INJECTOR);
+        let parked = dir.path().join(PARKED_INJECTOR);
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+
+        std::fs::write(&injector, "reshade, updated").unwrap();
+        apply(&runtime, GraphicsPreset::Performance, 3).unwrap();
+        assert!(!injector.exists());
+        assert_eq!(std::fs::read_to_string(&parked).unwrap(), "reshade, updated");
+
+        std::fs::write(&injector, "reshade, repaired").unwrap();
+        apply(&runtime, GraphicsPreset::Balanced, 3).unwrap();
+        assert_eq!(std::fs::read_to_string(&injector).unwrap(), "reshade, repaired");
+        assert!(!parked.exists(), "the stale parked copy goes");
+    }
 }
 
 pub fn apply_imported(runtime:&Path,settings:&str,internal_resolution:u8)->Result<()> {
     let Some(root)=runtime.parent()else{return Ok(())};let file=root.join("ReShade.ini");if !file.exists(){return Ok(())}
     manage_stage_presets(root, false)?;
+    // Imported settings are ReShade settings: they need ReShade loaded.
+    set_injector(root, true)?;
     let original=std::fs::read_to_string(&file)?;
     let backup=root.join("ReShade.ini.launcher-original");if !backup.exists(){std::fs::write(&backup,&original)?;}
     let imported=IniDocument::parse(settings);let mut overlay=Overlay::new();
