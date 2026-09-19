@@ -39,6 +39,32 @@ use crate::runtime::{
 };
 use crate::supervisor::{SessionEnd, SessionRecord, Startup, Supervisor};
 
+/// Whether this launch is safe to write disc-level or per-game changes for:
+/// true for anything except the image netplay boots.
+///
+/// ⛔⛔ THE ONLY RELIABLE TEST. `netplay_open` builds its `LaunchRequest` with
+/// `build: GameBuild::Offline` and swaps only `game_path`, and the online
+/// image carries the SAME disc id (`GN7E69`), so both `req.build` and
+/// `req.build.game_id()` say "offline" for a netplay launch. Anything that
+/// must not reach netplay has to compare the image path.
+///
+/// Getting this wrong is not cosmetic: a Dolphin `[OnFrame]` patch rewrites
+/// emulated memory every frame and Dolphin does not synchronise those, so a
+/// machine carrying one beside a machine that is not diverges on the first
+/// frame. Netplay is lockstep; that is a certain desync, reproduced by Adam
+/// on 2026-09-18.
+///
+/// Asked this way round on purpose. "Is it THE offline image?" would answer
+/// no for a player whose game path is not the standard booted one, and they
+/// would silently lose the GameCube no-swap patch offline, which is the very
+/// complaint 3.0.10 shipped to fix. Excluding one known path is the narrow
+/// claim; the rest of the world is ordinary offline play.
+pub(crate) fn is_netplay_image(data_root: &std::path::Path, game_path: &std::path::Path) -> bool {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let online = crate::online_image::online_dir(data_root).join(crate::online_image::IMAGE_FILE);
+    canon(game_path) == canon(&online)
+}
+
 /// What the caller asks for.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
@@ -772,12 +798,39 @@ impl Session {
 
         }
 
+        // Is this launch the offline image, or netplay?
+        //
+        // ⛔⛔ `req.build` CANNOT ANSWER THAT. `netplay_open` builds its
+        // LaunchRequest with `build: GameBuild::Offline` and only swaps
+        // `game_path` to the online image, and that image carries the SAME
+        // disc id (`GN7E69`) as the offline one, so `req.build.game_id()` is
+        // "GN7E69" for netplay too. Every "offline only" rule written against
+        // the build or the id therefore includes netplay by accident. The
+        // image path is the only thing that tells them apart.
+        // Default to "this is ordinary offline play". Only a launch we can
+        // positively identify as netplay's image is excluded.
+        let on_booted_offline = !platform
+            .paths
+            .data_root()
+            .ok()
+            .is_some_and(|root| is_netplay_image(&root, &req.game_path));
+
         // The GameCube profile plays the game the GameCube way: the disc's
         // in-match X/B swap is switched off for that player through Dolphin's
         // per-game patch list, and switched back on for every other profile.
-        // Offline game only; see crate::gamecube_controls for the netplay rule.
+        //
+        // ⛔⛔ NETPLAY MUST NEVER CARRY IT. Dolphin does not synchronise
+        // [OnFrame] patches, so one machine running the cave beside one that
+        // is not diverges on the first B or X press: netplay is lockstep, and
+        // that is a guaranteed desync, not a risk. Before 2026-09-18 this was
+        // guarded by the game id, which netplay shares, so the patch went in
+        // anyway. The state is rewritten per launch, so an offline launch puts
+        // it back.
         {
-            let wanted = crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
+            let wanted = on_booted_offline
+                && crate::gamecube_controls::wanted_for(
+                    written.controls.as_ref().map(|c| c.profile),
+                );
             let mut ids = vec!["GN7E69", req.build.game_id()];
             ids.sort();
             ids.dedup();
@@ -790,6 +843,46 @@ impl Session {
                 );
                 written.keys_set += 1;
                 written.files.push(path);
+            }
+        }
+
+        // The same profile, the same rule, one layer further in: the disc's
+        // in-match Gamebreaker prompt draws X because game B is physical X
+        // for a swapped pad. A GameCube player is not swapped, so their
+        // prompt has to say B to match the button they actually press. The
+        // glyph lives in a disc file, not in a code word, so the offline
+        // image carries its own copy of that file. Offline only: netplay
+        // boots a different, non-customizable image where they ARE swapped
+        // and the shipped X is already right. See crate::gamecube_glyph.
+        //
+        // ⛔ Gated on the image path, for the reason spelled out above: a
+        // build check would rewrite the very disc netplay must keep identical
+        // between players.
+        if on_booted_offline {
+            let wanted =
+                crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
+            match crate::gamecube_glyph::apply(&req.game_path, wanted) {
+                Ok(crate::gamecube_glyph::Outcome::WroteVariant) => {
+                    tracing::info!("gamecube glyph: Gamebreaker prompt set to B in {}", req.game_path.display());
+                }
+                Ok(crate::gamecube_glyph::Outcome::WroteShipped) => {
+                    tracing::info!("gamecube glyph: Gamebreaker prompt restored to X in {}", req.game_path.display());
+                }
+                Ok(crate::gamecube_glyph::Outcome::AlreadyRight) => {}
+                Ok(crate::gamecube_glyph::Outcome::Unrecognised) => {
+                    tracing::warn!(
+                        "gamecube glyph: {} in the booted image matches neither copy this launcher carries, so the Gamebreaker prompt was left alone; a game update has changed the file and the launcher needs a new copy",
+                        crate::gamecube_glyph::FILE_NAME
+                    );
+                }
+                Ok(crate::gamecube_glyph::Outcome::NotFound) => {
+                    tracing::warn!(
+                        "gamecube glyph: no {} of the expected length in {}",
+                        crate::gamecube_glyph::FILE_NAME,
+                        req.game_path.display()
+                    );
+                }
+                Err(e) => tracing::warn!("gamecube glyph: {e}"),
             }
         }
         // Ask the runtime that is about to be launched. The built in scan sees
@@ -2924,5 +3017,46 @@ mod tests {
         let none = find_game_image(&exe, &user, None, None);
         assert!(matches!(none, GameSearch::None { .. }));
         assert!(none.explain().contains("No game image was found"), "{}", none.explain());
+    }
+
+    /// The bug this exists to stop coming back.
+    ///
+    /// `netplay_open` sets `build: GameBuild::Offline` and swaps only
+    /// `game_path`, and the online image shares the offline disc id, so
+    /// gating on either of those silently includes netplay. Before
+    /// 2026-09-18 `gamecube_controls` was gated on the game id and wrote its
+    /// [OnFrame] no-swap patch on a netplay launch, which desynced a
+    /// GameCube-profile player against everyone else on the first frame.
+    /// Adam reproduced that.
+    #[test]
+    fn the_image_netplay_boots_is_recognised_and_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let online = crate::online_image::online_dir(root).join(crate::online_image::IMAGE_FILE);
+        std::fs::create_dir_all(online.parent().unwrap()).unwrap();
+        std::fs::write(&online, b"online").unwrap();
+        assert!(is_netplay_image(root, &online), "netplay's image must be recognised");
+    }
+
+    /// The other half, and the reason the question is asked this way round:
+    /// ordinary offline play must still get its per-game writes, including a
+    /// game path that is not the standard booted image. Requiring the booted
+    /// path would take the GameCube no-swap patch away from those players.
+    #[test]
+    fn ordinary_offline_play_is_never_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let booted = crate::game_image::booted_path(root);
+        std::fs::create_dir_all(booted.parent().unwrap()).unwrap();
+        std::fs::write(&booted, b"offline").unwrap();
+        assert!(!is_netplay_image(root, &booted), "the booted image is not netplay");
+
+        let elsewhere = root.join("Games").join("NFL Street 2 FIELDS 12-19.iso");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, b"a player's own path").unwrap();
+        assert!(!is_netplay_image(root, &elsewhere), "a non-standard offline path is not netplay");
+
+        let missing = root.join("not-on-disk.iso");
+        assert!(!is_netplay_image(root, &missing), "a path that does not exist is not netplay");
     }
 }
