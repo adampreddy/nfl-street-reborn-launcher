@@ -314,6 +314,12 @@ pub struct WrittenConfig {
     /// Present when no controller could be found, so the caller can say so
     /// rather than launching silently into nothing.
     pub no_controller: bool,
+    /// Connected pads with controls that CANNOT be pressed on them, and how
+    /// many: `(device string, dead controls)`. Empty is the normal case. A pad
+    /// listed here starts the game with those controls doing nothing, which is
+    /// the failure that has always been silent; the caller can finally say so.
+    /// See [`crate::controller::ControllerProfile::dead_controls`].
+    pub pads_needing_setup: Vec<(String, usize)>,
     /// Which user directory this launch will boot against, and why.
     pub user_dir: UserDir,
     /// What the recorded controls profile did to the activation.
@@ -334,6 +340,7 @@ impl Default for WrittenConfig {
             pads: Vec::new(),
             pads_authoritative: false,
             no_controller: false,
+            pads_needing_setup: Vec::new(),
             // A path is required, and an empty one is obviously not a real
             // directory, so a caller that forgets to set it cannot mistake it
             // for a resolved one.
@@ -914,6 +921,30 @@ impl Session {
                 }
             }
         }
+        // Say which pads will start the game with controls that do nothing.
+        //
+        // The warning above never fired for the pads that need it: it asks
+        // `Mapping::unresolvable`, which skips every binding containing `|`,
+        // and since 3.0.6 every default binding is an OR. A pad Windows has no
+        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
+        // reports `Button 3` and `Axis 1-`, nothing in the default binding
+        // exists on it, and this log said nothing. At WARN, because that is
+        // the level a player's launcher.log keeps.
+        for pad in scan.playable_pads() {
+            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
+            let key = pad.identity().profile_key();
+            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
+            let dead = profile.dead_controls(&reported.all_names());
+            if !dead.is_empty() {
+                tracing::warn!(
+                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
+                    pad.device_string(),
+                    dead.len(),
+                    dead
+                );
+                written.pads_needing_setup.push((pad.device_string(), dead.len()));
+            }
+        }
         // Adopt whatever the player changed in Dolphin's own Controller
         // Settings before regenerating. The launcher keeps owning the Device
         // line and the port layout, because a remembered device string that no
@@ -927,7 +958,16 @@ impl Session {
         let mut saved_profiles = saved_profiles;
         if let Ok(live) = std::fs::read_to_string(&pad_path) {
             let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
-            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles);
+            // Which device each saved pad is THIS session. A section of the
+            // file is only ever adopted into the pad its Device line names.
+            let connected: std::collections::BTreeMap<String, String> = scan
+                .playable_pads()
+                .iter()
+                .map(|pad| (pad.identity().profile_key(), pad.device_string()))
+                .collect();
+            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles, |identity| {
+                connected.get(&identity.profile_key()).cloned()
+            });
             if !adopted.is_empty() {
                 tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
                 profiles_changed = true;
@@ -967,7 +1007,25 @@ impl Session {
                 written.pads = assignment;
                 written.no_controller = written.pads.is_empty();
             }
-            None => written.no_controller = true,
+            None => {
+                written.no_controller = true;
+                // No pad was SEEN, which is not the same as no pad. The scan
+                // can miss one, and a Bluetooth pad is often switched on after
+                // Play. The runtime binds player one to whichever pad turns
+                // up, so what is on disk has to be pressable by it. Never a
+                // reason not to start the game.
+                match leave_standing_pad_file(&pad_path) {
+                    Ok(true) => {
+                        tracing::warn!(
+                            "controller: no pad was seen at launch, so {} now binds every pad's names and the game takes whichever pad is connected",
+                            pad_path.display()
+                        );
+                        written.files.push(pad_path.clone());
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("controller: {} could not be prepared for a pad that turns up later: {e}", pad_path.display()),
+                }
+            }
         }
 
         // Dolphin.ini: the controller ports for the pads bound above, and a
@@ -984,10 +1042,16 @@ impl Session {
         let user_dir = config_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| config_dir.clone());
         let card = memory_card_overlay(&dolphin_doc, &user_dir);
         let mut changed = false;
-        if !written.no_controller {
-            let ports = controller_port_overlay(&dolphin_doc, &written.pads);
-            changed |= !dolphin_doc.merge(&ports).is_noop();
-        }
+        let ports = if written.no_controller {
+            // A pad that turns up after the scan reaches the game only if
+            // player one's port is on. Same rule as always: a port is switched
+            // on when it is off or unset, and a value somebody chose (a
+            // GameCube adapter, say) is left exactly as it is.
+            controller_port_overlay(&dolphin_doc, &player_one_port())
+        } else {
+            controller_port_overlay(&dolphin_doc, &written.pads)
+        };
+        changed |= !dolphin_doc.merge(&ports).is_noop();
         changed |= !dolphin_doc.merge(&card).is_noop();
         if changed {
             std::fs::write(&dolphin_file,dolphin_doc.render())?;
@@ -1358,6 +1422,39 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
 
 pub fn build_gcpad_with_profiles(scan: &Enumeration, ports: u8, saved: &[ControllerProfile]) -> Option<(String, Vec<(u8, String)>)> {
     build_gcpad_for_player(scan, ports, saved, None)
+}
+
+/// The port assignment of a launch that saw no pad: player one, and no claim
+/// about which device, because none was seen.
+pub fn player_one_port() -> Vec<(u8, String)> {
+    vec![(1, String::new())]
+}
+
+/// What a launch that saw NO pad leaves in `GCPadNew.ini`. True when the file
+/// was written.
+///
+/// "Saw no pad" is a statement about the scan, not about the desk. See
+/// [`crate::controller::standing_pad_file`] for the measurements and for what
+/// is never touched. Kept apart from [`Session::prepare`] so the bytes that
+/// land on disk can be checked without a runtime to scan with.
+///
+/// The sidecar is deliberately left alone. It records what the launcher wrote
+/// for a pad it could see, and everything widened here is the launcher's own
+/// vocabulary, which adoption already refuses to take for a player's choice.
+pub fn leave_standing_pad_file(pad_path: &Path) -> std::io::Result<bool> {
+    let live = match std::fs::read_to_string(pad_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let Some(standing) = crate::controller::standing_pad_file(&live) else {
+        return Ok(false);
+    };
+    if let Some(parent) = pad_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(pad_path, standing)?;
+    Ok(true)
 }
 
 /// Explicit player slots stay fixed even when a controller disconnects.
@@ -2301,6 +2398,60 @@ mod tests {
             not_searched: Vec::new(),
         };
         assert!(build_gcpad(&empty, 4).is_none());
+    }
+
+    /// The launch path, not just the text function. A launch that sees no pad
+    /// used to leave the seeded Xbox-only file in charge, and a PlayStation
+    /// pad the scan had missed was dead for the session. What is on disk
+    /// afterwards must be pressable by that pad.
+    #[test]
+    fn a_launch_that_sees_no_pad_leaves_player_one_bindable_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        std::fs::write(&pad, "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\nButtons/Start = Start\n").unwrap();
+
+        assert!(leave_standing_pad_file(&pad).unwrap(), "the seeded file is rewritten");
+        let after = std::fs::read_to_string(&pad).unwrap();
+        assert!(after.contains("Buttons/A = `Button A`|`Cross`"), "{after}");
+        assert!(after.contains("Buttons/Start = `Start`|`Menu`"), "{after}");
+
+        assert!(!leave_standing_pad_file(&pad).unwrap(), "and then there is nothing left to say");
+        assert_eq!(std::fs::read_to_string(&pad).unwrap(), after, "so nothing is written");
+    }
+
+    /// A keyboard player has no pad on every launch of their life. Their file
+    /// is theirs, byte for byte.
+    #[test]
+    fn a_launch_that_sees_no_pad_never_touches_a_keyboard_players_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        let theirs = "[GCPad1]\r\nDevice = DInput/0/Keyboard Mouse\r\nButtons/A = X\r\nMain Stick/Up = UP\r\n";
+        std::fs::write(&pad, theirs).unwrap();
+        assert!(!leave_standing_pad_file(&pad).unwrap());
+        assert_eq!(std::fs::read_to_string(&pad).unwrap(), theirs);
+    }
+
+    /// A pad that turns up after the scan only reaches the game if player
+    /// one's port is on. Off or unset is switched on; a value somebody chose
+    /// is not the launcher's to change.
+    #[test]
+    fn a_launch_that_sees_no_pad_still_switches_player_one_on() {
+        let off = crate::ini::IniDocument::parse("[Core]\nSIDevice0 = 0\n");
+        let overlay = controller_port_overlay(&off, &player_one_port());
+        assert_eq!(overlay.get("Core").and_then(|c| c.get("SIDevice0")).map(String::as_str), Some("6"));
+
+        let adapter = crate::ini::IniDocument::parse("[Core]\nSIDevice0 = 12\n");
+        assert!(controller_port_overlay(&adapter, &player_one_port()).is_empty(), "a GameCube adapter stays");
+    }
+
+    /// No pad file at all is the same player with even less: they still get a
+    /// player one.
+    #[test]
+    fn a_launch_that_sees_no_pad_and_no_pad_file_writes_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        assert!(leave_standing_pad_file(&pad).unwrap());
+        assert!(std::fs::read_to_string(&pad).unwrap().starts_with("[GCPad1]\n"));
     }
     /// The detection bug, pinned. A directory holding only the INIs the
     /// launcher itself writes must never be mistaken for a real install: that

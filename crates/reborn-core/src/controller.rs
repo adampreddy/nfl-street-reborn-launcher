@@ -990,6 +990,69 @@ impl ControllerProfile {
         widened
     }
 
+    /// The controls that cannot be pressed on a device reporting `available`.
+    ///
+    /// # Why this exists beside [`Mapping::unresolvable`]
+    ///
+    /// Every controller failure this project has shipped was SILENT: the file
+    /// parses, the Device line is right, and nothing happens. The guardrail
+    /// that was meant to catch it skips any binding containing `|`, and since
+    /// 3.0.6 every default binding IS an OR, so for the pads that most need it
+    /// the guardrail has been looking away. A pad Windows has no gamepad
+    /// mapping for (a USB GameCube-style pad, a generic HID pad) reports
+    /// `Button 3` and `Axis 1-`; nothing in the universal binding exists on
+    /// it, its sticks have never worked, and the Controllers page told its
+    /// owner "Automatic mapping is ready".
+    ///
+    /// This one sees through the OR: a binding made only of control names is
+    /// alive when ANY of those names exists on the device, because `|` is a
+    /// maximum and an unresolvable name is silently zero. The result is the
+    /// exact list the player has to press, which is the only honest way to
+    /// set such a pad up: `Button 3` means nothing until it is measured.
+    ///
+    /// # What it will not say
+    ///
+    /// An empty `available` means the device could not be asked, and no
+    /// evidence is not an accusation. A binding using anything other than
+    /// names joined by `|` is a hand written expression; this is not an
+    /// expression evaluator and must not veto what it cannot read.
+    pub fn dead_controls(&self, available: &[String]) -> Vec<GcInput> {
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let exists = |name: &str| available.iter().any(|a| Mapping::bare(a) == name);
+        GcInput::ALL
+            .iter()
+            .copied()
+            .filter(|input| {
+                let Some(binding) = self.mapping.get(*input).map(str::trim).filter(|b| !b.is_empty()) else {
+                    return true;
+                };
+                let mut names = Vec::new();
+                for part in binding.split('|') {
+                    let part = part.trim();
+                    let quoted = part.len() >= 2 && part.starts_with('`') && part.ends_with('`');
+                    let name = if quoted { &part[1..part.len() - 1] } else { part };
+                    // Quoted, a name may hold anything but a backtick. Bare,
+                    // anything the parser reads as an operator makes this an
+                    // expression, and that is not ours to judge. An axis name
+                    // ends in its sign (`Left Y+`), which is part of the name.
+                    let readable = if quoted {
+                        !name.is_empty() && !name.contains('`')
+                    } else {
+                        let stem = name.strip_suffix(['+', '-']).unwrap_or(name);
+                        !stem.is_empty() && !stem.contains(['&', '!', '+', '-', '^', '(', ')', '`', ',', '*', '/', '<', '>', '='])
+                    };
+                    if !readable {
+                        return false;
+                    }
+                    names.push(name);
+                }
+                !names.iter().any(|name| exists(name))
+            })
+            .collect()
+    }
+
     /// Rebind one input and remember that the user chose it.
     pub fn rebind(&mut self, input: GcInput, binding: impl Into<String>) {
         self.mapping.set(input, binding);
@@ -1146,18 +1209,167 @@ pub fn parse_gcpad(text: &str) -> BTreeMap<u8, PadSection> {
 ///
 /// Returns a description of what was adopted, per port, so the launcher can
 /// say so in the log rather than changing the player's controls in silence.
+/// The pad file to leave behind when a launch sees NO pad, or `None` when the
+/// one already on disk needs nothing.
+///
+/// # Why a launch with no pad writes anything at all
+///
+/// "No pad" is what the scan said, and the scan can be wrong. The runtime
+/// reports WGInput devices from a Windows callback that can land after the
+/// one-shot device list has been read: measured 2026-09-18, a connected pad
+/// was missing from 8 of 52 scans, on a fast machine with a wired pad. It is
+/// also simply true whenever a Bluetooth pad is switched on after Play.
+///
+/// The launcher used to write nothing in that case, which left whatever was
+/// already there in charge, and for a new player that is the seeded file:
+/// `Device = XInput/0/Gamepad` with Xbox-only names. A PlayStation pad lives
+/// on WGInput and nowhere else, so it was dead for the whole session while the
+/// Controllers page test, which asks the browser and not Dolphin, said it was
+/// fine.
+///
+/// The runtime now binds player one to whichever pad is really connected when
+/// the named one is absent. That only helps if the bindings can be pressed on
+/// that pad, so every binding that is the launcher's own vocabulary is widened
+/// to the universal one. See [`Mapping::universal`] for why that is safe.
+///
+/// # What is never touched
+///
+/// A binding that names anything outside its input's own candidates is the
+/// player's, exactly as [`Mapping::is_own_vocabulary`] rules for adoption: a
+/// keyboard layout, a remap, a pad set up by hand in Dolphin. So is every
+/// line that is not a binding. The file is edited in place, line by line,
+/// rather than regenerated, because with no pad in sight there is no profile
+/// to regenerate it from.
+pub fn standing_pad_file(live: &str) -> Option<String> {
+    const DEVICE: &str = "XInput/0/Gamepad";
+    let extra_keys = [
+        ("Triggers/L-Analog", Extra::AnalogTriggerL),
+        ("Triggers/R-Analog", Extra::AnalogTriggerR),
+        ("Rumble/Motor", Extra::RumbleMotor),
+    ];
+
+    let sections = parse_gcpad(live);
+    let player_one_is_bound = sections
+        .get(&1)
+        .is_some_and(|s| GcInput::ALL.iter().any(|i| s.get(i.ini_key()).is_some_and(|v| !v.is_empty())));
+
+    // The bindings a player one with none of their own gets.
+    let fresh = |with_header: bool, with_device: bool| -> String {
+        let identity = DeviceIdentity {
+            guid: "XInput:0".into(),
+            serial: None,
+            name: "Gamepad".into(),
+            family: DeviceFamily::Xbox,
+        };
+        let profile = ControllerProfile::new(identity, 1);
+        GcPadConfig::generate(std::slice::from_ref(&profile), |_| DEVICE.to_string())
+            .lines()
+            .filter(|line| with_header || !line.starts_with('['))
+            .filter(|line| with_device || !line.starts_with("Device ="))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+
+    if !sections.contains_key(&1) {
+        return Some(format!("{}{live}", fresh(true, true)));
+    }
+
+    let mut out = String::with_capacity(live.len() + 512);
+    let mut changed = false;
+    let mut in_pad = false;
+    for raw in live.split_inclusive('\n') {
+        let body = raw.trim_end_matches(['\r', '\n']);
+        let ending = &raw[body.len()..];
+        let line = body.trim();
+
+        if line.starts_with('[') && line.ends_with(']') {
+            let port = line[1..line.len() - 1]
+                .strip_prefix("GCPad")
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=4).contains(n));
+            in_pad = port.is_some();
+            out.push_str(raw);
+            // A player-one section with no bindings in it binds nothing.
+            if port == Some(1) && !player_one_is_bound {
+                if ending.is_empty() {
+                    out.push('\n');
+                }
+                let has_device = sections.get(&1).is_some_and(|s| s.get("Device").is_some_and(|d| !d.is_empty()));
+                out.push_str(&fresh(false, !has_device));
+                changed = true;
+            }
+            continue;
+        }
+
+        let widened = (|| {
+            if !in_pad || line.starts_with([';', '#']) {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            let (key, value) = (key.trim(), value.trim());
+            if let Some(input) = GcInput::ALL.iter().find(|i| i.ini_key() == key) {
+                let universal = Mapping::universal(*input);
+                return (Mapping::is_own_vocabulary(*input, value) && value != universal)
+                    .then(|| format!("{key} = {universal}"));
+            }
+            let (_, extra) = extra_keys.iter().find(|(k, _)| *k == key)?;
+            // `<binding> <strength>` is the old broken rumble form; the number
+            // was never legal there and is dropped with the rewrite.
+            let binding = match value.rsplit_once(' ') {
+                Some((binding, tail)) if parse_percent(tail).is_some() => binding,
+                _ => value,
+            };
+            let universal = Extras::universal(*extra);
+            (Mapping::extra_is_own_vocabulary(*extra, binding) && value != universal)
+                .then(|| format!("{key} = {universal}"))
+        })();
+
+        match widened {
+            Some(line) => {
+                out.push_str(&line);
+                out.push_str(ending);
+                changed = true;
+            }
+            None => out.push_str(raw),
+        }
+    }
+
+    changed.then_some(out)
+}
+
 pub fn adopt_external_edits(
     live: &str,
     last_written: &str,
     profiles: &mut [ControllerProfile],
+    device_of: impl Fn(&DeviceIdentity) -> Option<String>,
 ) -> Vec<String> {
     let live = parse_gcpad(live);
     let ours = parse_gcpad(last_written);
     let mut adopted = Vec::new();
 
     for profile in profiles.iter_mut() {
-        let Some(section) = live.get(&profile.port) else { continue };
-        let previous = ours.get(&profile.port);
+        // Bindings and the device they were made for travel together or not
+        // at all.
+        //
+        // This used to match a section to a profile by PORT alone and skip
+        // the Device line, so whatever was bound on port 1 was adopted into
+        // whichever pad held port 1 now. Control names are per backend and do
+        // not overlap: a 2.1 player's DirectInput setup (`Button 1`,
+        // `Axis Y-`) landed under the WGInput device line the launcher gives
+        // that pad, where `Button 1` happens to exist and `Axis Y-` does not.
+        // Reported 2026-09-18 as "only the buttons work, it won't read the
+        // stick". The same hole carried an Xbox pad's remap onto a
+        // PlayStation pad sharing its port.
+        //
+        // `device_of` answers what this pad is called THIS session, and only
+        // the section naming exactly that device is this pad's. A pad that is
+        // not connected has no section that can be its own.
+        let Some(device) = device_of(&profile.identity) else { continue };
+        let names_device = |s: &PadSection| s.get("Device").is_some_and(|d| *d == device);
+        let Some((port, section)) = live.iter().find(|(_, s)| names_device(s)) else { continue };
+        // What we wrote last time only counts as a baseline for the same pad.
+        let previous = ours.get(port).filter(|s| names_device(s));
+        let port = *port;
 
         for (key, value) in section {
             // The launcher owns which device is in which port. Everything else
@@ -1184,19 +1396,19 @@ pub fn adopt_external_edits(
                     continue;
                 }
                 profile.rebind(*input, value.clone());
-                adopted.push(format!("port {}: {key} = {value}", profile.port));
+                adopted.push(format!("port {}: {key} = {value}", port));
             } else if key == "Main Stick/Calibration" || key == "C-Stick/Calibration" {
                 profile.calibration.insert(key.clone(), value.clone());
-                adopted.push(format!("port {}: {key} (their own measurement)", profile.port));
+                adopted.push(format!("port {}: {key} (their own measurement)", port));
             } else if key == "Main Stick/Dead Zone" || key == "C-Stick/Dead Zone" {
                 if let Some(percent) = parse_percent(value) {
                     profile.tuning.deadzone_percent = percent;
-                    adopted.push(format!("port {}: dead zone {percent}", profile.port));
+                    adopted.push(format!("port {}: dead zone {percent}", port));
                 }
             } else if key == "Triggers/Threshold" {
                 if let Some(percent) = parse_percent(value) {
                     profile.tuning.trigger_threshold_percent = percent;
-                    adopted.push(format!("port {}: trigger threshold {percent}", profile.port));
+                    adopted.push(format!("port {}: trigger threshold {percent}", port));
                 }
             } else if key == "Rumble/Motor" {
                 // `<binding> <strength>` was the old broken form: the
@@ -1222,23 +1434,23 @@ pub fn adopt_external_edits(
                     changed = true;
                 }
                 if changed {
-                    adopted.push(format!("port {}: rumble", profile.port));
+                    adopted.push(format!("port {}: rumble", port));
                 }
             } else if key == "Triggers/L-Analog" {
                 if !Mapping::extra_is_own_vocabulary(Extra::AnalogTriggerL, value) {
                     profile.extras.set(Extra::AnalogTriggerL, value.clone());
-                    adopted.push(format!("port {}: {key}", profile.port));
+                    adopted.push(format!("port {}: {key}", port));
                 }
             } else if key == "Triggers/R-Analog" {
                 if !Mapping::extra_is_own_vocabulary(Extra::AnalogTriggerR, value) {
                     profile.extras.set(Extra::AnalogTriggerR, value.clone());
-                    adopted.push(format!("port {}: {key}", profile.port));
+                    adopted.push(format!("port {}: {key}", port));
                 }
             } else {
                 // Dolphin's window writes plenty this model has no concept of.
                 // Keep it exactly, so regenerating does not delete it.
                 profile.carried.insert(key.clone(), value.clone());
-                adopted.push(format!("port {}: {key} (carried)", profile.port));
+                adopted.push(format!("port {}: {key} (carried)", port));
             }
         }
     }
@@ -1396,7 +1608,7 @@ mod external_edit_tests {
             .collect();
 
         let mut profiles = [profile.clone()];
-        let adopted = adopt_external_edits(&theirs, &ours, &mut profiles);
+        let adopted = adopt_external_edits(&theirs, &ours, &mut profiles, |_| Some("XInput/0/Gamepad".into()));
         assert!(!adopted.is_empty(), "the player changed things; we must notice");
         profile = profiles.into_iter().next().unwrap();
 
@@ -1434,7 +1646,7 @@ mod external_edit_tests {
         let profile = ControllerProfile::new(identity("Xbox Controller"), 1);
         let ours = GcPadConfig::generate(std::slice::from_ref(&profile), |_| "XInput/0/Gamepad".into());
         let mut profiles = [profile.clone()];
-        assert!(adopt_external_edits(&ours, &ours, &mut profiles).is_empty());
+        assert!(adopt_external_edits(&ours, &ours, &mut profiles, |_| Some("XInput/0/Gamepad".into())).is_empty());
         assert_eq!(profiles[0], profile, "nothing about the profile changed");
     }
 
@@ -1447,7 +1659,7 @@ mod external_edit_tests {
     fn a_port_we_never_wrote_is_adopted_whole() {
         let mut profiles = [ControllerProfile::new(identity("Wireless Controller"), 2)];
         let theirs = "[GCPad2]\nDevice = WGInput/1/Controller\nButtons/A = Circle\nButtons/B = Cross\nMain Stick/Dead Zone = 12.00\n";
-        let adopted = adopt_external_edits(theirs, "", &mut profiles);
+        let adopted = adopt_external_edits(theirs, "", &mut profiles, |_| Some("WGInput/1/Controller".into()));
         assert!(!adopted.is_empty());
         assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("Circle"));
         assert_eq!(profiles[0].mapping.get(GcInput::ButtonB), Some("Cross"));
@@ -1491,7 +1703,7 @@ mod external_edit_tests {
         assert!(left_behind.contains("Buttons/A = `Button A`"), "{left_behind}");
 
         let mut profiles = [profile.clone()];
-        adopt_external_edits(&left_behind, "", &mut profiles);
+        adopt_external_edits(&left_behind, "", &mut profiles, |_| Some("WGInput/0/Wireless Controller".into()));
 
         assert_eq!(
             profiles[0].mapping, profile.mapping,
@@ -1516,7 +1728,7 @@ mod external_edit_tests {
             .replace("Buttons/A = `Button A`", "Buttons/A = `Circle`")
             .replace("Main Stick/Dead Zone = 15.00", "Main Stick/Dead Zone = 5.00");
         let mut profiles = [ControllerProfile::new(identity("Wireless Controller"), 1)];
-        adopt_external_edits(&theirs, "", &mut profiles);
+        adopt_external_edits(&theirs, "", &mut profiles, |_| Some("WGInput/0/Wireless Controller".into()));
         assert_eq!(profiles[0].mapping.get(GcInput::ButtonA), Some("`Circle`"), "their remap");
         assert_eq!(profiles[0].overridden, vec![GcInput::ButtonA], "only that one was theirs");
         assert_eq!(profiles[0].tuning.deadzone_percent, 5, "their dead zone");

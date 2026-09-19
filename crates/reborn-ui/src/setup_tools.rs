@@ -318,8 +318,20 @@ pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:
 pub async fn setup_controller_mapping(runtime: Option<String>, device: String) -> Result<serde_json::Value,String> {
     tauri::async_runtime::spawn_blocking(move|| {
         let profile=controller(runtime.as_deref(),&device)?;
-        Ok(serde_json::json!({"device":device,"custom":!profile.overridden.is_empty(),"rows":GcInput::ALL.iter().map(|input|
-            serde_json::json!({"key":input.ini_key(),"label":input.label(),"binding":profile.mapping.get(*input)})).collect::<Vec<_>>()}))
+        // Which of these controls can actually be pressed on THIS pad, asked of
+        // the runtime that will resolve them. A pad Windows has no gamepad
+        // mapping for reports `Button 3` and `Axis 1-`, nothing in the default
+        // binding exists on it, and this page used to tell its owner the
+        // mapping was ready. `checked` is false when the runtime could not be
+        // asked, and then nothing is called dead: no evidence, no accusation.
+        let p=Platform::detect();
+        let available=runtime.as_deref().and_then(|exe|{
+            let scratch=p.paths.data_root().ok()?.join("cache");
+            reborn_core::devices::dump_via_runtime(&p,Path::new(exe),&scratch).ok()
+        }).and_then(|(_,inputs)|inputs.into_iter().find(|d|d.device==device)).map(|d|d.all_names()).unwrap_or_default();
+        let dead=profile.dead_controls(&available);
+        Ok(serde_json::json!({"device":device,"custom":!profile.overridden.is_empty(),"checked":!available.is_empty(),"rows":GcInput::ALL.iter().map(|input|
+            serde_json::json!({"key":input.ini_key(),"label":input.label(),"binding":profile.mapping.get(*input),"dead":dead.contains(input)})).collect::<Vec<_>>()}))
     }).await.map_err(|e|e.to_string())?
 }
 
