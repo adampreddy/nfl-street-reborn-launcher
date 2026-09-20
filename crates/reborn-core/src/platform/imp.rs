@@ -260,8 +260,10 @@ impl ProcessHost for RealProcessHost {
                 "process handle was already consumed",
             )));
         };
+        // Before the wait, because the id is what the crash record is matched on.
+        let pid = child.id();
         let status = child.wait()?;
-        Ok(classify_exit(&status))
+        Ok(with_fault_site(classify_exit(&status), pid))
     }
 
     fn is_running(&self, handle: &ProcessHandle) -> bool {
@@ -458,6 +460,121 @@ fn classify_exit(status: &std::process::ExitStatus) -> ExitKind {
         }
         None => ExitKind::Terminated,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Where a crash happened
+// ---------------------------------------------------------------------------
+
+/// The module that faulted and the offset inside it, as Windows recorded them.
+///
+/// An exit code says a crash happened. It does not say where, and "access
+/// violation" on its own has been worth nothing every time a player reported
+/// one: the same code covers a null dereference in the emulator, a driver
+/// fault and a half-written save. The offset is the part that names a site,
+/// because it resolves back to a function in the build that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FaultSite {
+    module: String,
+    offset: String,
+}
+
+/// One named field out of an `Application Error` payload.
+///
+/// `wevtutil` emits `<Data Name='ModuleName'>`. Both quote styles are accepted
+/// because the attribute quoting is the emitter's choice, not a guarantee, and
+/// getting it wrong here fails silently -- which is the one outcome this whole
+/// path exists to stop.
+fn event_field<'a>(event: &'a str, name: &str) -> Option<&'a str> {
+    for open in [format!("<Data Name='{name}'>"), format!("<Data Name=\"{name}\">")] {
+        let Some(at) = event.find(&open) else { continue };
+        let rest = &event[at + open.len()..];
+        let Some(end) = rest.find("</Data>") else { continue };
+        return Some(rest[..end].trim());
+    }
+    None
+}
+
+/// Pull the fault site for one process id out of `wevtutil` XML.
+///
+/// Windows writes an `Application Error` record for every process it ends this
+/// way. Read by field name rather than by position: the payload order is
+/// Windows' business, and a record that gains a field must not silently start
+/// reporting the wrong one. Matching on the process id rather than the image
+/// name is what keeps a second copy of the emulator, or a record left by an
+/// earlier session, out of the answer.
+///
+/// Scanned as text rather than parsed as XML: the shape is fixed, this runs
+/// once after a crash, and the input is output this code asked for.
+fn fault_site_in(xml: &str, pid: u32) -> Option<FaultSite> {
+    for event in xml.split("<Event ").skip(1) {
+        let Some(recorded) = event_field(event, "ProcessId") else { continue };
+        let Ok(recorded) = u32::from_str_radix(recorded.trim_start_matches("0x"), 16) else {
+            continue;
+        };
+        if recorded != pid {
+            continue;
+        }
+        let Some(module) = event_field(event, "ModuleName") else { continue };
+        let Some(offset) = event_field(event, "FaultingOffset") else { continue };
+        return Some(FaultSite { module: module.to_string(), offset: offset.to_string() });
+    }
+    None
+}
+
+/// Ask Windows where the crash was.
+///
+/// The record is written a moment after the process dies, so this polls rather
+/// than reading once and reporting nothing. Bounded, because the player is
+/// waiting on the launcher to come back: a second and a half at worst. Every
+/// failure is silent on purpose -- a missing record must never turn a crash
+/// into an error, it just leaves the detail as short as it was before.
+#[cfg(windows)]
+fn fault_site(pid: u32) -> Option<FaultSite> {
+    use std::os::windows::process::CommandExt;
+    for attempt in 0..6u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let out = std::process::Command::new("wevtutil")
+            .args([
+                "qe",
+                "Application",
+                "/q:*[System[Provider[@Name='Application Error']]]",
+                "/c:20",
+                "/rd:true",
+                "/f:xml",
+            ])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        if let Some(site) = fault_site_in(&String::from_utf8_lossy(&out.stdout), pid) {
+            return Some(site);
+        }
+    }
+    None
+}
+
+/// Attach the fault site to a crash, when Windows recorded one.
+fn with_fault_site(kind: ExitKind, pid: u32) -> ExitKind {
+    let _ = pid;
+    #[cfg(windows)]
+    if let ExitKind::Crashed { detail } = &kind {
+        if let Some(site) = fault_site(pid) {
+            // WARN, because a shipped build logs nothing quieter, and this line
+            // is the whole reason the lookup happens: it turns "it crashed" into
+            // an address somebody can resolve to a function.
+            tracing::warn!(
+                "the game crashed in {} at +{} ({detail})",
+                site.module,
+                site.offset
+            );
+            return ExitKind::Crashed {
+                detail: format!("{detail} in {} +{}", site.module, site.offset),
+            };
+        }
+    }
+    kind
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,4 +1477,77 @@ mod tests {
         assert_eq!(r.source, ChannelSource::Unknown("beat".to_string()));
         assert!(r.explain().contains("\"beat\""), "{}", r.explain());
     }
+
+    /// A real `Application Error` record, as `wevtutil qe Application /f:xml`
+    /// emitted it on 2026-09-20 for the shipped runtime 1.2.4 build. Kept
+    /// verbatim rather than hand written: the first version of this parser read
+    /// unnamed `<Data>` elements, which this payload does not have, and it would
+    /// have found nothing forever without ever saying so.
+    const CRASH_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>
+<Provider Name='Application Error' Guid='{a0e9b465-b939-57d7-b27d-95d8e925ff57}'/>
+<EventID>1000</EventID><Level>2</Level>
+<TimeCreated SystemTime='2026-09-20T02:40:10.8602063Z'/>
+<Execution ProcessID='22676' ThreadID='28744'/>
+<Channel>Application</Channel></System><EventData>
+<Data Name='AppName'>NFL Street Reborn Dolphin.exe</Data>
+<Data Name='AppVersion'>1.1.0.0</Data>
+<Data Name='AppTimeStamp'>45e4af26</Data>
+<Data Name='ModuleName'>NFL Street Reborn Dolphin.exe</Data>
+<Data Name='ModuleVersion'>1.1.0.0</Data>
+<Data Name='ModuleTimeStamp'>45e4af26</Data>
+<Data Name='ExceptionCode'>c0000005</Data>
+<Data Name='FaultingOffset'>0000000000637940</Data>
+<Data Name='ProcessId'>0x541c</Data>
+<Data Name='ProcessCreationTime'>0x1dd48a863d5733d</Data>
+<Data Name='AppPath'>C:\Users\Adam\AppData\Roaming\NFL Street Reborn\runtime\NFL Street Reborn Dolphin.exe</Data>
+<Data Name='ModulePath'>C:\Users\Adam\AppData\Roaming\NFL Street Reborn\runtime\NFL Street Reborn Dolphin.exe</Data>
+</EventData></Event>"#;
+
+    #[test]
+    fn a_crash_record_gives_up_the_module_and_the_offset() {
+        // 0x541c is the id Windows recorded for the process that died.
+        let site = fault_site_in(CRASH_XML, 0x541c).expect("the record is for this process");
+        assert_eq!(site.module, "NFL Street Reborn Dolphin.exe");
+        // The offset is the whole point: this one resolved to
+        // DX11::D3D::StateManager::UnsetTexture in the build that produced it.
+        assert_eq!(site.offset, "0000000000637940");
+    }
+
+    /// The trap this test exists for: `<Execution ProcessID='22676'>` in the
+    /// System block is the service that WROTE the record, not the process that
+    /// crashed. Reading that one would attach a stranger's fault site to every
+    /// crash, and it would look entirely plausible in the log.
+    #[test]
+    fn the_reporting_service_is_not_mistaken_for_the_crashed_process() {
+        assert_eq!(fault_site_in(CRASH_XML, 22676), None);
+    }
+
+    #[test]
+    fn a_record_belonging_to_another_process_is_never_borrowed() {
+        assert_eq!(fault_site_in(CRASH_XML, 0x1234), None);
+    }
+
+    #[test]
+    fn double_quoted_attributes_read_the_same_as_single_quoted() {
+        let doubled = CRASH_XML.replace('\'', "\"");
+        let site = fault_site_in(&doubled, 0x541c).expect("quoting is the emitter's choice");
+        assert_eq!(site.offset, "0000000000637940");
+    }
+
+    #[test]
+    fn nothing_to_read_is_not_an_answer() {
+        assert_eq!(fault_site_in("", 0x541c), None);
+        assert_eq!(fault_site_in("<Event ><EventData></EventData></Event>", 0x541c), None);
+    }
+
+    /// The fault site is extra detail, never a precondition: a crash Windows
+    /// recorded nothing for is still reported as a crash, in its own words.
+    #[test]
+    fn a_crash_without_a_record_still_reads_as_a_crash() {
+        let plain = ExitKind::Crashed { detail: "access violation (0xC0000005)".into() };
+        assert!(with_fault_site(plain, 0).is_crash());
+        assert_eq!(with_fault_site(ExitKind::Normal, 0), ExitKind::Normal);
+    }
+
 }
