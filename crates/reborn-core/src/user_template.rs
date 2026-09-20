@@ -100,6 +100,24 @@ pub fn sanitize_game_settings_ini(text: &str) -> String {
     for key in crate::settings_law::retired_game_settings() {
         doc.remove(key.section, key.key);
     }
+    // A template is built from a developer's own Dolphin folder, and that
+    // folder is where cheat codes get switched on during a session. Four of
+    // them rode out that way for a week: the codes are patched into the disc,
+    // so every install that seeded from the template applied them twice. The
+    // dev profile had no [Gecko_Enabled] section, so nobody saw it there.
+    for (section, name) in crate::settings_law::BAKED_CODES {
+        let body = doc.raw_lines(section);
+        if body.is_empty() {
+            continue;
+        }
+        let kept: Vec<String> = body
+            .iter()
+            .filter(|line| !line.trim().trim_start_matches('$').trim().eq_ignore_ascii_case(name))
+            .cloned()
+            .collect();
+        let kept = if kept.iter().all(|l| l.trim().is_empty()) { Vec::new() } else { kept };
+        doc.replace_raw_lines(section, &kept);
+    }
     doc.render()
 }
 
@@ -268,5 +286,39 @@ mod tests {
         assert!(!text.contains("C:\\") && !text.contains("C:/"), "an absolute path survived: {text}");
         assert!(into.join("GameSettings/GN7E69.ini").is_file());
         assert!(!into.join("Load").exists() && !into.join("GC").exists());
+    }
+
+    /// The template that ships inside the runtime component, checked in place.
+    ///
+    /// This is the file every new install is seeded from, and it sits one layer
+    /// ABOVE the `Sys/GameSettings` block the 2026-09-13 pass cleaned, so a pin
+    /// left here beats everything the launcher, the Settings page and Dolphin's
+    /// own dialogs can write. It carried `SyncGPU = True`, `InternalResolution
+    /// = 3` and `MSAA = 1` for a week after that pass because only `Sys/` was
+    /// re-staged; the mtime never moved off the day it was captured.
+    ///
+    /// Sanitising is idempotent, so a clean file is a fixed point. If this
+    /// fails, the payload on this machine is carrying something
+    /// `sanitize_game_settings_ini` would strip, and shipping it would seed
+    /// that into every fresh install.
+    #[test]
+    fn the_shipped_template_on_this_machine_is_already_sanitised() {
+        let Ok(appdata) = std::env::var("APPDATA") else { return };
+        let path = Path::new(&appdata)
+            .join("NFL Street Reborn/runtime/User/GameSettings/GN7E69.ini");
+        let Ok(text) = std::fs::read_to_string(&path) else { return };
+
+        let cleaned = sanitize_game_settings_ini(&text);
+        if cleaned != text {
+            let gone: Vec<&str> = text
+                .lines()
+                .filter(|l| !cleaned.lines().any(|c| c == *l))
+                .collect();
+            panic!(
+                "{} would still be stripped by the sanitiser: {:#?}",
+                path.display(),
+                gone
+            );
+        }
     }
 }

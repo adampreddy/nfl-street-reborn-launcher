@@ -78,6 +78,12 @@ pub const GAME_SETTINGS: &str = "GameSettings";
 /// Bumped when [`reconcile_once`] needs to run again over installs it has
 /// already visited. The marker file holds the revision that last ran.
 ///
+/// 4 (2026-09-19): the shipped per-game template enabled four cheat codes that
+/// are already patched into the disc, so every install applied them a second
+/// time on top of the baked ones. See [`BAKED_CODES`]. Prior revisions only
+/// ever pruned `key = value` pins and never looked at the code lists, so the
+/// installs that need this are the ones every earlier revision already visited.
+///
 /// 3 (2026-09-14): revision 2 wrote `ShaderCompilationMode = 0` into every
 /// install. Blocking shader compilation on a cache the same release had just
 /// invalidated is what players reported as a multi-second stall at every snap,
@@ -89,7 +95,31 @@ pub const GAME_SETTINGS: &str = "GameSettings";
 /// since the product shipped - became live on every install that reconciled.
 /// The installs that need the repair are exactly the ones revision 1 already
 /// visited, so fixing the table is only half of it; the marker has to move too.
-pub const REVISION: u32 = 3;
+pub const REVISION: u32 = 4;
+
+/// Cheat codes the shipped template switched on that the disc already carries.
+///
+/// Verified against `main.dol` in the 2026-09-19 image, not assumed: each of
+/// the three Gecko hooks holds a branch into the cave region
+/// (`0x800D411C -> 0x802C7D30`, `0x800D1BF4 -> 0x802C7D60`,
+/// `0x800D1BC0 -> 0x802C7D90`), and all eleven names the Legends ActionReplay
+/// code writes are already sitting at `0x8028E9C8`. Enabling them a second time
+/// re-applies the same GameBreaker and scoring changes on top of the baked
+/// ones.
+///
+/// Nobody saw it on the dev box: that profile has no `[Gecko_Enabled]` section
+/// at all, so none of these were ever active there.
+///
+/// Matched by exact name, never by clearing the section, because a player may
+/// have enabled a code of their own and that is theirs to keep. `OnFrame` is
+/// deliberately absent: it carries the GameCube controls patch, which is live
+/// and correct.
+pub const BAKED_CODES: &[(&str, &str)] = &[
+    ("Gecko_Enabled", "Remove GameBreaker 2"),
+    ("Gecko_Enabled", "GB Takes Longer (v2)"),
+    ("Gecko_Enabled", "Point Remover"),
+    ("ActionReplay_Enabled", "Legends Text Code"),
+];
 
 /// Who decides a key's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,6 +415,8 @@ fn mark_reconciled(platform: &Platform) -> Result<()> {
 pub struct Reconciled {
     /// `GameSettings` pins removed, as `<game id>/<section>/<key>`.
     pub pruned: Vec<String>,
+    /// Baked cheat codes switched back off, as `<game id>/<section>/<name>`.
+    pub disabled: Vec<String>,
     /// Config keys put back to the player's own value, as `<file>/<section>/<key>`.
     pub restored: Vec<String>,
     /// Config keys given their repair value because no evidence survived.
@@ -395,7 +427,10 @@ pub struct Reconciled {
 
 impl Reconciled {
     pub fn is_empty(&self) -> bool {
-        self.pruned.is_empty() && self.restored.is_empty() && self.repaired.is_empty()
+        self.pruned.is_empty()
+            && self.disabled.is_empty()
+            && self.restored.is_empty()
+            && self.repaired.is_empty()
     }
 }
 
@@ -451,6 +486,40 @@ pub fn reconcile_in(user_dir: &Path, game_ids: &[&str]) -> Result<Reconciled> {
                 out.pruned.push(format!("{game_id}/{}/{}", key.section, key.key));
                 changed = true;
             }
+        }
+        // Switch off the codes the disc already carries. Dolphin keeps these
+        // lists as bare `$name` lines, so they go through the raw-line door
+        // rather than `remove`, and only the names in `BAKED_CODES` are
+        // dropped - anything else in the section is the player's.
+        for section in ["Gecko_Enabled", "ActionReplay_Enabled"] {
+            let body = doc.raw_lines(section);
+            if body.is_empty() {
+                continue;
+            }
+            let kept: Vec<String> = body
+                .iter()
+                .filter(|line| {
+                    let name = line.trim().trim_start_matches('$').trim();
+                    !BAKED_CODES
+                        .iter()
+                        .any(|(s, n)| *s == section && n.eq_ignore_ascii_case(name))
+                })
+                .cloned()
+                .collect();
+            if kept.len() == body.len() {
+                continue;
+            }
+            for line in &body {
+                let name = line.trim().trim_start_matches('$').trim();
+                if BAKED_CODES.iter().any(|(s, n)| *s == section && n.eq_ignore_ascii_case(name)) {
+                    out.disabled.push(format!("{game_id}/{section}/{name}"));
+                }
+            }
+            // An enabled list with nothing left in it is the same to Dolphin as
+            // no list at all, and that is what a clean profile looks like.
+            let kept = if kept.iter().all(|l| l.trim().is_empty()) { Vec::new() } else { kept };
+            doc.replace_raw_lines(section, &kept);
+            changed = true;
         }
         if changed {
             let backup = path.with_extension("ini.launcher-original");
@@ -831,6 +900,101 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("Config")).unwrap();
         std::fs::write(dir.path().join("GameSettings/GN7E69.ini"), game_settings).unwrap();
         dir
+    }
+
+    /// A profile seeded from the shipped template: the four baked codes are
+    /// switched on, and so is one the player turned on themselves.
+    fn game_settings_with_enabled_codes() -> String {
+        format!(
+            "{}[Gecko_Enabled]\n\
+             $Remove GameBreaker 2\n\
+             $GB Takes Longer (v2)\n\
+             $Point Remover\n\
+             $My Own Code\n\
+             [ActionReplay_Enabled]\n\
+             $Legends Text Code\n\
+             [OnFrame_Enabled]\n\
+             $Reborn GameCube controls (no X/B swap)\n",
+            live_game_settings()
+        )
+    }
+
+    fn enabled_in(dir: &Path, section: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(dir.join("GameSettings/GN7E69.ini")).unwrap();
+        crate::ini::IniDocument::parse(&text)
+            .raw_lines(section)
+            .iter()
+            .map(|l| l.trim().trim_start_matches('$').trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
+    /// The disc already branches to a cave at all three Gecko hook addresses
+    /// and already holds the eleven Legends names, so a profile that also
+    /// enables the codes applies them twice. Verified against `main.dol` in the
+    /// 2026-09-19 image before this rule was written.
+    #[test]
+    fn codes_the_disc_already_carries_are_switched_off() {
+        let dir = user_dir_with(&game_settings_with_enabled_codes());
+        let done = reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            enabled_in(dir.path(), "Gecko_Enabled"),
+            vec!["My Own Code".to_string()],
+            "the three baked Gecko codes go, the player's own stays",
+        );
+        assert!(
+            enabled_in(dir.path(), "ActionReplay_Enabled").is_empty(),
+            "the Legends text is baked at 0x8028E9C8; enabling it writes the same names again",
+        );
+        assert_eq!(
+            done.disabled.len(),
+            4,
+            "all four are reported, so the log says honestly what changed: {:?}",
+            done.disabled,
+        );
+    }
+
+    /// `OnFrame_Enabled` carries the GameCube controls patch, which is live and
+    /// correct. Clearing whole sections instead of matching names would take it
+    /// out and hand every GameCube player the X/B swap back.
+    #[test]
+    fn the_gamecube_controls_patch_is_left_enabled() {
+        let dir = user_dir_with(&game_settings_with_enabled_codes());
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        assert_eq!(
+            enabled_in(dir.path(), "OnFrame_Enabled"),
+            vec!["Reborn GameCube controls (no X/B swap)".to_string()],
+        );
+    }
+
+    /// The code BODIES are not the problem and are not ours to delete. Only the
+    /// enabled list moves, so anyone can switch a code back on by hand.
+    #[test]
+    fn disabling_a_code_leaves_its_body_intact() {
+        let dir = user_dir_with(&game_settings_with_enabled_codes());
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join("GameSettings/GN7E69.ini")).unwrap();
+        assert!(text.contains("C20D411C 00000003"), "Gecko body must survive");
+        assert!(text.contains("0428E9C8 4368616D"), "ActionReplay body must survive");
+        assert!(text.contains("$Remove GameBreaker 2 [Ludiyolo252]"), "the [Gecko] entry stays");
+    }
+
+    /// A profile that never had the codes on must come out unchanged, so the
+    /// pass is idempotent and a second run reports nothing.
+    #[test]
+    fn a_profile_with_no_enabled_codes_is_untouched() {
+        let dir = user_dir_with(&game_settings_with_enabled_codes());
+        reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+        let after_first = std::fs::read_to_string(dir.path().join("GameSettings/GN7E69.ini")).unwrap();
+
+        let done = reconcile_in(dir.path(), &["GN7E69"]).unwrap();
+        let after_second = std::fs::read_to_string(dir.path().join("GameSettings/GN7E69.ini")).unwrap();
+
+        assert!(done.disabled.is_empty(), "nothing left to disable: {:?}", done.disabled);
+        assert_eq!(after_first, after_second, "the pass must be idempotent");
     }
 
     /// The prune is key-scoped. Gecko codes, ActionReplay blocks and the
