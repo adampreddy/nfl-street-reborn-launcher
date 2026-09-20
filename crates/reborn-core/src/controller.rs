@@ -1110,6 +1110,16 @@ impl ControllerProfile {
     }
 }
 
+/// Whether a pad with these dead controls can enter the game at all.
+///
+/// Start and A, and nothing else. They are the two controls the game asks for
+/// before anything can be chosen: the press start screen, then every menu. A
+/// pad missing its C-stick or Z is a worse pad, not an unplayable one, and the
+/// Controllers page already says so; stopping Play for it would be nagging.
+pub fn blocks_play(dead: &[GcInput]) -> bool {
+    dead.iter().any(|input| matches!(input, GcInput::Start | GcInput::ButtonA))
+}
+
 /// Something on the system that will fight the launcher for a controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputConflict {

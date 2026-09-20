@@ -426,6 +426,19 @@ struct LaunchResult {
     /// date before it, in-game edits kept after it, or why a card was left
     /// as it was. Absent when nothing started or when it was quiet.
     cards_note: Option<String>,
+    /// Present when the game was NOT started because player one's pad cannot
+    /// press Start or A. The page offers the setup, or Play again with
+    /// `playAnyway`. Absent for every other answer, including every other
+    /// refusal, so the page never has to guess which kind it is looking at.
+    controller_setup: Option<ControllerSetupView>,
+}
+
+/// What the Play page needs to offer a controller setup: whose pad, and which
+/// controls do nothing on it yet, in the words printed on a GameCube pad.
+#[derive(Debug, Serialize)]
+struct ControllerSetupView {
+    device: String,
+    controls: Vec<String>,
 }
 
 fn preset_from(name: &str) -> GraphicsPreset {
@@ -467,6 +480,7 @@ async fn prepare_launch(
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
             league_match: false,
+            play_with_unset_controller: true,
             // Prepare composes nothing, so there is nothing to claim.
             textures: reborn_core::game_identity::ImageStanding::Unknown,
         };
@@ -1058,6 +1072,9 @@ async fn launch(
     user_dir: Option<String>,
     mods_disabled: bool,
     league_match: Option<bool>,
+    // The player saw that their controller needs setting up and chose to play
+    // anyway. Absent and false are the same thing: ask first.
+    play_anyway: Option<bool>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LaunchGuard::acquire_session()?;
@@ -1084,6 +1101,7 @@ async fn launch(
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
+            play_with_unset_controller: play_anyway.unwrap_or(false),
             textures: standing,
         };
 
@@ -1108,6 +1126,13 @@ async fn launch(
             Launched::Refused(r) => Ok(LaunchResult {
                 started: false,
                 user_dir_note: None,
+                controller_setup: match &r {
+                    reborn_core::session::Refusal::ControllerNeedsSetup(pad) => Some(ControllerSetupView {
+                        device: pad.device.clone(),
+                        controls: pad.controls.iter().map(|c| c.label().to_string()).collect(),
+                    }),
+                    _ => None,
+                },
                 message: r.message(),
                 minutes: None,
                 needs_recovery: false,
@@ -1171,6 +1196,7 @@ async fn launch(
                     session_id: Some(session_id),
                     stats_note,
                     cards_note: cards.explain(),
+                    controller_setup: None,
                 })
             }
         }
@@ -3679,6 +3705,7 @@ async fn onboarding_run_task(
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
                     league_match: false,
+                    play_with_unset_controller: true,
                     // Prepare composes nothing, so there is nothing to claim.
                     textures: reborn_core::game_identity::ImageStanding::Unknown,
                 };
@@ -5869,6 +5896,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
         league_match: false,
+        play_with_unset_controller: true,
         textures: standing,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {

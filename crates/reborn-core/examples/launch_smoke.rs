@@ -72,6 +72,7 @@ fn main() {
         // machine would boot against.
         user_dir: None,
         league_match: false,
+        play_with_unset_controller: true,
         textures: reborn_core::game_identity::ImageStanding::Reborn,
     };
 

@@ -1310,6 +1310,7 @@ fn play(
         mods_disabled: false,
         user_dir: user_dir.map(|p| p.to_path_buf()),
         league_match: false,
+        play_with_unset_controller: true,
         // Answered below, by the gate, before anything boots. `Session::prepare`
         // never reads this field (only `Session::run` composes the texture
         // tree), so a dry run does not need the whole-disc hash the gate costs.

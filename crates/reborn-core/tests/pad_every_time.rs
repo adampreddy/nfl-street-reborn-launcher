@@ -412,3 +412,74 @@ fn the_measured_playstation_pad_still_narrows_to_the_names_it_always_did() {
     assert_eq!(mapping.get(GcInput::ButtonA), Some("`Cross`"));
     assert_eq!(mapping.get(GcInput::ButtonZ), Some("`Bumper R`"));
 }
+
+// ---------------------------------------------------------------------------
+// Never start the game on a pad that cannot press Start
+// ---------------------------------------------------------------------------
+
+use reborn_core::session::{player_one_blocked, BlockedPad, Refusal};
+use std::collections::BTreeMap;
+
+/// The launcher has known at every launch which controls cannot be pressed,
+/// and wrote it to a log nobody reads. The player found out at the press start
+/// screen, holding a pad that did nothing, with no idea why. Start and A are
+/// the two controls without which the game cannot be entered at all.
+#[test]
+fn a_pad_that_cannot_press_start_or_a_blocks_play() {
+    use reborn_core::controller::blocks_play;
+    assert!(blocks_play(&[GcInput::Start]));
+    assert!(blocks_play(&[GcInput::ButtonA]));
+    assert!(blocks_play(&[GcInput::CStickUp, GcInput::Start]));
+}
+
+/// A pad with a dead C-stick is a worse pad, not an unplayable one. Stopping
+/// Play for it would be nagging, and the Controllers page already says so.
+#[test]
+fn a_pad_missing_only_lesser_controls_does_not_block_play() {
+    use reborn_core::controller::blocks_play;
+    assert!(!blocks_play(&[]));
+    assert!(!blocks_play(&[GcInput::CStickUp, GcInput::CStickDown, GcInput::ButtonZ]));
+}
+
+fn dead(entries: &[(&str, &[GcInput])]) -> BTreeMap<String, Vec<GcInput>> {
+    entries.iter().map(|(d, c)| (d.to_string(), c.to_vec())).collect()
+}
+
+/// Only PLAYER ONE's pad decides. They are the one at the press start screen.
+#[test]
+fn only_player_ones_pad_can_block_play() {
+    let pads = vec![(1u8, "XInput/0/Gamepad".to_string()), (2u8, "WGInput/0/Generic USB Joystick".to_string())];
+    let broken_p2 = dead(&[("WGInput/0/Generic USB Joystick", &[GcInput::Start, GcInput::ButtonA])]);
+    assert_eq!(player_one_blocked(&pads, &broken_p2), None, "player two's pad must not stop player one playing");
+
+    let broken_p1 = dead(&[("XInput/0/Gamepad", &[GcInput::Start])]);
+    assert_eq!(
+        player_one_blocked(&pads, &broken_p1),
+        Some(BlockedPad { device: "XInput/0/Gamepad".into(), controls: vec![GcInput::Start] })
+    );
+}
+
+/// No pad at all is a keyboard player, or a pad that turns up later and is
+/// picked up by the runtime. Neither is this launch's business to refuse.
+#[test]
+fn no_pad_at_all_never_blocks_play() {
+    assert_eq!(player_one_blocked(&[], &dead(&[])), None);
+    assert_eq!(player_one_blocked(&[], &dead(&[("WGInput/0/Pad", &[GcInput::Start])])), None);
+}
+
+/// What the player reads. It has to say what is wrong in their words, which
+/// controls, and the one place to fix it. Never "error", and never the word
+/// this project does not use for its own faults.
+#[test]
+fn the_refusal_tells_the_player_which_controls_and_where_to_fix_them() {
+    let refusal = Refusal::ControllerNeedsSetup(BlockedPad {
+        device: "WGInput/0/Pro Controller".into(),
+        controls: vec![GcInput::Start, GcInput::ButtonA],
+    });
+    let message = refusal.message();
+    assert!(message.contains("Start") && message.contains("A"), "{message}");
+    assert!(message.contains("Controllers"), "it must say where to go: {message}");
+    for banned in ["error", "Error", "custom", "Custom", "Dolphin", "WGInput"] {
+        assert!(!message.contains(banned), "a player should never read `{banned}`: {message}");
+    }
+}

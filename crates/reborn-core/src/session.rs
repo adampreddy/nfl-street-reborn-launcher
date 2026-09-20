@@ -91,6 +91,12 @@ pub struct LaunchRequest {
     /// The player said this is a league match. Recorded in the session before Dolphin
     /// starts; the backend forwards the game to the league site only when it is true.
     pub league_match: bool,
+    /// Start the game even though player one's pad cannot press Start or A.
+    /// False for Play, which then answers [`Refusal::ControllerNeedsSetup`]
+    /// and lets the player choose. True for every caller with no way to ask
+    /// (netplay, the desktop shortcut, the command line), which keeps
+    /// exactly the behaviour it had.
+    pub play_with_unset_controller: bool,
     /// What the launcher knows about this image, which decides what happens
     /// to Reborn's texture pack. Only `Session::run` reads it;
     /// `Session::prepare` composes nothing, so a prepare-only caller has
@@ -110,6 +116,40 @@ pub enum Refusal {
     NoGame { path: PathBuf },
     /// Another launcher holds the lock.
     AlreadyRunning,
+    /// Player one's pad cannot press Start or A, so the game would open on a
+    /// press start screen nothing can get past. Not a fault: a pad Windows has
+    /// no names for has to be set up once by pressing its buttons, and the
+    /// launcher knows that BEFORE the game starts. It used to write it to a log
+    /// nobody reads and start the game anyway. The caller offers the setup,
+    /// and may launch again with `play_with_unset_controller`.
+    ControllerNeedsSetup(BlockedPad),
+}
+
+/// Player one's pad, and the controls on it that do nothing yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedPad {
+    pub device: String,
+    pub controls: Vec<crate::controller::GcInput>,
+}
+
+/// Whether player one's pad stops this launch.
+///
+/// `pads` is the port assignment the launch just made, `dead` the controls
+/// that cannot be pressed, per device. Only PLAYER ONE's pad decides: they are
+/// the one at the press start screen, and a second player's unfinished pad
+/// must never stop the first from playing. No pad at all is a keyboard player,
+/// or a pad that turns up later and is picked up by the runtime; neither is
+/// this launch's business to refuse.
+pub fn player_one_blocked(
+    pads: &[(u8, String)],
+    dead: &std::collections::BTreeMap<String, Vec<crate::controller::GcInput>>,
+) -> Option<BlockedPad> {
+    let (_, device) = pads.iter().find(|(port, _)| *port == 1)?;
+    let controls = dead.get(device)?;
+    crate::controller::blocks_play(controls).then(|| BlockedPad {
+        device: device.clone(),
+        controls: controls.clone(),
+    })
 }
 
 impl Refusal {
@@ -126,6 +166,19 @@ impl Refusal {
             ),
             Refusal::AlreadyRunning => {
                 "Another launcher is already running. Close it first.".to_string()
+            }
+            Refusal::ControllerNeedsSetup(pad) => {
+                // The two that matter, by the name printed on a GameCube pad.
+                let names: Vec<&str> = pad
+                    .controls
+                    .iter()
+                    .filter(|c| matches!(c, crate::controller::GcInput::Start | crate::controller::GcInput::ButtonA))
+                    .map(|c| c.label())
+                    .collect();
+                format!(
+                    "Your controller needs a one-time setup before it can be used in the game: {} would do nothing yet. Open Controllers and choose Set up this controller. It takes about a minute, and you only do it once.",
+                    names.join(" and ")
+                )
             }
         }
     }
@@ -346,6 +399,9 @@ pub struct WrittenConfig {
     /// the failure that has always been silent; the caller can finally say so.
     /// See [`crate::controller::ControllerProfile::dead_controls`].
     pub pads_needing_setup: Vec<(String, usize)>,
+    /// Set when PLAYER ONE's pad cannot press Start or A. See
+    /// [`player_one_blocked`].
+    pub player_one_blocked: Option<BlockedPad>,
     /// Which user directory this launch will boot against, and why.
     pub user_dir: UserDir,
     /// What the recorded controls profile did to the activation.
@@ -367,6 +423,7 @@ impl Default for WrittenConfig {
             pads_authoritative: false,
             no_controller: false,
             pads_needing_setup: Vec::new(),
+            player_one_blocked: None,
             // A path is required, and an empty one is obviously not a real
             // directory, so a caller that forgets to set it cannot mistake it
             // for a resolved one.
@@ -1023,6 +1080,7 @@ impl Session {
         // reports `Button 3` and `Axis 1-`, nothing in the default binding
         // exists on it, and this log said nothing. At WARN, because that is
         // the level a player's launcher.log keeps.
+        let mut dead_by_device: std::collections::BTreeMap<String, Vec<crate::controller::GcInput>> = Default::default();
         for pad in scan.playable_pads() {
             let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
             let key = pad.identity().profile_key();
@@ -1036,6 +1094,7 @@ impl Session {
                     dead
                 );
                 written.pads_needing_setup.push((pad.device_string(), dead.len()));
+                dead_by_device.insert(pad.device_string(), dead);
             }
         }
         // Adopt whatever the player changed in Dolphin's own Controller
@@ -1099,6 +1158,8 @@ impl Session {
                 written.files.push(path);
                 written.pads = assignment;
                 written.no_controller = written.pads.is_empty();
+                // Decided here, once the ports are known: only player one's pad counts.
+                written.player_one_blocked = player_one_blocked(&written.pads, &dead_by_device);
             }
             None => {
                 written.no_controller = true;
@@ -1182,6 +1243,22 @@ impl Session {
         let _ = supervisor.recover_unfinished()?;
 
         let written = Self::prepare(platform, req)?;
+
+        // Never start the game on a pad that cannot press Start.
+        //
+        // Before the session record opens and before the emulator starts, so a
+        // refusal leaves nothing behind; the lock is given back by returning.
+        // What prepare wrote stays written, which is what the setup needs.
+        if !req.play_with_unset_controller {
+            if let Some(blocked) = written.player_one_blocked.clone() {
+                tracing::warn!(
+                    "controller: not starting the game, because {} cannot press {:?}; the player is offered the setup",
+                    blocked.device,
+                    blocked.controls
+                );
+                return Ok(Launched::Refused(Refusal::ControllerNeedsSetup(blocked)));
+            }
+        }
 
         // The mods, made real. prepare reconciled the activation list; this
         // builds the tree that list describes and points the emulator at it.
@@ -2417,6 +2494,7 @@ mod tests {
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
             league_match: false,
+            play_with_unset_controller: true,
             textures: crate::game_identity::ImageStanding::Reborn,
         }
     }

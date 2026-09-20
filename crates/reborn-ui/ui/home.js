@@ -31,6 +31,12 @@ let result = null;
 let problem = null;
 let externalSession = false;
 let leagueMatch = false;
+// Set when Play was NOT started because player one's pad cannot press Start or
+// A. The launcher has always known this before the game opened; it used to
+// start the game anyway, and the player found out at a press start screen that
+// nothing could get past. Now they are told, and choose.
+let controllerSetup = null;
+let playAnyway = false;
 const signIn = { active: false, starting: false, deviceCode: null, userCode: null, verifyUrl: null, timer: null, message: null, polling: false };
 
 // Shown when `identity_status` fails, whatever the reason. The same sentence
@@ -79,6 +85,7 @@ async function play() {
   playing = true;
   result = null;
   problem = null;
+  controllerSetup = null;
   draw();
   try {
     result = await call("launch", {
@@ -94,14 +101,22 @@ async function play() {
       // and in recovery, not here.
       modsDisabled: false,
       leagueMatch,
+      // Always sent: false asks first, true is the player's own choice to go on.
+      playAnyway,
     });
-    if (result && result.started === false) { problem = result.message || "The game could not start."; result = null; }
+    if (result && result.started === false) {
+      // Not a failure, so never the red "could not start": a setup to offer.
+      if (result.controller_setup) controllerSetup = { ...result.controller_setup, message: result.message };
+      else problem = result.message || "The game could not start.";
+      result = null;
+    }
   } catch (e) {
     problem = reason(e);
   }
   playing = false;
   busy = false;
   leagueMatch = false;
+  playAnyway = false;
   await load();
   draw();
 }
@@ -360,6 +375,14 @@ function draw() {
   // choice must stay visible and reversible, and the wording here must
   // never suggest a preference the player chose, since it is almost always
   // a fault to repair instead.
+  if (controllerSetup) {
+    controls.append(el("div", { class: "play-controller-setup", role: "alert" },
+      el("strong", { text: "Your controller needs a one-time setup" }),
+      el("p", { text: controllerSetup.message }),
+      el("div", { class: "play-controller-setup-actions" },
+        el("a", { class: "button primary", href: "controls.html", text: "Set up controller" }),
+        el("button", { type: "button", id: "play-anyway", disabled: busy, text: "Play anyway", onclick: () => { playAnyway = true; play(); } }))));
+  }
   if (state.check?.game_verdict === "unconverted") {
     controls.append(el("div", { class: "play-warning", role: "status" },
       el("span", { text: "Not a Reborn build" }),

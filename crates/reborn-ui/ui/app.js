@@ -162,6 +162,9 @@ const FEATURES = [
           userDir: get("userDir"),
           modsDisabled: false,
           leagueMatch: false,
+          // Pinned true: this row is a developer's direct launch, with nobody
+          // to offer a controller setup to. Play sends false and asks first.
+          playAnyway: true,
         }),
       },
     ],
