@@ -203,6 +203,8 @@ pub const KEYS: &[Key] = &[
         "A Dolphin panic handler is an error popup, and the standing product rule is no error popups, ever."),
     locked("Dolphin.ini", "Interface", "SkipNKitWarning", "True", &["True"],
         "Every image Reborn ships is an NKit disc, and Dolphin asks before booting one: a modal that stops the boot until somebody ticks a box and clicks OK. In an ordinary Play the player at least sees that window; in a Netplay session Dolphin's own main window is never shown, so the dialog sits behind the launcher unnoticed and that player never boots. The other player boots, finishes compiling shaders and then waits forever on a black screen for input that cannot arrive, which is what \"Netplay gets stuck on compiling shaders\" was. The warning is about a property of a disc the launcher itself built, so it is not a choice to put to the player."),
+    locked("Dolphin.ini", "Input", "BackgroundInput", "True", &["True"],
+        "Dolphin throws away every controller press while its render window is not the focused one (Core::UpdateInputGate). Reported 2026-09-19 as 'after i open the app i cant get pass the press start screen': click anything else during the shader compile and the game opens unfocused, and a pad of any kind does nothing until the game is clicked with a mouse, which a player holding a controller does not think to do. Keyboard hotkeys have their own gate (MAIN_FOCUSED_HOTKEYS), so this lets the pad through and nothing else. Locked, not seeded, because every player already has the key set False."),
     locked("Dolphin.ini", "Analytics", "Enabled", "False", &["False"],
         "No telemetry. Stated explicitly rather than left to an upstream default that could change and quietly turn it on."),
     locked("Dolphin.ini", "Analytics", "PermissionAsked", "True", &["True"],
@@ -527,11 +529,27 @@ pub fn reconcile_in(user_dir: &Path, game_ids: &[&str]) -> Result<Reconciled> {
 mod tests {
     use super::*;
 
+    /// "after i open the app i cant get pass the press start screen". Dolphin
+    /// drops ALL controller input while its render window is not focused
+    /// (`Core::UpdateInputGate`, gated on `[Input] BackgroundInput`), and the
+    /// file every player is given says False. Keyboard hotkeys have their own
+    /// gate (`MAIN_FOCUSED_HOTKEYS`), so this lets the PAD through and nothing
+    /// else. Locked, not seeded: every affected player already has the key.
+    #[test]
+    fn a_controller_still_works_when_the_game_window_is_not_the_focused_one() {
+        let key = KEYS
+            .iter()
+            .find(|k| k.file == "Dolphin.ini" && k.section == "Input" && k.key == "BackgroundInput")
+            .expect("the launcher does not manage BackgroundInput at all");
+        assert_eq!(key.owner, Owner::Locked, "a seeded key never reaches a player who already has it");
+        assert_eq!(key.value, Some("True"));
+    }
+
     /// The locked set is the whole compromise. It is written out by name here
     /// so that adding to it means editing this test, which means saying out
     /// loud that the launcher is taking another setting away from the player.
     #[test]
-    fn the_locked_set_is_exactly_these_sixteen_keys_and_each_states_why() {
+    fn the_locked_set_is_exactly_these_seventeen_keys_and_each_states_why() {
         let mut locked: Vec<_> = KEYS
             .iter()
             .filter(|k| k.owner == Owner::Locked)
@@ -554,6 +572,12 @@ mod tests {
             ("Dolphin.ini", "Interface", "SkipNKitWarning"),
             ("Dolphin.ini", "Analytics", "Enabled"),
             ("Dolphin.ini", "Analytics", "PermissionAsked"),
+            // Added 2026-09-19: with this off, Dolphin throws away every
+            // controller press while the game window is not the focused one.
+            // A player who clicks anything else during the shader compile gets a
+            // game that opens unfocused and a pad that does nothing, on every
+            // kind of controller, until they click the game with a mouse.
+            ("Dolphin.ini", "Input", "BackgroundInput"),
             // Added 2026-09-13: exclusive fullscreen hard-hangs Windows when an
             // outside capture overlay (Print Screen, Steam's F12) grabs the
             // screen. Locked, not seeded, because every affected player already

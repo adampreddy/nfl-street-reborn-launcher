@@ -207,16 +207,36 @@ impl Mapping {
     pub fn candidates(input: GcInput) -> &'static [&'static str] {
         use GcInput::*;
         match input {
-            // Face buttons. South, east, west, north.
-            ButtonA => &["Button A", "Cross", "Button S"],
-            ButtonB => &["Button B", "Circle", "Button E"],
-            ButtonX => &["Button X", "Square", "Button W"],
-            ButtonY => &["Button Y", "Triangle", "Button N"],
+            // COMPLETE BY CONSTRUCTION, not by whichever pad was to hand.
+            //
+            // The first version of this list held the names ONE measured
+            // DualSense reported, and every pad that says something else was
+            // dead on exactly the buttons where it differs, in silence.
+            // Reported 2026-09-19: a PlayStation pad and a Switch pad both
+            // stuck at the press start screen. The names a button can have
+            // are finite: they are the label table in the fork's WGInput.cpp
+            // (Windows' GameControllerButtonLabel). Every label that can sit
+            // in a position is listed for that position. Order is preference
+            // and only matters to `auto_from`, so what already narrows to a
+            // name keeps narrowing to the same one.
+            //
+            // Face buttons. South, east, west, north for the pads that label
+            // by shape or by Xbox letter. A pad that letters its buttons
+            // (`Letter A`) is a different case and needs no position guessed:
+            // a GameCube pad has an A, a B, an X and a Y of its own, so each
+            // goes on the button carrying its letter, which is what a
+            // Nintendo player means by "A".
+            ButtonA => &["Button A", "Cross", "Letter A", "Button S"],
+            ButtonB => &["Button B", "Circle", "Letter B", "Button E"],
+            ButtonX => &["Button X", "Square", "Letter X", "Button W"],
+            ButtonY => &["Button Y", "Triangle", "Letter Y", "Button N"],
             // Z on the right shoulder, as the working install has it.
-            ButtonZ => &["Shoulder R", "Bumper R"],
-            // A PlayStation pad has no Start. Windows labels it Menu, which is
-            // the Options button, and that is the right home for it.
-            Start => &["Start", "Menu"],
+            // `Right 1` is the same button on a pad that numbers them (R1).
+            ButtonZ => &["Shoulder R", "Bumper R", "Right 1"],
+            // The button in the start position has four names. XInput says
+            // Start; Windows labels a PlayStation pad's Menu or Options
+            // depending on the driver; a Switch pad's is Plus.
+            Start => &["Start", "Menu", "Options", "Plus"],
             MainStickUp => &["Left Y+"],
             MainStickDown => &["Left Y-"],
             MainStickLeft => &["Left X-"],
@@ -403,8 +423,8 @@ impl Mapping {
     /// `Shoulder L` and no `Motor` on that pad.
     pub fn extra_candidates(extra: Extra) -> &'static [&'static str] {
         match extra {
-            Extra::AnalogTriggerL => &["Shoulder L", "Bumper L"],
-            Extra::AnalogTriggerR => &["Shoulder R", "Bumper R"],
+            Extra::AnalogTriggerL => &["Shoulder L", "Bumper L", "Left 1"],
+            Extra::AnalogTriggerR => &["Shoulder R", "Bumper R", "Right 1"],
             // One motor, not an expression combining both. `Motor L` is
             // measured to exist and measured to resolve; a two motor
             // expression would be an assumption about the parser that nothing

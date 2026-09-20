@@ -338,3 +338,77 @@ fn a_hand_written_expression_is_never_called_dead() {
     profile.rebind(GcInput::ButtonA, "`Button 1` & !`Button 2`");
     assert!(!profile.dead_controls(&unlabelled_pad_names()).contains(&GcInput::ButtonA));
 }
+
+// ---------------------------------------------------------------------------
+// Every name the runtime can give a button, not just the ones one pad gave it
+// ---------------------------------------------------------------------------
+
+/// "i got a ps5 controller and ive tried with my switch controller but after i
+/// open the app i cant get pass the press start screen" (2026-09-19).
+///
+/// The names bound to Start were `Start` and `Menu`, because the one
+/// PlayStation pad that could be measured called its button `Menu`. The
+/// fork's WGInput backend has FOUR names for the button in that position
+/// (WGInput.cpp's label table, from Windows' GameControllerButtonLabel):
+/// `Start`, `Menu`, `Options`, `Plus`. A Switch controller says `Plus`; a
+/// PlayStation pad says `Options` or `Menu` depending on the driver. A name
+/// that is not bound binds nothing and says nothing, and the first thing the
+/// game asks for is Start.
+///
+/// The list of labels is finite and lives in the fork's source, so this is
+/// made complete from that list, never again from whichever pad was to hand.
+#[test]
+fn every_name_the_runtime_has_for_the_start_button_presses_start() {
+    for name in ["Start", "Menu", "Options", "Plus"] {
+        let profile = ControllerProfile::new(identity("WGInput:0", "Some Controller"), 1);
+        let available = vec![name.to_string(), "Left Y+".to_string()];
+        assert!(
+            !profile.dead_controls(&available).contains(&GcInput::Start),
+            "a pad that calls it `{name}` cannot get past the press start screen: Start = {:?}",
+            profile.mapping.get(GcInput::Start)
+        );
+    }
+}
+
+/// A pad that labels its face buttons with letters gets each GameCube letter
+/// on the button carrying that letter. GameCube pads have an A, a B, an X and
+/// a Y of their own, so this is the one case where the letter IS the answer
+/// and no position has to be guessed: a Switch player pressing A gets A.
+#[test]
+fn a_pad_that_letters_its_face_buttons_gets_each_letter_on_its_own_button() {
+    let profile = ControllerProfile::new(identity("WGInput:0", "Pro Controller"), 1);
+    let available: Vec<String> =
+        ["Letter A", "Letter B", "Letter X", "Letter Y"].iter().map(|s| s.to_string()).collect();
+    let dead = profile.dead_controls(&available);
+    for (input, letter) in [
+        (GcInput::ButtonA, "`Letter A`"),
+        (GcInput::ButtonB, "`Letter B`"),
+        (GcInput::ButtonX, "`Letter X`"),
+        (GcInput::ButtonY, "`Letter Y`"),
+    ] {
+        assert!(!dead.contains(&input), "{input:?} does nothing on a lettered pad: {dead:?}");
+        assert!(
+            profile.mapping.get(input).is_some_and(|b| b.contains(letter)),
+            "{input:?} must be on the button with its own letter: {:?}",
+            profile.mapping.get(input)
+        );
+    }
+}
+
+/// PlayStation-style labels for the shoulder buttons: `Right 1` is R1.
+#[test]
+fn z_is_pressable_on_a_pad_that_numbers_its_shoulders() {
+    let profile = ControllerProfile::new(identity("WGInput:0", "Some Controller"), 1);
+    assert!(!profile.dead_controls(&["Right 1".to_string()]).contains(&GcInput::ButtonZ));
+}
+
+/// Widening the vocabulary must not move a pad that already works: the names
+/// measured on the real DualSense still win, in the same order.
+#[test]
+fn the_measured_playstation_pad_still_narrows_to_the_names_it_always_did() {
+    let (mapping, unmatched) = Mapping::auto_from(&ps5_names());
+    assert!(unmatched.is_empty(), "{unmatched:?}");
+    assert_eq!(mapping.get(GcInput::Start), Some("`Menu`"));
+    assert_eq!(mapping.get(GcInput::ButtonA), Some("`Cross`"));
+    assert_eq!(mapping.get(GcInput::ButtonZ), Some("`Bumper R`"));
+}
