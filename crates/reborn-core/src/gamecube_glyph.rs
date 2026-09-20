@@ -64,11 +64,39 @@ pub const FILE_LEN: u64 = 885_312;
 pub const SHIPPED_SHA256: &str =
     "bd5c417405b07f13a00515177400afc1f24ac79c2d5678812046f0bd28058352";
 
-/// The same file with arm1 back to B in both in-match HUD documents,
-/// (3,3) and (3,16). Built by `tools/build_gamecube_glyph_variant.py` in the
-/// game tree.
+/// The same file with the WHOLE glyph switch back to retail in both in-match
+/// HUD documents, (3,3) and (3,16): arm0 A, arm1 B, arm2 X, arm3 Y. Built by
+/// `tools/build_gamecube_glyph_variant.py` in the game tree, which refuses to
+/// write anything but the full retail switch.
+///
+/// Every arm, not just the Gamebreaker's. The shipped switch moves two arms
+/// and both moves exist only because of the X/B swap: arm1 B->X for the
+/// Gamebreaker, and arm2 X->Y for the replay window, where the pad cave also
+/// swaps X and Y. A GameCube-profile player has no swap at all. The first
+/// variant restored arm1 only, and the replay prompt kept saying Y while X
+/// did it (Adam, 2026-09-19).
 pub const VARIANT_SHA256: &str =
-    "7cfa91be01ef944b7f1186a9bf0ff72631da4388cfa2a8141ebe677501adc037";
+    "ea5eed6aacd0643add70938d6ce8036f222fa85ffb793015e16e5d3047cc04d1";
+
+/// Earlier GameCube copies a previous launcher wrote into players' images.
+///
+/// ⛔⛔ EVERY REPLACED VARIANT MUST STAY IN THIS LIST. A player who got one of
+/// these is holding bytes that are neither the shipped copy nor today's
+/// variant, and [`apply`] refuses to overwrite anything it does not recognise.
+/// Drop a hash from here and every player who has it is stuck on it for good:
+/// no upgrade, and no way back to the shipped copy if they leave the GameCube
+/// profile, which would leave an Xbox player looking at a B prompt.
+///
+/// * `7cfa91be...` launchers 3.0.19 and 3.0.20: arm1 only, so the replay
+///   prompt still said Y while X did it.
+pub const RETIRED_VARIANT_SHA256: &[&str] =
+    &["7cfa91be01ef944b7f1186a9bf0ff72631da4388cfa2a8141ebe677501adc037"];
+
+/// Whether `have` is a copy this launcher may overwrite on its way to `want`:
+/// the other current copy, or any variant an earlier launcher wrote.
+fn replaceable(have: &str, other: &str) -> bool {
+    have == other || RETIRED_VARIANT_SHA256.contains(&have)
+}
 
 static SHIPPED: &[u8] = include_bytes!("../assets/uis_all.shipped.dat");
 static VARIANT: &[u8] = include_bytes!("../assets/uis_all.gamecube.dat");
@@ -159,7 +187,7 @@ pub fn apply(image: &Path, wanted: bool) -> std::io::Result<Outcome> {
         return Ok(Outcome::AlreadyRight);
     }
     let other = if wanted { SHIPPED_SHA256 } else { VARIANT_SHA256 };
-    if have != other {
+    if !replaceable(&have, other) {
         return Ok(Outcome::Unrecognised);
     }
 
@@ -254,6 +282,26 @@ mod tests {
         }
         assert_eq!(&std::fs::read(&iso).unwrap()[0x2000..], SHIPPED);
         assert_eq!(std::fs::metadata(&iso).unwrap().modified().unwrap(), before);
+    }
+
+    /// A player whose image holds a variant an earlier launcher wrote must be
+    /// moved on, in both directions: forward to today's variant while they
+    /// stay on the GameCube profile, and back to the shipped copy if they
+    /// leave it. Refusing either strands them on the old bytes for good.
+    #[test]
+    fn a_retired_variant_is_replaced_both_ways() {
+        for old in RETIRED_VARIANT_SHA256 {
+            assert!(replaceable(old, SHIPPED_SHA256), "GameCube player stuck on {old}");
+            assert!(replaceable(old, VARIANT_SHA256), "player leaving GameCube stuck on {old}");
+        }
+    }
+
+    /// Recognising old variants must not widen into overwriting anything.
+    #[test]
+    fn the_retired_list_is_not_a_wildcard() {
+        assert!(!replaceable("00".repeat(32).as_str(), SHIPPED_SHA256));
+        assert!(!RETIRED_VARIANT_SHA256.contains(&SHIPPED_SHA256));
+        assert!(!RETIRED_VARIANT_SHA256.contains(&VARIANT_SHA256));
     }
 
     /// The case that matters after a game update changes the file: leave it
