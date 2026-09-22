@@ -803,6 +803,12 @@ impl Session {
             let seeded_report = doc.merge_absent(&seeded);
             report.added.extend(seeded_report.added);
             report.sections_created.extend(seeded_report.sections_created);
+            // A backend this platform's Dolphin cannot run, carried in by a
+            // template built on Windows. Always empty on Windows.
+            if name == "Dolphin.ini" {
+                let repair = crate::dolphin_preferences::unusable_here(&doc);
+                report.updated.extend(doc.merge(&repair).updated);
+            }
 
             // Nothing to change means nothing to write. A launcher that
             // rewrites a config on every start looks like it is corrupting it.
@@ -2077,7 +2083,10 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
+            // Linux's build ships its disc tool beside the emulator as
+            // `dolphin-tool`; it is not the emulator.
             name.contains("dolphin")
+                && !name.contains("tool")
                 && (name.ends_with(".exe") || !name.contains('.'))
         })
         .collect();
@@ -2085,7 +2094,7 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
     // tree mid-update. Alphabetical order alone would pick "dolphin.exe".
     found.sort_by_key(|p| {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
-        (if name == "nfl street reborn dolphin.exe" { 0 } else { 1 }, name)
+        (if name.trim_end_matches(".exe") == "nfl street reborn dolphin" { 0 } else { 1 }, name)
     });
     found.into_iter().next()
 }
@@ -2735,6 +2744,20 @@ mod tests {
         std::fs::write(dir.path().join("Dolphin.exe"), b"").unwrap();
         std::fs::write(dir.path().join("NFL Street Reborn Dolphin.exe"), b"").unwrap();
         assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin.exe");
+    }
+
+    /// The Linux build is `dolphin-emu`, with `dolphin-tool` beside it.
+    /// Alphabetical order happens to pick the emulator; nothing should rest on
+    /// that, so the disc tool is never a candidate at all.
+    #[test]
+    fn a_linux_runtime_is_found_and_its_disc_tool_is_not_the_emulator() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("dolphin-tool"), b"").unwrap();
+        assert!(dolphin_in(dir.path()).is_none(), "the disc tool alone is no emulator");
+        std::fs::write(dir.path().join("dolphin-emu"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "dolphin-emu");
+        std::fs::write(dir.path().join("NFL Street Reborn Dolphin"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin");
     }
 
     #[test]

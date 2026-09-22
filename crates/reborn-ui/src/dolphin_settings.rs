@@ -35,14 +35,15 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
     match field.kind{
         "bool"=>match value.to_lowercase().as_str(){"true"=>Ok("True".into()),"false"=>Ok("False".into()),_=>Err("Choose on or off.".into())},
         "volume"|"latency"=>{let n=value.parse::<u32>().map_err(|_|"Enter a whole number.")?;let max=if field.kind=="volume"{100}else{200};if n>max{return Err(format!("Choose a value from 0 to {max}."));}Ok(n.to_string())},
-        "backend"=>if ["Cubeb","WASAPI (Exclusive Mode)"].contains(&value){Ok(value.into())}else{Err("Choose a supported audio output mode.".into())},
+        "backend"=>if reborn_core::dolphin_preferences::AUDIO_BACKENDS.contains(&value){Ok(value.into())}else{Err("Choose a supported audio output mode.".into())},
         // Spelled exactly as Dolphin spells them: CONFIG_NAME in
         // VideoBackends/*/VideoBackend.h. A name Dolphin does not recognise
         // falls back to the default backend silently, so a typo here would
         // look like the setting being ignored, which is the bug this control
         // exists to fix. Null and Software Renderer are debugging backends
         // that cannot play the game, so they are neither offered nor accepted.
-        "video_backend"=>if ["D3D","D3D12","Vulkan","OGL"].contains(&value){Ok(value.into())}else{Err("Choose a supported graphics backend.".into())},
+        // Which names are real depends on the platform; see VIDEO_BACKENDS.
+        "video_backend"=>if reborn_core::dolphin_preferences::VIDEO_BACKENDS.contains(&value){Ok(value.into())}else{Err("Choose a supported graphics backend.".into())},
         "slot"=>if ["1","8","255"].contains(&value){Ok(value.into())}else{Err("Choose a supported memory card type.".into())},
         // Written the way Dolphin writes it, so the file reads the same whoever last saved it.
         "msaa"=>{let n=value.trim_start_matches("0x").trim_start_matches('0');let n=if n.is_empty(){"0"}else{n};if ["1","2","4","8"].contains(&n){Ok(format!("0x{:08x}",n.parse::<u32>().unwrap()))}else{Err("Choose 1×, 2×, 4× or 8× anti-aliasing.".into())}},
@@ -57,11 +58,7 @@ fn checked_value(field:&Field,value:&str)->Result<String,String>{
 }
 // Dolphin rewrites its in-memory settings on exit. Refuse edits while it is open.
 pub(crate) fn require_closed(exe:&Path)->Result<(),String>{
-    #[cfg(windows)] {
-        reborn_core::runtime::ensure_runtime_idle(exe).map_err(player)?;
-    }
-    #[cfg(not(windows))] {let _=exe;return Err("Open Dolphin to change emulator settings on this platform.".into());}
-    Ok(())
+    reborn_core::runtime::ensure_runtime_idle(exe).map_err(player)
 }
 #[tauri::command]
 pub async fn dolphin_preferences(runtime:Option<String>)->Result<serde_json::Value,String>{
@@ -72,7 +69,8 @@ pub async fn dolphin_preferences(runtime:Option<String>)->Result<serde_json::Val
         let live=crate::live_settings::status(&user);
         if let Some(status)=&live {values.insert("volume".into(),status["volume"].to_string().into());values.insert("muted".into(),status["muted"].to_string().into());}
         let readonly_reason=require_closed(&exe).err();
-        Ok(serde_json::json!({"values":values,"user_dir":user,"editable":readonly_reason.is_none(),"live_editable":if live.is_some(){vec!["volume","muted"]}else{vec![]},"readonly_reason":readonly_reason}))
+        let choices=serde_json::json!({"video_backend":reborn_core::dolphin_preferences::VIDEO_BACKENDS,"audio_backend":reborn_core::dolphin_preferences::AUDIO_BACKENDS});
+        Ok(serde_json::json!({"values":values,"choices":choices,"os":std::env::consts::OS,"user_dir":user,"editable":readonly_reason.is_none(),"live_editable":if live.is_some(){vec!["volume","muted"]}else{vec![]},"readonly_reason":readonly_reason}))
     }).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
@@ -147,8 +145,13 @@ mod tests {
     #[test]
     fn the_graphics_backend_accepts_only_names_dolphin_knows() {
         let field = FIELDS.iter().find(|f| f.id == "video_backend").expect("offered on the page");
-        for name in ["D3D", "D3D12", "Vulkan", "OGL"] {
-            assert_eq!(checked_value(field, name).as_deref(), Ok(name), "{name} is a real backend");
+        for name in reborn_core::dolphin_preferences::VIDEO_BACKENDS {
+            assert_eq!(checked_value(field, name).as_deref(), Ok(*name), "{name} is a real backend");
+        }
+        if cfg!(windows) {
+            assert_eq!(reborn_core::dolphin_preferences::VIDEO_BACKENDS, &["D3D", "D3D12", "Vulkan", "OGL"], "Windows offers what it always offered");
+        } else {
+            assert!(checked_value(field, "D3D").is_err(), "Direct3D does not exist off Windows");
         }
         // Null and Software Renderer are real names and still refused: they
         // are debugging backends that cannot play the game.

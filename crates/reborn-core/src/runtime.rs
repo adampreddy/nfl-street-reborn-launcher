@@ -966,8 +966,12 @@ mod tests {
 /// Settings page's open-the-emulator button.
 pub const CLOSE_EMULATOR_FIRST: &str =
     "Close Reborn Dolphin before applying settings, then try again.";
+#[cfg(windows)]
 const PROCESS_CHECK_UNAVAILABLE: &str =
     "Windows could not check whether Reborn Dolphin is running. Try again.";
+#[cfg(not(windows))]
+const PROCESS_CHECK_UNAVAILABLE: &str =
+    "Reborn could not check whether Reborn Dolphin is running. Try again.";
 
 /// Avoid Dolphin's in-memory settings overwriting configuration written during a session.
 pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
@@ -977,6 +981,8 @@ pub fn ensure_runtime_idle(exe:&Path)->Result<()> {
 
 /// A fresh OS snapshot of this executable. A different install with the same
 /// filename is not this runtime, and an inspection error is not proof it is open.
+// Each platform's block ends in `return` because the others are compiled out.
+#[allow(clippy::needless_return)]
 pub fn runtime_is_running(exe: &Path) -> Result<bool> {
     #[cfg(windows)] {
         if !exe.is_file() { return Ok(false); }
@@ -985,7 +991,14 @@ pub fn runtime_is_running(exe: &Path) -> Result<bool> {
             crate::Error::player(PROCESS_CHECK_UNAVAILABLE)
         });
     }
-    #[cfg(not(windows))] { let _ = exe; Ok(false) }
+    #[cfg(unix)] {
+        if !exe.is_file() { return Ok(false); }
+        return crate::platform::runtime_process_unix::is_running(exe).map_err(|error| {
+            tracing::warn!(%error, "Dolphin process detection failed");
+            crate::Error::player(PROCESS_CHECK_UNAVAILABLE)
+        });
+    }
+    #[cfg(not(any(windows, unix)))] { let _ = exe; Ok(false) }
 }
 
 #[cfg(all(test, windows))]
@@ -1008,6 +1021,37 @@ mod process_detection_tests {
             .args(["/D","/Q","/C","set /p REBORN_TEST_WAIT="])
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()).creation_flags(0x08000000).spawn().unwrap());
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(runtime_is_running(&first).unwrap(), "The actual child must be protected");
+        assert!(ensure_runtime_idle(&first).is_err());
+        assert!(!runtime_is_running(&second).unwrap(), "Another installation must not be blocked by its filename");
+        drop(child);
+        assert!(!runtime_is_running(&first).unwrap(), "Exited processes must not leave stale running state");
+        assert!(ensure_runtime_idle(&first).is_ok());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod unix_process_detection_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The Linux half of the Windows test above: a real child, a second
+    /// install with the same file name, and no stale answer after it exits.
+    #[test]
+    fn exact_runtime_detection_recovers_after_exit_and_ignores_another_install() {
+        struct Child(std::process::Child);
+        impl Drop for Child { fn drop(&mut self) { let _=self.0.kill(); let _=self.0.wait(); } }
+        let root=tempfile::tempdir().unwrap();
+        let (first, second)=(root.path().join("first"), root.path().join("second"));
+        std::fs::create_dir(&first).unwrap();std::fs::create_dir(&second).unwrap();
+        let (first, second)=(first.join("dolphin-emu"), second.join("dolphin-emu"));
+        for copy in [&first, &second] {
+            std::fs::copy("/bin/sleep", copy).unwrap();
+            std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(!runtime_is_running(&first).unwrap());
+        let mut child=Child(std::process::Command::new(&first).arg("30").spawn().unwrap());
         assert!(child.0.try_wait().unwrap().is_none());
         assert!(runtime_is_running(&first).unwrap(), "The actual child must be protected");
         assert!(ensure_runtime_idle(&first).is_err());

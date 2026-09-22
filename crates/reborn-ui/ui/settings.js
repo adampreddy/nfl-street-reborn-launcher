@@ -66,7 +66,7 @@ const BOXES = [
     key: "runtime",
     setting: "runtime",
     name: "Emulator",
-    hint: "The bundled Reborn Dolphin is selected automatically on Windows.",
+    hint: "The bundled Reborn Dolphin is selected automatically.",
   },
   {
     key: "userDir",
@@ -287,6 +287,8 @@ function updatesBlock() {
 const GRAPHICS_PRESETS=[['performance','Performance','ReShade disabled.'],['balanced','Balanced','ReShade enabled with lighter effects.'],['quality','All-Out','ReShade enabled with high effects.']];
 function graphicsBlock(){
   const wrap=dolphinBlock();
+  // The presets choose ReShade's effects, and ReShade exists only on Windows.
+  if(state.dolphin?.os&&state.dolphin.os!=='windows')return wrap;
   const group=el('section',{class:'preference-group'},el('h2',{text:'Visual effects'}));
   if(!ok(state.graphics))group.append(el('p',{class:'partial',text:state.graphics?.error||'Graphics settings are unavailable. Refresh settings to try again.'}));
   else{
@@ -318,19 +320,35 @@ const preferenceGroups={
  Audio:[['audio_backend','Audio output','Default shares audio with other apps. Windows exclusive gives Dolphin sole use of the output device.','backend'],['volume','Game volume','Adjust Dolphin audio output.','range',0,100],['muted','Mute audio','Silence game audio without changing the volume.','bool'],['audio_stretch','Audio stretching','Smooth out audio during brief slowdowns.','bool'],['audio_latency','Audio buffer','Audio buffering in milliseconds. Raise it if sound crackles.','range',0,200]],
  Saves:[['slot_a','Memory Slot A','Choose where Player 1 saves game progress.','slot'],['card_a','Slot A memory card','Used when Slot A is set to Memory card. Leave blank for Dolphin’s default.','card'],['gci_a','Slot A save folder','Used when Slot A is set to GCI folder. Leave blank for the default folder.','folder'],['slot_b','Memory Slot B','An optional second card. Existing saves are kept when you change the type.','slot'],['card_b','Slot B memory card','Used when Slot B is set to Memory card.','card'],['gci_b','Slot B save folder','Used when Slot B is set to GCI folder.','folder']]
 };
+// The choices come from the launcher, per platform: Direct3D and WASAPI exist
+// only on Windows, and a Mac plays on Metal. The lists below are the Windows
+// answer, kept for a launcher that does not send its own.
+const backendNames={D3D:'Direct3D 11',D3D12:'Direct3D 12',Vulkan:'Vulkan',OGL:'OpenGL',Metal:'Metal'};
+const audioNames={Cubeb:'Default (shared audio)','WASAPI (Exclusive Mode)':'Windows exclusive'};
+function choicesFor(key,fallback){const list=state.dolphin?.choices?.[key];return Array.isArray(list)&&list.length?list:fallback;}
+// ReShade and Windows exclusive audio exist only on Windows, so the Windows
+// wording would promise something another platform does not have.
+function platformNote(key,description){
+ const os=state.dolphin?.os;if(!os||os==='windows')return description;
+ if(key==='video_backend')return os==='macos'?'Metal is the only graphics backend that loads the Reborn HD textures on a Mac.':'Vulkan is the Reborn default. OpenGL can run better on some drivers.';
+ if(key==='msaa')return 'Smooths edges. Off is the Reborn default and is what the game has always run at; raising it costs frame rate.';
+ if(key==='audio_backend')return 'Dolphin shares audio with other apps.';
+ return description;
+}
 function dolphinBlock(){
  const group=el('section',{class:'preference-group'},el('h2',{text:settingsTab==='Saves'?'Memory cards & save data':settingsTab==='Graphics'?'Rendering':settingsTab}));
  if(!ok(state.dolphin)){group.append(el('p',{class:'partial',text:state.dolphin?.error||'Dolphin settings could not be read.'}));return el('div',{class:'settings-content'},group);}
  const canEdit=key=>state.dolphin.editable!==false||(state.dolphin.live_editable||[]).includes(key);
  const values=state.dolphin.values||{},status=el('p',{class:'settings-status',role:'status',text:settingsTab==='Audio'&&(state.dolphin.live_editable||[]).length?'Volume and mute apply immediately, including during NetPlay. Other audio settings apply next time.':state.dolphin.editable===false?(state.dolphin.readonly_reason||'Close Dolphin to edit these settings, then refresh.'):'Changes save automatically and take effect next time you open Dolphin.'});
- for(const [key,label,description,type,min,max] of preferenceGroups[settingsTab]||[]){
+ for(let [key,label,description,type,min,max] of preferenceGroups[settingsTab]||[]){
+  description=platformNote(key,description);
   if(key==='audio_latency'&&!['WASAPI (Exclusive Mode)','OpenAL'].includes(values.audio_backend))continue;
   if(values[key]===undefined){group.append(el('p',{class:'partial',text:label+' is unavailable. Refresh settings to try again.'}));continue;}
   const id='preference-'+key,area=el('div',{class:'preference-value'});let control;
-  if(type==='backend'){control=el('select',{id});for(const [value,text] of [['Cubeb','Default (shared audio)'],['WASAPI (Exclusive Mode)','Windows exclusive']])control.append(el('option',{value,text}));if(!['Cubeb','WASAPI (Exclusive Mode)'].includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
+  if(type==='backend'){control=el('select',{id});const audio=choicesFor('audio_backend',['Cubeb','WASAPI (Exclusive Mode)']);for(const value of audio)control.append(el('option',{value,text:audioNames[value]||value}));if(!audio.includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
   else if(type==='slot'){control=el('select',{id});for(const [value,text] of [['8','GCI folder'],['1','Memory card'],['255','Nothing']])control.append(el('option',{value,text}));if(!['8','1','255'].includes(values[key]))control.append(el('option',{value:values[key],text:'Current device ('+values[key]+')'}));control.value=values[key];}
   else if(type==='resolution'){control=el('select',{id});for(const [value,text] of [['1','1× native (640×528)'],['2','2×'],['3','3× (Reborn default)'],['4','4×'],['5','5×'],['6','6×']])control.append(el('option',{value,text}));const n=String(parseInt(values[key])||3);if(!['1','2','3','4','5','6'].includes(n))control.append(el('option',{value:n,text:n+'×'}));control.value=n;}
-  else if(type==='video_backend'){control=el('select',{id});for(const [value,text] of [['D3D','Direct3D 11 (Reborn default)'],['D3D12','Direct3D 12'],['Vulkan','Vulkan'],['OGL','OpenGL']])control.append(el('option',{value,text}));if(!['D3D','D3D12','Vulkan','OGL'].includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
+  else if(type==='video_backend'){control=el('select',{id});const video=choicesFor('video_backend',['D3D','D3D12','Vulkan','OGL']);video.forEach((value,i)=>control.append(el('option',{value,text:(backendNames[value]||value)+(i===0?' (Reborn default)':'')})));if(!video.includes(values[key]))control.append(el('option',{value:values[key],text:values[key]}));control.value=values[key];}
   else if(type==='msaa'){control=el('select',{id});for(const [value,text] of [['1','Off (Reborn default)'],['2','2×'],['4','4×'],['8','8×']])control.append(el('option',{value,text}));const n=String(parseInt(values[key])||1);if(!['1','2','4','8'].includes(n))control.append(el('option',{value:n,text:n+'×'}));control.value=n;}
   else if(type==='bool')control=el('input',{id,type:'checkbox',checked:String(values[key]).toLowerCase()==='true'});
   else if(type==='range')control=el('input',{id,type:'range',min,max,step:1,value:values[key]});

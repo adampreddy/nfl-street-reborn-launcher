@@ -318,9 +318,9 @@ pub const KEYS: &[Key] = &[
     // own Backend dropdown cannot beat, which is the pin we just retired.
     // Dolphin.ini is where Dolphin's GUI writes, so a fresh install gets D3D
     // and a player who switches backend keeps the switch.
-    with_ui(seeded("Dolphin.ini", "Core", "GFXBackend", "D3D", &["D3D"],
+    with_ui(seeded("Dolphin.ini", "Core", "GFXBackend", crate::dolphin_preferences::DEFAULT_VIDEO_BACKEND, &["D3D"],
         "ReShade's hook is dxgi.dll, so D3D is what the effects need. If the player picks another backend the choice is honored and the consequence is stated, not overridden. Retiring the per-game pin said that out loud on 2026-09-13 and still left the player with no way to switch: the launcher boots Dolphin with -u/-e, and -b on top of that in fullscreen, so \"the player never sees Dolphin's own interface in an ordinary flow\" (runtime::Launcher::args). Freeing a key is not the same as offering it. This page is the only surface there is, so the key carries a Ui now."),
-        Ui { id: "video_backend", kind: "video_backend", default: "D3D" }),
+        Ui { id: "video_backend", kind: "video_backend", default: crate::dolphin_preferences::DEFAULT_VIDEO_BACKEND }),
     seeded("GFX.ini", "Hacks", "EFBAccessEnable", "True", &["True"],
         "The per-game layer locks this; seeding the global layer keeps a fresh install consistent without taking the key twice."),
     locked("Logger.ini", "Options", "WriteToFile", "False", &["False"],
@@ -852,7 +852,7 @@ mod tests {
         // A fresh install, where nobody has said anything, still gets D3D.
         let mut fresh = crate::ini::IniDocument::parse("[Core]\n");
         fresh.merge_absent(&seeded_overlay("Dolphin.ini"));
-        assert_eq!(fresh.get("Core", "GFXBackend"), Some("D3D"));
+        assert_eq!(fresh.get("Core", "GFXBackend"), Some(crate::dolphin_preferences::DEFAULT_VIDEO_BACKEND));
 
         // And the per-game layer must stay out of it, or the control is inert
         // the same way the MSAA control was.

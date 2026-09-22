@@ -288,12 +288,23 @@ fn safe_file_name(name: &str) -> String {
     }
 }
 
+/// Shown off Windows, where there is no installer to hand an update to.
+pub const UPDATE_THROUGH_PACKAGE: &str =
+    "Update Reborn the same way you installed it.";
+
 /// Start the installer. The caller exits afterwards; Inno does the rest.
 ///
 /// `/SILENT` shows progress and asks nothing; `/NORESTART` keeps the machine
 /// up. The installer's own upgrade rules apply: same AppId, program files
 /// only, the data root untouched.
 pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
+    // The installer is Inno Setup, a Windows program. Off Windows the
+    // launcher is updated the way it was installed (a Flatpak by Flatpak),
+    // and a release carries no asset for it yet, so a check never offers one.
+    // This refuses anything that gets here regardless.
+    if !cfg!(windows) {
+        return Err(Error::player(UPDATE_THROUGH_PACKAGE));
+    }
     if !installer.is_file() {
         return Err(Error::PlainIo(std::io::Error::new(
             std::io::ErrorKind::NotFound,

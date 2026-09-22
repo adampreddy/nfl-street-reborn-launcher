@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 pub mod imp;
 #[cfg(windows)]
 pub(crate) mod runtime_process;
+pub(crate) mod runtime_process_unix;
 
 /// Errors a platform seam can produce.
 #[derive(Debug, thiserror::Error)]

@@ -98,6 +98,8 @@ impl RealPaths {
     /// The directory of `exe` when it is an install: the launcher itself
     /// sits there. `None` for anything else (a test binary under target,
     /// a copied tool), so the fixed per-channel path answers instead.
+    /// Windows only in use: Linux answers with the executable's own folder.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn install_dir_holding(exe: &Path) -> Option<PathBuf> {
         let dir = exe.parent()?.to_path_buf();
         dir.join("reborn-launcher.exe").is_file().then_some(dir)
