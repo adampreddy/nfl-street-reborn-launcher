@@ -83,7 +83,12 @@ export function mountMenuPadSetup() {
         const pad=[...(navigator.getGamepads?.()||[])].find(p=>p?.connected&&p.index===chosen.index&&p.id===chosen.id);
         if(!pad){text.textContent='Controller disconnected. Reconnect it to continue.';rest=null;waiting=true;neutralSince=null;return;}
         if(document.hidden||!document.hasFocus()){neutralSince=null;waiting=true;return;}
-        if(!rest){rest={axes:[...pad.axes],buttons:pad.buttons.map(b=>({pressed:b.pressed,value:b.value}))};neutralSince=now;return;}
+        if(!rest){
+          // Begin may have been selected with a still-held controller button.
+          // Never record that press as the button's neutral state.
+          if(pad.buttons.some(b=>b.pressed||b.value>.3))return;
+          rest={axes:[...pad.axes],buttons:pad.buttons.map(b=>({pressed:b.pressed,value:b.value}))};neutralSince=now;return;
+        }
         const neutral=pad.buttons.every(b=>!b.pressed&&!(b.value>.3))&&pad.axes.every((v,i)=>Math.abs(v-rest.axes[i])<.2);
         if(waiting){if(!neutral){neutralSince=null;return;}neutralSince??=now;if(now-neutralSince>=180)waiting=false;return;}
         const binding=detectBinding(pad,rest,steps[step][2]);

@@ -61,3 +61,34 @@ fn additional_same_model_pad_on_another_backend_is_retained() {
     assert_eq!(pads.playable_pads().len(),2);
     assert_eq!(pads.playable_pads()[1].device_string(),"SDL/1/DualSense Wireless Controller");
 }
+
+#[test]
+fn generic_gamepad_is_not_assumed_to_be_the_xinput_pad() {
+    let pads=scan("XInput/0/Gamepad\nSDL/0/Gamepad\nDInput/0/Gamepad");
+    let names:Vec<_>=pads.playable_pads().iter().map(|p|p.device_string()).collect();
+    assert_eq!(names, ["XInput/0/Gamepad", "SDL/0/Gamepad"]);
+}
+
+#[test]
+fn extra_xbox_named_sdl_pad_is_not_hidden_by_one_xinput_pad() {
+    let pads=scan("XInput/0/Gamepad\nSDL/0/Xbox Controller\nSDL/1/Xbox Controller");
+    assert_eq!(pads.playable_pads().len(),2);
+}
+
+#[test]
+#[ignore = "requires REBORN_TEST_RUNTIME pointing at a locally built Dolphin runtime"]
+fn real_runtime_list_dump_and_capture_agree() {
+    let exe=std::path::PathBuf::from(std::env::var_os("REBORN_TEST_RUNTIME").expect("set REBORN_TEST_RUNTIME"));
+    let dir=tempfile::tempdir().unwrap();
+    let platform=reborn_core::platform::Platform::detect();
+    let inherited=std::env::var_os("REBORN_RAW_CONTROLLERS");
+    let list=devices::scan_via_runtime(&platform,&exe,dir.path()).unwrap();
+    let (dump,inputs)=devices::dump_via_runtime(&platform,&exe,dir.path()).unwrap();
+    assert_eq!(list,dump,"hardware must remain connected throughout the probe");
+    let capture=reborn_core::capture::Capture::start(&platform,&exe,dir.path()).unwrap();
+    assert_eq!(capture.devices(),inputs);
+    assert_eq!(capture.detect("SDL/9999/Reborn test missing device").unwrap(),None);
+    drop(capture);
+    assert!(dir.path().join("quit").exists());
+    assert_eq!(std::env::var_os("REBORN_RAW_CONTROLLERS"),inherited,"query opt-in must not mutate the launcher's environment");
+}

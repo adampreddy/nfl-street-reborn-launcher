@@ -18,7 +18,11 @@ try{
  await page.addInitScript(()=>{
   window.pads=[{id:'Test pad',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:18},()=>({pressed:false,value:0}))}];
   Object.defineProperty(navigator,'getGamepads',{value:()=>pads});
-  document.hasFocus=()=>true;
+  window.focused=true;document.hasFocus=()=>focused;
+  if(location.pathname==='/'){
+   window.sessionActive=false;window.sessionReads=0;
+   window.__TAURI__={core:{invoke:async cmd=>{if(cmd==='session_active'){sessionReads++;return sessionActive;}return {};}}};
+  }
   window.frames=[];window.clock=0;window.requestAnimationFrame=fn=>(frames.push(fn),frames.length);window.cancelAnimationFrame=()=>{};
   window.tick=()=>{clock+=16;const pending=frames.splice(0);pending.forEach(fn=>fn(clock));};
  });
@@ -33,11 +37,16 @@ try{
  await page.evaluate(()=>document.querySelector('dialog[open]').focus());
  await press(13);assert.equal(await focus(),'modal-one','lost modal focus recovers inside dialog');
  await press(13);assert.equal(await focus(),'modal-two','D-pad reaches dialog controls outside main');
+ await press(4);assert.equal(await focus(),'modal-two','bumpers cannot escape a dialog');
  await press(1);assert.equal(await page.locator('dialog[open]').count(),0);
  // Unknown USB hat and reversed-axis calibration, persisted then used after reload.
  await page.evaluate(()=>{pads[0].mapping='';pads[0].axes=[0,0,3];});
- await page.locator('#menu-pad-setup').waitFor({state:'visible'});await page.locator('#menu-pad-setup').click();await page.getByRole('button',{name:'Begin',exact:true}).click();
+ await page.locator('#menu-pad-setup').waitFor({state:'visible'});await page.locator('#menu-pad-setup').click();
+ // The button used to begin can still be held on the first capture frame.
+ await page.evaluate(()=>pads[0].buttons[2]={pressed:true,value:1});
+ await page.getByRole('button',{name:'Begin',exact:true}).click();
  const settle=()=>page.evaluate(()=>{for(let i=0;i<15;i++)tick();});
+ await settle();await page.evaluate(()=>pads[0].buttons[2]={pressed:false,value:0});
  await settle();
  for(const v of [-1,1/7,5/7,-3/7]){
   await page.evaluate(v=>{pads[0].axes[2]=v;tick();},v);await page.evaluate(()=>pads[0].axes[2]=3);await settle();
@@ -54,6 +63,25 @@ try{
  await page.reload();await page.waitForFunction(()=>frames.length>0);
  await page.evaluate(()=>{pads[0].mapping='';pads[0].axes=[0,0,3];document.getElementById('first').focus();tick();pads[0].axes[2]=1/7;tick();});
  assert.equal(await focus(),'second','saved raw D-pad layout survives reload');
+ // A background launcher must not consume presses meant for the game.
+ await page.evaluate(()=>{pads[0].mapping='standard';pads[0].axes=[0,0,0,0];document.getElementById('first').focus();tick();});
+ for(const blocked of ['focus','busy']){
+  await page.evaluate(blocked=>{if(blocked==='focus')focused=false;else document.getElementById('screen').setAttribute('aria-busy','true');pads[0].buttons[13]={pressed:true,value:1};tick();},blocked);
+  assert.equal(await focus(),'first');
+  await page.evaluate(()=>{focused=true;document.getElementById('screen').removeAttribute('aria-busy');tick();});
+  assert.equal(await focus(),'first','held input cannot leak through after resuming');
+  await page.evaluate(()=>{pads[0].buttons[13]={pressed:false,value:0};tick();});
+  await press(13);assert.equal(await focus(),'second');await press(12);
+ }
+ await page.evaluate(()=>{sessionActive=true;window.previousReads=sessionReads;});
+ await page.waitForFunction(()=>sessionReads>previousReads,null,{polling:50});await frame();
+ await page.evaluate(()=>{pads[0].buttons[13]={pressed:true,value:1};tick();});
+ assert.equal(await focus(),'first','game session suppresses launcher movement');
+ await page.evaluate(()=>{sessionActive=false;window.previousReads=sessionReads;});
+ await page.waitForFunction(()=>sessionReads>previousReads,null,{polling:50});await frame();
+ assert.equal(await focus(),'first','return from game requires neutral');
+ await page.evaluate(()=>{pads[0].buttons[13]={pressed:false,value:0};tick();});
+ await press(13);assert.equal(await focus(),'second','navigation resumes after release');
  assert.deepEqual(errors,[]);
  mkdirSync(path.join(root,'target/browser-review'),{recursive:true});
  await page.screenshot({path:path.join(root,'target/browser-review/controller-navigation.png')});
@@ -70,5 +98,5 @@ try{
   await page.screenshot({path:path.join(root,`target/browser-review/launcher-controller-setup-${width}.png`)});}
  await page.getByRole('button',{name:'Cancel',exact:true}).click();
  assert.deepEqual(errors,[]);
- console.log('PASS: first-focus, adjacent D-pad movement, modal navigation, raw hat/stick calibration, saved raw navigation');
+ console.log('PASS: first-focus, adjacent D-pad movement, modal isolation, held-button calibration, saved raw navigation, focus/busy/game-session recovery');
 }finally{await browser.close();server.close();}

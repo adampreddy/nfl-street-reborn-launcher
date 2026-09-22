@@ -41,7 +41,6 @@
 //! uses. So it is guaranteed to parse and guaranteed to resolve, which is the
 //! one property the launcher could never provide for itself.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -90,7 +89,7 @@ impl Capture {
             "--input-capture={}",
             dir.display()
         ))];
-        let env: BTreeMap<String, std::ffi::OsString> = BTreeMap::new();
+        let env = crate::devices::controller_query_env();
         platform
             .processes
             .spawn(runtime_exe, &args, None, &env)
@@ -173,6 +172,44 @@ impl Drop for Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RawControllerRuntime;
+    impl crate::platform::ProcessHost for RawControllerRuntime {
+        fn spawn(&self, _: &Path, args: &[std::ffi::OsString], _: Option<&Path>, env: &std::collections::BTreeMap<String, std::ffi::OsString>) -> crate::platform::Result<crate::platform::ProcessHandle> {
+            assert_eq!(env.get("REBORN_RAW_CONTROLLERS").and_then(|v|v.to_str()),Some("1"));
+            let arg=args[0].to_str().unwrap();
+            let dir=Path::new(arg.strip_prefix("--input-capture=").unwrap());
+            std::fs::write(dir.join("devices.txt"), RAW_PAD)?;
+            std::fs::write(dir.join("ready"), "1")?;
+            Ok(crate::platform::ProcessHandle {pid:0,inner:None})
+        }
+        fn wait(&self, _: crate::platform::ProcessHandle) -> crate::platform::Result<crate::platform::ExitKind> { unreachable!() }
+        fn is_running(&self, _: &crate::platform::ProcessHandle) -> bool { false }
+        fn run_capturing(&self, _: &Path, args: &[std::ffi::OsString], env: &std::collections::BTreeMap<String, std::ffi::OsString>) -> crate::platform::Result<crate::platform::CapturedRun> {
+            assert_eq!(env.get("REBORN_RAW_CONTROLLERS").and_then(|v|v.to_str()),Some("1"));
+            let (flag,file)=args[0].to_str().unwrap().split_once('=').unwrap();
+            let body=match flag { "--dump-device-inputs"=>RAW_PAD,"--list-input-devices"=>"SDL/0/USB GameCube Controller\n",_=>panic!("unexpected flag") };
+            std::fs::write(file,body)?;
+            Ok(crate::platform::CapturedRun {stdout:String::new(),stderr:String::new(),exit:crate::platform::ExitKind::Normal})
+        }
+    }
+    const RAW_PAD:&str="DEVICE\tSDL/0/USB GameCube Controller\nINPUT\tAxis 1-\t1\nINPUT\tHat 0 N\t1\n";
+
+    #[test]
+    fn raw_controller_opt_in_reaches_list_dump_and_capture() {
+        let dir=tempfile::tempdir().unwrap();
+        let exe=dir.path().join("runtime");std::fs::write(&exe,"").unwrap();
+        let mut platform=Platform::detect();platform.processes=Box::new(RawControllerRuntime);
+        let list=crate::devices::scan_via_runtime(&platform,&exe,dir.path()).unwrap();
+        assert_eq!(list.playable_pads()[0].device_string(),"SDL/0/USB GameCube Controller");
+        let (dump,inputs)=crate::devices::dump_via_runtime(&platform,&exe,dir.path()).unwrap();
+        assert_eq!(dump.playable_pads()[0].device_string(),list.playable_pads()[0].device_string());
+        let capture=Capture::start(&platform,&exe,dir.path()).unwrap();
+        assert_eq!(capture.devices(),inputs);
+        assert!(capture.device("SDL/0/USB GameCube Controller").unwrap().names().contains(&"Axis 1-".into()));
+        drop(capture);
+        assert!(dir.path().join("quit").exists());
+    }
 
     /// The protocol's file handling, without a runtime.
     ///

@@ -160,11 +160,11 @@ impl Enumeration {
             // `WGInput/1/Xbox One Game Controller` alongside its XInput entry,
             // so the id carries no information about how many pads exist.
             let occurrence = seen.iter().filter(|d|
-                d.backend == pad.backend && same_physical_pad(&d.name, &pad.name)).count();
+                d.backend == pad.backend && same_physical_pad(d, pad)).count();
             let better_count = chosen.iter().filter(|kept|
-                kept.backend != pad.backend && same_physical_pad(&kept.name, &pad.name)).count();
-            let xbox_alias = pad.backend != Backend::XInput && chosen.iter().any(|kept|
-                kept.backend == Backend::XInput && same_physical_pad(&kept.name, &pad.name));
+                kept.backend != pad.backend && same_physical_pad(kept, pad)).count();
+            let xbox_alias = pad.backend == Backend::Other("WGInput".into()) && chosen.iter().any(|kept|
+                kept.backend == Backend::XInput && same_physical_pad(kept, pad));
             let already_seen_elsewhere = xbox_alias || better_count >= occurrence;
             if !already_seen_elsewhere {
                 chosen.push(pad);
@@ -202,10 +202,16 @@ impl Enumeration {
 ///
 /// Match exact names and the observed Xbox and Sony aliases. Do not merge all
 /// PlayStation devices together: DualShock and DualSense can be separate pads.
-fn same_physical_pad(a: &str, b: &str) -> bool {
-    fn xbox_ish(name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
-        lower == "gamepad" || lower.contains("xbox")
+fn same_physical_pad(a: &DetectedDevice, b: &DetectedDevice) -> bool {
+    // "Gamepad" is XInput's fixed label, but also a common generic USB name.
+    // The latter is not evidence of an Xbox alias.
+    if a.backend != b.backend
+        && ((a.backend == Backend::XInput && b.name.eq_ignore_ascii_case("gamepad"))
+            || (b.backend == Backend::XInput && a.name.eq_ignore_ascii_case("gamepad"))) {
+        return false;
+    }
+    fn xbox_ish(pad: &DetectedDevice) -> bool {
+        pad.backend == Backend::XInput || pad.name.to_ascii_lowercase().contains("xbox")
     }
     fn sony_model(name: &str) -> Option<u8> {
         let n = name.to_ascii_lowercase();
@@ -213,8 +219,8 @@ fn same_physical_pad(a: &str, b: &str) -> bool {
         else if n.contains("dualshock 4") || n.contains("dualshock4") || n.contains("ps4 controller") { Some(4) }
         else { None }
     }
-    a.eq_ignore_ascii_case(b) || (xbox_ish(a) && xbox_ish(b))
-        || (sony_model(a).is_some() && sony_model(a) == sony_model(b))
+    a.name.eq_ignore_ascii_case(&b.name) || (xbox_ish(a) && xbox_ish(b))
+        || (sony_model(&a.name).is_some() && sony_model(&a.name) == sony_model(&b.name))
 }
 
 /// The inputs one device reports, as the runtime names them.
@@ -402,6 +408,13 @@ impl Enumeration {
 #[derive(Debug)]
 pub struct DeviceScanner;
 
+/// Opt into raw controllers in runtimes that hide SDL from older launchers.
+/// Older runtimes ignore this child-only environment variable, so their
+/// existing query flags continue to work without a failed capability probe.
+pub(crate) fn controller_query_env() -> std::collections::BTreeMap<String, std::ffi::OsString> {
+    [("REBORN_RAW_CONTROLLERS".to_owned(), "1".into())].into()
+}
+
 impl DeviceScanner {
     /// Look for connected controllers.
     pub fn scan() -> Enumeration {
@@ -467,7 +480,7 @@ pub fn scan_via_runtime(
     ))];
     let run = platform
         .processes
-        .run_capturing(runtime_exe, &args, &Default::default())
+        .run_capturing(runtime_exe, &args, &controller_query_env())
         .map_err(|e| format!("could not run the runtime: {e}"))?;
 
     let raw = std::fs::read_to_string(&list_path).map_err(|_| {
@@ -522,7 +535,7 @@ pub fn dump_via_runtime(
     ))];
     platform
         .processes
-        .run_capturing(runtime_exe, &args, &Default::default())
+        .run_capturing(runtime_exe, &args, &controller_query_env())
         .map_err(|e| format!("could not run the runtime: {e}"))?;
 
     let raw = std::fs::read_to_string(&out).map_err(|_| {

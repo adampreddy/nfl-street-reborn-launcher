@@ -53,4 +53,30 @@ test('raw hat neutral outside [-1,1] is not a held direction',()=>{
  assert.deepEqual(up,{kind:'hat',index:2,rest:3,value:-1});assert.equal(bindingValue(p,up),1);
  p.axes[2]=3;assert.equal(bindingValue(p,up),0);
 });
+test('noisy sustained stick holds stay stable at 30, 60, 120 and 144 Hz',()=>{
+ for(const hz of [30,60,120,144]){
+  const r=new MenuPadReader(),p=pad(),dt=1000/hz,moves=[];r.update([p],0);
+  for(let frame=1;frame<=hz*10;frame++){
+   p.axes[0]=.70+.015*Math.sin(frame*7);p.axes[1]=.67+.015*Math.cos(frame*11);
+   const result=r.update([p],frame*dt);
+   if(result.move)moves.push({direction:result.move,time:frame*dt});
+  }
+  assert.ok(moves.length>=65&&moves.length<=90,`${hz} Hz repeated ${moves.length} times in ten seconds`);
+  assert.ok(moves.every(m=>m.direction==='right'),'diagonal noise must not switch axes');
+  assert.ok(moves.slice(1).every((m,i)=>m.time-moves[i].time>=110),'no frame-rate-dependent rapid repeats');
+ }
+});
+test('twenty separate taps produce twenty moves at every refresh rate',()=>{
+ for(const hz of [30,60,120,144]){
+  const r=new MenuPadReader(),p=pad(),dt=1000/hz;let moves=0;r.update([p],0);
+  for(let i=0;i<40;i++){press(p,13,i%2===0);if(r.update([p],(i+1)*dt).move)moves++;}
+  assert.equal(moves,20);
+ }
+});
+test('mirrored select buttons activate once even when releases are staggered',()=>{
+ const r=new MenuPadReader(),a=pad(),b=pad(1);r.update([a,b],0);
+ press(a,0);press(b,0);assert.equal(r.update([a,b],16).accept,true);
+ press(a,0,false);assert.equal(r.update([a,b],32).accept,false);
+ press(b,0,false);r.update([a,b],48);press(b,0);assert.equal(r.update([a,b],64).accept,true);
+});
 console.log(`${count} menu input tests passed`);

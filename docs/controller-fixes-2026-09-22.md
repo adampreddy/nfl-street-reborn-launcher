@@ -1,5 +1,7 @@
 # Controller fixes, September 22, 2026
 
+The [verification follow-up](controller-validation-2026-09-22.md) supersedes the initial test/build results below and records additional launcher and runtime fixes.
+
 Implementation is on `fix/controller-navigation` in this worktree. It includes release/3.0.23 plus the existing crash-detail commit, then the controller changes below. Existing worktrees and their uncommitted edits were not overwritten.
 
 ## Confirmed defects and fixes
@@ -55,6 +57,6 @@ This is a local test candidate. It has not been published or installed, and the 
 
 `cargo build -p reborn-ui --release --target-dir ../controller-build --quiet` completed successfully. The compiler reported one existing unused import (`UNVERIFIED_GAME` in `main.rs`).
 
-The candidate is `dist/controller-test/reborn-launcher.exe` in this worktree (54,160,384 bytes). Its SHA-256 is `1941210e0f371d0a0d1f0999b34218114ded3e59ec21c4fa3d24a4c074f43721`.
+The initial candidate was 54,160,384 bytes, SHA-256 `1941210e0f371d0a0d1f0999b34218114ded3e59ec21c4fa3d24a4c074f43721`. It has been replaced at `dist/controller-test/reborn-launcher.exe` by the corrected build documented in the verification follow-up.
 
 This is the launcher executable, not an installer or a new Dolphin runtime. It retains the branch's existing 3.1.0 version metadata. Use it with a test installation; launching it can use and update the current user's launcher state. The build has not been run against the production installation.
