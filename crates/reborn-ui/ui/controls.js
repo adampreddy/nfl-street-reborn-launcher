@@ -1,9 +1,10 @@
 import {bridge,call,el,get,reason,markCurrent,wireCoreFold} from './shell.js';
 import {mountNotices} from './notices.js';
+import {openControllerReport} from './controller-report.js';
 let active=0,busy=false,workspace=null,state={pads:[],slots:[null,null,null,null]},problem='';
 const screen=document.getElementById('screen');
 delete document.body.dataset.controllerTesting;
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!workspace&&document.body.dataset.controllerTesting){event.preventDefault();event.stopImmediatePropagation();delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));}},true);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!workspace&&document.body.dataset.controllerTesting==='setup'){event.preventDefault();event.stopImmediatePropagation();delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));}},true);
 const friendly=device=>{if(!device)return 'No controller';const parts=device.split('/');const name=parts.slice(2).join('/')||device;return `${name==='Gamepad'&&parts[0]==='XInput'?'Xbox controller':name} · ${Number(parts[1])+1||1}`;};
 const connected=device=>state.pads.some(p=>p.device_string===device);
 function lock(value){busy=value;screen.querySelectorAll('.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);}
@@ -42,6 +43,11 @@ function draw(){
  panel.append(el('div',{class:'player-textures'},el('label',{for:'player-textures',text:'Button textures'}),textures,el('span',{text:'Shared by all four players.'})),feedback);
  const noticeHost=el('div',{class:'notices'},el('section',{class:'controller-mapping-note'},el('strong',{text:'B maps to B. X maps to X.'}),el('p',{text:'Older installs may have these reversed. Check the bindings below: B must use Button B, and X must use Button X. Only use the correction if they are reversed.'})));
  screen.replaceChildren(noticeHost,tabs,panel);
+ const report=el('button',{type:'button',id:'record-controller-problem',text:'Record controller problem',disabled:!bridge,onclick:()=>{
+  if(busy)return;workspace?.dispose?.();workspace=null;lock(true);
+  openControllerReport({runtime:state.runtime||null,device:state.slots[active],onClose:()=>{busy=false;draw();document.getElementById('record-controller-problem')?.focus();}});
+ }});
+ screen.append(el('section',{class:'controller-report-entry'},el('h2',{text:'Controller not responding correctly?'}),el('p',{text:'Record a short guided input test and save a report to share with support.'}),report));
  if(bridge)mountNotices(noticeHost);
 }
 markCurrent();wireCoreFold();

@@ -25,6 +25,7 @@
 mod content_updates;
 mod music_page;
 mod remap;
+mod controller_report;
 mod setup_tools;
 mod shell_tools;
 mod stats_view;
@@ -6139,6 +6140,10 @@ fn main() {
             remap::remap_start,
             remap::remap_detect,
             remap::remap_stop,
+            controller_report::controller_report_start,
+            controller_report::controller_report_detect,
+            controller_report::controller_report_stop,
+            controller_report::controller_report_save,
             setup_tools::setup_controller_mapping,
             setup_tools::setup_save_mapping,
             paths,

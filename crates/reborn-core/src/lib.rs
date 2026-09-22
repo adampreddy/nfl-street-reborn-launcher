@@ -54,6 +54,7 @@ pub mod capture;
 pub mod content;
 pub mod controller;
 pub mod controller_profiles;
+pub mod controller_diagnostics;
 pub mod cards;
 pub mod notices;
 pub mod devices;

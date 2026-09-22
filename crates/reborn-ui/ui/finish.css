@@ -118,3 +118,12 @@ body.shell .update-dialog{width:min(540px,calc(100vw - 48px));max-height:80vh;ov
 
 /* Preserve wizard visibility inside the dialog action flex layout. */
 #menu-pad-setup[hidden],.menu-pad-setup-dialog [hidden]{display:none!important}
+.controller-report-dialog [hidden]{display:none!important}
+.controller-report-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+.controller-report-fields label{display:grid;gap:6px;min-width:0;font-size:13px}
+.controller-report-fields label:last-child{grid-column:1 / -1}
+.controller-report-fields select,.controller-report-fields textarea{width:100%;min-width:0;box-sizing:border-box}
+.controller-report-note{font-size:12px;line-height:1.6;color:var(--muted)}
+.controller-report-entry{margin-top:24px;padding:20px;border-top:1px solid var(--line)}
+.controller-report-entry h2{font-size:18px;margin:0 0 8px}
+.controller-report-entry p{color:var(--muted);font-size:13px;line-height:1.6}

@@ -118,6 +118,11 @@ impl Capture {
         &self.devices
     }
 
+    /// Request shutdown even when an in-flight detection still holds a reader.
+    pub fn stop(&self) {
+        let _ = std::fs::write(self.dir.join("quit"), "1\n");
+    }
+
     /// One device's report, if it is still connected.
     pub fn device(&self, device_string: &str) -> Option<&DeviceInputs> {
         self.devices.iter().find(|d| d.device == device_string)
@@ -165,7 +170,7 @@ impl Drop for Capture {
     /// the bug this whole area exists to fix, so it must not be possible to
     /// leave one behind by forgetting a call.
     fn drop(&mut self) {
-        let _ = std::fs::write(self.dir.join("quit"), "1\n");
+        self.stop();
     }
 }
 
