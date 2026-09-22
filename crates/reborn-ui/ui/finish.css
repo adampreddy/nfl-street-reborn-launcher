@@ -115,3 +115,6 @@ body.shell.page-setup .shell-nav .brand{margin-top:26px}
 body.shell .update-dialog{width:min(540px,calc(100vw - 48px));max-height:80vh;overflow:auto;padding:28px;border:1px solid var(--control-border);border-radius:14px;background:var(--panel);color:var(--fg);box-shadow:0 24px 80px #0008}
 .update-dialog::backdrop{background:#0009}.update-dialog h2{margin:0 0 10px;font-size:24px;letter-spacing:-.02em}.update-version{margin:0 0 20px;color:var(--muted);font-size:13px}
 .update-changes{max-height:34vh;overflow:auto;border-block:1px solid var(--line);padding:16px 0}.update-changes ul{padding-left:20px;margin:0}.update-changes li{padding:4px 0;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.update-countdown{font-size:12px;line-height:1.6;color:var(--muted);margin:18px 0}.update-dialog-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}.update-dialog-actions button{margin:0}
+
+/* Preserve wizard visibility inside the dialog action flex layout. */
+#menu-pad-setup[hidden],.menu-pad-setup-dialog [hidden]{display:none!important}

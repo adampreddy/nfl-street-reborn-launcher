@@ -90,32 +90,16 @@ impl Backend {
     /// because it is the backend with working rumble and analog triggers for
     /// Xbox pads.
     ///
-    /// SDL second, but see [`Enumeration::playable_pads`]: it is only ever
-    /// offered when no backend that names its controls has a pad. This used to
-    /// say SDL "is where every PlayStation pad lives on Windows". Measured
-    /// 2026-09-12, that is wrong: a DualSense arrives on WGInput, and the
-    /// fork's SDL backend names controls by number, which nothing here can
-    /// bind.
-    ///
-    /// WGInput third. It duplicates XInput for Xbox pads and reported the same
-    /// controller twice here, which makes it the worst thing to bind by
-    /// default.
-    ///
-    /// DirectInput last. It is where keyboard and mouse live, and those are a
-    /// fallback for an empty port rather than something to hand a player.
+    /// Windows.Gaming.Input next, then SDL and DirectInput. Raw numeric
+    /// controls remain available for the existing press-to-map workflow.
     pub fn preference(&self) -> u8 {
         match self {
             Backend::XInput => 0,
-            Backend::Sdl => 1,
-            Backend::Other(name) if name == "WGInput" => 2,
+            Backend::Other(name) if name == "WGInput" => 1,
+            Backend::Sdl => 2,
             Backend::Other(_) => 3,
             Backend::DInput => 4,
         }
-    }
-
-    /// Whether this backend supplies things a player holds.
-    pub fn is_pad_backend(&self) -> bool {
-        !matches!(self, Backend::DInput)
     }
 
     /// Whether this backend calls a control by what it IS (`Button A`,
@@ -130,48 +114,23 @@ impl Backend {
     }
 }
 
+impl DetectedDevice {
+    pub fn is_controller(&self) -> bool {
+        let name = self.name.to_ascii_lowercase();
+        // Dolphin's DirectInput backend exposes keyboards AND joysticks.
+        !matches!(name.as_str(), "keyboard mouse" | "keyboard" | "mouse")
+    }
+}
+
 impl Enumeration {
-    /// The devices worth offering as player pads, best first.
-    ///
-    /// Two rules, both from what the emulator actually reported here.
-    ///
-    /// Keyboard and mouse are dropped. They are a fallback for an unused port,
-    /// not a controller.
-    ///
-    /// When a higher ranked backend has pads, lower ranked ones are dropped
-    /// wholesale rather than filtered device by device. There is no reliable
-    /// way to tell that `WGInput/0/Xbox One Game Controller` and
-    /// `XInput/0/Gamepad` are one piece of plastic, so the safe move is to
-    /// trust one backend at a time. The cost is a genuine edge case: an Xbox
-    /// pad and a DualSense plugged in together would offer only the Xbox one,
-    /// because they land in different backends. That is worth fixing when
-    /// somebody hits it, and is better than handing player two a second copy
-    /// of player one's controller.
+    /// Prefer labelled controls, but retain other physical controllers. A backend
+    /// is not a device identity: SDL and DirectInput can contain unique pads.
     pub fn playable_pads(&self) -> Vec<&DetectedDevice> {
         let mut pads: Vec<&DetectedDevice> = self
             .devices
             .iter()
-            .filter(|d| d.backend.is_pad_backend())
+            .filter(|d| d.is_controller())
             .collect();
-
-        // SDL only when it is all there is.
-        //
-        // The fork's SDL backend names controls by number (`Button 0`,
-        // `Axis 1-`, `Hat 0 N`), and no binding the launcher writes can press
-        // a number: a pad bound through SDL has a correct Device line and
-        // every control dead. XInput and WGInput name theirs (`Button A`,
-        // `Cross`), and on Windows WGInput reports every pad SDL does.
-        //
-        // SDL used to outrank WGInput here and got away with it for one
-        // reason: it reports from its own thread, the one-shot scan read the
-        // list before it had, and so it was almost never in the list. A scan
-        // that waits for the list to settle puts it there every time. The two
-        // backends do not agree on what a pad is called either
-        // (`DualSense Wireless Controller` against `PS5 Controller`), so the
-        // name comparison below cannot be what keeps one pad off two ports.
-        if pads.iter().any(|d| d.backend.names_its_controls()) {
-            pads.retain(|d| d.backend != Backend::Sdl);
-        }
 
         // Deduplicate by the PAD, not by the backend.
         //
@@ -189,7 +148,9 @@ impl Enumeration {
         // PlayStation pad never collides with an Xbox one.
         pads.sort_by_key(|d| (d.backend.preference(), d.id));
         let mut chosen: Vec<&DetectedDevice> = Vec::new();
+        let mut seen: Vec<&DetectedDevice> = Vec::new();
         for pad in pads {
+            seen.push(pad);
             // Only ACROSS backends, and never by id.
             //
             // Two ids in one backend are two pads: `XInput/0/Gamepad` and
@@ -198,9 +159,13 @@ impl Enumeration {
             // `WGInput/0/Xbox One Game Controller` AND
             // `WGInput/1/Xbox One Game Controller` alongside its XInput entry,
             // so the id carries no information about how many pads exist.
-            let already_seen_elsewhere = chosen.iter().any(|kept: &&DetectedDevice| {
-                kept.backend != pad.backend && same_physical_pad(&kept.name, &pad.name)
-            });
+            let occurrence = seen.iter().filter(|d|
+                d.backend == pad.backend && same_physical_pad(&d.name, &pad.name)).count();
+            let better_count = chosen.iter().filter(|kept|
+                kept.backend != pad.backend && same_physical_pad(&kept.name, &pad.name)).count();
+            let xbox_alias = pad.backend != Backend::XInput && chosen.iter().any(|kept|
+                kept.backend == Backend::XInput && same_physical_pad(&kept.name, &pad.name));
+            let already_seen_elsewhere = xbox_alias || better_count >= occurrence;
             if !already_seen_elsewhere {
                 chosen.push(pad);
             }
@@ -221,7 +186,7 @@ impl Enumeration {
             .iter()
             .filter(|d| !chosen.contains(&d.device_string()))
             .map(|d| {
-                let why = if !d.backend.is_pad_backend() {
+                let why = if !d.is_controller() {
                     "keyboard and mouse, kept as a fallback for an unused port"
                 } else {
                     "the same pad is already offered through a better backend"
@@ -232,20 +197,24 @@ impl Enumeration {
     }
 }
 
-/// Whether two device names, seen on different backends at the same id, are
-/// one piece of plastic.
+/// Known aliases used for cross-backend deduplication. This is not a hardware
+/// identity; enumeration preserves extra same-model devices on another backend.
 ///
-/// Deliberately conservative. Saying yes wrongly hides a real second pad from
-/// player two, which is the failure this whole function exists to stop. So only
-/// the case that is actually known to collide is matched: an Xbox pad, which
-/// XInput calls `Gamepad` and Windows.Gaming.Input calls
-/// `Xbox ... Controller`.
+/// Match exact names and the observed Xbox and Sony aliases. Do not merge all
+/// PlayStation devices together: DualShock and DualSense can be separate pads.
 fn same_physical_pad(a: &str, b: &str) -> bool {
     fn xbox_ish(name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         lower == "gamepad" || lower.contains("xbox")
     }
+    fn sony_model(name: &str) -> Option<u8> {
+        let n = name.to_ascii_lowercase();
+        if n.contains("dualsense") || n.contains("ps5 controller") { Some(5) }
+        else if n.contains("dualshock 4") || n.contains("dualshock4") || n.contains("ps4 controller") { Some(4) }
+        else { None }
+    }
     a.eq_ignore_ascii_case(b) || (xbox_ish(a) && xbox_ish(b))
+        || (sony_model(a).is_some() && sony_model(a) == sony_model(b))
 }
 
 /// The inputs one device reports, as the runtime names them.

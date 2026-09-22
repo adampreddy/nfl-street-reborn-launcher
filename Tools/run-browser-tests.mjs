@@ -178,8 +178,8 @@ await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
 assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
 await page.screenshot({path:path.join(out,'reborn-setup-controller.png')});
 await page.getByRole('button',{name:'Assign A',exact:true}).click();
-// The typed input sits behind "Type a Dolphin input name instead" since 2026-09-11.
-await page.getByText('Type a Dolphin input name instead',{exact:true}).click();
+// The mocked runtime has no capture service. Its error opens the typed fallback
+// automatically; clicking the summary here would close it again.
 await page.getByRole('textbox',{name:'A binding',exact:true}).fill('`Button Y`');
 await page.getByRole('button',{name:'Use binding',exact:true}).click();
 await page.getByRole('status').filter({hasText:'A saved.'}).waitFor();
@@ -320,3 +320,6 @@ await import('./review-players.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
+
+await import('./test-menu-pad.mjs');
+await import('./check-controller-navigation.mjs');

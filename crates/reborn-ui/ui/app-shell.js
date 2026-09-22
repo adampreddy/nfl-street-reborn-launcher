@@ -1,5 +1,7 @@
 // Controller navigation belongs to the window, independently of page data.
 import { bridge } from './shell.js';
+import { MenuPadReader, readLayout } from './menu-pad.js';
+import { mountMenuPadSetup } from './menu-pad-setup.js';
 
 const selector = 'a[href],button,input,select,textarea,summary';
 const main = document.getElementById('main');
@@ -72,7 +74,8 @@ function renderHints() {
   if (!pad) { hints.replaceChildren(); delete hints.dataset.layout; return; }
   const ps = /playstation|dualsense|dualshock|054c/i.test(pad.id);
   const testing = !!document.body.dataset.controllerTesting;
-  const items = testing
+  const needsSetup = pad.mapping !== 'standard' && !readLayout(pad);
+  const items = needsSetup && !testing ? [['Setup','Set up launcher controls']] : testing
     ? [[document.body.classList.contains('page-controls') ? 'Esc' : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
     : selectEdit ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
     : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],...(document.body.classList.contains('page-setup') ? [] : [[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']])];
@@ -108,8 +111,9 @@ function focus(n, reveal = true) {
   }
 }
 function primary() {
-  return reachable(main).find(n => n.matches('[data-primary],#next')) ||
-    reachable(main).find(n => n.matches('input:checked')) || reachable(main)[0];
+  const scope = document.querySelector('dialog[open]') || main;
+  return reachable(scope).find(n => n.matches('[data-primary],#next')) ||
+    reachable(scope).find(n => n.matches('input:checked')) || reachable(scope)[0];
 }
 document.addEventListener('focusin',e => {
   const n = e.target;
@@ -165,7 +169,8 @@ function move(direction) {
   }
   // Keep vertical movement within content or navigation. A distant sidebar
   // control should never steal focus from the next settings row.
-  const items = reachable(inNav ? document.querySelector('.shell-nav') : main);
+  const modal = document.querySelector('dialog[open]');
+  const items = reachable(modal || (inNav ? document.querySelector('.shell-nav') : main));
   const a = box(current), ax = a.x+a.width/2, ay = a.y+a.height/2;
   const viewport = (current.closest('dialog[open]') || main).getBoundingClientRect();
   if (!inNav && (a.bottom < viewport.top || a.top > viewport.bottom)) {
@@ -183,7 +188,7 @@ function move(direction) {
   }).filter(x => x.distance > 4 && (!horizontal || x.overlap > 0));
   ranked.sort((a,b) => Number(b.overlap > 0)-Number(a.overlap > 0) || a.score-b.score);
   if (ranked[0]) focus(ranked[0].n);
-  else if (!inNav && direction === 'left') focus(document.querySelector('.shell-nav a.current') || reachable(document.querySelector('.shell-nav'))[0]);
+  else if (!modal && !inNav && direction === 'left') focus(document.querySelector('.shell-nav a.current') || reachable(document.querySelector('.shell-nav'))[0]);
 }
 function endSelect(commit) {
   if (!selectEdit) return;
@@ -254,55 +259,40 @@ async function sessionState() {
   } catch (_) {} finally { checking = false; }
 }
 if (bridge) { sessionState(); setInterval(sessionState,1500); }
-let previous = [], direction = null, nextRepeat = 0, lastFrame = 0, padId = null, armed = false;
+const reader = new MenuPadReader();
 function poll(now) {
   requestAnimationFrame(poll);
-  if (document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
-    previous = []; direction = null; lastFrame = 0; armed = false; return;
+  if (active || document.hidden || !document.hasFocus() || screen?.getAttribute("aria-busy")==="true" || document.body.dataset.controllerTesting) {
+    reader.reset(); return;
   }
   const pads = connectedPads();
   if (document.body.classList.contains('controller-connected') !== !!pads.length) renderHints();
-  const pad = pads.find(p => p?.connected && p.mapping === 'standard');
-  if (!pad) { padId = null; previous = []; direction = null; lastFrame = 0; armed = false; return; }
-  const id = `${pad.index}:${pad.id}`;
-  const buttons = pad.buttons.map(b => b.pressed || b.value > .55);
-  const axes = pad.axes || [];
-  if (padId !== id || !lastFrame || now-lastFrame > 250) { padId = id; armed = false; direction = null; }
-  const elapsed = Math.min(40,now-(lastFrame || now)); lastFrame = now;
-  // New pages, reconnects, and return from testing require neutral controls.
-  // In particular, a held A must never activate the next page's primary action.
-  if (!armed) {
-    previous = buttons;
-    armed = !buttons.some(Boolean) && axes.every(v => Math.abs(v) < .3);
-    return;
+  const input = reader.update(pads, now, readLayout);
+  const hasInput = input.move || input.scroll || input.accept || input.back || input.previous || input.next;
+  if (!hasInput) return;
+  mode(true);
+  // Enter controller navigation at the primary control. The first press must
+  // not both establish focus and skip it (or launch it before it was visible).
+  if (!visible(document.activeElement)) {
+    focus(primary());
+    if (!input.previous && !input.next && !input.back) return;
   }
-  const pressed = i => buttons[i] && !previous[i];
-  const x = axes[0] || 0, y = axes[1] || 0;
-  const threshold = direction ? .38 : .58;
-  const stick = Math.max(Math.abs(x),Math.abs(y)) > threshold ? Math.abs(x) > Math.abs(y) ? x < 0 ? 'left' : 'right' : y < 0 ? 'up' : 'down' : null;
-  const d = buttons[12] ? 'up' : buttons[13] ? 'down' : buttons[14] ? 'left' : buttons[15] ? 'right' : stick;
-  const rawScroll = axes[3] || 0;
-  const magnitude = Math.max(0,(Math.abs(rawScroll)-.22)/.78);
-  const scroll = Math.sign(rawScroll)*magnitude*magnitude;
-  if (d || scroll || buttons.some((_,i) => pressed(i))) {
-    mode(true);
-    if (!visible(document.activeElement)) focus(primary());
-  }
-  if (d && (d !== direction || now >= nextRepeat)) { move(d); nextRepeat = now+(d !== direction ? 330 : 115); }
-  direction = d;
-  if (scroll && !selectEdit) {
+  if (input.move) move(input.move);
+  if (input.scroll && !selectEdit) {
     const area = document.querySelector('dialog[open]') || main;
-    scrollToTarget(area,(scrollTargets.get(area) ?? area.scrollTop)+scroll*elapsed*1.35);
+    scrollToTarget(area,(scrollTargets.get(area) ?? area.scrollTop)+input.scroll*input.elapsed*1.35);
   }
-  if (pressed(4)) pageStep(-1);
-  else if (pressed(5)) pageStep(1);
-  else if (pressed(1)) back();
-  else if (pressed(0)) activate();
-  previous = buttons;
+  if (input.previous) pageStep(-1);
+  else if (input.next) pageStep(1);
+  else if (input.back) back();
+  else if (input.accept) activate();
 }
+document.addEventListener('menu-pad-layout',()=>reader.reset());
+mountMenuPadSetup();
+
 renderHints();
 if (controllerMode) focus(primary());
 requestAnimationFrame(poll);
 window.addEventListener('gamepadconnected',() => {renderHints();document.dispatchEvent(new Event('refresh-devices'));});
-window.addEventListener('gamepaddisconnected',() => { armed = false; renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
+window.addEventListener('gamepaddisconnected',() => { reader.reset(); renderHints(); document.dispatchEvent(new Event('refresh-devices')); });
 import './update-notice.js';

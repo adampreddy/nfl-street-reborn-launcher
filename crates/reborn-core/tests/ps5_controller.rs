@@ -171,7 +171,7 @@ fn a_numeric_only_pad_is_sent_to_the_wizard_rather_than_guessed() {
         .find(|d| d.device == "DInput/0/DualSense Wireless Controller")
         .expect("the capture contains the DirectInput view of the pad");
 
-    let (_, unmatched) = Mapping::auto_from(&dinput.names());
+    let (mapping, unmatched) = Mapping::auto_from(&dinput.names());
     let mut got = unmatched.clone();
     got.sort();
     let mut expected = vec![
@@ -183,10 +183,6 @@ fn a_numeric_only_pad_is_sent_to_the_wizard_rather_than_guessed() {
         GcInput::Start,
         GcInput::TriggerL,
         GcInput::TriggerR,
-        GcInput::DPadUp,
-        GcInput::DPadDown,
-        GcInput::DPadLeft,
-        GcInput::DPadRight,
         GcInput::MainStickUp,
         GcInput::MainStickDown,
         GcInput::MainStickLeft,
@@ -196,10 +192,12 @@ fn a_numeric_only_pad_is_sent_to_the_wizard_rather_than_guessed() {
         GcInput::CStickLeft,
         GcInput::CStickRight,
     ];
+    assert_eq!(mapping.get(GcInput::DPadUp), Some("`Hat 0 N`"));
+    assert_eq!(mapping.get(GcInput::DPadDown), Some("`Hat 0 S`"));
     expected.sort();
     assert_eq!(
         got, expected,
-        "nothing on a numeric-only device is auto mapped. `Button 3` could be \
+        "Numbered buttons and axes need measurement. `Button 3` could be \
          any button on any pad, so it is measured by the wizard, never assumed."
     );
 }

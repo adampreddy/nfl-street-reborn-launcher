@@ -248,10 +248,10 @@ impl Mapping {
             TriggerL => &["Trigger L"],
             TriggerR => &["Trigger R"],
             // XInput calls the d-pad a pad. WGInput calls it switch zero.
-            DPadUp => &["Pad N", "Switch 0 N"],
-            DPadDown => &["Pad S", "Switch 0 S"],
-            DPadLeft => &["Pad W", "Switch 0 W"],
-            DPadRight => &["Pad E", "Switch 0 E"],
+            DPadUp => &["Pad N", "Switch 0 N", "Hat 0 N"],
+            DPadDown => &["Pad S", "Switch 0 S", "Hat 0 S"],
+            DPadLeft => &["Pad W", "Switch 0 W", "Hat 0 W"],
+            DPadRight => &["Pad E", "Switch 0 E", "Hat 0 E"],
         }
     }
 
@@ -388,25 +388,28 @@ impl Mapping {
         if available.is_empty() {
             return Vec::new();
         }
-        GcInput::ALL
-            .iter()
-            .copied()
-            .filter(|input| match self.get(*input) {
-                // An unbound input is already reported by `unbound`.
-                None => false,
-                Some(binding) => {
-                    let bare = Self::bare(binding);
-                    // Only a plain control name is checked. Anything with an
-                    // operator in it is a hand written expression, and this is
-                    // not an expression evaluator: it must not veto something
-                    // it cannot parse.
-                    if bare.contains(['|', '&', '!', '+', '^', '(', ')']) && !bare.ends_with('+') {
-                        return false;
-                    }
-                    !available.iter().any(|a| Self::bare(a) == bare)
-                }
-            })
+        GcInput::ALL.iter().copied()
+            .filter(|input| self.get(*input).is_some_and(|binding|
+                Self::binding_resolves(binding, available) == Some(false)))
             .collect()
+    }
+
+    /// Resolve names joined by OR. Leave more complex Dolphin expressions to
+    /// Dolphin; their operators are not control names. Quoted axis signs are
+    /// part of the name, including on the last branch of an OR expression.
+    fn binding_resolves(binding: &str, available: &[String]) -> Option<bool> {
+        let mut resolved = false;
+        for part in binding.split('|') {
+            let part = part.trim();
+            let quoted = part.len() >= 2 && part.starts_with('`') && part.ends_with('`');
+            let name = if quoted { &part[1..part.len()-1] } else { part };
+            let stem = name.strip_suffix(['+', '-']).unwrap_or(name);
+            if name.contains('`') || (!quoted && stem.contains(['&','!','+','-','^','(',')',',','*','/','<','>','='])) {
+                return None;
+            }
+            resolved |= !name.is_empty() && available.iter().any(|a| Self::bare(a) == name);
+        }
+        Some(resolved)
     }
 
     /// Bindings the pad file needs that are NOT GameCube inputs.
@@ -569,7 +572,7 @@ impl Extras {
                 let bare = Mapping::bare(self.get(*e));
                 // Empty means "this pad has no such control and no line is
                 // written", which is a resolved state, not a broken one.
-                !bare.is_empty() && !available.iter().any(|a| Mapping::bare(a) == bare)
+                !bare.is_empty() && Mapping::binding_resolves(self.get(*e), available) == Some(false)
             })
             .collect()
     }
@@ -908,7 +911,7 @@ impl ControllerProfile {
             if self
                 .mapping
                 .get(*input)
-                .is_some_and(|b| b.contains('|'))
+                .is_some_and(|b| b.contains('|') && Mapping::is_own_vocabulary(*input, b))
                 && !needs.contains(input)
             {
                 needs.push(*input);
@@ -919,24 +922,17 @@ impl ControllerProfile {
                 needs.push(input);
             }
         }
-        if needs.is_empty() {
-            // Still not a no-op: the extras can be dead even when all twenty
-            // mapped controls resolve, which is exactly the PlayStation 5 case.
-            if !self.extras.unresolvable(available).is_empty()
-                || Extra::ALL.iter().any(|e| self.extras.get(*e).contains('|'))
+        // Repair extras independently. A dead motor must not reset a working
+        // trigger remap, and a custom OR expression is not a default placeholder.
+        let dead_extras = self.extras.unresolvable(available);
+        let defaults = Extras::from_device(available);
+        for extra in Extra::ALL {
+            let current = self.extras.get(*extra);
+            if dead_extras.contains(extra)
+                || (current.contains('|') && Mapping::extra_is_own_vocabulary(*extra, current))
             {
-                self.extras = Extras::from_device(available);
+                self.extras.set(*extra, defaults.get(*extra).to_owned());
             }
-            return Vec::new();
-        }
-
-        // The analog triggers and the motor are bound by name too, and were
-        // dead on a PlayStation 5 pad for the same reason. Repaired on the
-        // same terms: only when the current name does not resolve.
-        if !self.extras.unresolvable(available).is_empty()
-            || Extra::ALL.iter().any(|e| self.extras.get(*e).contains('|'))
-        {
-            self.extras = Extras::from_device(available);
         }
 
         let (workable, _) = Mapping::auto_from(available);

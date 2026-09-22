@@ -81,6 +81,8 @@ await context.addInitScript(data=>{
   if(cmd==='controller_slots') return {slots:JSON.parse(localStorage.getItem('qa:slots')||'null')};
   if(cmd==='controller_assign_player'){const slots=JSON.parse(localStorage.getItem('qa:slots')||'null')||data.devices.pads.map(p=>p.device_string);for(let i=0;i<4;i++)if(slots[i]===args.device)slots[i]=null;slots[args.player-1]=args.device;localStorage.setItem('qa:slots',JSON.stringify(slots));return {slots};}
   if(cmd==='setup_controller_mapping') return {custom:false,rows:[...['A','B','X','Y','Z','Start'].map(x=>({key:'Buttons/'+x,label:x,binding:JSON.parse(localStorage.getItem('qa:map:'+args.device)||'{}')['Buttons/'+x]||'`Button '+x+'`'})),...['Up','Down','Left','Right'].flatMap(x=>['Main Stick','C-Stick','D-Pad'].map(g=>({key:g+'/'+x,label:g+' '+x,binding:'`'+x+'`'}))),...['L','R'].map(x=>({key:'Triggers/'+x,label:x,binding:'`Trigger '+x+'`'}))]};
+  if(cmd==='remap_start'||cmd==='remap_stop') return {};
+  if(cmd==='remap_detect') return new Promise(resolve=>{window.__completeRemap=resolve;window.__remapDevice=args.device;});
   if(cmd==='setup_save_mapping'){const key='qa:map:'+args.device;localStorage.setItem(key,JSON.stringify(args.reset?{}:{...JSON.parse(localStorage.getItem(key)||'{}'),...args.bindings}));return;}
   if(cmd==='onboarding_run_task') return {task:args.task,step:{outcome:'recorded'}};
   if(cmd==='onboarding_finish') {data.onboarding_progress.complete=true;return {outcome:'recorded'};}
@@ -112,6 +114,8 @@ try {
  assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
  await page.getByRole('button',{name:'Finish test',exact:true}).focus();
  const focusBefore=await page.evaluate(()=>document.activeElement.textContent);
+ await page.evaluate(()=>document.fonts.ready);
+ await page.waitForTimeout(200);
  const scrollBefore=await page.evaluate(()=>document.getElementById('main').scrollTop);
  await page.waitForTimeout(100);
  await page.evaluate(()=>window.__pads.forEach(p=>{p.buttons.forEach((b,i)=>{b.pressed=i!==8&&i!==9;b.value=b.pressed?1:0;});p.axes=[1,1,1,1];}));
@@ -130,7 +134,9 @@ try {
  await page.evaluate(()=>window.__pads[0].buttons[0]={pressed:true,value:1});
  await page.waitForTimeout(100);
  assert.equal(await page.evaluate(()=>window.__calls.filter(c=>c.cmd==='setup_save_mapping').length),0);
- await page.evaluate(()=>window.__pads[2].buttons[3]={pressed:true,value:1});
+ await page.waitForFunction(()=>!!window.__completeRemap);
+ assert.equal(await page.evaluate(()=>window.__remapDevice),'XInput/2/Gamepad');
+ await page.evaluate(()=>window.__completeRemap({binding:'`Button Y`'}));
  await page.getByText('A saved.',{exact:true}).waitFor();
  assert.match(await page.getByRole('button',{name:'Assign A',exact:true}).innerText(),/Button Y/);
  assert.equal(await page.evaluate(()=>window.__calls.find(c=>c.cmd==='setup_save_mapping').args.device),'XInput/2/Gamepad');
