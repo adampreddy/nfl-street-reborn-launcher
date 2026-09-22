@@ -164,11 +164,11 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // Game ID is the sole content acceptance gate. Patch compatibility is
         // separate: preserve an existing/modified image if it cannot use this delta.
         check_reborn_id(&source)?;
-        let (output,patched)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
-            Ok(output)=>(output,true),
-            Err(_) => {
+        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
+            Ok(output)=>(output,true,None),
+            Err(reason) => {
                 let _=app.emit("game-import-progress",serde_json::json!({"stage":"Importing your game file...","percent":null}));
-                (import_existing(&p,&source)?,false)
+                (import_existing(&p,&source)?,false,Some(reason))
             }
         };
         let settings=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
@@ -188,6 +188,77 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
             let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
             (o.name().to_string(),o.applied().map(String::from),o.note().map(String::from))
         };
+        // A disc can patch clean and still not be a build Reborn recognizes as
+        // its own (a modified NFL Street 2 shares every byte the patcher
+        // checks except the ones that matter). Ask what actually landed and
+        // let that override the outcome above rather than trust that patching
+        // cleanly means the disc converted.
+        //
+        // The chain has to be on disk before we ask: patch_to_newest is the
+        // only other caller of seed_game_patch, and the bundle branch above
+        // never runs it, so a disc that just converted perfectly would find
+        // no chain.json here. A missing chain reads to identify() as "not a
+        // Reborn build" (Chain::load -> None -> classify's Unconverted), which
+        // would condemn the exact disc this whole feature exists to bless.
+        seed_game_patch(&p)?;
+        let verdict=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&booted),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
+        let (outcome,label,note)=match &verdict {
+            reborn_core::game_identity::Verdict::DifferentGame{game_id}=>
+                ("different-game".to_string(),None,Some(format!("This is not NFL Street 2 (game ID {game_id}). Reborn's roster, textures and updates do not apply to it."))),
+            reborn_core::game_identity::Verdict::Unconverted=>
+                ("unconverted".to_string(),None,bundle_reason.clone().or_else(||Some("Reborn does not recognize this disc.".into()))),
+            reborn_core::game_identity::Verdict::Unreadable{reason}=>
+                ("unreadable".to_string(),None,Some(reason.clone())),
+            // A disc Reborn DOES recognize, whose patch step refused or could
+            // not run. `outcome` is "unknown" or "no-chain" then, and the
+            // wizard renders both of those as "Your game file isn't NFL Street
+            // Reborn" while Continue stays enabled and the Play badge stays
+            // silent: three surfaces disagreeing about one file, and two of
+            // them wrong. A patch that did not run is a patch failure, so it
+            // gets patch-failure words rather than the verdict's vocabulary.
+            reborn_core::game_identity::Verdict::RebornBuild{label:build,..} if outcome=="unknown"||outcome=="no-chain" =>
+                ("not-updated".to_string(),Some(build.clone()).filter(|b|!b.is_empty()),note),
+            reborn_core::game_identity::Verdict::RebornBuild{..}|reborn_core::game_identity::Verdict::Convertible=>(outcome,label,note),
+        };
+        // A disc that is NFL Street 2 but not a build Reborn can convert used
+        // to end here: saved as the game, reported to the wizard, and left for
+        // the launch gate to refuse. The player had done nothing wrong and had
+        // nothing to do about it. So recovery runs now, without being asked,
+        // because the answer is never in the player's hands and a prompt only
+        // delays the one outcome anybody wants.
+        //
+        // Only `unconverted` recovers. `different-game` is somebody opening
+        // another game and is theirs to keep; `unreadable` is a fault in the
+        // tool rather than a verdict on the disc, and neither is worth 1.4 GB
+        // of somebody's connection on a guess.
+        //
+        // On success the downloaded image becomes `booted`, so the save below
+        // writes the game that works rather than the one that did not. On
+        // failure nothing is lost: the disc stays the game, the words carry
+        // both reasons, and the launch gate still refuses it.
+        let (booted,outcome,label,note)=if outcome=="unconverted" {
+            match download_reborn_game(&app) {
+                Ok(downloaded)=>{
+                    let v=match dolphin_tool_path(&p){
+                        Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&downloaded),
+                        None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+                    };
+                    let build=match &v {
+                        reborn_core::game_identity::Verdict::RebornBuild{label,..}=>Some(label.clone()).filter(|b|!b.is_empty()),
+                        _=>None,
+                    };
+                    (downloaded,"downloaded".to_string(),build,
+                     Some("Reborn could not convert the game file you chose, so it downloaded and verified the Reborn game for you. Your own file was not changed.".to_string()))
+                }
+                Err(why)=>{
+                    let first=note.clone().unwrap_or_else(||"Reborn does not recognize this disc.".into());
+                    (booted,"unconverted".to_string(),label,Some(format!("{first} Reborn tried to download its own copy for you and could not: {why}")))
+                }
+            }
+        } else { (booted,outcome,label,note) };
         let patched=patched||outcome=="patched";
         let mut saved=reborn_core::settings::Settings::load(&settings).map_err(|e|e.to_string())?;
         saved.game_path=Some(booted.clone());saved.user_dir=Some(user);saved.graphics_override=None;saved.migrated_texture_root=None;
@@ -195,7 +266,7 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let _=app.emit("game-import-progress",serde_json::json!({"stage":if patched{"Game File Patched!"}else{"Game File Imported!"},"percent":100}));
         // The pristine after the chain ran, not the one the import landed.
         let pristine=reborn_core::game_image::find_pristine(&data).map(|p|p.path).unwrap_or(output);
-        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note}))
+        Ok(serde_json::json!({"path":booted,"pristine":pristine,"patched":patched,"outcome":outcome,"label":label,"note":note,"reason":bundle_reason}))
     }).await.map_err(|e|e.to_string())?
 }
 
@@ -247,8 +318,20 @@ pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:
 pub async fn setup_controller_mapping(runtime: Option<String>, device: String) -> Result<serde_json::Value,String> {
     tauri::async_runtime::spawn_blocking(move|| {
         let profile=controller(runtime.as_deref(),&device)?;
-        Ok(serde_json::json!({"device":device,"custom":!profile.overridden.is_empty(),"rows":GcInput::ALL.iter().map(|input|
-            serde_json::json!({"key":input.ini_key(),"label":input.label(),"binding":profile.mapping.get(*input)})).collect::<Vec<_>>()}))
+        // Which of these controls can actually be pressed on THIS pad, asked of
+        // the runtime that will resolve them. A pad Windows has no gamepad
+        // mapping for reports `Button 3` and `Axis 1-`, nothing in the default
+        // binding exists on it, and this page used to tell its owner the
+        // mapping was ready. `checked` is false when the runtime could not be
+        // asked, and then nothing is called dead: no evidence, no accusation.
+        let p=Platform::detect();
+        let available=runtime.as_deref().and_then(|exe|{
+            let scratch=p.paths.data_root().ok()?.join("cache");
+            reborn_core::devices::dump_via_runtime(&p,Path::new(exe),&scratch).ok()
+        }).and_then(|(_,inputs)|inputs.into_iter().find(|d|d.device==device)).map(|d|d.all_names()).unwrap_or_default();
+        let dead=profile.dead_controls(&available);
+        Ok(serde_json::json!({"device":device,"custom":!profile.overridden.is_empty(),"checked":!available.is_empty(),"rows":GcInput::ALL.iter().map(|input|
+            serde_json::json!({"key":input.ini_key(),"label":input.label(),"binding":profile.mapping.get(*input),"dead":dead.contains(input)})).collect::<Vec<_>>()}))
     }).await.map_err(|e|e.to_string())?
 }
 
@@ -375,7 +458,7 @@ fn legacy_games(root:&Path)->Vec<String>{
     games.sort_by_key(|p|(!p.to_ascii_lowercase().ends_with("nsr.iso"),p.clone()));games
 }
 pub(super) fn check_reborn_id(source:&Path)->Result<(),String>{
-    let tool=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import/DolphinTool.exe");
+    let tool=dolphin_tool_path(&Platform::detect()).ok_or_else(||DOLPHIN_TOOL_MISSING.to_string())?;
     let mut cmd=std::process::Command::new(tool);cmd.arg("header").arg("-i").arg(source).arg("-j");
     #[cfg(windows)]{use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);}
     let out=cmd.output().map_err(|e|e.to_string())?;
@@ -417,7 +500,8 @@ fn establish_booted(p:&Platform,data:&Path,pristine:&Path)->Result<PathBuf,Strin
         if let Some(exe_dir)=std::env::current_exe().ok().and_then(|e|e.parent().map(Path::to_path_buf)){dirs.push(exe_dir.join("tools"));dirs.push(exe_dir);}
         if let Ok(appdata)=std::env::var("APPDATA"){dirs.push(PathBuf::from(appdata).join("NFL Street Reborn").join("Tools"));}
         if let Some(builder)=reborn_core::roster::find_builder(p,&dirs){
-            let textures=reborn_core::mods::pristine_root(p,&reborn_core::mods::GameId::parse("GN7E69").map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            // The pack root's PARENT: the Builder appends the game id. See mods::builder_textures_arg.
+            let textures=reborn_core::mods::builder_textures_arg(p,&reborn_core::mods::GameId::parse("GN7E69").map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             match reborn_core::roster::apply(p,&reborn_core::roster::ApplyRequest{data_root:data,roster:&roster,builder:&builder,output:None,textures_root:Some(&textures),accept_warnings:true}){
                 Ok(reborn_core::roster::ApplyOutcome::Refused(r))=>eprintln!("roster not applied to the imported game: {}",r.message()),
                 Err(e)=>eprintln!("roster not applied to the imported game: {e}"),
@@ -433,11 +517,280 @@ pub async fn setup_import_existing_game(image:String)->Result<String,String>{
     tauri::async_runtime::spawn_blocking(move||{let _guard=LaunchGuard::acquire()?;let p=Platform::detect();let pristine=import_existing(&p,&reborn_core::session::user_path(&image))?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;let game=establish_booted(&p,&data,&pristine)?;
         patch_to_newest(&p,&|_|{})?;
-        let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
+        // `patch_to_newest` returning `Unknown` is non-fatal to importing, but
+        // that must not make an unrecognized disc the booted game in silence:
+        // ask what actually landed and refuse, or record an acknowledgment,
+        // the same way every other writer of `settings.game_path` does.
+        let verdict=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&game),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
+        let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
+        // `Consent::NotAsked`, the same rule `may_adopt` applies to an
+        // inherited 2.1 disc one click away: setup never adopts a disc that is
+        // not a Reborn build. It has a real repair (the full download) right
+        // there, so the honest answer is the fault, not a silent escape hatch.
+        record_verdict(&file,&game,&verdict,crate::Consent::NotAsked)?;
+        let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;saved.game_path=Some(game.clone());
         if fresh(&p)&&saved.user_dir.is_none(){let user=p.paths.data_root().map_err(|e|e.to_string())?.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
         saved.save(&file).map_err(|e|e.to_string())?;Ok(game.display().to_string())
     }).await.map_err(|e|e.to_string())?
 }
+
+/// How much is on disk under `dir`, for a progress reading measured rather
+/// than reported.
+///
+/// `ContentService::download` has no progress callback, and a 1.36 GB
+/// download that says nothing for ten minutes reads as a hung launcher. The
+/// staging tree is the download, so its size is the progress.
+fn tree_bytes(dir:&Path)->u64{
+    let mut total=0u64;let mut stack=vec![dir.to_path_buf()];
+    while let Some(d)=stack.pop(){
+        let Ok(entries)=std::fs::read_dir(&d) else {continue};
+        for entry in entries.flatten(){
+            let path=entry.path();
+            if path.is_dir(){stack.push(path);}
+            else if let Ok(meta)=entry.metadata(){total=total.saturating_add(meta.len());}
+        }
+    }
+    total
+}
+
+/// The landed download, as a pristine image.
+///
+/// `library/game-full` is where the component installs. It is neither layer
+/// of the image model: the pristine layer is `library/imported/<sha256>`,
+/// and that is what the booted image is made from and what every future game
+/// delta applies to (`reborn_core::game_image`). So landing the file is not
+/// the end of it, and this is the separate step that finishes the job.
+///
+/// A hardlink costs no bytes and leaves the component's live tree matching
+/// the manifest that was just promoted, so a later repair check still finds
+/// the file it installed. Where the filesystem has no links (exFAT), the
+/// file is moved instead: a second 1.36 GB copy to hold a landing spot open
+/// is a worse trade than re-downloading in the rare case somebody recovers
+/// twice on such a disk.
+fn land_as_pristine(p:&Platform,data:&Path,landed:&Path,sha:&str)->Result<PathBuf,String>{
+    let dir=reborn_core::game_image::pristine_dir(data,sha);
+    let target=dir.join(reborn_core::game_image::IMAGE_FILE);
+    let same_size=|a:&Path,b:&Path|match (std::fs::metadata(a),std::fs::metadata(b)){(Ok(x),Ok(y))=>x.len()==y.len(),_=>false};
+    // Named by the hash of the bytes we just verified, so a folder that is
+    // already there holds this build. A different length means an earlier
+    // run died part way through; that is the one case worth redoing.
+    if target.is_file(){
+        if same_size(&target,landed){return Ok(target);}
+        std::fs::remove_file(&target).map_err(|e|e.to_string())?;
+    }
+    std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    if let Err(e)=p.files.hardlink(landed,&target){
+        eprintln!("hardlink refused ({e}); moving the downloaded game instead");
+        let _=std::fs::remove_file(&target);
+        std::fs::rename(landed,&target).map_err(|e|format!("The downloaded game could not be put in place: {e}"))?;
+    }
+    Ok(target)
+}
+
+/// Download the complete built disc, for a player whose own copy could not
+/// be converted. Returns the path of the game Reborn will boot.
+///
+/// # Why this goes through the ordinary content pipeline
+///
+/// `game-full` is 1.36 GB that a normal install must never fetch, and one
+/// exclusion is what keeps that true, not a download stack of its own:
+/// `pipeline::UPDATABLE` does not list it, so the automatic
+/// check/fetch/promote loop never asks for it however many releases pin it.
+/// Naming it here, on a button press, is the only way it is fetched at all.
+///
+/// It is otherwise an ordinary pinned component and carries forward into
+/// every later release, so recovery stays available to the player who needs
+/// it long after the release that published the disc. An earlier design kept
+/// it out of the carry-forward instead, which gated nothing (a pin is a line
+/// of JSON) and quietly retired recovery on the next ordinary publish.
+///
+/// # Why landing the file is not the end of it
+///
+/// The component installs into `library/game-full`, which is neither layer
+/// of the image model. A downloaded disc is a PRISTINE image, so it is
+/// linked into `library/imported/<sha256>` and the booted image is
+/// established from there, exactly as an import does. That is what lets the
+/// next game update reach it as a delta.
+#[tauri::command]
+pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,String> {
+    tauri::async_runtime::spawn_blocking(move|| {
+        let _guard=LaunchGuard::acquire()?;
+        Ok(download_reborn_game(&app)?.display().to_string())
+    }).await.map_err(|e|e.to_string())?
+}
+
+/// Download the Reborn game and make it the booted image, returning it.
+///
+/// Split out of the command above so `setup_import_game` can run recovery
+/// itself the moment a disc turns out not to be convertible, without the
+/// player being asked to go and press a button. The guard is the reason this
+/// is a plain function and not a call to the command: `LaunchGuard::acquire`
+/// is a compare_exchange, so a caller that already holds it would be told the
+/// launcher is busy by its own recovery step.
+fn download_reborn_game(app:&tauri::AppHandle)->Result<PathBuf,String>{
+    use tauri::Emitter;
+    use std::sync::atomic::{AtomicBool,Ordering};
+    use reborn_core::content::pipeline::{CheckRequest,ComponentState,Depth,FetchOutcomeState,ImageHook,PromoteState,Updater};
+    let p=Platform::detect();
+    let data=p.paths.data_root().map_err(|e|e.to_string())?;
+    let say=|stage:&str,percent:Option<u8>|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":percent}));};
+    // The chain the installer carries, before anything asks what a disc
+    // is: `game_identity::identify` reads `Unconverted` when there is no
+    // chain to consult, which would condemn the very build this command
+    // downloads. Same reason `setup_import_game` seeds it.
+    seed_game_patch(&p)?;
+
+    say("Looking for the Reborn game…",Some(0));
+    let settings_file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
+    let settings=reborn_core::settings::Settings::load(&settings_file).map_err(|e|e.to_string())?;
+    let verifier=crate::content_updates::verifier()?;
+    let origin=reborn_core::origin::Origin::new(&crate::content_updates::origin_url(&settings));
+    let updater=Updater::new(&p,&data,&origin,&verifier);
+    // Verify, not Quick: a pointer left by an earlier attempt must not
+    // report a game file that is no longer there as installed.
+    let check=updater.check(&CheckRequest{components:&[ComponentId::GameFull],depth:Depth::Verify}).map_err(|e|e.to_string())?;
+    match &check.component(ComponentId::GameFull).ok_or("The Reborn game download could not be looked up.")?.state {
+        // Still reachable, and kept: an origin that has never published
+        // the disc carries no pin for it, which covers a mirror, a
+        // `content_origin` set in settings, and the product's own origin
+        // before the first `rebornctl publish game-full` ever runs. What
+        // it no longer means is "try again in a moment": now that the pin
+        // carries forward, this state does not clear itself, so the words
+        // say so and ask for it to be reported.
+        ComponentState::NotCarried=>return Err("Your update source is not offering NFL Street Reborn, so there is nothing to download and nothing was changed. The download is meant to always be available, so please report this.".into()),
+        ComponentState::NotUpdatable=>return Err("This build of the launcher cannot download the Reborn game.".into()),
+        ComponentState::Problem(why)=>return Err(why.clone()),
+        ComponentState::Refused(r)=>return Err(r.message()),
+        ComponentState::UpToDate{..}|ComponentState::Available(_)=>{}
+    }
+
+    if check.has_updates() {
+        let total=check.download_bytes();
+        let staging=check.available().next().map(|(_,plan)|updater.service().layout().staging_dir(plan.component(),plan.version()))
+            .ok_or("The Reborn game download could not be prepared.")?;
+        say("Downloading NFL Street Reborn…",Some(0));
+        let done=std::sync::Arc::new(AtomicBool::new(false));
+        let watcher={
+            let (done,app,staging)=(done.clone(),app.clone(),staging.clone());
+            std::thread::spawn(move||{
+                while !done.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(750));
+                    if done.load(Ordering::SeqCst){break;}
+                    let percent=if total>0 {(90*tree_bytes(&staging)/total).min(90) as u8} else {0};
+                    let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading NFL Street Reborn…","percent":percent}));
+                }
+            })
+        };
+        let fetched=updater.fetch(&check);
+        done.store(true,Ordering::SeqCst);
+        let _=watcher.join();
+        let fetched=fetched.map_err(|e|e.to_string())?;
+        if !fetched.all_staged() {
+            let why=fetched.not_staged().map(|c|match &c.state{
+                FetchOutcomeState::Incomplete{remaining_bytes,..}=>format!("{} MB still to come",(remaining_bytes+1_048_575)/1_048_576),
+                FetchOutcomeState::NotReady{..}=>"the downloaded file did not verify".to_string(),
+                FetchOutcomeState::Staged{..}=>String::new(),
+            }).collect::<Vec<_>>().join("; ");
+            return Err(format!("The download did not finish ({why}). What arrived is kept, so trying again carries on from there."));
+        }
+        say("Installing NFL Street Reborn…",Some(92));
+        let promoted=updater.promote(&check,&ImageHook::default()).map_err(|e|e.to_string())?;
+        if !promoted.all_applied() {
+            let why=promoted.components.iter().filter_map(|c|match &c.state{
+                PromoteState::Refused(r)=>Some(r.message()),
+                PromoteState::RolledBack{reason,..}=>Some(reason.clone()),
+                PromoteState::Applied{..}=>None,
+            }).collect::<Vec<_>>().join(" ");
+            return Err(format!("The downloaded game could not be put in place. {why}"));
+        }
+    }
+
+    // The component publishes one file, under the name the booted image
+    // ships as: see `publish::game_full::ISO_FILE_NAME`, which is
+    // documented as matching `game_image::IMAGE_FILE` so that this step
+    // needs no rename.
+    let landed=data.join(reborn_core::DataDir::LibraryGameFull.relative()).join(reborn_core::game_image::IMAGE_FILE);
+    if !landed.is_file(){return Err("The download left no game file behind. Try again.".into());}
+
+    // What actually arrived, before any of it becomes the game. A
+    // downloaded disc that is not a Reborn build means the origin served
+    // something wrong, and the whole point of this feature is that such
+    // an image never quietly becomes the booted game. So this refuses
+    // rather than recording an acknowledgment: nobody chose this file.
+    say("Checking the download…",Some(94));
+    let verdict=match dolphin_tool_path(&p){
+        Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&landed),
+        None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+    };
+    if !verdict.is_reborn() {
+        return Err(match &verdict {
+            reborn_core::game_identity::Verdict::Unreadable{reason}=>format!("The downloaded game could not be read: {reason} Nothing was changed."),
+            _=>"The downloaded game is not a Reborn build, so it was not installed and nothing was changed. Try again, and report it if it happens twice.".to_string(),
+        });
+    }
+    // Whether what was served is the chain's newest build. It need not be:
+    // the pin is published once and carried forward, so the disc can sit
+    // several game-patch builds behind by the time anybody downloads it.
+    let at_head=matches!(verdict,reborn_core::game_identity::Verdict::RebornBuild{at_head:true,..});
+
+    // A second pass over the file, for the folder the pristine layer
+    // names it by. `identify` hashes to answer what the disc is but does
+    // not hand the hash back, and asking it the question through any
+    // other door is what every guard in this feature exists to stop.
+    say("Setting up your game…",Some(97));
+    let sha=reborn_core::library::hash_file(&landed).map_err(|e|e.to_string())?.as_str().to_string();
+    let pristine=land_as_pristine(&p,&data,&landed,&sha)?;
+    let booted=establish_booted(&p,&data,&pristine)?;
+
+    // Walk the downloaded disc to the chain head, exactly as both imports
+    // do. The check above asked the content engine for `game-full` and
+    // nothing else, so no game patch has moved this image, and the pin
+    // carrying forward into every later release is precisely what lets a
+    // disc published months ago be what a player receives today. Doing it
+    // here rather than leaving it to the automatic update loop keeps the
+    // ordering something this command decides rather than something it
+    // hopes for.
+    //
+    // Non-fatal, like both imports, and for a stronger reason here:
+    // `identify` has already proven this is a Reborn build, so a refusal
+    // cannot mean "a disc nothing recognizes". It means a missing
+    // xdelta3, a file held open, or a broken game-patch component, and
+    // none of those make what was just established unplayable. Failing
+    // would strand a player who has downloaded 1.36 GB behind a fault
+    // the ordinary game-patch update clears on its own, and every refusal
+    // in `game_patch::apply` leaves the image as it was. The card's words
+    // stay true either way: it says the game was downloaded and verified,
+    // never that it is the newest build.
+    let moved=patch_to_newest(&p,&|stage|say(stage,Some(98)))?;
+    if !at_head&&!matches!(moved,PatchOutcome::Applied(_)|PatchOutcome::UpToDate) {
+        eprintln!(
+            "the downloaded game is behind the newest build and could not be moved forward now: {}",
+            moved.note().unwrap_or("no delta tool or update chain is installed")
+        );
+    }
+
+    let mut saved=reborn_core::settings::Settings::load(&settings_file).map_err(|e|e.to_string())?;
+    saved.game_path=Some(booted.clone());
+    // A verified Reborn build retires the escape hatch: the
+    // acknowledgment was given for the image that could not be
+    // converted, and that image is not the game any more.
+    saved.unverified_game_ack=None;
+    if fresh(&p)&&saved.user_dir.is_none(){let user=data.join("dolphin-users/fresh");std::fs::create_dir_all(&user).map_err(|e|e.to_string())?;saved.user_dir=Some(user);}
+    saved.save(&settings_file).map_err(|e|e.to_string())?;
+    say("NFL Street Reborn is ready",Some(100));
+    Ok(booted)
+}
+
+/// Whether a 2.1 installation's disc may be adopted as this install's game.
+/// Only a build Reborn recognizes, or an unmodified disc it can convert.
+/// Anything else goes to recovery rather than quietly becoming the game.
+fn may_adopt(verdict:&reborn_core::game_identity::Verdict)->bool{
+    verdict.is_reborn()||matches!(verdict,reborn_core::game_identity::Verdict::Convertible)
+}
+
 #[tauri::command]
 pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String)->Result<serde_json::Value,String>{
     let cards=tauri::async_runtime::spawn_blocking(move||->Result<Vec<String>,String>{
@@ -494,6 +847,12 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         let options=reborn_core::settings::GraphicsOverride{label:"Previous settings".into(),resolution:3,msaa:1,ssaa:false,legacy_gfx:Some(gfx),legacy_reshade:migrate_effects(&root,&data.join("migrated-effects").join(folder.to_string()))?};
         std::fs::create_dir_all(data.join("config")).map_err(|e|e.to_string())?;
         std::fs::write(data.join("config/migrated-graphics.json"),serde_json::to_vec_pretty(&options).unwrap()).map_err(|e|e.to_string())?;
+        const UNVERIFIED_MIGRATED_GAME:&str="The game file in your old installation isn't an NFL Street Reborn build, so it was not brought over. Choose your NFL Street 2 disc on the next step and Reborn will convert it.";
+        let inherited=match dolphin_tool_path(&p){
+            Some(tool)=>reborn_core::game_identity::identify(&data,&tool,&game),
+            None=>reborn_core::game_identity::Verdict::Unreadable{reason:DOLPHIN_TOOL_MISSING.to_string()},
+        };
+        let game=if may_adopt(&inherited){game.clone()}else{return Err(UNVERIFIED_MIGRATED_GAME.to_string())};
         let file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;let mut saved=reborn_core::settings::Settings::load(&file).map_err(|e|e.to_string())?;
         saved.legacy_root=Some(root.clone());saved.user_dir=Some(user.clone());saved.game_path=Some(game.clone());saved.runtime_exe=Some(runtime.clone());saved.graphics_override=Some(options);saved.manage_texture_folder=Some(true);
         saved.save(&file).map_err(|e|e.to_string())?;
@@ -579,5 +938,33 @@ fn rebase_user_paths(root:&Path,user:&Path)->Result<(),String>{
         assert_eq!(PathBuf::from(doc.get("Core","MemoryCardBPath").unwrap()),user.join("GC/B.raw"));
         assert_eq!(std::fs::read(&card).unwrap(),b"save data");
         std::fs::remove_dir_all(base).unwrap();
+    }
+}
+
+/// `may_adopt` is Door 3's decision: whether a 2.1 installation's disc may
+/// become this install's game. Every verdict is pinned here so widening the
+/// condition (or dropping the `Convertible` arm) compiles and passes
+/// everything else while quietly adopting an image Reborn cannot vouch for.
+#[cfg(test)] mod door3_tests {
+    use super::*;
+    #[test] fn may_adopt_refuses_an_unreadable_image() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::Unreadable{reason:"truncated".to_string()}),
+            "an Unreadable image that may_adopt accepted would mean a file that is not a disc becomes this install's game");
+    }
+    #[test] fn may_adopt_refuses_an_unconverted_disc() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::Unconverted),
+            "an Unconverted disc that may_adopt accepted would silently carry a player's own modified NFL Street 2 into this install as its game, with no acknowledgment ever recorded, which is exactly the disc this task's Task 1 tests exist to catch");
+    }
+    #[test] fn may_adopt_refuses_a_different_game() {
+        assert!(!may_adopt(&reborn_core::game_identity::Verdict::DifferentGame{game_id:"GAFE01".to_string()}),
+            "a disc for a different game entirely must never become this install's game just because a 2.1 folder pointed at it");
+    }
+    #[test] fn may_adopt_accepts_a_convertible_disc() {
+        assert!(may_adopt(&reborn_core::game_identity::Verdict::Convertible),
+            "an unmodified retail disc must be adoptable; refusing it would send every ordinary migration to recovery for no reason");
+    }
+    #[test] fn may_adopt_accepts_a_reborn_build() {
+        assert!(may_adopt(&reborn_core::game_identity::Verdict::RebornBuild{label:"3.0.2".to_string(),at_head:true}),
+            "a genuine Reborn build must be adoptable; refusing it would send every ordinary migration to recovery for no reason");
     }
 }

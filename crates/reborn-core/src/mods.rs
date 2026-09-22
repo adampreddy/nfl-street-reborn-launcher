@@ -1430,6 +1430,150 @@ pub fn shipped_pristine_root(platform: &Platform, game: &GameId) -> Option<PathB
     candidate.is_dir().then_some(candidate)
 }
 
+/// The directory to hand the Builder's `--textures` flag.
+///
+/// The Builder documents that flag as "Reborn Dolphin's Load/Textures
+/// folder" and appends the game id itself, so a caller that passes an
+/// already qualified pack root gets the id twice:
+/// `library/textures/GN7E69/GN7E69/`. Every roster apply did exactly that
+/// until 2026-09-17, which left 460 portraits one level too deep on every
+/// install that had applied a roster.
+///
+/// It stayed invisible because Dolphin scans the game-id tree recursively, so
+/// the misplaced portraits still loaded. What Dolphin actually did was log
+/// "One or more textures at path '...' were already inserted" and drop one of
+/// each duplicate pair, arbitrarily. While the pairs hold the same bytes that
+/// costs only disk. The pair has to differ exactly once -- the next textures
+/// update that replaces a portrait at the correct level -- for the stale
+/// nested copy to win and the player to see the old face.
+///
+/// [`pristine_root`] is game-id-qualified on every branch but one: a saved
+/// `migrated_texture_root` is whatever the player's 2.1 install used. So the
+/// trailing component is stripped only when it really is the game id, and an
+/// unqualified root is passed through for the Builder to qualify itself.
+pub fn builder_textures_arg(platform: &Platform, game: &GameId) -> Result<PathBuf> {
+    Ok(strip_trailing_game_id(&pristine_root(platform, game)?, game))
+}
+
+/// `root` without a trailing `<gameid>` component, or `root` unchanged when it
+/// does not end in one.
+fn strip_trailing_game_id(root: &Path, game: &GameId) -> PathBuf {
+    let ends_in_id = root.file_name().and_then(|n| n.to_str()) == Some(game.as_str());
+    match (ends_in_id, root.parent()) {
+        (true, Some(parent)) => parent.to_path_buf(),
+        _ => root.to_path_buf(),
+    }
+}
+
+/// What [`heal_nested_game_folder`] found and did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Healed {
+    /// Nested files deleted because the same bytes already sat at the right
+    /// level. Nothing was lost.
+    pub duplicates: usize,
+    /// Nested files deleted because a DIFFERENT file held that texture name at
+    /// the right level. The right-level file is the one a manifest lists, so it
+    /// wins; the nested one was a stale Builder write that no manifest knows.
+    pub superseded: Vec<String>,
+    /// Nested files moved up, because nothing at the right level had them.
+    /// These are real content and deleting them would have lost it.
+    pub moved: Vec<String>,
+}
+
+impl Healed {
+    pub fn is_empty(&self) -> bool {
+        self.duplicates == 0 && self.superseded.is_empty() && self.moved.is_empty()
+    }
+}
+
+/// Repair a texture tree that has a copy of its own game-id folder inside it.
+///
+/// `root` ends in the game id (`.../GN7E69`), so the folder to fold away is
+/// `root/GN7E69`. Each file in it is deleted when the same bytes are already at
+/// the right level, and MOVED UP otherwise -- never pruned on sight. On the
+/// install this was found on, 459 of 460 were byte-identical duplicates and one
+/// was a portrait that existed nowhere else, so a prune would have lost it.
+///
+/// Does nothing, cheaply, when there is no such folder. See
+/// [`builder_textures_arg`] for what put it there.
+pub fn heal_nested_game_folder(root: &Path) -> Result<Healed> {
+    let Some(leaf) = root.file_name().map(|n| n.to_os_string()) else {
+        return Ok(Healed::default());
+    };
+    let nested = root.join(&leaf);
+    if !nested.is_dir() {
+        return Ok(Healed::default());
+    }
+    let listing = walk(&nested)?;
+    let mut healed = Healed::default();
+    for file in &listing.files {
+        let wrong = join_relative(&nested, &file.relative);
+        let right = join_relative(root, &file.relative);
+        if right.is_file() {
+            if same_bytes(&wrong, &right)? {
+                healed.duplicates += 1;
+            } else {
+                healed.superseded.push(file.relative.clone());
+            }
+            std::fs::remove_file(&wrong).map_err(|source| Error::Io { path: wrong, source })?;
+            continue;
+        }
+        if let Some(parent) = right.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source| Error::Io { path: parent.to_path_buf(), source })?;
+        }
+        std::fs::rename(&wrong, &right).map_err(|source| Error::Io { path: wrong, source })?;
+        healed.moved.push(file.relative.clone());
+    }
+    // Whatever is left is empty directories, and an unsupported entry (a
+    // symlink, a device) is left exactly where it is for a human to look at.
+    remove_empty_dirs(&nested)?;
+    Ok(healed)
+}
+
+/// Say what a heal did, or why it could not. Never fatal: a pack that still
+/// has the nested folder composes, it just keeps paying for it.
+fn report_heal(tree: &Path, outcome: Result<Healed>) {
+    match outcome {
+        Ok(healed) if healed.is_empty() => {}
+        Ok(healed) => tracing::info!(
+            "texture pack layout repaired in {}: {} duplicate(s) removed, {} moved up to the right level, {} superseded by the file already there",
+            tree.display(),
+            healed.duplicates,
+            healed.moved.len(),
+            healed.superseded.len(),
+        ),
+        Err(e) => tracing::warn!(
+            "the nested game-id folder in {} could not be folded away ({e}); composing with it in place",
+            tree.display()
+        ),
+    }
+}
+
+fn same_bytes(a: &Path, b: &Path) -> Result<bool> {
+    let left = std::fs::metadata(a).map_err(|source| Error::Io { path: a.to_path_buf(), source })?;
+    let right = std::fs::metadata(b).map_err(|source| Error::Io { path: b.to_path_buf(), source })?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    Ok(crate::library::hash_file(a)? == crate::library::hash_file(b)?)
+}
+
+/// Remove `dir` and every directory under it, bottom up, stopping at the first
+/// one that still holds something.
+fn remove_empty_dirs(dir: &Path) -> Result<()> {
+    let entries = std::fs::read_dir(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            remove_empty_dirs(&entry.path())?;
+        }
+    }
+    // Not an error: a leftover file is a deliberate stop, not a failure.
+    let _ = std::fs::remove_dir(dir);
+    Ok(())
+}
+
 /// Whether a content update has installed the textures component for this
 /// game id into the data root.
 ///
@@ -1484,6 +1628,43 @@ pub fn pristine_identity(platform: &Platform, game: &GameId) -> Option<String> {
     let layout = crate::content::ContentLayout::new(&data);
     let pointer = crate::content::Pointer::load(&layout.pointer_path("textures")).ok().flatten()?;
     Some(format!("{}#{}", pointer.current.version, pointer.current.sequence))
+}
+
+/// Whether the texture pack Dolphin will read is actually there, and which
+/// version it is.
+///
+/// The player's question is "do my textures load". This answers exactly that
+/// and nothing more: no hashing, and no walk beyond finding one entry. The
+/// pack is 27,000 files and 2.83 GB of it is oversized upscales, so anything
+/// that reads it in full would be paid on a path the player waits on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackStatus {
+    /// `<user dir>/Load/Textures/<gameid>`, the folder Dolphin reads.
+    pub textures_dir: PathBuf,
+    /// It resolves and holds at least one entry. A broken junction does not
+    /// resolve; an empty folder loads nothing.
+    pub reachable: bool,
+    /// It carries the launcher's marker, so it is the tree we composed
+    /// rather than a folder someone else put there.
+    pub composed_by_us: bool,
+    /// What the textures content pointer says is installed.
+    pub version: Option<String>,
+}
+
+/// Answers "will the pack load, and which version is it" for the folder
+/// Dolphin actually reads, given the same user directory the launch will
+/// pass with `-u`.
+pub fn pack_status(platform: &Platform, user_dir: &Path, game: &GameId) -> PackStatus {
+    let textures_dir = composed_root(user_dir, game);
+    let reachable = std::fs::read_dir(&textures_dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    PackStatus {
+        composed_by_us: textures_dir.join(COMPOSED_MARKER).is_file(),
+        version: pristine_identity(platform, game),
+        textures_dir,
+        reachable,
+    }
 }
 
 /// `mods/packages/`, the validated payloads.
@@ -1959,6 +2140,12 @@ impl Composer {
                 path: req.pristine_root.clone(),
             }));
         }
+        // Fold away a copy of the pack's own game-id folder written inside the
+        // pack, before anything reads the pack, so the plan is made from the
+        // real file list. See `heal_nested_game_folder` for what put it there.
+        // A failure is logged, not fatal: a pack with the extra folder still
+        // composes, it just keeps costing what it costs.
+        report_heal(&req.pristine_root, heal_nested_game_folder(&req.pristine_root));
         let pristine = PristineTree::open(&req.pristine_root)?;
         let listing = pristine.list()?;
         if !listing.unsupported.is_empty() {
@@ -1979,6 +2166,13 @@ impl Composer {
         if let Some(refusal) = foreign_tree_refusal(&req.composed_root)? {
             return Ok(Composition::Refused(refusal));
         }
+
+        // Now that the tree is known to be one the launcher composed, the same
+        // repair applies to it: an earlier compose copied the nested folder
+        // across, and that is the copy Dolphin actually reads. Deliberately
+        // after the check above and never before it -- a folder the launcher
+        // did not compose is the player's, and this would have written into it.
+        report_heal(&req.composed_root, heal_nested_game_folder(&req.composed_root));
 
         let conflicts = detect_conflicts(&req.packages, &req.game);
         let (hard, soft): (Vec<Conflict>, Vec<Conflict>) =
@@ -2560,12 +2754,33 @@ pub struct SyncRequest {
     /// game loads the pristine tree once, and the player's selection is
     /// still there for the next launch.
     pub active_override: Option<Vec<ActivePackage>>,
-    /// Whether the launcher manages the emulator's texture folder.
-    ///
-    /// False composes nothing and leaves `Load/Textures/<game>` completely
-    /// alone, which is what someone who authors textures needs: theirs is
-    /// the source of truth.
-    pub manage_user_texture_folder: bool,
+    /// What the launcher may do with the emulator's texture folder.
+    pub texture_policy: TexturePolicy,
+}
+
+/// What the launcher may do with `Load/Textures/<game>`.
+///
+/// Three states, not two, because "do not compose" and "take the pack away"
+/// are opposite intentions that a single boolean used to have to carry.
+/// [`TexturePolicy::LeaveAlone`] means somebody else owns that folder;
+/// [`TexturePolicy::Withhold`] means the folder is ours and the image about
+/// to boot is not, so what is in it has to go. A boolean shared between them
+/// answered "leave it exactly as it is" to both questions, which is right
+/// for the author and is precisely the "old names with new faces" bug for
+/// the unverified disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TexturePolicy {
+    /// Compose the active set into it. The normal case.
+    Manage,
+    /// A texture author owns that folder: nothing is composed, and nothing
+    /// in it is touched or removed. Theirs is the source of truth.
+    LeaveAlone,
+    /// The image this is for is not one Reborn verified as its own, so
+    /// Reborn's art must not be painted on it. A composed tree already there
+    /// is removed, which is the only way the pack actually stops loading:
+    /// `HiresTextures` is a locked setting and Dolphin loads whatever sits
+    /// under the booted game's ID.
+    Withhold,
 }
 
 impl SyncRequest {
@@ -2582,7 +2797,7 @@ impl SyncRequest {
             pristine_identity: pristine_identity(platform, &game),
             game,
             active_override: None,
-            manage_user_texture_folder: true,
+            texture_policy: TexturePolicy::Manage,
         })
     }
 }
@@ -2592,6 +2807,10 @@ impl SyncRequest {
 pub enum TreeStep {
     /// Not composed, on purpose: the folder is managed by hand.
     LeftAlone,
+    /// Not composed, and what Reborn had composed there was taken away,
+    /// because the image this sync was for is not one Reborn verified.
+    /// `removed` is false when there was nothing of ours there to remove.
+    Withheld { removed: bool },
     /// It already matched the active set, so it was left alone.
     ///
     /// This is the common case, and it is what makes syncing on every launch
@@ -2646,6 +2865,11 @@ impl SyncReport {
         let count = self.active.len() - self.missing.len();
         let tree = match &self.tree {
             TreeStep::LeftAlone => "left alone, because the launcher was asked not to manage it".to_string(),
+            TreeStep::Withheld { removed } => if *removed {
+                "removed, because this game file is not an NFL Street Reborn build".to_string()
+            } else {
+                "not composed, because this game file is not an NFL Street Reborn build".to_string()
+            },
             TreeStep::AlreadyCurrent => "already in place".to_string(),
             TreeStep::Rebuilt { entries, .. } => format!("rebuilt, {entries} entries"),
         };
@@ -2709,16 +2933,56 @@ pub fn sync_active(
         None => Activation::load(&req.activation_file)?.active,
     };
 
-    if !req.manage_user_texture_folder {
-        // The author's folder: nothing is composed and nothing is touched.
-        return Ok(SyncOutcome::Done(Box::new(SyncReport {
-            game: req.game.clone(),
-            composed_root: req.composed_root.clone(),
-            active,
-            missing: Vec::new(),
-            tree: TreeStep::LeftAlone,
-            moved_aside: None,
-        })));
+    match req.texture_policy {
+        TexturePolicy::LeaveAlone => {
+            // The author's folder: nothing is composed and nothing is touched.
+            //
+            // This is checked BEFORE Withhold on purpose. Somebody who turned
+            // the launcher's management off has asserted that the contents of
+            // that folder are theirs, and Reborn does not delete out of a
+            // folder it was told not to manage. The composed marker is not
+            // proof the tree is free of their work either: an author who
+            // started from Reborn's pack and edited files in place still has
+            // the marker sitting next to their edits. Adam lost a folder to a
+            // delete like that once, and the launcher is not going to add a
+            // second one to enforce a rule the player has already overridden
+            // in the only way the launcher offers.
+            return Ok(SyncOutcome::Done(Box::new(SyncReport {
+                game: req.game.clone(),
+                composed_root: req.composed_root.clone(),
+                active,
+                missing: Vec::new(),
+                tree: TreeStep::LeftAlone,
+                moved_aside: None,
+            })));
+        }
+        TexturePolicy::Withhold => {
+            // Not our image, so not our art on it. Removing the composed tree
+            // is the only thing that actually switches the pack off: Dolphin
+            // has `HiresTextures` locked on and loads whatever is filed under
+            // the booted disc's game ID, so composing nothing this time would
+            // leave every previously composed player exactly as broken.
+            //
+            // `Composer::discard` is reused rather than a second removal
+            // written here: it removes only a directory carrying our own
+            // marker, or an empty one, and refuses anything else with a
+            // sentence. A refusal is carried out as a refusal, never as an
+            // error, because the tree standing is a state the caller has to
+            // be able to show rather than a failure that should stop a launch.
+            if let Some(refusal) = foreign_tree_refusal(&req.composed_root)? {
+                return Ok(SyncOutcome::Refused(refusal.message()));
+            }
+            let removed = Composer::discard(lock, &req.composed_root)?;
+            return Ok(SyncOutcome::Done(Box::new(SyncReport {
+                game: req.game.clone(),
+                composed_root: req.composed_root.clone(),
+                active,
+                missing: Vec::new(),
+                tree: TreeStep::Withheld { removed },
+                moved_aside: None,
+            })));
+        }
+        TexturePolicy::Manage => {}
     }
 
     let mut packages = Vec::new();
@@ -2787,6 +3051,122 @@ mod tests {
 
     fn game() -> GameId {
         GameId::parse("GN7E69").unwrap()
+    }
+
+    // --- the nested game-id folder: a pack root with a copy of itself inside
+    //
+    // What put it there: the Builder's --textures flag wants Dolphin's
+    // Load/Textures folder and appends the game id, but four call sites passed
+    // the already qualified pack root. See mods::builder_textures_arg.
+
+    #[test]
+    fn strip_trailing_game_id_removes_only_a_real_game_id() {
+        let g = game();
+        // Qualified: the Builder would double it, so hand it the parent.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/data/library/textures/GN7E69"), &g),
+            PathBuf::from("/data/library/textures")
+        );
+        // Not qualified (a saved migrated_texture_root): pass it through and
+        // let the Builder qualify it itself.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/old/Reborn 2.1/User/Load/Textures"), &g),
+            PathBuf::from("/old/Reborn 2.1/User/Load/Textures")
+        );
+        // A different game id is not this game's id.
+        assert_eq!(
+            strip_trailing_game_id(Path::new("/data/library/textures/LG4P76"), &g),
+            PathBuf::from("/data/library/textures/LG4P76")
+        );
+    }
+
+    #[test]
+    fn heal_deletes_duplicates_moves_real_content_and_drops_the_nested_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        // Byte-identical at both levels: the nested one is pure waste.
+        write(&root.join("dup.png"), b"the same portrait");
+        write(&root.join("GN7E69").join("dup.png"), b"the same portrait");
+        // Nowhere else on disk: this is the one a prune would have lost.
+        write(&root.join("GN7E69").join("only-here.png"), b"a portrait that ships nowhere");
+        // A subdirectory inside the nested folder is folded too.
+        write(&root.join("GN7E69").join("sub").join("deep.png"), b"deep");
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert_eq!(healed.duplicates, 1);
+        assert_eq!(healed.superseded, Vec::<String>::new());
+        let mut moved = healed.moved.clone();
+        moved.sort();
+        assert_eq!(moved, vec!["only-here.png".to_string(), "sub/deep.png".to_string()]);
+        assert!(!root.join("GN7E69").exists(), "the nested folder is gone");
+        assert_eq!(std::fs::read(root.join("dup.png")).unwrap(), b"the same portrait");
+        assert_eq!(
+            std::fs::read(root.join("only-here.png")).unwrap(),
+            b"a portrait that ships nowhere"
+        );
+        assert_eq!(std::fs::read(root.join("sub").join("deep.png")).unwrap(), b"deep");
+    }
+
+    #[test]
+    fn heal_keeps_the_right_level_file_when_the_nested_copy_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        // The right-level file is what a manifest lists, so it wins. The
+        // nested one is a stale Builder write no manifest knows about, and
+        // leaving it is what makes a later update show the OLD face.
+        write(&root.join("face.png"), b"the new face, from the manifest");
+        write(&root.join("GN7E69").join("face.png"), b"the old face");
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert_eq!(healed.duplicates, 0);
+        assert_eq!(healed.superseded, vec!["face.png".to_string()]);
+        assert!(healed.moved.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("face.png")).unwrap(),
+            b"the new face, from the manifest"
+        );
+        assert!(!root.join("GN7E69").exists());
+    }
+
+    /// The repair writes into the composed tree, so it must happen only after
+    /// the tree has been shown to be one the launcher composed. Placed before
+    /// that check, as it first was, it deleted and moved files inside a folder
+    /// the very next line refuses to touch: the player's own.
+    #[test]
+    fn a_texture_folder_the_launcher_did_not_compose_is_never_repaired() {
+        let p = Platform::detect();
+        let fx = fixture();
+        // No marker: this folder is somebody's own. Give it the same nested
+        // game-id folder the repair exists for, holding a file that would be
+        // deleted as a duplicate if the repair ever ran here.
+        write(&fx.composed.join("theirs.dds"), b"their own texture");
+        write(
+            &fx.composed.join("GN7E69").join("theirs.dds"),
+            b"their own texture",
+        );
+
+        let r = refusal(&p, &fx.request(Vec::new()));
+
+        assert!(matches!(r, ComposeRefusal::ForeignComposedTree { .. }));
+        assert!(
+            fx.composed.join("GN7E69").join("theirs.dds").is_file(),
+            "the repair reached into a folder the launcher did not compose"
+        );
+    }
+
+    #[test]
+    fn heal_does_nothing_to_a_correctly_laid_out_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("GN7E69");
+        lay_pristine(&root);
+        let before = walk(&root).unwrap().files;
+
+        let healed = heal_nested_game_folder(&root).unwrap();
+
+        assert!(healed.is_empty());
+        assert_eq!(walk(&root).unwrap().files, before);
     }
 
     fn write(path: &Path, bytes: &[u8]) {
@@ -4205,6 +4585,52 @@ mod tests {
         assert!(at.join(COMPOSED_MARKER).is_file());
     }
 
+    /// The player's question is "do my textures load", and the honest answer
+    /// is whether the folder Dolphin reads exists and has files in it. A
+    /// folder that resolves but is empty loads nothing, so it is not
+    /// reachable.
+    #[test]
+    fn a_missing_or_empty_texture_folder_is_not_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = game();
+        let user = dir.path().join("user");
+        let p = Platform::detect();
+
+        // Nothing there at all.
+        let absent = pack_status(&p, &user, &game);
+        assert!(!absent.reachable, "an absent folder cannot load textures");
+
+        // Present but empty: resolves, loads nothing.
+        let composed = composed_root(&user, &game);
+        std::fs::create_dir_all(&composed).unwrap();
+        let empty = pack_status(&p, &user, &game);
+        assert!(!empty.reachable, "an empty folder loads no textures");
+        assert_eq!(empty.textures_dir, composed, "it must name the folder Dolphin reads");
+
+        // One file is enough to load something.
+        write(&composed.join("tex1_x.png"), b"not really a png");
+        let full = pack_status(&p, &user, &game);
+        assert!(full.reachable, "a folder with files in it loads textures");
+    }
+
+    /// A tree the launcher composed carries its marker. A folder the player
+    /// or another tool put there does not, and saying so is how the Play
+    /// page can tell "your pack" from "someone else's folder".
+    #[test]
+    fn a_folder_we_did_not_compose_is_reported_as_not_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = game();
+        let user = dir.path().join("user");
+        let p = Platform::detect();
+        let composed = composed_root(&user, &game);
+        write(&composed.join("tex1_x.png"), b"x");
+
+        assert!(!pack_status(&p, &user, &game).composed_by_us);
+
+        write(&composed.join(COMPOSED_MARKER), b"{}");
+        assert!(pack_status(&p, &user, &game).composed_by_us);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_link_in_the_way_is_removed_without_touching_its_target() {
@@ -4314,7 +4740,7 @@ mod tests {
             old_composed_root: Some(fx.composed.clone()),
             pristine_identity: None,
             active_override: None,
-            manage_user_texture_folder: true,
+            texture_policy: TexturePolicy::Manage,
         }
     }
 
@@ -4522,7 +4948,7 @@ mod tests {
         write(&theirs.join("mine.dds"), b"a texture I am working on");
 
         let mut req = sync_request(&fx, &user_dir);
-        req.manage_user_texture_folder = false;
+        req.texture_policy = TexturePolicy::LeaveAlone;
         let report = done(sync_active(&p, &guard, &req, 1).unwrap());
 
         assert_eq!(report.tree, TreeStep::LeftAlone, "nothing is composed into a folder the author owns");
@@ -4534,6 +4960,103 @@ mod tests {
         );
         assert!(!theirs.join(BALL).exists(), "and nothing of ours may appear in it");
         assert!(report.explain().contains("left alone"), "{}", report.explain());
+    }
+
+    /// Withholding has to TAKE THE PACK AWAY, not merely decline to rebuild it.
+    ///
+    /// This is the finding the whole law turned on. `manage_user_texture_folder
+    /// = false` was reused to mean "this image is not ours", and all it does is
+    /// return early leaving `Load/Textures/GN7E69` exactly as it was. For any
+    /// player who has ever booted successfully, exactly as it was IS the whole
+    /// composed pack, and Dolphin loads it by game ID with `HiresTextures`
+    /// locked on. So the test composes first, the way a real player's first
+    /// good boot does, and only then asks what a withheld sync leaves behind.
+    #[test]
+    fn withholding_removes_the_pack_a_previous_launch_composed() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let composed = user_dir.join("Load").join("Textures").join("GN7E69");
+
+        let package = lay_installed_package(
+            &fx.packages,
+            "reborn.ball.purple",
+            Some("ball"),
+            &[(&format!("GN7E69/{BALL}"), b"the purple football")],
+        );
+        let mut activation = Activation::default();
+        activation.activate(package.id.clone(), package.version.clone());
+        activation.save(&fx.activation()).unwrap();
+        let guard = lock(&p, &fx);
+
+        // A good boot: the pack is composed into the user folder.
+        let mut req = sync_request(&fx, &user_dir);
+        let first = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert!(matches!(first.tree, TreeStep::Rebuilt { .. }), "{:?}", first.tree);
+        assert_eq!(loaded_by_the_game(&user_dir, BALL), b"the purple football");
+
+        // Then the player points Reborn at a disc it cannot vouch for.
+        req.texture_policy = TexturePolicy::Withhold;
+        let withheld = done(sync_active(&p, &guard, &req, 2).unwrap());
+
+        assert_eq!(
+            withheld.tree,
+            TreeStep::Withheld { removed: true },
+            "a withheld sync must report that it took the tree away"
+        );
+        assert!(
+            !composed.exists(),
+            "Reborn's texture pack is still at {} for Dolphin to paint on a disc that is not ours",
+            composed.display()
+        );
+        assert!(
+            withheld.explain().contains("not an NFL Street Reborn build"),
+            "{}",
+            withheld.explain()
+        );
+    }
+
+    /// Withholding never destroys somebody else's folder.
+    ///
+    /// The removal is `Composer::discard`, which only ever removes a tree
+    /// carrying our own marker or an empty one. A folder of the player's own
+    /// textures sitting at the composed path is refused with a sentence and
+    /// left standing, rather than deleted to enforce the rule.
+    #[test]
+    fn withholding_refuses_rather_than_delete_a_folder_that_is_not_ours() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let theirs = user_dir.join("Load").join("Textures").join("GN7E69");
+        let guard = lock(&p, &fx);
+        write(&theirs.join("mine.dds"), b"a texture I am working on");
+
+        let mut req = sync_request(&fx, &user_dir);
+        req.texture_policy = TexturePolicy::Withhold;
+        let outcome = sync_active(&p, &guard, &req, 1).unwrap();
+
+        assert!(
+            matches!(outcome, SyncOutcome::Refused(_)),
+            "a foreign tree must be refused, not deleted: {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(theirs.join("mine.dds")).unwrap(),
+            b"a texture I am working on",
+            "their folder must be exactly as they left it"
+        );
+    }
+
+    /// Withholding on a machine that never composed anything is not an error.
+    #[test]
+    fn withholding_with_nothing_composed_is_quiet() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let guard = lock(&p, &fx);
+        let mut req = sync_request(&fx, &user_dir);
+        req.texture_policy = TexturePolicy::Withhold;
+        let report = done(sync_active(&p, &guard, &req, 1).unwrap());
+        assert_eq!(report.tree, TreeStep::Withheld { removed: false });
     }
 
     #[test]

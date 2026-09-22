@@ -191,6 +191,12 @@ impl Chain {
         self.steps.first().map(|s| s.from_sha256.as_str())
     }
 
+    /// The build label of the node with this hash. The root has no label: it
+    /// is the unmodified disc, not a Reborn build.
+    pub fn label_for(&self, sha256: &str) -> Option<String> {
+        self.steps.iter().find(|s| s.to_sha256 == sha256).map(|s| s.label.clone())
+    }
+
     pub fn route(&self, from: &str) -> Route<'_> {
         if self.head() == Some(from) {
             return Route::Current;

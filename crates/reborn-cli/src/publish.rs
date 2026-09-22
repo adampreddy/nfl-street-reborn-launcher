@@ -176,6 +176,48 @@ pub enum PublishCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Publish the `game-full` recovery component: the head build's complete
+    /// disc, for a player whose own copy cannot be converted. Carried forward
+    /// into later releases like every other pin, so recovery does not expire;
+    /// re-run this only when the disc itself changes. A normal install still
+    /// never downloads it: nothing but the launcher's recovery button ever
+    /// asks for this component.
+    GameFull {
+        /// The complete built disc. Must hash to the game-patch chain's
+        /// current head.
+        #[arg(long)]
+        iso: PathBuf,
+        /// The build's label, matching the game-patch step that produced it.
+        #[arg(long)]
+        version: String,
+        /// The tree the game-patch chain accumulates in, read here only for
+        /// its head. Defaults to `<origin>-stage\game-patch`.
+        #[arg(long)]
+        chain_tree: Option<PathBuf>,
+        /// Where the one-file component tree is staged before publishing.
+        /// Defaults to `<origin>-stage\game-full`.
+        #[arg(long)]
+        stage: Option<PathBuf>,
+        #[arg(long)]
+        origin: PathBuf,
+        /// Defaults to one above the highest game-full sequence in the origin.
+        #[arg(long)]
+        sequence: Option<u64>,
+        /// The publisher.key file. Without it the component is published and
+        /// the release step is only described.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// The release label players see. Defaults to the one already served.
+        #[arg(long)]
+        release_version: Option<String>,
+        /// Defaults to one above the release already served.
+        #[arg(long)]
+        release_sequence: Option<u64>,
+        /// Stage, verify, write and sign. Without this the disc is hashed and
+        /// checked against the chain head, and nothing is written.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Upload the origin's plan to the bucket: every blob, then every
     /// component manifest, then the two release files, in that order, and
     /// read back what the public host serves once it is all up.
@@ -239,6 +281,7 @@ pub enum PublishCommand {
 
 use reborn_core::inventory::{ComponentId, ComponentSpec, ScanObserver};
 use reborn_core::publish::component::{publish_component, ComponentRequest};
+use reborn_core::publish::game_full::{stage as stage_game_full, GameFullRequest};
 use reborn_core::publish::game_patch::{publish_game_patch, GamePatchRequest};
 use reborn_core::publish::keys::keygen;
 use reborn_core::publish::release::{release, Pin, ReleaseRequest};
@@ -409,6 +452,33 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             };
             let log = ScanLog::new();
             Ok(exit_of(&publish_game_patch(&platform, &req, &log as &dyn ScanObserver, &mut sink)?))
+        }
+        PublishCommand::GameFull {
+            iso,
+            version,
+            chain_tree,
+            stage,
+            origin,
+            sequence,
+            key,
+            release_version,
+            release_sequence,
+            apply,
+        } => {
+            let req = GameFullRequest {
+                iso: &iso,
+                version: &version,
+                chain_tree: chain_tree.as_deref(),
+                stage: stage.as_deref(),
+                origin: &origin,
+                sequence,
+                key: key.as_deref(),
+                release_version: release_version.as_deref(),
+                release_sequence,
+                apply,
+            };
+            let log = ScanLog::new();
+            Ok(exit_of(&stage_game_full(&req, &log as &dyn ScanObserver, &mut sink)?))
         }
         PublishCommand::Upload {
             origin,

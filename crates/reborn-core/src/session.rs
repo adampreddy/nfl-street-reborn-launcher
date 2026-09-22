@@ -39,6 +39,32 @@ use crate::runtime::{
 };
 use crate::supervisor::{SessionEnd, SessionRecord, Startup, Supervisor};
 
+/// Whether this launch is safe to write disc-level or per-game changes for:
+/// true for anything except the image netplay boots.
+///
+/// ⛔⛔ THE ONLY RELIABLE TEST. `netplay_open` builds its `LaunchRequest` with
+/// `build: GameBuild::Offline` and swaps only `game_path`, and the online
+/// image carries the SAME disc id (`GN7E69`), so both `req.build` and
+/// `req.build.game_id()` say "offline" for a netplay launch. Anything that
+/// must not reach netplay has to compare the image path.
+///
+/// Getting this wrong is not cosmetic: a Dolphin `[OnFrame]` patch rewrites
+/// emulated memory every frame and Dolphin does not synchronise those, so a
+/// machine carrying one beside a machine that is not diverges on the first
+/// frame. Netplay is lockstep; that is a certain desync, reproduced by Adam
+/// on 2026-09-18.
+///
+/// Asked this way round on purpose. "Is it THE offline image?" would answer
+/// no for a player whose game path is not the standard booted one, and they
+/// would silently lose the GameCube no-swap patch offline, which is the very
+/// complaint 3.0.10 shipped to fix. Excluding one known path is the narrow
+/// claim; the rest of the world is ordinary offline play.
+pub(crate) fn is_netplay_image(data_root: &std::path::Path, game_path: &std::path::Path) -> bool {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let online = crate::online_image::online_dir(data_root).join(crate::online_image::IMAGE_FILE);
+    canon(game_path) == canon(&online)
+}
+
 /// What the caller asks for.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
@@ -65,6 +91,11 @@ pub struct LaunchRequest {
     /// The player said this is a league match. Recorded in the session before Dolphin
     /// starts; the backend forwards the game to the league site only when it is true.
     pub league_match: bool,
+    /// What the launcher knows about this image, which decides what happens
+    /// to Reborn's texture pack. Only `Session::run` reads it;
+    /// `Session::prepare` composes nothing, so a prepare-only caller has
+    /// nothing to claim and passes `Unknown`.
+    pub textures: crate::game_identity::ImageStanding,
 }
 
 /// Why a launch could not even be attempted.
@@ -309,6 +340,12 @@ pub struct WrittenConfig {
     /// Present when no controller could be found, so the caller can say so
     /// rather than launching silently into nothing.
     pub no_controller: bool,
+    /// Connected pads with controls that CANNOT be pressed on them, and how
+    /// many: `(device string, dead controls)`. Empty is the normal case. A pad
+    /// listed here starts the game with those controls doing nothing, which is
+    /// the failure that has always been silent; the caller can finally say so.
+    /// See [`crate::controller::ControllerProfile::dead_controls`].
+    pub pads_needing_setup: Vec<(String, usize)>,
     /// Which user directory this launch will boot against, and why.
     pub user_dir: UserDir,
     /// What the recorded controls profile did to the activation.
@@ -329,6 +366,7 @@ impl Default for WrittenConfig {
             pads: Vec::new(),
             pads_authoritative: false,
             no_controller: false,
+            pads_needing_setup: Vec::new(),
             // A path is required, and an empty one is obviously not a real
             // directory, so a caller that forgets to set it cannot mistake it
             // for a resolved one.
@@ -760,12 +798,39 @@ impl Session {
 
         }
 
+        // Is this launch the offline image, or netplay?
+        //
+        // ⛔⛔ `req.build` CANNOT ANSWER THAT. `netplay_open` builds its
+        // LaunchRequest with `build: GameBuild::Offline` and only swaps
+        // `game_path` to the online image, and that image carries the SAME
+        // disc id (`GN7E69`) as the offline one, so `req.build.game_id()` is
+        // "GN7E69" for netplay too. Every "offline only" rule written against
+        // the build or the id therefore includes netplay by accident. The
+        // image path is the only thing that tells them apart.
+        // Default to "this is ordinary offline play". Only a launch we can
+        // positively identify as netplay's image is excluded.
+        let on_booted_offline = !platform
+            .paths
+            .data_root()
+            .ok()
+            .is_some_and(|root| is_netplay_image(&root, &req.game_path));
+
         // The GameCube profile plays the game the GameCube way: the disc's
         // in-match X/B swap is switched off for that player through Dolphin's
         // per-game patch list, and switched back on for every other profile.
-        // Offline game only; see crate::gamecube_controls for the netplay rule.
+        //
+        // ⛔⛔ NETPLAY MUST NEVER CARRY IT. Dolphin does not synchronise
+        // [OnFrame] patches, so one machine running the cave beside one that
+        // is not diverges on the first B or X press: netplay is lockstep, and
+        // that is a guaranteed desync, not a risk. Before 2026-09-18 this was
+        // guarded by the game id, which netplay shares, so the patch went in
+        // anyway. The state is rewritten per launch, so an offline launch puts
+        // it back.
         {
-            let wanted = crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
+            let wanted = on_booted_offline
+                && crate::gamecube_controls::wanted_for(
+                    written.controls.as_ref().map(|c| c.profile),
+                );
             let mut ids = vec!["GN7E69", req.build.game_id()];
             ids.sort();
             ids.dedup();
@@ -778,6 +843,46 @@ impl Session {
                 );
                 written.keys_set += 1;
                 written.files.push(path);
+            }
+        }
+
+        // The same profile, the same rule, one layer further in: the disc's
+        // in-match Gamebreaker prompt draws X because game B is physical X
+        // for a swapped pad. A GameCube player is not swapped, so their
+        // prompt has to say B to match the button they actually press. The
+        // glyph lives in a disc file, not in a code word, so the offline
+        // image carries its own copy of that file. Offline only: netplay
+        // boots a different, non-customizable image where they ARE swapped
+        // and the shipped X is already right. See crate::gamecube_glyph.
+        //
+        // ⛔ Gated on the image path, for the reason spelled out above: a
+        // build check would rewrite the very disc netplay must keep identical
+        // between players.
+        if on_booted_offline {
+            let wanted =
+                crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
+            match crate::gamecube_glyph::apply(&req.game_path, wanted) {
+                Ok(crate::gamecube_glyph::Outcome::WroteVariant) => {
+                    tracing::info!("gamecube glyph: Gamebreaker prompt set to B in {}", req.game_path.display());
+                }
+                Ok(crate::gamecube_glyph::Outcome::WroteShipped) => {
+                    tracing::info!("gamecube glyph: Gamebreaker prompt restored to X in {}", req.game_path.display());
+                }
+                Ok(crate::gamecube_glyph::Outcome::AlreadyRight) => {}
+                Ok(crate::gamecube_glyph::Outcome::Unrecognised) => {
+                    tracing::warn!(
+                        "gamecube glyph: {} in the booted image matches neither copy this launcher carries, so the Gamebreaker prompt was left alone; a game update has changed the file and the launcher needs a new copy",
+                        crate::gamecube_glyph::FILE_NAME
+                    );
+                }
+                Ok(crate::gamecube_glyph::Outcome::NotFound) => {
+                    tracing::warn!(
+                        "gamecube glyph: no {} of the expected length in {}",
+                        crate::gamecube_glyph::FILE_NAME,
+                        req.game_path.display()
+                    );
+                }
+                Err(e) => tracing::warn!("gamecube glyph: {e}"),
             }
         }
         // Ask the runtime that is about to be launched. The built in scan sees
@@ -909,6 +1014,30 @@ impl Session {
                 }
             }
         }
+        // Say which pads will start the game with controls that do nothing.
+        //
+        // The warning above never fired for the pads that need it: it asks
+        // `Mapping::unresolvable`, which skips every binding containing `|`,
+        // and since 3.0.6 every default binding is an OR. A pad Windows has no
+        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
+        // reports `Button 3` and `Axis 1-`, nothing in the default binding
+        // exists on it, and this log said nothing. At WARN, because that is
+        // the level a player's launcher.log keeps.
+        for pad in scan.playable_pads() {
+            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
+            let key = pad.identity().profile_key();
+            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
+            let dead = profile.dead_controls(&reported.all_names());
+            if !dead.is_empty() {
+                tracing::warn!(
+                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
+                    pad.device_string(),
+                    dead.len(),
+                    dead
+                );
+                written.pads_needing_setup.push((pad.device_string(), dead.len()));
+            }
+        }
         // Adopt whatever the player changed in Dolphin's own Controller
         // Settings before regenerating. The launcher keeps owning the Device
         // line and the port layout, because a remembered device string that no
@@ -922,7 +1051,16 @@ impl Session {
         let mut saved_profiles = saved_profiles;
         if let Ok(live) = std::fs::read_to_string(&pad_path) {
             let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
-            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles);
+            // Which device each saved pad is THIS session. A section of the
+            // file is only ever adopted into the pad its Device line names.
+            let connected: std::collections::BTreeMap<String, String> = scan
+                .playable_pads()
+                .iter()
+                .map(|pad| (pad.identity().profile_key(), pad.device_string()))
+                .collect();
+            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles, |identity| {
+                connected.get(&identity.profile_key()).cloned()
+            });
             if !adopted.is_empty() {
                 tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
                 profiles_changed = true;
@@ -962,7 +1100,25 @@ impl Session {
                 written.pads = assignment;
                 written.no_controller = written.pads.is_empty();
             }
-            None => written.no_controller = true,
+            None => {
+                written.no_controller = true;
+                // No pad was SEEN, which is not the same as no pad. The scan
+                // can miss one, and a Bluetooth pad is often switched on after
+                // Play. The runtime binds player one to whichever pad turns
+                // up, so what is on disk has to be pressable by it. Never a
+                // reason not to start the game.
+                match leave_standing_pad_file(&pad_path) {
+                    Ok(true) => {
+                        tracing::warn!(
+                            "controller: no pad was seen at launch, so {} now binds every pad's names and the game takes whichever pad is connected",
+                            pad_path.display()
+                        );
+                        written.files.push(pad_path.clone());
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("controller: {} could not be prepared for a pad that turns up later: {e}", pad_path.display()),
+                }
+            }
         }
 
         // Dolphin.ini: the controller ports for the pads bound above, and a
@@ -979,10 +1135,16 @@ impl Session {
         let user_dir = config_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| config_dir.clone());
         let card = memory_card_overlay(&dolphin_doc, &user_dir);
         let mut changed = false;
-        if !written.no_controller {
-            let ports = controller_port_overlay(&dolphin_doc, &written.pads);
-            changed |= !dolphin_doc.merge(&ports).is_noop();
-        }
+        let ports = if written.no_controller {
+            // A pad that turns up after the scan reaches the game only if
+            // player one's port is on. Same rule as always: a port is switched
+            // on when it is off or unset, and a value somebody chose (a
+            // GameCube adapter, say) is left exactly as it is.
+            controller_port_overlay(&dolphin_doc, &player_one_port())
+        } else {
+            controller_port_overlay(&dolphin_doc, &written.pads)
+        };
+        changed |= !dolphin_doc.merge(&ports).is_noop();
         changed |= !dolphin_doc.merge(&card).is_noop();
         if changed {
             std::fs::write(&dolphin_file,dolphin_doc.render())?;
@@ -1025,7 +1187,7 @@ impl Session {
         // builds the tree that list describes and points the emulator at it.
         // Before this call existed every profile switch wrote the list
         // correctly and the game never saw it.
-        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled);
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, req.textures);
 
         // The memory cards, brought up to date with the installed roster
         // before the game opens them, under the lock and with the game not
@@ -1268,6 +1430,49 @@ pub fn finish_and_collect(
     collect(platform, supervisor, &session_id, user_dir)
 }
 
+/// What to do with the emulator's texture folder.
+///
+/// Public because a launch is not the only thing that composes into it: the
+/// Mods page, the pack toggle and the controls-profile apply all write the
+/// same folder a launch boots against, and a second copy of this rule for
+/// them is exactly how the two would drift apart.
+///
+/// Three answers, not two, and the order of the two refusals is the whole
+/// point of the function:
+///
+/// 1. A player who turned the launcher's management off owns that folder.
+///    That wins outright, over everything below it. Reborn composes nothing
+///    and removes nothing, which is what a texture author needs and what the
+///    setting has always promised.
+/// 2. Otherwise, an image Reborn did not verify as its own gets
+///    [`TexturePolicy::Withhold`]: the composed tree is taken away rather
+///    than merely not rebuilt. Not rebuilding is what a boolean could
+///    express, and it is not enough, because the pack is already sitting in
+///    the user folder for anybody who has ever booted successfully and
+///    Dolphin loads it by game ID for whatever `GN7E69` disc turns up. That
+///    is exactly the "old names with new faces" report this law comes from.
+/// 3. Otherwise, compose normally.
+pub fn texture_policy_for_launch(
+    standing: crate::game_identity::ImageStanding,
+    player_wants_managed: bool,
+) -> crate::mods::TexturePolicy {
+    use crate::game_identity::ImageStanding;
+    use crate::mods::TexturePolicy;
+    if !player_wants_managed {
+        return TexturePolicy::LeaveAlone;
+    }
+    match standing {
+        ImageStanding::Reborn => TexturePolicy::Manage,
+        ImageStanding::NotReborn => TexturePolicy::Withhold,
+        // Withholding DELETES the pack, so it is reserved for an image the
+        // launcher actually read and actually ruled out. Not knowing is not a
+        // ruling: a missing DolphinTool or a disc held open for a moment must
+        // not cost the player the texture pack they already have. Leaving it
+        // alone keeps whatever is composed exactly as it is.
+        ImageStanding::Unknown => TexturePolicy::LeaveAlone,
+    }
+}
+
 /// Point this build at what `activation.json` says is on.
 ///
 /// Every error is caught and carried, never propagated: see [`ModsAtLaunch`].
@@ -1277,6 +1482,7 @@ fn sync_mods_for_launch(
     build: GameBuild,
     user_dir: &Path,
     disabled: bool,
+    textures: crate::game_identity::ImageStanding,
 ) -> ModsAtLaunch {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1286,7 +1492,8 @@ fn sync_mods_for_launch(
         let game = crate::mods::GameId::parse(build.game_id())?;
         let mut req = crate::mods::SyncRequest::in_data_root(platform, game, user_dir)?;
         let settings_file = crate::settings::settings_path(platform)?;
-        req.manage_user_texture_folder = crate::settings::manage_texture_folder(&settings_file)?;
+        req.texture_policy =
+            texture_policy_for_launch(textures, crate::settings::manage_texture_folder(&settings_file)?);
         if disabled {
             req.active_override = Some(Vec::new());
         }
@@ -1308,6 +1515,39 @@ pub fn build_gcpad(scan: &Enumeration, ports: u8) -> Option<(String, Vec<(u8, St
 
 pub fn build_gcpad_with_profiles(scan: &Enumeration, ports: u8, saved: &[ControllerProfile]) -> Option<(String, Vec<(u8, String)>)> {
     build_gcpad_for_player(scan, ports, saved, None)
+}
+
+/// The port assignment of a launch that saw no pad: player one, and no claim
+/// about which device, because none was seen.
+pub fn player_one_port() -> Vec<(u8, String)> {
+    vec![(1, String::new())]
+}
+
+/// What a launch that saw NO pad leaves in `GCPadNew.ini`. True when the file
+/// was written.
+///
+/// "Saw no pad" is a statement about the scan, not about the desk. See
+/// [`crate::controller::standing_pad_file`] for the measurements and for what
+/// is never touched. Kept apart from [`Session::prepare`] so the bytes that
+/// land on disk can be checked without a runtime to scan with.
+///
+/// The sidecar is deliberately left alone. It records what the launcher wrote
+/// for a pad it could see, and everything widened here is the launcher's own
+/// vocabulary, which adoption already refuses to take for a player's choice.
+pub fn leave_standing_pad_file(pad_path: &Path) -> std::io::Result<bool> {
+    let live = match std::fs::read_to_string(pad_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let Some(standing) = crate::controller::standing_pad_file(&live) else {
+        return Ok(false);
+    };
+    if let Some(parent) = pad_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(pad_path, standing)?;
+    Ok(true)
 }
 
 /// Explicit player slots stay fixed even when a controller disconnects.
@@ -1915,6 +2155,75 @@ mod tests {
     use super::*;
     use crate::player_sentence::assert_player_safe;
 
+    /// Reborn's art only ever paints a disc Reborn verified. A player who chose
+    /// to play a modified NFL Street 2 anyway must see it as what it is, not
+    /// wearing Reborn's faces over someone else's roster.
+    ///
+    /// The unverified answer is `Withhold`, not `LeaveAlone`. `LeaveAlone`
+    /// composes nothing and leaves the folder exactly as it is, and for
+    /// everyone who has ever booted successfully "exactly as it is" means
+    /// Reborn's whole pack still sitting there under `GN7E69` for Dolphin to
+    /// load. Asserting the variant, rather than a boolean that used to carry
+    /// both meanings, is what keeps the two from collapsing back together.
+    #[test]
+    fn an_image_ruled_out_never_gets_rebornes_texture_pack() {
+        use crate::mods::TexturePolicy;
+        use crate::game_identity::ImageStanding;
+        assert_eq!(
+            texture_policy_for_launch(ImageStanding::NotReborn, true),
+            TexturePolicy::Withhold,
+            "an image ruled out must have the pack actively taken away, not merely not rebuilt"
+        );
+        assert_eq!(
+            texture_policy_for_launch(ImageStanding::Reborn, true),
+            TexturePolicy::Manage,
+            "a verified image must still get the pack"
+        );
+    }
+
+    /// The other direction of being wrong, and the one the law itself caused.
+    ///
+    /// While this took a `bool`, "I could not read the image" and "this image
+    /// is not ours" were the same value, so a missing DolphinTool or a disc
+    /// held open for a moment removed the player's whole composed pack. That
+    /// is where "missing textures" came from. Withholding is a ruling and
+    /// needs an answer; not knowing must cost the player nothing.
+    #[test]
+    fn an_image_that_could_not_be_read_costs_the_player_nothing() {
+        use crate::mods::TexturePolicy;
+        use crate::game_identity::ImageStanding;
+        assert_eq!(
+            texture_policy_for_launch(ImageStanding::Unknown, true),
+            TexturePolicy::LeaveAlone,
+            "a question that was never answered took the player's texture pack away"
+        );
+        assert_ne!(
+            texture_policy_for_launch(ImageStanding::Unknown, true),
+            texture_policy_for_launch(ImageStanding::NotReborn, true),
+            "not knowing and ruling out have collapsed back into one answer"
+        );
+    }
+
+    /// The author's folder wins over the withholding rule.
+    ///
+    /// Somebody who turned management off asserted that the contents of
+    /// `Load/Textures/<game>` are theirs. Withholding removes a tree, and
+    /// removing out of a folder the player has claimed is a worse failure
+    /// than the one it would prevent: the composed marker is not proof the
+    /// tree is free of their own edits.
+    #[test]
+    fn the_authors_folder_is_never_taken_away_even_on_an_unverified_image() {
+        use crate::mods::TexturePolicy;
+        use crate::game_identity::ImageStanding;
+        for standing in [ImageStanding::NotReborn, ImageStanding::Reborn, ImageStanding::Unknown] {
+            assert_eq!(
+                texture_policy_for_launch(standing, false),
+                TexturePolicy::LeaveAlone,
+                "an author's folder must never be touched, whatever the disc is: {standing:?}"
+            );
+        }
+    }
+
     #[test]
     fn background_sync_reports_collection_without_claiming_delivery() {
         let root = tempfile::tempdir().unwrap();
@@ -2108,6 +2417,7 @@ mod tests {
             // to be on the machine running them.
             user_dir: Some(PathBuf::from("test-user-dir")),
             league_match: false,
+            textures: crate::game_identity::ImageStanding::Reborn,
         }
     }
 
@@ -2181,6 +2491,60 @@ mod tests {
             not_searched: Vec::new(),
         };
         assert!(build_gcpad(&empty, 4).is_none());
+    }
+
+    /// The launch path, not just the text function. A launch that sees no pad
+    /// used to leave the seeded Xbox-only file in charge, and a PlayStation
+    /// pad the scan had missed was dead for the session. What is on disk
+    /// afterwards must be pressable by that pad.
+    #[test]
+    fn a_launch_that_sees_no_pad_leaves_player_one_bindable_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        std::fs::write(&pad, "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\nButtons/Start = Start\n").unwrap();
+
+        assert!(leave_standing_pad_file(&pad).unwrap(), "the seeded file is rewritten");
+        let after = std::fs::read_to_string(&pad).unwrap();
+        assert!(after.contains("Buttons/A = `Button A`|`Cross`"), "{after}");
+        assert!(after.contains("Buttons/Start = `Start`|`Menu`"), "{after}");
+
+        assert!(!leave_standing_pad_file(&pad).unwrap(), "and then there is nothing left to say");
+        assert_eq!(std::fs::read_to_string(&pad).unwrap(), after, "so nothing is written");
+    }
+
+    /// A keyboard player has no pad on every launch of their life. Their file
+    /// is theirs, byte for byte.
+    #[test]
+    fn a_launch_that_sees_no_pad_never_touches_a_keyboard_players_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        let theirs = "[GCPad1]\r\nDevice = DInput/0/Keyboard Mouse\r\nButtons/A = X\r\nMain Stick/Up = UP\r\n";
+        std::fs::write(&pad, theirs).unwrap();
+        assert!(!leave_standing_pad_file(&pad).unwrap());
+        assert_eq!(std::fs::read_to_string(&pad).unwrap(), theirs);
+    }
+
+    /// A pad that turns up after the scan only reaches the game if player
+    /// one's port is on. Off or unset is switched on; a value somebody chose
+    /// is not the launcher's to change.
+    #[test]
+    fn a_launch_that_sees_no_pad_still_switches_player_one_on() {
+        let off = crate::ini::IniDocument::parse("[Core]\nSIDevice0 = 0\n");
+        let overlay = controller_port_overlay(&off, &player_one_port());
+        assert_eq!(overlay.get("Core").and_then(|c| c.get("SIDevice0")).map(String::as_str), Some("6"));
+
+        let adapter = crate::ini::IniDocument::parse("[Core]\nSIDevice0 = 12\n");
+        assert!(controller_port_overlay(&adapter, &player_one_port()).is_empty(), "a GameCube adapter stays");
+    }
+
+    /// No pad file at all is the same player with even less: they still get a
+    /// player one.
+    #[test]
+    fn a_launch_that_sees_no_pad_and_no_pad_file_writes_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        assert!(leave_standing_pad_file(&pad).unwrap());
+        assert!(std::fs::read_to_string(&pad).unwrap().starts_with("[GCPad1]\n"));
     }
     /// The detection bug, pinned. A directory holding only the INIs the
     /// launcher itself writes must never be mistaken for a real install: that
@@ -2653,5 +3017,46 @@ mod tests {
         let none = find_game_image(&exe, &user, None, None);
         assert!(matches!(none, GameSearch::None { .. }));
         assert!(none.explain().contains("No game image was found"), "{}", none.explain());
+    }
+
+    /// The bug this exists to stop coming back.
+    ///
+    /// `netplay_open` sets `build: GameBuild::Offline` and swaps only
+    /// `game_path`, and the online image shares the offline disc id, so
+    /// gating on either of those silently includes netplay. Before
+    /// 2026-09-18 `gamecube_controls` was gated on the game id and wrote its
+    /// [OnFrame] no-swap patch on a netplay launch, which desynced a
+    /// GameCube-profile player against everyone else on the first frame.
+    /// Adam reproduced that.
+    #[test]
+    fn the_image_netplay_boots_is_recognised_and_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let online = crate::online_image::online_dir(root).join(crate::online_image::IMAGE_FILE);
+        std::fs::create_dir_all(online.parent().unwrap()).unwrap();
+        std::fs::write(&online, b"online").unwrap();
+        assert!(is_netplay_image(root, &online), "netplay's image must be recognised");
+    }
+
+    /// The other half, and the reason the question is asked this way round:
+    /// ordinary offline play must still get its per-game writes, including a
+    /// game path that is not the standard booted image. Requiring the booted
+    /// path would take the GameCube no-swap patch away from those players.
+    #[test]
+    fn ordinary_offline_play_is_never_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let booted = crate::game_image::booted_path(root);
+        std::fs::create_dir_all(booted.parent().unwrap()).unwrap();
+        std::fs::write(&booted, b"offline").unwrap();
+        assert!(!is_netplay_image(root, &booted), "the booted image is not netplay");
+
+        let elsewhere = root.join("Games").join("NFL Street 2 FIELDS 12-19.iso");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, b"a player's own path").unwrap();
+        assert!(!is_netplay_image(root, &elsewhere), "a non-standard offline path is not netplay");
+
+        let missing = root.join("not-on-disk.iso");
+        assert!(!is_netplay_image(root, &missing), "a path that does not exist is not netplay");
     }
 }

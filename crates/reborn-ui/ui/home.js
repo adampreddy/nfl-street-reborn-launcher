@@ -355,6 +355,28 @@ function draw() {
   bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
     el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
   controls.append(bar);
+  // Tier 2 of the game-image law: a disc this launcher could not verify as
+  // a Reborn build, but the player chose to play anyway from Settings. That
+  // choice must stay visible and reversible, and the wording here must
+  // never suggest a preference the player chose, since it is almost always
+  // a fault to repair instead.
+  if (state.check?.game_verdict === "unconverted") {
+    controls.append(el("div", { class: "play-warning", role: "status" },
+      el("span", { text: "Not a Reborn build" }),
+      el("a", { class: "play-warning-repair", href: "settings.html#files", text: "Repair" })));
+  }
+  // The player's own test for a right pack is "can I see stuff, and what
+  // version is it". This is that answer, read straight off the folder the
+  // launch will actually use, not asked about separately.
+  if (state.check?.pack) {
+    const pack = state.check.pack;
+    if (pack.reachable) {
+      controls.append(el("p", { class: "note", text: pack.version ? `Texture pack ${pack.version}` : "Texture pack loaded" }));
+    } else {
+      controls.append(el("div", { class: "play-warning", role: "status" },
+        el("span", { text: "Texture pack not loading" })));
+    }
+  }
   controls.append(identityCard());
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });

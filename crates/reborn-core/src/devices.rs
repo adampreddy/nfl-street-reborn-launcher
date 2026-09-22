@@ -90,10 +90,12 @@ impl Backend {
     /// because it is the backend with working rumble and analog triggers for
     /// Xbox pads.
     ///
-    /// SDL second because that is where every PlayStation pad lives on Windows.
-    /// The SDL backend deliberately refuses Xbox 360 class devices, so a pad
-    /// that appears there and not in XInput is a DualSense, a DualShock or
-    /// something similar, and SDL is the right home for it.
+    /// SDL second, but see [`Enumeration::playable_pads`]: it is only ever
+    /// offered when no backend that names its controls has a pad. This used to
+    /// say SDL "is where every PlayStation pad lives on Windows". Measured
+    /// 2026-09-12, that is wrong: a DualSense arrives on WGInput, and the
+    /// fork's SDL backend names controls by number, which nothing here can
+    /// bind.
     ///
     /// WGInput third. It duplicates XInput for Xbox pads and reported the same
     /// controller twice here, which makes it the worst thing to bind by
@@ -114,6 +116,17 @@ impl Backend {
     /// Whether this backend supplies things a player holds.
     pub fn is_pad_backend(&self) -> bool {
         !matches!(self, Backend::DInput)
+    }
+
+    /// Whether this backend calls a control by what it IS (`Button A`,
+    /// `Cross`, `Left Y+`) rather than by an index whose meaning changes from
+    /// pad to pad. Only a named control can be bound without measuring it.
+    pub fn names_its_controls(&self) -> bool {
+        match self {
+            Backend::XInput => true,
+            Backend::Other(name) => name == "WGInput",
+            Backend::Sdl | Backend::DInput => false,
+        }
     }
 }
 
@@ -140,6 +153,25 @@ impl Enumeration {
             .iter()
             .filter(|d| d.backend.is_pad_backend())
             .collect();
+
+        // SDL only when it is all there is.
+        //
+        // The fork's SDL backend names controls by number (`Button 0`,
+        // `Axis 1-`, `Hat 0 N`), and no binding the launcher writes can press
+        // a number: a pad bound through SDL has a correct Device line and
+        // every control dead. XInput and WGInput name theirs (`Button A`,
+        // `Cross`), and on Windows WGInput reports every pad SDL does.
+        //
+        // SDL used to outrank WGInput here and got away with it for one
+        // reason: it reports from its own thread, the one-shot scan read the
+        // list before it had, and so it was almost never in the list. A scan
+        // that waits for the list to settle puts it there every time. The two
+        // backends do not agree on what a pad is called either
+        // (`DualSense Wireless Controller` against `PS5 Controller`), so the
+        // name comparison below cannot be what keeps one pad off two ports.
+        if pads.iter().any(|d| d.backend.names_its_controls()) {
+            pads.retain(|d| d.backend != Backend::Sdl);
+        }
 
         // Deduplicate by the PAD, not by the backend.
         //
@@ -792,6 +824,42 @@ SDL/0/DualSense Wireless Controller",
             DeviceFamily::PlayStation,
             "a DualSense should show PlayStation button art"
         );
+    }
+
+    /// The case a RELIABLE scan creates. The fork's SDL backend reports from
+    /// its own thread, so until the scan learned to wait it was usually
+    /// missing, which is the only reason its rank above WGInput never bit. It
+    /// names controls by number (`Button 0`, `Axis 1-`, `Hat 0 N`), which no
+    /// launcher binding can press: a PlayStation pad bound through SDL has a
+    /// correct Device line and every control dead.
+    ///
+    /// The two backends do not even agree on the pad's name, so this cannot be
+    /// left to the name comparison.
+    #[test]
+    fn a_pad_on_wginput_and_sdl_is_bound_through_wginput_and_offered_once() {
+        let scan = parse_all(
+            "DInput/0/Keyboard Mouse
+SDL/0/DualSense Wireless Controller
+WGInput/0/PS5 Controller
+DInput/0/DualSense Wireless Controller",
+        );
+        let chosen = scan.playable_pads();
+        assert_eq!(chosen.len(), 1, "one piece of plastic, one port: {chosen:?}");
+        assert_eq!(chosen[0].device_string(), "WGInput/0/PS5 Controller");
+    }
+
+    /// Same again beside an Xbox pad: two players, two pads, and the SDL copy
+    /// of the PlayStation pad is nobody's third controller.
+    #[test]
+    fn the_sdl_copy_of_a_pad_never_takes_a_port_beside_labelled_pads() {
+        let scan = parse_all(
+            "SDL/0/PS5 Controller
+WGInput/0/PS5 Controller
+WGInput/0/Xbox One Game Controller
+XInput/0/Gamepad",
+        );
+        let chosen: Vec<String> = scan.playable_pads().iter().map(|d| d.device_string()).collect();
+        assert_eq!(chosen, ["XInput/0/Gamepad", "WGInput/0/PS5 Controller"]);
     }
 
     /// XInput names every pad "Gamepad", which identifies nothing. The backend

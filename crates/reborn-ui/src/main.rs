@@ -466,6 +466,8 @@ async fn prepare_launch(
             mods_disabled: false,
             user_dir: selected_user_dir(&p, user_dir.as_deref())?,
             league_match: false,
+            // Prepare composes nothing, so there is nothing to claim.
+            textures: reborn_core::game_identity::ImageStanding::Unknown,
         };
         Session::prepare(&p, &req)
             .map(|w| PrepareResult {
@@ -580,13 +582,164 @@ struct LaunchCheck {
     /// "bundled", "legacy_install", or "chosen". Absent when none was found.
     runtime_kind: Option<&'static str>,
     game: Option<String>,
+    /// What this image is: "reborn", "convertible", "unconverted",
+    /// "different-game", or "unreadable". Absent only when no image was
+    /// found at all, which `problem` already explains. Tier 2 of the spec:
+    /// "unconverted" is the one value the Play page must show as a fault to
+    /// repair, never worded as a preference the player chose.
+    game_verdict: Option<String>,
     /// Why THIS image, in a sentence, so a wrong one is caught before the
     /// menu comes up. Absent when the image was given rather than found.
     game_note: Option<String>,
     /// Which user folder the launch would boot against, and why.
     user_dir_note: Option<String>,
+    /// Whether the texture pack will load, and which version. Absent when no
+    /// user directory could be resolved, in which case there is nothing to
+    /// report about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack: Option<PackView>,
     /// Why a launch would refuse, in a sentence. Absent when ready.
     problem: Option<String>,
+}
+
+/// What the Play card shows about the texture pack: whether it will load,
+/// and which version, straight from [`reborn_core::mods::PackStatus`].
+#[derive(Debug, Serialize)]
+struct PackView {
+    reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+}
+
+/// The wire value `game_verdict` reports for each `Verdict`, matching the
+/// strings `home.js` checks the Play card against.
+fn game_verdict_tag(verdict: &reborn_core::game_identity::Verdict) -> &'static str {
+    use reborn_core::game_identity::Verdict;
+    match verdict {
+        Verdict::RebornBuild { .. } => "reborn",
+        Verdict::Convertible => "convertible",
+        Verdict::Unconverted => "unconverted",
+        Verdict::DifferentGame { .. } => "different-game",
+        Verdict::Unreadable { .. } => "unreadable",
+    }
+}
+
+/// `game_identity::identify`'s cache key: the image's path, size, and
+/// modified time. Any change to one of these is a repair, a swapped disc, or
+/// a fresh install, and must invalidate the cache immediately.
+type GameVerdictKey = (PathBuf, u64, std::time::SystemTime);
+
+/// Reuses the last verdict for an unchanged image instead of calling
+/// `compute`, which stands in for `game_identity::identify`.
+///
+/// `launch_check` runs on every Play page load: at first paint, after every
+/// finished session, and on every device or session-state refresh (see
+/// `home.js`'s `load`/`refresh`). `identify` answers by hashing the whole
+/// disc image, upward of a gigabyte; calling it fresh on every one of those
+/// reads would make the launcher's single most common page pay a full-disc
+/// hash apiece for an answer that only changes when the file itself does.
+/// Keying on path, size and modified time buys that back: `compute` runs
+/// only on a genuine miss, so this can never answer with bytes it has not
+/// actually verified for the image now on disk. Takes the cache as an
+/// argument, and `compute` as a closure, rather than owning a `Verdict`
+/// static itself, so this is provable against a fake `compute` and does not
+/// need a multi-gigabyte fixture to test.
+/// The one cache, shared by every reader.
+///
+/// It used to be a `static` inside `launch_check`, which meant `launch_check`
+/// was the only caller that could ever hit it. `may_play_before_boot` ran
+/// `identify` fresh, so every Play press paid a SHA-256 over a 1.46 GB file
+/// before the emulator started, for an answer the Play page had computed
+/// moments earlier off the same bytes. Hoisted here, the Play page's read,
+/// the launch gate, and the texture decision all share one answer per version
+/// of one file.
+static GAME_VERDICT_CACHE: std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>> =
+    std::sync::Mutex::new(None);
+
+/// The bundled DolphinTool, found the one way `game_identity::find_tool`
+/// defines it: beside the installed program, then beside the program
+/// itself, then whatever extra directory the caller adds. Nine call sites
+/// across this crate used to hardcode `<exe dir>/game-import/DolphinTool.exe`
+/// instead of calling `find_tool`, so a tool sitting in `find_tool`'s second
+/// search directory (the install root itself, not its `game-import`
+/// subfolder) read as missing here. A missing tool makes
+/// `game_identity::identify` return `Unreadable`, which the texture policy
+/// treats as `Withhold` and deletes the player's composed HD pack, silently,
+/// on every launch and every Mods-page action until the tool reappears.
+///
+/// The extra directory passed here, the folder holding whichever executable
+/// is actually running, exists because `install_root` is not guaranteed to
+/// be that folder: it falls back to a fixed per-channel path when the
+/// running exe has no `reborn-launcher.exe` beside it (a test binary, or a
+/// companion tool run from elsewhere). `patch_to_newest` extends
+/// `xdelta_dirs` the same way for the identical reason; this mirrors it.
+fn dolphin_tool_path(p: &Platform) -> Option<PathBuf> {
+    let extra: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .map(|dir| vec![dir.join(reborn_core::game_patch::BUNDLE_DIR)])
+        .unwrap_or_default();
+    reborn_core::game_identity::find_tool(p, &extra)
+}
+
+/// The `Verdict::Unreadable` reason to use when `dolphin_tool_path` finds
+/// nothing. Never substitute a path that does not exist just to keep a call
+/// site's types the same: that is exactly the bug this constant replaces.
+const DOLPHIN_TOOL_MISSING: &str =
+    "The tool used to read this game file could not be found. Reinstall NFL Street Reborn to restore it.";
+
+/// What the image at `image` is, through [`GAME_VERDICT_CACHE`].
+///
+/// The cache key is the path, the size and the modified time, so a repair, a
+/// swapped disc or a fresh install invalidates it immediately and this can
+/// never answer with bytes it has not verified for the file now on disk.
+///
+/// Calls `identify_booted`, not `identify`: `image` here is the booted
+/// image, `library/offline/NSR.iso`, and a roster apply deliberately
+/// rewrites it (see `game_image`'s module header). Hashing it against the
+/// chain the way a freshly-imported candidate is hashed called every
+/// rostered player's own game "not NFL Street Reborn", refused Play, and
+/// deleted their HD texture pack. `identify_booted` tries the same hash
+/// first and only falls back to provenance (which pristine this was
+/// established from) when that fails, so an install with no roster yet is
+/// unaffected.
+fn verdict_now(p: &Platform, image: &Path) -> Result<reborn_core::game_identity::Verdict, String> {
+    let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+    let Some(tool) = dolphin_tool_path(p) else {
+        return Ok(reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() });
+    };
+    Ok(match std::fs::metadata(image).and_then(|m| Ok((m.len(), m.modified()?))) {
+        Ok((len, modified)) => cached_game_verdict(
+            &GAME_VERDICT_CACHE,
+            (image.to_path_buf(), len, modified),
+            || reborn_core::game_identity::identify_booted(&data, &tool, image),
+        ),
+        // No metadata means no cache key. Ask anyway: a missing key is a
+        // reason to work harder, never a reason to skip the question.
+        Err(e) => {
+            eprintln!("could not read {} to key the verdict cache: {e}", image.display());
+            reborn_core::game_identity::identify_booted(&data, &tool, image)
+        }
+    })
+}
+
+fn cached_game_verdict(
+    cache: &std::sync::Mutex<Option<(GameVerdictKey, reborn_core::game_identity::Verdict)>>,
+    key: GameVerdictKey,
+    compute: impl FnOnce() -> reborn_core::game_identity::Verdict,
+) -> reborn_core::game_identity::Verdict {
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_key, verdict)) = guard.as_ref() {
+            if *cached_key == key {
+                return verdict.clone();
+            }
+        }
+    }
+    let verdict = compute();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, verdict.clone()));
+    }
+    verdict
 }
 
 /// What a launch would use, without starting anything.
@@ -602,35 +755,71 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
         match find_runtime_and_game_for(&p, runtime.as_deref(), game.as_deref(), legacy.as_deref(), chosen_user.as_deref()) {
-            Ok((found, image)) => Ok(LaunchCheck {
-                user_dir_note: reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path()))
-                    .ok()
-                    .map(|d| d.explain()),
-                game_note: {
-                    let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
-                    let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
-                    if given.is_some() {
-                        None
-                    } else {
-                        let user = reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
-                        let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-                        user.map(|u| {
-                            reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
-                                .explain()
+            Ok((found, image)) => {
+                let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+                // `identify_booted`, not `identify`: `image` here is the
+                // booted image the Play button would actually launch, and a
+                // roster apply deliberately rewrites it (see `verdict_now`,
+                // which this mirrors so the Play page and the launch gate
+                // never disagree about the same file).
+                let verdict = match dolphin_tool_path(&p) {
+                    None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+                    Some(tool) => match std::fs::metadata(&image).and_then(|m| Ok((m.len(), m.modified()?))) {
+                        Ok((len, modified)) => cached_game_verdict(
+                            &GAME_VERDICT_CACHE,
+                            (image.clone(), len, modified),
+                            || reborn_core::game_identity::identify_booted(&data, &tool, &image),
+                        ),
+                        Err(_) => reborn_core::game_identity::identify_booted(&data, &tool, &image),
+                    },
+                };
+                let game_verdict = Some(game_verdict_tag(&verdict).to_string());
+                // Resolved once and reused for user_dir_note, game_note and
+                // pack below, rather than asking resolve_user_dir_for again
+                // for each: the point of this check is to report on the one
+                // directory the launch will actually use, not on whichever
+                // directory a fresh resolve happens to land on.
+                let resolved_user_dir =
+                    reborn_core::session::resolve_user_dir_for(&p, chosen_user.as_deref(), Some(found.path())).ok();
+                Ok(LaunchCheck {
+                    user_dir_note: resolved_user_dir.as_ref().map(|d| d.explain()),
+                    game_note: {
+                        let saved_game = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(&p).map_err(|e| e.player_message().to_string())?).map_err(|e| e.player_message().to_string())?.game_path;
+                        let given = game.as_deref().map(reborn_core::session::user_path).or(saved_game).filter(|g| g.is_file());
+                        if given.is_some() {
+                            None
+                        } else {
+                            let launcher_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+                            resolved_user_dir.as_ref().map(|u| {
+                                reborn_core::session::find_game_image(found.path(), u.path(), legacy.as_deref(), launcher_dir.as_deref())
+                                    .explain()
+                            })
+                        }
+                    },
+                    ready: true,
+                    runtime: Some(found.path().display().to_string()),
+                    runtime_note: Some(found.explain()),
+                    runtime_kind: Some(match found {
+                        reborn_core::session::Runtime::Bundled(_) => "bundled",
+                        reborn_core::session::Runtime::FromLegacyInstall(_) => "legacy_install",
+                        reborn_core::session::Runtime::Chosen(_) => "chosen",
+                    }),
+                    game: Some(image.display().to_string()),
+                    game_verdict,
+                    // Absent when no user directory could be resolved, in
+                    // which case there is nothing to report about: the pack
+                    // is answered against the same directory the launch will
+                    // actually pass with `-u`, never a freshly re-resolved
+                    // one.
+                    pack: GameId::parse(GameBuild::Offline.game_id()).ok().and_then(|g| {
+                        resolved_user_dir.as_ref().map(|dir| {
+                            let status = reborn_core::mods::pack_status(&p, dir.path(), &g);
+                            PackView { reachable: status.reachable, version: status.version }
                         })
-                    }
-                },
-                ready: true,
-                runtime: Some(found.path().display().to_string()),
-                runtime_note: Some(found.explain()),
-                runtime_kind: Some(match found {
-                    reborn_core::session::Runtime::Bundled(_) => "bundled",
-                    reborn_core::session::Runtime::FromLegacyInstall(_) => "legacy_install",
-                    reborn_core::session::Runtime::Chosen(_) => "chosen",
-                }),
-                game: Some(image.display().to_string()),
-                problem: None,
-            }),
+                    }),
+                    problem: None,
+                })
+            }
             Err(problem) => Ok(LaunchCheck {
                 game_note: None,
                 user_dir_note: None,
@@ -639,6 +828,8 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                 runtime_note: None,
                 runtime_kind: None,
                 game: None,
+                game_verdict: None,
+                pack: None,
                 problem: Some(problem),
             }),
         }
@@ -697,6 +888,160 @@ impl Drop for LaunchGuard {
 #[tauri::command]
 fn session_active() -> bool { GAME_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) }
 
+/// Tier 2's wording, in the one place every surface reads it from.
+///
+/// The spec gives these two sentences verbatim, and they are a fault to
+/// repair rather than a preference somebody chose. Never the word "custom",
+/// on any surface, for this state.
+const UNVERIFIED_GAME_HEADLINE: &str = "Your game file isn't NFL Street Reborn.";
+const UNVERIFIED_GAME_DETAIL: &str = "This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc.";
+/// The primary action. Repair comes first everywhere it is offered.
+const REPAIR_ACTION: &str = "Repair my game";
+/// The escape hatch. Secondary, never the default, never a mode.
+const PLAY_ANYWAY_ACTION: &str = "Play it anyway";
+
+/// Shown when Play is pressed on an NFL Street 2 disc that is not a Reborn
+/// build. Worded as the fault it almost always is, not as a preference.
+///
+/// Re-exported from `reborn_core::game_identity` rather than declared here:
+/// `rebornctl play` boots the game too and has to refuse with the same words.
+use reborn_core::game_identity::UNVERIFIED_GAME;
+
+/// Shown when setup is handed a disc that is not a Reborn build. Setup has a
+/// real repair one button away, so it names it rather than sending anybody to
+/// another page.
+const UNVERIFIED_SETUP_GAME: &str = "Your game file isn't NFL Street Reborn. This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. Reborn can download the complete game for you, or you can choose a different file.";
+
+/// Whether the caller has a confirmed Tier 2 choice standing behind it.
+///
+/// An enum rather than a `bool` on purpose. `record_verdict` used to write the
+/// acknowledgment the instant any caller classified an image as `Unconverted`,
+/// with nothing asked and nothing shown, which enrolled a player in an escape
+/// hatch they were never offered and made the launch gate's refusal
+/// unreachable on that route. A named value cannot be passed by accident the
+/// way a positional `true` can, and it forces every new caller to state which
+/// of the two it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    /// Nobody has been asked. The only value a caller may use by default.
+    NotAsked,
+    /// The player was shown the Tier 2 choice, with Repair primary, and
+    /// pressed "Play it anyway" for this exact image.
+    PlayItAnyway,
+}
+
+/// Whether Play may boot this image, and whether Reborn may treat it as its
+/// own. The rule itself lives in `reborn_core::game_identity` so that
+/// `rebornctl play`, which also ships and also boots the game, applies the
+/// same one. The fail-safe direction is pinned by tests in both crates: an
+/// inverted condition would otherwise compile and pass everything while
+/// letting an unverified disc boot wearing Reborn's faces.
+use reborn_core::game_identity::may_play;
+
+/// What choosing this image on the Settings page should do. Split out of
+/// `settings_set_path` so the decision is pinned by tests: silently widening
+/// it would let an image Reborn cannot vouch for become the booted game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathChoice {
+    /// Not a usable disc image. Refuse, and say why.
+    Refuse(String),
+    /// NFL Street 2 but not a Reborn build. Storable, but only as a
+    /// deliberate acknowledgment recorded against this exact image.
+    Acknowledge,
+    /// A build Reborn recognizes. Store the path and nothing more.
+    Store,
+}
+
+fn path_choice(verdict: &reborn_core::game_identity::Verdict) -> PathChoice {
+    use reborn_core::game_identity::Verdict;
+    match verdict {
+        Verdict::Unreadable { reason } => PathChoice::Refuse(reason.clone()),
+        Verdict::Unconverted => PathChoice::Acknowledge,
+        Verdict::RebornBuild { .. } | Verdict::Convertible | Verdict::DifferentGame { .. } => PathChoice::Store,
+    }
+}
+
+/// Carry out `path_choice`'s decision against a settings file: refuse,
+/// record a deliberate acknowledgment against this exact image, or do
+/// nothing further because Reborn already vouches for it.
+///
+/// Every writer of `settings.game_path` resolves its own tool and image
+/// before asking `game_identity::identify` what it has, so the call stays
+/// visible at each site. What the answer should DO to the file is the same
+/// question everywhere, so it lives here once rather than in three or five
+/// copies that could drift apart.
+fn record_verdict(
+    settings_file: &Path,
+    image: &Path,
+    verdict: &reborn_core::game_identity::Verdict,
+    consent: Consent,
+) -> Result<(), String> {
+    match path_choice(verdict) {
+        PathChoice::Refuse(reason) => Err(reason),
+        // Nobody asked, so nobody consented. The acknowledgment is the
+        // player's deliberate escape hatch and it is only ever written on the
+        // call a confirmed dialog makes; every other caller is refused with
+        // the fault, which is what sends them to a repair.
+        PathChoice::Acknowledge if consent == Consent::NotAsked => {
+            Err(UNVERIFIED_SETUP_GAME.to_string())
+        }
+        PathChoice::Acknowledge => {
+            let sha = reborn_core::library::hash_file(image)
+                .map(|h| h.as_str().to_string())
+                .map_err(|e| e.to_string())?;
+            let mut saved = reborn_core::settings::Settings::load(settings_file)
+                .map_err(|e| e.player_message().to_string())?;
+            saved.unverified_game_ack = Some(sha);
+            saved.save(settings_file).map_err(|e| e.player_message().to_string())
+        }
+        PathChoice::Store => Ok(()),
+    }
+}
+
+/// The verdict for an image plus the player's standing acknowledgment, in
+/// the one shape every boot path needs. Returns the value for
+/// `LaunchRequest::textures`, or the refusal to show the player.
+///
+/// Named for the question it answers, `may_play`, rather than for what it
+/// does internally: the guard tests that pin every boot path grep for that
+/// name, and a helper called something else would let a caller stop asking
+/// it while every text scan kept passing on the strength of this doc comment
+/// alone. `launch` (this file), `play_now` (this file) and `netplay_open`
+/// (`dolphin_settings.rs`) each resolve their own runtime and image
+/// differently, but once an image is chosen, ask `game_identity::identify`
+/// what it is, then ask `may_play` whether it may boot and wear Reborn's
+/// textures, is identical every time. Splitting it out here is what keeps
+/// them from holding the same eight lines three times, quietly drifting
+/// apart the next time one of them changes.
+fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<reborn_core::game_identity::ImageStanding, String> {
+    // Through the cache. `identify` answers by hashing the whole disc image,
+    // and this runs on every single Play press, on a file the Play page has
+    // usually just asked about. The key is path, size and modified time, so
+    // a repaired or swapped disc still pays the hash exactly once.
+    let verdict = verdict_now(p, game_path)?;
+    let settings_file =
+        reborn_core::settings::settings_path(p).map_err(|e| e.player_message().to_string())?;
+    let saved = reborn_core::settings::Settings::load(&settings_file)
+        .map_err(|e| e.player_message().to_string())?;
+    let acknowledged = matches!(verdict, reborn_core::game_identity::Verdict::Unconverted)
+        && match reborn_core::library::hash_file(game_path) {
+            Ok(h) => saved.ack_matches(h.as_str()),
+            // Said out loud rather than swallowed. A player stuck in a repair
+            // loop reports "it keeps telling me to repair", and without this
+            // line there is nothing anywhere that distinguishes "the disc is
+            // genuinely not acknowledged" from "the acknowledgment could not
+            // be checked because the file would not read".
+            Err(e) => {
+                eprintln!(
+                    "could not hash {} to check the unverified-game acknowledgment: {e}",
+                    game_path.display()
+                );
+                false
+            }
+        };
+    may_play(&verdict, acknowledged).map_err(str::to_string)
+}
+
 /// Start the game and answer when it stops.
 ///
 /// Runs on a blocking thread rather than the interface thread. The sequence has
@@ -725,6 +1070,10 @@ async fn launch(
             legacy.as_deref(),
             chosen_user.as_deref(),
         )?;
+        // What we are about to boot, before we boot it. A disc that is not a
+        // Reborn build must never reach the emulator wearing Reborn's
+        // textures: that is what produced "old names with new faces".
+        let standing = may_play_before_boot(&p, &game_path)?;
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
@@ -734,6 +1083,7 @@ async fn launch(
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
+            textures: standing,
         };
 
         let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
@@ -1406,6 +1756,16 @@ struct ModSyncView {
     /// rebuild did, in a sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     soundtrack_note: Option<String>,
+    /// Present when Reborn's texture pack was taken off this game file, and
+    /// why, in a sentence for the player.
+    ///
+    /// A withheld sync is a successful sync: `synced` is true, nothing failed,
+    /// and the interface's only note channel was `synced == false`. So the
+    /// reason a player's entire HD pack had just been removed was computed and
+    /// then discarded. This is its own field rather than a `refusal` because a
+    /// refusal means nothing changed, and here a great deal did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    withheld_note: Option<String>,
 }
 
 fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackageView> {
@@ -1418,7 +1778,11 @@ fn active_view(entries: &[reborn_core::mods::ActivePackage]) -> Vec<ActivePackag
         .collect()
 }
 
-fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncView {
+fn sync_view(
+    game: &GameId,
+    outcome: reborn_core::mods::SyncOutcome,
+    withheld_because: Option<&'static str>,
+) -> ModSyncView {
     use reborn_core::mods::{SyncOutcome, TreeStep};
     let note = outcome.explain();
     match outcome {
@@ -1437,10 +1801,12 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             moved_aside: None,
             composed_root: None,
             soundtrack_note: None,
+            withheld_note: None,
         },
         SyncOutcome::Done(r) => {
             let (tree, entries, overlaid) = match &r.tree {
                 TreeStep::LeftAlone => ("left_alone", 0, 0),
+                TreeStep::Withheld { .. } => ("withheld", 0, 0),
                 TreeStep::AlreadyCurrent => ("already_current", 0, 0),
                 TreeStep::Rebuilt {
                     entries, overlaid, ..
@@ -1448,7 +1814,11 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
             };
             // The composed tree IS the game's texture folder now; "link"
             // stays in the view for the harness page that shows it.
-            let link = if matches!(r.tree, TreeStep::LeftAlone) { "left_alone" } else { "composed_in_user_folder" };
+            let link = match r.tree {
+                TreeStep::LeftAlone => "left_alone",
+                TreeStep::Withheld { .. } => "withheld",
+                _ => "composed_in_user_folder",
+            };
             let link_at = r.composed_root.clone();
             let moved_aside = r.moved_aside.clone();
             ModSyncView {
@@ -1466,6 +1836,11 @@ fn sync_view(game: &GameId, outcome: reborn_core::mods::SyncOutcome) -> ModSyncV
                 moved_aside: moved_aside.map(|p| p.display().to_string()),
                 composed_root: Some(r.composed_root.display().to_string()),
             soundtrack_note: None,
+            // Only when the tree really was withheld. The decision knows the
+            // words; the report knows whether they apply.
+            withheld_note: matches!(r.tree, TreeStep::Withheld { .. })
+                .then(|| withheld_because.map(str::to_string))
+                .flatten(),
             }
         }
     }
@@ -1484,6 +1859,30 @@ fn now_ms() -> u64 {
 /// would resolve, so what the Mods page shows as applied is what the next
 /// launch loads and not a parallel notion of it.
 pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Result<ModSyncView, String> {
+    sync_active_judged(p, runtime_hint, None)
+}
+
+/// The same sync, for a caller that already knows what the bytes it will boot
+/// are and cannot have them looked up.
+///
+/// Netplay is that caller, and the only one. It boots `library/online/NSR.iso`,
+/// a copy Reborn derives from the pristine plus the installed roster, so once
+/// a roster is applied those bytes are deliberately not a node of the patch
+/// chain: `game_identity::identify` would route Reborn's own artifact to
+/// `Unconverted` and withhold the pack from every league player's online game.
+/// See `online_image::built_from` for how that image is identified instead.
+///
+/// `already_judged` is NOT a way to skip the question. It is the answer to the
+/// question, asked about a different file, and it goes through exactly the same
+/// rule: `Some(NotReborn)` means `Withhold`, which REMOVES the composed tree. What
+/// must never come back is a caller that skips this function entirely when its
+/// own answer is false, because skipping composes nothing and leaves the whole
+/// pack in place, which is the bug this law exists to remove.
+pub(crate) fn sync_active_judged(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    already_judged: Option<reborn_core::game_identity::ImageStanding>,
+) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
@@ -1493,10 +1892,115 @@ pub(crate) fn sync_active_now(p: &Platform, runtime_hint: Option<&str>) -> Resul
     let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
-    req.manage_user_texture_folder = preferences.manage_texture_folder.unwrap_or(true);
+    // The same two questions a launch asks, in the same order, and for the
+    // same reason. This is not a launch, but it composes into exactly the
+    // folder a launch boots against, so a sync that only read the preference
+    // would put the pack back on an unverified disc the moment the player
+    // toggled a mod or switched a controls profile, and Play would then find
+    // it already there.
+    let decision = match already_judged {
+        Some(standing) => TextureDecision::new(standing, &preferences, TEXTURES_WITHHELD_NOT_REBORN),
+        None => texture_policy_now(p, runtime_hint, &preferences),
+    };
+    req.texture_policy = decision.policy;
     let outcome =
         reborn_core::mods::sync_active(p, &lock, &req, now_ms()).map_err(|e| e.to_string())?;
-    Ok(sync_view(&game, outcome))
+    Ok(sync_view(&game, outcome, decision.withheld_because))
+}
+
+/// Shown on the Mods page when Reborn's pack was taken off the game file
+/// because that file is not a Reborn build.
+const TEXTURES_WITHHELD_NOT_REBORN: &str = "Your game file is not NFL Street Reborn, so Reborn's texture pack was removed from it. Repair your game on the Settings page to put the pack back.";
+
+/// What to do with the texture folder, and the sentence to say when the answer
+/// took the pack away.
+///
+/// The sentence travels with the decision because only the decision knows why.
+/// A withheld sync reported `synced: true` with its reason computed into
+/// `SyncReport::explain` and then thrown away, and `mods.js` shows a note only
+/// when `synced` is false, so a player whose DolphinTool was missing or
+/// quarantined lost their whole HD pack off a Mods page toggle with no message
+/// on any screen.
+struct TextureDecision {
+    policy: reborn_core::mods::TexturePolicy,
+    withheld_because: Option<&'static str>,
+}
+
+impl TextureDecision {
+    fn new(
+        standing: reborn_core::game_identity::ImageStanding,
+        preferences: &reborn_core::settings::Settings,
+        because: &'static str,
+    ) -> Self {
+        let policy = reborn_core::session::texture_policy_for_launch(
+            standing,
+            preferences.manage_texture_folder.unwrap_or(true),
+        );
+        Self {
+            withheld_because: matches!(policy, reborn_core::mods::TexturePolicy::Withhold)
+                .then_some(because),
+            policy,
+        }
+    }
+}
+
+/// What the texture folder policy is right now, outside a launch.
+///
+/// `sync_active_now` runs from the Mods page, the pack toggle and the
+/// controls-profile apply. All three compose into the emulator's user folder,
+/// which is the folder Play boots against, so all three have to answer the
+/// question Play answers: is the image this machine would boot one Reborn
+/// verified as its own.
+///
+/// Two directions of being wrong, and they are not symmetric. Painting
+/// Reborn's art on somebody else's roster is the report this law comes from.
+/// Taking an eight thousand file pack off a disc that was fine is the report
+/// the law then produced. So withholding is reserved for an image that was
+/// read and ruled out, and an image that could not be read or could not be
+/// resolved leaves the pack exactly as it is.
+fn texture_policy_now(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    preferences: &reborn_core::settings::Settings,
+) -> TextureDecision {
+    let image = find_runtime_and_game_for(
+        p,
+        runtime_hint,
+        None,
+        default_legacy_root(p).as_deref(),
+        preferences.user_dir.as_deref(),
+    )
+    .map(|(_, image)| image)
+    // A missing emulator stops the search above without saying anything
+    // about the disc. The saved path is what a launch would boot once the
+    // emulator is back, so it is the honest thing to judge.
+    .ok()
+    .or_else(|| preferences.game_path.clone().filter(|g| g.is_file()));
+    // "I could not ask" and "this is not ours" are different answers and no
+    // longer get the same policy. A missing DolphinTool is exactly the case
+    // where the disc may be perfectly bootable and perfectly fine, and it used
+    // to cost the player their whole pack.
+    let standing = match image {
+        Some(image) => match verdict_now(p, &image) {
+            Ok(verdict) if verdict.is_reborn() => reborn_core::game_identity::ImageStanding::Reborn,
+            Ok(reborn_core::game_identity::Verdict::Unreadable { reason }) => {
+                eprintln!("could not read {}, so Reborn's textures are left exactly as they are: {reason}", image.display());
+                reborn_core::game_identity::ImageStanding::Unknown
+            }
+            Ok(_) => reborn_core::game_identity::ImageStanding::NotReborn,
+            Err(why) => {
+                eprintln!("could not identify {}, so Reborn's textures are left exactly as they are: {why}", image.display());
+                reborn_core::game_identity::ImageStanding::Unknown
+            }
+        },
+        None => {
+            eprintln!("no game image resolved, so Reborn's textures are left exactly as they are");
+            reborn_core::game_identity::ImageStanding::Unknown
+        }
+    };
+    // The decision itself is the launch's, not a second copy of it: one rule,
+    // one place, unit-tested in `reborn_core::session`.
+    TextureDecision::new(standing, preferences, TEXTURES_WITHHELD_NOT_REBORN)
 }
 
 /// Make the game load what activation.json says.
@@ -1556,6 +2060,7 @@ async fn mods_toggle(
                 moved_aside: None,
                 composed_root: None,
                 soundtrack_note: Some(note),
+                withheld_note: None,
             });
         }
 
@@ -2651,6 +3156,33 @@ async fn onboarding_confirm_game(
         let (_, game) = find_runtime_and_game_for(&p, None, image.as_deref(), legacy.as_deref(), user.as_deref())?;
         let total_bytes = Some(checked_setup_image(&game)?);
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        // This step sits at the end of the wizard's happy path, where the
+        // image was normally already classified by `setup_import_game` or
+        // `setup_import_existing_game`. Trusting that prior record instead of
+        // asking again was considered, to avoid hashing the whole disc a
+        // second time, but `setup_import_game` only ASKS what a disc is to
+        // report it accurately; it does not refuse or record an
+        // acknowledgment the way `path_choice` does; that is deliberate,
+        // since it is the wizard's own first look at a disc it cannot judge
+        // before examining. Trusting "this exact path is already recorded"
+        // here would therefore let an unconverted disc reach this step
+        // un-acknowledged whenever it got here some way other than the
+        // Continue button the wizard's own JavaScript disables for one. So
+        // this asks fresh, the same as every other writer, on every call:
+        // a re-check of a build Reborn already recognizes only ever
+        // reaffirms that verdict, so a good install is never turned into a
+        // refusal by asking twice.
+        let data = p.paths.data_root().map_err(|e| e.to_string())?;
+        let verdict = match dolphin_tool_path(&p) {
+            Some(tool) => reborn_core::game_identity::identify(&data, &tool, &game),
+            None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+        };
+        // `Consent::NotAsked`, always. This step is a Continue button at the
+        // end of the wizard, and a Continue button is not consent to play a
+        // disc Reborn could not convert. An unconverted image is refused here
+        // and the player is sent back to the import screen, which has the
+        // download that actually repairs it.
+        record_verdict(&file, &game, &verdict, Consent::NotAsked)?;
         // Persist before advancing so a failed save leaves this step available to retry.
         reborn_core::settings::set_path(&file, reborn_core::settings::PathSetting::Game, &game.to_string_lossy())
             .map_err(|e| e.to_string())?;
@@ -3146,6 +3678,8 @@ async fn onboarding_run_task(
                     // with none of the player's saves.
                     user_dir: selected_user_dir(&p, None)?,
                     league_match: false,
+                    // Prepare composes nothing, so there is nothing to claim.
+                    textures: reborn_core::game_identity::ImageStanding::Unknown,
                 };
 
                 // The same call a launch makes, so first run cannot configure
@@ -3966,8 +4500,40 @@ async fn pick_paths(kind: String) -> Result<Vec<String>, String> {
 struct PathSetView {
     which: String,
     /// What was stored, cleaned. Absent when the box was emptied, which
-    /// means the launcher finds it again.
+    /// means the launcher finds it again, and absent when `unverified` is
+    /// present, because then nothing was stored at all.
     value: Option<String>,
+    /// Present when the chosen image is NFL Street 2 but not a Reborn build,
+    /// and nothing was written. The page owes the player the Tier 2 choice
+    /// before anything is: Repair first, "Play it anyway" second.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unverified: Option<UnverifiedGameView>,
+}
+
+/// The Tier 2 choice, as the page has to draw it.
+///
+/// The words come from the backend rather than from the page so that the
+/// launch refusal, the Play badge and this dialog cannot drift into three
+/// different descriptions of one disc.
+#[derive(Debug, Serialize)]
+struct UnverifiedGameView {
+    headline: &'static str,
+    detail: &'static str,
+    /// The primary action's label. Repair is always primary.
+    repair: &'static str,
+    /// The secondary action's label. An escape hatch, never a mode.
+    play_anyway: &'static str,
+}
+
+impl UnverifiedGameView {
+    fn new() -> Self {
+        Self {
+            headline: UNVERIFIED_GAME_HEADLINE,
+            detail: UNVERIFIED_GAME_DETAIL,
+            repair: REPAIR_ACTION,
+            play_anyway: PLAY_ANYWAY_ACTION,
+        }
+    }
 }
 
 /// Record one of the three paths a person can override.
@@ -3975,8 +4541,17 @@ struct PathSetView {
 /// Kept on disk rather than in the window alone, so the Play and files
 /// shortcuts resolve the same emulator, image and folder the Play button
 /// does. An empty value clears it.
+///
+/// `acknowledge_unverified` is set ONLY by a confirmed Tier 2 dialog that
+/// showed the player the choice and took "Play it anyway". It is absent
+/// everywhere else, and an unconverted image is then handed back as a choice
+/// to make rather than quietly acknowledged.
 #[tauri::command]
-async fn settings_set_path(which: String, value: String) -> Result<PathSetView, String> {
+async fn settings_set_path(
+    which: String,
+    value: String,
+    acknowledge_unverified: Option<bool>,
+) -> Result<PathSetView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use reborn_core::settings::PathSetting;
         let setting = match which.as_str() {
@@ -3988,8 +4563,38 @@ async fn settings_set_path(which: String, value: String) -> Result<PathSetView, 
         };
         let p = Platform::detect();
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
+        if matches!(setting, PathSetting::Game) && !value.trim().is_empty() {
+            let data = p.paths.data_root().map_err(|e| e.player_message().to_string())?;
+            let image = reborn_core::session::user_path(value.trim());
+            let verdict = match dolphin_tool_path(&p) {
+                Some(tool) => reborn_core::game_identity::identify(&data, &tool, &image),
+                None => reborn_core::game_identity::Verdict::Unreadable { reason: DOLPHIN_TOOL_MISSING.to_string() },
+            };
+            // The choice is the player's to make, so it is put to them before
+            // anything is written. Answering here without asking is how a
+            // player who simply pointed the box at their own disc ended up
+            // enrolled in an escape hatch nobody had offered them, and it is
+            // also what made the launch gate's refusal unreachable on this
+            // route: the acknowledgment was already on file by the time Play
+            // asked about it.
+            let consent = if acknowledge_unverified == Some(true) {
+                Consent::PlayItAnyway
+            } else {
+                Consent::NotAsked
+            };
+            if consent == Consent::NotAsked
+                && matches!(path_choice(&verdict), PathChoice::Acknowledge)
+            {
+                return Ok(PathSetView {
+                    which,
+                    value: None,
+                    unverified: Some(UnverifiedGameView::new()),
+                });
+            }
+            record_verdict(&file, &image, &verdict, consent)?;
+        }
         let stored = reborn_core::settings::set_path(&file, setting, &value).map_err(|e| e.to_string())?;
-        Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()) })
+        Ok(PathSetView { which, value: stored.map(|v| v.display().to_string()), unverified: None })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5239,6 +5844,10 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         saved.game_path.as_deref().and_then(Path::to_str),
         legacy.as_deref(),
     )?;
+    // The desktop shortcut is a shipped entry point like any other: a disc
+    // that is not a Reborn build must not boot from here wearing Reborn's
+    // textures just because it skipped the window Play is drawn in.
+    let standing = may_play_before_boot(platform, &game_path)?;
 
     // The preset the player chose, or first run's answer. Never a guess: a
     // shortcut that quietly boots at a different resolution than the Play
@@ -5259,6 +5868,7 @@ fn play_now(platform: &Platform) -> Result<String, String> {
         mods_disabled: false,
         user_dir: saved.user_dir.clone(),
         league_match: false,
+        textures: standing,
     };
     match Session::run(platform, &req).map_err(|e| e.to_string())? {
         Launched::Refused(r) => Err(r.message()),
@@ -5522,6 +6132,7 @@ fn main() {
             setup_tools::setup_save_graphics_options,
             setup_tools::setup_hardware_info,
             setup_tools::setup_import_game,
+            setup_tools::setup_download_reborn_game,
             setup_tools::setup_use_existing,
             setup_tools::controller_slots,
             setup_tools::controller_assign_player,
@@ -5649,12 +6260,29 @@ mod tests {
 
     /// The text of one command, from its signature to the start of the next
     /// `#[tauri::command]`.
+    /// # Why the slice stops at `#[cfg(test)]` as well
+    ///
+    /// It used to stop only at the next `#[tauri::command]`, so the LAST
+    /// command in a file had no stop marker at all and its "body" ran to end
+    /// of file, swallowing whatever test module followed. That is how
+    /// `setup_never_adopts_a_disc_that_is_not_a_reborn_build`'s third
+    /// assertion became incapable of failing: it scanned
+    /// `setup_migrate_install`, the last command in `setup_tools.rs`, and the
+    /// slice picked up `mod door3_tests`, which names `may_adopt` twelve more
+    /// times. Deleting the real gate left the assertion green.
+    ///
+    /// `code_only` cannot catch that one: it is slice-shaped, not
+    /// comment-shaped. The stop has to be right in the first place.
     fn command_body<'a>(source: &'a str, signature: &str) -> &'a str {
         let from = source
             .find(signature)
             .unwrap_or_else(|| panic!("{signature} is not in this file any more"));
         let rest = &source[from..];
-        let to = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
+        let to = ["\n#[tauri::command]", "\n#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
         &rest[..to]
     }
 
@@ -5684,6 +6312,105 @@ mod tests {
     /// this file, whether or not the real fix was made.
     fn inner_body(body: &str) -> &str {
         &body[..body.find("\n    .await").unwrap_or(body.len())]
+    }
+
+    /// A body with its comment lines removed, so a guard can only be satisfied
+    /// by executable text. Four guards in this feature were satisfiable by a
+    /// comment that merely named the thing they were checking for; the code
+    /// under test is what a guard must see, never the prose beside it.
+    /// The Builder's `--textures` flag wants Dolphin's `Load/Textures` folder
+    /// and appends the game id itself. `mods::pristine_root` already ends in
+    /// the game id, so handing it over writes the pack's own game-id folder
+    /// inside the pack: `library/textures/GN7E69/GN7E69/`. That is what put
+    /// 460 portraits one level too deep on every install that had applied a
+    /// roster, and Dolphin hid it by scanning recursively while silently
+    /// dropping one of each duplicate pair.
+    ///
+    /// `mods::builder_textures_arg` is the only correct source for that path.
+    #[test]
+    fn no_roster_apply_hands_the_builder_a_game_qualified_texture_path() {
+        for (name, body) in [
+            (
+                "image_hook",
+                body_until(
+                    include_str!("content_updates.rs"),
+                    "pub(crate) fn image_hook",
+                    "fn run_check",
+                ),
+            ),
+            (
+                "establish_booted",
+                body_until(
+                    include_str!("setup_tools.rs"),
+                    "fn establish_booted",
+                    "pub async fn setup_import_existing_game",
+                ),
+            ),
+        ] {
+            let code = code_only(body);
+            assert!(
+                code.contains("builder_textures_arg"),
+                "{name} does not take the Builder's textures path from \
+                 mods::builder_textures_arg"
+            );
+            assert!(
+                !code.contains("pristine_root"),
+                "{name} hands the Builder a game-id-qualified pack root, so the \
+                 Builder will qualify it a second time and portraits land in \
+                 library/textures/GN7E69/GN7E69/"
+            );
+        }
+    }
+
+    /// A disc that is NFL Street 2 but not a build Reborn can convert is not
+    /// something the player can do anything about, so setup fixes it rather
+    /// than reporting it. Before this, `setup_import_game` saved the disc as
+    /// the game, told the wizard "Your game file isn't NFL Street Reborn", and
+    /// left the launch gate to refuse it: a dead end with no way out inside
+    /// the wizard.
+    #[test]
+    fn an_unconvertible_disc_recovers_itself_instead_of_reporting_a_dead_end() {
+        let body = command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_import_game",
+        );
+        let code = code_only(body);
+        assert!(
+            code.contains("download_reborn_game"),
+            "setup_import_game can end on a disc it knows is not Reborn without \
+             ever trying to get the player a disc that is"
+        );
+        assert!(
+            code.contains("outcome==") && code.contains("unconverted"),
+            "nothing in setup_import_game keys recovery to the one verdict it \
+             is for, so it either never runs or runs on discs it should not"
+        );
+    }
+
+    fn code_only(body: &str) -> String {
+        body.lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// One rule in one place. The UI hardcoded this path seven times while
+    /// `find_tool` sat public and unused, and a tool in the directory this
+    /// missed reads as `Unreadable`, which now withholds and deletes the
+    /// player's texture pack.
+    #[test]
+    fn nothing_hardcodes_the_dolphin_tool_path() {
+        for (name, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("setup_tools.rs", include_str!("setup_tools.rs")),
+        ] {
+            let code = code_only(src);
+            assert!(
+                !code.contains(concat!("game-import/", "DolphinTool")),
+                "{name} hardcodes the tool path instead of calling find_tool"
+            );
+        }
     }
 
     /// Every way of starting the emulator records a session and collects what
@@ -5881,6 +6608,684 @@ mod tests {
             "a token this project has already had to rotate stays in the credential vault \
              forever, on every machine that ever stored one"
         );
+    }
+
+    /// Play must know what the disc is before it boots it.
+    ///
+    /// Three commands wrote `settings.game_path` and none of them verified
+    /// it, so a player's own unconverted NFL Street 2 booted with Reborn's
+    /// texture pack over it: old names with new faces. `launch` is the one
+    /// path every player takes, so it is the one that has to ask.
+    ///
+    /// Looks for `may_play_before_boot`, not the raw `game_identity::identify`
+    /// call it wraps: that call moved into the shared helper `launch`,
+    /// `play_now` and `netplay_open` all call now, so it no longer sits
+    /// inline here. The helper is defined before `launch`, so only the call
+    /// site itself is inside the text this test reads; the invariant this
+    /// pins is unchanged, only its name.
+    #[test]
+    fn launch_verifies_the_image_before_starting_the_emulator() {
+        let body = command_body(include_str!("main.rs"), "async fn launch(");
+        let verify = body
+            .find("may_play_before_boot")
+            .expect("launch boots game_path without ever asking what it is");
+        let request = body
+            .find("LaunchRequest {")
+            .expect("launch still builds a LaunchRequest");
+        assert!(
+            verify < request,
+            "launch must know what the image is before it builds the request that boots it"
+        );
+    }
+
+    /// `may_play` holds the highest-scrutiny decision in this feature: every
+    /// case is pinned here so the fail-safe direction is defended by tests,
+    /// not just by code reading. Dropping the `!` before `acknowledged`
+    /// inside `may_play` would compile and pass every other test while
+    /// silently turning the fail-safe into a bypass.
+    #[test]
+    fn may_play_refuses_an_unacknowledged_unconverted_disc() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Unconverted, false),
+            Err(UNVERIFIED_GAME),
+            "a player's own unconverted NFL Street 2 must never boot wearing Reborn's texture pack"
+        );
+    }
+
+    #[test]
+    fn may_play_lets_an_acknowledged_unconverted_disc_boot_but_not_as_reborns_own() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Unconverted, true),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
+            "a player who already accepted this exact mismatch may still play, but Reborn must \
+             not start treating the disc as one of its own builds just because it was allowed \
+             through once"
+        );
+    }
+
+    #[test]
+    fn may_play_treats_a_reborn_build_as_its_own() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true },
+                false,
+            ),
+            Ok(reborn_core::game_identity::ImageStanding::Reborn),
+            "a genuine Reborn build must boot and be offered Reborn's textures and updates"
+        );
+    }
+
+    #[test]
+    fn may_play_does_not_claim_a_convertible_disc_as_reborns_own() {
+        assert_eq!(
+            may_play(&reborn_core::game_identity::Verdict::Convertible, false),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
+            "an unconverted retail disc must not be treated as a Reborn build before setup has \
+             actually converted it, even though it is allowed to boot"
+        );
+    }
+
+    #[test]
+    fn may_play_does_not_claim_a_different_game() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::DifferentGame { game_id: "GAFE01".to_string() },
+                false,
+            ),
+            Ok(reborn_core::game_identity::ImageStanding::NotReborn),
+            "a disc for a different game entirely must never be treated as a Reborn build or \
+             receive its texture pack"
+        );
+    }
+
+    /// An image that could not be read is not a ruling on the image. It must
+    /// not be claimed as Reborn's, and it must not cost the player their pack:
+    /// `Unknown` is the only answer that does neither.
+    #[test]
+    fn may_play_neither_claims_nor_condemns_an_unreadable_image() {
+        assert_eq!(
+            may_play(
+                &reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() },
+                false,
+            ),
+            Ok(reborn_core::game_identity::ImageStanding::Unknown),
+            "an image this launcher could not even read was ruled on anyway"
+        );
+    }
+
+    /// `path_choice` is Door 2's decision: what choosing an image on the
+    /// Settings page should do. Every verdict is pinned here so widening it
+    /// (or deleting the `Refuse` arm) compiles and passes everything else
+    /// while quietly letting an image Reborn cannot vouch for become the
+    /// booted game.
+    /// The Tier 2 acknowledgment is only ever written by a confirmed choice.
+    ///
+    /// `record_verdict` used to write `unverified_game_ack` the instant any
+    /// caller classified an image as `Unconverted`, with nothing asked and
+    /// nothing shown. A player who simply pointed the Settings box at their
+    /// own disc was enrolled in an escape hatch they were never offered, and
+    /// the launch gate's refusal became unreachable on that route, because the
+    /// acknowledgment was already on file by the time Play looked.
+    #[test]
+    fn an_unconverted_image_is_never_acknowledged_without_being_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let image = dir.path().join("theirs.iso");
+        std::fs::write(&image, b"NFL Street 2, but somebody else's").unwrap();
+        let verdict = reborn_core::game_identity::Verdict::Unconverted;
+
+        let refused = record_verdict(&file, &image, &verdict, Consent::NotAsked);
+        assert!(
+            refused.is_err(),
+            "an unconverted image was accepted with nobody asked: {refused:?}"
+        );
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file).unwrap().unverified_game_ack,
+            None,
+            "the acknowledgment was written without the player ever being offered the choice"
+        );
+
+        record_verdict(&file, &image, &verdict, Consent::PlayItAnyway)
+            .expect("a confirmed choice must be honoured");
+        let sha = reborn_core::library::hash_file(&image).unwrap();
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file)
+                .unwrap()
+                .unverified_game_ack
+                .as_deref(),
+            Some(sha.as_str()),
+            "a confirmed choice must be recorded against this exact image"
+        );
+    }
+
+    /// Consent cannot manufacture an acknowledgment for a verdict that has
+    /// nothing to acknowledge, and cannot talk past a refusal.
+    #[test]
+    fn consent_only_applies_to_the_verdict_that_asks_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let image = dir.path().join("reborn.iso");
+        std::fs::write(&image, b"a Reborn build").unwrap();
+
+        record_verdict(
+            &file,
+            &image,
+            &reborn_core::game_identity::Verdict::RebornBuild {
+                label: "3.0.2".to_string(),
+                at_head: true,
+            },
+            Consent::PlayItAnyway,
+        )
+        .unwrap();
+        assert_eq!(
+            reborn_core::settings::Settings::load(&file).unwrap().unverified_game_ack,
+            None,
+            "a build Reborn recognizes must never carry an acknowledgment"
+        );
+
+        assert!(
+            record_verdict(
+                &file,
+                &image,
+                &reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() },
+                Consent::PlayItAnyway,
+            )
+            .is_err(),
+            "consent must not talk an unreadable file past the refusal"
+        );
+    }
+
+    /// Exactly one place writes the acknowledgment, and it is the one that
+    /// takes a `Consent`.
+    ///
+    /// Read through `code_only` over all three window source files, so a
+    /// comment mentioning the field cannot stand in for a write of it.
+    ///
+    /// The needle is assembled with `concat!` rather than written out, because
+    /// a test that greps its own source for a literal it contains counts
+    /// itself and can then never reach zero, which is one of the ways the
+    /// guard tests on this branch turned out to be incapable of failing.
+    #[test]
+    fn nothing_but_a_confirmed_choice_writes_the_unverified_acknowledgment() {
+        const GRANT: &str = concat!("unverified_game_ack", " = Some");
+        let writes: usize = [
+            include_str!("main.rs"),
+            include_str!("setup_tools.rs"),
+            include_str!("dolphin_settings.rs"),
+        ]
+        .into_iter()
+        .map(|src| code_only(src).matches(GRANT).count())
+        .sum();
+        assert_eq!(
+            writes, 1,
+            "the Tier 2 acknowledgment must be written in exactly one place, the one that takes a Consent"
+        );
+        assert!(
+            code_only(body_until(
+                include_str!("main.rs"),
+                "\nfn record_verdict(",
+                "\n/// The verdict for an image plus the player's standing acknowledgment",
+            ))
+            .contains("Consent::NotAsked"),
+            "record_verdict must turn the un-asked case away rather than write an acknowledgment"
+        );
+    }
+
+    /// The Tier 2 words the player is shown are the spec's words, and they
+    /// never frame the state as something the player preferred.
+    #[test]
+    fn the_tier_two_choice_reads_as_a_fault_to_repair() {
+        let view = UnverifiedGameView::new();
+        assert_eq!(view.headline, "Your game file isn't NFL Street Reborn.");
+        assert!(view.detail.starts_with("This is NFL Street 2, but not a Reborn build"));
+        assert!(view.detail.contains("setup couldn't convert your disc"));
+        assert_eq!(view.repair, "Repair my game");
+        assert_eq!(view.play_anyway, "Play it anyway");
+        for word in [
+            view.headline,
+            view.detail,
+            view.repair,
+            view.play_anyway,
+            UNVERIFIED_GAME,
+            UNVERIFIED_SETUP_GAME,
+        ] {
+            assert!(
+                !word.to_lowercase().contains("custom"),
+                "this is a fault to repair, never a preference: {word}"
+            );
+            assert!(!word.contains('\u{2014}'), "no em-dashes in player text: {word}");
+        }
+        // The launch refusal and the dialog have to describe one disc.
+        assert!(UNVERIFIED_GAME.starts_with(UNVERIFIED_GAME_HEADLINE));
+        assert!(UNVERIFIED_GAME.contains(UNVERIFIED_GAME_DETAIL));
+    }
+
+    #[test]
+    fn path_choice_refuses_an_unreadable_image() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Unreadable { reason: "truncated".to_string() }),
+            PathChoice::Refuse("truncated".to_string()),
+            "an Unreadable image that returns anything but Refuse would mean a file that is not \
+             a disc becomes the game Reborn tries to boot"
+        );
+    }
+
+    #[test]
+    fn path_choice_only_acknowledges_an_unconverted_disc() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Unconverted),
+            PathChoice::Acknowledge,
+            "an Unconverted disc that returns Store instead of Acknowledge would let a player's \
+             own modified NFL Street 2 become the settings game path with no record that it was \
+             ever an unverified choice, which is the acknowledgment Task 5's launch gate relies on"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_reborn_build_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }),
+            PathChoice::Store,
+            "a genuine Reborn build must be storable as the game path without demanding an \
+             acknowledgment it does not need"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_convertible_disc_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::Convertible),
+            PathChoice::Store,
+            "an unmodified retail disc must be storable as the game path; setup, not Settings, is \
+             where it gets converted"
+        );
+    }
+
+    #[test]
+    fn path_choice_stores_a_different_game_plainly() {
+        assert_eq!(
+            path_choice(&reborn_core::game_identity::Verdict::DifferentGame { game_id: "GAFE01".to_string() }),
+            PathChoice::Store,
+            "a disc for a different game is named at the wizard, not blocked here; Settings must \
+             still be able to point at it"
+        );
+    }
+
+    /// The Play page's badge must fire on exactly one verdict. A `Convertible`
+    /// or `DifferentGame` disc is Tier 1: allowed, merely noted elsewhere, and
+    /// must not wear the unresolved badge. A `RebornBuild` shows nothing at
+    /// all. Only `Unconverted` is the fault Tier 2 exists to surface.
+    #[test]
+    fn game_verdict_tag_flags_only_the_unconverted_case() {
+        use reborn_core::game_identity::Verdict;
+        assert_eq!(
+            game_verdict_tag(&Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }),
+            "reborn"
+        );
+        assert_eq!(game_verdict_tag(&Verdict::Convertible), "convertible");
+        assert_eq!(game_verdict_tag(&Verdict::Unconverted), "unconverted");
+        assert_eq!(
+            game_verdict_tag(&Verdict::DifferentGame { game_id: "GAFE01".to_string() }),
+            "different-game"
+        );
+        assert_eq!(
+            game_verdict_tag(&Verdict::Unreadable { reason: "truncated".to_string() }),
+            "unreadable"
+        );
+    }
+
+    /// `identify` hashes the whole disc image to answer, and `launch_check`
+    /// asks it on every Play page load. Without this cache, opening Play,
+    /// finishing a session, or toggling a controller would each pay a
+    /// full-disc hash for an answer that has not changed. `compute` stands in
+    /// for `identify` here precisely so this is provable without a
+    /// multi-gigabyte fixture: what matters is that an unchanged key never
+    /// calls it twice, and a changed one always calls it again.
+    #[test]
+    fn cached_game_verdict_only_recomputes_when_its_key_changes() {
+        use reborn_core::game_identity::Verdict;
+        let cache: std::sync::Mutex<Option<(GameVerdictKey, Verdict)>> = std::sync::Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        let key_a = (PathBuf::from("NSR.iso"), 100u64, epoch);
+
+        let first = cached_game_verdict(&cache, key_a.clone(), || {
+            calls.set(calls.get() + 1);
+            Verdict::Unconverted
+        });
+        assert_eq!(first, Verdict::Unconverted);
+        assert_eq!(calls.get(), 1, "the first look for a key must compute");
+
+        let second = cached_game_verdict(&cache, key_a.clone(), || {
+            calls.set(calls.get() + 1);
+            Verdict::RebornBuild { label: "should not win".to_string(), at_head: true }
+        });
+        assert_eq!(
+            second,
+            Verdict::Unconverted,
+            "an unchanged key must reuse the cached verdict, not the new closure's answer"
+        );
+        assert_eq!(calls.get(), 1, "an unchanged key must not recompute");
+
+        let key_b = (PathBuf::from("NSR.iso"), 101u64, epoch);
+        let third = cached_game_verdict(&cache, key_b, || {
+            calls.set(calls.get() + 1);
+            Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true }
+        });
+        assert_eq!(third, Verdict::RebornBuild { label: "3.0.2".to_string(), at_head: true });
+        assert_eq!(calls.get(), 2, "a changed size must be treated as a possibly different file");
+    }
+
+    /// Taking a player's texture pack away is never silent, and never done on
+    /// a question that was not answered.
+    ///
+    /// `identify` shells out to `game-import/DolphinTool.exe`. Missing,
+    /// blocked or quarantined, every verdict became `Unreadable`, the policy
+    /// became `Withhold`, and an ordinary Mods page toggle removed the whole
+    /// composed pack. That direction was wrong: a launcher that could not read
+    /// the image had ruled out nothing, and it cost players packs of eight
+    /// thousand files over a tool that was not there. "Missing textures" is
+    /// the report it produced. Not knowing now leaves the pack alone.
+    #[test]
+    fn a_pack_is_taken_only_on_an_answer_and_never_silently() {
+        use reborn_core::mods::TexturePolicy;
+        let mut preferences = reborn_core::settings::Settings::default();
+        preferences.manage_texture_folder = Some(true);
+
+        // Read and ruled out: the one case that removes the pack, with words.
+        let ruled_out =
+            TextureDecision::new(reborn_core::game_identity::ImageStanding::NotReborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(ruled_out.policy, TexturePolicy::Withhold);
+        assert_eq!(
+            ruled_out.withheld_because,
+            Some(TEXTURES_WITHHELD_NOT_REBORN),
+            "the pack was removed and nothing anywhere said so"
+        );
+
+        // Never answered. Nothing is known, so nothing is done.
+        let unknown = TextureDecision::new(reborn_core::game_identity::ImageStanding::Unknown, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(
+            unknown.policy,
+            TexturePolicy::LeaveAlone,
+            "an image the launcher could not read still cost the player their texture pack"
+        );
+        assert_eq!(
+            unknown.withheld_because, None,
+            "nothing was taken away, so there is nothing to explain"
+        );
+
+        let kept = TextureDecision::new(reborn_core::game_identity::ImageStanding::Reborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(kept.policy, TexturePolicy::Manage);
+        assert_eq!(kept.withheld_because, None);
+
+        // The author's folder is never touched, so there is nothing to report
+        // either. Saying "your pack was removed" there would be a lie.
+        preferences.manage_texture_folder = Some(false);
+        let authors =
+            TextureDecision::new(reborn_core::game_identity::ImageStanding::NotReborn, &preferences, TEXTURES_WITHHELD_NOT_REBORN);
+        assert_eq!(authors.policy, TexturePolicy::LeaveAlone);
+        assert_eq!(authors.withheld_because, None);
+
+        let words = TEXTURES_WITHHELD_NOT_REBORN;
+        assert!(words.contains("Settings page"), "no way out is named: {words}");
+        assert!(!words.to_lowercase().contains("custom"), "a fault, never a preference: {words}");
+        assert!(!words.contains('\u{2014}'), "no em-dashes in player text: {words}");
+    }
+
+    /// ...and the sentence actually reaches the page.
+    #[test]
+    fn the_reason_a_pack_was_removed_reaches_the_mods_page() {
+        let view = code_only(body_until(include_str!("main.rs"), "\nfn sync_view(", "\nfn now_ms("));
+        // COUNTED, not merely present. The field name survives
+        // `withheld_note: None`, and the parameter name survives an unused
+        // parameter, so either as a presence check is a guard that passes while
+        // the reason is discarded. Two occurrences means the signature plus at
+        // least one real use.
+        assert!(
+            view.matches("withheld_because").count() >= 2,
+            "sync_view is handed the reason the pack went and then never uses it"
+        );
+        assert!(
+            code_only(include_str!("../ui/mods.js")).contains("withheld_note"),
+            "the Mods page never reads the reason, so a player who just lost their HD textures \
+             sees nothing at all"
+        );
+    }
+
+    /// Play does not pay for a full-disc SHA-256 on every press.
+    ///
+    /// `may_play_before_boot` called `identify` uncached, on a 1.46 GB file,
+    /// on every Play, while `cached_game_verdict` sat one function away being
+    /// used by `launch_check` alone. The cache key is path, size and modified
+    /// time, so this cannot answer with bytes it has not verified for the file
+    /// now on disk.
+    ///
+    /// Also pins that the acknowledgment's hash failure is said out loud. It
+    /// was `.unwrap_or(false)`, which turns "the file would not read" into "the
+    /// player never acknowledged it" and makes a repair loop undiagnosable.
+    #[test]
+    fn the_launch_gate_reuses_the_verdict_instead_of_rehashing_the_whole_disc() {
+        let src = include_str!("main.rs");
+        let gate = code_only(body_until(
+            src,
+            "\nfn may_play_before_boot(",
+            "\n/// Start the game and answer when it stops.",
+        ));
+        assert!(
+            gate.contains("verdict_now"),
+            "the launch gate identifies the image without going through the cache"
+        );
+        assert!(
+            !gate.contains("game_identity::identify"),
+            "every Play press pays a full-disc SHA-256 for an answer the Play page already has"
+        );
+        assert!(
+            gate.contains("eprintln!"),
+            "a failure to hash the image for the acknowledgment check is swallowed, so a repair \
+             loop cannot be told apart from a disc nobody acknowledged"
+        );
+        let cached = code_only(body_until(src, "\nfn verdict_now(", "\nfn cached_game_verdict("));
+        assert!(
+            cached.contains("cached_game_verdict"),
+            "verdict_now is not actually a cache, so nothing it fronts is cached"
+        );
+    }
+
+    /// Setup adopts a disc by one rule, whichever screen asked.
+    ///
+    /// `setup_migrate_install` refused an inherited `Unconverted` disc while
+    /// the wizard's review-screen Edit button, one click away, routed the
+    /// identical disc through `setup_import_existing_game` into an
+    /// acknowledgment nobody was asked for. The rule kept is the stricter one,
+    /// `may_adopt`'s: setup never adopts a disc that is not a Reborn build,
+    /// because setup has a real repair (the full download) one button away.
+    #[test]
+    fn setup_never_adopts_a_disc_that_is_not_a_reborn_build() {
+        for (name, body) in [
+            (
+                "setup_import_existing_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_existing_game"),
+            ),
+            (
+                "onboarding_confirm_game",
+                command_body(include_str!("main.rs"), "async fn onboarding_confirm_game"),
+            ),
+        ] {
+            assert!(
+                code_only(body).contains("Consent::NotAsked"),
+                "{name} can still acknowledge a disc that is not a Reborn build without asking anybody"
+            );
+        }
+        assert!(
+            code_only(command_body(
+                include_str!("setup_tools.rs"),
+                "pub async fn setup_migrate_install"
+            ))
+            .contains("may_adopt"),
+            "the migrate door stopped applying the adoption rule"
+        );
+    }
+
+    /// A disc Reborn DID recognize is never accused of not being one.
+    ///
+    /// `patch_to_newest` answering `unknown` or `no-chain` says the patch step
+    /// refused, not that the disc is somebody else's. Passed through unchanged
+    /// it made the wizard render "Your game file isn't NFL Street Reborn" over
+    /// a verified Reborn build, while Continue stayed enabled and the Play
+    /// badge stayed silent: three surfaces disagreeing about one file.
+    #[test]
+    fn a_patch_that_did_not_run_is_reported_as_a_patch_failure() {
+        let import = code_only(command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_import_game",
+        ));
+        assert!(
+            import.contains("\"not-updated\""),
+            "a verified Reborn build whose patch step refused still reports the verdict's own \
+             wording, which the wizard renders as \"Your game file isn't NFL Street Reborn\""
+        );
+        let wizard = include_str!("../ui/onboarding.js");
+        assert!(
+            wizard.contains("case 'not-updated'"),
+            "the wizard has no words for a patch that did not run, so it falls through to success"
+        );
+        assert!(
+            wizard.contains("'unconverted','unreadable','unknown','no-chain'"),
+            "the wizard still lets a disc it could not recognize past Continue with no recovery offered"
+        );
+    }
+
+    /// Every refusal points somewhere that can actually repair the fault.
+    ///
+    /// `UNVERIFIED_GAME` and the Play card's badge both send the player to
+    /// `settings.html#files`, which offered a path box, a Browse button and
+    /// nothing else. The only real repair, `setup_download_reborn_game`, lived
+    /// solely inside the setup wizard, so a refused player reached a dead end.
+    #[test]
+    fn the_page_every_refusal_points_at_can_repair_the_fault() {
+        assert!(
+            UNVERIFIED_GAME.contains("Settings page"),
+            "the launch refusal no longer names where to go"
+        );
+        let home = include_str!("../ui/home.js");
+        assert!(
+            home.contains("settings.html#files"),
+            "the Play badge no longer sends the player to the files page"
+        );
+        let settings = include_str!("../ui/settings.js");
+        assert!(
+            settings.contains("setup_download_reborn_game"),
+            "the page every refusal points at still cannot repair anything"
+        );
+        assert!(
+            settings.contains(UNVERIFIED_GAME_HEADLINE),
+            "the files page never says what is wrong with the game file"
+        );
+        assert!(
+            settings.contains("acknowledgeUnverified"),
+            "the files page cannot offer the Tier 2 choice, so nothing can ever grant it"
+        );
+    }
+
+    /// The spec's Tier 2 rule: a player who used the escape hatch has a
+    /// standing reminder on the Play page, worded as a fault, never as a
+    /// preference they chose.
+    #[test]
+    fn the_play_page_can_tell_the_player_their_game_is_not_reborn() {
+        let body = command_body(include_str!("main.rs"), "async fn launch_check");
+        assert!(
+            body.contains("game_identity::identify"),
+            "launch_check never asks what the game is, so the Play page cannot show \
+             that the player is on a disc Reborn did not verify"
+        );
+        let home = include_str!("../ui/home.js");
+        assert!(home.contains("game_verdict"), "the Play page ignores the verdict");
+        assert!(
+            !home.contains("Custom game"),
+            "Tier 2 must never be worded as a preference the player chose"
+        );
+    }
+
+    /// The player's own test for whether their pack is right is "can I see
+    /// stuff, and what version is it". Neither was on any screen, so the
+    /// answer lived only in a support conversation. `launch_check` already
+    /// runs on every Play page load, so it is where the answer belongs.
+    ///
+    /// `home.js` already contains the bare substring "pack" (`mod_packages`,
+    /// `m.packages`), so this checks for the actual property access the Play
+    /// card would need to read, not the bare word.
+    #[test]
+    fn the_play_page_can_tell_the_player_which_pack_is_loading() {
+        let body = code_only(command_body(include_str!("main.rs"), "async fn launch_check"));
+        assert!(
+            body.contains("pack_status"),
+            "launch_check does not ask whether the texture pack will load"
+        );
+        let home = code_only(include_str!("../ui/home.js"));
+        assert!(
+            home.contains("check?.pack") || home.contains("check.pack"),
+            "the Play page does not show the pack's state"
+        );
+    }
+
+    /// `open_runtime` is deliberately unrestricted: it hands the player
+    /// Dolphin's own UI, and Reborn's texture pack is keyed by game ID, so
+    /// any NFL Street 2 disc booted there picks up Reborn's faces. That is
+    /// the last remaining route to "old names with new faces". Adam's
+    /// decision is to name it, not police it, so the fix is wording, not a
+    /// gate.
+    #[test]
+    fn opening_dolphin_directly_says_its_textures_apply_to_any_disc() {
+        let settings = code_only(include_str!("../ui/settings.js"));
+        assert!(
+            settings.contains("Reborn's textures apply to any NFL Street 2 disc"),
+            "the Dolphin toolbar never says its textures follow the game ID, not the disc, \
+             so a player who opens another copy there gets no warning before seeing Reborn's players"
+        );
+        let recovery = code_only(include_str!("../ui/recovery.js"));
+        assert!(
+            recovery.contains("Reborn's textures apply to any NFL Street 2 disc"),
+            "the recovery page's own Open Dolphin row still says nothing about textures \
+             following the game ID rather than the disc, and a player there is already \
+             troubleshooting a look that does not match what they expect"
+        );
+    }
+
+    /// `setup_import_game` is Door 1: the first place a player's disc ever
+    /// reaches the launcher. `game_import::import_with_progress` already
+    /// verifies every file inside the disc and fails with a precise reason
+    /// (`"sys/main.dol does not match the supported USA release"`, say). That
+    /// reason used to hit `Err(_) =>` and be thrown away, so the player's raw
+    /// disc was imported verbatim and the wizard announced "Game File
+    /// Imported!" with a green progress bar. This is the bug the whole
+    /// project exists to fix.
+    #[test]
+    fn the_import_never_discards_why_a_disc_failed() {
+        let src = include_str!("setup_tools.rs");
+        let body = command_body(src, "pub async fn setup_import_game");
+        assert!(
+            !body.contains("Err(_) =>"),
+            "setup_import_game still throws away the verifier's reason, which is how an \
+             unconverted disc got reported as 'Game File Imported!'"
+        );
+        assert!(
+            body.contains("game_identity::identify"),
+            "setup_import_game does not ask what the disc actually is"
+        );
+    }
+
+    /// The patch chain has to be seeded before the disc is classified. Without
+    /// it `Chain::load` returns None, `classify` answers `Unconverted` for
+    /// anything, and a disc that converted perfectly is condemned as not a
+    /// Reborn build.
+    #[test]
+    fn setup_seeds_the_patch_chain_before_it_classifies_the_disc() {
+        let body = command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game");
+        let seed = body.find("seed_game_patch(&p)").expect(
+            "setup_import_game classifies the disc without ensuring the chain is on disk",
+        );
+        let classify = body.find("game_identity::identify").expect("the verdict call is gone");
+        assert!(seed < classify, "the chain must be seeded before the disc is classified");
     }
 
     /// The lock and the guard go back before the network work, and the online
@@ -6643,5 +8048,278 @@ struct StatsSubmitView {"),
         // never silently given a different glyph set than it asked for.
         let fallback = gamepad_contract(Some("dualshock".to_string())).expect("pure lookup");
         assert_ne!(fallback.family, "PlayStation controller");
+    }
+
+    /// Every path that boots the game has to ask what the disc is, not just the
+    /// Play button. The desktop shortcut is a shipped entry point, and a player
+    /// who uses it must not slip past the gate that protects everyone else.
+    ///
+    /// `play_now` is a plain `fn`, not a `#[tauri::command]`, so
+    /// `command_body`'s attribute-based stop does not bound it: unbounded, its
+    /// "body" would run past `open_game_folder` and everything else until the
+    /// next real command, hundreds of lines away, including this very test
+    /// module's own `may_play_*` unit tests -- which would make this
+    /// assertion pass on `play_now`'s name whether or not `play_now` itself
+    /// asks `may_play` anything. `body_until` with `open_game_folder`'s own
+    /// signature as the stop is what keeps this reading only `play_now`.
+    ///
+    /// Every scanned body is run through `code_only` before the assertion.
+    /// `may_play_before_boot`, the shared helper every one of these calls,
+    /// contains `may_play` as a literal prefix of its own name, so a comment
+    /// that merely names the helper (`// ... may_play_before_boot ...`)
+    /// satisfies `.contains("may_play")` exactly as well as the call does.
+    /// `code_only` strips every line that starts with `//` first, so only the
+    /// call itself, never prose beside it, can pass this.
+    #[test]
+    fn every_boot_path_verifies_the_image() {
+        for (name, body) in [
+            ("launch", command_body(include_str!("main.rs"), "async fn launch(")),
+            (
+                "play_now",
+                body_until(include_str!("main.rs"), "\nfn play_now(", "\nfn open_game_folder("),
+            ),
+            (
+                "netplay_open",
+                command_body(include_str!("dolphin_settings.rs"), "pub async fn netplay_open"),
+            ),
+        ] {
+            assert!(
+                code_only(body).contains("may_play"),
+                "{name} boots the game without asking whether the disc is a Reborn build"
+            );
+        }
+    }
+
+    /// Every path that COMPOSES the texture pack has to ask what the image is,
+    /// not only the ones that boot it, AND none of them may gate the sync on
+    /// the answer.
+    ///
+    /// `sync_active_now` set the folder policy from the player's preference
+    /// alone, and it is reachable from the Mods page (`mods_sync`), the pack
+    /// toggle (`mods_toggle`) and the controls-profile apply (`controls_set`).
+    /// Any of those three composed Reborn's entire pack into the folder the
+    /// emulator loads by game ID, on a machine whose disc the launch gate had
+    /// already refused.
+    ///
+    /// `netplay_open` was worse, and this test missed it first time round by
+    /// scanning only the two helpers. It wrapped the sync in `if verified`,
+    /// which is the boolean semantics this whole law exists to abolish: it
+    /// SKIPS the compose where the law requires the pack to be TAKEN AWAY, and
+    /// netplay never calls `Session::run`, so the removal that protects every
+    /// other path never ran there at all. So the call site is checked for
+    /// brace depth, not merely for presence: a sync nested one level deeper
+    /// than the gate above it is a sync inside a conditional.
+    ///
+    /// Every scanned body goes through `code_only` first, so a comment naming
+    /// the helper can never pass for a call to it, and so a brace inside a
+    /// comment cannot move the depth.
+    #[test]
+    fn every_composer_of_the_texture_pack_asks_what_the_image_is() {
+        let src = include_str!("main.rs");
+        let entry = code_only(body_until(
+            src,
+            "\npub(crate) fn sync_active_now(",
+            "\n/// The same sync, for a caller",
+        ));
+        assert!(
+            entry.contains("sync_active_judged"),
+            "sync_active_now no longer shares one body with the judged path, so the two can drift"
+        );
+        let sync = code_only(body_until(
+            src,
+            "\npub(crate) fn sync_active_judged(",
+            "\n/// Shown on the Mods page when Reborn's pack",
+        ));
+        assert!(
+            sync.contains("texture_policy_now"),
+            "sync_active_judged composes the texture pack without ever asking what the image is"
+        );
+        let decide = code_only(body_until(
+            src,
+            "\nfn texture_policy_now(",
+            "\n/// Make the game load what activation.json says.",
+        ));
+        assert!(
+            decide.contains("verdict_now"),
+            "texture_policy_now decides whether to paint Reborn's art without asking what the image is"
+        );
+        let rule = code_only(body_until(
+            src,
+            "\nimpl TextureDecision {",
+            "\n/// What the texture folder policy is right now",
+        ));
+        assert!(
+            rule.contains("texture_policy_for_launch"),
+            "the texture decision must apply the launch's own rule, not a second copy that can drift"
+        );
+
+        // Netplay: present, and at the same brace depth as the gate, which is
+        // the closure's own statement level.
+        let netplay = code_only(command_body(
+            include_str!("dolphin_settings.rs"),
+            "pub async fn netplay_open",
+        ));
+        let depth_at = |needle: &str| -> i32 {
+            let at = netplay
+                .find(needle)
+                .unwrap_or_else(|| panic!("netplay_open no longer contains {needle}"));
+            netplay[..at].chars().fold(0, |d, c| match c {
+                '{' => d + 1,
+                '}' => d - 1,
+                _ => d,
+            })
+        };
+        assert!(
+            netplay.contains("netplay_copy_is_reborns_own"),
+            "netplay judges the disc the player chose and never the derived copy it actually \
+             boots, so the bytes handed to the emulator are the one thing nothing asked about"
+        );
+        let gate = depth_at("may_play_before_boot");
+        let sync_depth = depth_at("sync_active_judged");
+        assert!(
+            netplay.find("netplay_copy_is_reborns_own").unwrap() < netplay.find("sync_active_judged").unwrap(),
+            "netplay identifies the copy it boots only after the sync has already decided"
+        );
+        assert_eq!(
+            sync_depth, gate,
+            "netplay_open's texture sync sits {} level(s) deeper than its gate, so it is inside a \
+             conditional again: skipping the sync leaves Reborn's whole pack on a disc Reborn did \
+             not verify, and netplay never calls Session::run to remove it later",
+            sync_depth - gate
+        );
+    }
+    /// Every command that can make an image the game Reborn boots has to ask
+    /// what that image is first. Three of them did not, and a disc nothing
+    /// recognized became the booted game wearing Reborn's textures. Two more
+    /// doors found later must fail here rather than reopen it quietly.
+    ///
+    /// Every scanned body is run through `code_only` before the assertion, for
+    /// the same reason `every_boot_path_verifies_the_image` does: a comment
+    /// naming `game_identity::identify` must not be able to stand in for the
+    /// call itself.
+    #[test]
+    fn every_writer_of_game_path_verifies_the_image() {
+        for (name, body) in [
+            (
+                "setup_import_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_game"),
+            ),
+            (
+                "settings_set_path",
+                command_body(include_str!("main.rs"), "async fn settings_set_path"),
+            ),
+            (
+                "setup_migrate_install",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_migrate_install"),
+            ),
+            (
+                "setup_import_existing_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_import_existing_game"),
+            ),
+            (
+                "onboarding_confirm_game",
+                command_body(include_str!("main.rs"), "async fn onboarding_confirm_game"),
+            ),
+            (
+                "setup_download_reborn_game",
+                command_body(include_str!("setup_tools.rs"), "pub async fn setup_download_reborn_game"),
+            ),
+        ] {
+            assert!(
+                code_only(body).contains("game_identity::identify"),
+                "{name} can make an image the booted game without ever asking what it is"
+            );
+        }
+    }
+
+    /// Recovery has to end on the chain head, not merely on a genuine Reborn
+    /// build.
+    ///
+    /// The disc is published once and its pin is carried forward into every
+    /// later release, which is what keeps recovery from expiring. The price
+    /// is that by the time a player downloads it, it can be several
+    /// `game-patch` builds behind. The recovery command asks the content
+    /// engine for `game-full` and nothing else, so no patch moves that image
+    /// on its way in: the walk to the head has to be its own call, the way
+    /// both imports make it. Without it the wizard says "NFL Street Reborn is
+    /// ready" over a silently stale disc, which is the class of quiet
+    /// inconsistency this whole feature exists to prevent.
+    ///
+    /// What this can check is that the call is there and in the only order
+    /// that is correct: prove the download is genuine, put it in place, then
+    /// walk it forward. What it cannot check is that the walk arrives. That
+    /// needs a real chain, a real xdelta3 and a real 1.46 GB disc, and there
+    /// is no integration harness here for any of the three, so this does not
+    /// pretend otherwise. The arrival itself is proven in the core, by
+    /// `reborn_core::game_patch::tests::
+    /// apply_walks_every_step_verifies_each_and_leaves_one_pristine_and_a_booted_copy`,
+    /// which takes a mid-chain image to the head and asserts the booted copy
+    /// is the new build. That test is the behavior; this one is the wiring.
+    #[test]
+    fn recovery_walks_the_downloaded_disc_to_the_chain_head() {
+        let body = code_only(command_body(
+            include_str!("setup_tools.rs"),
+            "pub async fn setup_download_reborn_game",
+        ));
+        let identify = body
+            .find("game_identity::identify")
+            .expect("the download becomes the game without anything asking what it is");
+        let establish = body
+            .find("establish_booted(")
+            .expect("the download never becomes the booted image");
+        let patch = body.find("patch_to_newest(").expect(
+            "a recovering player is left on whatever build the release happened to pin, \
+             while the wizard tells them the game is ready",
+        );
+        assert!(identify < establish, "an unchecked image becomes the game before it is checked");
+        assert!(
+            establish < patch,
+            "the walk to the head runs before the image it re-establishes over is in place"
+        );
+    }
+
+    /// Recovery exists for the player whose own copy could not be converted.
+    /// A disc that converted is already a Reborn build, so putting a 1.36 GB
+    /// download in front of it would be offering a cure for a fault it does
+    /// not have.
+    ///
+    /// The button object is built every time the screen draws, because the
+    /// import that decides whether it is needed has not run yet when the
+    /// screen is first assembled. So what decides whether a player ever sees
+    /// it is not whether it is built but whether it is ever put into the
+    /// card, and that is what this pins: every line that appends it has to
+    /// ask `blocked()`, the helper whose set is every outcome that leaves the
+    /// player without a Reborn build. `unknown` and `no-chain` joined that set
+    /// once a genuine Reborn build whose patch step merely refused started
+    /// being reported as `not-updated` instead: what is left on those two is a
+    /// disc that is not a Reborn build, which is what recovery is for.
+    ///
+    /// `code_only` strips `//` lines first, exactly as the guard tests above
+    /// do, so a comment mentioning recovery beside an unguarded append
+    /// cannot satisfy this.
+    #[test]
+    fn the_recovery_download_is_offered_only_for_a_disc_we_could_not_convert() {
+        let src = code_only(include_str!("../ui/onboarding.js"));
+        assert!(
+            src.contains("setup_download_reborn_game"),
+            "no recovery is offered, so a player whose disc cannot convert is stranded"
+        );
+        assert!(
+            src.contains("['unconverted','unreadable','unknown','no-chain'].includes("),
+            "the blocked set moved, so this no longer pins who recovery is offered to"
+        );
+        let mut appended = 0;
+        for (n, line) in src.lines().enumerate() {
+            if line.contains("recover") && line.contains(".append(") {
+                appended += 1;
+                assert!(
+                    line.contains("blocked()"),
+                    "onboarding.js line {} puts the recovery download in the card without asking \
+                     whether the disc is one we could not convert: {line}",
+                    n + 1
+                );
+            }
+        }
+        assert_eq!(appended, 1, "the recovery button joins the card in one place, guarded once");
     }
 }

@@ -94,6 +94,12 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         ComponentId::Mods => Some(DataDir::ModsPackages),
         ComponentId::Roster => Some(DataDir::LibraryRoster),
         ComponentId::GamePatch => Some(DataDir::LibraryGamePatch),
+        // Matches `ComponentId::install_root`: `LibraryGameFull`, never
+        // `LibraryOffline` (the BOOTED image a roster apply rewrites in
+        // place). Also not in `UPDATABLE`: recovery is resolved on demand by
+        // its own call path, never by this pipeline's automatic
+        // check/fetch/promote loop.
+        ComponentId::GameFull => Some(DataDir::LibraryGameFull),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }
@@ -1019,6 +1025,93 @@ mod tests {
 
     fn live(data_root: &Path, id: ComponentId, rel: &str) -> PathBuf {
         data_root.join(install_dir(id).unwrap().relative()).join(rel)
+    }
+
+    /// `game-full` is recovery: 1.36 GB a normal install never needs, for the
+    /// player whose own copy could not be converted. It is resolved through
+    /// this pipeline like every other component, and what keeps it away from
+    /// everybody else is not a second code path but one exclusion, here:
+    /// `UPDATABLE` does not list it, so the automatic check/fetch/promote
+    /// loop the window runs at startup never asks for it however many
+    /// releases pin it.
+    ///
+    /// This is the whole gate, which is why it is asserted beside the check
+    /// that a caller naming the component explicitly still works. The
+    /// publisher deliberately does carry the pin forward
+    /// (`publish::release::tests::
+    /// the_full_disc_carries_forward_so_recovery_does_not_expire`): keeping
+    /// it out of later releases gated nothing, because a pin is a line of
+    /// JSON, and it quietly retired recovery on the next ordinary publish.
+    #[test]
+    fn game_full_is_recovery_the_automatic_loop_never_asks_for() {
+        assert!(
+            !UPDATABLE.contains(&ComponentId::GameFull),
+            "the automatic update loop would fetch 1.36 GB of recovery on every install"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let platform = Platform::detect();
+        let src = origin(
+            1,
+            vec![
+                runtime_v1(),
+                built(ComponentId::GameFull, "2026.09.13.3", 1, vec![("NSR.iso", b"a whole disc")]),
+            ],
+        );
+        let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
+
+        let automatic = updater.check(&quick(&UPDATABLE)).unwrap();
+        assert!(
+            automatic.component(ComponentId::GameFull).is_none(),
+            "the ordinary update loop put the recovery disc in front of a player who never asked"
+        );
+
+        // Asked for by name, it resolves: the release pins it, so the engine
+        // accepts its manifest and plans it like anything else.
+        let check = updater.check(&quick(&[ComponentId::GameFull])).unwrap();
+        let plan = check
+            .component(ComponentId::GameFull)
+            .unwrap()
+            .plan()
+            .expect("recovery is available on demand");
+        assert_eq!(plan.version(), "2026.09.13.3");
+        assert!(updater.fetch(&check).unwrap().all_staged());
+        assert!(updater.promote(&check, &ImageHook::default()).unwrap().all_applied());
+
+        // It lands in `library/game-full`, not on the booted image and not in
+        // the pristine layer. Turning the landed file into a pristine image is
+        // a separate step, which is what makes that layering safe.
+        let landed = live(dir.path(), ComponentId::GameFull, "NSR.iso");
+        assert_eq!(std::fs::read(&landed).unwrap(), b"a whole disc");
+        assert_eq!(landed, dir.path().join("library").join("game-full").join("NSR.iso"));
+        assert!(!dir.path().join("library").join("offline").join("NSR.iso").exists());
+        assert!(!dir.path().join("library").join("imported").exists());
+    }
+
+    /// A release that does not pin `game-full` cannot be talked into serving
+    /// it: the pin is the only door, and without one the answer is
+    /// `NotCarried`, not an error.
+    ///
+    /// Reachable, and so worth pinning, even though the publisher now carries
+    /// the pin forward: an origin that has never published the disc has no
+    /// pin to carry. That covers a mirror, an origin set in settings, and the
+    /// product's own origin before the first `publish game-full` runs. The
+    /// recovery command turns this into a sentence for the player rather than
+    /// propagating it.
+    #[test]
+    fn game_full_is_not_carried_by_a_release_that_does_not_pin_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = Platform::detect();
+        let src = origin(1, vec![runtime_v1()]);
+        let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
+
+        let check = updater.check(&quick(&[ComponentId::GameFull])).unwrap();
+        assert!(matches!(
+            check.component(ComponentId::GameFull).unwrap().state,
+            ComponentState::NotCarried
+        ));
+        assert!(!check.has_updates());
+        assert!(check.problems().is_empty(), "not being offered recovery is not a fault");
     }
 
     #[test]

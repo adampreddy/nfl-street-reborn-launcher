@@ -89,6 +89,23 @@ impl Source {
     }
 }
 
+/// What the online image on disk was actually built from, as recorded beside
+/// it. `None` when nothing has been built, or the record will not read.
+///
+/// # Why this is how the online image is identified
+///
+/// `game_identity::identify` cannot answer "is this Reborn's own build?" about
+/// this file. The online image is derived: the pristine plus the installed
+/// roster, assembled by the Builder. The moment a roster is applied its bytes
+/// are deliberately not any node of the patch chain, so `identify` would route
+/// it to `Unconverted` and call Reborn's own artifact somebody else's disc.
+/// What IS chain-routable is the pristine it came from, and that hash is
+/// recorded here, so the question can be asked about the provenance instead of
+/// about bytes no chain will ever know.
+pub fn built_from(data_root: &Path) -> Option<Source> {
+    Source::load(data_root)
+}
+
 /// What the current pristine image and roster say the online image should be
 /// built from. `None` when there is no pristine image to build from.
 pub fn wanted(data_root: &Path) -> Result<Option<Source>> {

@@ -155,6 +155,13 @@ pub enum ComponentId {
     /// applied to the player's pristine image. About a megabyte per build,
     /// against 1.46 GB for the image itself.
     GamePatch,
+    /// The complete head-build disc, 1,459,978,240 bytes. Recovery only, for
+    /// a player whose own copy cannot be converted. It is pinned and carried
+    /// forward like every other component, so recovery does not expire; what
+    /// keeps a normal install from ever fetching it is
+    /// [`crate::content::pipeline::UPDATABLE`], which does not list it, so
+    /// only the recovery command asks for it and only on a button press.
+    GameFull,
 }
 
 impl ComponentId {
@@ -169,6 +176,7 @@ impl ComponentId {
         ComponentId::ControllerDb,
         ComponentId::Roster,
         ComponentId::GamePatch,
+        ComponentId::GameFull,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -183,6 +191,7 @@ impl ComponentId {
             ComponentId::ControllerDb => "controller-db",
             ComponentId::Roster => "roster",
             ComponentId::GamePatch => "game-patch",
+            ComponentId::GameFull => "game-full",
         }
     }
 
@@ -234,6 +243,17 @@ impl ComponentId {
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
             ComponentId::Roster => Some(DataDir::LibraryRoster.relative()),
             ComponentId::GamePatch => Some(DataDir::LibraryGamePatch.relative()),
+            // NOT `LibraryOffline`. That directory holds the BOOTED image
+            // (`crate::game_image::booted_path`), which a roster apply
+            // rewrites in place, and it is not what this component's
+            // manifest describes: a downloaded disc is a PRISTINE image
+            // (`crate::game_image` module doc), and pristine images live at
+            // `library/imported/<sha256>`, a path this method cannot express
+            // because it takes no version or hash. `library/game-full` is a
+            // neutral landing spot that collides with neither layer; turning
+            // a landed download into a pristine image is a separate, later
+            // step, not this component's install root.
+            ComponentId::GameFull => Some(DataDir::LibraryGameFull.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -1451,12 +1471,35 @@ mod tests {
         assert_eq!(ComponentId::parse("Runtime"), None, "names are exact");
     }
 
+    #[test]
+    fn the_full_disc_is_a_component_the_publisher_knows() {
+        assert_eq!(ComponentId::GameFull.as_str(), "game-full");
+        assert!(
+            ComponentId::ALL.contains(&ComponentId::GameFull),
+            "publishing and name validation need to see it"
+        );
+    }
+
+    /// The downloaded disc is a PRISTINE image, so it must never install into
+    /// the directory holding the booted one. The booted image is the mutable
+    /// layer: a roster apply rewrites it in place, and pointing the update
+    /// engine's staging and prior machinery at that path aims it at the file
+    /// the player is currently playing.
+    #[test]
+    fn the_full_disc_never_installs_over_the_booted_image() {
+        assert_ne!(
+            ComponentId::GameFull.install_root(),
+            Some(DataDir::LibraryOffline.relative()),
+            "game-full would install over the player's live game"
+        );
+    }
+
     /// The whole reason `customizable` exists. If a second component were ever
     /// marked customizable, repair would stop treating tampering with it as
     /// damage, and the online image is trusted by matchmaking precisely because
     /// it is not customizable.
     #[test]
-    fn exactly_one_of_the_seven_components_is_customizable() {
+    fn exactly_one_component_is_customizable() {
         let customizable: Vec<&str> = ComponentId::ALL
             .iter()
             .filter(|id| id.is_customizable())

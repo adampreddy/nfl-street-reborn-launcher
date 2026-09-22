@@ -227,6 +227,57 @@ for (const [file, name] of PAGES) {
  check("Settings explains why editing is unavailable",text(screen).includes(message));
 }
 
+// Files & storage is where the launch refusal and the Play badge both send a
+// player whose game file is not a Reborn build. It used to offer a path box, a
+// Browse button and nothing that could repair anything, so a refused player
+// arrived at a dead end.
+{
+ global.location = { pathname: "/index.html", hash: "#files" };
+ const answers={...FULL,launch_check:{...FULL.launch_check,game_verdict:"unconverted"}};
+ const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",answers,"full");
+ const t=text(screen);
+ check("Settings offers a repair for a disc that is not a Reborn build", t.includes("Repair my game"), t.slice(0,400));
+ check("Settings words that as a fault, never as a preference", t.includes("isn't NFL Street Reborn") && !/custom/i.test(t), t.slice(0,400));
+ global.location = { pathname: "/index.html" };
+}
+
+// The Tier 2 choice, driven: choosing an unconverted image in Settings must
+// put the choice to the player with Repair primary, and must NOT enrol them in
+// the escape hatch on its own. `acknowledgeUnverified` may only ever leave the
+// page on the call the second button makes.
+{
+ global.location = { pathname: "/index.html", hash: "#files" };
+ const seen=[];
+ const CHOICE={headline:"Your game file isn't NFL Street Reborn.",detail:"This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc.",repair:"Repair my game",play_anyway:"Play it anyway"};
+ const invoke=async(cmd,args)=>{
+   seen.push([cmd,args||{}]);
+   if(cmd==="settings_set_path"){
+     if(args&&args.acknowledgeUnverified===true)return {which:args.which,value:args.value};
+     return {which:args.which,value:null,unverified:CHOICE};
+   }
+   if(cmd in FULL)return FULL[cmd];
+   throw new Error(`no fake answer for ${cmd}`);
+ };
+ const page=await loadPageDriven("crates/reborn-ui/ui/settings.js",invoke);
+ const press=async node=>{ for(const fn of node.listeners.click||[]) await fn(); await tick(); await tick(); await tick(); };
+ const saveButton=findByAttr(page.screen(),"aria-label","Save Game image");
+ if(!saveButton){check("Settings has a Save button for the game image",false);}
+ else{
+   await press(saveButton);
+   const t=text(page.screen());
+   check("Choosing an unconverted image puts the choice to the player", t.includes(CHOICE.headline)&&t.includes("Repair my game")&&t.includes("Play it anyway"), t.slice(0,400));
+   check("Nothing is acknowledged before the player answers", !seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+   const anyway=findByText(page.screen(),"Play it anyway");
+   if(!anyway){check("The escape hatch is offered",false);}
+   else{
+     await press(anyway);
+     check("Play it anyway is the only thing that acknowledges", seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+   }
+ }
+ page.done();
+ global.location = { pathname: "/index.html" };
+}
+
 // The sign-in poll, driven tick by tick.
 //
 // `identity_sign_in_poll` does not answer until the sign-in is saved AND the

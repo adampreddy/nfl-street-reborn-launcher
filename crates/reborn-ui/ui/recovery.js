@@ -103,7 +103,7 @@ function actionsBlock() {
     ["Relaunch the game", "Start the game with your current settings.", () => act("Relaunch", "launch", launchArgs({}), { launch: true, say: launchSaid }), ready],
     ["Start with mods disabled", "Use the original textures for one session. Your mod selections are preserved.", () => act("Mods disabled", "launch", launchArgs({ modsDisabled: true }), { launch: true, say: launchSaid }), ready],
     ["Start with ReShade off", "Disable ReShade for one session. Your graphics preset is preserved.", () => act("Performance", "launch", launchArgs({ preset: "performance" }), { launch: true, say: launchSaid }), ready],
-    ["Open NFL Street Reborn Dolphin", "Open the emulator to review its settings.", () => act("Open Dolphin", "open_runtime", { runtime: get("runtime"), userDir: get("userDir") }, { say: (r) => `Started ${r.runtime}. ${r.user_dir_note}` }), true],
+    ["Open NFL Street Reborn Dolphin", "Open the emulator to review its settings. Reborn's textures apply to any NFL Street 2 disc you open here, so another copy will show Reborn's players.", () => act("Open Dolphin", "open_runtime", { runtime: get("runtime"), userDir: get("userDir") }, { say: (r) => `Started ${r.runtime}. ${r.user_dir_note}` }), true],
     ["Create a diagnostic bundle", "Copies settings, the emulator's config and log, and the session list into one folder you can send.", () => act("Diagnostic bundle", "diagnostic_bundle", { runtime: get("runtime") }, { say: (r) => `Written to ${r.folder}: ${r.files.join(", ")}.${r.skipped.length ? ` Not found: ${r.skipped.join("; ")}.` : ""}` }), true],
   ];
   for (const [label, why, on, enabled] of rows) {

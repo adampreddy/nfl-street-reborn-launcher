@@ -4,6 +4,10 @@
 input[type=checkbox],input[type=range]{accent-color:var(--accent)}
 .controller-mapping-note{padding:14px 18px;margin:0 0 20px;border:1px solid var(--control-border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
 .controller-mapping-note strong{font-size:14px;color:var(--fg)}
+.controller-needs-setup{padding:14px 18px;margin:0 0 14px;border:1px solid var(--control-border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
+.controller-needs-setup strong{display:block;font-size:14px;color:var(--fg)}
+.controller-needs-setup p{margin:6px 0 12px;font-size:12px;line-height:1.65;color:var(--muted);max-width:80ch}
+.mapping-key[data-dead="true"] small{color:var(--accent);font-weight:600}
 .controller-mapping-note p,.mapping-guidance{margin:6px 0 0;font-size:12px;line-height:1.65;color:var(--muted);max-width:80ch}
 body.shell.page-home .play-overview .play-fullscreen{display:flex;align-items:center;justify-content:center;gap:12px;padding:18px 24px;min-height:70px;margin:0;border-left:1px solid var(--line);cursor:pointer;font-size:13px;color:var(--fg)}
 .play-fullscreen input{width:18px;height:18px;margin:0;flex:none}

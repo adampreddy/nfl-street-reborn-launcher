@@ -280,6 +280,17 @@ pub fn republish_pinning(req: &CarryForward<'_>, sink: Sink<'_>) -> Result<Outco
             if pinned_name == name {
                 continue;
             }
+            // Every pinned component carries, `game-full` included. It was
+            // excluded here once, to keep 1.36 GB of recovery away from a
+            // normal install, and that was the wrong layer: a pin costs a
+            // line of JSON, not a download, and what actually decides who
+            // fetches the full disc is `content::pipeline::UPDATABLE`, which
+            // does not list it (see that module's
+            // `game_full_is_recovery_the_automatic_loop_never_asks_for`).
+            // Excluding it here bought nothing and cost the thing recovery
+            // exists for: the pin vanished from the next ordinary release, so
+            // the download silently stopped being offered to the player who
+            // needed it, with nothing to say so.
             let manifest = origin.join(pinned.url.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
             let bytes = std::fs::read(&manifest).map_err(|e| io_err(&manifest, e))?;
             let component = Component::parse(&bytes).map_err(|e| {
@@ -460,6 +471,70 @@ mod tests {
         let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
         assert_eq!((s.version.as_str(), s.sequence), ("3.0.0", 4));
         assert!(lines.iter().any(|l| l.contains("pinning roster=2026.09.06, runtime=1.0.2")), "{lines:?}");
+    }
+
+    /// The 1.36 GB recovery disc carries forward like every other pinned
+    /// component, and that is what keeps recovery available.
+    ///
+    /// It used to be excluded here, to keep the full disc away from a normal
+    /// install. That was the wrong layer. Being pinned in a release costs a
+    /// line of JSON; what decides who actually downloads it is
+    /// `content::pipeline::UPDATABLE`, which does not list `game-full`, so
+    /// the launcher's automatic check/fetch/promote loop never asks for it
+    /// however many releases pin it. That half is asserted where it lives,
+    /// by `content::pipeline::tests::
+    /// game_full_is_recovery_the_automatic_loop_never_asks_for`, and is not
+    /// duplicated here.
+    ///
+    /// What the exclusion did buy was silent expiry: the pin vanished from
+    /// the next ordinary release, so a player whose own disc could not be
+    /// converted was told the download "is not being offered right now",
+    /// with nothing anywhere to say why or to remind a publisher to re-pin
+    /// it. This test is the guard against that coming back.
+    #[test]
+    fn the_full_disc_carries_forward_so_recovery_does_not_expire() {
+        let w = world();
+        publish(&w, ComponentId::Roster, "2026.09.13", 1, &[("roster.rebornroster", b"PK")]);
+        publish(&w, ComponentId::GameFull, "2026.09.13.3", 1, &[("NSR.iso", b"disc")]);
+        assert!(sign(
+            &w,
+            "3.0.0",
+            1,
+            &[pin(ComponentId::Roster, "2026.09.13"), pin(ComponentId::GameFull, "2026.09.13.3")],
+            true,
+        )
+        .0
+        .is_done());
+
+        // Republish some unrelated component, the way an ordinary roster or
+        // runtime release does. Recovery has to survive it.
+        publish(&w, ComponentId::Runtime, "1.0.3", 1, &[("a.txt", b"alpha\n")]);
+        let mut lines = Vec::new();
+        let req = CarryForward {
+            origin: &w.origin, id: ComponentId::Runtime, version: "1.0.3",
+            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+        };
+        let outcome = republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap();
+        let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
+        assert_eq!((s.version.as_str(), s.sequence), ("3.0.0", 2));
+        assert!(
+            lines.iter().any(|l| l.contains("pinning game-full=2026.09.13.3, roster=2026.09.13, runtime=1.0.3")),
+            "the recovery disc stopped being offered the moment somebody published anything else: {lines:?}"
+        );
+
+        // And again, because expiry after one release would be a slower
+        // version of the same defect.
+        publish(&w, ComponentId::Mods, "1.1.0", 1, &[("pack.txt", b"mods\n")]);
+        let mut lines = Vec::new();
+        let req = CarryForward {
+            origin: &w.origin, id: ComponentId::Mods, version: "1.1.0",
+            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+        };
+        assert!(republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap().is_done());
+        assert!(
+            lines.iter().any(|l| l.contains("game-full=2026.09.13.3")),
+            "recovery survived one release and not the next: {lines:?}"
+        );
     }
 
     #[test]

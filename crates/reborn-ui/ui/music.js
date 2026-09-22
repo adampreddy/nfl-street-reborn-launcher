@@ -126,6 +126,20 @@ function mmss(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+// Why a song will not go in, in the same words the launcher's core uses: its
+// length, the length the game fits, and what to do about it. The limit is the
+// game's own stream buffer, so no amount of room on the disc changes it, and
+// the number comes from the core rather than being written down here twice.
+function tooLongProblem(song) {
+  // guard the number, not the formatted string: mmss(0) is "0:00", which is
+  // truthy, and would promise a cap of no seconds at all
+  const secs = status?.limit_seconds;
+  const cap = typeof secs === "number" && secs > 0 ? mmss(secs * 1000) : null;
+  const mine = mmss(song?.duration_ms);
+  if (!cap) return "This song is longer than the game fits in a slot. Trim it in an audio editor and add it again.";
+  return `${mine ? `This song is ${mine} long. ` : ""}The game fits up to ${cap} in a slot. Trim it in an audio editor and add it again.`;
+}
+
 function slots() {
   return status && Array.isArray(status.slots) ? status.slots : [];
 }
@@ -223,7 +237,7 @@ async function chooseFile(n) {
     fields = {title:picked.title||'',artist:picked.artist||'',album:picked.album||''};
     candidates = picked.candidates || []; searchText = picked.query || '';
     lookupNote = picked.details_from === 'lookup' ? 'Details found online. You can edit them below.' : picked.details_from === 'tags' ? 'Details read from your file. You can edit them below.' : 'Check the song details before adding it.';
-    if (picked.too_long) editorProblem = `This song is too long. Choose a track under ${mmss((status?.limit_seconds || 380)*1000)}.`;
+    if (picked.too_long) editorProblem = tooLongProblem(picked);
   } catch(e) { picked = {path, failed:true}; editorProblem = reason(e); }
   if (editor?.open) renderEditor();
 }

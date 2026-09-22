@@ -80,11 +80,17 @@ async function act(cmd, args) {
   try {
     const r = await call(cmd, args);
     if (cmd === "controls_set") {
-      if (r && r.synced) lastSync = r.synced;
+      if (r && r.synced) { lastSync = r.synced; if (r.synced.withheld_note) notice = r.synced.withheld_note; }
       else if (r) notice = r.sync_note;
     } else {
       lastSync = r;
       if(r?.synced===false)notice=r.note||"Your selection is saved, but the mod files could not be applied yet.";
+      // A withheld sync SUCCEEDS: synced is true, nothing failed, and the
+      // texture pack was just taken off the game file. Without this line the
+      // only channel for saying so was synced === false, so a player whose
+      // DolphinTool was missing or quarantined lost their whole HD pack off a
+      // mod toggle with no message on any screen.
+      if(r?.withheld_note)notice=r.withheld_note;
       if(r?.soundtrack_note)notice=r.soundtrack_note;
     }
     await load();

@@ -614,7 +614,7 @@ DInput/0/DualSense Wireless Controller",
     assert!(left_behind.contains("Buttons/A = `Button A`"), "{left_behind}");
 
     let mut profiles = vec![ControllerProfile::from_device(pad.identity(), 1, &[])];
-    let adopted = adopt_external_edits(&left_behind, "", &mut profiles);
+    let adopted = adopt_external_edits(&left_behind, "", &mut profiles, |_| Some(pad.device_string()));
     let (ini, _) = build_gcpad_for_slots(&scan, &profiles, None, None).expect("a file");
     eprintln!("---- first launch after upgrading from 3.0.5 ----\n{ini}---- adopted: {adopted:?}");
 

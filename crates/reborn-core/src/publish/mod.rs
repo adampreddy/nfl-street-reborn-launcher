@@ -24,6 +24,7 @@ pub mod release;
 pub mod vault;
 pub mod roster;
 pub mod game_patch;
+pub mod game_full;
 pub mod upload;
 pub mod journal;
 pub mod status;

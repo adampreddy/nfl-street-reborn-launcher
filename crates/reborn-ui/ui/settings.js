@@ -14,6 +14,12 @@ let busy = false;
 let update = null; // update_check view
 let downloaded = null; // update_download view
 let leagueSaid = null;
+// The Tier 2 choice, while it is open. Set from a settings_set_path answer
+// that stored nothing because the chosen image is NFL Street 2 but not a
+// Reborn build. The words come from the backend so the launch refusal, the
+// Play badge and this card all describe one disc. Never "custom": this is a
+// fault to repair, not a preference anybody expressed.
+let unverified = null;
 
 function ok(x) {
   return x && !x.error;
@@ -78,7 +84,14 @@ function boxesBlock() {
     const input = el("input", { id: `path-${b.key}`, type: "text", class: "wide", value: value || "", placeholder: "Detect automatically", disabled: busy });
     const save = async () => {
       const v = cleanPath(input.value);
-      await act(`Save ${b.name}`, "settings_set_path", { which: b.setting, value: v }, () => { set(b.key, v); });
+      await act(`Save ${b.name}`, "settings_set_path", { which: b.setting, value: v }, (r) => {
+        // Nothing was stored. The backend will not record the escape hatch on
+        // the player's behalf, so the choice is put to them here and the path
+        // is saved only if they take it.
+        if (r && r.unverified) { unverified = { ...r.unverified, which: b.setting, key: b.key, value: v }; return; }
+        unverified = null;
+        set(b.key, v);
+      });
     };
     const browse = async () => {
       if (busy) return;
@@ -94,6 +107,52 @@ function boxesBlock() {
   }
   sec.append(el("a", { href: "onboarding.html", class: "button", text: "Resume game setup" }));
   return sec;
+}
+
+// The repair every refusal points at.
+//
+// The Play card's badge and the launch refusal both send the player here, and
+// until now "here" was a path box and a Browse button: no way out for somebody
+// whose disc could not be converted. This is the same download the setup
+// wizard offers, on the page they are actually sent to.
+async function repairGame() {
+  await act("Repair my game", "setup_download_reborn_game", {}, () => { unverified = null; });
+}
+
+// "Play it anyway": the escape hatch, taken deliberately, for this one image.
+// This is the ONLY call in the launcher that sets acknowledgeUnverified.
+async function playItAnyway(choice) {
+  await act(choice.play_anyway, "settings_set_path", { which: choice.which, value: choice.value, acknowledgeUnverified: true }, () => {
+    unverified = null;
+    set(choice.key, choice.value);
+  });
+}
+
+// The Tier 2 choice, drawn as a modal when the browser has one and as a card
+// on the page when it does not. Repair is primary; the escape hatch is not.
+function unverifiedChoice() {
+  const choice = unverified;
+  if (!choice) return null;
+  const box = el("dialog", { id: "unverified-game", class: "settings-choice", role: "alertdialog", "aria-labelledby": "unverified-game-title" },
+    el("h2", { id: "unverified-game-title", text: choice.headline }),
+    el("p", { text: choice.detail }),
+    el("div", { class: "settings-actions" },
+      el("button", { type: "button", class: "primary", text: choice.repair, disabled: busy, onclick: () => repairGame() }),
+      el("button", { type: "button", text: choice.play_anyway, disabled: busy, onclick: () => playItAnyway(choice) }),
+      el("button", { type: "button", text: "Cancel", disabled: busy, onclick: () => { unverified = null; draw(); } })));
+  return box;
+}
+
+// The standing repair, for a player whose saved game file is already an
+// unconverted disc. Same words, same primary action, on the page both the Play
+// badge and the launch refusal send them to.
+function repairBlock() {
+  if (!ok(state.check) || state.check.game_verdict !== "unconverted") return null;
+  return el("section", { class: "block", id: "repair-game" },
+    el("h2", { text: "Your game file isn't NFL Street Reborn." }),
+    el("p", { text: "This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc." }),
+    el("div", { class: "settings-actions" },
+      el("button", { type: "button", class: "primary", text: "Repair my game", disabled: busy, onclick: () => repairGame() })));
 }
 
 function foundBlock() {
@@ -292,10 +351,16 @@ function draw() {
  const screen=document.getElementById('screen'),parts=[];
  if(problem)parts.push(refusal(problem));
  const status=el('p',{class:'settings-status',role:'status'});
- parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:'Everyday settings below. Open Dolphin for its complete set of tools.'})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened.';await refresh();}catch(e){status.textContent=reason(e);}}})),status);
+ parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:"Everyday settings below. Open Dolphin for its complete set of tools. Reborn's textures apply to any NFL Street 2 disc you open here, so another copy will show Reborn's players."})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened.';await refresh();}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
- if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
- parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));screen.replaceChildren(...parts);
+ if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(repairBlock(),unverifiedChoice(),boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
+ parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));
+ // `repairBlock` and `unverifiedChoice` draw nothing most of the time, and a
+ // null handed to replaceChildren becomes the word "null" on the page.
+ screen.replaceChildren(...parts.filter(Boolean));
+ // A real browser hides a <dialog> until it is opened; the page renders the
+ // same card either way, so a runtime without showModal still shows the choice.
+ if(unverified)document.getElementById('unverified-game')?.showModal?.();
 }
 
 async function refresh() {

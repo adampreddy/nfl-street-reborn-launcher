@@ -170,6 +170,28 @@ fn stock_or_text(stock_records: &[eatx::Record], slot: Slot, text: &Option<state
     }
 }
 
+/// How big the rebuilt image may be: the size it keeps while the files fit,
+/// and the ceiling it may grow to when a song needs a bigger allotment than
+/// the one it replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Room {
+    /// The size to write while the files fit it.
+    pub base: u64,
+    /// The largest image to write. Past this the apply is refused.
+    pub max: u64,
+}
+
+impl Room {
+    /// A full GameCube disc, grown by at most a whole soundtrack.
+    pub fn disc() -> Self {
+        Self::from_base(gcm::DISC_SIZE)
+    }
+
+    pub fn from_base(base: u64) -> Self {
+        Room { base, max: base.saturating_add(gcm::MAX_GROWTH) }
+    }
+}
+
 /// Apply the staged soundtrack to the booted image.
 pub fn apply(platform: &Platform, data_root: &Path, on: &mut dyn FnMut(Progress)) -> Result<Outcome> {
     apply_with_size(platform, data_root, None, on)
@@ -180,6 +202,17 @@ pub fn apply_with_size(
     platform: &Platform,
     data_root: &Path,
     disc_size: Option<u64>,
+    on: &mut dyn FnMut(Progress),
+) -> Result<Outcome> {
+    apply_in_room(platform, data_root, disc_size.map(Room::from_base), on)
+}
+
+/// `room` overrides both the size to write and the growth ceiling, for the
+/// toy discs the tests build.
+pub fn apply_in_room(
+    platform: &Platform,
+    data_root: &Path,
+    room: Option<Room>,
     on: &mut dyn FnMut(Progress),
 ) -> Result<Outcome> {
     let mut st = Soundtrack::load(data_root)?;
@@ -223,13 +256,18 @@ pub fn apply_with_size(
     let mut replacements = BTreeMap::new();
     replacements.insert("pathfind.dat".to_string(), built.pathfind.clone());
     replacements.insert("template.dat".to_string(), built.template.clone());
-    let size = disc_size.unwrap_or(gcm::DISC_SIZE);
-    // A disc image has one size. A soundtrack of 21 long songs can outgrow
-    // it, and that is a sentence with a number for the player, not an io
+    let room = room.unwrap_or_else(Room::disc);
+    // A song is not the same size as the one it replaces: a slot's allotment
+    // is cut to the audio in it, so a longer song needs a bigger one. The
+    // shipped disc has 675,840 bytes of slack, about 26 seconds of audio for
+    // all 21 slots, so the image grows to hold the soundtrack instead of the
+    // soundtrack being refused. It shrinks straight back when the songs do.
+    let end = gcm::end_with(&source, &replacements);
+    let size = if end <= room.base { room.base } else { gcm::align(end) };
+    // Past the ceiling is a sentence with a number for the player, not an io
     // error from the middle of a rebuild.
-    let over_bytes = gcm::overflow_with(&source, &replacements, size);
-    if over_bytes > 0 {
-        return Ok(Outcome::Refused(Refusal::DiscFull { over_bytes }));
+    if size > room.max {
+        return Ok(Outcome::Refused(Refusal::DiscFull { over_bytes: size - room.max }));
     }
     let after = gcm::repack_with_size(&source, &replacements, &part, size, &mut |done, total| on(Progress::Building { done, total }))?;
 
@@ -996,10 +1034,49 @@ mod tests {
         (dir, pristine, booted, size)
     }
 
-    /// A soundtrack that outgrows the disc is refused with the overflow in
-    /// bytes before anything is written, never an io error mid-rebuild.
+    /// A song longer than the one it replaces needs a bigger allotment, so
+    /// the rebuilt image grows past the disc's own size rather than refusing
+    /// the song. The shipped disc has 675,840 bytes of slack, about 26
+    /// seconds of audio for the whole soundtrack, so without this almost
+    /// every song a player picked was refused (2026-09-18).
     #[test]
-    fn a_soundtrack_too_big_for_the_disc_is_refused_with_the_overflow() {
+    fn a_soundtrack_bigger_than_the_disc_grows_the_image() {
+        let (dir, _pristine, booted, size) = scratch_root();
+        set_enabled(dir.path(), true).unwrap();
+        let root = dir.path();
+        let platform = Platform::detect();
+        let pack_path = root.join("big.nsrmusic");
+        pack::write_pack(&pack_path, "Big", "", "", &[pack::SongInput { slot: Slot::new(3).unwrap(), blob: blob(48_000), title: "Long".into(), artist: String::new(), album: String::new() }]).unwrap();
+        stage_pack(root, &pack_path).unwrap();
+        // the disc as it is has no room for a bigger pathfind.dat, and that
+        // is no longer a refusal
+        let applied = match apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
+            Outcome::Applied(a) => a,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(applied.slots_changed, vec![3]);
+        let grown = std::fs::metadata(&booted).unwrap().len();
+        assert!(grown > size, "the image grew to hold the song: {grown} vs {size}");
+        assert_eq!(grown % gcm::ALIGN, 0, "a disc image is 0x800 aligned");
+        // and the grown image is a disc that carries the song
+        let disc = gcm::Disc::open(&booted).unwrap();
+        assert_eq!(asf::slot_blob(pathfind::asf(&disc.read_file("pathfind.dat").unwrap()), Slot::new(3).unwrap()).unwrap(), blob(48_000));
+        assert_eq!(disc.read_file("z.dat").unwrap(), b"zz", "the files past it still read back");
+        assert!(!Soundtrack::load(root).unwrap().has_pending(), "the staging was committed");
+        // swapping in a song that fits shrinks the image back to the disc's
+        // own size: the growth lasts exactly as long as it is needed
+        let small = root.join("small.nsrmusic");
+        let fits: Vec<u8> = (0..40).flat_map(|_| synthetic_stream(SYN_PT, 4800, 256)).collect();
+        pack::write_pack(&small, "Small", "", "", &[pack::SongInput { slot: Slot::new(3).unwrap(), blob: fits, title: "Short".into(), artist: String::new(), album: String::new() }]).unwrap();
+        stage_pack(root, &small).unwrap();
+        apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::metadata(&booted).unwrap().len(), size, "no longer bigger than it has to be");
+    }
+
+    /// Growth has a ceiling, and reaching it is a sentence with a number
+    /// rather than an io error from the middle of a rebuild.
+    #[test]
+    fn a_soundtrack_past_the_growth_ceiling_is_refused_with_the_overflow() {
         let (dir, _pristine, booted, size) = scratch_root();
         set_enabled(dir.path(), true).unwrap();
         let root = dir.path();
@@ -1008,8 +1085,8 @@ mod tests {
         pack::write_pack(&pack_path, "Big", "", "", &[pack::SongInput { slot: Slot::new(3).unwrap(), blob: blob(48_000), title: "Long".into(), artist: String::new(), album: String::new() }]).unwrap();
         stage_pack(root, &pack_path).unwrap();
         let before = hash_file(&booted).unwrap();
-        // the disc as it is has no room for a bigger pathfind.dat
-        match apply_with_size(&platform, root, Some(size), &mut |_| {}).unwrap() {
+        let room = Room { base: size, max: size + gcm::ALIGN };
+        match apply_in_room(&platform, root, Some(room), &mut |_| {}).unwrap() {
             Outcome::Refused(Refusal::DiscFull { over_bytes }) => {
                 assert!(over_bytes > 0);
                 assert!(Refusal::DiscFull { over_bytes }.message().contains("too big for the disc"));
@@ -1018,8 +1095,20 @@ mod tests {
         }
         assert_eq!(hash_file(&booted).unwrap(), before, "nothing was written");
         assert!(Soundtrack::load(root).unwrap().has_pending(), "the staging is kept for the player to trim");
-        // with room to spare the same staging applies
-        assert!(matches!(apply_with_size(&platform, root, Some(size + 0x400000), &mut |_| {}).unwrap(), Outcome::Applied(_)));
+    }
+
+    /// The default ceiling is a whole maximum-size soundtrack past the
+    /// disc's own size, so no soundtrack the editor can build reaches it.
+    #[test]
+    fn the_growth_ceiling_holds_any_soundtrack_the_editor_can_build() {
+        use crate::soundtrack::{SEGMENTS_PER_SONG, SEGMENT_CEILING, SONG_SLOTS};
+        let widest = u64::from(SONG_SLOTS) * SEGMENTS_PER_SONG as u64 * SEGMENT_CEILING as u64;
+        let room = Room::disc();
+        assert_eq!(room.base, gcm::DISC_SIZE);
+        assert_eq!(room.max, gcm::DISC_SIZE + widest);
+        // even a disc whose every byte outside the soundtrack is full leaves
+        // room for 21 slots at the per-segment ceiling
+        assert!(room.max - room.base >= widest);
     }
 
     #[test]
