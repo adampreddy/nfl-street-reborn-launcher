@@ -646,6 +646,21 @@ mod tests {
         assert_eq!(err.to_string(), "Pick a field first.");
     }
 
+    /// The server's "nothing changed" answer (its 25 s hold ran out) carries cursors and nothing
+    /// else. It must decode as `changed: false`, never as a snapshot with no match in it.
+    #[test]
+    fn a_quiet_poll_answer_is_not_an_empty_snapshot() {
+        let url = format!("{ORIGIN}/v1/mm/live?since=22&chat=0");
+        let quiet = r#"{"ok":true,"changed":false,"epoch":"e1","version":22,"hold_ms":25000,"poll_after_ms":0,"restarting":false}"#;
+        let http = FakeHttp::default().reply(&url, 200, quiet);
+        let s = Client::new(&http, ORIGIN, "t").live(22, 0).expect("decodes");
+        assert!(!s.changed);
+        assert_eq!(s.version, 22);
+        assert!(s.matched.is_none() && s.ticket.is_none(), "and it names nothing - which is why it must not replace the last snapshot");
+        let full: Snapshot = serde_json::from_str(MATCHED).unwrap();
+        assert!(full.changed, "a real snapshot says so");
+    }
+
     #[test]
     fn a_server_with_matchmaking_off_is_the_kill_switch_not_an_error() {
         let url = format!("{ORIGIN}/v1/mm/live?since=0&chat=0");

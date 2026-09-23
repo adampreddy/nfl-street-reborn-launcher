@@ -157,6 +157,18 @@ fn drive() {
             continue;
         }
         let room = Room::from_status(&crate::dolphin_settings::netplay_status().unwrap_or_default());
+        // Dolphin's own refusal ("Everyone needs the same game file before starting.", "Choose a
+        // fixed graphics resolution...") used to vanish: the fork writes it to the status file
+        // and nothing read it. It is the relay error now, on the page and in the log.
+        if room.phase == "error" {
+            if let Some(e) = room.error.as_deref().filter(|e| !e.is_empty()) {
+                let msg = format!("Dolphin: {e}");
+                if lock(&STATE).relay_error.as_deref() != Some(msg.as_str()) {
+                    mm_log(&format!("room error: {e}"));
+                    lock(&STATE).relay_error = Some(msg);
+                }
+            }
+        }
         for step in relay_driver::plan(matched.as_ref(), &room, &mut mem) {
             let result = run_step(matched.as_ref(), &step);
             match result {
@@ -254,6 +266,26 @@ fn run(platform: Platform) {
         let client = Client::new(&http, origin, token);
 
         match client.live(since, chat) {
+            Ok(snap) if !snap.changed => {
+                // A "nothing changed" answer: the server's 25 s hold ran out, or it asked us to
+                // back off. It carries cursors and NO snapshot fields. Taking it as a snapshot made
+                // the launcher forget its own match every 25 quiet seconds -- the page fell back to
+                // "Find a game", and the relay closed the Dolphin room as "no match" (2026-09-23,
+                // Adam's first real test, 00:43:38 in matchmaking.log). Cursors move; state stays.
+                backoff = Duration::from_secs(2);
+                if !epoch.is_empty() && epoch != snap.epoch {
+                    mm_log("poll: server restarted (quiet), re-reading from scratch");
+                    since = 0;
+                } else {
+                    since = snap.version;
+                }
+                epoch = snap.epoch.clone();
+                let wait = if snap.restarting { 250 } else { snap.poll_after_ms.min(10_000) };
+                set_link(Link::Connected, None, None);
+                if wait > 0 {
+                    std::thread::sleep(Duration::from_millis(wait));
+                }
+            }
             Ok(snap) => {
                 backoff = Duration::from_secs(2);
                 // A new epoch means the server restarted. The snapshot is complete, so there is

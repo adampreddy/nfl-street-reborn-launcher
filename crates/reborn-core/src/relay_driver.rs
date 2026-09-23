@@ -34,6 +34,8 @@ pub struct Room {
     pub players: Vec<RoomPlayer>,
     /// Pad 1..4 -> NetPlay player id, 0 = nobody.
     pub ports: Vec<u8>,
+    /// The fork's own refusal text when `phase` is `error`.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -57,6 +59,7 @@ impl Room {
             code: v["code"].as_str().map(str::trim).filter(|c| is_host_code(c)).map(str::to_string),
             players,
             ports: v["ports"].as_array().map(|a| a.iter().map(|p| p.as_u64().unwrap_or(0).min(255) as u8).collect()).unwrap_or_default(),
+            error: v["error"].as_str().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string),
         }
     }
 
@@ -288,6 +291,7 @@ mod tests {
             active: true, phase: phase.into(), code: Some("AbCd1234".into()),
             players: players.iter().map(|(id, n)| RoomPlayer { id: *id, name: n.to_string(), ping_ms: Some(20) }).collect(),
             ports: ports.to_vec(),
+            error: None,
         }
     }
 
@@ -440,5 +444,7 @@ mod tests {
         assert_eq!(r.players[0].ping_ms, Some(12));
         assert_eq!(r.ports, vec![1, 2, 0, 0]);
         assert_eq!(Room::from_status(&serde_json::json!({"phase": "idle", "active": false})).active, false);
+        let refused = Room::from_status(&serde_json::json!({"phase": "error", "active": true, "error": "Everyone needs the same game file before starting."}));
+        assert_eq!(refused.error.as_deref(), Some("Everyone needs the same game file before starting."));
     }
 }
