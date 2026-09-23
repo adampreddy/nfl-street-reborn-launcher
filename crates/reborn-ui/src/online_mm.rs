@@ -164,6 +164,15 @@ fn live_plays_loop(platform: Platform) {
             return;
         }
     };
+    // Dolphin's play tracker writes to this folder for every game, not only a matched one, so a player
+    // who never queues for matchmaking -- and so never runs a `LivePoster`, the only other place this
+    // ever happens -- would otherwise never have it swept at all. One pass, here at startup, against
+    // whatever folder NetPlay itself would boot against right now (see `netplay_open`); nothing to
+    // resolve yet (no runtime found, no settings written) just skips it, same as any other best-effort
+    // sweep.
+    if let Ok((_, user_dir)) = crate::dolphin_settings::config_user(&platform, None) {
+        reborn_core::live_plays::prune_live(&user_dir, &state_dir, None);
+    }
     let http = crate::http_client();
     let mut current: Option<(String, reborn_core::live_plays::LivePoster)> = None;
     let mut ended_at: Option<u64> = None;

@@ -277,16 +277,35 @@ pub enum Sent {
     Stop(String),
 }
 
+/// Mirrors `backend::classify`'s rule for the same reason (see its doc comment): only our server's
+/// own JSON, saying `"ok": false`, may retire the token. Anything else on a 401 -- a gateway's own
+/// sign-in page, a captive portal, an empty body -- is some other hop between us and the server, not
+/// a revoked token, so it must not be treated as a permanent sign-out.
+fn server_signed_us_out(body: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        ok: Option<bool>,
+    }
+    serde_json::from_str::<Reply>(body).is_ok_and(|r| r.ok == Some(false))
+}
+
 /// Any 2xx is final -- `dropped` included: the server lost it and a resend cannot recover it (backend
 /// README). 429 / 5xx / no connection: keep it and send it again. Any 4xx other than 401 or 429: the
-/// server refused that specific play; move on. 401: this device is signed out; stop. 1xx and 3xx (a
-/// captive-portal redirect, say) are not a real reply from the backend either way, so they are treated
-/// like a transport hiccup: retry rather than discard a play on a status the backend never actually sends.
+/// server refused that specific play; move on. 401: this device is signed out only when the body is our
+/// server's own `{"ok":false,...}`; otherwise stop. 1xx and 3xx (a captive-portal redirect, say) are not
+/// a real reply from the backend either way, so they are treated like a transport hiccup: retry rather
+/// than discard a play on a status the backend never actually sends.
 pub fn classify(reply: &crate::platform::Result<crate::net::HttpResponse>) -> Sent {
     match reply {
         Err(_) => Sent::Retry,
         Ok(r) if (200..300).contains(&r.status) => Sent::Done,
-        Ok(r) if r.status == 401 => Sent::Stop("signed out".into()),
+        Ok(r) if r.status == 401 => {
+            if server_signed_us_out(&r.body) {
+                Sent::Stop("signed out".into())
+            } else {
+                Sent::Retry
+            }
+        }
         Ok(r) if r.status == 429 || r.status >= 500 => Sent::Retry,
         Ok(r) if (400..500).contains(&r.status) => Sent::Drop(format!("{} {}", r.status, r.body.chars().take(120).collect::<String>())),
         Ok(_) => Sent::Retry,
@@ -315,20 +334,67 @@ fn has_unposted_bytes(cursor: &Cursor, file: &str, len: u64) -> bool {
     through < len
 }
 
+/// Whether `cursor` has itself ever looked at `file` at all -- it appears in `done` or `baseline` --
+/// AND, by its own reckoning ([`has_unposted_bytes`]), has not taken it all the way through yet.
+///
+/// This is deliberately stricter than `has_unposted_bytes` alone: that function's "no entry counts as
+/// unposted" default is right for the ONE cursor a running match's own poster consults about ITS OWN
+/// Live folder -- a file it has not reached yet in file order is still ahead of it, not abandoned. It
+/// is wrong once many SAVED cursors are consulted at once, one per match: under that default, any
+/// cursor that simply never mentions a name -- which is every cursor except the one match that ever
+/// wrote to it -- would count as "still needing" it forever, and a solo-play file no poster is ever
+/// watching would never be swept at all, which is the exact growth this sweep exists to stop.
+fn cursor_tracks_and_needs(cursor: &Cursor, file: &str, len: u64) -> bool {
+    (cursor.done.contains_key(file) || cursor.baseline.contains_key(file)) && has_unposted_bytes(cursor, file, len)
+}
+
 fn is_stale(modified: std::io::Result<SystemTime>, now: SystemTime) -> bool {
     let Ok(modified) = modified else { return false };
     now.duration_since(modified).is_ok_and(|age| age >= PRUNE_AFTER)
 }
 
-/// Sweeps session files this match's cursor has fully consumed and that have sat untouched for
-/// [`PRUNE_AFTER`], so a Live folder fed by many finished matches never grows the per-tick directory
-/// listing without bound. Best-effort: every error is swallowed, since a failed sweep is never worse than
-/// no sweep, and must never be allowed to stop the poster from starting.
-fn prune_live_dir(live: &Path, cursor: &Cursor, now: SystemTime) {
-    for file in session_files(live) {
+/// Every saved cursor in `state_dir`. Best-effort like the rest of this sweep: a cursor file that fails
+/// to parse, or a `state_dir` that cannot even be listed, is simply left out -- exactly as if it were
+/// missing -- so a read error can only ever protect too little, never delete too much.
+fn load_all_cursors(state_dir: &Path) -> Vec<Cursor> {
+    std::fs::read_dir(state_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".cursor.json"))
+        .filter_map(|e| Cursor::load(&e.path()))
+        .collect()
+}
+
+/// Sweeps `user_dir`'s Live folder against every cursor saved in `state_dir` at once, deleting a
+/// session file only when EVERY cursor that ever looked at it agrees it is fully posted (or none ever
+/// looked at it at all) and it has sat untouched for [`PRUNE_AFTER`]. Best-effort: every error is
+/// swallowed, since a failed sweep is never worse than no sweep.
+///
+/// Meant to run both from [`LivePoster::start`], once a match begins, and once more at launcher
+/// startup: the tracker that writes these files runs for every game, not only a matched one, so a
+/// player who never queues for matchmaking -- and so never starts a `LivePoster` at all -- would
+/// otherwise never have this folder swept, and it would grow forever.
+///
+/// `keep_match`, when given, is folded in as a cursor of its own whenever `state_dir` does not already
+/// have one under that name: `LivePoster::start`'s own call needs this the moment a match's cursor has
+/// just been begun and has never been saved even once yet, so its own baseline -- "nothing already
+/// sitting here when this match started was ever this match's to post" -- is honoured on this, its very
+/// first pass, exactly as it was before this sweep also had to answer for every OTHER match's cursor.
+pub fn prune_live(user_dir: &Path, state_dir: &Path, keep_match: Option<&str>) {
+    let live = live_dir(user_dir);
+    let now = SystemTime::now();
+    let mut cursors = load_all_cursors(state_dir);
+    if let Some(id) = keep_match {
+        if !cursors.iter().any(|c| c.match_id == id) {
+            cursors.push(Cursor::begin(id, &live));
+        }
+    }
+    for file in session_files(&live) {
         let path = live.join(&file);
         let Ok(meta) = std::fs::metadata(&path) else { continue };
-        if has_unposted_bytes(cursor, &file, meta.len()) {
+        let len = meta.len();
+        if cursors.iter().any(|c| cursor_tracks_and_needs(c, &file, len)) {
             continue;
         }
         if is_stale(meta.modified(), now) {
@@ -379,7 +445,7 @@ impl LivePoster {
         let dirty = loaded.is_none();
         let cursor = loaded.unwrap_or_else(|| Cursor::begin(&ctx.match_id, &live));
         let now = SystemTime::now();
-        prune_live_dir(&live, &cursor, now);
+        prune_live(user_dir, state_dir, Some(&ctx.match_id));
         prune_state_dir(state_dir, &cursor_path, now);
         LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None, dirty }
     }
@@ -714,7 +780,9 @@ mod tests {
         for s in [400, 403, 404, 409, 413] {
             assert!(matches!(classify(&ok(s, "{\"ok\":false,\"error\":\"x\"}")), Sent::Drop(_)), "{s}");
         }
-        assert!(matches!(classify(&ok(401, "")), Sent::Stop(_)));
+        assert!(matches!(classify(&ok(401, "{\"ok\":false,\"error\":\"signed out\"}")), Sent::Stop(_)), "our server's own ok:false 401 stops the feed");
+        assert_eq!(classify(&ok(401, "")), Sent::Retry, "an empty 401 body is not our server saying so");
+        assert_eq!(classify(&ok(401, "<html>captive portal</html>")), Sent::Retry, "a gateway's own 401 page is not our server saying so");
         for s in [429, 500, 502, 503] {
             assert_eq!(classify(&ok(s, "")), Sent::Retry, "{s}");
         }
@@ -783,7 +851,7 @@ mod tests {
         let (user, state) = setup();
         let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
         live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
-        let http = Script::new(vec![Some((401, ""))]);
+        let http = Script::new(vec![Some((401, "{\"ok\":false,\"error\":\"signed out\"}"))]);
         assert!(poster.tick(&http, "https://api.test", "tok", 0).stopped.is_some());
         assert!(poster.tick(&http, "https://api.test", "tok", 60_000).stopped.is_some());
         assert_eq!(http.posts.lock().unwrap().len(), 1, "nothing more after a 401");
@@ -910,6 +978,36 @@ mod tests {
     }
 
     #[test]
+    fn a_startup_prune_never_deletes_a_file_another_matchs_cursor_still_needs() {
+        // No `LivePoster` is running at all here -- this is the once-at-launch sweep, which has no
+        // match of its own to protect and must instead consult every cursor `state_dir` holds.
+        let (user, state) = setup();
+        let live = live_dir(user.path());
+        let f = "20260101-000000-1.plays.jsonl";
+        live_append(user.path(), f, &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let other_id = "11111111-0000-4000-8000-000000000002";
+        // Only play 1 is accounted for; play 2's bytes are still sitting past `done`.
+        let c = Cursor { match_id: other_id.to_string(), done: BTreeMap::from([(f.to_string(), line(1, 1, 1, 3).len() as u64)]), ..Default::default() };
+        c.save(&state.path().join(format!("{other_id}.cursor.json"))).unwrap();
+        set_mtime(&live.join(f), SystemTime::now() - 20 * DAY);
+        prune_live(user.path(), state.path(), None);
+        assert!(live.join(f).exists(), "another match's cursor still has unposted bytes in this file; the startup sweep must leave it alone");
+    }
+
+    #[test]
+    fn a_startup_prune_sweeps_a_file_no_cursor_ever_tracked() {
+        // Solo play never starts a `LivePoster`, so no cursor anywhere ever mentions this file. That
+        // must not read as "still needed forever" -- it is exactly the buildup this sweep exists to stop.
+        let (user, state) = setup();
+        let live = live_dir(user.path());
+        let f = "20260101-000000-1.plays.jsonl";
+        live_append(user.path(), f, &line(1, 1, 1, 3));
+        set_mtime(&live.join(f), SystemTime::now() - 20 * DAY);
+        prune_live(user.path(), state.path(), None);
+        assert!(!live.join(f).exists(), "a stale file no cursor ever looked at is swept");
+    }
+
+    #[test]
     fn tick_lists_the_live_dir_once_per_call_not_once_per_play() {
         let (user, state) = setup();
         let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
@@ -927,7 +1025,7 @@ mod tests {
         let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
         assert!(poster.ready(0));
         live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
-        let http = Script::new(vec![None, Some((401, ""))]);
+        let http = Script::new(vec![None, Some((401, "{\"ok\":false,\"error\":\"signed out\"}"))]);
         poster.tick(&http, "https://api.test", "tok", 0); // transport failure: back off 1 s
         assert!(!poster.ready(500));
         // A not-ready tick with no token sends nothing.
