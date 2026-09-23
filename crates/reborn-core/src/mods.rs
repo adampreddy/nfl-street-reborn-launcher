@@ -74,6 +74,7 @@
 use crate::controller::ControlsProfile;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -1117,6 +1118,9 @@ pub struct PristineEntry {
     /// Path relative to the pristine root, forward slashes.
     pub relative: String,
     pub bytes: u64,
+    /// Last write time, from the metadata the walk already reads. `None`
+    /// where the filesystem does not report one.
+    pub modified: Option<SystemTime>,
 }
 
 /// What is in the pristine tree.
@@ -1213,6 +1217,7 @@ fn walk(root: &Path) -> Result<PristineListing> {
                 out.files.push(PristineEntry {
                     relative,
                     bytes: meta.len(),
+                    modified: meta.modified().ok(),
                 });
             } else {
                 out.unsupported.push(path);
@@ -1222,6 +1227,23 @@ fn walk(root: &Path) -> Result<PristineListing> {
 
     out.files.sort_by(|a, b| a.relative.cmp(&b.relative));
     Ok(out)
+}
+
+/// Whether two write times name the same write.
+///
+/// FAT32 keeps write times to two seconds and exFAT to ten milliseconds, so a
+/// copy onto one can come back rounded. Anything within that is the same
+/// write; a file replaced by a later update is minutes or days apart. A time
+/// the filesystem did not report is no evidence either way.
+fn same_write_time(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
+    const SLACK: Duration = Duration::from_secs(2);
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let apart = a.duration_since(b).or_else(|_| b.duration_since(a)).unwrap_or_default();
+            apart <= SLACK
+        }
+        _ => true,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,6 +1266,10 @@ pub enum LinkMethod {
 pub enum EntrySource {
     Pristine {
         path: PathBuf,
+        /// The source's last write time when the plan was made. A composed
+        /// link shares it; a pristine file replaced under the same name does
+        /// not. See [`Discrepancy::PristineFileReplaced`].
+        modified: Option<SystemTime>,
     },
     Overlay {
         id: ModId,
@@ -1975,6 +2001,14 @@ pub enum Discrepancy {
         planned: u64,
         recorded: u64,
     },
+    /// A pristine file was replaced under the same name, so the composed
+    /// link still holds the old bytes. A roster update does this to the
+    /// portraits it rewrites, and neither the textures identity nor any count
+    /// changes. `count` is how many files differ; `relative` is the first.
+    PristineFileReplaced {
+        relative: String,
+        count: u64,
+    },
     MissingOverlay {
         relative: String,
     },
@@ -2023,6 +2057,10 @@ impl Discrepancy {
             Discrepancy::PlanCountDiffers { planned, recorded } => {
                 format!("the plan has {planned} files, the tree records {recorded}.")
             }
+            Discrepancy::PristineFileReplaced { relative, count } => format!(
+                "{count} pristine file(s) changed since the tree was composed, \
+                 {relative} first."
+            ),
             Discrepancy::MissingOverlay { relative } => {
                 format!("the mod file {relative} is not in the tree.")
             }
@@ -2197,6 +2235,7 @@ impl Composer {
                     bytes: file.bytes,
                     source: EntrySource::Pristine {
                         path: join_relative(&req.pristine_root, &file.relative),
+                        modified: file.modified,
                     },
                 },
             );
@@ -2351,7 +2390,7 @@ impl Composer {
 
         for entry in &plan.entries {
             let source = match &entry.source {
-                EntrySource::Pristine { path } => path,
+                EntrySource::Pristine { path, .. } => path,
                 EntrySource::Overlay { path, .. } => {
                     overlaid += 1;
                     path
@@ -2385,6 +2424,19 @@ impl Composer {
                 path: dest.clone(),
                 source,
             })?;
+            // A copy has to carry its source's write time, as a link does, or
+            // verification would read every copied file as replaced and
+            // rebuild on every launch. Windows keeps it on copy; other
+            // platforms do not.
+            if let Ok(when) = std::fs::metadata(source).and_then(|m| m.modified()) {
+                if let Err(e) = std::fs::File::options()
+                    .write(true)
+                    .open(&dest)
+                    .and_then(|f| f.set_modified(when))
+                {
+                    tracing::warn!("could not carry the write time onto {}: {e}", dest.display());
+                }
+            }
             copied += 1;
             bytes_copied += written;
         }
@@ -2575,6 +2627,33 @@ impl Composer {
             found.push(Discrepancy::EntryCountDiffers {
                 recorded: record.total_entries,
                 found: on_disk,
+            });
+        }
+
+        // The pristine side, by length and write time, from metadata both
+        // walks already read, so this costs no extra disk access. A link and
+        // its source are one file and always agree; a source replaced under
+        // the same name (a roster rewriting a portrait) does not.
+        let composed: BTreeMap<&str, &PristineEntry> =
+            listing.files.iter().map(|f| (f.relative.as_str(), f)).collect();
+        let mut replaced: Option<String> = None;
+        let mut replaced_count = 0u64;
+        for entry in &plan.entries {
+            let EntrySource::Pristine { modified, .. } = &entry.source else {
+                continue;
+            };
+            let same = composed.get(entry.relative.as_str()).is_some_and(|c| {
+                c.bytes == entry.bytes && same_write_time(c.modified, *modified)
+            });
+            if !same {
+                replaced_count += 1;
+                replaced.get_or_insert_with(|| entry.relative.clone());
+            }
+        }
+        if let Some(relative) = replaced {
+            found.push(Discrepancy::PristineFileReplaced {
+                relative,
+                count: replaced_count,
             });
         }
 
@@ -3312,7 +3391,7 @@ mod tests {
         // a source that vanishes between planning and building
         let plan2 = planned(&p, &req);
         let victim = match &plan2.entries[0].source {
-            EntrySource::Pristine { path } => path.clone(),
+            EntrySource::Pristine { path, .. } => path.clone(),
             EntrySource::Overlay { path, .. } => path.clone(),
         };
         let bytes = std::fs::read(&victim).unwrap();
@@ -4219,6 +4298,7 @@ mod tests {
                     bytes: 1,
                     source: EntrySource::Pristine {
                         path: PathBuf::from(relative),
+                        modified: None,
                     },
                 },
             );
@@ -4696,14 +4776,56 @@ mod tests {
         std::fs::rename(&fx.pristine, &prior).unwrap();
         lay_pristine(&fx.pristine);
         std::fs::write(fx.pristine.join(BALL), b"the NEW football").unwrap();
-        let same = done(sync_active(&p, &guard, &req, 2).unwrap());
-        assert_eq!(same.tree, TreeStep::AlreadyCurrent, "same identity: the count check cannot see a swap, by design");
-        assert_eq!(std::fs::read(&composed).unwrap(), b"the original football", "and the game still gets the old bytes");
-
         req.pristine_identity = Some("1.2.0#3".into());
-        let rebuilt = done(sync_active(&p, &guard, &req, 3).unwrap());
+        let rebuilt = done(sync_active(&p, &guard, &req, 2).unwrap());
         assert!(matches!(rebuilt.tree, TreeStep::Rebuilt { .. }), "{:?}", rebuilt.tree);
         assert_eq!(std::fs::read(&composed).unwrap(), b"the NEW football");
+    }
+
+    /// The roster case, 2026-09-23: the Builder rewrites a portrait INTO the
+    /// pristine tree under its old name. The new file is a new file, so the
+    /// composed link keeps the old face, and the textures identity, every
+    /// name and every count stay the same. Michael Penix Jr. took Cooper
+    /// Rush's slot and wore Rush's face on every install. Same length here on
+    /// purpose: a 64x64 BC7 portrait is the same size whoever it shows.
+    #[test]
+    fn a_pristine_file_replaced_under_the_same_name_rebuilds_the_composed_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let user_dir = fx.run.parent().unwrap().join("User");
+        let guard = lock(&p, &fx);
+        let mut req = sync_request(&fx, &user_dir);
+        req.pristine_identity = Some("1.3.3#8".into());
+        done(sync_active(&p, &guard, &req, 1).unwrap());
+        let composed = composed_root(&user_dir, &game()).join(BALL);
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the original football");
+
+        // what the Builder does: write a new file, rename it over the old one
+        let source = fx.pristine.join(BALL);
+        let fresh = fx.pristine.join("portrait.tmp");
+        write(&fresh, b"the replaced football");
+        assert_eq!(std::fs::metadata(&fresh).unwrap().len(), std::fs::metadata(&source).unwrap().len());
+        let later = std::fs::metadata(&source).unwrap().modified().unwrap() + Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&fresh).unwrap().set_modified(later).unwrap();
+        std::fs::rename(&fresh, &source).unwrap();
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the original football", "the link kept the old bytes");
+
+        let rebuilt = done(sync_active(&p, &guard, &req, 2).unwrap());
+        assert!(matches!(rebuilt.tree, TreeStep::Rebuilt { .. }), "{:?}", rebuilt.tree);
+        assert_eq!(std::fs::read(&composed).unwrap(), b"the replaced football");
+
+        let again = done(sync_active(&p, &guard, &req, 3).unwrap());
+        assert_eq!(again.tree, TreeStep::AlreadyCurrent, "a rebuilt tree must not rebuild again");
+    }
+
+    #[test]
+    fn write_times_within_filesystem_rounding_are_the_same_write() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        assert!(same_write_time(Some(t), Some(t)));
+        assert!(same_write_time(Some(t), Some(t + Duration::from_secs(2))), "FAT32 rounds to two seconds");
+        assert!(same_write_time(Some(t + Duration::from_millis(10)), Some(t)), "either direction");
+        assert!(!same_write_time(Some(t), Some(t + Duration::from_secs(3))));
+        assert!(same_write_time(None, Some(t)), "no time reported is no evidence");
     }
 
     // -----------------------------------------------------------------------
