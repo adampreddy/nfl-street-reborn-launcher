@@ -3,7 +3,7 @@
 //! remembers, in a small cursor file, how far the server has taken them. The cursor IS the durable queue:
 //! a play that failed to send is simply the next one read. Pure file I/O -- no network, no clocks.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The backend refuses a live play body over 16 KB; a longer line is skipped, never sent.
@@ -84,8 +84,15 @@ pub enum Next {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cursor {
     pub match_id: String,
-    /// Session files that already existed when this match began: another game's, never posted.
-    pub baseline: BTreeSet<String>,
+    /// File -> byte length it already had when this match's cursor first saw it. A session file can
+    /// predate the cursor two ways: it is a leftover from another game (nothing in it is ever this
+    /// match's), or -- Task 5's resume case -- this match's own poster is only now starting to watch a
+    /// file Dolphin had already begun writing. Both look identical at this instant: a name with some
+    /// bytes already in it. There is no way to tell them apart from the file alone, so this records only
+    /// "already accounted for up to here" rather than excluding the name outright: whatever was already
+    /// there is never posted, but bytes appended afterward are read exactly like any other file's. A
+    /// leftover file simply never grows again, so in practice it stays silent forever anyway.
+    pub baseline: BTreeMap<String, u64>,
     /// File -> byte offset the server has taken it through.
     pub done: BTreeMap<String, u64>,
     /// File -> games this match had finished when the file was first seen (Task 5 fills it).
@@ -94,7 +101,14 @@ pub struct Cursor {
 
 impl Cursor {
     pub fn begin(match_id: &str, live_dir: &Path) -> Cursor {
-        Cursor { match_id: match_id.to_string(), baseline: session_files(live_dir).into_iter().collect(), ..Default::default() }
+        let baseline = session_files(live_dir)
+            .into_iter()
+            .map(|f| {
+                let len = std::fs::metadata(live_dir.join(&f)).map(|m| m.len()).unwrap_or(0);
+                (f, len)
+            })
+            .collect();
+        Cursor { match_id: match_id.to_string(), baseline, ..Default::default() }
     }
 
     pub fn load(path: &Path) -> Option<Cursor> {
@@ -116,10 +130,10 @@ impl Cursor {
     }
 
     pub fn next(&self, live_dir: &Path) -> Next {
-        let files: Vec<String> = session_files(live_dir).into_iter().filter(|f| !self.baseline.contains(f)).collect();
+        let files: Vec<String> = session_files(live_dir);
         for (i, file) in files.iter().enumerate() {
             let path = live_dir.join(file);
-            let from = self.done.get(file).copied().unwrap_or(0);
+            let from = self.done.get(file).copied().unwrap_or_else(|| self.baseline.get(file).copied().unwrap_or(0));
             // Cheap first: a caught-up file costs one size check and no read. This runs every second during netplay.
             let Ok(len) = std::fs::metadata(&path).map(|m| m.len()) else { continue };
             if from >= len {
@@ -163,6 +177,165 @@ impl Cursor {
             });
         }
         Next::Nothing
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchCtx {
+    pub match_id: String,
+    pub best_of: u8,
+    /// Games of this match already recorded by the server when the current Dolphin process started.
+    pub games_before: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Decision {
+    Post { game_seq: u32, body: Vec<u8> },
+    Skip(&'static str),
+}
+
+/// Whether a play goes out, and as which game of the series.
+pub fn decide(ctx: &MatchCtx, game_base: u32, play: &LivePlay) -> Decision {
+    if play.human_sides == 0 {
+        return Decision::Skip("no human in control");
+    }
+    // Both PCs restart together, but the first try's plays are already on the feed under the same seqs;
+    // the final capture is the record for a restarted game.
+    if play.attempt > 1 {
+        return Decision::Skip("restarted game");
+    }
+    let game_seq = game_base + play.game_no;
+    if game_seq < 1 || game_seq > ctx.best_of as u32 {
+        return Decision::Skip("past the last game of the series");
+    }
+    let body = serde_json::json!({ "match_id": ctx.match_id, "game_seq": game_seq, "play": play.raw });
+    let body = serde_json::to_vec(&body).unwrap_or_default();
+    if body.len() > MAX_LINE_BYTES {
+        return Decision::Skip("play over 16 KB");
+    }
+    Decision::Post { game_seq, body }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sent {
+    Done,
+    Drop(String),
+    Retry,
+    Stop(String),
+}
+
+/// Any 2xx is final -- `dropped` included: the server lost it and a resend cannot recover it (backend
+/// README). 429 / 5xx / no connection: keep it and send it again. Any other 4xx: the server refused that
+/// play; move on. 401: this device is signed out; stop.
+pub fn classify(reply: &crate::platform::Result<crate::net::HttpResponse>) -> Sent {
+    match reply {
+        Err(_) => Sent::Retry,
+        Ok(r) if (200..300).contains(&r.status) => Sent::Done,
+        Ok(r) if r.status == 401 => Sent::Stop("signed out".into()),
+        Ok(r) if r.status == 429 || r.status >= 500 => Sent::Retry,
+        Ok(r) => Sent::Drop(format!("{} {}", r.status, r.body.chars().take(120).collect::<String>())),
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TickReport {
+    pub posted: u32,
+    pub skipped: u32,
+    pub dropped: u32,
+    pub retrying: bool,
+    pub stopped: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct LivePoster {
+    ctx: MatchCtx,
+    live: PathBuf,
+    cursor_path: PathBuf,
+    cursor: Cursor,
+    fails: u32,
+    not_before_ms: u64,
+    stopped: Option<String>,
+}
+
+/// One tick sends at most this many plays, so a long backlog never holds the loop.
+const PER_TICK: u32 = 20;
+
+impl LivePoster {
+    pub fn start(ctx: MatchCtx, user_dir: &Path, state_dir: &Path) -> LivePoster {
+        let live = live_dir(user_dir);
+        let cursor_path = state_dir.join(format!("{}.cursor.json", ctx.match_id));
+        let cursor = Cursor::load(&cursor_path)
+            .filter(|c| c.match_id == ctx.match_id)
+            .unwrap_or_else(|| Cursor::begin(&ctx.match_id, &live));
+        LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None }
+    }
+
+    pub fn set_games_before(&mut self, games_before: u32) {
+        self.ctx.games_before = games_before;
+    }
+
+    pub fn caught_up(&self) -> bool {
+        matches!(self.cursor.next(&self.live), Next::Nothing)
+    }
+
+    fn step_past(&mut self, file: &str, end: u64) {
+        self.cursor.advance(file, end);
+        let _ = self.cursor.save(&self.cursor_path);
+    }
+
+    pub fn tick(&mut self, http: &dyn crate::net::Http, origin: &str, token: &str, now_ms: u64) -> TickReport {
+        let mut report = TickReport { stopped: self.stopped.clone(), ..Default::default() };
+        if self.stopped.is_some() || now_ms < self.not_before_ms {
+            report.retrying = self.fails > 0 && self.stopped.is_none();
+            return report;
+        }
+        let url = format!("{}/v1/live/plays", origin.trim_end_matches('/'));
+        for _ in 0..PER_TICK {
+            let play = match self.cursor.next(&self.live) {
+                Next::Nothing => break,
+                Next::Skip { file, end, .. } => {
+                    report.skipped += 1;
+                    self.step_past(&file, end);
+                    continue;
+                }
+                Next::Play(p) => p,
+            };
+            let base = *self.cursor.game_base.entry(play.file.clone()).or_insert(self.ctx.games_before);
+            let body = match decide(&self.ctx, base, &play) {
+                Decision::Skip(_) => {
+                    report.skipped += 1;
+                    self.step_past(&play.file, play.end);
+                    continue;
+                }
+                Decision::Post { body, .. } => body,
+            };
+            match classify(&http.post_json(&url, &body, Some(token))) {
+                Sent::Done => {
+                    report.posted += 1;
+                    self.fails = 0;
+                    self.step_past(&play.file, play.end);
+                }
+                Sent::Drop(_) => {
+                    report.dropped += 1;
+                    self.fails = 0;
+                    self.step_past(&play.file, play.end);
+                }
+                Sent::Retry => {
+                    self.fails += 1;
+                    // 1 s, 2 s, 4 s ... capped at 30 s.
+                    self.not_before_ms = now_ms + (1000u64 << (self.fails - 1).min(5)).min(30_000);
+                    let _ = self.cursor.save(&self.cursor_path); // keep the game_base just recorded
+                    report.retrying = true;
+                    break;
+                }
+                Sent::Stop(why) => {
+                    self.stopped = Some(why.clone());
+                    report.stopped = Some(why);
+                    break;
+                }
+            }
+        }
+        report
     }
 }
 
@@ -303,5 +476,189 @@ mod tests {
         assert!(Cursor::load(&state.path().join("nope.json")).is_none());
         std::fs::write(state.path().join("bad.json"), "{").unwrap();
         assert!(Cursor::load(&state.path().join("bad.json")).is_none());
+    }
+
+    use crate::net::{Http, HttpResponse};
+    use std::sync::Mutex;
+
+    /// Replies in order; `None` is a transport failure. Records every POST body.
+    struct Script { replies: Mutex<Vec<Option<(u16, &'static str)>>>, posts: Mutex<Vec<serde_json::Value>> }
+    impl Script {
+        fn new(r: Vec<Option<(u16, &'static str)>>) -> Self { Script { replies: Mutex::new(r), posts: Mutex::new(vec![]) } }
+    }
+    impl Http for Script {
+        fn get_text(&self, url: &str) -> crate::platform::Result<HttpResponse> { panic!("no GET expected: {url}") }
+        fn get_to_file(&self, url: &str, _: &Path) -> crate::platform::Result<u64> { panic!("no download expected: {url}") }
+        fn post_json(&self, url: &str, body: &[u8], bearer: Option<&str>) -> crate::platform::Result<HttpResponse> {
+            assert_eq!(url, "https://api.test/v1/live/plays");
+            assert_eq!(bearer, Some("tok"));
+            self.posts.lock().unwrap().push(serde_json::from_slice(body).unwrap());
+            let mut r = self.replies.lock().unwrap();
+            match if r.is_empty() { Some((200, "{\"ok\":true,\"status\":\"live\"}")) } else { r.remove(0) } {
+                Some((status, body)) => Ok(HttpResponse { status, body: body.to_string() }),
+                None => Err(crate::platform::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::NotConnected, "down"))),
+            }
+        }
+    }
+
+    fn ctx(best_of: u8, games_before: u32) -> MatchCtx {
+        MatchCtx { match_id: "3f1c0f3e-0000-4000-8000-000000000001".into(), best_of, games_before }
+    }
+    fn setup() -> (tempfile::TempDir, tempfile::TempDir) {
+        let user = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(live_dir(user.path())).unwrap();
+        (user, tempfile::tempdir().unwrap())
+    }
+    fn live_append(user: &Path, name: &str, s: &str) { append(&live_dir(user), name, s) }
+
+    #[test]
+    fn decide_maps_game_no_to_game_seq_and_wraps_the_raw_line() {
+        let p = LivePlay { file: "f".into(), end: 1, game_no: 2, attempt: 1, seq: 7, human_sides: 3, raw: serde_json::json!({"schema":"nsr.play.v1","seq":7}) };
+        match decide(&ctx(3, 0), 0, &p) {
+            Decision::Post { game_seq, body } => {
+                assert_eq!(game_seq, 2);
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(v, serde_json::json!({"match_id": ctx(3, 0).match_id, "game_seq": 2, "play": {"schema":"nsr.play.v1","seq":7}}));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_skips_no_human_restarts_and_games_past_the_series() {
+        let base = LivePlay { file: "f".into(), end: 1, game_no: 1, attempt: 1, seq: 1, human_sides: 0, raw: serde_json::json!({}) };
+        assert_eq!(decide(&ctx(3, 0), 0, &base), Decision::Skip("no human in control"));
+        let restarted = LivePlay { human_sides: 1, attempt: 2, ..base.clone() };
+        assert_eq!(decide(&ctx(3, 0), 0, &restarted), Decision::Skip("restarted game"));
+        let past = LivePlay { human_sides: 1, game_no: 2, ..base.clone() };
+        assert_eq!(decide(&ctx(1, 0), 0, &past), Decision::Skip("past the last game of the series"));
+        let unknown = LivePlay { human_sides: -1, ..base };
+        assert!(matches!(decide(&ctx(1, 0), 0, &unknown), Decision::Post { game_seq: 1, .. }), "-1 (unknown) is posted");
+    }
+
+    #[test]
+    fn classify_follows_the_backend_contract() {
+        let ok = |s: u16, b: &str| -> crate::platform::Result<HttpResponse> { Ok(HttpResponse { status: s, body: b.into() }) };
+        for status in ["live", "confirmed", "disputed", "duplicate", "ignored", "dropped"] {
+            assert_eq!(classify(&ok(200, &format!("{{\"ok\":true,\"status\":\"{status}\"}}"))), Sent::Done, "{status} is final");
+        }
+        for s in [400, 403, 404, 409, 413] {
+            assert!(matches!(classify(&ok(s, "{\"ok\":false,\"error\":\"x\"}")), Sent::Drop(_)), "{s}");
+        }
+        assert!(matches!(classify(&ok(401, "")), Sent::Stop(_)));
+        for s in [429, 500, 502, 503] {
+            assert_eq!(classify(&ok(s, "")), Sent::Retry, "{s}");
+        }
+        let down: crate::platform::Result<HttpResponse> = Err(crate::platform::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::NotConnected, "x")));
+        assert_eq!(classify(&down), Sent::Retry);
+    }
+
+    #[test]
+    fn posts_new_plays_in_order_and_saves_the_cursor() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let http = Script::new(vec![]);
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!(r.posted, 2);
+        let posts = http.posts.lock().unwrap();
+        assert_eq!(posts.iter().map(|p| p["play"]["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(poster.caught_up());
+        let saved = Cursor::load(&state.path().join(format!("{}.cursor.json", ctx(3, 0).match_id))).unwrap();
+        assert_eq!(saved.done.get("20260923-100000-1.plays.jsonl").copied(), Some((line(1, 1, 1, 3).len() + line(2, 1, 1, 3).len()) as u64));
+    }
+
+    #[test]
+    fn transport_failure_keeps_the_play_and_backs_off() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let http = Script::new(vec![None, Some((503, "")), None]);
+        assert!(poster.tick(&http, "https://api.test", "tok", 0).retrying);
+        assert_eq!(poster.tick(&http, "https://api.test", "tok", 500).posted, 0, "still backing off: nothing sent");
+        assert_eq!(http.posts.lock().unwrap().len(), 1);
+        assert!(poster.tick(&http, "https://api.test", "tok", 2_000).retrying);   // 503
+        assert!(poster.tick(&http, "https://api.test", "tok", 10_000).retrying);  // down again
+        let r = poster.tick(&http, "https://api.test", "tok", 60_000);            // recovers
+        assert_eq!(r.posted, 2);
+        let seqs: Vec<u64> = http.posts.lock().unwrap().iter().map(|p| p["play"]["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 1, 1, 1, 2], "the same play is resent until it lands, then the next");
+    }
+
+    #[test]
+    fn backoff_never_exceeds_thirty_seconds() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        let http = Script::new(vec![None; 20]);
+        let mut now = 0u64;
+        for _ in 0..10 {
+            poster.tick(&http, "https://api.test", "tok", now);
+            now += 30_000;
+        }
+        assert_eq!(http.posts.lock().unwrap().len(), 10, "one attempt every 30 s at worst");
+    }
+
+    #[test]
+    fn a_refused_play_is_dropped_and_the_next_one_sent() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let http = Script::new(vec![Some((409, "{\"ok\":false,\"error\":\"over\"}"))]);
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!((r.dropped, r.posted), (1, 1));
+    }
+
+    #[test]
+    fn unauthorized_stops_the_poster() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let http = Script::new(vec![Some((401, ""))]);
+        assert!(poster.tick(&http, "https://api.test", "tok", 0).stopped.is_some());
+        assert!(poster.tick(&http, "https://api.test", "tok", 60_000).stopped.is_some());
+        assert_eq!(http.posts.lock().unwrap().len(), 1, "nothing more after a 401");
+    }
+
+    #[test]
+    fn restarted_attempt_is_not_posted() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        live_append(user.path(), "20260923-100500-2.plays.jsonl", &(line(1, 1, 2, 3) + &line(2, 1, 2, 3)));
+        let http = Script::new(vec![]);
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!((r.posted, r.skipped), (1, 2));
+    }
+
+    #[test]
+    fn files_keep_the_game_base_they_were_first_seen_with() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        let http = Script::new(vec![None]);
+        poster.tick(&http, "https://api.test", "tok", 0); // file seen with base 0, the post fails
+        // Dolphin relaunched after game 1 was recorded; its new process numbers games from 1 again.
+        poster.set_games_before(1);
+        live_append(user.path(), "20260923-101000-1.plays.jsonl", &line(1, 1, 1, 3));
+        poster.tick(&http, "https://api.test", "tok", 60_000);
+        let seqs: Vec<u64> = http.posts.lock().unwrap().iter().map(|p| p["game_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 1, 2], "the old file stays game 1; the relaunched process's game 1 is game 2");
+    }
+
+    #[test]
+    fn start_resumes_a_saved_cursor_for_the_same_match_only() {
+        let (user, state) = setup();
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        {
+            let mut p = LivePoster::start(ctx(3, 0), user.path(), state.path());
+            p.tick(&Script::new(vec![]), "https://api.test", "tok", 0);
+        }
+        // The launcher restarts: the same match resumes where it was.
+        let mut again = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(2, 1, 1, 3));
+        let http = Script::new(vec![]);
+        again.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!(http.posts.lock().unwrap().iter().map(|p| p["play"]["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2]);
     }
 }
