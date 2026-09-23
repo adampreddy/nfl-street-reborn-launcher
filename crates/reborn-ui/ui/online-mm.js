@@ -156,10 +156,22 @@ async function loadLobbies(box) {
   }
 }
 
+// The queue timer counts on this page, every second. The snapshot's `waited_ms` only changes when
+// the server has something new to say (a long poll can sit for 25 s), so drawing it as-is froze the
+// timer (Adam, 2026-09-23: "The timer doesn't move"). It is anchored once per ticket, on the
+// server's figure, and then advanced by this page's own clock.
+let queueClock = { key: null, base: 0, at: 0 };
+const queuedMs = () => queueClock.base + (Date.now() - queueClock.at);
+setInterval(() => {
+  const timer = section.querySelector('.mm-timer');
+  if (timer && queueClock.key) timer.textContent = `Waiting ${clock(queuedMs())}`;
+}, 1000);
+
 function drawQueued(t) {
+  if (queueClock.key !== t.enqueued_at) queueClock = { key: t.enqueued_at, base: t.waited_ms || 0, at: Date.now() };
   return [
     el('h2', { text: `Looking for a ${t.mode} game` }),
-    el('p', { class: 'mm-timer', text: `Waiting ${clock(t.waited_ms)}` }),
+    el('p', { class: 'mm-timer', text: `Waiting ${clock(queuedMs())}` }),
     el('button', { type: 'button', text: 'Stop looking', onclick: () => act('mm_leave_queue') }),
   ];
 }

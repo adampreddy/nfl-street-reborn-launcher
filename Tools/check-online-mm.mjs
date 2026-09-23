@@ -52,7 +52,7 @@ const EXPECT = {
   // Matchmaking switched off: the section is empty and the private-room page is untouched.
   disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
   idle: { text: ['Quick Match', 'Find a casual game', 'Lobbies', 'Jock · Casual', '1 waiting', '3 online'], buttons: ['Find a casual game', 'Join', 'Open a public lobby', 'Join by code'], absent: ['field pick'] },
-  queued: { text: ['Looking for a casual game', '0:42'], buttons: ['Stop looking'], absent: ['Find a casual game', 'field'] },
+  queued: { text: ['Looking for a casual game', 'Waiting 0:4'], buttons: ['Stop looking'], absent: ['Find a casual game', 'field'] },
   lobby: { text: ['Casual lobby', 'K7QP2M', 'Adam (you)', 'Jock — ready', 'ready when you are'], buttons: ['Ready', 'Start', 'Leave lobby', 'Send'], absent: ['field pick'] },
   pairing: { text: ['vs Jock', 'Match found. Accept to play.'], buttons: ['Accept', 'Decline', 'Leave match'] },
   running_bo3: { text: ['vs Jock', 'Playing', 'Ranked · best of 3', 'Series: you 1 – 0 Jock'], buttons: ['Leave match'], absent: ['Accept', 'City Limits'] },
@@ -112,6 +112,15 @@ try {
     }
     for (const t of exp.absent ?? []) if (has(t)) problems.push(`should NOT offer "${t}"`);
     if (errors.length) problems.push(`page errors: ${errors.join(' | ')}`);
+
+    // The queue timer must COUNT between server updates (it froze once: the stub never changes, and
+    // neither does a real snapshot for up to 25 s of long poll).
+    if (name === 'queued') {
+      const before = await page.locator('.mm-timer').innerText();
+      await page.waitForTimeout(2200);
+      const after = await page.locator('.mm-timer').innerText();
+      if (before === after) problems.push(`the queue timer did not move: "${before}" stayed "${after}"`);
+    }
 
     // The private-room section must be hidden exactly while matchmaking has the player busy, and
     // visible otherwise - including while a match is HELD, because a held match's seats are released.

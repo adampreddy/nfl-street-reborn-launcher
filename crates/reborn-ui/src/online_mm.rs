@@ -67,6 +67,20 @@ static LAUNCH: Mutex<(Option<String>, Option<String>, String)> = Mutex::new((Non
 static PRESENCE: Mutex<Option<Box<dyn Presence + Send>>> = Mutex::new(None);
 static POLLER: AtomicBool = AtomicBool::new(false);
 
+/// One line to `<data root>/logs/matchmaking.log`. The launcher is a windowed app, so stderr goes
+/// nowhere; the first real test left no trace of what either launcher saw (2026-09-23). Never
+/// fails, never blocks play: a log that cannot be written is skipped.
+pub(crate) fn mm_log(line: &str) {
+    use std::io::Write;
+    let Ok(root) = Platform::detect().paths.data_root() else { return };
+    let dir = root.join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("matchmaking.log")) {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = writeln!(f, "{secs} {line}");
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     // A poisoned lock here means a panic mid-update of display state. Recover the data rather than
     // take the whole launcher down over what Discord shows.
@@ -147,11 +161,12 @@ fn drive() {
             let result = run_step(matched.as_ref(), &step);
             match result {
                 Ok(()) => {
+                    mm_log(&format!("relay ok {step:?} (match relay_state {})", matched.as_ref().map(|m| m.relay_state.as_str()).unwrap_or("-")));
                     mem.record(&step);
                     lock(&STATE).relay_error = None;
                 }
                 Err(e) => {
-                    eprintln!("matchmaking relay: {step:?} did not land: {e}");
+                    mm_log(&format!("relay FAILED {step:?}: {e}"));
                     lock(&STATE).relay_error = Some(e);
                     // A room that would not open is not retried every second: the server's deadline
                     // abandons a pre-game match and puts the player back in the queue, which is the
@@ -216,6 +231,7 @@ fn run(platform: Platform) {
     let mut chat: u64 = 0;
     let mut epoch = String::new();
     let mut backoff = Duration::from_secs(2);
+    let mut last_seen = String::new();
 
     loop {
         let token = reborn_core::identity::token(&platform).ok().flatten();
@@ -243,12 +259,23 @@ fn run(platform: Platform) {
                 // A new epoch means the server restarted. The snapshot is complete, so there is
                 // nothing to reconcile - just stop trusting cursors minted by the old process.
                 if !epoch.is_empty() && epoch != snap.epoch {
-                    eprintln!("matchmaking: server restarted, re-reading from scratch");
+                    mm_log("poll: server restarted, re-reading from scratch");
                 }
                 epoch = snap.epoch.clone();
                 since = snap.version;
                 chat = snap.chat.latest_seq;
                 let wait = if snap.restarting { 250 } else { snap.poll_after_ms.min(10_000) };
+                // What the server says about this player, logged when it changes: when a launcher
+                // first saw a match is exactly what the 2026-09-23 test could not answer.
+                let seen = format!(
+                    "ticket={} match={}",
+                    snap.ticket.as_ref().map(|t| t.mode.as_str()).unwrap_or("-"),
+                    snap.matched.as_ref().map(|m| format!("{}@{}", &m.id[..m.id.len().min(8)], m.relay_state)).unwrap_or_else(|| "-".into()),
+                );
+                if seen != last_seen {
+                    mm_log(&format!("poll: {seen} (version {})", snap.version));
+                    last_seen = seen;
+                }
                 set_link(Link::Connected, Some(snap), None);
                 refresh_presence();
                 if wait > 0 {
@@ -273,7 +300,7 @@ fn run(platform: Platform) {
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
             Err(e) => {
-                eprintln!("matchmaking poll: {e:?}");
+                mm_log(&format!("poll error: {e:?}"));
                 set_link(Link::Connected, None, Some(e.to_string()));
                 std::thread::sleep(Duration::from_secs(5));
             }
