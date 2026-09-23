@@ -81,12 +81,12 @@ pub const TARGET_SCORE: i64 = 36;
 
 /// The wire payload cap inherited from the deployed endpoint.
 ///
-/// Matches the backend's 4 MB `/v1/results` limit, because a capture now
-/// carries its plays.
+/// The backend's 4 MB `/v1/results` limit, less 64 KB for the submission
+/// envelope around the capture, because a capture now carries its plays.
 ///
 /// Checked here so an oversized capture is refused before a request is built
 /// rather than after it is rejected.
-pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 64 * 1024;
 
 /// The folder Dolphin writes captures into, inside the per-launch user directory,
 /// with one subfolder per mode. Dolphin decides the subfolder from its NetPlay state.
