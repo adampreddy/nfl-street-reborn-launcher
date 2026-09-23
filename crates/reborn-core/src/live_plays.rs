@@ -193,15 +193,27 @@ impl Cursor {
                 return Next::Skip { file: file.clone(), end, why: "unreadable play line" };
             };
             let num = |k: &str| raw.get(k).and_then(|v| v.as_u64());
-            let (Some(seq), true) = (num("seq"), raw.get("schema").and_then(|v| v.as_str()) == Some("nsr.play.v1")) else {
+            // A field over u32::MAX is refused rather than silently truncated by an `as u32`, which would
+            // otherwise wrap it into some unrelated, plausible-looking small number.
+            let field_u32 = |v: Option<u64>, default: u32| -> Option<u32> {
+                match v {
+                    None => Some(default),
+                    Some(n) => u32::try_from(n).ok(),
+                }
+            };
+            let schema_ok = raw.get("schema").and_then(|v| v.as_str()) == Some("nsr.play.v1");
+            let seq = num("seq").and_then(|n| u32::try_from(n).ok());
+            let game_no = field_u32(num("game_no"), 1);
+            let attempt = field_u32(num("attempt"), 1);
+            let (true, Some(seq), Some(game_no), Some(attempt)) = (schema_ok, seq, game_no, attempt) else {
                 return Next::Skip { file: file.clone(), end, why: "not a play line" };
             };
             return Next::Play(LivePlay {
                 file: file.clone(),
                 end,
-                game_no: num("game_no").unwrap_or(1) as u32,
-                attempt: num("attempt").unwrap_or(1) as u32,
-                seq: seq as u32,
+                game_no,
+                attempt,
+                seq,
                 human_sides: raw.get("human_sides").and_then(|v| v.as_i64()).unwrap_or(-1),
                 raw,
             });
@@ -234,7 +246,9 @@ pub fn decide(ctx: &MatchCtx, game_base: u32, play: &LivePlay) -> Decision {
     if play.attempt > 1 {
         return Decision::Skip("restarted game");
     }
-    let game_seq = game_base + play.game_no;
+    let Some(game_seq) = game_base.checked_add(play.game_no) else {
+        return Decision::Skip("bad game number");
+    };
     if game_seq < 1 || game_seq > ctx.best_of as u32 {
         return Decision::Skip("past the last game of the series");
     }
@@ -255,15 +269,18 @@ pub enum Sent {
 }
 
 /// Any 2xx is final -- `dropped` included: the server lost it and a resend cannot recover it (backend
-/// README). 429 / 5xx / no connection: keep it and send it again. Any other 4xx: the server refused that
-/// play; move on. 401: this device is signed out; stop.
+/// README). 429 / 5xx / no connection: keep it and send it again. Any 4xx other than 401 or 429: the
+/// server refused that specific play; move on. 401: this device is signed out; stop. 1xx and 3xx (a
+/// captive-portal redirect, say) are not a real reply from the backend either way, so they are treated
+/// like a transport hiccup: retry rather than discard a play on a status the backend never actually sends.
 pub fn classify(reply: &crate::platform::Result<crate::net::HttpResponse>) -> Sent {
     match reply {
         Err(_) => Sent::Retry,
         Ok(r) if (200..300).contains(&r.status) => Sent::Done,
         Ok(r) if r.status == 401 => Sent::Stop("signed out".into()),
         Ok(r) if r.status == 429 || r.status >= 500 => Sent::Retry,
-        Ok(r) => Sent::Drop(format!("{} {}", r.status, r.body.chars().take(120).collect::<String>())),
+        Ok(r) if (400..500).contains(&r.status) => Sent::Drop(format!("{} {}", r.status, r.body.chars().take(120).collect::<String>())),
+        Ok(_) => Sent::Retry,
     }
 }
 
@@ -274,6 +291,10 @@ pub struct TickReport {
     pub dropped: u32,
     pub retrying: bool,
     pub stopped: Option<String>,
+    /// The status plus at most 120 characters of the server's error from the most recent `Drop` this
+    /// tick, for one log line. Built only from `classify`'s own formatting of the server's reply, which
+    /// never sees the bearer token, so this can never carry it.
+    pub last_drop: Option<String>,
 }
 
 /// Whether `cursor` still has bytes of `file` (current length `len`) left to read: the offset it has
@@ -358,67 +379,89 @@ impl LivePoster {
         matches!(self.cursor.next(&self.live), Next::Nothing)
     }
 
-    fn step_past(&mut self, file: &str, end: u64) {
-        self.cursor.advance(file, end);
-        let _ = self.cursor.save(&self.cursor_path);
+    /// Gives every currently listed session file a durable `game_base`, the moment its name is first
+    /// seen at all -- never the moment its first play is actually read, which can be much later than
+    /// that if an earlier file's play is stuck retrying (a base must be caught before `games_before` can
+    /// move again, not whenever the backlog finally clears). Dolphin's own per-process file counter `n`
+    /// (the number after the last `-`) restarts at 1 only when the emulator itself restarts: a Rematch
+    /// keeps writing new files, with `n` climbing, in the very same process. So a file starting a new
+    /// process (`n == 1`, or nothing earlier in session order has a base yet) takes whatever
+    /// `ctx.games_before` is right now; a later file from that same process inherits the base already
+    /// latched for the file just before it in session order. That way a game the server records mid
+    /// process never renumbers that same process's own later games.
+    fn latch_game_bases(&mut self, files: &[String]) {
+        for (i, file) in files.iter().enumerate() {
+            if self.cursor.game_base.contains_key(file) {
+                continue;
+            }
+            let starts_a_process = sort_key(file).1 == 1 || i == 0 || !self.cursor.game_base.contains_key(&files[i - 1]);
+            let base = if starts_a_process { self.ctx.games_before } else { self.cursor.game_base[&files[i - 1]] };
+            self.cursor.game_base.insert(file.clone(), base);
+        }
     }
 
     pub fn tick(&mut self, http: &dyn crate::net::Http, origin: &str, token: &str, now_ms: u64) -> TickReport {
         let mut report = TickReport { stopped: self.stopped.clone(), ..Default::default() };
-        if self.stopped.is_some() || now_ms < self.not_before_ms {
-            report.retrying = self.fails > 0 && self.stopped.is_none();
-            return report;
-        }
-        let url = format!("{}/v1/live/plays", origin.trim_end_matches('/'));
         // One read_dir + sort for the whole tick, not one per play: a Skip or a post only ever moves the
         // cursor's offset *within* an already-listed file, it never renames or removes one, so the same
-        // listing stays correct for every iteration below.
+        // listing stays correct for every iteration below. Listed and latched even on a tick that is
+        // about to back off without sending anything, so a file's base is caught the moment it is first
+        // seen rather than whenever its backlog finally clears.
         let files = session_files(&self.live);
-        for _ in 0..PER_TICK {
-            let play = match self.cursor.next_in(&self.live, &files) {
-                Next::Nothing => break,
-                Next::Skip { file, end, .. } => {
-                    report.skipped += 1;
-                    self.step_past(&file, end);
-                    continue;
-                }
-                Next::Play(p) => p,
-            };
-            let base = *self.cursor.game_base.entry(play.file.clone()).or_insert(self.ctx.games_before);
-            let body = match decide(&self.ctx, base, &play) {
-                Decision::Skip(_) => {
-                    report.skipped += 1;
-                    self.step_past(&play.file, play.end);
-                    continue;
-                }
-                Decision::Post { body, .. } => body,
-            };
-            match classify(&http.post_json(&url, &body, Some(token))) {
-                Sent::Done => {
-                    report.posted += 1;
-                    self.fails = 0;
-                    self.step_past(&play.file, play.end);
-                }
-                Sent::Drop(_) => {
-                    report.dropped += 1;
-                    self.fails = 0;
-                    self.step_past(&play.file, play.end);
-                }
-                Sent::Retry => {
-                    self.fails += 1;
-                    // 1 s, 2 s, 4 s ... capped at 30 s.
-                    self.not_before_ms = now_ms + (1000u64 << (self.fails - 1).min(5)).min(30_000);
-                    let _ = self.cursor.save(&self.cursor_path); // keep the game_base just recorded
-                    report.retrying = true;
-                    break;
-                }
-                Sent::Stop(why) => {
-                    self.stopped = Some(why.clone());
-                    report.stopped = Some(why);
-                    break;
+        self.latch_game_bases(&files);
+        if self.stopped.is_none() && now_ms >= self.not_before_ms {
+            let url = format!("{}/v1/live/plays", origin.trim_end_matches('/'));
+            for _ in 0..PER_TICK {
+                let play = match self.cursor.next_in(&self.live, &files) {
+                    Next::Nothing => break,
+                    Next::Skip { file, end, .. } => {
+                        report.skipped += 1;
+                        self.cursor.advance(&file, end);
+                        continue;
+                    }
+                    Next::Play(p) => p,
+                };
+                let base = self.cursor.game_base.get(&play.file).copied().unwrap_or(self.ctx.games_before);
+                let body = match decide(&self.ctx, base, &play) {
+                    Decision::Skip(_) => {
+                        report.skipped += 1;
+                        self.cursor.advance(&play.file, play.end);
+                        continue;
+                    }
+                    Decision::Post { body, .. } => body,
+                };
+                match classify(&http.post_json(&url, &body, Some(token))) {
+                    Sent::Done => {
+                        report.posted += 1;
+                        self.fails = 0;
+                        self.cursor.advance(&play.file, play.end);
+                    }
+                    Sent::Drop(reason) => {
+                        report.dropped += 1;
+                        report.last_drop = Some(reason);
+                        self.fails = 0;
+                        self.cursor.advance(&play.file, play.end);
+                    }
+                    Sent::Retry => {
+                        self.fails += 1;
+                        // 1 s, 2 s, 4 s ... capped at 30 s.
+                        self.not_before_ms = now_ms + (1000u64 << (self.fails - 1).min(5)).min(30_000);
+                        report.retrying = true;
+                        break;
+                    }
+                    Sent::Stop(why) => {
+                        self.stopped = Some(why.clone());
+                        report.stopped = Some(why);
+                        break;
+                    }
                 }
             }
+        } else {
+            report.retrying = self.fails > 0 && self.stopped.is_none();
         }
+        // Once per tick, not once per advance: a crash right after this can resend at most this one
+        // tick's worth of plays, and the backend answers "duplicate" for whichever of those already landed.
+        let _ = self.cursor.save(&self.cursor_path);
         report
     }
 }
@@ -834,5 +877,138 @@ mod tests {
         let r = poster.tick(&http, "https://api.test", "tok", 0);
         assert_eq!(r.posted, 3);
         assert_eq!(SESSION_FILES_CALLS.with(|c| c.get()), 1, "one directory listing for the whole tick, not one per play");
+    }
+
+    // -- Fix round 2 (Task 5 review) --
+
+    #[test]
+    fn a_rematch_in_the_same_process_keeps_the_process_base() {
+        // The reviewer's case: game 1 posts, the server records it, then a Rematch -- no Dolphin restart,
+        // so the file counter climbs instead of resetting -- writes game 2 in the very same process.
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let f1 = "20260923-100000-1.plays.jsonl";
+        live_append(user.path(), f1, &line(1, 1, 1, 3));
+        let http = Script::new(vec![]);
+        poster.tick(&http, "https://api.test", "tok", 0);
+        poster.set_games_before(1); // the server now has game 1 recorded
+        let f2 = "20260923-100000-2.plays.jsonl"; // same stamp, counter climbs: still this process
+        live_append(user.path(), f2, &line(1, 2, 1, 3));
+        poster.tick(&http, "https://api.test", "tok", 1_000);
+        let seqs: Vec<u64> = http.posts.lock().unwrap().iter().map(|p| p["game_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 2], "the process's own base (0) carries to its next game, not the bumped games_before");
+    }
+
+    #[test]
+    fn a_relaunched_process_takes_the_current_games_before() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let f1 = "20260923-100000-1.plays.jsonl";
+        live_append(user.path(), f1, &line(1, 1, 1, 3));
+        let http = Script::new(vec![]);
+        poster.tick(&http, "https://api.test", "tok", 0);
+        poster.set_games_before(1);
+        // A later stamp, counter back at 1: a genuinely new Dolphin process, not the same one continuing.
+        let f2 = "20260923-110000-1.plays.jsonl";
+        live_append(user.path(), f2, &line(1, 1, 1, 3));
+        poster.tick(&http, "https://api.test", "tok", 1_000);
+        let seqs: Vec<u64> = http.posts.lock().unwrap().iter().map(|p| p["game_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 2], "a new process's own first file takes whatever games_before is now");
+    }
+
+    #[test]
+    fn a_base_latched_while_retrying_survives_a_later_games_before_bump() {
+        // The reviewer's second case: while game 1's play is stuck retrying, game 2's file appears. Its
+        // base must be caught then -- at list time -- not whenever game 1's backlog finally clears.
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let f1 = "20260923-100000-1.plays.jsonl";
+        live_append(user.path(), f1, &line(1, 1, 1, 3));
+        let http = Script::new(vec![None]);
+        assert!(poster.tick(&http, "https://api.test", "tok", 0).retrying, "play 1 fails to post: stuck retrying");
+        let f2 = "20260923-100000-2.plays.jsonl";
+        live_append(user.path(), f2, &line(1, 2, 1, 3));
+        // Still inside the backoff window: this tick lists (and latches) but sends nothing.
+        let r = poster.tick(&http, "https://api.test", "tok", 500);
+        assert_eq!(r.posted, 0);
+        assert_eq!(http.posts.lock().unwrap().len(), 1, "no new attempt while still backing off");
+        // Some other signal now reports 2 games recorded, before play 1's post has ever landed.
+        poster.set_games_before(2);
+        let http2 = Script::new(vec![]);
+        poster.tick(&http2, "https://api.test", "tok", 60_000);
+        let seqs: Vec<u64> = http2.posts.lock().unwrap().iter().map(|p| p["game_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 2], "game 2's base was latched from game 1's own base before the bump");
+    }
+
+    #[test]
+    fn a_new_processs_base_is_caught_at_list_time_even_while_backing_off() {
+        // The exact ordering the ruling calls for: listing (and latching) happens even on a tick that is
+        // about to back off without sending anything, so a fresh process's OWN first file -- one that
+        // reads `games_before` directly, unlike a same-process file that only ever inherits its neighbor
+        // -- grabs whatever `games_before` is right now, not whatever it has drifted to by the time its
+        // play finally sends.
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let f1 = "20260923-100000-1.plays.jsonl";
+        live_append(user.path(), f1, &line(1, 1, 1, 3));
+        let http = Script::new(vec![None]);
+        assert!(poster.tick(&http, "https://api.test", "tok", 0).retrying, "play 1 fails to post: stuck retrying");
+        // A different, later-launched process's first file appears while f1 is still stuck retrying.
+        let f2 = "20260923-110000-1.plays.jsonl";
+        live_append(user.path(), f2, &line(1, 1, 1, 3));
+        let r = poster.tick(&http, "https://api.test", "tok", 500); // still inside the backoff window
+        assert_eq!(r.posted, 0);
+        // Some unrelated signal now claims 5 games recorded, well after f2's file was already listed.
+        poster.set_games_before(5);
+        let http2 = Script::new(vec![]);
+        poster.tick(&http2, "https://api.test", "tok", 60_000);
+        let seqs: Vec<u64> = http2.posts.lock().unwrap().iter().map(|p| p["game_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 1], "f2's base (0) was caught when it was first listed, before the later bump to 5");
+    }
+
+    #[test]
+    fn classify_retries_1xx_and_3xx() {
+        let ok = |s: u16| -> crate::platform::Result<HttpResponse> { Ok(HttpResponse { status: s, body: String::new() }) };
+        for s in [100, 101, 300, 301, 302, 307] {
+            assert_eq!(classify(&ok(s)), Sent::Retry, "{s}");
+        }
+    }
+
+    #[test]
+    fn last_drop_never_contains_the_token() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        let http = Script::new(vec![Some((409, "{\"ok\":false,\"error\":\"over\"}"))]);
+        // The fake's own bearer assertion pins the token to "tok"; `classify` -- and so `last_drop`, which
+        // is built purely from its own formatting of the server's reply -- never even receives it, since
+        // `classify`'s signature takes no bearer at all. This proves that structurally, not by collision.
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        let drop = r.last_drop.expect("a 409 sets last_drop");
+        assert!(drop.starts_with("409"), "{drop}");
+        assert!(!drop.contains("tok"), "{drop}");
+    }
+
+    #[test]
+    fn decide_skips_on_game_number_overflow() {
+        let p = LivePlay { file: "f".into(), end: 1, game_no: u32::MAX, attempt: 1, seq: 1, human_sides: 1, raw: serde_json::json!({}) };
+        assert_eq!(decide(&ctx(3, 0), 1, &p), Decision::Skip("bad game number"));
+    }
+
+    #[test]
+    fn a_field_over_u32_max_is_skipped_as_not_a_play_line() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = Cursor::begin("m1", d.path());
+        let f = "20260923-100000-1.plays.jsonl";
+        let huge_seq = format!("{{\"schema\":\"nsr.play.v1\",\"seq\":{},\"human_sides\":1}}\n", u64::from(u32::MAX) + 1);
+        append(d.path(), f, &(huge_seq + &line(9, 1, 1, 3)));
+        match c.next(d.path()) {
+            Next::Skip { file, end, why } => {
+                assert_eq!(why, "not a play line");
+                c.advance(&file, end);
+            }
+            other => panic!("expected a skip, got {other:?}"),
+        }
+        assert_eq!(play(c.next(d.path())).seq, 9);
     }
 }
