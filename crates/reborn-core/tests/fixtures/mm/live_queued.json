@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "changed": true,
+  "epoch": "93979e0c-b950-400c-9a27-d0c71a5a5380",
+  "server_time": "2026-09-22T20:35:09.967Z",
+  "version": 2,
+  "player": {
+    "id": "a1ceb088-35f1-4091-845f-67b20f5e32ad",
+    "display_name": "Adam",
+    "region": null,
+    "presence_hidden": false,
+    "rating": {
+      "ranked": null,
+      "casual": null
+    }
+  },
+  "ticket": {
+    "id": "3c8ca211-fcc8-41b0-96e0-689c89c0b707",
+    "mode": "casual",
+    "region": "na-east",
+    "rating": 1000,
+    "field_pick": "the_pit",
+    "enqueued_at": "2026-09-22T20:35:09.954Z",
+    "expires_at": "2026-09-22T20:45:09.954Z",
+    "cooldown_until": null,
+    "waited_ms": 13,
+    "window": null,
+    "depth": {
+      "ranked": 0,
+      "casual": 1
+    }
+  },
+  "room": null,
+  "match": null,
+  "chat": {
+    "scope": null,
+    "parent_id": null,
+    "since": 0,
+    "latest_seq": 0,
+    "truncated": false,
+    "messages": []
+  },
+  "queue_depth": {
+    "ranked": 0,
+    "casual": 1
+  },
+  "hold_ms": 25000,
+  "poll_after_ms": 0,
+  "restarting": false,
+  "online": {
+    "count": 1,
+    "players": [
+      {
+        "id": "a1ceb088-35f1-4091-845f-67b20f5e32ad",
+        "display_name": "Adam",
+        "avatar_hash": null,
+        "region": null,
+        "activity": "queued",
+        "last_seen_at": "2026-09-22T20:35:09.916Z",
+        "online": true
+      }
+    ]
+  }
+}

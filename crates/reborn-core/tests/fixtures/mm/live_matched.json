@@ -1,0 +1,123 @@
+{
+  "ok": true,
+  "changed": true,
+  "epoch": "93979e0c-b950-400c-9a27-d0c71a5a5380",
+  "server_time": "2026-09-22T20:35:09.992Z",
+  "version": 4,
+  "player": {
+    "id": "a1ceb088-35f1-4091-845f-67b20f5e32ad",
+    "display_name": "Adam",
+    "region": null,
+    "presence_hidden": false,
+    "rating": {
+      "ranked": null,
+      "casual": null
+    }
+  },
+  "ticket": null,
+  "room": null,
+  "match": {
+    "id": "fa8c9fca-e624-4219-8739-504ce5ab563c",
+    "mode": "casual",
+    "status": "pairing",
+    "relay_state": "pairing",
+    "relay_deadline": "2026-09-22T20:35:29.981Z",
+    "best_of": 1,
+    "seat": 0,
+    "you_host": true,
+    "source": "queue",
+    "region": "na-east",
+    "room_id": null,
+    "opponent": {
+      "id": "00293bc5-4a46-4e1f-bff7-499864bb1f96",
+      "display_name": "Jock",
+      "rating": null
+    },
+    "field": null,
+    "field_from": null,
+    "field_picks": null,
+    "your_field_pick": "the_pit",
+    "seed_kind": "pickup",
+    "buffer_size": null,
+    "accepted": [
+      false,
+      false
+    ],
+    "your_accepted": false,
+    "ready": [
+      false,
+      false
+    ],
+    "your_ready": false,
+    "preflight": null,
+    "opponent_preflight": null,
+    "nsr_tag": "nsr:31e546b0",
+    "opponent_nsr_tag": "nsr:23c07313",
+    "host_code": null,
+    "observed_ports": null,
+    "observed_ping_ms": null,
+    "seats": [
+      {
+        "player_id": "a1ceb088-35f1-4091-845f-67b20f5e32ad",
+        "seat": 0,
+        "claimed_at": "2026-09-22T16:35:09.981-04:00"
+      },
+      {
+        "player_id": "00293bc5-4a46-4e1f-bff7-499864bb1f96",
+        "seat": 1,
+        "claimed_at": "2026-09-22T16:35:09.981-04:00"
+      }
+    ],
+    "games": [],
+    "series": [
+      0,
+      0
+    ],
+    "wins_needed": 1,
+    "winner_seat": null,
+    "hold_reason": null,
+    "chat_seq": 0,
+    "created_at": "2026-09-22T20:35:09.981Z",
+    "started_at": null,
+    "resolved_at": null,
+    "rated_at": null
+  },
+  "chat": {
+    "scope": "match",
+    "parent_id": "fa8c9fca-e624-4219-8739-504ce5ab563c",
+    "since": 0,
+    "latest_seq": 0,
+    "truncated": false,
+    "messages": []
+  },
+  "queue_depth": {
+    "ranked": 0,
+    "casual": 0
+  },
+  "hold_ms": 25000,
+  "poll_after_ms": 0,
+  "restarting": false,
+  "online": {
+    "count": 2,
+    "players": [
+      {
+        "id": "00293bc5-4a46-4e1f-bff7-499864bb1f96",
+        "display_name": "Jock",
+        "avatar_hash": null,
+        "region": null,
+        "activity": "in_match",
+        "last_seen_at": "2026-09-22T20:35:09.975Z",
+        "online": true
+      },
+      {
+        "id": "a1ceb088-35f1-4091-845f-67b20f5e32ad",
+        "display_name": "Adam",
+        "avatar_hash": null,
+        "region": null,
+        "activity": "in_match",
+        "last_seen_at": "2026-09-22T20:35:09.916Z",
+        "online": true
+      }
+    ]
+  }
+}

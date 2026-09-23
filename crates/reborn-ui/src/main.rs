@@ -29,6 +29,7 @@ mod setup_tools;
 mod shell_tools;
 mod stats_view;
 mod dolphin_settings;
+mod online_mm;
 mod live_settings;
 
 use std::path::{Path, PathBuf};
@@ -5023,6 +5024,12 @@ struct DiagnosticBundleView {
 /// Gather what a person would need to look at a bad session into one folder
 /// under recovery/, and name what it holds. Copies only: nothing is moved.
 /// No token, no credential, and no memory card ever goes in.
+fn diagnostic_user(platform: &Platform, exe: Option<&Path>) -> Result<reborn_core::session::UserDir, String> {
+    let chosen = selected_user_dir(platform, None)?;
+    reborn_core::session::resolve_user_dir_for(platform, chosen.as_deref(), exe)
+        .map_err(|e| e.player_message().to_string())
+}
+
 #[tauri::command]
 async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleView, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -5054,12 +5061,42 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
         );
 
         let exe = runtime_for(&p, runtime.as_deref());
-        if let Ok(user) = reborn_core::session::resolve_user_dir_for(&p, None, exe.as_deref()) {
+        let user = diagnostic_user(&p, exe.as_deref())?;
+        {
             let config = user.path().join("Config");
             for name in ["Dolphin.ini", "GFX.ini", "GCPadNew.ini"] {
                 take(config.join(name), name);
             }
+            // Include Dolphin's system, family, full-ID and revision layers.
+            // Base config alone can report False while a game override forces True.
+            let mut layers = vec![("User", user.path().join("GameSettings"))];
+            if let Some(root) = exe.as_deref().and_then(std::path::Path::parent) {
+                layers.push(("Sys", root.join("Sys/GameSettings")));
+            }
+            for (label, dir) in layers {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|s| s.to_str()) != Some("ini") { continue; }
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let relevant = ["G", "GN7", "GN7E69", "F", "FR4", "FR4N31"].contains(&stem)
+                            || ["GN7E69r", "FR4N31r"].iter().any(|prefix| {
+                                stem.strip_prefix(prefix).is_some_and(|rev|
+                                    !rev.is_empty() && rev.bytes().all(|c| c.is_ascii_digit()))
+                            });
+                        if relevant {
+                            take(path.clone(), &format!("{label}-GameSettings-{stem}.ini"));
+                        }
+                    }
+                }
+            }
             take(user.path().join("Logs").join("dolphin.log"), "dolphin.log");
+        }
+
+        if let Some(root) = exe.as_deref().and_then(Path::parent) {
+            for name in ["ReShade.ini", "NSRShaderlessMenu.ini"] {
+                take(root.join(name), name);
+            }
         }
 
         // The launcher's own log, which is where every failure it decided not
@@ -5080,6 +5117,8 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
         status.push_str(&format!("launcher {}\n", crate::launcher_version()));
         status.push_str(&format!("channel {}\n", reborn_core::Channel::detect().explain()));
         status.push_str(&format!("data root {}\n", data.display()));
+        status.push_str(&format!("Dolphin user directory {}\n", user.path().display()));
+        status.push_str("Configuration snapshot: files on disk; in-game edits may not be saved until Dolphin exits.\n");
         if let Some(exe) = &exe {
             status.push_str(&format!("emulator {}\n", exe.display()));
         }
@@ -6109,6 +6148,17 @@ fn main() {
         }))
         .invoke_handler(tauri::generate_handler![
             // Already here.
+            online_mm::mm_state,
+            online_mm::mm_queue,
+            online_mm::mm_leave_queue,
+            online_mm::mm_rooms,
+            online_mm::mm_room_create,
+            online_mm::mm_room_join,
+            online_mm::mm_room_action,
+            online_mm::mm_match_action,
+            online_mm::presence_page,
+            online_mm::presence_set_enabled,
+            online_mm::mm_launch_prefs,
             dolphin_settings::netplay_open,
             dolphin_settings::netplay_status,
             dolphin_settings::netplay_action,
@@ -7506,6 +7556,33 @@ struct StatsSubmitView {"),
             commands_only.contains("player_message"),
             "no core error on this page is mapped to a sentence at all"
         );
+    }
+
+    #[test]
+    fn diagnostics_use_the_saved_gameplay_profile_instead_of_a_portable_fallback() {
+        struct DiagnosticPaths(PathBuf);
+        impl reborn_core::platform::Paths for DiagnosticPaths {
+            fn install_root(&self) -> reborn_core::platform::Result<PathBuf> { Ok(self.0.clone()) }
+            fn data_root(&self) -> reborn_core::platform::Result<PathBuf> { Ok(self.0.clone()) }
+            fn cache_root(&self) -> reborn_core::platform::Result<PathBuf> { Ok(self.0.join("cache")) }
+            fn exe_suffix(&self) -> &'static str { ".exe" }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let mut p = Platform::detect();
+        p.paths = Box::new(DiagnosticPaths(temp.path().to_path_buf()));
+        let chosen = temp.path().join("actual-gameplay-profile");
+        std::fs::create_dir_all(&chosen).unwrap();
+        let mut prefs = reborn_core::settings::Settings::default();
+        prefs.user_dir = Some(chosen.clone());
+        prefs.save(&reborn_core::settings::settings_path(&p).unwrap()).unwrap();
+        let runtime = temp.path().join("runtime");
+        std::fs::create_dir_all(runtime.join("User")).unwrap();
+        std::fs::write(runtime.join("portable.txt"), "").unwrap();
+        let exe = runtime.join("Dolphin.exe");
+        // The old diagnostic code selected this portable fallback with None.
+        let fallback = reborn_core::session::resolve_user_dir_for(&p, None, Some(&exe)).unwrap();
+        assert_eq!(fallback.path(), runtime.join("User"));
+        assert_eq!(diagnostic_user(&p, Some(&exe)).unwrap().path(), chosen);
     }
 
     /// The launcher writes a log, and the diagnostic bundle can collect it.

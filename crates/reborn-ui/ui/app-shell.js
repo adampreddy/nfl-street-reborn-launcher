@@ -1,6 +1,16 @@
 // Controller navigation belongs to the window, independently of page data.
 import { bridge } from './shell.js';
 
+// Tell Discord presence which page is open. Fire-and-forget and fully guarded: presence must never
+// be able to break a page, and the Playwright checkers run these pages against a stubbed bridge that
+// may not know this command at all - may reject, may return undefined, may throw.
+try {
+  const page = (document.body.className.match(/(?:^|\s)page-([a-z]+)/) || [])[1] || 'home';
+  if (bridge && typeof bridge.invoke === 'function') {
+    Promise.resolve(bridge.invoke('presence_page', { page })).catch(() => {});
+  }
+} catch { /* never a reason for a page not to load */ }
+
 const selector = 'a[href],button,input,select,textarea,summary';
 const main = document.getElementById('main');
 const screen = document.getElementById('screen');

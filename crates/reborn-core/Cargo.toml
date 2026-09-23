@@ -72,6 +72,7 @@ percent-encoding = { version = "2", optional = true }
 # default feature set's bzip2/lzma/zstd/aes-crypto/ppmd, none of which either
 # use case ever needs.
 zip = { version = "5", default-features = false, features = ["deflate-flate2"] }
+discord-rich-presence = "1.1.0"
 
 [features]
 # The publisher's half: key generation and signing. Enabled by reborn-cli only.

@@ -893,3 +893,8 @@ mod tests {
 }
 
 pub mod dolphin_preferences;
+pub mod matchmaking;
+pub mod presence;
+pub mod presence_discord;
+pub mod relay_driver;
+pub mod traversal_probe;
