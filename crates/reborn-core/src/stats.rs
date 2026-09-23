@@ -81,14 +81,20 @@ pub const TARGET_SCORE: i64 = 36;
 
 /// The wire payload cap inherited from the deployed endpoint.
 ///
+/// Matches the backend's 4 MB `/v1/results` limit, because a capture now
+/// carries its plays.
+///
 /// Checked here so an oversized capture is refused before a request is built
 /// rather than after it is rejected.
-pub const MAX_PAYLOAD_BYTES: usize = 512 * 1024;
+pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 /// The folder Dolphin writes captures into, inside the per-launch user directory,
 /// with one subfolder per mode. Dolphin decides the subfolder from its NetPlay state.
 pub const DOLPHIN_CAPTURE_DIR: &str = "GameStats";
 pub const CAPTURE_FOLDERS: [&str; 2] = ["Online", "Offline"];
+/// Dolphin's live play lines, written and read while a netplay match is still
+/// running. Never a capture: a launch must never read this folder as one.
+pub const LIVE_PLAYS_DIR: &str = "Live";
 /// The folder older runtimes wrote. Still read, so nothing left behind is lost.
 pub const LEGACY_CAPTURE_DIR: &str = "LeagueGameStats";
 
@@ -182,6 +188,9 @@ pub fn capture_folders_on_disk(user_dir: &Path) -> Vec<CaptureFolder> {
                 continue;
             }
             if is_someone_elses_folder(name) {
+                continue;
+            }
+            if name.eq_ignore_ascii_case(LIVE_PLAYS_DIR) {
                 continue;
             }
             unknown.push(path);
