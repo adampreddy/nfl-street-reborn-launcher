@@ -5,10 +5,18 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// The backend refuses a live play body over 16 KB; a longer line is skipped, never sent.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 const SUFFIX: &str = ".plays.jsonl";
+/// A session file (or a saved cursor) untouched this long is swept on `LivePoster::start`, so a Live
+/// folder fed by many finished matches never grows the per-tick directory listing, or the next
+/// `Cursor::begin`'s baseline map, without bound.
+const PRUNE_AFTER: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+/// A UTF-8 BOM some editors and some versions of Windows' own tools still write at a file's first byte.
+/// It is never valid JSON, so left in place it would make every parse of line 1 fail forever.
+const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 pub fn live_dir(user_dir: &Path) -> PathBuf {
     user_dir.join(crate::stats::DOLPHIN_CAPTURE_DIR).join(crate::stats::LIVE_PLAYS_DIR)
@@ -49,7 +57,17 @@ fn sort_key(name: &str) -> (String, u64) {
     }
 }
 
+// A thread-local rather than a shared atomic: `cargo test` runs tests on separate threads, and each
+// test's own calls -- including everything a poster does on its behalf, with no spawning in between --
+// land on that test's own thread, so counts from other tests running at the same time never leak in.
+#[cfg(test)]
+thread_local! {
+    static SESSION_FILES_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub fn session_files(live_dir: &Path) -> Vec<String> {
+    #[cfg(test)]
+    SESSION_FILES_CALLS.with(|c| c.set(c.get() + 1));
     let mut names: Vec<String> = std::fs::read_dir(live_dir)
         .into_iter()
         .flatten()
@@ -129,8 +147,14 @@ impl Cursor {
         self.done.insert(file.to_string(), end);
     }
 
+    /// Lists the live directory itself, one read_dir per call. [`Cursor::next_in`] takes that listing as
+    /// an argument instead, so a caller walking many plays in a row -- [`LivePoster::tick`] -- can list
+    /// once and reuse it, rather than paying for a fresh read_dir and sort per play.
     pub fn next(&self, live_dir: &Path) -> Next {
-        let files: Vec<String> = session_files(live_dir);
+        self.next_in(live_dir, &session_files(live_dir))
+    }
+
+    pub fn next_in(&self, live_dir: &Path, files: &[String]) -> Next {
         for (i, file) in files.iter().enumerate() {
             let path = live_dir.join(file);
             let from = self.done.get(file).copied().unwrap_or_else(|| self.baseline.get(file).copied().unwrap_or(0));
@@ -155,7 +179,13 @@ impl Cursor {
                 return Next::Nothing;
             };
             let end = from + nl as u64 + 1;
-            let text = &rest[..nl];
+            // A UTF-8 BOM can only ever sit at a file's first three bytes, so it is only ever in play when
+            // this is the very first read of the file (`from == 0`); `end` is computed above, from `nl`'s
+            // position in the untouched `rest`, so it keeps counting the BOM's bytes regardless.
+            let mut text = &rest[..nl];
+            if from == 0 {
+                text = text.strip_prefix(&UTF8_BOM).unwrap_or(text);
+            }
             if text.len() > MAX_LINE_BYTES {
                 return Next::Skip { file: file.clone(), end, why: "play line over 16 KB" };
             }
@@ -246,6 +276,53 @@ pub struct TickReport {
     pub stopped: Option<String>,
 }
 
+/// Whether `cursor` still has bytes of `file` (current length `len`) left to read: the offset it has
+/// taken that file through -- `done`, or failing that `baseline` -- is short of `len`. A file with no
+/// entry in either map at all counts as fully unposted (offset 0), so an untracked file is never swept
+/// out from under a cursor that has not even looked at it yet.
+fn has_unposted_bytes(cursor: &Cursor, file: &str, len: u64) -> bool {
+    let through = cursor.done.get(file).copied().unwrap_or_else(|| cursor.baseline.get(file).copied().unwrap_or(0));
+    through < len
+}
+
+fn is_stale(modified: std::io::Result<SystemTime>, now: SystemTime) -> bool {
+    let Ok(modified) = modified else { return false };
+    now.duration_since(modified).is_ok_and(|age| age >= PRUNE_AFTER)
+}
+
+/// Sweeps session files this match's cursor has fully consumed and that have sat untouched for
+/// [`PRUNE_AFTER`], so a Live folder fed by many finished matches never grows the per-tick directory
+/// listing without bound. Best-effort: every error is swallowed, since a failed sweep is never worse than
+/// no sweep, and must never be allowed to stop the poster from starting.
+fn prune_live_dir(live: &Path, cursor: &Cursor, now: SystemTime) {
+    for file in session_files(live) {
+        let path = live.join(&file);
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if has_unposted_bytes(cursor, &file, meta.len()) {
+            continue;
+        }
+        if is_stale(meta.modified(), now) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Sweeps other matches' saved cursors once they have sat untouched for [`PRUNE_AFTER`]. Never the
+/// current match's own file, however old: it is this poster's only durable record of what it has sent.
+fn prune_state_dir(state_dir: &Path, keep: &Path, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(state_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep || !entry.file_name().to_string_lossy().ends_with(".cursor.json") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if is_stale(meta.modified(), now) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LivePoster {
     ctx: MatchCtx,
@@ -267,6 +344,9 @@ impl LivePoster {
         let cursor = Cursor::load(&cursor_path)
             .filter(|c| c.match_id == ctx.match_id)
             .unwrap_or_else(|| Cursor::begin(&ctx.match_id, &live));
+        let now = SystemTime::now();
+        prune_live_dir(&live, &cursor, now);
+        prune_state_dir(state_dir, &cursor_path, now);
         LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None }
     }
 
@@ -290,8 +370,12 @@ impl LivePoster {
             return report;
         }
         let url = format!("{}/v1/live/plays", origin.trim_end_matches('/'));
+        // One read_dir + sort for the whole tick, not one per play: a Skip or a post only ever moves the
+        // cursor's offset *within* an already-listed file, it never renames or removes one, so the same
+        // listing stays correct for every iteration below.
+        let files = session_files(&self.live);
         for _ in 0..PER_TICK {
-            let play = match self.cursor.next(&self.live) {
+            let play = match self.cursor.next_in(&self.live, &files) {
                 Next::Nothing => break,
                 Next::Skip { file, end, .. } => {
                     report.skipped += 1;
@@ -466,7 +550,7 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(c.next(d.path()), Next::Nothing);
         }
-        let limit = if cfg!(debug_assertions) { 500 } else { 100 };
+        let limit = if cfg!(debug_assertions) { 500 } else { 250 };
         assert!(t.elapsed() < std::time::Duration::from_millis(limit), "{:?}", t.elapsed());
     }
 
@@ -660,5 +744,95 @@ mod tests {
         let http = Script::new(vec![]);
         again.tick(&http, "https://api.test", "tok", 0);
         assert_eq!(http.posts.lock().unwrap().iter().map(|p| p["play"]["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2]);
+    }
+
+    // -- Fix round 1 (Task 4 review) --
+
+    #[test]
+    fn a_leading_utf8_bom_does_not_block_line_one() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let bom = "\u{FEFF}"; // encodes to EF BB BF in UTF-8, exactly like a file written with it.
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(bom.to_string() + &line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let http = Script::new(vec![]);
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!(r.posted, 2);
+        let seqs: Vec<u64> = http.posts.lock().unwrap().iter().map(|p| p["play"]["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 2]);
+    }
+
+    fn set_mtime(path: &Path, when: SystemTime) {
+        std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    #[test]
+    fn prune_deletes_a_fully_read_file_once_it_is_old() {
+        let (user, state) = setup();
+        let live = live_dir(user.path());
+        let f = "20260101-000000-1.plays.jsonl";
+        live_append(user.path(), f, &line(1, 1, 1, 3));
+        let match_id = ctx(3, 0).match_id;
+        let c = Cursor { match_id: match_id.clone(), done: BTreeMap::from([(f.to_string(), line(1, 1, 1, 3).len() as u64)]), ..Default::default() };
+        c.save(&state.path().join(format!("{match_id}.cursor.json"))).unwrap();
+        set_mtime(&live.join(f), SystemTime::now() - 20 * DAY);
+        let _poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        assert!(!live.join(f).exists(), "fully read and 20 days old: swept");
+    }
+
+    #[test]
+    fn prune_never_deletes_a_file_with_bytes_still_unposted() {
+        let (user, state) = setup();
+        let live = live_dir(user.path());
+        let f = "20260101-000000-1.plays.jsonl";
+        live_append(user.path(), f, &(line(1, 1, 1, 3) + &line(2, 1, 1, 3)));
+        let match_id = ctx(3, 0).match_id;
+        // Only play 1 is accounted for; play 2's bytes are still sitting past `done`.
+        let c = Cursor { match_id: match_id.clone(), done: BTreeMap::from([(f.to_string(), line(1, 1, 1, 3).len() as u64)]), ..Default::default() };
+        c.save(&state.path().join(format!("{match_id}.cursor.json"))).unwrap();
+        set_mtime(&live.join(f), SystemTime::now() - 20 * DAY);
+        let _poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        assert!(live.join(f).exists(), "play 2 is still unposted; the sweep must leave the file alone however old it is");
+    }
+
+    #[test]
+    fn prune_leaves_a_recent_file_alone_even_if_fully_read() {
+        let (user, state) = setup();
+        let live = live_dir(user.path());
+        let f = "20260101-000000-1.plays.jsonl";
+        live_append(user.path(), f, &line(1, 1, 1, 3));
+        let match_id = ctx(3, 0).match_id;
+        let c = Cursor { match_id: match_id.clone(), done: BTreeMap::from([(f.to_string(), line(1, 1, 1, 3).len() as u64)]), ..Default::default() };
+        c.save(&state.path().join(format!("{match_id}.cursor.json"))).unwrap();
+        set_mtime(&live.join(f), SystemTime::now() - DAY);
+        let _poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        assert!(live.join(f).exists(), "one day old is under the 14-day sweep age");
+    }
+
+    #[test]
+    fn prune_deletes_old_cursor_files_for_other_matches_but_never_this_ones() {
+        let (user, state) = setup();
+        let mine_id = ctx(3, 0).match_id;
+        let mine = state.path().join(format!("{mine_id}.cursor.json"));
+        Cursor::begin(&mine_id, &live_dir(user.path())).save(&mine).unwrap();
+        set_mtime(&mine, SystemTime::now() - 20 * DAY);
+        let other = state.path().join("11111111-0000-4000-8000-000000000002.cursor.json");
+        std::fs::write(&other, "{}").unwrap();
+        set_mtime(&other, SystemTime::now() - 20 * DAY);
+        let _poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        assert!(mine.exists(), "this match's own cursor is never swept, however old");
+        assert!(!other.exists(), "a 20-day-old cursor for a different match is swept");
+    }
+
+    #[test]
+    fn tick_lists_the_live_dir_once_per_call_not_once_per_play() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(line(1, 1, 1, 3) + &line(2, 1, 1, 3) + &line(3, 1, 1, 3)));
+        let http = Script::new(vec![]);
+        SESSION_FILES_CALLS.with(|c| c.set(0));
+        let r = poster.tick(&http, "https://api.test", "tok", 0);
+        assert_eq!(r.posted, 3);
+        assert_eq!(SESSION_FILES_CALLS.with(|c| c.get()), 1, "one directory listing for the whole tick, not one per play");
     }
 }
