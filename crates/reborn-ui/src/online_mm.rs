@@ -153,77 +153,110 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// A tick that only skipped plays (a restarted game, a line past the series) logs at most this often.
+const LIVE_SKIP_LOG_MS: u64 = 60_000;
+
 fn live_plays_loop(platform: Platform) {
     let state_dir = match platform.data_dir(reborn_core::platform::DataDir::Cache) {
         Ok(d) => d.join("live"),
-        Err(_) => return,
+        Err(e) => {
+            mm_log(&format!("live feed: off, no cache folder ({e})"));
+            return;
+        }
     };
     let http = crate::http_client();
     let mut current: Option<(String, reborn_core::live_plays::LivePoster)> = None;
     let mut ended_at: Option<u64> = None;
     // A poster stopped by a 401 reports it again on every tick; say it once, and stop reading the vault.
     let mut halted = false;
+    let mut last_skip_log: Option<u64> = None;
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let now = now_ms();
-        let matched = lock(&STATE).snapshot.as_ref().and_then(|s| s.matched.clone());
-        let ctx = matched.as_ref().and_then(reborn_core::live_plays::match_ctx);
-        let user_dir = crate::dolphin_settings::netplay_user_dir();
-        match (&ctx, &user_dir) {
-            (Some(ctx), Some(user)) => {
-                ended_at = None;
-                if current.as_ref().map(|(id, _)| id != &ctx.match_id).unwrap_or(true) {
-                    mm_log(&format!("live feed: streaming match {}", ctx.match_id));
-                    current = Some((ctx.match_id.clone(), reborn_core::live_plays::LivePoster::start(ctx.clone(), user, &state_dir)));
-                    halted = false;
-                }
-                // Safe every tick: the poster latches each session file's base per Dolphin process when it
-                // first lists it, so this only ever reaches files a relaunched Dolphin writes from now on.
-                if let Some((_, poster)) = current.as_mut() {
-                    poster.set_games_before(ctx.games_before);
-                }
+        // One second's work. A panic in it must not end the feed for the rest of the session: it is
+        // logged, the poster is dropped, and the next second starts a fresh one from the saved cursor.
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (connected, matched) = {
+                let s = lock(&STATE);
+                (s.link == Link::Connected && s.snapshot.is_some(), s.snapshot.as_ref().and_then(|x| x.matched.clone()))
+            };
+            // Not knowing is not "no match". A network blip empties the snapshot; taking that as the
+            // match ending would start the flush and drop the poster. Hold everything as it is.
+            if !connected {
+                return;
             }
-            _ => {
-                if current.is_none() {
-                    continue;
-                }
-                let since = *ended_at.get_or_insert(now);
-                if now.saturating_sub(since) > LIVE_FLUSH_MS || current.as_ref().is_some_and(|(_, p)| p.caught_up()) {
-                    mm_log("live feed: match over, stopped");
-                    current = None;
+            let ctx = matched.as_ref().and_then(reborn_core::live_plays::match_ctx);
+            let user_dir = crate::dolphin_settings::netplay_user_dir();
+            match (&ctx, &user_dir) {
+                (Some(ctx), Some(user)) => {
                     ended_at = None;
-                    continue;
+                    if current.as_ref().map(|(id, _)| id != &ctx.match_id).unwrap_or(true) {
+                        mm_log(&format!("live feed: streaming match {}", ctx.match_id));
+                        current = Some((ctx.match_id.clone(), reborn_core::live_plays::LivePoster::start(ctx.clone(), user, &state_dir)));
+                        halted = false;
+                    }
+                    // Safe every tick: the poster latches each session file's base per Dolphin process when it
+                    // first lists it, so this only ever reaches files a relaunched Dolphin writes from now on.
+                    if let Some((_, poster)) = current.as_mut() {
+                        poster.set_games_before(ctx.games_before);
+                    }
+                }
+                _ => {
+                    if current.is_none() {
+                        return;
+                    }
+                    let since = *ended_at.get_or_insert(now);
+                    let flushed = now.saturating_sub(since) > LIVE_FLUSH_MS
+                        || current.as_ref().is_some_and(|(_, p)| p.ready(now) && p.caught_up());
+                    if flushed {
+                        mm_log("live feed: match over, stopped");
+                        current = None;
+                        ended_at = None;
+                        return;
+                    }
                 }
             }
+            let Some((_, poster)) = current.as_mut() else { return };
+            if halted {
+                return;
+            }
+            // Backing off after a failure: nothing will be sent this second. Checked before `caught_up`,
+            // which reads and parses the next line: this tick only lists the folder and latches a new
+            // file's game base, and writes nothing unless one was latched.
+            if !poster.ready(now) {
+                poster.tick(&http, "", "", now);
+                return;
+            }
+            // Most seconds of a game have no new play: stop at the cheap size check, before touching the
+            // credential vault or the network.
+            if poster.caught_up() {
+                return;
+            }
+            let (Ok(Some(token)), Ok(origin)) = (reborn_core::identity::token(&platform), reborn_core::identity::origin(&platform)) else { return };
+            let r = poster.tick(&http, &origin, &token, now);
+            let notable = r.posted + r.dropped > 0 || r.stopped.is_some();
+            let skips_due = r.skipped > 0 && last_skip_log.is_none_or(|t| now.saturating_sub(t) >= LIVE_SKIP_LOG_MS);
+            if notable || skips_due {
+                if !notable {
+                    last_skip_log = Some(now);
+                }
+                mm_log(&format!(
+                    "live feed: posted {} dropped {} skipped {}{}{}",
+                    r.posted,
+                    r.dropped,
+                    r.skipped,
+                    r.last_drop.map(|d| format!(" (last drop: {d})")).unwrap_or_default(),
+                    r.stopped.as_ref().map(|s| format!(" STOPPED ({s})")).unwrap_or_default()
+                ));
+            }
+            halted = r.stopped.is_some();
+        }));
+        if ran.is_err() {
+            mm_log("live feed: a tick panicked; dropped the poster, resuming from its saved cursor");
+            current = None;
+            ended_at = None;
+            halted = false;
         }
-        let Some((_, poster)) = current.as_mut() else { continue };
-        if halted {
-            continue;
-        }
-        // Most seconds of a game have no new play: stop at the cheap size check, before touching the
-        // credential vault or the network.
-        if poster.caught_up() {
-            continue;
-        }
-        // Backing off after a failure (or signed out): nothing will be sent this second, so skip the
-        // credential vault; the tick still lists the folder so a new file's game base is latched on time.
-        if !poster.ready(now) {
-            poster.tick(&http, "", "", now);
-            continue;
-        }
-        let (Ok(Some(token)), Ok(origin)) = (reborn_core::identity::token(&platform), reborn_core::identity::origin(&platform)) else { continue };
-        let r = poster.tick(&http, &origin, &token, now);
-        if r.posted + r.dropped + r.skipped > 0 || r.stopped.is_some() {
-            mm_log(&format!(
-                "live feed: posted {} dropped {} skipped {}{}{}",
-                r.posted,
-                r.dropped,
-                r.skipped,
-                r.last_drop.map(|d| format!(" (last drop: {d})")).unwrap_or_default(),
-                r.stopped.as_ref().map(|s| format!(" STOPPED ({s})")).unwrap_or_default()
-            ));
-        }
-        halted = r.stopped.is_some();
     }
 }
 

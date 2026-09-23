@@ -362,6 +362,10 @@ pub struct LivePoster {
     fails: u32,
     not_before_ms: u64,
     stopped: Option<String>,
+    /// The cursor differs from what is on disk: a play or skip advanced it, a new file's game base was
+    /// latched, or it was just begun and never saved. A tick writes the cursor only then, so a second
+    /// with nothing new (backing off during an outage, or caught up) never touches the disk.
+    dirty: bool,
 }
 
 /// One tick sends at most this many plays, so a long backlog never holds the loop.
@@ -371,13 +375,13 @@ impl LivePoster {
     pub fn start(ctx: MatchCtx, user_dir: &Path, state_dir: &Path) -> LivePoster {
         let live = live_dir(user_dir);
         let cursor_path = state_dir.join(format!("{}.cursor.json", ctx.match_id));
-        let cursor = Cursor::load(&cursor_path)
-            .filter(|c| c.match_id == ctx.match_id)
-            .unwrap_or_else(|| Cursor::begin(&ctx.match_id, &live));
+        let loaded = Cursor::load(&cursor_path).filter(|c| c.match_id == ctx.match_id);
+        let dirty = loaded.is_none();
+        let cursor = loaded.unwrap_or_else(|| Cursor::begin(&ctx.match_id, &live));
         let now = SystemTime::now();
         prune_live_dir(&live, &cursor, now);
         prune_state_dir(state_dir, &cursor_path, now);
-        LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None }
+        LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None, dirty }
     }
 
     pub fn set_games_before(&mut self, games_before: u32) {
@@ -413,6 +417,7 @@ impl LivePoster {
             let starts_a_process = sort_key(file).1 == 1 || i == 0 || !self.cursor.game_base.contains_key(&files[i - 1]);
             let base = if starts_a_process { self.ctx.games_before } else { self.cursor.game_base[&files[i - 1]] };
             self.cursor.game_base.insert(file.clone(), base);
+            self.dirty = true;
         }
     }
 
@@ -433,6 +438,7 @@ impl LivePoster {
                     Next::Skip { file, end, .. } => {
                         report.skipped += 1;
                         self.cursor.advance(&file, end);
+                        self.dirty = true;
                         continue;
                     }
                     Next::Play(p) => p,
@@ -442,6 +448,7 @@ impl LivePoster {
                     Decision::Skip(_) => {
                         report.skipped += 1;
                         self.cursor.advance(&play.file, play.end);
+                        self.dirty = true;
                         continue;
                     }
                     Decision::Post { body, .. } => body,
@@ -451,12 +458,14 @@ impl LivePoster {
                         report.posted += 1;
                         self.fails = 0;
                         self.cursor.advance(&play.file, play.end);
+                        self.dirty = true;
                     }
                     Sent::Drop(reason) => {
                         report.dropped += 1;
                         report.last_drop = Some(reason);
                         self.fails = 0;
                         self.cursor.advance(&play.file, play.end);
+                        self.dirty = true;
                     }
                     Sent::Retry => {
                         self.fails += 1;
@@ -477,7 +486,10 @@ impl LivePoster {
         }
         // Once per tick, not once per advance: a crash right after this can resend at most this one
         // tick's worth of plays, and the backend answers "duplicate" for whichever of those already landed.
-        let _ = self.cursor.save(&self.cursor_path);
+        // Only when something changed, so an idle or backing-off second never writes to the disk.
+        if self.dirty && self.cursor.save(&self.cursor_path).is_ok() {
+            self.dirty = false;
+        }
         report
     }
 }
@@ -924,6 +936,28 @@ mod tests {
         assert!(poster.ready(1_000));
         poster.tick(&http, "https://api.test", "tok", 1_000); // 401
         assert!(!poster.ready(60_000));
+    }
+
+    #[test]
+    fn a_tick_that_changes_nothing_never_rewrites_the_cursor() {
+        let (user, state) = setup();
+        let cursor = state.path().join(format!("{}.cursor.json", ctx(3, 0).match_id));
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        let http = Script::new(vec![None, Some((200, r#"{"ok":true,"status":"live"}"#))]);
+        poster.tick(&http, "https://api.test", "tok", 0); // transport failure: back off 1 s; the new file's base is latched
+        assert!(cursor.exists(), "a newly latched game base is saved");
+        std::fs::remove_file(&cursor).unwrap();
+        // Backing off, no new file: nothing changed, so nothing is written.
+        poster.tick(&http, "", "", 500);
+        assert!(!cursor.exists(), "a backing-off tick with no new files must not rewrite the cursor");
+        // A tick that posts advances the cursor and saves it.
+        poster.tick(&http, "https://api.test", "tok", 1_000);
+        assert!(cursor.exists());
+        std::fs::remove_file(&cursor).unwrap();
+        // Caught up: nothing changed again.
+        poster.tick(&http, "https://api.test", "tok", 2_000);
+        assert!(!cursor.exists(), "a caught-up tick must not rewrite the cursor");
     }
 
     // -- Fix round 2 (Task 5 review) --
