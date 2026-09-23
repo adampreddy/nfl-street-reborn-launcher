@@ -205,6 +205,12 @@ fn live_plays_loop(platform: Platform) {
         if poster.caught_up() {
             continue;
         }
+        // Backing off after a failure (or signed out): nothing will be sent this second, so skip the
+        // credential vault; the tick still lists the folder so a new file's game base is latched on time.
+        if !poster.ready(now) {
+            poster.tick(&http, "", "", now);
+            continue;
+        }
         let (Ok(Some(token)), Ok(origin)) = (reborn_core::identity::token(&platform), reborn_core::identity::origin(&platform)) else { continue };
         let r = poster.tick(&http, &origin, &token, now);
         if r.posted + r.dropped + r.skipped > 0 || r.stopped.is_some() {

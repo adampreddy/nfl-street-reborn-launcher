@@ -388,6 +388,13 @@ impl LivePoster {
         matches!(self.cursor.next(&self.live), Next::Nothing)
     }
 
+    /// False while backing off after a failure, or after a 401: a tick now would send nothing, so the
+    /// caller can skip the credential vault. (Such a tick still lists and latches game bases; call
+    /// `tick` with an empty token for that -- it never sends while not ready.)
+    pub fn ready(&self, now_ms: u64) -> bool {
+        self.stopped.is_none() && now_ms >= self.not_before_ms
+    }
+
     /// Gives every currently listed session file a durable `game_base`, the moment its name is first
     /// seen at all -- never the moment its first play is actually read, which can be much later than
     /// that if an earlier file's play is stuck retrying (a base must be caught before `games_before` can
@@ -900,6 +907,23 @@ mod tests {
         let r = poster.tick(&http, "https://api.test", "tok", 0);
         assert_eq!(r.posted, 3);
         assert_eq!(SESSION_FILES_CALLS.with(|c| c.get()), 1, "one directory listing for the whole tick, not one per play");
+    }
+
+    #[test]
+    fn ready_is_false_while_backing_off_and_after_a_401() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        assert!(poster.ready(0));
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &line(1, 1, 1, 3));
+        let http = Script::new(vec![None, Some((401, ""))]);
+        poster.tick(&http, "https://api.test", "tok", 0); // transport failure: back off 1 s
+        assert!(!poster.ready(500));
+        // A not-ready tick with no token sends nothing.
+        poster.tick(&http, "", "", 500);
+        assert_eq!(http.posts.lock().unwrap().len(), 1);
+        assert!(poster.ready(1_000));
+        poster.tick(&http, "https://api.test", "tok", 1_000); // 401
+        assert!(!poster.ready(60_000));
     }
 
     // -- Fix round 2 (Task 5 review) --
