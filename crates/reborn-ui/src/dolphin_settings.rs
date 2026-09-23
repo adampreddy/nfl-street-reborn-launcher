@@ -401,7 +401,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // filed under exists before there is anything to file.
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
-  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
+  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
   std::thread::spawn(move||{
     // The lock and the guard are held across the wait AND across the
     // collection: the queue and the session log are shared state, and
@@ -439,8 +439,15 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
 }
 
 
-struct NetplaySession { path:PathBuf, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
+struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
 static NETPLAY:std::sync::Mutex<Option<NetplaySession>>=std::sync::Mutex::new(None);
+
+/// The Dolphin user folder of the NetPlay game running right now, so the live feed can read its play lines.
+pub fn netplay_user_dir() -> Option<std::path::PathBuf> {
+    let s = NETPLAY.lock().ok()?;
+    let s = s.as_ref()?;
+    if s.active { s.user_dir.clone() } else { None }
+}
 
 // A poisoned lock means a prior panic while the room's own state was being
 // updated. Nothing here can trust that state afterward, and this is the one

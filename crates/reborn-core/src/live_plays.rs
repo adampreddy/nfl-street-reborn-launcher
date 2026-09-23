@@ -230,6 +230,15 @@ pub struct MatchCtx {
     pub games_before: u32,
 }
 
+/// The live feed runs only while the server says the match is being played.
+pub fn match_ctx(m: &crate::matchmaking::MatchView) -> Option<MatchCtx> {
+    (m.status == "running").then(|| MatchCtx {
+        match_id: m.id.clone(),
+        best_of: m.best_of,
+        games_before: m.series.iter().map(|w| *w as u32).sum(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     Post { game_seq: u32, body: Vec<u8> },
@@ -480,6 +489,20 @@ mod tests {
     }
     fn play(n: Next) -> LivePlay {
         match n { Next::Play(p) => p, other => panic!("expected a play, got {other:?}") }
+    }
+
+    #[test]
+    fn match_ctx_only_while_running_and_counts_recorded_games() {
+        let mut m = crate::matchmaking::MatchView::default();
+        m.id = "3f1c0f3e-0000-4000-8000-000000000001".into();
+        m.best_of = 3;
+        m.series = vec![1, 0];
+        m.status = "running".into();
+        assert_eq!(match_ctx(&m), Some(MatchCtx { match_id: m.id.clone(), best_of: 3, games_before: 1 }));
+        for s in ["pairing", "lobby", "complete", "held", "void", "abandoned"] {
+            m.status = s.into();
+            assert_eq!(match_ctx(&m), None, "{s}");
+        }
     }
 
     #[test]
