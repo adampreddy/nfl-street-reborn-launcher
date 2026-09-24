@@ -48,7 +48,10 @@ impl LiveError {
 /// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Uppercase is refused rather than lowercased and
 /// accepted, because the backend's own ids are always lowercase and a caller passing anything
 /// else is not really quoting one back.
-fn is_canonical_uuid(id: &str) -> bool {
+///
+/// `pub` so `reborn-ui`'s `open_website` can reuse this exact rule for the live-match page link
+/// rather than writing a second UUID check that could drift from this one.
+pub fn is_canonical_uuid(id: &str) -> bool {
     let bytes = id.as_bytes();
     if bytes.len() != 36 {
         return false;

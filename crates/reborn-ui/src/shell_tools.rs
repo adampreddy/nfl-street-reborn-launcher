@@ -8,6 +8,36 @@ use tauri::Manager;
 /// URL is a launcher that opens whatever a manifest or a mod says.
 const SITE: &str = "https://nflstreetreborn.com/";
 
+/// The one other thing this launcher will open: the web game's live-match page for a single
+/// match, built from the backend origin rather than a second literal so it cannot drift from
+/// `identity::DEFAULT_ORIGIN`.
+fn live_prefix() -> String {
+    format!("{}/live/", reborn_core::identity::DEFAULT_ORIGIN)
+}
+
+/// Whether `url` is one this launcher will hand to the shell: a page on the site, or exactly
+/// `<backend origin>/live/<uuid>` for the web game's live-match page.
+///
+/// Pure and side-effect free, so tests drive it directly without spawning a process. This is the
+/// ONLY place either rule is decided; `open_website` calls it and does not re-derive either
+/// check. The UUID rule is the same [`reborn_core::live_view::is_canonical_uuid`] the core client
+/// checks a match id against before it is ever sent to the network -- reused rather than
+/// reimplemented, so the two can never drift apart on what a "real" id looks like.
+///
+/// `strip_prefix` is what makes this strict: anything left over after the prefix other than
+/// exactly 36 canonical-UUID characters -- `../admin`, a `?query`, a `#fragment`, a trailing
+/// slash, more path -- fails [`reborn_core::live_view::is_canonical_uuid`]'s length check and is
+/// refused, without this function having to name any of those shapes itself.
+fn allowed(url: &str) -> bool {
+    if url.starts_with(SITE) {
+        return true;
+    }
+    match url.strip_prefix(&live_prefix()) {
+        Some(rest) => reborn_core::live_view::is_canonical_uuid(rest),
+        None => false,
+    }
+}
+
 /// One size while first run is incomplete: every setup screen is laid out for
 /// 1280 by 800, and a resized window put a scrollbar on the controller step.
 /// Resizable again once the launcher proper is up.
@@ -28,7 +58,7 @@ pub fn setup_window_lock(app: tauri::AppHandle, locked: bool) -> Result<(), Stri
 /// Open a page of the site in the player's default browser.
 #[tauri::command]
 pub fn open_website(url: String) -> Result<(), String> {
-    if !url.starts_with(SITE) {
+    if !allowed(&url) {
         return Err("Only pages on nflstreetreborn.com open from here.".into());
     }
     let mut cmd = std::process::Command::new("rundll32.exe");
@@ -91,6 +121,72 @@ mod tests {
         assert!(open_website("http://nflstreetreborn.com/".into()).is_err(), "https only");
         assert!(open_website("https://nflstreetreborn.com.evil.example/".into()).is_err());
         // The site itself would launch a browser here, so it is not exercised.
+    }
+
+    /// A canonical UUID from `reborn_core::live_view`'s own test fixtures, so this file is
+    /// never the place a second "what a valid id looks like" gets written down.
+    const LIVE_ID: &str = "3f1c0f3e-0000-4000-8000-000000000001";
+
+    #[test]
+    fn a_page_on_the_site_is_still_allowed() {
+        assert!(allowed("https://nflstreetreborn.com/x"));
+    }
+
+    #[test]
+    fn a_canonical_live_match_link_is_allowed() {
+        assert!(allowed(&format!("https://api.nflstreetreborn.com/live/{LIVE_ID}")));
+    }
+
+    #[test]
+    fn a_live_link_is_refused_unless_it_is_exactly_the_bare_canonical_id() {
+        // Path traversal past the prefix.
+        assert!(!allowed("https://api.nflstreetreborn.com/live/../admin"));
+        // A query string after an otherwise-valid id.
+        assert!(!allowed(&format!("https://api.nflstreetreborn.com/live/{LIVE_ID}?x=1")));
+        // Uppercase: the backend's ids are always lowercase, same rule as `is_canonical_uuid`.
+        assert!(!allowed(&format!(
+            "https://api.nflstreetreborn.com/live/{}",
+            LIVE_ID.to_ascii_uppercase()
+        )));
+        // A real backend path, but not the live-match page.
+        assert!(!allowed("https://api.nflstreetreborn.com/v1/live"));
+        // The right path and a real id, wrong origin entirely.
+        assert!(!allowed(&format!("https://evil.com/live/{LIVE_ID}")));
+    }
+
+    /// The CSP's `img-src` is the one directive this feature widens, and only to let a live
+    /// match's crest and avatar images load. Everything else -- `default-src`, `style-src`,
+    /// `script-src`, `font-src`, and in particular `connect-src`, which does not exist in this
+    /// CSP today -- must be untouched: the page never fetches the backend itself, only the Rust
+    /// commands do, so nothing here needed a new `connect-src` at all.
+    #[test]
+    fn the_csp_only_widens_img_src_for_the_backend_and_discord() {
+        let conf = include_str!("../tauri.conf.json");
+        let json: serde_json::Value = serde_json::from_str(conf).expect("tauri.conf.json is valid JSON");
+        let csp = json["app"]["security"]["csp"]
+            .as_str()
+            .expect("the CSP is a single string");
+
+        let directives: std::collections::HashMap<&str, &str> = csp
+            .split(';')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| {
+                let mut parts = d.splitn(2, char::is_whitespace);
+                (parts.next().unwrap_or(""), parts.next().unwrap_or("").trim())
+            })
+            .collect();
+
+        assert_eq!(
+            directives.get("img-src").copied(),
+            Some("'self' data: https://api.nflstreetreborn.com https://cdn.discordapp.com"),
+            "img-src must be exactly 'self', data:, the backend origin and Discord's CDN"
+        );
+        assert!(
+            directives.get("connect-src").is_none(),
+            "connect-src must stay absent: the live page renders what the Rust commands already \
+             fetched, and never fetches the backend itself"
+        );
     }
 }
 

@@ -31,6 +31,7 @@ mod stats_view;
 mod dolphin_settings;
 mod online_mm;
 mod live_settings;
+mod live_view;
 
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -6159,6 +6160,8 @@ fn main() {
             online_mm::presence_page,
             online_mm::presence_set_enabled,
             online_mm::mm_launch_prefs,
+            live_view::live_matches,
+            live_view::live_match,
             dolphin_settings::netplay_open,
             dolphin_settings::netplay_status,
             dolphin_settings::netplay_action,
