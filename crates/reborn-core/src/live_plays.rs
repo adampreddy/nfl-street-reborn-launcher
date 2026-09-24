@@ -701,7 +701,7 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(c.next(d.path()), Next::Nothing);
         }
-        let limit = if cfg!(debug_assertions) { 500 } else { 250 };
+        let limit = if cfg!(debug_assertions) { 2000 } else { 250 }; // debug under a parallel test run measured 540 ms; the check guards against reading file bytes (~10x slower), not scheduler noise
         assert!(t.elapsed() < std::time::Duration::from_millis(limit), "{:?}", t.elapsed());
     }
 
