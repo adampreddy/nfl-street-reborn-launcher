@@ -44,11 +44,23 @@ function findAll(node, pred, out = []) {
 }
 const byClass = (root, cls) => findAll(root, (n) => String(n.className || "").split(/\s+/).includes(cls));
 const imgsOf = (root) => findAll(root, (n) => n.tagName === "img");
+const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";").filter(Boolean).map((d) => d.split(":").map((s) => s.trim())));
 
-// shell.js is inlined the same way check-shell-pages.mjs inlines it: a data: URL module cannot
-// resolve a relative import, so the shared module's exports become plain declarations.
+// WCAG relative luminance / contrast, to hold the team-colour abbreviation chip to 4.5:1 -- the
+// same maths as live-color.js, kept separate here so the check verifies the real output, not its
+// own assumptions about how live-color.js works.
+function lum(hex) {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+
+// shell.js and live-color.js are inlined the same way check-shell-pages.mjs inlines shell.js: a
+// data: URL module cannot resolve a relative import, so each shared module's exports become plain
+// declarations.
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from ['"]\.\/shell\.js['"];\r?\n/m;
+const LIVE_COLOR = readFileSync("crates/reborn-ui/ui/live-color.js", "utf8").replaceAll("export ", "");
+const IMPORT_LINE = /^import .*from ['"]\.\/(?:shell|live-color)\.js['"];\r?\n/gm;
 const LIVE_NOW_SRC = readFileSync("crates/reborn-ui/ui/live-now.js", "utf8").replace(IMPORT_LINE, "");
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -84,7 +96,7 @@ async function loadLive(invoke) {
   global.setInterval = (fn) => { timers.push({ fn, alive: true }); return timers.length; };
   global.clearInterval = (id) => { if (id && timers[id - 1]) timers[id - 1].alive = false; };
 
-  const mod = SHELL + "\n" + LIVE_NOW_SRC + `\n// live-now check ${Math.random()}`;
+  const mod = SHELL + "\n" + LIVE_COLOR + "\n" + LIVE_NOW_SRC + `\n// live-now check ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   await tick(); await tick(); await tick();
 
@@ -138,8 +150,13 @@ function check(what, ok, detail = "") {
     watch.every((w) => FIXTURE.matches.some((m) => w.attrs.href === `live.html?match=${encodeURIComponent(m.id)}`)),
     watch.map((w) => w.attrs.href).join(", "));
   const abbrevs = byClass(section, "live-abbrev");
-  const wantColor = `color:${FIXTURE.matches[0].teams[0].primary}`;
-  check("a team's abbreviation is coloured with its own primary", abbrevs.some((a) => a.attrs.style === wantColor), abbrevs.map((a) => a.attrs.style).join(", "));
+  const wantBg = FIXTURE.matches[0].teams[0].primary;
+  check("a team's abbreviation sits in a chip whose background is its own primary colour",
+    abbrevs.length > 0 && abbrevs.every((a) => styleOf(a).background === wantBg), abbrevs.map((a) => a.attrs.style).join(", "));
+  check("that dark navy chip (#122852) gets white text for contrast",
+    abbrevs.every((a) => styleOf(a).color === "#ffffff"), abbrevs.map((a) => a.attrs.style).join(", "));
+  check("the abbreviation chips clear 4.5:1 contrast",
+    abbrevs.every((a) => contrast(styleOf(a).color, styleOf(a).background) >= 4.5), abbrevs.map((a) => a.attrs.style).join(", "));
   const allImgs = imgsOf(section);
   check("the fixture's logos and avatars rendered as <img>", allImgs.length > 0);
   check("only allowed image prefixes are ever set as src",
@@ -252,7 +269,35 @@ function check(what, ok, detail = "") {
   page.done();
 }
 
+// ---- 8: the abbreviation chip's background is the team's own primary; its text is chosen by luminance ----
+{
+  const match = {
+    id: "33333333-3333-4333-8333-333333333333", mode: "ranked", best_of: 1, series: [0, 0], started_at: "2026-09-24T00:00:00Z",
+    seats: [{ display_name: "A", avatar_url: null }, { display_name: "B", avatar_url: null }],
+    game_seq: 1, score: [0, 0], sides: [{ seat: 0 }, { seat: 1 }],
+    teams: [
+      { side: 0, tgid: 1, name: "Navy", abbrev: "NVY", city: null, primary: "#0E172E", secondary: "#000000", logo_url: null, wordmark_url: null },
+      { side: 1, tgid: 2, name: "Light", abbrev: "LGT", city: null, primary: "#F5D033", secondary: "#000000", logo_url: null, wordmark_url: null },
+    ],
+  };
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [match] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  const abbrevs = byClass(page.section(), "live-abbrev");
+  check("two abbreviation chips are drawn", abbrevs.length === 2, `${abbrevs.length}`);
+  const navy = abbrevs.find((a) => a.textContent === "NVY");
+  const light = abbrevs.find((a) => a.textContent === "LGT");
+  check("each chip's background is that team's own primary colour",
+    !!navy && !!light && styleOf(navy).background === "#0E172E" && styleOf(light).background === "#F5D033",
+    [navy, light].map((a) => a && a.attrs.style).join(" | "));
+  check("a dark navy chip (#0E172E) gets white text", !!navy && styleOf(navy).color === "#ffffff", navy && navy.attrs.style);
+  check("a light chip (#F5D033) gets black text", !!light && styleOf(light).color === "#000000", light && light.attrs.style);
+  check("both chips clear 4.5:1 contrast",
+    [navy, light].every((a) => a && contrast(styleOf(a).color, styleOf(a).background) >= 4.5),
+    [navy, light].map((a) => a && a.attrs.style).join(" | "));
+  page.done();
+}
+
 console.log(fails === 0
-  ? "\nPASS: Live now renders the fixture's two rows, the empty and error states, escapes untrusted text, gates image origins to the two allowed prefixes, keeps row identity across a refresh, and stops/resumes polling with page visibility."
+  ? "\nPASS: Live now renders the fixture's two rows, the empty and error states, escapes untrusted text, gates image origins to the two allowed prefixes, keeps row identity across a refresh, stops/resumes polling with page visibility, and gives each team's abbreviation a readable chip (its own colour as background, black or white text by luminance)."
   : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

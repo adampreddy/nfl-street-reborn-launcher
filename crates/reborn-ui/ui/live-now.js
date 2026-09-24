@@ -10,6 +10,7 @@
 // since that setting can never widen a static CSP -- see docs/superpowers/sdd's constraints for
 // this feature.
 import { bridge, call, el, reason } from './shell.js';
+import { inkFor } from './live-color.js';
 
 // The backend origin the CSP's img-src is pinned to (identity::DEFAULT_ORIGIN on the Rust side).
 // Deliberately NOT read from a setting: a player-configured `backend_origin` cannot change what
@@ -56,10 +57,12 @@ function teamLogo(team) {
   return withImageFallback(img, badge);
 }
 
-/** The team's abbreviation, in its own colour when the catalog gave one (validated, never trusted as is). */
+/** The team's abbreviation as a chip: the catalog's own primary colour as its background (validated,
+    never trusted as is), with black or white text picked by luminance for 4.5:1 contrast or better --
+    the same treatment live.js's header gives a team's name, via the shared live-color.js. */
 function teamAbbrev(team) {
   const attrs = { class: 'live-abbrev', text: team && team.abbrev ? String(team.abbrev) : '?' };
-  if (team && HEX_RE.test(team.primary)) attrs.style = `color:${team.primary}`;
+  if (team && HEX_RE.test(team.primary)) attrs.style = `background:${team.primary};color:${inkFor(team.primary)}`;
   return el('span', attrs);
 }
 

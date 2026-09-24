@@ -55,7 +55,8 @@ const button = (root, label) => buttonsOf(root).find((b) => text(b).trim() === l
 async function click(node) { for (const f of node?.listeners?.click || []) await f({ preventDefault() {} }); await tick(); await tick(); }
 
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from ['"]\.\/shell\.js['"];\r?\n/m;
+const LIVE_COLOR = readFileSync("crates/reborn-ui/ui/live-color.js", "utf8").replaceAll("export ", "");
+const IMPORT_LINE = /^import .*from ['"]\.\/(?:shell|live-color)\.js['"];\r?\n/gm;
 const LIVE_SRC = readFileSync("crates/reborn-ui/ui/live.js", "utf8").replace(IMPORT_LINE, "");
 const LIVE_HTML = readFileSync("crates/reborn-ui/ui/live.html", "utf8");
 
@@ -93,7 +94,7 @@ async function loadLive(search, invoke) {
   global.setInterval = (fn, ms) => { timers.push({ fn, ms, alive: true }); return timers.length; };
   global.clearInterval = (id) => { if (id && timers[id - 1]) timers[id - 1].alive = false; };
 
-  const mod = SHELL + "\n" + LIVE_SRC + `\n// live view check ${Math.random()}`;
+  const mod = SHELL + "\n" + LIVE_COLOR + "\n" + LIVE_SRC + `\n// live view check ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   for (let i = 0; i < 6; i++) await tick();
 

@@ -17,6 +17,7 @@
 // prefixes the launcher's CSP `img-src` allows. A custom `backend_origin` (Settings) cannot widen that
 // static CSP, so its images would simply fail to load and draw their badges instead.
 import { bridge, call, el, reason } from './shell.js';
+import { inkFor } from './live-color.js';
 
 const LIVE_ORIGIN = 'https://api.nflstreetreborn.com';
 const AVATAR_PREFIX = 'https://cdn.discordapp.com/avatars/';
@@ -50,19 +51,6 @@ function avatarSrc(seat) {
 function initialOf(name) {
   const s = String(name ?? '');
   return s ? Array.from(s)[0].toUpperCase() : '?';
-}
-
-/** WCAG relative luminance of a validated #rrggbb. */
-function luminance(hex) {
-  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
-    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-}
-
-/** Black or white text on `hex`, whichever contrasts more (the better of the two is always 4.58:1 or more). */
-function inkFor(hex) {
-  const l = luminance(hex);
-  return (l + 0.05) / 0.05 >= 1.05 / (l + 0.05) ? '#000000' : '#ffffff';
 }
 
 function newestGame(snap) {

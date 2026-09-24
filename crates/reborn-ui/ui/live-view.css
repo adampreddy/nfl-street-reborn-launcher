@@ -1,7 +1,9 @@
 /* "Live now" on the Online page. Reuses the product surface tokens already defined in
    finish.css / product-ui.css (--panel, --fg, --muted, --line, --control-bg, --control-border,
    --panel-border, --focus): no colors of its own besides a team's own primary, which is only ever
-   used as validated inline text colour (see live-now.js), never trusted as raw CSS. */
+   used (validated, never trusted as raw CSS) as the background of the abbreviation chip below, with
+   black or white text picked by luminance in live-now.js -- the same treatment live.js's header
+   gives a team's name (see live-color.js). */
 .live-now { margin: 0 0 24px; }
 .live-now-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 14px; }
 .live-now-heading h2 { margin: 0; font: 600 17px/1.4 Inter, "Segoe UI", sans-serif; color: var(--fg); letter-spacing: -.01em; }
@@ -17,8 +19,9 @@
 .live-logo, .live-badge { width: 128px; height: 128px; border-radius: 14px; flex: none; }
 .live-logo { object-fit: contain; background: var(--control-bg); }
 .live-badge { display: inline-flex; align-items: center; justify-content: center; background: var(--control-bg); border: 1px solid var(--control-border); font-size: 22px; font-weight: 800; letter-spacing: .03em; color: var(--muted); }
-.live-team-id { display: grid; gap: 3px; min-width: 0; }
-.live-abbrev { font-size: 16px; font-weight: 800; letter-spacing: .03em; color: var(--fg); }
+.live-team-id { display: grid; gap: 3px; min-width: 0; justify-items: start; }
+.live-team-1 .live-team-id { justify-items: end; }
+.live-abbrev { max-width: 100%; padding: 3px 9px; border-radius: 6px; background: var(--control-bg); color: var(--fg); font-size: 15px; font-weight: 800; letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-team-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-score-num { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg); }
 .live-team-1 .live-score-num { order: -1; }
@@ -45,6 +48,7 @@
   .live-logo, .live-badge { width: 64px; height: 64px; border-radius: 10px; }
   .live-scoreboard { grid-template-columns: 1fr; gap: 10px; }
   .live-team-1 { flex-direction: row; text-align: left; }
+  .live-team-1 .live-team-id { justify-items: start; }
   .live-team-1 .live-score-num { order: 0; }
   .live-score-sep { display: none; }
 }
