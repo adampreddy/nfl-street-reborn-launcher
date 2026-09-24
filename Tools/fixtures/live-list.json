@@ -1,0 +1,119 @@
+{
+  "ok": true,
+  "matches": [
+    {
+      "id": "b41cf41a-43c4-4d1b-aaa8-05e4e72c737b",
+      "mode": "ranked",
+      "best_of": 3,
+      "series": [
+        0,
+        0
+      ],
+      "started_at": "2026-09-24T04:41:36.766Z",
+      "seats": [
+        {
+          "display_name": "Adam",
+          "avatar_url": "https://cdn.discordapp.com/avatars/123456789012345678/0123456789abcdef0123456789abcdef.png?size=64"
+        },
+        {
+          "display_name": "Jock",
+          "avatar_url": "https://cdn.discordapp.com/avatars/223456789012345678/a_fedcba9876543210fedcba9876543210.png?size=64"
+        }
+      ],
+      "game_seq": 1,
+      "score": [
+        0,
+        0
+      ],
+      "sides": [
+        {
+          "seat": 0
+        },
+        {
+          "seat": 1
+        }
+      ],
+      "teams": [
+        {
+          "side": 0,
+          "tgid": 16,
+          "name": "Giants",
+          "abbrev": "NYG",
+          "city": "New York",
+          "primary": "#122852",
+          "secondary": "#881E17",
+          "logo_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/teams/16-256.png",
+          "wordmark_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/wordmarks/16.png"
+        },
+        {
+          "side": 1,
+          "tgid": 10,
+          "name": "Colts",
+          "abbrev": "IND",
+          "city": "Indianapolis",
+          "primary": "#122852",
+          "secondary": "#B4B4B4",
+          "logo_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/teams/10-256.png",
+          "wordmark_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/wordmarks/10.png"
+        }
+      ]
+    },
+    {
+      "id": "7a31b72d-d6b8-40d4-a50d-28f9ee22c209",
+      "mode": "casual",
+      "best_of": 1,
+      "series": [
+        0,
+        0
+      ],
+      "started_at": "2026-09-24T04:40:06.831Z",
+      "seats": [
+        {
+          "display_name": "Tuna",
+          "avatar_url": "https://cdn.discordapp.com/avatars/323456789012345678/52fc9630da741eb852fc9630da741eb8.png?size=64"
+        },
+        {
+          "display_name": "Riley",
+          "avatar_url": "https://cdn.discordapp.com/avatars/423456789012345678/30da741eb852fc9630da741eb852fc96.png?size=64"
+        }
+      ],
+      "game_seq": 1,
+      "score": [
+        0,
+        0
+      ],
+      "sides": [
+        {
+          "seat": 0
+        },
+        {
+          "seat": 1
+        }
+      ],
+      "teams": [
+        {
+          "side": 0,
+          "tgid": 16,
+          "name": "Giants",
+          "abbrev": "NYG",
+          "city": "New York",
+          "primary": "#122852",
+          "secondary": "#881E17",
+          "logo_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/teams/16-256.png",
+          "wordmark_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/wordmarks/16.png"
+        },
+        {
+          "side": 1,
+          "tgid": 10,
+          "name": "Colts",
+          "abbrev": "IND",
+          "city": "Indianapolis",
+          "primary": "#122852",
+          "secondary": "#B4B4B4",
+          "logo_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/teams/10-256.png",
+          "wordmark_url": "/live-assets/r/2026.09.23-seq-7.b4a3774091/wordmarks/10.png"
+        }
+      ]
+    }
+  ]
+}

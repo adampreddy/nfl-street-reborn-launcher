@@ -1,0 +1,50 @@
+/* "Live now" on the Online page. Reuses the product surface tokens already defined in
+   finish.css / product-ui.css (--panel, --fg, --muted, --line, --control-bg, --control-border,
+   --panel-border, --focus): no colors of its own besides a team's own primary, which is only ever
+   used as validated inline text colour (see live-now.js), never trusted as raw CSS. */
+.live-now { margin: 0 0 24px; }
+.live-now-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 14px; }
+.live-now-heading h2 { margin: 0; font: 600 17px/1.4 Inter, "Segoe UI", sans-serif; color: var(--fg); letter-spacing: -.01em; }
+.live-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.live-row { display: grid; gap: 14px; padding: 20px 22px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); }
+.live-empty, .live-error { margin: 0; padding: 20px 22px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.6; }
+.live-error { color: var(--focus); }
+
+.live-scoreboard { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 18px; }
+.live-team { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.live-team-1 { flex-direction: row-reverse; text-align: right; }
+.live-image { display: inline-flex; flex: none; }
+.live-logo, .live-badge { width: 128px; height: 128px; border-radius: 14px; flex: none; }
+.live-logo { object-fit: contain; background: var(--control-bg); }
+.live-badge { display: inline-flex; align-items: center; justify-content: center; background: var(--control-bg); border: 1px solid var(--control-border); font-size: 22px; font-weight: 800; letter-spacing: .03em; color: var(--muted); }
+.live-team-id { display: grid; gap: 3px; min-width: 0; }
+.live-abbrev { font-size: 16px; font-weight: 800; letter-spacing: .03em; color: var(--fg); }
+.live-team-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-score-num { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg); }
+.live-team-1 .live-score-num { order: -1; }
+.live-score-sep { color: var(--muted); font-size: 20px; text-align: center; }
+
+.live-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); }
+.live-mode { text-transform: uppercase; letter-spacing: .06em; }
+
+.live-players { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+.live-player { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg); min-width: 0; max-width: 220px; }
+.live-avatar, .live-avatar-badge { width: 24px; height: 24px; border-radius: 50%; flex: none; }
+.live-avatar { object-fit: cover; background: var(--control-bg); }
+.live-avatar-badge { display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: var(--control-bg); border: 1px solid var(--control-border); color: var(--muted); }
+.live-player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.live-watch { justify-self: start; }
+
+@media (max-width: 1000px) {
+  .live-logo, .live-badge { width: 96px; height: 96px; }
+  .live-score-num { font-size: 24px; }
+}
+@media (max-width: 760px) {
+  .live-row { padding: 16px; }
+  .live-logo, .live-badge { width: 64px; height: 64px; border-radius: 10px; }
+  .live-scoreboard { grid-template-columns: 1fr; gap: 10px; }
+  .live-team-1 { flex-direction: row; text-align: left; }
+  .live-team-1 .live-score-num { order: 0; }
+  .live-score-sep { display: none; }
+}
