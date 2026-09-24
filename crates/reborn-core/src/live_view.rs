@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::net::Http;
 
-/// Why a call failed, in the four ways a caller actually has to handle differently.
+/// Why a call failed, in the five ways a caller actually has to handle differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveError {
     /// The id given to [`snapshot`] is not a canonical (lowercase) UUID. Checked before any
@@ -24,7 +24,11 @@ pub enum LiveError {
     BadId,
     /// The server could not be reached: no route, DNS, timeout, refused.
     Unreachable,
-    /// The server answered with an error status.
+    /// The server answered `429 Too Many Requests`. Kept apart from [`LiveError::Server`] so a
+    /// page can back off for a full minute instead of retrying on its usual short schedule: a
+    /// LAN party behind one NAT address shares one rate limit.
+    RateLimited,
+    /// The server answered with an error status (other than 429).
     Server(u16),
     /// The server answered success but the body was not the JSON this client expects.
     BadReply,
@@ -37,10 +41,20 @@ impl LiveError {
     pub fn player_message(&self) -> &'static str {
         match self {
             LiveError::BadId => "That live game link isn't valid.",
+            LiveError::RateLimited => "Live games are busy right now. Trying again in a minute.",
             LiveError::Unreachable | LiveError::Server(_) | LiveError::BadReply => {
                 "Live games couldn't be loaded right now."
             }
         }
+    }
+}
+
+/// A non-success status as a [`LiveError`]: 429 is its own kind, everything else is `Server`.
+fn status_error(status: u16) -> LiveError {
+    if status == 429 {
+        LiveError::RateLimited
+    } else {
+        LiveError::Server(status)
     }
 }
 
@@ -70,7 +84,7 @@ pub fn list(http: &dyn Http, origin: &str) -> Result<Value, LiveError> {
     let url = format!("{}/v1/live", origin.trim_end_matches('/'));
     let reply = http.get_text(&url).map_err(|_| LiveError::Unreachable)?;
     if !reply.is_success() {
-        return Err(LiveError::Server(reply.status));
+        return Err(status_error(reply.status));
     }
     let body: Value = serde_json::from_str(&reply.body).map_err(|_| LiveError::BadReply)?;
     Ok(body.get("matches").cloned().unwrap_or_else(|| Value::Array(Vec::new())))
@@ -89,7 +103,7 @@ pub fn snapshot(http: &dyn Http, origin: &str, match_id: &str) -> Result<Option<
         return Ok(None);
     }
     if !reply.is_success() {
-        return Err(LiveError::Server(reply.status));
+        return Err(status_error(reply.status));
     }
     let body: Value = serde_json::from_str(&reply.body).map_err(|_| LiveError::BadReply)?;
     Ok(Some(body))
@@ -174,9 +188,18 @@ mod tests {
     }
 
     #[test]
+    fn a_429_is_a_rate_limit_not_a_generic_server_error() {
+        let http = FakeHttp::default().reply("https://api.test/v1/live", 429, "");
+        assert_eq!(list(&http, ORIGIN).unwrap_err(), LiveError::RateLimited);
+        let url = format!("https://api.test/v1/live/{ID}");
+        let http = FakeHttp::default().reply(&url, 429, "");
+        assert_eq!(snapshot(&http, ORIGIN, ID).unwrap_err(), LiveError::RateLimited);
+    }
+
+    #[test]
     fn player_message_never_leaks_a_url_body_or_status_code() {
         use crate::player_sentence::assert_player_safe;
-        for err in [LiveError::BadId, LiveError::Unreachable, LiveError::Server(500), LiveError::BadReply] {
+        for err in [LiveError::BadId, LiveError::Unreachable, LiveError::Server(500), LiveError::BadReply, LiveError::RateLimited] {
             let msg = err.player_message();
             assert_player_safe(msg);
             assert!(!msg.contains("api.test"), "{msg}");
