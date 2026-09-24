@@ -179,8 +179,8 @@ mod tests {
 
         assert_eq!(
             directives.get("img-src").copied(),
-            Some("'self' data: https://api.nflstreetreborn.com https://cdn.discordapp.com"),
-            "img-src must be exactly 'self', data:, the backend origin and Discord's CDN"
+            Some("'self' data: https://api.nflstreetreborn.com/live-assets/ https://cdn.discordapp.com/avatars/"),
+            "img-src must be exactly 'self', data:, the backend's /live-assets/ path and Discord's /avatars/ path"
         );
         assert!(
             directives.get("connect-src").is_none(),

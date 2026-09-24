@@ -102,4 +102,21 @@ mod tests {
         assert!(!compact.contains("|e|e.to_string()"), "a command still maps an error through its Display");
         assert!(compact.contains(".map_err(|_|LiveCommandError::unavailable(NOT_LOADED))"), "a JoinError is not worded for a player");
     }
+
+    /// The live pages build image and "Watch on web" URLs against the backend origin, and the CSP
+    /// pins `img-src` to it; none of them can read `identity::DEFAULT_ORIGIN` at runtime, so this
+    /// holds all three to the same string. The origin lives in one shared module (live-common.js)
+    /// that both pages import, and neither page spells a backend origin of its own.
+    #[test]
+    fn the_live_pages_and_the_csp_use_the_default_origin() {
+        let origin = identity::DEFAULT_ORIGIN;
+        let common = include_str!("../ui/live-common.js");
+        let conf = include_str!("../tauri.conf.json");
+        assert!(common.contains(&format!("'{origin}'")), "live-common.js no longer uses {origin}");
+        assert!(conf.contains(&format!("{origin}/live-assets/")), "tauri.conf.json's CSP no longer allows {origin}");
+        for (name, page) in [("live.js", include_str!("../ui/live.js")), ("live-now.js", include_str!("../ui/live-now.js"))] {
+            assert!(page.contains("from './live-common.js'"), "{name} no longer imports the shared origin");
+            assert!(!page.contains("https://api."), "{name} spells a backend origin of its own");
+        }
+    }
 }
