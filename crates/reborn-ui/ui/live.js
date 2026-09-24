@@ -16,12 +16,10 @@
 // `/live-assets/...` catalog under the default origin, or from Discord's avatar CDN -- the only two
 // prefixes the launcher's CSP `img-src` allows. A custom `backend_origin` (Settings) cannot widen that
 // static CSP, so its images would simply fail to load and draw their badges instead.
-import { bridge, call, el, reason } from './shell.js';
+import { bridge, call, el, quietCall, reason } from './shell.js';
 import { inkFor } from './live-color.js';
+import { LIVE_ORIGIN, assetUrl, avatarSrc, makePoller, sideOfSeats } from './live-common.js';
 
-const LIVE_ORIGIN = 'https://api.nflstreetreborn.com';
-const AVATAR_PREFIX = 'https://cdn.discordapp.com/avatars/';
-const ASSET_RE = /^\/live-assets\/[A-Za-z0-9._/-]+\.png$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 const DASH = '–';
@@ -38,16 +36,6 @@ const num = (v) => (Number.isFinite(v) ? v : 0);
 const seqOf = (p) => (Number.isInteger(p?.body?.seq) ? p.body.seq : p?.seq);
 const str = (v) => (typeof v === 'string' ? v : '');
 
-/** A `/live-assets/...png` path as an absolute URL under the default origin, or null. */
-function assetUrl(path) {
-  return typeof path === 'string' && ASSET_RE.test(path) && !path.includes('..') ? LIVE_ORIGIN + path : null;
-}
-
-function avatarSrc(seat) {
-  const u = str(seat?.avatar_url);
-  return u.startsWith(AVATAR_PREFIX) ? u : null;
-}
-
 function initialOf(name) {
   const s = String(name ?? '');
   return s ? Array.from(s)[0].toUpperCase() : '?';
@@ -61,13 +49,6 @@ function newestGame(snap) {
 
 function playsOf(game) {
   return (Array.isArray(game?.plays) ? game.plays : []).filter((p) => p && Number.isInteger(seqOf(p)));
-}
-
-/** Which side each seat has: `[sideOfSeat0, sideOfSeat1]`, each 0|1|null. */
-function sideOfSeats(sides) {
-  const out = [null, null];
-  (Array.isArray(sides) ? sides : []).forEach((s, side) => { if (s && (s.seat === 0 || s.seat === 1) && side < 2) out[s.seat] = side; });
-  return out;
 }
 
 /** A by-side score as `[seat0, seat1]`, or null when the sides are not known. */
@@ -315,12 +296,11 @@ const matchId = params.get('match') ?? '';
 function notFound() {
   screen?.replaceChildren(
     el('p', { class: 'lv-empty', role: 'alert', text: NOT_FOUND }),
-    el('a', { class: 'button', href: 'online.html', text: 'Back to Online' }));
+    el('a', { class: 'button', id: 'back', 'data-key': 'back', href: 'online.html', text: 'Back to Online' }));
 }
 
 const state = { snap: null, error: null, picked: null, tab: 'plays', done: false };
 let lastText = null;
-let timer = null;
 
 function pickedGame() {
   const games = Array.isArray(state.snap?.games) ? state.snap.games.filter((g) => g && Number.isInteger(g.game_seq)) : [];
@@ -332,7 +312,8 @@ function draw() {
   const focusKey = document.activeElement?.getAttribute?.('data-key') ?? null;
   const parts = [];
   parts.push(el('div', { class: 'lv-actions' },
-    el('a', { class: 'button lv-back', href: 'online.html', text: '← Back' }),
+    // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return to Online.
+    el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: 'online.html', text: '← Back' }),
     el('button', { type: 'button', class: 'lv-watch', 'data-key': 'watch', text: 'Watch on web', onclick: watchOnWeb })));
   if (state.error) parts.push(el('p', { class: 'lv-error', role: 'alert', text: state.error }));
   const snap = state.snap;
@@ -364,57 +345,55 @@ async function watchOnWeb() {
   try { await call('open_website', { url: `${LIVE_ORIGIN}/live/${matchId}` }); } catch (e) { state.error = reason(e); draw(); }
 }
 
-function stop() {
-  if (timer) { clearInterval(timer); timer = null; }
-}
-function start() {
-  stop();
-  if (!state.done && document.visibilityState !== 'hidden') timer = setInterval(poll, POLL_MS);
-}
+// One request at a time; errors back off from 5 s up to 60 s (a rate limit waits a full minute)
+// and the normal 3 s resumes after the first good answer -- see live-common.js.
+const poller = makePoller(poll, POLL_MS);
 
-let inflight = false;
 async function poll() {
-  if (inflight || state.done) return;
-  inflight = true;
+  if (state.done) { poller.stop(); return; }
+  let snap;
   try {
-    const snap = await call('live_match', { matchId });
-    if (!snap || typeof snap !== 'object' || !Array.isArray(snap.games)) {
-      state.done = true;
-      stop();
-      notFound();
-      return;
-    }
-    const text = JSON.stringify(snap);
-    const hadError = state.error !== null;
-    state.error = null;
-    if (text !== lastText || hadError) { lastText = text; state.snap = snap; draw(); }
-    if (ENDED.has(str(snap.match?.status))) { state.done = true; stop(); }
+    snap = await quietCall('live_match', { matchId });
   } catch (e) {
-    // Quiet retries: the one line the core already words for a player, over the last good view.
+    // The one line the core already words for a player, over the last good view (which stays).
     const was = state.error;
     state.error = reason(e);
     if (was !== state.error) draw();
-  } finally {
-    inflight = false;
+    throw e;
   }
+  if (!snap || typeof snap !== 'object' || !Array.isArray(snap.games)) {
+    state.done = true;
+    poller.stop();
+    notFound();
+    return;
+  }
+  const text = JSON.stringify(snap);
+  const hadError = state.error !== null;
+  state.error = null;
+  if (text !== lastText || hadError) { lastText = text; state.snap = snap; draw(); }
+  if (ENDED.has(str(snap.match?.status))) { state.done = true; poller.stop(); }
+}
+
+// Nothing polls while the page is hidden, after navigating away, once the match has ended, or
+// while a game is running (app-shell.js's `session-state`): a match in progress needs the network.
+let sessionActive = false;
+let away = false;
+function update() {
+  if (state.done || away || sessionActive || document.visibilityState === 'hidden') poller.stop();
+  else poller.start();
 }
 
 if (!UUID_RE.test(matchId)) {
   notFound();
 } else {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { stop(); return; }
-    if (state.done) return;
-    poll();
-    start();
-  });
-  window.addEventListener?.('pagehide', stop);
-  window.addEventListener?.('pageshow', (e) => { if (e?.persisted && !state.done) { poll(); start(); } });
+  document.addEventListener('visibilitychange', update);
+  document.addEventListener('session-state', (e) => { sessionActive = Boolean(e?.detail); update(); });
+  window.addEventListener?.('pagehide', () => { away = true; update(); });
+  window.addEventListener?.('pageshow', (e) => { if (e?.persisted) { away = false; update(); } });
   if (!bridge) {
     state.error = 'Open this page inside the launcher window.';
     draw();
   } else {
-    await poll();
-    start();
+    update();
   }
 }

@@ -10,6 +10,11 @@
 // name stays literal; a match that turns `complete` shows Final and stops polling; an invalid ?match= shows the
 // not-found line and never asks for a snapshot; Watch on web and Back; polling every 3 s only while visible.
 //
+// Final-review fixes (plan 4c): one request at a time, errors back off from 5 s to 60 s with jitter (at least
+// 60 s after a 429) and reset on success, the last good view stays under the error line (I2); polling pauses
+// while a game session runs (M7); Back is #back with a data-key, so a controller's B / Esc returns to Online
+// (M9); the image rules come from the shared live-common.js (M3); nothing is written to the diagnostic log (M6).
+//
 //     node Tools/check-live-view.mjs
 import { readFileSync } from "node:fs";
 
@@ -29,7 +34,7 @@ function fakeEl(tag) {
     removeEventListener(k, f) { this.listeners[k] = (this.listeners[k] || []).filter((x) => x !== f); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
-    focus() {},
+    focus() { if (global.document) global.document.activeElement = this; },
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };
@@ -56,19 +61,26 @@ async function click(node) { for (const f of node?.listeners?.click || []) await
 
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
 const LIVE_COLOR = readFileSync("crates/reborn-ui/ui/live-color.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from ['"]\.\/(?:shell|live-color)\.js['"];\r?\n/gm;
-const LIVE_SRC = readFileSync("crates/reborn-ui/ui/live.js", "utf8").replace(IMPORT_LINE, "");
+const LIVE_COMMON = readFileSync("crates/reborn-ui/ui/live-common.js", "utf8").replaceAll("export ", "");
+const IMPORT_LINE = /^import .*from ['"]\.\/(?:shell|live-color|live-common)\.js['"];\r?\n/gm;
+const LIVE_RAW = readFileSync("crates/reborn-ui/ui/live.js", "utf8");
+const LIVE_SRC = LIVE_RAW.replace(IMPORT_LINE, "");
 const LIVE_HTML = readFileSync("crates/reborn-ui/ui/live.html", "utf8");
+const APP_SHELL = readFileSync("crates/reborn-ui/ui/app-shell.js", "utf8");
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+// The page's timers are faked (below); the checker's own ticks use the real one.
+const realSetTimeout = setTimeout, realClearTimeout = clearTimeout;
+const tick = () => new Promise((r) => realSetTimeout(r, 0));
 
 /** A fresh #screen, `location.search`, window.__TAURI__ wired to `invoke`, then live.js loaded. */
 async function loadLive(search, invoke) {
   const screenEl = fakeEl("section#screen");
-  const byId = { screen: screenEl };
+  const outEl = fakeEl("pre#out");
+  const byId = { screen: screenEl, out: outEl };
   const docListeners = {};
   const winListeners = {};
   const doc = {
+    activeElement: null,
     visibilityState: "visible",
     body: { dataset: {}, className: "shell ob page-online" },
     title: "",
@@ -89,18 +101,21 @@ async function loadLive(search, invoke) {
   };
   global.addEventListener = global.window.addEventListener;
 
+  // One-shot timers, stepped by hand: the page re-arms its poll after each answer.
   const timers = [];
-  const realSetInterval = global.setInterval, realClearInterval = global.clearInterval;
-  global.setInterval = (fn, ms) => { timers.push({ fn, ms, alive: true }); return timers.length; };
-  global.clearInterval = (id) => { if (id && timers[id - 1]) timers[id - 1].alive = false; };
+  global.setTimeout = (fn, ms) => { timers.push({ fn, ms, alive: true }); return timers.length; };
+  global.clearTimeout = (id) => { if (id && timers[id - 1]) timers[id - 1].alive = false; };
 
-  const mod = SHELL + "\n" + LIVE_COLOR + "\n" + LIVE_SRC + `\n// live view check ${Math.random()}`;
+  const mod = SHELL + "\n" + LIVE_COLOR + "\n" + LIVE_COMMON + "\n" + LIVE_SRC + `\n// live view check ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   for (let i = 0; i < 6; i++) await tick();
 
   return {
     calls,
+    doc,
+    out: outEl,
     screen: screenEl,
+    fireSession(active) { for (const f of docListeners["session-state"] || []) f({ detail: active }); },
     liveCalls: () => calls.filter((c) => c.cmd === "live_match"),
     fireVisibility(state) {
       doc.visibilityState = state;
@@ -109,11 +124,11 @@ async function loadLive(search, invoke) {
     firePagehide() { for (const f of winListeners.pagehide || []) f(); },
     activeTimers: () => timers.filter((t) => t.alive),
     async fireTimers() {
-      for (const t of timers) if (t.alive) await t.fn();
+      for (const t of [...timers]) if (t.alive) { t.alive = false; await t.fn(); }
       for (let i = 0; i < 4; i++) await tick();
     },
     async settle() { for (let i = 0; i < 4; i++) await tick(); },
-    done() { global.setInterval = realSetInterval; global.clearInterval = realClearInterval; },
+    done() { global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; },
   };
 }
 
@@ -367,6 +382,115 @@ for (const search of ["?match=abc", `?match=${MATCH_ID.toUpperCase()}`, "", `?ma
   fail = false;
   await page.fireTimers();
   check("the next good answer draws the match", text(page.screen).includes("Giants") && !text(page.screen).includes(MSG));
+  page.done();
+}
+
+// ---- 10 (I2): errors back off with jitter, keep the last good view, honour 429, reset on success ----
+{
+  const MSG = "Live games couldn't be loaded right now.";
+  const MSG2 = "Live games are busy right now. Trying again in a minute.";
+  let mode = "ok";
+  const page = await loadLive(`?match=${MATCH_ID}`, async (cmd) => {
+    if (cmd === "settings_paths") return {};
+    if (cmd === "live_match") {
+      if (mode === "fail") throw { kind: "unavailable", message: MSG };
+      if (mode === "limit") throw { kind: "rate_limited", message: MSG2 };
+      return fixture();
+    }
+    throw new Error(`no fake answer for ${cmd}`);
+  });
+  const wait = () => page.activeTimers().map((t) => t.ms);
+  check("a good answer polls again in 3 s", wait().length === 1 && wait()[0] === 3000, JSON.stringify(wait()));
+  mode = "fail";
+  await page.fireTimers();
+  const s = page.screen;
+  check("an error shows its line", byClass(s, "lv-error").length === 1 && text(byClass(s, "lv-error")[0]).includes(MSG));
+  check("an error keeps the last good view (header and plays stay)", text(byClass(s, "lv-header")[0]).includes("Giants") && byClass(s, "lv-play").length === 5);
+  const w1 = wait()[0];
+  check("the first error backs off 5 s plus jitter (5-6.25 s)", wait().length === 1 && w1 >= 5000 && w1 <= 6250, JSON.stringify(wait()));
+  await page.fireTimers();
+  const w2 = wait()[0];
+  check("a second error doubles it (10-12.5 s)", w2 >= 10000 && w2 <= 12500, `${w2}`);
+  for (let i = 0; i < 6; i++) await page.fireTimers();
+  const wMax = wait()[0];
+  check("the backoff caps at 60 s", wMax <= 60000 && wMax >= 40000, `${wMax}`);
+  mode = "ok";
+  await page.fireTimers();
+  check("a good answer clears the error line", byClass(page.screen, "lv-error").length === 0);
+  check("a good answer resets to 3 s", wait().length === 1 && wait()[0] === 3000, JSON.stringify(wait()));
+  mode = "limit";
+  await page.fireTimers();
+  check("a 429 (kind rate_limited) waits at least 60 s, even as the first error", wait().length === 1 && wait()[0] >= 60000, JSON.stringify(wait()));
+  const n = page.liveCalls().length;
+  page.fireVisibility("hidden"); page.fireVisibility("visible");
+  await page.settle();
+  check("showing the page again does not skip the rate-limit wait", page.liveCalls().length === n, `${page.liveCalls().length - n} extra`);
+  page.done();
+}
+
+// ---- 11 (I2): one request at a time ----
+{
+  let release = null;
+  let first = true;
+  const page = await loadLive(`?match=${MATCH_ID}`, (cmd) => {
+    if (cmd === "settings_paths") return Promise.resolve({});
+    if (cmd === "live_match") {
+      if (first) { first = false; return Promise.resolve(fixture()); }
+      return new Promise((r) => { release = () => r(fixture()); });
+    }
+    return Promise.reject(new Error(`no fake answer for ${cmd}`));
+  });
+  page.fireTimers(); // the second poll goes out and hangs (not awaited: it never answers until released)
+  await page.settle();
+  const n = page.liveCalls().length;
+  page.fireVisibility("hidden"); page.fireVisibility("visible");
+  page.fireSession(false);
+  await page.fireTimers();
+  check("nothing asks again while a poll is still out", page.liveCalls().length === n, `${page.liveCalls().length - n} extra`);
+  release();
+  await page.settle();
+  check("the answer arms exactly one next poll", page.activeTimers().length === 1, `${page.activeTimers().length}`);
+  page.done();
+}
+
+// ---- 12 (M7): polling pauses while a game session runs ----
+{
+  const page = await loadLive(`?match=${MATCH_ID}`, answering(fixture()));
+  page.fireSession(true);
+  check("a running game stops the timer", page.activeTimers().length === 0);
+  const n = page.liveCalls().length;
+  page.fireVisibility("hidden"); page.fireVisibility("visible");
+  await page.settle();
+  check("no poll while the game runs, even when the page is shown again", page.liveCalls().length === n, `${page.liveCalls().length - n}`);
+  page.fireSession(false);
+  await page.settle();
+  check("the game ending polls again at once and re-arms", page.liveCalls().length === n + 1 && page.activeTimers().length === 1,
+    `${page.liveCalls().length - n} call(s), ${page.activeTimers().length} timer(s)`);
+  page.done();
+}
+
+// ---- 13 (M9): Back is #back with a data-key, so a controller's B / Esc returns to Online ----
+{
+  const page = await loadLive(`?match=${MATCH_ID}`, answering(fixture()));
+  const back = findAll(page.screen, (n) => n.tagName === "a" && n.attrs.href === "online.html")[0];
+  check("the Back link is #back with data-key=back", !!back && back.attrs.id === "back" && back.attrs["data-key"] === "back", JSON.stringify(back && back.attrs));
+  page.done();
+  const nf = await loadLive("?match=abc", answering(fixture()));
+  const nfBack = findAll(nf.screen, (n) => n.tagName === "a" && n.attrs.href === "online.html")[0];
+  check("the not-found Back link is #back too", !!nfBack && nfBack.attrs.id === "back" && nfBack.attrs["data-key"] === "back");
+  nf.done();
+  check("app-shell.js's B / Esc clicks a visible #back", /getElementById\('back'\)[\s\S]{0,80}\.click\(\)/.test(APP_SHELL));
+}
+
+// ---- 14 (M3, M6): the shared image rules, and nothing in the diagnostic log ----
+{
+  check("live.js takes its image rules and origin from live-common.js",
+    /import \{[^}]*\bLIVE_ORIGIN\b[^}]*\bassetUrl\b[^}]*\} from '\.\/live-common\.js'/.test(LIVE_RAW));
+  check("live.js has no image-prefix rule of its own", !/live-assets\\\/|ASSET_RE\s*=|cdn\.discordapp/.test(LIVE_RAW.replace(/^\s*\/\/.*$/gm, "")));
+  const page = await loadLive(`?match=${MATCH_ID}`, answering(fixture()));
+  await page.fireTimers();
+  check("polling never writes a snapshot into the diagnostic log", !page.out.textContent.includes("live_match") && !page.out.textContent.includes("Giants"),
+    page.out.textContent.slice(0, 200));
   page.done();
 }
 

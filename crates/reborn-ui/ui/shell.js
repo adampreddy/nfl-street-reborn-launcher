@@ -52,6 +52,13 @@ export async function call(cmd, args = {}) {
   return answer;
 }
 
+// The same call without the diagnostic log: for a page that polls (the live views), whose full
+// answers every few seconds would push everything else out of the log.
+export async function quietCall(cmd, args = {}) {
+  if (!bridge) throw new Error("the launcher core is not attached. Open this page inside the launcher window.");
+  return bridge.invoke(cmd, args);
+}
+
 export function reason(e) {
   if (e === null || e === undefined) return "unknown failure";
   if (typeof e === "string") return e;

@@ -9,28 +9,14 @@
 // instead of an <img>, which is also what a custom `backend_origin` (Settings) falls back to,
 // since that setting can never widen a static CSP -- see docs/superpowers/sdd's constraints for
 // this feature.
-import { bridge, call, el, reason } from './shell.js';
+import { bridge, el, quietCall, reason } from './shell.js';
 import { inkFor } from './live-color.js';
+import { assetUrl, avatarSrc, makePoller, seatsBySide } from './live-common.js';
 
-// The backend origin the CSP's img-src is pinned to (identity::DEFAULT_ORIGIN on the Rust side).
-// Deliberately NOT read from a setting: a player-configured `backend_origin` cannot change what
-// the static CSP allows, so image URLs are always built against this default regardless of which
-// origin `live_matches` actually talked to. A mismatch (a self-hosted backend) simply never
-// produces a URL under this prefix, and the row draws its badge instead of a blocked image.
-const LIVE_ORIGIN = 'https://api.nflstreetreborn.com';
-const AVATAR_PREFIX = 'https://cdn.discordapp.com/avatars/';
+// The list changes slowly (a match starts or a score moves); 10 s keeps a LAN party of launchers
+// behind one address well inside the backend's rate limit.
+const POLL_MS = 10000;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
-
-/** A same-origin `/live-assets/...` path, absolute under the default origin, or null. */
-function assetUrl(path) {
-  return typeof path === 'string' && path.startsWith('/live-assets/') ? LIVE_ORIGIN + path : null;
-}
-
-/** A seat's Discord avatar URL, only when it is already exactly that CDN's prefix. */
-function avatarSrc(seat) {
-  const u = seat && typeof seat.avatar_url === 'string' ? seat.avatar_url : '';
-  return u.startsWith(AVATAR_PREFIX) ? u : null;
-}
 
 function initialOf(name) {
   const s = String(name ?? '');
@@ -93,10 +79,12 @@ function watchLink(match) {
   const id = typeof match.id === 'string' ? match.id : '';
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const label = (t) => (t && t.name ? t.name : 'a team');
-  return el('a', {
-    class: 'button live-watch', href: `live.html?match=${encodeURIComponent(id)}`,
+  const link = el('a', {
+    class: 'button live-watch', href: `live.html?match=${encodeURIComponent(id)}`, 'data-key': `watch-${id}`,
     'aria-label': `Watch ${label(teams[0])} vs ${label(teams[1])}`, text: 'Watch',
   });
+  watchLinks.set(`watch-${id}`, link);
+  return link;
 }
 
 /** The row's whole content, rebuilt fresh every poll; only the <li> that holds it is reused. */
@@ -104,6 +92,9 @@ function rowContent(match) {
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const score = Array.isArray(match.score) ? match.score : [0, 0];
   const seats = Array.isArray(match.seats) ? match.seats : [null, null];
+  // Each player sits under the team they have: side 0's seat first, then side 1's (seat order
+  // when the sides are not known), so the names line up with the scoreboard above them.
+  const [first, second] = seatsBySide(match.sides);
   const gameNo = Number.isInteger(match.game_seq) ? match.game_seq : 1;
   const bestOf = Number.isInteger(match.best_of) ? match.best_of : 1;
   return [
@@ -114,7 +105,7 @@ function rowContent(match) {
     el('div', { class: 'live-meta' },
       el('span', { class: 'live-game-no', text: `Game ${gameNo} of ${bestOf}` }),
       el('span', { class: 'live-mode', text: match.mode === 'ranked' ? 'Ranked' : 'Casual' })),
-    el('div', { class: 'live-players' }, playerLine(seats[0]), playerLine(seats[1])),
+    el('div', { class: 'live-players' }, playerLine(seats[first]), playerLine(seats[second])),
     watchLink(match),
   ];
 }
@@ -122,6 +113,7 @@ function rowContent(match) {
 // ---- the section, its keyed rows, and polling ----
 
 const rows = new Map(); // match id -> <li>, reused across polls so a refresh never flickers
+const watchLinks = new Map(); // data-key -> the Watch link drawn last, to keep its focus across a redraw
 
 function rowFor(match) {
   const id = String(match.id);
@@ -141,55 +133,68 @@ screen?.parentNode?.insertBefore(section, screen);
 // No Tauri core attached (a bare preview, or a launcher build with no live views): nothing to
 // poll, and the section stays empty, the same way online-mm.js stays out of the way without one.
 if (bridge) {
-  const body = el('div', { class: 'live-now-body' });
+  // Two fixed parts: the error line (if any) and the rows. A failed poll only ever touches the
+  // first, so the last good rows -- and a Watch link that has focus -- stay exactly as they were.
+  const note = el('div', { class: 'live-now-note' });
+  const content = el('div', { class: 'live-now-rows' });
+  const body = el('div', { class: 'live-now-body' }, note, content);
   section.append(el('div', { class: 'live-now-heading' }, el('h2', { text: 'Live now' })), body);
   const list = el('ul', { class: 'live-rows' });
 
-  function render(state) {
-    if (state.error) {
-      body.replaceChildren(el('p', { class: 'live-error', role: 'alert', text: state.error }));
-      return;
-    }
-    const matches = Array.isArray(state.matches) ? state.matches : [];
-    if (!matches.length) {
-      rows.clear();
-      body.replaceChildren(el('p', { class: 'live-empty', text: 'No live games right now.' }));
-      return;
-    }
+  let lastJson = null; // the list last drawn, so an unchanged poll touches nothing
+  let alertText = null; // the error line on screen, replaced only when its words change
+
+  function drawRows(matches) {
+    const focusKey = [...watchLinks].find(([, n]) => n === document.activeElement)?.[0] ?? null;
     const ids = new Set(matches.map((m) => String(m?.id)));
     for (const id of [...rows.keys()]) if (!ids.has(id)) rows.delete(id);
+    watchLinks.clear();
     list.replaceChildren(...matches.map((m) => rowFor(m)));
-    body.replaceChildren(list);
+    content.replaceChildren(list);
+    if (focusKey) watchLinks.get(focusKey)?.focus();
   }
 
-  const state = { matches: null, error: null };
+  /** A good answer: clear the error line, and redraw the rows only when the list itself changed. */
+  function showMatches(matches) {
+    if (alertText !== null) { alertText = null; note.replaceChildren(); }
+    const json = JSON.stringify(matches);
+    if (json === lastJson) return;
+    lastJson = json;
+    if (matches.length) { drawRows(matches); return; }
+    rows.clear();
+    watchLinks.clear();
+    content.replaceChildren(el('p', { class: 'live-empty', text: 'No live games right now.' }));
+  }
+
+  /** A failed poll: its one line above the last good rows, which stay. The same words twice
+      leave the alert alone, so a screen reader hears it once. */
+  function showError(text) {
+    if (text === alertText) return;
+    alertText = text;
+    note.replaceChildren(el('p', { class: 'live-error', role: 'alert', text }));
+  }
+
   async function poll() {
+    let matches;
     try {
-      const matches = await call('live_matches');
-      state.matches = Array.isArray(matches) ? matches : [];
-      state.error = null;
+      matches = await quietCall('live_matches');
     } catch (e) {
-      // Quiet retries: the line the backend's own error already gives a player, nothing more.
-      state.error = reason(e);
+      // The line the backend's own error already gives a player, nothing more; the poller backs off.
+      showError(reason(e));
+      throw e;
     }
-    render(state);
+    showMatches(Array.isArray(matches) ? matches : []);
   }
 
-  let timer = null;
-  function stop() {
-    if (timer) { clearInterval(timer); timer = null; }
+  const poller = makePoller(poll, POLL_MS);
+  // Nothing polls while the page is hidden or while a game is running (the launcher's own
+  // `session-state` signal from app-shell.js): a match in progress needs the network and the CPU.
+  let sessionActive = false;
+  function update() {
+    if (document.visibilityState === 'hidden' || sessionActive) poller.stop();
+    else poller.start();
   }
-  function start() {
-    stop();
-    if (document.visibilityState !== 'hidden') timer = setInterval(poll, 5000);
-  }
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { stop(); return; }
-    poll();
-    start();
-  });
-
-  poll();
-  start();
+  document.addEventListener('visibilitychange', update);
+  document.addEventListener('session-state', (e) => { sessionActive = Boolean(e?.detail); update(); });
+  update();
 }
