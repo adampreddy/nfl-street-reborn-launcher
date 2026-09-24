@@ -48,3 +48,93 @@
   .live-team-1 .live-score-num { order: 0; }
   .live-score-sep { display: none; }
 }
+
+/* The native match view (live.html). Same tokens; a team's own primary is only ever used as the validated
+   background of its name chip, with black or white text picked by luminance in live.js. */
+.page-online #screen.live-view { max-width: 980px; display: grid; gap: 18px; }
+/* An image and its badge swap with the `hidden` attribute; a class's own `display` would otherwise beat the
+   user-agent [hidden] rule and draw both (Live now's rows included). */
+.live-image > [hidden], .lv-image > [hidden], .lv-face[hidden], .lv-play-face[hidden] { display: none !important; }
+.lv-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lv-back { text-decoration: none; }
+.lv-error { margin: 0; padding: 12px 16px; border: 1px solid var(--accent-border, var(--panel-border)); border-radius: 10px; background: var(--panel); color: var(--focus); font-size: 13px; }
+.lv-empty { margin: 0; padding: 20px 22px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+.lv-header { display: grid; gap: 14px; padding: 24px; border: 1px solid var(--panel-border); border-radius: 14px; background: var(--panel); }
+.lv-scoreboard { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 20px; }
+.lv-seat { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.lv-seat-1 { flex-direction: row-reverse; text-align: right; }
+.lv-image { display: inline-flex; flex: none; }
+.lv-logo, .lv-logo-badge { width: 112px; height: 112px; border-radius: 14px; flex: none; }
+.lv-logo { object-fit: contain; background: var(--control-bg); }
+.lv-logo-badge { display: inline-flex; align-items: center; justify-content: center; background: var(--control-bg); border: 1px solid var(--control-border); font-size: 22px; font-weight: 800; letter-spacing: .03em; color: var(--muted); }
+.lv-seat-id { display: grid; gap: 8px; min-width: 0; justify-items: start; }
+.lv-seat-1 .lv-seat-id { justify-items: end; }
+.lv-team-name { max-width: 100%; padding: 4px 10px; border-radius: 6px; background: var(--control-bg); color: var(--fg); font-size: 15px; font-weight: 800; letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-player { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; font-size: 13px; color: var(--fg); }
+.lv-seat-1 .lv-player { flex-direction: row-reverse; }
+.lv-avatar, .lv-avatar-badge { width: 28px; height: 28px; border-radius: 50%; flex: none; }
+.lv-avatar { object-fit: cover; background: var(--control-bg); }
+.lv-avatar-badge { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--control-bg); border: 1px solid var(--control-border); color: var(--muted); }
+.lv-player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-points { margin-left: auto; font-size: 48px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg); }
+.lv-seat-1 .lv-points { margin-left: 0; margin-right: auto; }
+.lv-vs { color: var(--muted); font-size: 24px; }
+.lv-side-score { margin: 0; max-width: none; justify-self: center; text-align: center; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); overflow-wrap: anywhere; }
+.lv-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; font-size: 12px; color: var(--muted); }
+.lv-status { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.lv-status.live { color: var(--focus); }
+.lv-status.live::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
+.lv-status.done { color: var(--fg); }
+.lv-mode { text-transform: uppercase; letter-spacing: .06em; }
+.lv-situation { margin: 0; max-width: none; justify-self: center; text-align: center; font-size: 14px; font-weight: 600; color: var(--fg); }
+
+.lv-picker, .lv-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.lv-tabs { gap: 26px; border-bottom: 1px solid var(--line); }
+body.shell #screen .lv-tabs button { margin: 0; padding: 10px 0; background: transparent; border: 0; border-radius: 0; color: var(--muted); }
+body.shell #screen .lv-tabs button[aria-pressed=true] { color: var(--focus); box-shadow: inset 0 -2px var(--accent); }
+body.shell #screen .lv-picker button[aria-pressed=true] { background: var(--selected-bg, var(--control-bg)); border-color: var(--accent-border, var(--control-border)); color: var(--fg); }
+
+.lv-plays { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.lv-play { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--panel-border); border-left: 3px solid var(--panel-border); border-radius: 10px; background: var(--panel); }
+.lv-play.score { border-left-color: #d9b44a; background: linear-gradient(90deg, #d9b44a14, transparent 60%), var(--panel); }
+.lv-play.turnover { border-left-color: var(--accent); }
+.lv-play.disputed { border-style: dashed; border-left-style: solid; border-left-color: var(--muted); }
+.lv-play-face { width: 48px; height: 48px; border-radius: 8px; flex: none; object-fit: cover; background: var(--control-bg); }
+.lv-play-body { display: grid; gap: 6px; min-width: 0; }
+.lv-play-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 11px; color: var(--muted); }
+.lv-play-seq { font-weight: 700; color: var(--fg); }
+.lv-play-after { font-variant-numeric: tabular-nums; }
+.lv-play-text { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg); overflow-wrap: anywhere; }
+.lv-badge { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--control-border); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.lv-badge.disputed { color: var(--muted); }
+.lv-badge.turnover { color: var(--focus); border-color: var(--accent-border, var(--control-border)); }
+
+.lv-box { display: grid; gap: 16px; }
+.lv-box-title { margin: 0; font: 600 15px/1.4 Inter, "Segoe UI", sans-serif; color: var(--fg); }
+.lv-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--panel); border: 1px solid var(--panel-border); }
+.lv-table caption { text-align: left; padding: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.lv-table th, .lv-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.lv-table th { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted); }
+.lv-table .lv-who { text-align: left; }
+.lv-table td.lv-who { color: var(--fg); overflow-wrap: anywhere; }
+.lv-table td.lv-who > * { vertical-align: middle; }
+.lv-table .lv-team-col { color: var(--muted); }
+.lv-table tbody tr:last-child td { border-bottom: 0; }
+.lv-table tr.score td:first-child { box-shadow: inset 3px 0 #d9b44a; }
+.lv-face { width: 28px; height: 28px; margin-right: 10px; border-radius: 50%; object-fit: cover; background: var(--control-bg); }
+
+@media (max-width: 1000px) {
+  .lv-logo, .lv-logo-badge { width: 88px; height: 88px; }
+  .lv-points { font-size: 38px; }
+}
+@media (max-width: 760px) {
+  .lv-header { padding: 16px; }
+  .lv-scoreboard { grid-template-columns: 1fr; gap: 12px; }
+  .lv-seat-1 { flex-direction: row; text-align: left; }
+  .lv-seat-1 .lv-seat-id { justify-items: start; }
+  .lv-seat-1 .lv-player { flex-direction: row; }
+  .lv-seat-1 .lv-points { margin: 0 0 0 auto; }
+  .lv-vs { display: none; }
+  .lv-logo, .lv-logo-badge { width: 64px; height: 64px; border-radius: 10px; }
+}
