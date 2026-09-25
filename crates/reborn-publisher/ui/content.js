@@ -33,12 +33,16 @@ function browseFolderButton(input, onChosen) {
   });
 }
 
-// The three things this page publishes. The roster, the launcher and the
-// game patch each have their own page.
+// The things this page publishes. The roster, the launcher and the game
+// patch each have their own page.
 const COMPONENTS = [
   ["textures", "Textures"],
   ["runtime", "Runtime"],
   ["mods", "Mods"],
+  // Matchmaking seed save states only: a folder holding seed/pickup.s01
+  // (and seed/regular.s01). Anything else in it is refused, and a seed must
+  // first pass Tools/check_seed_matches_disc.py against the current DOL.
+  ["online-content", "Online seed"],
 ];
 
 function block(title, ...children) {
@@ -100,6 +104,7 @@ function dropDefault(component) {
     case "textures": return `${root}\\textures\\${gameIdSelect.value || "GN7E69"}`;
     case "runtime": return `${root}\\runtime`;
     case "mods": return `${root}\\mods\\packages`;
+    case "online-content": return `${root}\\online-seed`;
     default: return "";
   }
 }

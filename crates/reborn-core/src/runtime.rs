@@ -391,6 +391,14 @@ impl Launcher {
             "-e".into(),
             config.game_path.clone().into_os_string(),
             "-b".into(),
+            // The launcher owns Discord presence now, and Dolphin publishes its OWN with
+            // Main.General.UseDiscordPresence defaulting to true. Two publishers for one account
+            // race on the local IPC socket - the winner is whichever connected last - so presence
+            // flickers between "NFL Street Reborn" and "Dolphin". A -C layer is non-persistent, so
+            // this silences the session without editing the player's own Dolphin.ini, which
+            // settings_law deliberately leaves as their choice.
+            "-C".into(),
+            "Dolphin.General.UseDiscordPresence=False".into(),
         ]
     }
 

@@ -113,8 +113,13 @@ use crate::settings::Settings;
 
 /// Components this page publishes. Roster, launcher, game-patch and the
 /// rest each have their own page; a name this build knows but that is not
-/// one of these three is refused by name rather than silently accepted.
-const CONTENT_COMPONENTS: &[ComponentId] = &[ComponentId::Textures, ComponentId::Runtime, ComponentId::Mods];
+/// one of these is refused by name rather than silently accepted.
+///
+/// `online-content` is here for ONE job today: the matchmaking seed save
+/// states (`seed/pickup.s01`, `seed/regular.s01` under `library/online`).
+/// See `check_online_content_folder` for why nothing else may ride along.
+const CONTENT_COMPONENTS: &[ComponentId] =
+    &[ComponentId::Textures, ComponentId::Runtime, ComponentId::Mods, ComponentId::OnlineContent];
 
 const OFFLINE_GAME_ID: &str = "GN7E69";
 const ONLINE_GAME_ID: &str = "FR4N31";
@@ -143,6 +148,9 @@ pub fn content_plan(
         return Err("Choose a version first.".to_string());
     }
     let install_root = install_root_for(id, game_id.as_deref())?;
+    if id == ComponentId::OnlineContent {
+        check_online_content_folder(&root)?;
+    }
 
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -329,6 +337,9 @@ pub fn content_run(
         return Err("Choose a version first.".to_string());
     }
     let install_root = install_root_for(id, game_id.as_deref())?;
+    if id == ComponentId::OnlineContent {
+        check_online_content_folder(&root)?;
+    }
 
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
@@ -839,7 +850,7 @@ fn parse_content_component(name: &str) -> Result<ComponentId, String> {
         Some(id) if CONTENT_COMPONENTS.contains(&id) => Ok(id),
         Some(other) => Err(format!(
             "{:?} is a component this build knows, but not one this page publishes. Content publishes \
-             textures, runtime or mods.",
+             textures, runtime, mods or online-content.",
             other.as_str()
         )),
         None => {
@@ -865,7 +876,7 @@ fn install_root_for(id: ComponentId, game_id: Option<&str>) -> Result<String, St
                 ))
             }
         }
-        ComponentId::Runtime | ComponentId::Mods => match id.install_root() {
+        ComponentId::Runtime | ComponentId::Mods | ComponentId::OnlineContent => match id.install_root() {
             Some(root) => Ok(root.to_string()),
             None => Err(format!(
                 "{} has no fixed install root in this build. This is an internal inconsistency.",
@@ -874,6 +885,55 @@ fn install_root_for(id: ComponentId, game_id: Option<&str>) -> Result<String, St
         },
         other => Err(format!("{} is not a component this page publishes.", other.as_str())),
     }
+}
+
+/// An `online-content` folder holds seed save states and nothing else.
+///
+/// `library/online` on a player's PC ALSO holds `NSR.iso` (1.4 GB, rebuilt
+/// locally from the player's own disc) and `source.json`. Pointing this page
+/// at a live `library/online` would publish Adam's disc image to every
+/// player, so a folder with anything but `seed/*.s01` is refused by name.
+///
+/// A seed must also run the CURRENT disc's code: a state captured before a
+/// game patch boots every match on the old build. That is checked by
+/// `nflstreet2_clean/Tools/check_seed_matches_disc.py <seed> <Start.dol>`
+/// before publishing; this page cannot read LZO states itself.
+fn check_online_content_folder(root: &std::path::Path) -> Result<(), String> {
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, base, out)?;
+            } else {
+                let rel = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                out.push(rel);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files).map_err(|e| format!("Could not read {}: {e}", root.display()))?;
+    let stray: Vec<&String> = files
+        .iter()
+        // seed.json is make_seed.py's capture record (the DOL the seeds were captured on).
+        .filter(|f| {
+            !(f.starts_with("seed/") && f.matches('/').count() == 1 && (f.ends_with(".s01") || f.as_str() == "seed/seed.json"))
+        })
+        .collect();
+    if !stray.is_empty() {
+        let mut names: Vec<&str> = stray.iter().take(5).map(|s| s.as_str()).collect();
+        if stray.len() > 5 {
+            names.push("...");
+        }
+        return Err(format!(
+            "online-content ships only seed save states (seed/*.s01). This folder also has: {}. Publish from a folder holding just the seed folder.",
+            names.join(", ")
+        ));
+    }
+    if !files.iter().any(|f| f == "seed/pickup.s01") {
+        return Err("online-content needs seed/pickup.s01 - matchmaking boots every match from it.".to_string());
+    }
+    Ok(())
 }
 
 fn settings_and_platform() -> Result<(Platform, Settings), String> {
@@ -915,4 +975,40 @@ fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, Strin
 
 fn non_empty(s: &Option<String>) -> Option<String> {
     s.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod online_content_tests {
+    use super::*;
+
+    fn folder(files: &[&str]) -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        for f in files {
+            let p = t.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn a_seed_folder_is_accepted_and_lands_in_library_online() {
+        let t = folder(&["seed/pickup.s01", "seed/regular.s01", "seed/seed.json"]);
+        assert_eq!(check_online_content_folder(t.path()), Ok(()));
+        assert_eq!(install_root_for(ComponentId::OnlineContent, None).unwrap(), "library/online");
+        assert_eq!(parse_content_component("online-content"), Ok(ComponentId::OnlineContent));
+    }
+
+    #[test]
+    fn a_live_library_online_is_refused_so_a_disc_image_never_ships() {
+        let t = folder(&["seed/pickup.s01", "NSR.iso", "source.json"]);
+        let e = check_online_content_folder(t.path()).unwrap_err();
+        assert!(e.contains("NSR.iso") && e.contains("source.json"), "{e}");
+    }
+
+    #[test]
+    fn a_folder_without_the_pickup_seed_is_refused() {
+        let t = folder(&["seed/regular.s01"]);
+        assert!(check_online_content_folder(t.path()).unwrap_err().contains("pickup.s01"));
+    }
 }

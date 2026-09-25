@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "ticket": {
+    "id": "11d4ed8e-9e4f-4c69-97d9-e658fd369b68",
+    "mode": "casual",
+    "region": "na-east",
+    "rating": 1000,
+    "field_pick": "the_pit",
+    "status": "paired",
+    "enqueued_at": "2026-09-22T20:35:09.976Z",
+    "expires_at": "2026-09-22T20:45:09.976Z",
+    "cooldown_until": null,
+    "waited_ms": 12,
+    "window": null,
+    "depth": {
+      "ranked": 0,
+      "casual": 0
+    }
+  },
+  "matched": true,
+  "match_id": "fa8c9fca-e624-4219-8739-504ce5ab563c",
+  "depth": {
+    "ranked": 0,
+    "casual": 0
+  }
+}

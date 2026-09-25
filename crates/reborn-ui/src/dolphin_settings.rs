@@ -109,6 +109,26 @@ mod tests {
         assert!(shown.contains("different Reborn versions") && shown.contains("Check game content"), "{shown}");
         assert_eq!(netplay_error_for_player("Could not connect. Check the host code or address and try again."), None);
     }
+
+    /// The session plan names the seed only when one is installed, and carries the match's dice
+    /// only alongside a seed. Emitting `boot_state` with no seed would make the fork refuse to
+    /// boot at all, and omitting it when there is one would put both players on the title screen.
+    #[test]
+    fn the_session_plan_names_a_seed_only_when_one_is_installed() {
+        let game = std::path::Path::new("C:/games/NSR.iso");
+        let without = netplay_plan(game, "host", None, Some(7));
+        assert_eq!(without["mode"], "host");
+        assert!(without.get("boot_state").is_none(), "no seed installed must not name one: {without}");
+        assert!(without.get("rng_seed").is_none(), "no seed state, nothing to reseed: {without}");
+
+        let seed = std::path::Path::new("C:/data/library/online/seed/pickup.s01");
+        let with = netplay_plan(game, "join", Some(seed), Some(0xDEAD_BEEF));
+        assert_eq!(with["rng_seed"], 0xDEAD_BEEFu32, "the match's dice must reach the fork: {with}");
+        assert!(netplay_plan(game, "join", Some(seed), None).get("rng_seed").is_none(), "a private room keeps the seed's own dice");
+        assert_eq!(with["mode"], "join");
+        assert_eq!(with["boot_state"], serde_json::json!(seed), "the seed must reach the fork: {with}");
+        assert_eq!(with["game"], serde_json::json!(game), "the game must survive adding a seed");
+    }
     /// The door every failure on this page goes through keeps a sentence that
     /// was written for the player, and summarizes one that was not.
     ///
@@ -258,9 +278,53 @@ fn netplay_copy_is_reborns_own(p:&Platform)->bool{
 /// league fixture" is the only honest answer to a question the player was not
 /// put, and asserting a fixture nobody claimed is the one direction that
 /// corrupts league standings. The result still reaches the server, marked
+/// The seed save state an online match boots into, when one is installed.
+///
+/// Netplay otherwise starts at the title screen and both players walk the menus by hand.
+/// The fork loads this in `Core::CpuThread` before the CPU runs its first instruction, so
+/// both peers begin lockstep from identical RAM (`State::LoadAtBoot`). It is therefore only
+/// safe while every peer loads the SAME bytes: the seed ships as a hash-checked component
+/// pinned to the online image, and a disc update must retire the seed with it.
+///
+/// Absent is not an error. A launcher whose content predates the seed simply boots the disc,
+/// exactly as it does today, rather than refusing to open a room.
+/// The session plan the fork reads once at boot.
+///
+/// `boot_state` is present only when a seed is installed. The fork treats a named-but-missing
+/// file as a hard error rather than falling back to the disc, because a peer that could not
+/// load it would start from a different machine state and desync on the first frame.
+fn netplay_plan(game:&std::path::Path,mode:&str,seed:Option<&std::path::Path>,rng_seed:Option<u32>)->serde_json::Value{
+ let mut plan=serde_json::json!({"game":game,"mode":mode});
+ if let Some(seed)=seed {
+  plan["boot_state"]=serde_json::json!(seed);
+  // Only with a seed state: the fork writes it right after that load (State::SetBootRngSeed).
+  if let Some(r)=rng_seed { plan["rng_seed"]=serde_json::json!(r); }
+ }
+ plan
+}
+
+fn netplay_boot_state(p:&Platform)->Option<std::path::PathBuf>{
+ let seed=p.paths.data_root().ok()?.join("library/online/seed/pickup.s01");
+ seed.is_file().then_some(seed)
+}
+
+/// What matchmaking's `ready` sends: this PC's answers, measured, never assumed. `seed_sha256` is
+/// the one the server compares - two seeds that differ, or one that is absent, hold the match
+/// before either Dolphin starts, because they would desync on frame one. `traversal_ok` is one
+/// hello to the traversal server, the same first packet Dolphin sends (about 1.5 s at worst).
+/// Cheap on purpose: it does not rebuild the online image (netplay_open does that at launch).
+pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>)->serde_json::Value{
+ let p=Platform::detect();let legacy=default_legacy_root(&p);
+ let found=find_runtime_and_game(&p,runtime,game,legacy.as_deref());
+ let runtime_ok=found.as_ref().map(|(f,_)|supports_launcher_netplay(f.path()).unwrap_or(false)).unwrap_or(false);
+ let seed=netplay_boot_state(&p).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
+ serde_json::json!({"runtime_ok":runtime_ok,"image_ok":found.is_ok(),"seed_ok":seed.is_some(),"seed_sha256":seed,"backend_ok":true,
+  "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
+}
+
 /// online.
 #[tauri::command]
-pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16)->Result<serde_json::Value,String>{
+pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16,rng_seed:Option<u32>)->Result<serde_json::Value,String>{
  tauri::async_runtime::spawn_blocking(move||{
   let guard=LaunchGuard::acquire_session()?;
   let nickname=nickname.trim();let address=address.trim();
@@ -332,7 +396,11 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // Fixed, small bridge files are reused. Never duplicate a game, profile or card.
   let path=directory.join("session.json");
   for suffix in ["status","command"] { let _=std::fs::remove_file(path.with_extension(format!("json.{suffix}"))); }
-  let session_bytes=serde_json::to_vec(&serde_json::json!({"game":game_path,"mode":mode})).map_err(|_|"Could not prepare the NetPlay room. Try again.".to_string())?;
+  // The plan the fork reads once at boot. `boot_state` is added only when a seed is
+  // installed; the fork treats a named-but-missing file as a hard error, because a peer that
+  // could not load it would start from a different machine state and desync on frame one.
+  let plan=netplay_plan(&game_path,&mode,netplay_boot_state(&p).as_deref(),rng_seed);
+  let session_bytes=serde_json::to_vec(&plan).map_err(|_|"Could not prepare the NetPlay room. Try again.".to_string())?;
   std::fs::write(&path,session_bytes).map_err(player)?;
   std::fs::write(path.with_extension("json.alive"),b"alive").map_err(player)?;
   let mut args=vec![std::ffi::OsString::from("-u"),user.as_os_str().to_os_string(),"--reborn-netplay-session".into(),path.as_os_str().to_os_string()];
@@ -342,7 +410,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // filed under exists before there is anything to file.
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
-  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
+  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
   std::thread::spawn(move||{
     // The lock and the guard are held across the wait AND across the
     // collection: the queue and the session log are shared state, and
@@ -380,8 +448,15 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
 }
 
 
-struct NetplaySession { path:PathBuf, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
+struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
 static NETPLAY:std::sync::Mutex<Option<NetplaySession>>=std::sync::Mutex::new(None);
+
+/// The Dolphin user folder of the NetPlay game running right now, so the live feed can read its play lines.
+pub fn netplay_user_dir() -> Option<std::path::PathBuf> {
+    let s = NETPLAY.lock().ok()?;
+    let s = s.as_ref()?;
+    if s.active { s.user_dir.clone() } else { None }
+}
 
 // A poisoned lock means a prior panic while the room's own state was being
 // updated. Nothing here can trust that state afterward, and this is the one
@@ -399,6 +474,8 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
   "Dolphin.NetPlay.SyncCodes=True".into(),"Dolphin.NetPlay.StrictSettingsSync=True".into(),
   "Dolphin.NetPlay.UseIndex=False".into(),"Dolphin.Display.RenderToMain=False".into(),
   "Dolphin.Analytics.PermissionAsked=True".into(),"Dolphin.Interface.SkipNKitWarning=True".into(),
+  // The launcher owns presence; Dolphin's own would race it on the IPC socket.
+  "Dolphin.General.UseDiscordPresence=False".into(),
   format!("Dolphin.NetPlay.Nickname={nickname}"),format!("Dolphin.NetPlay.TraversalChoice={connection}"),
   format!("Dolphin.NetPlay.ConnectPort={port}"),format!("Dolphin.NetPlay.HostPort={port}"),
  ];

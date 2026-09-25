@@ -617,6 +617,12 @@ Proposed state mapping, with what each publishes:
 
 The record-level answers for unlink, sign out, export and delete are in 6.4, because that is where the records are defined. Two consequences land in this section: signing out or unlinking **removes the player from any queue and closes any lobby they host**, and presence stops immediately on sign-out, since there is no longer an account to publish for.
 
+### 9.7 Live now and the match view
+
+"Live now" on the Online page and the native match view (`live.html`) read the backend's public `GET /v1/live` and `GET /v1/live/{id}` through the `live_matches` and `live_match` commands, from the configured backend origin. Their images and the **Watch on web** button do not follow that setting: logos, portraits and avatars load only from `https://api.nflstreetreborn.com/live-assets/` and `https://cdn.discordapp.com/avatars/` (the static CSP `img-src` allows nothing else), and **Watch on web always opens the production page, `https://api.nflstreetreborn.com/live/<id>`**, because `open_website` allows only that prefix. Against a self-hosted or test backend the lists and scores still work, the images fall back to badges, and Watch on web shows the production site's page for that id (which will not exist there). The origin is kept in one place, `crates/reborn-ui/ui/live-common.js`, and a Rust test holds it to `identity::DEFAULT_ORIGIN` and to the CSP.
+
+Both pages poll only while visible and while no game session is running: the list every 10 s, the match every 3 s, one request at a time. Errors back off from 5 s up to 60 s with jitter, a 429 waits at least 60 s, and the last good rows or view stay on screen under a one-line note.
+
 ---
 
 ## 10. Stat pipeline split
