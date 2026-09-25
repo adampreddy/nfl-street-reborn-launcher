@@ -776,10 +776,9 @@ impl DeviceFamily {
 /// A device the launcher has seen, identified so it is recognized again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceIdentity {
-    /// SDL's joystick GUID: bus, vendor, product and version.
-    ///
-    /// Stable across reconnects and across reboots, unlike an index. Two
-    /// identical pads share a GUID, which is why `serial` exists.
+    /// Hardware GUID when available, otherwise the runtime's device qualifier.
+    /// The current Dolphin text protocol supplies a source, index, and name,
+    /// not a hardware GUID. XInput is identified by its user slot.
     pub guid: String,
     /// Hardware serial where the platform exposes one. Distinguishes two
     /// identical controllers so their profiles do not collide.
@@ -791,8 +790,9 @@ pub struct DeviceIdentity {
 impl DeviceIdentity {
     /// The key a profile is stored under.
     ///
-    /// Never an index or a port number. Both change when a device is
-    /// unplugged, which is exactly when a profile most needs to survive.
+    /// A serial distinguishes otherwise identical hardware when available.
+    /// Runtime-only identities can follow a different identical controller
+    /// if the driver changes its index after reconnecting.
     pub fn profile_key(&self) -> String {
         match &self.serial {
             Some(serial) if !serial.is_empty() => format!("{}:{}", self.guid, serial),
@@ -1110,14 +1110,14 @@ impl ControllerProfile {
     }
 }
 
-/// Whether a pad with these dead controls can enter the game at all.
-///
-/// Start and A, and nothing else. They are the two controls the game asks for
-/// before anything can be chosen: the press start screen, then every menu. A
-/// pad missing its C-stick or Z is a worse pad, not an unplayable one, and the
-/// Controllers page already says so; stopping Play for it would be nagging.
+/// Whether known-dead bindings prevent entering or moving through the game.
+/// Missing movement matters even when Start and A work: raw USB controllers
+/// can report named buttons alongside numbered axes. Optional controls remain
+/// available to configure on the Controllers page without stopping Play.
 pub fn blocks_play(dead: &[GcInput]) -> bool {
-    dead.iter().any(|input| matches!(input, GcInput::Start | GcInput::ButtonA))
+    dead.iter().any(|input| matches!(input, GcInput::Start | GcInput::ButtonA |
+        GcInput::MainStickUp | GcInput::MainStickDown |
+        GcInput::MainStickLeft | GcInput::MainStickRight))
 }
 
 /// Something on the system that will fight the launcher for a controller.

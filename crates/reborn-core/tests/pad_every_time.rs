@@ -432,6 +432,38 @@ fn a_pad_that_cannot_press_start_or_a_blocks_play() {
     assert!(blocks_play(&[GcInput::CStickUp, GcInput::Start]));
 }
 
+#[test]
+fn working_buttons_with_unmapped_usb_axes_need_setup_before_play() {
+    let profile = ControllerProfile::new(identity("SDL/0/USB pad", "USB pad"), 1);
+    let names: Vec<String> = ["Start", "Button A", "Axis 0+", "Axis 0-", "Axis 1+", "Axis 1-"]
+        .into_iter().map(String::from).collect();
+    let dead = profile.dead_controls(&names);
+    assert!(!dead.contains(&GcInput::Start));
+    assert!(!dead.contains(&GcInput::ButtonA));
+    for direction in [GcInput::MainStickUp, GcInput::MainStickDown, GcInput::MainStickLeft, GcInput::MainStickRight] {
+        assert!(dead.contains(&direction));
+        assert!(reborn_core::controller::blocks_play(&[direction]));
+    }
+    let message = Refusal::ControllerNeedsSetup(BlockedPad {
+        device: "SDL/0/USB pad".into(), controls: dead,
+    }).message();
+    assert!(message.contains("Move down"), "{message}");
+}
+
+#[test]
+fn measured_usb_axis_mapping_allows_play_without_a_c_stick() {
+    let mut profile = ControllerProfile::new(identity("SDL/0/USB pad", "USB pad"), 1);
+    for (input, name) in [(GcInput::MainStickUp,"Axis 1-"), (GcInput::MainStickDown,"Axis 1+"),
+        (GcInput::MainStickLeft,"Axis 0-"), (GcInput::MainStickRight,"Axis 0+")] {
+        profile.rebind(input, Mapping::quote(name));
+    }
+    let names: Vec<String> = ["Start", "Button A", "Axis 0+", "Axis 0-", "Axis 1+", "Axis 1-"]
+        .into_iter().map(String::from).collect();
+    let dead = profile.dead_controls(&names);
+    assert!(dead.contains(&GcInput::CStickUp));
+    assert!(!reborn_core::controller::blocks_play(&dead));
+}
+
 /// A pad with a dead C-stick is a worse pad, not an unplayable one. Stopping
 /// Play for it would be nagging, and the Controllers page already says so.
 #[test]

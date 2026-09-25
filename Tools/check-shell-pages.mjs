@@ -10,6 +10,7 @@
 //     node Tools/check-shell-pages.mjs
 
 import { readFileSync } from "fs";
+import path from "node:path";
 
 // ---- a DOM that records structure ------------------------------------------
 function fakeEl(tag) {
@@ -68,13 +69,20 @@ function check(what, ok, detail = "") {
   console.log(`${ok ? "ok  " : "FAIL"}  ${what}${ok ? "" : `: ${detail}`}`);
 }
 
-// The pages import ./shell.js, which a data: URL cannot resolve, so the shared
-// module is inlined: its exports become plain declarations.
-const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-// notices.js is the one other shared module a page imports; inlined the
-// same way, after shell.js, with its own shell import dropped.
-const NOTICES = readFileSync("crates/reborn-ui/ui/notices.js", "utf8").replaceAll("export ", "").replace(/^import .*from ['"]\.\/shell\.js['"];\r?\n/m, "");
-const IMPORT_LINE = /^import .*from ['"]\.\/(shell|notices)\.js['"];\r?\n/gm;
+// A data: URL cannot resolve relative imports. Keep each production module's
+// scope and exports intact, recursively replacing imports with data: URLs.
+// A fresh graph per page also keeps shell.js's bridge tied to that page's core.
+function pageModule(file, nonce = Math.random(), modules = new Map()) {
+  file = path.resolve(file);
+  if (modules.has(file)) return modules.get(file);
+  const src = readFileSync(file, "utf8").replace(
+    /(\bfrom\s*['"])(\.\.?\/[^'"]+)(['"])/g,
+    (_, before, relative, after) => before + pageModule(path.resolve(path.dirname(file), relative), nonce, modules) + after,
+  );
+  const url = "data:text/javascript;base64," + Buffer.from(src + `\n// ${file} ${nonce}`).toString("base64");
+  modules.set(file, url);
+  return url;
+}
 
 async function loadPage(file, answers, mode) {
   const calls = [];
@@ -92,10 +100,7 @@ async function loadPage(file, answers, mode) {
     },
   };
   byId["screen"] = fakeEl("div#screen");
-  const src = readFileSync(file, "utf8").replace(IMPORT_LINE, "");
-  // A fresh module each time: a cache-busting comment on the data: URL.
-  const mod = SHELL + "\n" + NOTICES + "\n" + src + `\n// ${file} ${mode} ${Math.random()}`;
-  await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
+  await import(pageModule(file));
   await tick(); await tick(); await tick();
   return { calls, screen: byId["screen"] };
 }
@@ -112,9 +117,7 @@ async function loadPageDriven(file, invoke) {
   };
   global.window = { addEventListener() {}, __TAURI__: { core: { invoke } } };
   byId["screen"] = fakeEl("div#screen");
-  const src = readFileSync(file, "utf8").replace(IMPORT_LINE, "");
-  const mod = SHELL + "\n" + NOTICES + "\n" + src + `\n// ${file} driven ${Math.random()}`;
-  await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
+  await import(pageModule(file));
   await tick(); await tick(); await tick();
   return {
     screen: () => byId["screen"],

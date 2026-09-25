@@ -6,12 +6,28 @@ pub fn path(platform: &Platform) -> Result<PathBuf> {
 }
 pub fn load(file: &Path) -> Result<Vec<ControllerProfile>> {
     match std::fs::read(file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,e).into()),
+        Ok(bytes) => {
+            let profiles: Vec<ControllerProfile> = serde_json::from_slice(&bytes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,e))?;
+            // A current-format mapping always wins over an older copy. Only
+            // upgrade identities in memory; save writes the new format later.
+            let current_keys: std::collections::HashSet<_> = profiles.iter()
+                .filter(|p| legacy_runtime_key(p).is_none())
+                .map(|p| p.identity.profile_key()).collect();
+            Ok(profiles.into_iter().filter_map(|mut profile| {
+                if let Some(key) = legacy_runtime_key(&profile) {
+                    if current_keys.contains(&key) { return None; }
+                    profile.identity.guid = key;
+                }
+                Some(profile)
+            }).collect())
+        },
         Err(e) if e.kind()==std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e.into()),
     }
 }
-pub fn save(file: &Path, profile: ControllerProfile) -> Result<()> {
+pub fn save(file: &Path, mut profile: ControllerProfile) -> Result<()> {
+    if let Some(key) = legacy_runtime_key(&profile) { profile.identity.guid = key; }
     let mut profiles=load(file)?;
     profiles.retain(|p| p.identity.profile_key()!=profile.identity.profile_key());
     profiles.push(profile);
@@ -21,6 +37,26 @@ pub fn save(file: &Path, profile: ControllerProfile) -> Result<()> {
     std::fs::write(&temporary,bytes)?;
     std::fs::rename(temporary,file)?;
     Ok(())
+}
+
+/// Old launcher releases keyed raw devices by backend:index, even though
+/// Dolphin assigns indices separately for each device name. The profile's
+/// recorded name identifies its owner; the current enumeration order does
+/// not. Restrict migration to known runtime sources so actual hardware GUIDs
+/// and serial-bearing identities keep their existing keys.
+fn legacy_runtime_key(profile: &ControllerProfile) -> Option<String> {
+    let identity = &profile.identity;
+    if identity.name.is_empty() || identity.serial.as_deref().is_some_and(|s| !s.is_empty()) {
+        return None;
+    }
+    let (source, index) = identity.guid.split_once(':')?;
+    if !matches!(source,
+        "SDL" | "DInput" | "WGInput" | "evdev" | "Quartz" | "Input" |
+        "DSUClient" | "Bluetooth" | "Pipe" | "Android" | "XInput2") {
+        return None;
+    }
+    let index: u32 = index.parse().ok()?;
+    Some(format!("{source}/{index}/{}", identity.name))
 }
 
 /// Adopt a migrated binding set when that device first reconnects. Existing

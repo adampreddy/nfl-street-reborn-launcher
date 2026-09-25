@@ -370,15 +370,23 @@ impl DetectedDevice {
         format!("{}/{}/{}", self.backend.source(), self.id, self.name)
     }
 
-    /// A stable key for remembering this player's settings.
+    /// A key for remembering this runtime device's settings.
     ///
     /// XInput exposes no serial or GUID, so the slot is all there is. That is
     /// worth saying out loud: unplug two Xbox pads and plug them back in the
     /// other way round, and their profiles follow the slots rather than the
-    /// hardware. SDL devices carry a GUID and do not have this problem.
+    /// hardware. The runtime's text protocol exposes no hardware GUID or
+    /// serial for the other backends either. Their IDs are allocated per
+    /// source AND name, so the full qualifier is required: SDL/0/Retro Pad
+    /// and SDL/0/Arcade Stick must never share a mapping. Identical models
+    /// still follow their runtime indices when reconnected in another order.
     pub fn identity(&self) -> DeviceIdentity {
         DeviceIdentity {
-            guid: format!("{}:{}", self.backend.source(), self.id),
+            guid: if self.backend == Backend::XInput {
+                format!("XInput:{}", self.id)
+            } else {
+                self.device_string()
+            },
             serial: None,
             name: self.name.clone(),
             family: self.family,

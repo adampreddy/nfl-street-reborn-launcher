@@ -325,3 +325,4 @@ await import('./test-menu-pad.mjs');
 await import('./check-controller-navigation.mjs');
 await import('./test-controller-report.mjs');
 await import('./check-controller-report.mjs');
+await import('./check-play-controller-gate.mjs');

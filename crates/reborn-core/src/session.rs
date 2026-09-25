@@ -91,7 +91,7 @@ pub struct LaunchRequest {
     /// The player said this is a league match. Recorded in the session before Dolphin
     /// starts; the backend forwards the game to the league site only when it is true.
     pub league_match: bool,
-    /// Start the game even though player one's pad cannot press Start or A.
+    /// Start the game even though player one's pad has dead essential bindings.
     /// False for Play, which then answers [`Refusal::ControllerNeedsSetup`]
     /// and lets the player choose. True for every caller with no way to ask
     /// (netplay, the desktop shortcut, the command line), which keeps
@@ -116,8 +116,7 @@ pub enum Refusal {
     NoGame { path: PathBuf },
     /// Another launcher holds the lock.
     AlreadyRunning,
-    /// Player one's pad cannot press Start or A, so the game would open on a
-    /// press start screen nothing can get past. Not a fault: a pad Windows has
+    /// Player one's pad cannot enter or move through the game. A pad Windows has
     /// no names for has to be set up once by pressing its buttons, and the
     /// launcher knows that BEFORE the game starts. It used to write it to a log
     /// nobody reads and start the game anyway. The caller offers the setup,
@@ -168,11 +167,11 @@ impl Refusal {
                 "Another launcher is already running. Close it first.".to_string()
             }
             Refusal::ControllerNeedsSetup(pad) => {
-                // The two that matter, by the name printed on a GameCube pad.
+                // Name the essential controls that still need a binding.
                 let names: Vec<&str> = pad
                     .controls
                     .iter()
-                    .filter(|c| matches!(c, crate::controller::GcInput::Start | crate::controller::GcInput::ButtonA))
+                    .filter(|c| crate::controller::blocks_play(&[**c]))
                     .map(|c| c.label())
                     .collect();
                 format!(
@@ -399,7 +398,7 @@ pub struct WrittenConfig {
     /// the failure that has always been silent; the caller can finally say so.
     /// See [`crate::controller::ControllerProfile::dead_controls`].
     pub pads_needing_setup: Vec<(String, usize)>,
-    /// Set when PLAYER ONE's pad cannot press Start or A. See
+    /// Set when PLAYER ONE's pad has dead essential bindings. See
     /// [`player_one_blocked`].
     pub player_one_blocked: Option<BlockedPad>,
     /// Which user directory this launch will boot against, and why.
@@ -1071,32 +1070,6 @@ impl Session {
                 }
             }
         }
-        // Say which pads will start the game with controls that do nothing.
-        //
-        // The warning above never fired for the pads that need it: it asks
-        // `Mapping::unresolvable`, which skips every binding containing `|`,
-        // and since 3.0.6 every default binding is an OR. A pad Windows has no
-        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
-        // reports `Button 3` and `Axis 1-`, nothing in the default binding
-        // exists on it, and this log said nothing. At WARN, because that is
-        // the level a player's launcher.log keeps.
-        let mut dead_by_device: std::collections::BTreeMap<String, Vec<crate::controller::GcInput>> = Default::default();
-        for pad in scan.playable_pads() {
-            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
-            let key = pad.identity().profile_key();
-            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
-            let dead = profile.dead_controls(&reported.all_names());
-            if !dead.is_empty() {
-                tracing::warn!(
-                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
-                    pad.device_string(),
-                    dead.len(),
-                    dead
-                );
-                written.pads_needing_setup.push((pad.device_string(), dead.len()));
-                dead_by_device.insert(pad.device_string(), dead);
-            }
-        }
         // Adopt whatever the player changed in Dolphin's own Controller
         // Settings before regenerating. The launcher keeps owning the Device
         // line and the port layout, because a remembered device string that no
@@ -1123,6 +1096,33 @@ impl Session {
             if !adopted.is_empty() {
                 tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
                 profiles_changed = true;
+            }
+        }
+        // Assess the final bindings, including edits just adopted from Dolphin.
+        // Say which pads will start the game with controls that do nothing.
+        //
+        // The warning above never fired for the pads that need it: it asks
+        // `Mapping::unresolvable`, which skips every binding containing `|`,
+        // and since 3.0.6 every default binding is an OR. A pad Windows has no
+        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
+        // reports `Button 3` and `Axis 1-`, nothing in the default binding
+        // exists on it, and this log said nothing. At WARN, because that is
+        // the level a player's launcher.log keeps.
+        let mut dead_by_device: std::collections::BTreeMap<String, Vec<crate::controller::GcInput>> = Default::default();
+        for pad in scan.playable_pads() {
+            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
+            let key = pad.identity().profile_key();
+            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
+            let dead = profile.dead_controls(&reported.all_names());
+            if !dead.is_empty() {
+                tracing::warn!(
+                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
+                    pad.device_string(),
+                    dead.len(),
+                    dead
+                );
+                written.pads_needing_setup.push((pad.device_string(), dead.len()));
+                dead_by_device.insert(pad.device_string(), dead);
             }
         }
         // Persist what changed: an adoption, a widening, or a repair. A
