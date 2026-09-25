@@ -143,8 +143,23 @@ impl Enumeration {
         // also where vJoy, wheels and HOTAS drivers live, which would make a
         // keyboard player's "controller" something they never meant to hold.
         // WGInput reports every HID game controller DirectInput does.
-        if pads.iter().any(|d| d.backend.names_its_controls()) {
-            pads.retain(|d| d.backend != Backend::Sdl);
+        //
+        // Runtime 1.2.7 changed who owns a pad. WGInput is off, so nothing
+        // reports a pad twice, and SDL names a pad it recognises like an Xbox
+        // pad (`Button A`, `Start`, `Left Y+`): SDL is where every PlayStation,
+        // Switch and third-party pad lives now, and dropping it would leave a
+        // DualSense beside an Xbox pad with no port. A list with WGInput in it
+        // comes from an older runtime, whose SDL numbers its controls, so the
+        // old rule stands for it.
+        let older_runtime = pads.iter().any(|d| d.backend == Backend::Other("WGInput".into()));
+        if older_runtime {
+            if pads.iter().any(|d| d.backend.names_its_controls()) {
+                pads.retain(|d| d.backend != Backend::Sdl);
+            }
+        } else if pads.iter().any(|d| d.backend == Backend::XInput) {
+            // The runtime leaves Xbox pads to XInput; this only guards a name
+            // that slipped through (a pad SDL did not type as Xbox).
+            pads.retain(|d| !(d.backend == Backend::Sdl && d.name.to_ascii_lowercase().contains("xbox")));
         }
 
         // Deduplicate by the PAD, not by the backend.
