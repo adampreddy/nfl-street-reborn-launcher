@@ -61,11 +61,29 @@ function drawRoom(snapshot){
  lobby.replaceChildren(heading,info,code,players,slots);if(snapshot.error)lobby.append(el('p',{class:'settings-status',role:'alert',text:snapshot.error}));lobby.append(buttons);
  if(focus)lobby.querySelector(`[data-room-focus="${focus}"]`)?.focus({preventScroll:true});
 }
+// Both players must run the same release: a runtime one of them has not
+// installed yet refuses the room ("NetPlay versions are incompatible", runtime
+// 1.2.5 against 1.2.6 on 09-24), and the background check only runs every few
+// minutes. So check now, and install before opening a room when the update
+// touches what online play shares. Anything else (textures) can wait.
+const ONLINE_PARTS=['runtime','roster','game-patch','online-content'];
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+async function bringOnlineCurrent(){
+ let c=await call('content_check',{depth:null});
+ const needed=()=>(c?.components||[]).some(x=>ONLINE_PARTS.includes(x.component)&&x.state==='available');
+ for(let waited=0;waited<1800;waited++){
+  if(['checking','fetching','installing'].includes(c?.phase)){status.textContent=c.phase==='checking'?'Checking for updates before going online…':c.note||'Updating before going online…';await pause(1000);c=await call('content_status');continue;}
+  if(c?.phase==='available'&&needed()){status.textContent=`Downloading the update online play needs (${Math.ceil((c.download_bytes||0)/1048576)} MB)…`;c=await call('content_fetch');if(c?.phase==='available')throw new Error(c.note||'The update did not finish downloading. Try again.');continue;}
+  if(c?.phase==='staged'&&needed()){status.textContent='Installing the update…';c=await call('content_promote',{confirm:true});if(c?.phase==='problem')throw new Error(c.note);continue;}
+  return;
+ }
+ throw new Error('The update is taking too long. Try again in a few minutes.');
+}
 async function poll(){if(polling||disposed||!bridge)return;polling=true;try{drawRoom(await call('netplay_status'));}catch(e){if(room?.active){status.textContent=reason(e);lobby.append(status);}}finally{polling=false;}}
 form.addEventListener('submit',async event=>{
  event.preventDefault();if(busy||sessionActive||!form.reportValidity())return;
- busy=true;updateAvailability();status.textContent='Preparing your game and controllers…';
- try{await call('netplay_open',{runtime:get('runtime'),game:get('game'),preset:get('preset')||'balanced',nickname:nickname.value.trim(),mode,connection:connection.value,address:address.value.trim(),port:Number(port.value)});localStorage.setItem('netplay:nickname',nickname.value.trim());sessionActive=true;lastSnapshot='';}
+ busy=true;updateAvailability();
+ try{await bringOnlineCurrent();status.textContent='Preparing your game and controllers…';await call('netplay_open',{runtime:get('runtime'),game:get('game'),preset:get('preset')||'balanced',nickname:nickname.value.trim(),mode,connection:connection.value,address:address.value.trim(),port:Number(port.value)});localStorage.setItem('netplay:nickname',nickname.value.trim());sessionActive=true;lastSnapshot='';}
  catch(e){status.textContent=reason(e);}finally{busy=false;updateAvailability();await poll();}
 });
 document.addEventListener('session-state',event=>{sessionActive=!!event.detail;updateAvailability();});

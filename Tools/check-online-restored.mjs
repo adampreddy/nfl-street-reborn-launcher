@@ -57,6 +57,8 @@ await context.addInitScript(data=>{
   if(cmd==='update_check')return data.update_check;
   if(cmd==='update_download')return {path:'C:/Reborn/update.exe',bytes:38000000};
   if(cmd==='netplay_open'){data.session_active=true;data.netplay_status={phase:'lobby',active:true,host:args.mode==='host',connection:args.connection,port:args.port,code:args.connection==='traversal'?'ABC12345':'',can_start:args.mode==='host',players:[{id:1,name:'Player One',status:'OK',ping:'0 ms'}],ports:[1,0,0,0]};return {started:true};}
+  if(cmd==='content_fetch'){data.content_check={...data.content_check,phase:'staged'};return data.content_check;}
+  if(cmd==='content_promote'){data.content_check={...data.content_check,phase:'installed',note:'Installed'};return data.content_check;}
   if(cmd==='netplay_status')return data.netplay_status||{phase:'idle',active:false};
   if(cmd==='netplay_action'){if(args.action==='leave'){data.session_active=false;data.netplay_status={phase:'closed',active:false};}if(args.action==='start'){data.netplay_status.phase='running';data.netplay_status.can_start=false;}if(args.action==='ports')data.netplay_status.ports=args.ports;return;}
   if(cmd==='settings_paths') return JSON.parse(localStorage.getItem('qa:settings')||'null')||data.settings_paths;
@@ -116,6 +118,17 @@ try{
  await page.evaluate(()=>window.__reject='netplay_open');await page.getByRole('button',{name:'Create room',exact:true}).click();await page.getByText('Test failure: netplay_open',{exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Create room',exact:true}).isEnabled(),true);
  assert.equal(await page.getByRole('textbox',{name:'Player name'}).inputValue(),'Player One');
+ // A runtime the player has not installed yet refuses the room on the other
+ // side, so it is installed before the room opens. Textures alone never wait.
+ const openFresh=async(pending)=>{
+  await page.goto(url+'/online.html');
+  await page.evaluate(p=>{window.__calls=[];window.__fixture.content_check={phase:'available',download_bytes:18538496,components:p.map(c=>({component:c,state:'available'}))};},pending);
+  await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
+  await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
+  return page.evaluate(()=>window.__calls.map(c=>c.cmd).filter(c=>c.startsWith('content_')||c==='netplay_open'));
+ };
+ assert.deepEqual(await openFresh(['runtime','textures']),['content_check','content_fetch','content_promote','netplay_open']);
+ assert.deepEqual(await openFresh(['textures']),['content_check','netplay_open']);
 
- assert.deepEqual(errors,[]);console.log('PASS: join/host lobby, four player assignments, start/leave, and error recovery.');
+ assert.deepEqual(errors,[]);console.log('PASS: join/host lobby, four player assignments, start/leave, error recovery, and a pending runtime installs before a room opens.');
 }finally{await browser.close();server.close();}

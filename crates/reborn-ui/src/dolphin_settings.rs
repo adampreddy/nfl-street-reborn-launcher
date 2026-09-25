@@ -100,6 +100,15 @@ pub async fn dolphin_saves_folder(runtime:Option<String>)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The exact line runtime 1.2.6 wrote into the joiner's status when the
+    /// host ran 1.2.5, observed 09-25 on localhost through the session bridge.
+    #[test]
+    fn a_version_refusal_tells_both_players_to_update() {
+        let observed = "Failed to connect: The server and client's NetPlay versions are incompatible.";
+        let shown = netplay_error_for_player(observed).expect("the version refusal reached the page as Dolphin wrote it");
+        assert!(shown.contains("different Reborn versions") && shown.contains("Check game content"), "{shown}");
+        assert_eq!(netplay_error_for_player("Could not connect. Check the host code or address and try again."), None);
+    }
     /// The door every failure on this page goes through keeps a sentence that
     /// was written for the player, and summarizes one that was not.
     ///
@@ -396,6 +405,15 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
  values.push(format!("Dolphin.NetPlay.{}={address}",if connection=="traversal"{"HostCode"}else{"Address"}));values
 }
 
+/// Dolphin's refusal when host and joiner run different Reborn runtimes, in
+/// words that say what to do. Players read "NetPlay versions are
+/// incompatible" as a broken install, when one of them has simply not taken
+/// the latest update yet (runtime 1.2.5 against 1.2.6, 09-24).
+fn netplay_error_for_player(error:&str)->Option<&'static str>{
+ error.contains("NetPlay versions are incompatible").then_some(
+  "You and the host are on different Reborn versions. Both players: open Settings, press Check game content, install the update, then try again.")
+}
+
 #[tauri::command]
 pub fn netplay_status()->Result<serde_json::Value,String>{
  let mut state=NETPLAY.lock().map_err(netplay_lock_poisoned)?;
@@ -404,6 +422,7 @@ pub fn netplay_status()->Result<serde_json::Value,String>{
  let mut status=session.last_status.clone();
  if !session.active && status["phase"]!="error" {status["phase"]="closed".into();}
  if session.active && status["phase"]=="connecting" && session.started.elapsed().as_secs()>45 {status["phase"]="error".into();status["error"]="Dolphin did not open the room. Check that your Reborn Dolphin runtime supports launcher Netplay.".into();}
+ if let Some(e)=status["error"].as_str().and_then(netplay_error_for_player) {status["error"]=e.into();}
  status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();Ok(status)
 }
 
