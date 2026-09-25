@@ -205,3 +205,18 @@ fn one_measured_xbox_pad_on_runtime_1_2_6_is_one_player() {
     let (_, assignments) = build_gcpad_for_slots(&scan, &[], None, None).unwrap();
     assert_eq!(assignments, [(1, "XInput/0/Gamepad".to_string())]);
 }
+
+/// The same pad in 2 of 30 measured scans: WGInput also listed a twin.
+#[test]
+fn the_measured_wginput_twin_of_one_xbox_pad_is_not_a_second_player() {
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse
+SDL/0/Xbox Series X Controller
+SDL/1/Xbox Series X Controller
+WGInput/0/Xbox One Game Controller
+WGInput/1/Xbox One Game Controller
+XInput/0/Gamepad",
+    );
+    let pads: Vec<String> = scan.playable_pads().iter().map(|d| d.device_string()).collect();
+    assert_eq!(pads, ["XInput/0/Gamepad"]);
+}
