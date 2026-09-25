@@ -129,8 +129,23 @@ impl Enumeration {
         let mut pads: Vec<&DetectedDevice> = self
             .devices
             .iter()
-            .filter(|d| d.is_controller())
+            .filter(|d| d.is_controller() && d.backend != Backend::DInput)
             .collect();
+
+        // DirectInput is never offered, and SDL only when it is all there is.
+        //
+        // Both name controls by number and both report the same plastic as
+        // WGInput under a DIFFERENT name: a DualSense is `WGInput/0/PS5
+        // Controller` and `DInput/0/Wireless Controller`, a Switch Pro is
+        // `WGInput/0/Pro Controller` and `SDL/0/Nintendo Switch Pro
+        // Controller`. No name comparison can pair those, and a pad kept on
+        // both backends gets two ports: one pad driving two players. DInput is
+        // also where vJoy, wheels and HOTAS drivers live, which would make a
+        // keyboard player's "controller" something they never meant to hold.
+        // WGInput reports every HID game controller DirectInput does.
+        if pads.iter().any(|d| d.backend.names_its_controls()) {
+            pads.retain(|d| d.backend != Backend::Sdl);
+        }
 
         // Deduplicate by the PAD, not by the backend.
         //

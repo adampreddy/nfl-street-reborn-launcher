@@ -56,6 +56,8 @@ function launchArgs(extra) {
     fullscreen: true,
     userDir: get("userDir"),
     modsDisabled: false,
+    // Recovery cannot show the controller setup choice, so it never asks.
+    playAnyway: true,
     ...extra,
   };
 }

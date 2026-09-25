@@ -8,20 +8,25 @@ fn profile() -> ControllerProfile {
     ControllerProfile::new(DeviceIdentity {guid: "test".into(),serial: None,name: "USB controller".into(),family: DeviceFamily::Generic},1)
 }
 
+/// SDL and DirectInput report the same plastic as XInput/WGInput under other
+/// names (`DInput/0/Wireless Controller` for a DualSense), so while a backend
+/// that names its controls has a pad, they are not offered: a pad kept on two
+/// backends gets two ports and drives two players.
 #[test]
-fn mixed_backends_keep_unique_usb_controllers() {
-    let scan=scan("XInput/0/Gamepad\nSDL/0/USB GameCube Controller\nDInput/0/USB Arcade Pad\nDInput/0/Keyboard Mouse");
-    let pads=scan.playable_pads();
-    assert_eq!(pads.len(),3);
-    assert!(pads.iter().any(|p|p.name=="USB GameCube Controller"));
-    assert!(pads.iter().any(|p|p.name=="USB Arcade Pad"));
+fn a_named_backend_pad_hides_sdl_and_directinput_copies() {
+    let scan=scan("XInput/0/Gamepad
+SDL/0/USB GameCube Controller
+DInput/0/USB Arcade Pad
+DInput/0/Keyboard Mouse");
+    let names:Vec<_>=scan.playable_pads().iter().map(|p|p.device_string()).collect();
+    assert_eq!(names,["XInput/0/Gamepad"]);
 }
 
 #[test]
-fn raw_directinput_controller_is_not_a_keyboard() {
-    let scan=scan("DInput/0/Generic USB Joystick\nDInput/0/Keyboard Mouse");
-    assert_eq!(scan.playable_pads().len(),1);
-    assert_eq!(scan.playable_pads()[0].name,"Generic USB Joystick");
+fn directinput_joysticks_are_never_offered() {
+    let scan=scan("DInput/0/Generic USB Joystick
+DInput/0/Keyboard Mouse");
+    assert!(scan.playable_pads().is_empty());
 }
 
 #[test]
@@ -56,23 +61,21 @@ fn generic_stick_polarity_and_dpad_are_not_rewritten_as_xinput() {
 }
 
 #[test]
-fn additional_same_model_pad_on_another_backend_is_retained() {
-    let pads=scan("WGInput/0/PS5 Controller\nSDL/0/DualSense Wireless Controller\nSDL/1/DualSense Wireless Controller");
-    assert_eq!(pads.playable_pads().len(),2);
-    assert_eq!(pads.playable_pads()[1].device_string(),"SDL/1/DualSense Wireless Controller");
-}
-
-#[test]
-fn generic_gamepad_is_not_assumed_to_be_the_xinput_pad() {
-    let pads=scan("XInput/0/Gamepad\nSDL/0/Gamepad\nDInput/0/Gamepad");
+fn a_ps5_pad_on_wginput_is_not_doubled_by_its_sdl_copy() {
+    let pads=scan("WGInput/0/PS5 Controller
+SDL/0/DualSense Wireless Controller");
     let names:Vec<_>=pads.playable_pads().iter().map(|p|p.device_string()).collect();
-    assert_eq!(names, ["XInput/0/Gamepad", "SDL/0/Gamepad"]);
+    assert_eq!(names,["WGInput/0/PS5 Controller"]);
 }
 
 #[test]
-fn extra_xbox_named_sdl_pad_is_not_hidden_by_one_xinput_pad() {
-    let pads=scan("XInput/0/Gamepad\nSDL/0/Xbox Controller\nSDL/1/Xbox Controller");
-    assert_eq!(pads.playable_pads().len(),2);
+fn two_sdl_only_pads_are_two_pads_even_when_one_is_called_gamepad() {
+    let pads=scan("SDL/0/Gamepad
+SDL/0/Xbox Controller
+SDL/1/Xbox Controller
+DInput/0/Gamepad");
+    let names:Vec<_>=pads.playable_pads().iter().map(|p|p.device_string()).collect();
+    assert_eq!(names,["SDL/0/Gamepad","SDL/0/Xbox Controller","SDL/1/Xbox Controller"]);
 }
 
 #[test]
