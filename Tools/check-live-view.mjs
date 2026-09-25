@@ -313,6 +313,31 @@ const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";")
   page.done();
 }
 
+// ---- 4b: a real g5-shaped bug -- ports [-1, 0], a CPU side never borrows the other side's seat ----
+{
+  const snap = fixture();
+  const g = snap.games[1]; // the live game: Giants (side 0) vs Colts (side 1), Adam = seat 0, Jock = seat 1
+  g.sides = [{ seat: null }, { seat: 0 }]; // side 0 (Giants) is CPU; side 1's (Colts) only human is seat 0, Adam
+  g.score = [41, 28];
+  const page = await loadLive(`?match=${MATCH_ID}`, answering(snap));
+  const s = page.screen;
+  const header = byClass(s, "lv-header")[0];
+  const h = text(header);
+  check("both teams still show", h.includes("Giants") && h.includes("Colts"), h.slice(0, 300));
+  check("Jock's name never appears (seat 1 is not part of this game)", !h.includes("Jock"), h.slice(0, 300));
+  check("no duplicated side-labelled score line (side 1 has a known seat)", byClass(header, "lv-side-score").length === 0);
+  const cards = byClass(header, "lv-seat");
+  const giantsCard = cards.find((n) => text(n).includes("Giants"));
+  const coltsCard = cards.find((n) => text(n).includes("Colts"));
+  check("side 0 (Giants, CPU) shows CPU and its own real score",
+    !!giantsCard && text(giantsCard).includes("CPU") && byClass(giantsCard, "lv-points")[0]?.textContent === "41",
+    giantsCard && text(giantsCard));
+  check("side 1 (Colts) shows seat 0's own name (Adam) and its own real score",
+    !!coltsCard && text(coltsCard).includes("Adam") && byClass(coltsCard, "lv-points")[0]?.textContent === "28",
+    coltsCard && text(coltsCard));
+  page.done();
+}
+
 // ---- 5: long and HTML names stay literal ----
 {
   const HOSTILE = "<img src=x onerror=alert(1)>";

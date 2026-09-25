@@ -443,6 +443,21 @@ function check(what, ok, detail = "") {
   page.done();
 }
 
+// ---- 13b: a real g5-shaped bug -- ports [-1, 0], a CPU side never borrows the other side's seat ----
+{
+  const mixed = JSON.parse(JSON.stringify(FIXTURE.matches[0]));
+  mixed.sides = [{ seat: null }, { seat: 0 }]; // side 0 (Giants) is CPU; side 1's (Colts) only human is seat 0, Adam
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [mixed] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  const [row] = byClass(page.section(), "live-row");
+  const names = byClass(row, "live-player-name").map((n) => n.textContent);
+  check("side 0 (CPU, no seat) shows CPU, side 1 shows seat 0's own name -- in that order, by side",
+    names.join(",") === "CPU,Adam", names.join(","));
+  check("Jock's name never appears (seat 1 is not part of this game)", !text(row).includes("Jock"), text(row));
+  check("the CPU side still shows its own team and score", text(row).includes("Giants") && text(row).includes("Colts"), text(row).slice(0, 300));
+  page.done();
+}
+
 // ---- 14 (M7): polling pauses while a game session runs ----
 {
   let liveCalls = 0;
