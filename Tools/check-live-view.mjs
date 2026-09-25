@@ -59,6 +59,15 @@ const buttonsOf = (root) => findAll(root, (n) => n.tagName === "button");
 const button = (root, label) => buttonsOf(root).find((b) => text(b).trim() === label);
 async function click(node) { for (const f of node?.listeners?.click || []) await f({ preventDefault() {} }); await tick(); await tick(); }
 
+// A box-score table's header labels and its body rows (as an array of cell texts, "who" cell first).
+const cellsOf = (row) => (row.children || []).filter((n) => n && n.tagName === "td").map((td) => text(td));
+const rowsOf = (table) => { const tbody = (table.children || []).find((n) => n && n.tagName === "tbody"); return (tbody?.children || []).map(cellsOf); };
+const headersOf = (table) => {
+  const thead = (table.children || []).find((n) => n && n.tagName === "thead");
+  const tr = thead?.children?.[0];
+  return (tr?.children || []).filter((n) => n && n.tagName === "th").map((th) => text(th).trim());
+};
+
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
 const LIVE_COLOR = readFileSync("crates/reborn-ui/ui/live-color.js", "utf8").replaceAll("export ", "");
 const LIVE_COMMON = readFileSync("crates/reborn-ui/ui/live-common.js", "utf8").replaceAll("export ", "");
@@ -227,6 +236,16 @@ const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";")
   check("a live game's box score says (provisional)", bt.includes("(provisional)") && !bt.includes("Final box score"), bt.slice(0, 200));
   check("the box score has rushing and defense tables", bt.includes("Rushing") && bt.includes("Defense"), bt.slice(0, 300));
   check("the box score names the players", bt.includes("Jonathan Taylor") && bt.includes("Cam Skattebo"));
+  // Rushing carries AVG, BTK and YCO; Jonathan Taylor's real line (4 att, -4 yds, 3 BTK, 8 YCO) exercises them.
+  const rushing = byClass(box, "rushing")[0];
+  check("Rushing has ATT, YDS, AVG, TD, LONG, BTK and YCO columns",
+    ["ATT", "YDS", "AVG", "TD", "LONG", "BTK", "YCO"].every((h) => headersOf(rushing).includes(h)), headersOf(rushing).join(","));
+  const taylorRow = rowsOf(rushing).find((r) => r[0].includes("Jonathan Taylor"));
+  check("Jonathan Taylor's row reads ATT 4, YDS -4, AVG -1, LONG 2, BTK 3, YCO 8",
+    !!taylorRow && taylorRow[2] === "4" && taylorRow[3] === "-4" && taylorRow[4] === "-1" && taylorRow[6] === "2" && taylorRow[7] === "3" && taylorRow[8] === "8",
+    JSON.stringify(taylorRow));
+  check("Defense has no PBU column missing", headersOf(byClass(box, "defense")[0]).includes("PBU"), headersOf(byClass(box, "defense")[0]).join(","));
+  check("there is no separate extras table", !bt.includes("Extras") && byClass(box, "lv-table").every((t) => ["passing", "rushing", "receiving", "defense"].some((k) => classes(t).includes(k))));
   const faces = byClass(box, "lv-face");
   check("box score rows carry small portraits from live-assets", faces.length > 0 && faces.every((i) => i.tagName === "img" && ALLOWED(i.attrs.src) && /\/portraits\//.test(i.attrs.src)),
     faces.map((i) => i.attrs.src).join(", "));
@@ -494,7 +513,47 @@ for (const search of ["?match=abc", `?match=${MATCH_ID.toUpperCase()}`, "", `?ma
   page.done();
 }
 
+// ---- 15: box score inclusion rules -- BTK/YCO-only rushers, drop-only receivers, and a defender's PBU value ----
+// The base fixture's BTK/YCO/drops are all 0 except Jonathan Taylor's carries (covered in section 1), so this
+// section edits a small copy: Jaxson Dart (0 carries) gets BTK/YCO, Josh Downs (0 receptions) gets a drop, and
+// Arvell Reese (already shown for a tackle) gets a PBU value.
+{
+  const snap = fixture();
+  const lines = snap.games[1].box.lines;
+  const dart = lines.find((l) => l.digp === 16 && l.name === "Jaxson Dart");
+  dart.stats.broken_tackles = 2;
+  dart.stats.yds_after_contact = 5;
+  const downs = lines.find((l) => l.digp === 40 && l.name === "Josh Downs");
+  downs.stats.drops = 1;
+  const reese = lines.find((l) => l.digp === 18 && l.name === "Arvell Reese");
+  reese.stats.pass_breakups = 2;
+
+  const page = await loadLive(`?match=${MATCH_ID}`, answering(snap));
+  await click(button(page.screen, "Box score"));
+  const box = byClass(page.screen, "lv-box")[0];
+
+  const rushing = byClass(box, "rushing")[0];
+  const dartRow = rowsOf(rushing).find((r) => r[0].includes("Jaxson Dart"));
+  check("a 0-carry player with BTK/YCO shows in Rushing", !!dartRow, JSON.stringify(rowsOf(rushing).map((r) => r[0])));
+  check("that row's ATT is 0 and AVG is a dash (no carries)", !!dartRow && dartRow[2] === "0" && dartRow[4] === "–", JSON.stringify(dartRow));
+  check("that row's BTK is 2 and YCO is 5", !!dartRow && dartRow[7] === "2" && dartRow[8] === "5", JSON.stringify(dartRow));
+
+  const receiving = byClass(box, "receiving")[0];
+  check("Receiving has a DROP column", !!receiving && headersOf(receiving).includes("DROP"), receiving && headersOf(receiving).join(","));
+  const downsRow = receiving && rowsOf(receiving).find((r) => r[0].includes("Josh Downs"));
+  check("a 0-reception player with a drop shows in Receiving", !!downsRow, receiving && JSON.stringify(rowsOf(receiving).map((r) => r[0])));
+  check("that row's REC is 0 and DROP is 1", !!downsRow && downsRow[2] === "0" && downsRow[6] === "1", JSON.stringify(downsRow));
+
+  const defense = byClass(box, "defense")[0];
+  const reeseRow = rowsOf(defense).find((r) => r[0].includes("Arvell Reese"));
+  check("a defender's PBU value renders", !!reeseRow && reeseRow[6] === "2", JSON.stringify(reeseRow));
+
+  check("still exactly one table per non-empty category (no separate extras table)",
+    byClass(box, "lv-table").length === 3, byClass(box, "lv-table").map((t) => t.className).join(" | "));
+  page.done();
+}
+
 console.log(fails === 0
-  ? "\nPASS: the match view draws the real two-game snapshot's header, picker, plays, box score and drives; disputed plays stay unhighlighted; no-sides snapshots are side-labelled; untrusted text stays literal; polling is visible-only and stops when final; invalid ids make no call."
+  ? "\nPASS: the match view draws the real two-game snapshot's header, picker, plays, box score and drives; disputed plays stay unhighlighted; no-sides snapshots are side-labelled; untrusted text stays literal; polling is visible-only and stops when final; invalid ids make no call; Rushing's BTK/YCO/AVG, Receiving's DROP and Defense's PBU render and gate row inclusion correctly."
   : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

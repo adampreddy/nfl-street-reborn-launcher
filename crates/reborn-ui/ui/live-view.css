@@ -120,6 +120,8 @@ body.shell #screen .lv-picker button[aria-pressed=true] { background: var(--sele
 
 .lv-box { display: grid; gap: 16px; }
 .lv-box-title { margin: 0; font: 600 15px/1.4 Inter, "Segoe UI", sans-serif; color: var(--fg); }
+/* Rushing runs to 9 columns (BTK, YCO, AVG added) -- scroll sideways rather than crush the name column. */
+.lv-table-scroll { width: 100%; overflow-x: auto; }
 .lv-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--panel); border: 1px solid var(--panel-border); }
 .lv-table caption { text-align: left; padding: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .lv-table th, .lv-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
@@ -145,4 +147,5 @@ body.shell #screen .lv-picker button[aria-pressed=true] { background: var(--sele
   .lv-seat-1 .lv-points { margin: 0 0 0 auto; }
   .lv-vs { display: none; }
   .lv-logo, .lv-logo-badge { width: 64px; height: 64px; border-radius: 10px; }
+  .lv-table-scroll .lv-table { min-width: 620px; }
 }

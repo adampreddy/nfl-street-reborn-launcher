@@ -232,15 +232,21 @@ const TABLES = [
   { title: 'Passing', has: (s) => num(s.pass_att) > 0, sort: (s) => num(s.pass_yds),
     cols: [['C/ATT', (s) => `${num(s.pass_cmp)}/${num(s.pass_att)}`], ['YDS', (s) => num(s.pass_yds)], ['TD', (s) => num(s.pass_td)],
       ['INT', (s) => num(s.pass_int)], ['RTG', (s) => (Number.isFinite(s.pass_rtg) ? s.pass_rtg : DASH)]] },
-  { title: 'Rushing', has: (s) => num(s.rush_att) > 0, sort: (s) => num(s.rush_yds),
-    cols: [['ATT', (s) => num(s.rush_att)], ['YDS', (s) => num(s.rush_yds)], ['TD', (s) => num(s.rush_td)],
-      ['LONG', (s) => (Number.isFinite(s.rush_long) ? s.rush_long : DASH)]] },
-  { title: 'Receiving', has: (s) => num(s.rec) > 0, sort: (s) => num(s.rec_yds),
+  // A rusher shows up for carries OR broken tackles OR yards after (first) contact: a change-of-pace back can log
+  // BTK/YCO on a stuffed carry, or (in principle) draw the stat off a carry credited to someone else. AVG is the
+  // backend's own rush_ypc, already null with 0 carries, so it reads as a dash rather than a divide-by-zero.
+  { title: 'Rushing', has: (s) => num(s.rush_att) > 0 || num(s.broken_tackles) > 0 || num(s.yds_after_contact) > 0, sort: (s) => num(s.rush_yds),
+    cols: [['ATT', (s) => num(s.rush_att)], ['YDS', (s) => num(s.rush_yds)], ['AVG', (s) => (Number.isFinite(s.rush_ypc) ? s.rush_ypc : DASH)],
+      ['TD', (s) => num(s.rush_td)], ['LONG', (s) => (Number.isFinite(s.rush_long) ? s.rush_long : DASH)],
+      ['BTK', (s) => num(s.broken_tackles)], ['YCO', (s) => num(s.yds_after_contact)]] },
+  // A receiver shows up for receptions OR drops: a drop with no catch still belongs on the table.
+  { title: 'Receiving', has: (s) => num(s.rec) > 0 || num(s.drops) > 0, sort: (s) => num(s.rec_yds),
     cols: [['REC', (s) => num(s.rec)], ['YDS', (s) => num(s.rec_yds)], ['TD', (s) => num(s.rec_td)],
-      ['LONG', (s) => (Number.isFinite(s.rec_long) ? s.rec_long : DASH)]] },
+      ['LONG', (s) => (Number.isFinite(s.rec_long) ? s.rec_long : DASH)], ['DROP', (s) => num(s.drops)]] },
   { title: 'Defense', has: (s) => num(s.tackles) + num(s.sacks) + num(s.def_int) + num(s.ff) + num(s.fr) > 0,
     sort: (s) => num(s.tackles) + num(s.sacks) * 2 + num(s.def_int) * 3,
-    cols: [['TKL', (s) => num(s.tackles)], ['SCK', (s) => num(s.sacks)], ['INT', (s) => num(s.def_int)], ['FF', (s) => num(s.ff)]] },
+    cols: [['TKL', (s) => num(s.tackles)], ['SCK', (s) => num(s.sacks)], ['INT', (s) => num(s.def_int)], ['FF', (s) => num(s.ff)],
+      ['PBU', (s) => num(s.pass_breakups)]] },
 ];
 
 function boxTab(snap, game) {
@@ -262,7 +268,8 @@ function boxTab(snap, game) {
       el('td', { class: 'lv-who' }, face(portraitOf(l), 'lv-face', 28), el('span', { text: str(l.name) || `#${l.digp}` })),
       el('td', { class: 'lv-team-col', text: teamCol(l.team_index) }),
       ...t.cols.map(([, f]) => el('td', { text: String(f(l.stats)) })))));
-    root.append(el('table', { class: `lv-table ${t.title.toLowerCase()}` }, el('caption', { text: t.title }), el('thead', {}, head), body));
+    const table = el('table', { class: `lv-table ${t.title.toLowerCase()}` }, el('caption', { text: t.title }), el('thead', {}, head), body);
+    root.append(el('div', { class: 'lv-table-scroll' }, table));
   }
   if (!any) root.append(el('p', { class: 'lv-empty', text: 'No stats yet.' }));
   return root;
