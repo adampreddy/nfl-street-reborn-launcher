@@ -192,3 +192,16 @@ SDL/0/USB GameCube Controller");
     let pads: Vec<String> = scan.playable_pads().iter().map(|d| d.device_string()).collect();
     assert_eq!(pads, ["SDL/0/USB GameCube Controller"]);
 }
+
+/// Measured 2026-09-24 with runtime 1.2.6 and REBORN_RAW_CONTROLLERS=1 on a PC
+/// with ONE wired Xbox pad: the runtime reports it four times, twice on SDL.
+#[test]
+fn one_measured_xbox_pad_on_runtime_1_2_6_is_one_player() {
+    let scan = parse_device_list(
+        "DInput/0/Keyboard Mouse\nSDL/0/Xbox Series X Controller\nSDL/1/Xbox Series X Controller\nWGInput/0/Xbox One Game Controller\nXInput/0/Gamepad",
+    );
+    let pads: Vec<String> = scan.playable_pads().iter().map(|d| d.device_string()).collect();
+    assert_eq!(pads, ["XInput/0/Gamepad"]);
+    let (_, assignments) = build_gcpad_for_slots(&scan, &[], None, None).unwrap();
+    assert_eq!(assignments, [(1, "XInput/0/Gamepad".to_string())]);
+}
