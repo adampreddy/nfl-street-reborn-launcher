@@ -11,7 +11,7 @@
 // this feature.
 import { bridge, el, quietCall, reason } from './shell.js';
 import { inkFor } from './live-color.js';
-import { assetUrl, avatarSrc, makePoller, seatsBySide } from './live-common.js';
+import { assetUrl, avatarSrc, makePoller } from './live-common.js';
 
 // The list changes slowly (a match starts or a score moves); 10 s keeps a LAN party of launchers
 // behind one address well inside the backend's rate limit.
@@ -70,9 +70,22 @@ function playerAvatar(seat) {
   return withImageFallback(img, badge);
 }
 
-function playerLine(seat) {
+function playerLine(seat, cpu) {
+  if (cpu) return el('span', { class: 'live-player live-cpu' }, el('span', { class: 'live-player-name', text: 'CPU' }));
   const name = seat && typeof seat.display_name === 'string' && seat.display_name ? seat.display_name : 'Unknown player';
   return el('span', { class: 'live-player' }, playerAvatar(seat), el('span', { class: 'live-player-name', text: name }));
+}
+
+/**
+ * Which seat sits under side `side`, laid out BY SIDE like the scoreboard above it: `sides[side].seat` when a real
+ * (non-empty) `sides` array names one, else `{ cpu: true }` -- a side with no controller (CPU, a disconnect, or an
+ * older runtime that sends no ports at all) never borrows the other side's seat. With no `sides` array at all,
+ * this falls back to the seats by raw position, exactly as before ports existed.
+ */
+function seatOfSide(seats, sides, side) {
+  if (!sides) return { seat: seats[side], cpu: false };
+  const idx = sides[side]?.seat;
+  return (idx === 0 || idx === 1) ? { seat: seats[idx], cpu: false } : { seat: null, cpu: true };
 }
 
 function watchLink(match) {
@@ -92,9 +105,11 @@ function rowContent(match) {
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const score = Array.isArray(match.score) ? match.score : [0, 0];
   const seats = Array.isArray(match.seats) ? match.seats : [null, null];
-  // Each player sits under the team they have: side 0's seat first, then side 1's (seat order
-  // when the sides are not known), so the names line up with the scoreboard above them.
-  const [first, second] = seatsBySide(match.sides);
+  // Each player sits under the team they have (side 0 first, then side 1), so the names line up
+  // with the scoreboard above them; a side with no seat shows CPU rather than the other side's.
+  const sides = Array.isArray(match.sides) && match.sides.length ? match.sides : null;
+  const s0 = seatOfSide(seats, sides, 0);
+  const s1 = seatOfSide(seats, sides, 1);
   const gameNo = Number.isInteger(match.game_seq) ? match.game_seq : 1;
   const bestOf = Number.isInteger(match.best_of) ? match.best_of : 1;
   return [
@@ -105,7 +120,7 @@ function rowContent(match) {
     el('div', { class: 'live-meta' },
       el('span', { class: 'live-game-no', text: `Game ${gameNo} of ${bestOf}` }),
       el('span', { class: 'live-mode', text: match.mode === 'ranked' ? 'Ranked' : 'Casual' })),
-    el('div', { class: 'live-players' }, playerLine(seats[first]), playerLine(seats[second])),
+    el('div', { class: 'live-players' }, playerLine(s0.seat, s0.cpu), playerLine(s1.seat, s1.cpu)),
     watchLink(match),
   ];
 }

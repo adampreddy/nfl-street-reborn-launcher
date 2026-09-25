@@ -126,33 +126,58 @@ function teamName(team) {
   return el('span', attrs);
 }
 
-function seatCard(i, seat, team, points) {
-  const name = str(seat?.display_name) || 'Unknown player';
+function seatCard(i, seat, team, points, cpu) {
+  const body = cpu
+    ? el('span', { class: 'lv-player lv-cpu' }, el('span', { class: 'lv-player-name', text: 'CPU' }))
+    : el('span', { class: 'lv-player' }, seatAvatar(seat), el('span', { class: 'lv-player-name', text: str(seat?.display_name) || 'Unknown player' }));
   return el('div', { class: `lv-seat lv-seat-${i}${team ? ' has-team' : ''}` },
     team ? teamLogo(team) : null,
     el('div', { class: 'lv-seat-id' },
       team ? teamName(team) : null,
-      el('span', { class: 'lv-player' }, seatAvatar(seat), el('span', { class: 'lv-player-name', text: name }))),
+      body),
     points === null ? null : el('span', { class: 'lv-points', text: String(points) }));
 }
 
+/**
+ * Laid out BY SIDE: side 0 and side 1 each always get a card, from `game.teams` and `game.score` (by side) -- a
+ * side is never dropped for having no controller. A card's Discord seat is whichever seat maps to that side
+ * (`sides[side].seat`); a side with no seat -- CPU, a disconnect, or an older runtime with no ports at all -- shows
+ * "CPU", never another side's seat. When a real `sides` array names an actual seat for one of the two cards, that
+ * card keeps its historical seat-number position (a seat's card never jumps left/right mid-match); a side left
+ * without a claimed seat fills whatever position remains. With no `sides` array at all, cards fall back to the
+ * snapshot's seats by raw position, exactly as before ports existed.
+ */
 function header(snap, game) {
   const match = snap.match ?? {};
   const seats = Array.isArray(snap.seats) ? snap.seats : [];
   const plays = playsOf(game);
-  const sideOf = sideOfSeats(game?.sides);
-  const byGame = seatScore(game?.score, game?.sides);
+  const sides = Array.isArray(game?.sides) ? game.sides : null;
+  const hasSides = Boolean(sides && sides.length);
+  const sideOf = sideOfSeats(sides); // [side owning seat 0, side owning seat 1], each 0|1|null
+  const anySeatKnown = hasSides && sideOf.some((s) => s === 0 || s === 1);
   const sideScore = Array.isArray(game?.score) ? [num(game.score[0]), num(game.score[1])] : null;
   const hasAny = plays.length > 0 || Boolean(sideScore && (sideScore[0] || sideScore[1]));
-  // Unknown sides: no seat is credited with anything; the side-labelled line below carries the score.
-  const pointsOf = (i) => (byGame ? byGame[i] : null);
+
+  // cardSide[i]: which SIDE the card at position i shows. seatOfCard[i]: which seats[] index sits under it (or
+  // null for CPU). With no sides array, both default to the legacy raw-position behaviour (team always unknown).
+  let cardSide = [null, null];
+  let seatOfCard = [0, 1];
+  if (hasSides) {
+    const claimed = new Set(sideOf.filter((s) => s === 0 || s === 1));
+    const leftover = [0, 1].filter((s) => !claimed.has(s));
+    let li = 0;
+    cardSide = [0, 1].map((i) => (sideOf[i] === 0 || sideOf[i] === 1) ? sideOf[i] : leftover[li++]);
+    seatOfCard = [0, 1].map((i) => (sideOf[i] === 0 || sideOf[i] === 1) ? i : null);
+  }
+  // Unknown sides everywhere: no seat is credited with anything; the side-labelled line below carries the score.
+  const pointsOf = (i) => (anySeatKnown && sideScore ? sideScore[cardSide[i]] : null);
 
   const root = el('div', { class: 'lv-header' });
   root.append(el('div', { class: 'lv-scoreboard' },
-    seatCard(0, seats[0], teamOf(game, sideOf[0]), pointsOf(0)),
-    el('span', { class: 'lv-vs', 'aria-hidden': 'true', text: byGame ? DASH : 'vs' }),
-    seatCard(1, seats[1], teamOf(game, sideOf[1]), pointsOf(1))));
-  if (!byGame && sideScore && hasAny) {
+    seatCard(0, seats[seatOfCard[0]], teamOf(game, cardSide[0]), pointsOf(0), hasSides && seatOfCard[0] === null),
+    el('span', { class: 'lv-vs', 'aria-hidden': 'true', text: anySeatKnown ? DASH : 'vs' }),
+    seatCard(1, seats[seatOfCard[1]], teamOf(game, cardSide[1]), pointsOf(1), hasSides && seatOfCard[1] === null)));
+  if (!anySeatKnown && sideScore && hasAny) {
     const label = (side) => teamOf(game, side)?.name ?? `Side ${side + 1}`;
     root.append(el('p', { class: 'lv-side-score', text: `${label(0)} ${sideScore[0]} ${DASH} ${sideScore[1]} ${label(1)}` }));
   }
