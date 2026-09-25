@@ -33,6 +33,7 @@ def launch(mode,connection='direct',address='127.0.0.1'):
  args=[str(runtime),'-u',str(user),'--reborn-netplay-session',str(plan)]
  for value in ['Core.SlotA=255','Core.SlotB=255','NetPlay.SyncSaves=True','NetPlay.WriteSaveData=False','NetPlay.SyncCodes=True','NetPlay.StrictSettingsSync=True','NetPlay.UseIndex=False','Display.RenderToMain=False','Display.Fullscreen=False','Analytics.PermissionAsked=True','Interface.SkipNKitWarning=True',f'NetPlay.TraversalChoice={connection}','NetPlay.HostPort=26261','NetPlay.ConnectPort=26261',f'NetPlay.Address={address}','NetPlay.HostCode='+address,'NetPlay.Nickname=Test '+mode,'Interface.ConfirmStop=False']:
   args+=['-C','Dolphin.'+value]
+ args+=['-C','Graphics.Settings.WaitForShadersBeforeStarting=False']
  processes[mode]=subprocess.Popen(args,cwd=runtime.parent,creationflags=0x08000000)
  (folder/'pid.txt').write_text(str(processes[mode].pid))
 try:
