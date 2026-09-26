@@ -742,7 +742,18 @@ pub async fn content_repair_image() -> Result<serde_json::Value, String> {
                 notes.push(r.message());
                 notes.extend(sync_cards(&p, &settings, &data_root));
             }
-            Ok((gp.reached_the_image(), notes.join(" ")))
+            let mut current = gp.reached_the_image();
+            // The online copy too, now rather than when a room opens: 09-26 a repaired image
+            // was refused by the ready check on the stale record of a copy that the room
+            // would have rebuilt seconds later.
+            if current {
+                match crate::dolphin_settings::netplay_image(&p) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => { current = false; notes.push("No game image to build the online copy from.".to_string()); }
+                    Err(e) => { current = false; notes.push(e); }
+                }
+            }
+            Ok((current, notes.join(" ")))
         })();
         drop(guard);
         let (current, note) = outcome?;

@@ -228,7 +228,7 @@ mod tests {
 /// old shape of an install that was never imported: those keep booting what
 /// they always booted, and they have no custom soundtrack to diverge with
 /// either, because a soundtrack apply needs a pristine image too.
-fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
+pub(crate) fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
     use reborn_core::online_image::{ensure, Outcome, Refusal};
     let data_root = p.paths.data_root().map_err(player)?;
     let settings = crate::content_updates::load_settings(p)?;
@@ -326,7 +326,10 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  let content=reborn_core::content::ContentService::for_platform(&p).ok();
  let version=|component:&str| content.as_ref().and_then(|c|c.installed(component).ok().flatten()).map(|ptr|ptr.current.version);
  let data=p.paths.data_root().ok();
- let source=data.as_ref().and_then(|d|reborn_core::online_image::built_from(d));
+ // What the online copy WILL be built from when the room opens (netplay_open rebuilds it to
+ // this), not what an older copy's record says: 09-26 a repaired image was refused on the
+ // stale record of a copy that the room would have rebuilt seconds later.
+ let source=data.as_ref().and_then(|d|reborn_core::online_image::wanted(d).ok().flatten().or_else(||reborn_core::online_image::built_from(d)));
  // Is the game image the head of the installed patch chain? 09-26: a game-patch component
  // said 2026.09.26.2 while the image it should have patched was still NSRV3 (node 2 of 14),
  // so "same version" on both sides was true and the discs still differed. `None` = no chain
