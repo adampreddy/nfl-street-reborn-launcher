@@ -277,7 +277,7 @@ async function draw() {
     body = [el('h2', { text: 'Online play' }), el('p', { text: 'Can\'t reach the Reborn servers right now. Trying again.' })];
   } else if (!snap) {
     body = [el('p', { class: 'loading', text: 'Connecting…' })];
-  } else if (snap.match && !['complete', 'void', 'abandoned'].includes(snap.match.relay_state)) {
+  } else if (snap.match && !['complete', 'void', 'abandoned', 'held'].includes(snap.match.relay_state)) {
     body = drawMatch(snap.match, snap.chat ?? [], state.relay_error);
   } else if (snap.room) {
     body = drawRoom(snap.room, snap.chat ?? []);
@@ -285,6 +285,12 @@ async function draw() {
     body = drawQueued(snap.ticket);
   } else {
     body = drawIdle(snap);
+    // A held match is over for the player the moment it is held (seats released), but the server
+    // keeps showing it for a few minutes. It is a notice on the normal page, never the page itself:
+    // 09-26 both players sat on "Held for review" with no Find a game button for five minutes.
+    if (snap.match?.relay_state === 'held') {
+      body.unshift(el('p', { class: 'note', text: `Your last match${snap.match.opponent ? ` against ${snap.match.opponent}` : ''} was held for review: nothing changed on the ladder, and a person will look at it. You can play again now.` }));
+    }
   }
   section.replaceChildren(...body, status, drawOnline(snap), presenceToggle(state.presence_on));
 }
