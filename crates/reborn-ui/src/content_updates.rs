@@ -716,6 +716,42 @@ pub async fn content_promote(confirm: bool) -> Result<ContentStatusView, String>
     .map_err(|e| e.to_string())?
 }
 
+/// Walk the game image to the head of the installed patch chain and re-apply the roster, with
+/// no new component involved. Promote only patches the image while it installs something; a
+/// player whose game-patch component was already current but whose image had stayed an old
+/// build (09-26: NSRV3, so every online copy he built differed from everyone else's) had no
+/// way back short of importing the disc again. Returns whether the image is current now and
+/// the pipeline's own sentence about it.
+#[tauri::command]
+pub async fn content_repair_image() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = LaunchGuard::acquire()?;
+        let p = Platform::detect();
+        let outcome = (|| -> Result<(bool, String), String> {
+            let settings = load_settings(&p)?;
+            let verifier = verifier()?;
+            let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+            let origin = Origin::new(&origin_url(&settings));
+            let updater = Updater::new(&p, &data_root, &origin, &verifier);
+            let hook = image_hook(&p, &settings);
+            let gp = updater.apply_current_game_patch(&hook).map_err(|e| e.to_string())?;
+            let mut notes = vec![gp.message()];
+            if matches!(gp, GamePatchResult::Applied(_)) {
+                // A freshly patched image has no roster yet; the same step promote takes next.
+                let r = updater.apply_current_roster(&hook).map_err(|e| e.to_string())?;
+                notes.push(r.message());
+                notes.extend(sync_cards(&p, &settings, &data_root));
+            }
+            Ok((gp.reached_the_image(), notes.join(" ")))
+        })();
+        drop(guard);
+        let (current, note) = outcome?;
+        Ok(serde_json::json!({ "current": current, "note": note }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Put the installed summary away.
 #[tauri::command]
 pub fn content_dismiss() -> ContentStatusView {

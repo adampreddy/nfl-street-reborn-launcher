@@ -6273,6 +6273,7 @@ fn main() {
             content_updates::content_fetch,
             content_updates::content_promote,
             content_updates::content_dismiss,
+            content_updates::content_repair_image,
             texture_policy,
             texture_policy_set,
             controls_set,

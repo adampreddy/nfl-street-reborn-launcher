@@ -198,7 +198,7 @@ async function act(label, cmd, args, after) {
   busy = true;
   problem = null;
   if (window.setLauncherBusy) window.setLauncherBusy(true); else draw();
-  const messages={update_check:'Checking for updates…',update_download:'Downloading and verifying…',update_apply:'Starting installer…',content_check:'Checking game files…',content_fetch:'Downloading game content…',content_promote:'Installing game content…'};
+  const messages={update_check:'Checking for updates…',update_download:'Downloading and verifying…',update_apply:'Starting installer…',content_check:'Checking game files…',content_fetch:'Downloading game content…',content_promote:'Installing game content…',content_repair_image:'Repairing game files…'};
   if(messages[cmd])document.getElementById('screen').append(el('p',{class:'settings-status',role:'status',text:messages[cmd]}));
   try {
     const r = await call(cmd, args);
@@ -246,6 +246,10 @@ function contentBlock() {
     sec.append(list);
   }
   sec.append(preferenceRow('Verify game files','Check installed content and prepare repairs for missing or changed files.',el('button',{type:'button',text:'Verify and repair',disabled:busy||working,onclick:()=>act('Verify content','content_check',{depth:'verify'},()=>{})})));
+  // The image itself, not the components: walks the game to the newest build and re-applies the
+  // roster. 09-26: a player's game-patch component was current while his image was still an old
+  // build, so his online copy never matched anyone's and he had no way to fix it from here.
+  sec.append(preferenceRow('Repair game files','Bring the game image to the newest build and re-apply the roster, if an update left it behind.',el('button',{type:'button',text:'Repair game files',disabled:busy||working,onclick:()=>act('Repair game files','content_repair_image',{},(r)=>{problem=r?.note||null;})})));
   return sec;
 }
 

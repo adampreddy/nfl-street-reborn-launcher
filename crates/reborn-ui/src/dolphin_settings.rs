@@ -325,10 +325,19 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  // had said so. Absent on an older launcher; the server only compares what both sides sent.
  let content=reborn_core::content::ContentService::for_platform(&p).ok();
  let version=|component:&str| content.as_ref().and_then(|c|c.installed(component).ok().flatten()).map(|ptr|ptr.current.version);
- let source=p.paths.data_root().ok().and_then(|d|reborn_core::online_image::built_from(&d));
+ let data=p.paths.data_root().ok();
+ let source=data.as_ref().and_then(|d|reborn_core::online_image::built_from(d));
+ // Is the game image the head of the installed patch chain? 09-26: a game-patch component
+ // said 2026.09.26.2 while the image it should have patched was still NSRV3 (node 2 of 14),
+ // so "same version" on both sides was true and the discs still differed. `None` = no chain
+ // or no image to ask about; the server treats only `false` as a refusal.
+ let pristine=data.as_ref().and_then(|d|reborn_core::game_image::find_pristine(d)).map(|x|x.folder_sha256);
+ let chain_head=data.as_ref().and_then(|d|reborn_core::game_patch::Chain::load(&reborn_core::game_patch::component_root(d).join(reborn_core::game_patch::CHAIN_FILE)).ok().flatten()).and_then(|c|c.head().map(str::to_string));
+ let pristine_at_tip=match (&pristine,&chain_head){(Some(a),Some(b))=>Some(a==b),_=>None};
  serde_json::json!({"runtime_ok":runtime_ok,"image_ok":found.is_ok(),"seed_ok":seed.is_some(),"seed_sha256":seed,"backend_ok":true,
   "roster_version":version("roster"),"game_patch_version":version("game-patch"),"runtime_version":version("runtime"),
   "pristine_sha256":source.as_ref().map(|s|s.pristine_sha256.clone()),"roster_sha256":source.as_ref().and_then(|s|s.roster_sha256.clone()),
+  "pristine_at_tip":pristine_at_tip,"chain_head":chain_head,
   "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
 }
 

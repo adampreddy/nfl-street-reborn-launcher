@@ -93,6 +93,57 @@ async function act(cmd, args) {
   }
 }
 
+// The components online play needs to be current, the same list as the manual Online tab's.
+const ONLINE_PARTS = ['runtime', 'roster', 'game-patch', 'online-content'];
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Before a queue: the update-before-room walk the manual Online tab does (online.js:71), then the
+// image repair. 09-26: a player's game-patch component was current while his image was still an
+// old build, so every online copy he built differed from everyone else's and the match was held
+// as "content-mismatch" with nothing either player could do about it from the page.
+async function queueWhenCurrent() {
+  if (busy) return;
+  busy = true;
+  section.setAttribute('aria-busy', 'true');
+  try {
+    let c = await call('content_check', { depth: null });
+    const needed = () => (c?.components || []).some((x) => ONLINE_PARTS.includes(x.component) && x.state === 'available');
+    for (let waited = 0; waited < 1800; waited++) {
+      if (['checking', 'fetching', 'installing'].includes(c?.phase)) {
+        status.textContent = c.phase === 'checking' ? 'Checking for updates before going online…' : (c.note || 'Updating before going online…');
+        await pause(1000);
+        c = await call('content_check', { depth: null });
+        continue;
+      }
+      if (c?.phase === 'available' && needed()) {
+        status.textContent = `Downloading the update online play needs (${Math.ceil((c.download_bytes || 0) / 1048576)} MB)…`;
+        c = await call('content_fetch');
+        if (c?.phase === 'available') throw new Error(c.note || 'The download did not start.');
+        continue;
+      }
+      if (c?.phase === 'staged' && needed()) {
+        status.textContent = 'Installing the update…';
+        c = await call('content_promote', { confirm: true });
+        if (c?.phase === 'problem') throw new Error(c.note);
+        continue;
+      }
+      break;
+    }
+    status.textContent = 'Checking your game files…';
+    const repair = await call('content_repair_image', {});
+    if (!repair?.current) throw new Error(repair?.note || 'Your game files are not up to date.');
+    status.textContent = '';
+    await call('mm_queue', { mode: mode() });
+  } catch (e) {
+    status.textContent = reason(e);
+  } finally {
+    busy = false;
+    section.removeAttribute('aria-busy');
+    lastDrawn = '';
+    await draw();
+  }
+}
+
 function clock(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -111,7 +162,7 @@ function drawIdle(snap) {
   const depth = snap?.queue_depth ?? { casual: 0, ranked: 0 };
   const find = el('button', {
     type: 'button', class: 'primary', text: `Find a ${mode()} game`,
-    onclick: () => act('mm_queue', { mode: mode() }),
+    onclick: () => queueWhenCurrent(),
   });
   const lobbies = el('div', { class: 'mm-lobbies' }, el('h3', { text: 'Lobbies' }), el('p', { class: 'loading', text: 'Loading lobbies…' }));
   loadLobbies(lobbies);
@@ -221,6 +272,9 @@ function drawMatch(m, chat, relayError) {
   if (m.relay_state === 'held' && m.hold_reason === 'seed-mismatch') {
     parts.push(el('p', { class: 'note', text: 'Your games would not have started from the same point, so neither started. Update the launcher and try again.' }));
   }
+  if (m.relay_state === 'held' && m.hold_reason === 'content-stale') {
+    parts.push(el('p', { class: 'note', text: 'A game update never reached one of your game discs, so the game was not started. Both of you: Settings → Repair game files (the one that is current is told so), then find a game again.' }));
+  }
   if (m.relay_state === 'held' && m.hold_reason === 'content-mismatch') {
     parts.push(el('p', { class: 'note', text: `Your game files differ from ${m.opponent ?? 'your opponent'}'s, so the game was not started. Both of you: Settings → Check game content, install what it offers, then try again.` }));
   }
@@ -291,7 +345,9 @@ async function draw() {
     // A held match is over for the player the moment it is held (seats released), but the server
     // keeps showing it for a few minutes. It is a notice on the normal page, never the page itself:
     // 09-26 both players sat on "Held for review" with no Find a game button for five minutes.
-    if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-mismatch') {
+    if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-stale') {
+      body.unshift(el('p', { class: 'note', text: 'A game update never reached one of your game discs, so that game was not started. Both of you: Settings → Repair game files (the one that is current is told so), then find a game again. Finding a game now also repairs it first.' }));
+    } else if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-mismatch') {
       body.unshift(el('p', { class: 'note', text: `Your game files differ from ${snap.match.opponent ?? 'your opponent'}'s, so that game was not started. Both of you: Settings → Check game content, install what it offers, then find a game again.` }));
     } else if (snap.match?.relay_state === 'held') {
       body.unshift(el('p', { class: 'note', text: `Your last match${snap.match.opponent ? ` against ${snap.match.opponent}` : ''} was held for review: nothing changed on the ladder, and a person will look at it. You can play again now.` }));
