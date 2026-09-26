@@ -318,7 +318,17 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  let found=find_runtime_and_game(&p,runtime,game,legacy.as_deref());
  let runtime_ok=found.as_ref().map(|(f,_)|supports_launcher_netplay(f.path()).unwrap_or(false)).unwrap_or(false);
  let seed=netplay_boot_state(&p,seed_kind).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
+ // What this PC would boot, named precisely enough for the server to refuse a mismatch BEFORE
+ // two Dolphins start: the installed component versions, and the online copy's provenance
+ // (the pristine it was built from and the roster applied). 09-26: the two online copies had
+ // different disc hashes (the fork's comparison 1), the game froze on one side, and nothing
+ // had said so. Absent on an older launcher; the server only compares what both sides sent.
+ let content=reborn_core::content::ContentService::for_platform(&p).ok();
+ let version=|component:&str| content.as_ref().and_then(|c|c.installed(component).ok().flatten()).map(|ptr|ptr.current.version);
+ let source=p.paths.data_root().ok().and_then(|d|reborn_core::online_image::built_from(&d));
  serde_json::json!({"runtime_ok":runtime_ok,"image_ok":found.is_ok(),"seed_ok":seed.is_some(),"seed_sha256":seed,"backend_ok":true,
+  "roster_version":version("roster"),"game_patch_version":version("game-patch"),"runtime_version":version("runtime"),
+  "pristine_sha256":source.as_ref().map(|s|s.pristine_sha256.clone()),"roster_sha256":source.as_ref().and_then(|s|s.roster_sha256.clone()),
   "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
 }
 

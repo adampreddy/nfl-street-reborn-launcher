@@ -221,6 +221,9 @@ function drawMatch(m, chat, relayError) {
   if (m.relay_state === 'held' && m.hold_reason === 'seed-mismatch') {
     parts.push(el('p', { class: 'note', text: 'Your games would not have started from the same point, so neither started. Update the launcher and try again.' }));
   }
+  if (m.relay_state === 'held' && m.hold_reason === 'content-mismatch') {
+    parts.push(el('p', { class: 'note', text: `Your game files differ from ${m.opponent ?? 'your opponent'}'s, so the game was not started. Both of you: Settings → Check game content, install what it offers, then try again.` }));
+  }
   if (m.relay_state === 'held' && m.hold_reason) {
     parts.push(el('p', { class: 'note', text: 'Nothing has changed on the ladder. A person will look at this match.' }));
   }
@@ -288,7 +291,9 @@ async function draw() {
     // A held match is over for the player the moment it is held (seats released), but the server
     // keeps showing it for a few minutes. It is a notice on the normal page, never the page itself:
     // 09-26 both players sat on "Held for review" with no Find a game button for five minutes.
-    if (snap.match?.relay_state === 'held') {
+    if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-mismatch') {
+      body.unshift(el('p', { class: 'note', text: `Your game files differ from ${snap.match.opponent ?? 'your opponent'}'s, so that game was not started. Both of you: Settings → Check game content, install what it offers, then find a game again.` }));
+    } else if (snap.match?.relay_state === 'held') {
       body.unshift(el('p', { class: 'note', text: `Your last match${snap.match.opponent ? ` against ${snap.match.opponent}` : ''} was held for review: nothing changed on the ladder, and a person will look at it. You can play again now.` }));
     }
   }
