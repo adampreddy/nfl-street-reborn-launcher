@@ -245,7 +245,10 @@ pub enum Decision {
     Skip(&'static str),
 }
 
-/// Whether a play goes out, and as which game of the series.
+/// The most games one match's feed keeps, the same number the backend's live ingest accepts.
+pub const MAX_LIVE_GAMES: u32 = 20;
+
+/// Whether a play goes out, and as which game of the match.
 pub fn decide(ctx: &MatchCtx, game_base: u32, play: &LivePlay) -> Decision {
     if play.human_sides == 0 {
         return Decision::Skip("no human in control");
@@ -258,8 +261,11 @@ pub fn decide(ctx: &MatchCtx, game_base: u32, play: &LivePlay) -> Decision {
     let Some(game_seq) = game_base.checked_add(play.game_no) else {
         return Decision::Skip("bad game number");
     };
-    if game_seq < 1 || game_seq > ctx.best_of as u32 {
-        return Decision::Skip("past the last game of the series");
+    // Every game the two of them play streams, not only the series: a casual rematch (game 2 of
+    // a best-of-1) is the same page's next game. 09-26, Adam: "we started another game and we
+    // didn't get a new link". The cap is the server's (MAX_LIVE_GAMES), not best_of.
+    if game_seq < 1 || game_seq > MAX_LIVE_GAMES {
+        return Decision::Skip("past the last game the feed keeps");
     }
     let body = serde_json::json!({ "match_id": ctx.match_id, "game_seq": game_seq, "play": play.raw });
     let body = serde_json::to_vec(&body).unwrap_or_default();
@@ -765,8 +771,12 @@ mod tests {
         assert_eq!(decide(&ctx(3, 0), 0, &base), Decision::Skip("no human in control"));
         let restarted = LivePlay { human_sides: 1, attempt: 2, ..base.clone() };
         assert_eq!(decide(&ctx(3, 0), 0, &restarted), Decision::Skip("restarted game"));
-        let past = LivePlay { human_sides: 1, game_no: 2, ..base.clone() };
-        assert_eq!(decide(&ctx(1, 0), 0, &past), Decision::Skip("past the last game of the series"));
+        // A rematch after a best-of-1 is the same match's game 2, on the feed (09-26); only the
+        // feed's own cap ends it.
+        let rematch = LivePlay { human_sides: 1, game_no: 2, ..base.clone() };
+        assert!(matches!(decide(&ctx(1, 0), 0, &rematch), Decision::Post { game_seq: 2, .. }), "game 2 of a best-of-1 streams");
+        let past = LivePlay { human_sides: 1, game_no: MAX_LIVE_GAMES + 1, ..base.clone() };
+        assert_eq!(decide(&ctx(1, 0), 0, &past), Decision::Skip("past the last game the feed keeps"));
         let unknown = LivePlay { human_sides: -1, ..base };
         assert!(matches!(decide(&ctx(1, 0), 0, &unknown), Decision::Post { game_seq: 1, .. }), "-1 (unknown) is posted");
     }
