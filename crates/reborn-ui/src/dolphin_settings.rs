@@ -250,39 +250,6 @@ fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Whether the netplay copy was derived from a build Reborn vouches for.
-///
-/// `game_identity::identify` cannot answer this about the file netplay boots.
-/// `library/online/NSR.iso` is Reborn's own derived artifact: the pristine
-/// image plus the installed roster, assembled by the Builder. The moment a
-/// roster is applied its bytes are deliberately not a node of the patch chain,
-/// so `identify` would route it to `Unconverted` and withhold Reborn's pack
-/// from every league player's online game, which is a worse answer than the
-/// one it replaces.
-///
-/// What IS chain-routable is the pristine it came from, and `source.json`
-/// records that hash beside the image. So the question is asked about the
-/// provenance: an online copy built from a Reborn build is Reborn's; one built
-/// from the player's own unconverted disc is not, however many rosters were
-/// applied on top of it. No hashing: the pristine's hash is its folder name.
-///
-/// False when nothing has been built or the record will not read, which is the
-/// fail-safe direction.
-fn netplay_copy_is_reborns_own(p:&Platform)->bool{
-  let Ok(data)=p.paths.data_root() else { return false };
-  let Some(source)=reborn_core::online_image::built_from(&data) else {
-    eprintln!("netplay: the online copy has no record of what it was built from, so Reborn's textures are withheld");
-    return false;
-  };
-  let chain_path=reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE);
-  let chain=reborn_core::game_patch::Chain::load(&chain_path).ok().flatten();
-  let verdict=reborn_core::game_identity::classify(chain.as_ref(),reborn_core::game_identity::DISC_ID,&source.pristine_sha256);
-  if !verdict.is_reborn() {
-    eprintln!("netplay: the online copy was built from an image Reborn does not recognize, so its textures are withheld");
-  }
-  verdict.is_reborn()
-}
-
 /// Start Dolphin with NetPlay configured, and record the session.
 ///
 /// The session record is written before the emulator starts and finished when
@@ -386,14 +353,13 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // it turns a verified disc into NotReborn. A chosen disc nobody could read
   // stays Unknown: the copy says nothing about a question that was never
   // answered, and the pack is left alone rather than taken.
-  let standing=match &online{
-    Some(_)=>match chosen_disc{
-      reborn_core::game_identity::ImageStanding::Reborn if netplay_copy_is_reborns_own(&p)=>reborn_core::game_identity::ImageStanding::Reborn,
-      reborn_core::game_identity::ImageStanding::Reborn=>reborn_core::game_identity::ImageStanding::NotReborn,
-      other=>other,
-    },
-    None=>chosen_disc,
-  };
+  // The pack follows the disc the player chose, exactly as Play rules it. A room used to
+  // downgrade a verified disc to NotReborn when the online copy's provenance record was
+  // missing or unrecognized, and Withhold takes the pack OFF, so a player who has textures
+  // in every offline game lost them the moment they joined a friend (09-26, second PC).
+  // Adam: "make it so the textures work all the time". The online copy is still rebuilt
+  // from the pristine and the roster above; only the texture ruling no longer reads its record.
+  let standing=chosen_disc;
   let game_path=online.unwrap_or(game_path);
   // The same texture sync Play runs, and it runs UNCONDITIONALLY.
   //

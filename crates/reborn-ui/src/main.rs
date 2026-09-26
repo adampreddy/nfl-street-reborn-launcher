@@ -8282,16 +8282,25 @@ struct StatsSubmitView {"),
                 _ => d,
             })
         };
+        // The room's texture ruling is the chosen disc's, the same one Play makes. A room
+        // used to downgrade a verified disc when the online copy's provenance record was
+        // missing, and Withhold takes the pack off, so a player with textures in every
+        // offline game lost them on joining a friend (09-26). Adam: "make it so the
+        // textures work all the time".
         assert!(
-            netplay.contains("netplay_copy_is_reborns_own"),
-            "netplay judges the disc the player chose and never the derived copy it actually \
-             boots, so the bytes handed to the emulator are the one thing nothing asked about"
+            netplay.contains("let standing=chosen_disc;"),
+            "netplay's texture standing must be the chosen disc's ruling, never a second \
+             judgement of the derived copy it boots"
+        );
+        assert!(
+            !netplay.contains("netplay_copy_is_reborns_own"),
+            "the provenance downgrade is back: it withholds the pack from players who have it offline"
         );
         let gate = depth_at("may_play_before_boot");
         let sync_depth = depth_at("sync_active_judged");
         assert!(
-            netplay.find("netplay_copy_is_reborns_own").unwrap() < netplay.find("sync_active_judged").unwrap(),
-            "netplay identifies the copy it boots only after the sync has already decided"
+            netplay.find("let standing=chosen_disc;").unwrap() < netplay.find("sync_active_judged").unwrap(),
+            "netplay decides the standing only after the sync has already run"
         );
         assert_eq!(
             sync_depth, gate,
