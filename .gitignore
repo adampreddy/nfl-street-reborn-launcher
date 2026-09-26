@@ -29,6 +29,9 @@ credentials.json
 /release/
 node_modules/
 *.exe
+# The delta patcher every build ships in <install>\tools: a launcher-only update installed as a
+# fresh beta had no game-import\ and so no xdelta3, and game patches never reached the disc (09-26).
+!installer/windows/tools-redist/xdelta/xdelta3.exe
 *.dll
 *.dylib
 *.so

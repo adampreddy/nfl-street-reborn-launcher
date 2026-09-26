@@ -222,6 +222,20 @@ if ($Publisher) {
     New-Item -ItemType Directory -Force $tools | Out-Null
     Copy-Item -LiteralPath $Builder -Destination (Join-Path $tools "reborn-builder-cli.exe")
     Write-Host ("Builder: {0:N1} MB from {1}" -f ((Get-Item -LiteralPath $Builder).Length / 1MB), $Builder)
+
+    # The delta patcher, in EVERY build. Game patches are xdelta chains and the
+    # launcher looks for xdelta3 in <install>\game-import, <install>\tools and
+    # beside itself (content_updates::image_hook). game-import\ comes only with
+    # the full first-run installer; a beta installed from a launcher-only update
+    # had no patcher at all, so every game patch it "installed" never reached
+    # the disc and its online copy differed from everyone else's (2026-09-26).
+    $xdelta = Join-Path $PSScriptRoot "tools-redist\xdelta"
+    foreach ($required in @("xdelta3.exe", "xdelta-LICENSE.txt", "xdelta-source-v3.1.0.zip")) {
+        $from = Join-Path $xdelta $required
+        if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { throw "The vendored patcher is incomplete: $from is missing. Nothing was built." }
+        Copy-Item -LiteralPath $from -Destination (Join-Path $tools $required)
+    }
+    Write-Host ("Patcher: xdelta3 {0:N0} B staged in tools\ (with its GPL licence and source)" -f (Get-Item -LiteralPath (Join-Path $xdelta "xdelta3.exe")).Length)
     Write-Host $(if ($LauncherOnly) { "Build: launcher only (self-update). No runtime, textures, import bundle or content." } else { "Build: complete first-run installer." })
 
     # The channel marker the launcher reads at start. Only a beta carries one:
