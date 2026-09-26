@@ -36,6 +36,8 @@ pub struct Room {
     pub ports: Vec<u8>,
     /// The fork's own refusal text when `phase` is `error`.
     pub error: Option<String>,
+    /// Host only: the fork would act on a Start right now (everyone has the game, nothing running).
+    pub can_start: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -60,6 +62,7 @@ impl Room {
             players,
             ports: v["ports"].as_array().map(|a| a.iter().map(|p| p.as_u64().unwrap_or(0).min(255) as u8).collect()).unwrap_or_default(),
             error: v["error"].as_str().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string),
+            can_start: v["can_start"].as_bool().unwrap_or(false),
         }
     }
 
@@ -108,7 +111,18 @@ pub enum Step {
     StartGame,
     PostRoomLost(String),
     LeaveRoom,
+    /// Both: the server said `running`, and the room never left the lobby. This seat leaves the
+    /// match, so the server holds it and frees both players. Without it a start that Dolphin
+    /// swallowed left a match `running` for its whole 4-hour relay deadline (c2763988, 09-26).
+    GiveUp(String),
 }
+
+/// A host's Start the fork did not act on is pressed again after this many ticks (seconds)...
+pub const START_RETRY_TICKS: u32 = 6;
+/// ...and at most this many times in all.
+pub const START_ATTEMPTS: u8 = 4;
+/// A `running` match whose room has sat in the lobby this long, never having run, is given up.
+pub const LOBBY_GIVE_UP_TICKS: u32 = 75;
 
 /// What this launcher has already done for the match it is driving. Only [`Memory::record`] writes it,
 /// and only for steps that landed, so a failure is retried by planning it again.
@@ -124,6 +138,14 @@ pub struct Memory {
     ports_sent: Option<[u8; 4]>,
     observed_sent: Option<String>,
     started: bool,
+    /// How many Starts this host has pressed, and ticks since the last one.
+    start_attempts: u8,
+    ticks_since_start: u32,
+    /// Ticks the room has spent in the lobby while the server says `running`, and whether the
+    /// room has ever been seen running (a post-game lobby is never given up on).
+    lobby_ticks: u32,
+    ran: bool,
+    gave_up: bool,
     room_lost_sent: bool,
     left: bool,
 }
@@ -138,9 +160,10 @@ impl Memory {
             Step::PostJoinerLaunched => self.joiner_launched = true,
             Step::AssignPorts(p) => self.ports_sent = Some(*p),
             Step::PostObserved { ports, players } => self.observed_sent = Some(signature(ports, players)),
-            Step::StartGame => self.started = true,
+            Step::StartGame => { self.started = true; self.start_attempts = self.start_attempts.saturating_add(1); self.ticks_since_start = 0; }
             Step::PostRoomLost(_) => self.room_lost_sent = true,
             Step::LeaveRoom => self.left = true,
+            Step::GiveUp(_) => self.gave_up = true,
         }
     }
 
@@ -227,11 +250,31 @@ pub fn plan(m: Option<&MatchView>, room: &Room, mem: &mut Memory) -> Vec<Step> {
             if relay == "joining" || relay == "room_formed" { observe(&tag0, &tag1, host, room, mem, &mut steps); }
         }
         "running" => {
-            if host && room.phase == "lobby" && !mem.started {
-                if let Some(want) = desired_ports(&tag0, &tag1, room) {
-                    if room.ports != want { steps.push(Step::AssignPorts(want)); }
-                    steps.push(Step::StartGame);
+            if room.phase == "running" { mem.ran = true; }
+            if room.phase != "lobby" || mem.ran {
+                mem.lobby_ticks = 0;
+                return steps;
+            }
+            // A `running` match whose room is still a lobby. Ticks are seconds (online_mm plans
+            // once a second), so these counters are wall-clock in all but name.
+            mem.lobby_ticks += 1;
+            if mem.started { mem.ticks_since_start += 1; }
+            if host && !mem.gave_up {
+                // The first Start, and a bounded retry when the fork did not act on it. 09-26: the
+                // host's Dolphin read `start` and stayed in the lobby with can_start true, and the
+                // one-shot press was never repeated, so nothing happened for either player.
+                let again = mem.started && room.can_start
+                    && mem.ticks_since_start >= START_RETRY_TICKS && mem.start_attempts < START_ATTEMPTS;
+                if !mem.started || again {
+                    if let Some(want) = desired_ports(&tag0, &tag1, room) {
+                        if room.ports != want { steps.push(Step::AssignPorts(want)); }
+                        steps.push(Step::StartGame);
+                    }
                 }
+            }
+            if mem.lobby_ticks >= LOBBY_GIVE_UP_TICKS && !mem.gave_up {
+                let why = if host { format!("start-not-taken-after-{}-presses", mem.start_attempts) } else { "host-never-started".to_string() };
+                steps.push(Step::GiveUp(why));
             }
         }
         _ => {}
@@ -292,6 +335,7 @@ mod tests {
             players: players.iter().map(|(id, n)| RoomPlayer { id: *id, name: n.to_string(), ping_ms: Some(20) }).collect(),
             ports: ports.to_vec(),
             error: None,
+            can_start: phase == "lobby",
         }
     }
 
@@ -388,6 +432,58 @@ mod tests {
         assert_eq!(run(&view("running", 0), &mapped, &mut mem), vec![Step::StartGame]);
         assert!(run(&view("running", 0), &mapped, &mut mem).is_empty());
         assert!(run(&view("running", 1), &mapped, &mut Memory::default()).is_empty());
+    }
+
+    /// 09-26: the fork read the host's `start` and stayed in the lobby, can_start true. The press
+    /// is repeated on a timer, a bounded number of times, and never once the game has run.
+    #[test]
+    fn a_start_the_fork_ignored_is_pressed_again_a_bounded_number_of_times() {
+        let mapped = room("lobby", &[(1, T0), (2, T1)], [1, 2, 0, 0]);
+        let mut mem = Memory::default();
+        let mut presses = 0;
+        for _ in 0..(LOBBY_GIVE_UP_TICKS - 1) {
+            presses += run(&view("running", 0), &mapped, &mut mem).iter().filter(|s| **s == Step::StartGame).count();
+        }
+        assert_eq!(presses, START_ATTEMPTS as usize, "first press plus retries, then it stops");
+
+        // A room that cannot start (the fork says so) is not hammered.
+        let mut cannot = mapped.clone();
+        cannot.can_start = false;
+        let mut mem2 = Memory::default();
+        assert_eq!(run(&view("running", 0), &cannot, &mut mem2), vec![Step::StartGame], "the first press is always sent");
+        for _ in 0..(START_RETRY_TICKS * 3) { assert!(run(&view("running", 0), &cannot, &mut mem2).is_empty()); }
+
+        // Once the game has run, a lobby afterwards is the game being over, not a start to retry.
+        let mut mem3 = Memory::default();
+        run(&view("running", 0), &mapped, &mut mem3);
+        run(&view("running", 0), &room("running", &[(1, T0), (2, T1)], [1, 2, 0, 0]), &mut mem3);
+        for _ in 0..(LOBBY_GIVE_UP_TICKS * 2) { assert!(run(&view("running", 0), &mapped, &mut mem3).is_empty()); }
+    }
+
+    /// A `running` match whose room never runs is given up by BOTH seats, once, so the server holds
+    /// it and neither player is stuck behind a match for the relay deadline's four hours.
+    #[test]
+    fn a_running_match_whose_room_never_runs_is_given_up_once_by_either_seat() {
+        let mapped = room("lobby", &[(1, T0), (2, T1)], [1, 2, 0, 0]);
+        for seat in [0u8, 1u8] {
+            let mut mem = Memory::default();
+            let mut given = Vec::new();
+            for _ in 0..(LOBBY_GIVE_UP_TICKS + 20) {
+                given.extend(run(&view("running", seat), &mapped, &mut mem).into_iter().filter(|s| matches!(s, Step::GiveUp(_))));
+            }
+            assert_eq!(given.len(), 1, "seat {seat} gives up exactly once");
+            match &given[0] {
+                Step::GiveUp(why) if seat == 0 => assert!(why.starts_with("start-not-taken-after-"), "{why}"),
+                Step::GiveUp(why) => assert_eq!(why, "host-never-started"),
+                other => panic!("{other:?}"),
+            }
+        }
+        // Not a second sooner than the limit.
+        let mut mem = Memory::default();
+        for _ in 0..(LOBBY_GIVE_UP_TICKS - 1) {
+            assert!(!run(&view("running", 1), &mapped, &mut mem).iter().any(|s| matches!(s, Step::GiveUp(_))));
+        }
+        assert!(run(&view("running", 1), &mapped, &mut mem).iter().any(|s| matches!(s, Step::GiveUp(_))));
     }
 
     #[test]

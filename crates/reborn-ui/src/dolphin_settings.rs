@@ -193,6 +193,13 @@ mod tests {
         assert!(options.iter().any(|v|v=="Graphics.Settings.WaitForShadersBeforeStarting=False"));
         assert!(options.iter().all(|v|!v.starts_with("GFX.")));
     }
+
+    /// A room keeps Dolphin's own log, session-only: the 09-26 real match left nothing to read.
+    #[test]
+    fn online_rooms_write_dolphins_own_log() {
+        let options=netplay_session_options("Player", "host", "traversal", "",2626);
+        for required in ["Logger.Options.WriteToFile=True","Logger.Logs.NETPLAY=True","Logger.Logs.BOOT=True"] { assert!(options.iter().any(|v|v==required),"{required}"); }
+    }
     /// Only the locked requirements are kept out of the player's hands.
     ///
     /// This assertion used to also forbid `InternalResolution` and `SyncGPU`,
@@ -489,6 +496,13 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
   // Peers boot together, so one still compiling shaders holds the other on a
   // black screen. Mode 2 ubershaders cover whatever is not compiled yet.
   "Graphics.Settings.WaitForShadersBeforeStarting=False".into(),
+  // A room writes Dolphin's own log (User/Logs/dolphin.log). The 09-25/26 real matches left no
+  // trace of why a start never happened: the profile's Logger.ini turns file logging off, and
+  // that stays so for Play. Warning level (3): every PanicAlert is an ERROR line under its
+  // caller's type, and notices ("Booting from disc", "Stop") still print. Not Info: at Info
+  // NETPLAY writes one line per packet, ~270 a second in play (measured 09-26), each flushed.
+  "Logger.Options.WriteToFile=True".into(),"Logger.Options.Verbosity=3".into(),
+  "Logger.Logs.NETPLAY=True".into(),"Logger.Logs.BOOT=True".into(),"Logger.Logs.CORE=True".into(),"Logger.Logs.COMMON=True".into(),"Logger.Logs.MASTER=True".into(),
   format!("Dolphin.NetPlay.Nickname={nickname}"),format!("Dolphin.NetPlay.TraversalChoice={connection}"),
   format!("Dolphin.NetPlay.ConnectPort={port}"),format!("Dolphin.NetPlay.HostPort={port}"),
  ];

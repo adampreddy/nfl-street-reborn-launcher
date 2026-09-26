@@ -278,6 +278,7 @@ fn live_plays_loop(platform: Platform) {
 /// ours costs two reads and nothing else.
 fn drive() {
     let mut mem = relay_driver::Memory::default();
+    let mut last_room: Option<String> = None;
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let (connected, matched) = {
@@ -290,6 +291,21 @@ fn drive() {
             continue;
         }
         let room = Room::from_status(&crate::dolphin_settings::netplay_status().unwrap_or_default());
+        // The room as the fork reports it, logged when it changes. The 09-26 real match could
+        // only be read back from the status file by hand; this is that file's history.
+        if room.active || last_room.is_some() {
+            let seen_room = format!(
+                "room: phase={} can_start={} ports={:?} players=[{}]{}",
+                room.phase, room.can_start, room.ports,
+                room.players.iter().map(|p| format!("{}:{}", p.name, p.ping_ms.map(|m| format!("{m}ms")).unwrap_or_else(|| "-".into()))).collect::<Vec<_>>().join(" "),
+                room.error.as_deref().map(|e| format!(" error={e:?}")).unwrap_or_default(),
+            );
+            if last_room.as_deref() != Some(seen_room.as_str()) {
+                mm_log(&seen_room);
+                last_room = Some(seen_room);
+            }
+            if !room.active { last_room = None; }
+        }
         // Dolphin's own refusal ("Everyone needs the same game file before starting.", "Choose a
         // fixed graphics resolution...") used to vanish: the fork writes it to the status file
         // and nothing read it. It is the relay error now, on the page and in the log.
@@ -307,6 +323,13 @@ fn drive() {
             match result {
                 Ok(()) => {
                     mm_log(&format!("relay ok {step:?} (match relay_state {})", matched.as_ref().map(|m| m.relay_state.as_str()).unwrap_or("-")));
+                    // Where this room's Dolphin writes its own log (the session turns file
+                    // logging on), so a player can be asked for it by path.
+                    if matches!(step, Step::OpenRoom { .. }) {
+                        if let Some(user) = crate::dolphin_settings::netplay_user_dir() {
+                            mm_log(&format!("dolphin log: {}", user.join("Logs").join("dolphin.log").display()));
+                        }
+                    }
                     mem.record(&step);
                     lock(&STATE).relay_error = None;
                 }
@@ -362,6 +385,9 @@ fn run_step(m: Option<&MatchView>, step: &Step) -> Result<(), String> {
         Step::AssignPorts(ports) => crate::dolphin_settings::netplay_action("ports".into(), Some(ports.to_vec())),
         Step::StartGame => crate::dolphin_settings::netplay_action("start".into(), None),
         Step::LeaveRoom => crate::dolphin_settings::netplay_action("leave".into(), None),
+        // The server holds the match ("left-before-start") and frees both seats; the `held`
+        // branch of the plan then closes the room.
+        Step::GiveUp(_) => post(MatchAction::Leave),
     }
 }
 
