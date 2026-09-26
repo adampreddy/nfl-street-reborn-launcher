@@ -356,7 +356,9 @@ fn run_step(m: Option<&MatchView>, step: &Step) -> Result<(), String> {
     match step {
         Step::Ready => post(MatchAction::Ready {
             ready: true,
-            preflight: crate::dolphin_settings::mm_preflight(runtime.as_deref(), game.as_deref()),
+            // The seed the SERVER named for this match (regular = quick game, pickup), so both
+            // peers hash the same file and boot from it.
+            preflight: crate::dolphin_settings::mm_preflight(runtime.as_deref(), game.as_deref(), m.and_then(|m| m.seed_kind.as_deref())),
             rtt_ms: None,
         }),
         Step::PostHostLaunched => post(MatchAction::HostLaunched),
@@ -379,6 +381,7 @@ fn run_step(m: Option<&MatchView>, step: &Step) -> Result<(), String> {
                 code.clone().unwrap_or_default(),
                 2626,
                 Some(relay_driver::rng_seed_for(&id)),
+                m.and_then(|m| m.seed_kind.clone()),
             ))
             .map(|_| ())
         }

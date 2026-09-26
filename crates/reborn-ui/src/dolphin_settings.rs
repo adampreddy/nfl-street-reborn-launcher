@@ -194,6 +194,16 @@ mod tests {
         assert!(options.iter().all(|v|!v.starts_with("GFX.")));
     }
 
+    /// A match boots the seed the server named; a quick game (regular) unless it said pickup, and
+    /// nothing else can name a file.
+    #[test]
+    fn the_seed_is_the_servers_kind_and_regular_by_default() {
+        assert_eq!(seed_kind_or_default(None),"regular");
+        assert_eq!(seed_kind_or_default(Some("regular")),"regular");
+        assert_eq!(seed_kind_or_default(Some(" pickup ")),"pickup");
+        assert_eq!(seed_kind_or_default(Some("../evil")),"regular");
+    }
+
     /// A room keeps Dolphin's own log, session-only: the 09-26 real match left nothing to read.
     #[test]
     fn online_rooms_write_dolphins_own_log() {
@@ -320,8 +330,14 @@ fn netplay_plan(game:&std::path::Path,mode:&str,seed:Option<&std::path::Path>,rn
  plan
 }
 
-fn netplay_boot_state(p:&Platform)->Option<std::path::PathBuf>{
- let seed=p.paths.data_root().ok()?.join("library/online/seed/pickup.s01");
+/// The seed state a match boots from: `regular` (a quick game) unless the server named `pickup`.
+/// The name is one of the two the online-content component ships, never a path from outside.
+pub(crate) fn seed_kind_or_default(kind:Option<&str>)->&'static str{
+ match kind.map(str::trim) { Some("pickup")=>"pickup", _=>"regular" }
+}
+
+fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
+ let seed=p.paths.data_root().ok()?.join(format!("library/online/seed/{}.s01",seed_kind_or_default(seed_kind)));
  seed.is_file().then_some(seed)
 }
 
@@ -330,18 +346,18 @@ fn netplay_boot_state(p:&Platform)->Option<std::path::PathBuf>{
 /// before either Dolphin starts, because they would desync on frame one. `traversal_ok` is one
 /// hello to the traversal server, the same first packet Dolphin sends (about 1.5 s at worst).
 /// Cheap on purpose: it does not rebuild the online image (netplay_open does that at launch).
-pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>)->serde_json::Value{
+pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Option<&str>)->serde_json::Value{
  let p=Platform::detect();let legacy=default_legacy_root(&p);
  let found=find_runtime_and_game(&p,runtime,game,legacy.as_deref());
  let runtime_ok=found.as_ref().map(|(f,_)|supports_launcher_netplay(f.path()).unwrap_or(false)).unwrap_or(false);
- let seed=netplay_boot_state(&p).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
+ let seed=netplay_boot_state(&p,seed_kind).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
  serde_json::json!({"runtime_ok":runtime_ok,"image_ok":found.is_ok(),"seed_ok":seed.is_some(),"seed_sha256":seed,"backend_ok":true,
   "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
 }
 
 /// online.
 #[tauri::command]
-pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16,rng_seed:Option<u32>)->Result<serde_json::Value,String>{
+pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16,rng_seed:Option<u32>,seed_kind:Option<String>)->Result<serde_json::Value,String>{
  tauri::async_runtime::spawn_blocking(move||{
   let guard=LaunchGuard::acquire_session()?;
   let nickname=nickname.trim();let address=address.trim();
@@ -416,7 +432,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // The plan the fork reads once at boot. `boot_state` is added only when a seed is
   // installed; the fork treats a named-but-missing file as a hard error, because a peer that
   // could not load it would start from a different machine state and desync on frame one.
-  let plan=netplay_plan(&game_path,&mode,netplay_boot_state(&p).as_deref(),rng_seed);
+  let plan=netplay_plan(&game_path,&mode,netplay_boot_state(&p,seed_kind.as_deref()).as_deref(),rng_seed);
   let session_bytes=serde_json::to_vec(&plan).map_err(|_|"Could not prepare the NetPlay room. Try again.".to_string())?;
   std::fs::write(&path,session_bytes).map_err(player)?;
   std::fs::write(path.with_extension("json.alive"),b"alive").map_err(player)?;
