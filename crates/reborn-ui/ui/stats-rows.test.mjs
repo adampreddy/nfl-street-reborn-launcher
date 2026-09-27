@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowModel, queueLine, unsentCount, participantSeats, snapshotOf, webLinkShown } from './stats-rows.js';
+import { rowModel, queueLine, unsentCount, participantSeats, snapshotOf, sideTeams, webLinkShown } from './stats-rows.js';
 
 test('rowModel turns a games-list entry into what a row draws', () => {
   const r = rowModel({ id: 'g1', mode: 'online', status: 'accepted', captured_at: '2026-09-27T01:41:00Z',
@@ -101,4 +101,82 @@ test('webLinkShown: only an online game offers Open on web', () => {
   assert.equal(webLinkShown({ mode: 'offline' }), false);
   assert.equal(webLinkShown({}), false);
   assert.equal(webLinkShown(null), false);
+});
+
+// ---- side order: a finished game's capture order is not its play side order (game a51767ab, 2026-09-27) ----
+
+// The live game: capture teams [Eagles 36, Falcons 14]; plays side 0 = tgid 14 Falcons, side 1 = tgid 13 Eagles; the
+// fork's side_to_team was the swap, so every capture player carries side AND team_index.
+const swapped = () => ({
+  id: 'a51767ab-9bb0-42b0-89ab-f10902065a1f', mode: 'online', plays_status: 'verified',
+  teams: [{ name: 'Eagles', score: 36 }, { name: 'Falcons', score: 14 }],
+  players: [
+    { name: 'Michael Penix Jr.', team: 'Falcons', side: 0, team_index: 1, digp: 16 },
+    { name: 'Jalen Hurts', team: 'Eagles', side: 1, team_index: 0, digp: 36 },
+  ],
+  teams_view: [
+    { side: 0, tgid: 14, name: 'Falcons', abbrev: 'ATL', primary: '#141414', secondary: '#7D0D19', logo_url: '/live-assets/r/x/teams/14-256.png' },
+    { side: 1, tgid: 13, name: 'Eagles', abbrev: 'PHI', primary: '#032E2F', secondary: '#878787', logo_url: '/live-assets/r/x/teams/13-256.png' },
+  ],
+  participants: [
+    { kind: 'human', pad: 0, team_index: 1, player_id: 'adam', display_name: 'adamknowsball', avatar_url: null },
+    { kind: 'human', pad: 1, team_index: 0, player_id: 'playz', display_name: 'Playz', avatar_url: null },
+  ],
+});
+const swappedPlays = [{ body: { seq: 1, teams: [{ side: 0, tgid: 14, tmc: [1, 2, 3] }, { side: 1, tgid: 13, tmc: [4, 5, 6] }] } }];
+const swappedLines = [
+  { digp: 36, name: 'Jalen Hurts', team_index: 0, stats: { pass_att: 1 } },
+  { digp: 16, name: 'Michael Penix Jr.', team_index: 1, stats: { pass_att: 1 } },
+];
+
+test('snapshotOf: capture [Eagles 36, Falcons 14] with side 0 = Falcons puts Falcons 14 and its player on side 0', () => {
+  const game = swapped();
+  assert.deepEqual(sideTeams(game, game.teams_view), { team: [1, 0], key: 'players' });
+  const snap = snapshotOf({ game, plays: swappedPlays, lines: swappedLines, drives: [] });
+  const g = snap.games[0];
+  assert.deepEqual(g.teams.map((t) => [t.name, t.tgid, t.logo_url]),
+    [['Falcons', 14, '/live-assets/r/x/teams/14-256.png'], ['Eagles', 13, '/live-assets/r/x/teams/13-256.png']]);
+  assert.deepEqual(g.score, [14, 36], 'each side\'s score is its own team\'s');
+  assert.deepEqual(snap.seats.map((s) => s.display_name), ['adamknowsball', 'Playz'], 'team_index 1 (Falcons) sits on side 0');
+  assert.deepEqual(g.sides, [{ seat: 0 }, { seat: 1 }]);
+  assert.deepEqual(g.box.lines.map((l) => [l.name, l.team_index]), [['Jalen Hurts', 1], ['Michael Penix Jr.', 0]],
+    'box lines move from capture order onto sides');
+  // The Stats list row stays in the server's capture order, as the server's score/result are.
+  const row = rowModel({ ...game, score: [36, 14], team_index: 1, status: 'accepted', result: 'loss' });
+  assert.deepEqual([row.home.name, row.away.name, row.score, row.mine, row.result], ['Eagles', 'Falcons', [36, 14], 1, 'L']);
+});
+
+test('snapshotOf: without players\' team_index the side names match the capture names; without names it keeps capture order', () => {
+  const byTeam = { ...swapped(), players: [{ side: 0, team: 'Falcons' }, { side: 1, team: 'Eagles' }] };
+  assert.deepEqual(sideTeams(byTeam, byTeam.teams_view), { team: [1, 0], key: 'names' });
+  const byView = { ...swapped(), players: [] };
+  assert.deepEqual(sideTeams(byView, byView.teams_view), { team: [1, 0], key: 'names' });
+  const snap = snapshotOf({ game: byView, plays: swappedPlays, lines: swappedLines });
+  assert.deepEqual(snap.games[0].teams.map((t) => t.name), ['Falcons', 'Eagles']);
+  assert.deepEqual(snap.games[0].score, [14, 36]);
+  assert.deepEqual(snap.seats.map((s) => s.display_name), ['adamknowsball', 'Playz']);
+  const clash = { ...swapped(), players: [{ side: 0, team_index: 1, team: 'Falcons' }, { side: 0, team_index: 0 }] };
+  assert.deepEqual(sideTeams(clash, clash.teams_view).team, [1, 0]);
+  // An older server (no teams_view) and a capture with no players: capture order, exactly as before.
+  const { teams_view, players, ...older } = swapped();
+  assert.deepEqual(sideTeams(older), { team: [0, 1], key: 'order' });
+  const plain = snapshotOf({ game: older, lines: swappedLines });
+  assert.deepEqual(plain.games[0].teams.map((t) => t.name), ['Eagles', 'Falcons']);
+  assert.deepEqual(plain.games[0].score, [36, 14]);
+  assert.deepEqual(plain.seats.map((s) => s.display_name), ['Playz', 'adamknowsball']);
+  assert.deepEqual(plain.games[0].box.lines.map((l) => l.team_index), [0, 1]);
+});
+
+test('snapshotOf: capture order == side order is unchanged', () => {
+  const game = {
+    id: 'g', teams: [{ name: 'Falcons', score: 14 }, { name: 'Eagles', score: 36 }],
+    players: [{ side: 0, team_index: 0, team: 'Falcons' }, { side: 1, team_index: 1, team: 'Eagles' }],
+    teams_view: swapped().teams_view,
+    participants: [{ kind: 'human', pad: 0, team_index: 0, player_id: 'a', display_name: 'Alpha', avatar_url: null }],
+  };
+  const snap = snapshotOf({ game, plays: swappedPlays, lines: [{ digp: 1, name: 'X', team_index: 1, stats: {} }] });
+  assert.deepEqual(snap.games[0].teams.map((t) => [t.name, t.tgid]), [['Falcons', 14], ['Eagles', 13]]);
+  assert.deepEqual(snap.games[0].score, [14, 36]);
+  assert.deepEqual(snap.games[0].sides, [{ seat: 0 }, { seat: null }]);
+  assert.equal(snap.games[0].box.lines[0].team_index, 1);
 });
