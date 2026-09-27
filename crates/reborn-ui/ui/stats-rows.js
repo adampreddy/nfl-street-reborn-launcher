@@ -52,3 +52,66 @@ export function queueLine(entries) {
   const line = `${list.length} ${list.length === 1 ? 'game' : 'games'} not uploaded yet`;
   return why ? `${line}: ${why}` : line;
 }
+
+// ---- the native game view's snapshot (game.js), kept here so it is testable under node ----
+
+/**
+ * The header's seats and sides from a finished game's participants: for each side, the first human with a player
+ * account on that side (`team_index`) becomes a seat `{ display_name, avatar_url }` and `sides[side] = { seat }`.
+ * A side with no such human (CPU, a guest, an unattributed seat) has `{ seat: null }`. No attributed human at all:
+ * no seats and no sides, the renderers' "sides unknown" layout. Mirrors the backend's `participantSeats`
+ * (reborn-backend src/web/live-render.js).
+ */
+export function participantSeats(participants) {
+  const list = Array.isArray(participants) ? participants : [];
+  const seats = [];
+  const sides = [0, 1].map((side) => {
+    const p = list.find((x) => x && x.kind === 'human' && x.player_id && x.team_index === side);
+    if (!p) return { seat: null };
+    seats.push({ display_name: typeof p.display_name === 'string' ? p.display_name : '', avatar_url: typeof p.avatar_url === 'string' ? p.avatar_url : null });
+    return { seat: seats.length - 1 };
+  });
+  return seats.length ? { seats, sides } : { seats: [], sides: [] };
+}
+
+/**
+ * The snapshot shape the live renderers read, from one finished game's record (`stats_game`). Mirrors the backend's
+ * `gameSnapshot` (reborn-backend src/web/live-render.js), which draws the same game on the web: team identity from
+ * the plays' own `teams`, logo and colours from `game.teams_view` when the server sends it (an older server does
+ * not: names only), the capture's scores, and seats/sides from `game.participants`. Image URLs are only carried
+ * here; the renderers pass them through assetUrl()/avatarSrc() before any <img> gets one.
+ */
+export function snapshotOf(record) {
+  const g = record?.game ?? {};
+  const plays = Array.isArray(record?.plays) ? record.plays : [];
+  const fromPlays = plays.find((p) => Array.isArray(p?.body?.teams) && p.body.teams.length === 2)?.body.teams;
+  const view = Array.isArray(g.teams_view) ? g.teams_view : [];
+  const teams = [0, 1].map((side) => {
+    const tv = view[side] && typeof view[side] === 'object' ? view[side] : {};
+    return {
+      side,
+      tgid: Number.isInteger(fromPlays?.[side]?.tgid) ? fromPlays[side].tgid : Number.isInteger(tv.tgid) ? tv.tgid : null,
+      tmc: fromPlays?.[side]?.tmc ?? null,
+      name: g.teams?.[side]?.name ?? tv.name ?? `Side ${side + 1}`,
+      abbrev: g.teams?.[side]?.abbrev ?? tv.abbrev ?? null,
+      primary: tv.primary ?? null,
+      secondary: tv.secondary ?? null,
+      logo_url: tv.logo_url ?? null,
+    };
+  });
+  const score = [0, 1].map((i) => (Number.isFinite(g.teams?.[i]?.score) ? g.teams[i].score : 0));
+  const { seats, sides } = participantSeats(g.participants);
+  return {
+    match: { status: 'complete', best_of: 1 },
+    seats,
+    games: [{ game_seq: 1, game_id: g.id, score, teams, sides, plays,
+      box: { provisional: false, lines: Array.isArray(record?.lines) ? record.lines : [] },
+      drives: Array.isArray(record?.drives) ? record.drives : [] }],
+  };
+}
+
+/** Whether the game view offers "Open on web": only an online game, the one kind the public page always shows
+ *  (an offline game's page 404s for anyone but its players, and the browser is not signed in as them). */
+export function webLinkShown(game) {
+  return Boolean(game) && game.mode === 'online';
+}

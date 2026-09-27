@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowModel, queueLine, unsentCount } from './stats-rows.js';
+import { rowModel, queueLine, unsentCount, participantSeats, snapshotOf, webLinkShown } from './stats-rows.js';
 
 test('rowModel turns a games-list entry into what a row draws', () => {
   const r = rowModel({ id: 'g1', mode: 'online', status: 'accepted', captured_at: '2026-09-27T01:41:00Z',
@@ -48,4 +48,57 @@ test('queueLine carries the queue reason from the first unsent entry that has on
   assert.equal(queueLine([{ state: 'held', reason: 'review' }, { state: 'queued' }]), '1 game not uploaded yet'); // a held entry's reason is not an upload problem
   assert.equal(unsentCount([{ state: 'queued' }, { state: 'stalled' }, { state: 'accepted' }]), 2);
   assert.equal(unsentCount(null), 0);
+});
+
+test('snapshotOf seats the human participants on their sides; CPU and guests stay seatless', () => {
+  const avatar = 'https://cdn.discordapp.com/avatars/1001/0123456789abcdef0123456789abcdef.png?size=64';
+  const snap = snapshotOf({ game: { id: 'g', mode: 'offline', teams: [{ name: 'Eagles', score: 36 }, { name: 'Falcons', score: 6 }],
+    participants: [
+      { kind: 'cpu', pad: null, team_index: 0, player_id: null, display_name: null, avatar_url: null },
+      { kind: 'guest', pad: 1, team_index: null, player_id: null, display_name: null, avatar_url: null },
+      { kind: 'human', pad: 0, team_index: 1, player_id: 'p1', display_name: 'Alpha', avatar_url: avatar },
+    ] }, plays: [], lines: [], drives: [] });
+  assert.deepEqual(snap.seats, [{ display_name: 'Alpha', avatar_url: avatar }]);
+  assert.deepEqual(snap.games[0].sides, [{ seat: null }, { seat: 0 }]);
+  assert.deepEqual(snap.games[0].score, [36, 6]);
+
+  const two = participantSeats([
+    { kind: 'human', team_index: 1, player_id: 'b', display_name: 'Bravo' },
+    { kind: 'human', team_index: 0, player_id: 'a', display_name: 'Alpha' },
+  ]);
+  assert.deepEqual(two.seats.map((s) => s.display_name), ['Alpha', 'Bravo']);
+  assert.deepEqual(two.sides, [{ seat: 0 }, { seat: 1 }]);
+  assert.deepEqual(participantSeats([{ kind: 'human', team_index: null, player_id: 'a' }]), { seats: [], sides: [] });
+  assert.deepEqual(participantSeats(undefined), { seats: [], sides: [] });
+});
+
+test('snapshotOf takes logos and colours from teams_view, and tolerates an older server without it', () => {
+  const logo = '/live-assets/r/2026.09.23-seq-7.abc/teams/13-256.png';
+  const game = { id: 'g', teams: [{ name: 'Eagles', score: 7 }, { name: 'Customs', score: 3 }],
+    teams_view: [{ side: 0, tgid: 13, name: 'Eagles', abbrev: 'PHI', primary: '#032E2F', secondary: '#878787', logo_url: logo },
+      { side: 1, tgid: null, name: null, abbrev: null, primary: null, secondary: null, logo_url: null }] };
+  const t = snapshotOf({ game }).games[0].teams;
+  assert.equal(t[0].logo_url, logo);
+  assert.equal(t[0].primary, '#032E2F');
+  assert.equal(t[0].tgid, 13);
+  assert.equal(t[0].name, 'Eagles');
+  assert.equal(t[1].logo_url, null);
+  assert.equal(t[1].name, 'Customs');
+  // Plays' own teams win for the tgid.
+  const withPlays = snapshotOf({ game, plays: [{ body: { teams: [{ tgid: 14 }, { tgid: 8 }] } }] }).games[0].teams;
+  assert.equal(withPlays[0].tgid, 14);
+  // Older server: no teams_view, no participants.
+  const { teams_view, ...older } = game;
+  const plain = snapshotOf({ game: older });
+  assert.equal(plain.games[0].teams[0].logo_url, null);
+  assert.equal(plain.games[0].teams[0].primary, null);
+  assert.deepEqual(plain.seats, []);
+  assert.deepEqual(plain.games[0].sides, []);
+});
+
+test('webLinkShown: only an online game offers Open on web', () => {
+  assert.equal(webLinkShown({ mode: 'online' }), true);
+  assert.equal(webLinkShown({ mode: 'offline' }), false);
+  assert.equal(webLinkShown({}), false);
+  assert.equal(webLinkShown(null), false);
 });

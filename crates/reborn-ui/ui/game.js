@@ -6,38 +6,15 @@
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { LIVE_ORIGIN } from './live-common.js';
 import { TABS, header, notFound } from './live-game-render.js';
+import { snapshotOf, webLinkShown } from './stats-rows.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 const gameId = (params.get('game') || '').toLowerCase();
 const screen = document.getElementById('screen');
-const state = { snap: null, verified: false, error: null, tab: 'plays', missing: !UUID_RE.test(gameId) };
-
-/**
- * The snapshot shape the live renderers read, from one finished game. Mirrors the backend's
- * `gameSnapshot` (reborn-backend src/web/live-render.js), which draws the same game on the web.
- */
-function snapshotOf(record) {
-  const g = record.game ?? {};
-  const plays = Array.isArray(record.plays) ? record.plays : [];
-  const fromPlays = plays.find((p) => Array.isArray(p?.body?.teams) && p.body.teams.length === 2)?.body.teams;
-  const teams = [0, 1].map((side) => ({
-    side,
-    tgid: Number.isInteger(fromPlays?.[side]?.tgid) ? fromPlays[side].tgid : null,
-    tmc: fromPlays?.[side]?.tmc ?? null,
-    name: g.teams?.[side]?.name ?? `Side ${side + 1}`,
-    abbrev: g.teams?.[side]?.abbrev ?? null,
-  }));
-  const score = [0, 1].map((i) => (Number.isFinite(g.teams?.[i]?.score) ? g.teams[i].score : 0));
-  return {
-    match: { status: 'complete', best_of: 1 },
-    seats: [],
-    games: [{ game_seq: 1, game_id: g.id, score, teams, sides: [], plays,
-      box: { provisional: false, lines: Array.isArray(record.lines) ? record.lines : [] },
-      drives: Array.isArray(record.drives) ? record.drives : [] }],
-  };
-}
+// online: whether the game is an online one (only those get "Open on web"; see webLinkShown in stats-rows.js).
+const state = { snap: null, verified: false, online: false, error: null, tab: 'plays', missing: !UUID_RE.test(gameId) };
 
 function draw() {
   if (!screen) return;
@@ -46,7 +23,7 @@ function draw() {
   const parts = [el('div', { class: 'lv-actions' },
     // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return to Stats.
     el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: 'stats.html', text: '← Back' }),
-    el('button', { type: 'button', class: 'lv-watch', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }))];
+    state.online ? el('button', { type: 'button', class: 'lv-watch', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }) : null)];
   if (state.error) parts.push(el('p', { class: 'lv-error', role: 'alert', text: state.error }));
   const snap = state.snap;
   if (!snap && !state.error) parts.push(el('p', { class: 'loading', text: 'Loading the game…' }));
@@ -86,6 +63,7 @@ async function load() {
       state.snap = snapshotOf(record);
       // The server's own verdict, not whether any rows came back: only a verified game's plays are trusted.
       state.verified = record.game.plays_status === 'verified';
+      state.online = webLinkShown(record.game);
       state.error = null;
     }
   } catch (e) { state.error = reason(e); }
