@@ -76,20 +76,32 @@ fn my_games_view(player_id: Option<&str>, games: serde_json::Value) -> serde_jso
     serde_json::json!({ "signed_in": player_id.is_some(), "player_id": player_id, "games": games })
 }
 
+/// Who the Stats tab may ask the server about: the player's id and bearer token, or `None` for
+/// the signed-out shape. Both are needed -- an identity whose vault token is missing (or could
+/// not be read) is signed out as far as this list goes, because an anonymous request would hide
+/// the player's own offline games and still read as "signed in".
+fn my_games_identity(player_id: Option<String>, token: Option<String>) -> Option<(String, String)> {
+    match (player_id, token) {
+        (Some(id), Some(tok)) if !tok.trim().is_empty() => Some((id, tok)),
+        _ => None,
+    }
+}
+
 /// The signed-in player's games from the server (Stats tab). Signed out is a shape, not an error.
 #[tauri::command]
 pub async fn stats_my_games(limit: Option<u32>, before: Option<String>) -> Result<serde_json::Value, LiveCommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
-        let Some(file) = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))? else {
+        let player_id = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?.map(|f| f.player.id);
+        let token = if player_id.is_some() { identity::token(&p).unwrap_or(None) } else { None };
+        let Some((player_id, token)) = my_games_identity(player_id, token) else {
             return Ok(my_games_view(None, serde_json::Value::Array(vec![])));
         };
-        let token = identity::token(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
         let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
         let http = crate::http_client();
-        let games = reborn_core::live_view::player_games(&http, &origin, token.as_deref(), &file.player.id, limit.unwrap_or(50), before.as_deref())
+        let games = reborn_core::live_view::player_games(&http, &origin, Some(&token), &player_id, limit.unwrap_or(50), before.as_deref())
             .map_err(LiveCommandError::from)?;
-        Ok(my_games_view(Some(&file.player.id), games))
+        Ok(my_games_view(Some(&player_id), games))
     })
     .await
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
@@ -123,6 +135,15 @@ mod tests {
         assert_eq!(v["signed_in"], true);
         assert_eq!(v["player_id"], "p1");
         assert_eq!(v["games"][0]["id"], "g");
+    }
+
+    #[test]
+    fn my_games_needs_both_an_identity_and_a_token() {
+        assert_eq!(my_games_identity(None, None), None);
+        assert_eq!(my_games_identity(None, Some("tok".into())), None);
+        assert_eq!(my_games_identity(Some("p1".into()), None), None, "a missing vault token is signed out, not anonymous");
+        assert_eq!(my_games_identity(Some("p1".into()), Some("  ".into())), None, "a blank token is no token");
+        assert_eq!(my_games_identity(Some("p1".into()), Some("tok".into())), Some(("p1".to_string(), "tok".to_string())));
     }
 
     #[test]
