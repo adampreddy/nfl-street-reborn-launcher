@@ -28,7 +28,6 @@ mod remap;
 mod controller_report;
 mod setup_tools;
 mod shell_tools;
-mod stats_view;
 mod dolphin_settings;
 mod online_mm;
 mod live_settings;
@@ -6209,7 +6208,6 @@ fn main() {
             shell_tools::notice_dismiss,
             netplay_pending_join,
             netplay_pending_join_clear,
-            stats_view::stats_games,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,
             setup_tools::setup_graphics_options,
