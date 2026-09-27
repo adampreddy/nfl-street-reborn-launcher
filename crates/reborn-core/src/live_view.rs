@@ -146,9 +146,11 @@ fn get_json_opt(http: &dyn Http, url: &str, token: Option<&str>) -> Result<Optio
 /// fields the Stats tab's list draws (mode, teams, status, score, result, `plays_status`, ...).
 /// `limit` is clamped to `1..=200` rather than rejected outright, since a caller-side mistake
 /// (`0`, a huge number) should not become a hard error for a screen that just wants "as many as
-/// sensible". `before` is an opaque cursor -- the `captured_at` of the last game already shown --
-/// percent-encoded and passed straight through. `token`, when `Some`, becomes the `Authorization:
-/// Bearer` header this endpoint needs to tell one player's games from another's.
+/// sensible". `before` is an opaque cursor -- the `first_seen_at` of the last game already shown,
+/// the column the server paginates and orders by (`reborn-backend-pbp/src/players.js`:
+/// `g.first_seen_at < $3 ORDER BY g.first_seen_at DESC`) -- percent-encoded and passed straight
+/// through. `token`, when `Some`, becomes the `Authorization: Bearer` header this endpoint needs
+/// to tell one player's games from another's.
 pub fn player_games(
     http: &dyn Http,
     origin: &str,
@@ -174,8 +176,11 @@ pub fn player_games(
 }
 
 /// One game's full record: the detail `GET {origin}/v1/games/{game_id}` answers, plus its plays,
-/// box-score lines, and drives -- each read only when `game.plays_status == "verified"`, since an
-/// unverified game's per-play detail is not final yet and the three sub-routes 404 for it anyway.
+/// box-score lines, and drives -- each read only when `game.plays_status == "verified"`. That
+/// gate is enforced here, not by the server: `/boxscore` and `/drives` answer `200` with `[]` for
+/// an unverified game, and `/plays` returns whatever play rows already exist regardless of
+/// verification. This client reads those three sub-routes only for a verified game so an
+/// unverified game's not-yet-final play data never reaches the Stats view.
 /// A `404` on the detail itself is `Ok(None)`: the game does not exist, or this viewer (by
 /// `token`) may not see it.
 pub fn game_record(http: &dyn Http, origin: &str, token: Option<&str>, game_id: &str) -> Result<Option<Value>, LiveError> {
@@ -341,6 +346,13 @@ mod tests {
         let url = format!("https://api.test/v1/players/{ID}/games?limit=50");
         let http = FakeHttp::default().reply(&url, 200, r#"{"ok":true}"#);
         assert_eq!(player_games(&http, ORIGIN, None, ID, 50, None).unwrap(), serde_json::json!([]));
+    }
+
+    #[test]
+    fn player_games_500_is_a_server_error_the_same_way_list_maps_it() {
+        let url = format!("https://api.test/v1/players/{ID}/games?limit=50");
+        let http = FakeHttp::default().reply(&url, 500, "");
+        assert_eq!(player_games(&http, ORIGIN, None, ID, 50, None).unwrap_err(), LiveError::Server(500));
     }
 
     #[test]
