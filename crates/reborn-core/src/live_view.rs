@@ -111,12 +111,20 @@ pub fn snapshot(http: &dyn Http, origin: &str, match_id: &str) -> Result<Option<
     Ok(Some(body))
 }
 
-/// Percent-encode the two characters a `before` cursor (an ISO-8601 timestamp) can contain that
-/// are not safe verbatim in a query string: `:` and `+`. `before` always comes from a timestamp
-/// this crate or the backend generated, never arbitrary user text, so this does not need to be a
-/// general-purpose encoder.
+/// Percent-encode a `before` cursor for a query string: every byte outside the RFC 3986
+/// unreserved set (`A-Z a-z 0-9 - . _ ~`) becomes `%XX` (uppercase hex, UTF-8 bytes). The cursor
+/// is normally an ISO-8601 timestamp, but it is a string the page hands back, so `&`, `#`, `=`,
+/// spaces and anything else are encoded too and can never add or cut a query parameter.
 fn percent_encode(s: &str) -> String {
-    s.replace(':', "%3A").replace('+', "%2B")
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// `GET url` with an optional bearer, parsed as JSON on success. A non-2xx status becomes the
@@ -308,9 +316,13 @@ mod tests {
     }
 
     #[test]
-    fn percent_encode_escapes_colon_and_plus_only() {
+    fn percent_encode_escapes_every_byte_outside_unreserved() {
         assert_eq!(percent_encode("2026-09-27T00:00:00Z"), "2026-09-27T00%3A00%3A00Z");
         assert_eq!(percent_encode("2026-09-27T00:00:00+05:00"), "2026-09-27T00%3A00%3A00%2B05%3A00");
+        assert_eq!(percent_encode("2026-09-27T00:00:00.123Z"), "2026-09-27T00%3A00%3A00.123Z", "`.` is unreserved");
+        assert_eq!(percent_encode("a b&c=d#e/f?g%h"), "a%20b%26c%3Dd%23e%2Ff%3Fg%25h");
+        assert_eq!(percent_encode("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(percent_encode("\u{e9}"), "%C3%A9", "non-ASCII is encoded as its UTF-8 bytes");
     }
 
     #[test]
