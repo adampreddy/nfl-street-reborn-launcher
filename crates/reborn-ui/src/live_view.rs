@@ -72,9 +72,58 @@ pub async fn live_match(match_id: String) -> Result<Option<serde_json::Value>, L
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
 }
 
+fn my_games_view(player_id: Option<&str>, games: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "signed_in": player_id.is_some(), "player_id": player_id, "games": games })
+}
+
+/// The signed-in player's games from the server (Stats tab). Signed out is a shape, not an error.
+#[tauri::command]
+pub async fn stats_my_games(limit: Option<u32>, before: Option<String>) -> Result<serde_json::Value, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let Some(file) = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))? else {
+            return Ok(my_games_view(None, serde_json::Value::Array(vec![])));
+        };
+        let token = identity::token(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        let http = crate::http_client();
+        let games = reborn_core::live_view::player_games(&http, &origin, token.as_deref(), &file.player.id, limit.unwrap_or(50), before.as_deref())
+            .map_err(LiveCommandError::from)?;
+        Ok(my_games_view(Some(&file.player.id), games))
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
+/// One game's record for the native game view, with the player's token when signed in.
+#[tauri::command]
+pub async fn stats_game(game_id: String) -> Result<Option<serde_json::Value>, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let token = identity::token(&p).unwrap_or(None);
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        let http = crate::http_client();
+        reborn_core::live_view::game_record(&http, &origin, token.as_deref(), &game_id).map_err(LiveCommandError::from)
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn my_games_view_is_the_signed_out_shape_without_an_identity() {
+        let v = my_games_view(None, serde_json::Value::Array(vec![]));
+        assert_eq!(v["signed_in"], false);
+        assert!(v["player_id"].is_null());
+        assert_eq!(v["games"].as_array().unwrap().len(), 0);
+        let v = my_games_view(Some("p1"), serde_json::json!([{"id":"g"}]));
+        assert_eq!(v["signed_in"], true);
+        assert_eq!(v["player_id"], "p1");
+        assert_eq!(v["games"][0]["id"], "g");
+    }
 
     #[test]
     fn a_rate_limit_reaches_the_page_as_its_own_kind() {

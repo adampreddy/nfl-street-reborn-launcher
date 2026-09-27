@@ -6191,6 +6191,8 @@ fn main() {
             online_mm::mm_launch_prefs,
             live_view::live_matches,
             live_view::live_match,
+            live_view::stats_my_games,
+            live_view::stats_game,
             dolphin_settings::netplay_open,
             dolphin_settings::netplay_status,
             dolphin_settings::netplay_action,
