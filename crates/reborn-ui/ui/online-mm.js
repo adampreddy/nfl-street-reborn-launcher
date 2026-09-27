@@ -318,7 +318,11 @@ async function draw() {
   // Only redraw when something the player can see changed, so typing in chat is never interrupted.
   const signature = JSON.stringify({ l: state.link, s: state.snapshot, r: state.relay_error, p: state.presence_on, m: mode() });
   if (signature === lastDrawn || busy) return;
-  const focused = section.contains(document.activeElement) && document.activeElement.tagName === 'INPUT';
+  // Only a text field being typed in (the chat, the lobby code) holds a redraw. The presence
+  // checkbox is an <input> too, and focus left on it froze the page on "Waiting m:ss" for a whole
+  // game while the launcher underneath ran the match (09-26).
+  const active = document.activeElement;
+  const focused = section.contains(active) && active.tagName === 'INPUT' && ['text', 'search', 'url', 'email'].includes(active.type) && active.value !== '';
   if (focused) return;
   lastDrawn = signature;
 
