@@ -173,7 +173,11 @@ impl Origin {
 
 impl BlobSource for Origin {
     fn open(&self, req: &BlobRequest<'_>) -> Result<Box<dyn Read>> {
-        let url = self.url(&blob_path(&req.file.sha256));
+        // A blob is immutable and named by its hash, so `?v=` costs nothing and defeats a cached
+        // 404: the CDN keeps a "not found" for hours when a URL is asked for before its object is
+        // uploaded, and the bare URL then fails every client's fetch (09-26, two seed files; the
+        // same lever the launcher's own update URL has always carried).
+        let url = format!("{}?v={}", self.url(&blob_path(&req.file.sha256)), &req.file.sha256.as_str()[..8]);
         let mut request = self.agent.get(&url);
         if req.offset > 0 {
             request = request.set("Range", &format!("bytes={}-", req.offset));
@@ -250,13 +254,15 @@ mod tests {
                 let mut buf = vec![0u8; 8192];
                 let n = s.read(&mut buf).unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                // The request target as sent (with any `?v=`), and the path the files map is keyed by.
+                let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let path = target.split('?').next().unwrap_or("/").to_string();
                 let range = head
                     .lines()
                     .find(|l| l.to_ascii_lowercase().starts_with("range: bytes="))
                     .and_then(|l| l[13..].trim().trim_end_matches('-').parse::<usize>().ok());
                 log.lock().expect("log").push(format!(
-                    "{path}{}",
+                    "{target}{}",
                     range.map(|r| format!(" from {r}")).unwrap_or_default()
                 ));
                 let (status, body): (&str, Vec<u8>) = match files.get(&path) {
@@ -328,6 +334,8 @@ mod tests {
         let log = srv.requests.lock().expect("log").clone();
         assert_eq!(log.len(), 1);
         assert!(!log[0].contains("from"), "no Range header on a fresh fetch: {log:?}");
+        // The cache-buster: a CDN that cached a 404 for the bare URL must never answer a blob fetch (09-26).
+        assert!(log[0].contains(&format!("?v={}", &file.sha256.as_str()[..8])), "blob fetched with ?v=<sha8>: {log:?}");
     }
 
     #[test]
