@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowModel, queueLine } from './stats-rows.js';
+import { rowModel, queueLine, unsentCount } from './stats-rows.js';
 
 test('rowModel turns a games-list entry into what a row draws', () => {
   const r = rowModel({ id: 'g1', mode: 'online', status: 'accepted', captured_at: '2026-09-27T01:41:00Z',
@@ -39,4 +39,13 @@ test('queueLine counts what has not uploaded, in the spec\'s words', () => {
   assert.equal(queueLine([{ state: 'queued' }]), '1 game not uploaded yet');
   assert.equal(queueLine([{ state: 'queued' }, { state: 'stalled' }, { state: 'accepted' }]), '2 games not uploaded yet');
   assert.equal(queueLine([{ state: 'accepted' }, { state: 'held' }, { state: 'rejected' }, { state: 'quarantined' }]), null);
+});
+
+test('queueLine carries the queue reason from the first unsent entry that has one', () => {
+  assert.equal(queueLine([{ state: 'queued' }, { state: 'stalled', reason: 'The server could not be reached.' }]),
+    '2 games not uploaded yet: The server could not be reached.');
+  assert.equal(queueLine([{ state: 'stalled', reason: '  ' }]), '1 game not uploaded yet');
+  assert.equal(queueLine([{ state: 'held', reason: 'review' }, { state: 'queued' }]), '1 game not uploaded yet'); // a held entry's reason is not an upload problem
+  assert.equal(unsentCount([{ state: 'queued' }, { state: 'stalled' }, { state: 'accepted' }]), 2);
+  assert.equal(unsentCount(null), 0);
 });

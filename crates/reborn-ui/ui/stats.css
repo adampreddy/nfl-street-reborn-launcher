@@ -38,7 +38,21 @@ body.shell.page-stats #screen button.stats-game:focus-visible { outline-offset: 
 body.shell.page-stats #screen .stats-pager button { margin: 0; }
 .page-stats .stats-pager > span { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* Profile & sync, restored from the previous Stats page as it was. */
+.page-stats .stats-account { border: 1px solid var(--line); border-radius: 8px; padding: 0 22px; }
+body.shell.page-stats .stats-account > summary { padding: 16px 0; margin: 0; font-size: 12px; color: var(--fg); }
+.page-stats .stats-account-status { float: right; margin-left: 20px; color: var(--muted); }
+.page-stats .stats-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; padding: 20px 0; border-top: 1px solid var(--line); }
+.page-stats .stats-account-section h3 { margin: 0 0 14px; font-size: 13px; font-weight: 600; color: var(--fg); }
+.page-stats .stats-account-section p { margin: 0 0 12px; font-size: 12px; line-height: 1.65; color: var(--muted); }
+.page-stats .stats-account-section .stats-secondary { margin-bottom: 18px; }
+.page-stats .stats-visibility { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; font-size: 12px; line-height: 1.6; }
+.page-stats .stats-visibility input { width: 16px; height: 16px; margin: 2px 0 0; flex: none; }
+.page-stats .stats-sync-note { font-size: 12px; color: var(--fg); margin: 0 0 20px; }
+
 @media (max-width: 760px) {
+  .page-stats .stats-account-grid { grid-template-columns: 1fr; }
+  .page-stats .stats-account-status { float: none; display: block; margin: 6px 0 0 15px; }
   body.shell.page-stats #screen button.stats-game { grid-template-columns: 84px minmax(0, 1fr) 24px; column-gap: 12px; padding: 12px 14px; }
   .page-stats .stats-game-mode, .page-stats .stats-badge { display: none; }
 }

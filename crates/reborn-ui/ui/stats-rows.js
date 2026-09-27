@@ -34,8 +34,21 @@ export function rowModel(game) {
   };
 }
 
+function unsent(entries) {
+  return (Array.isArray(entries) ? entries : []).filter((e) => NOT_UPLOADED.has(String(e?.state ?? '')));
+}
+
+/** How many local results are not on the server yet (queued or stalled). */
+export function unsentCount(entries) {
+  return unsent(entries).length;
+}
+
+/** "N games not uploaded yet", plus the queue's own reason (the first unsent entry that has one, a stalled one),
+    or null when nothing is waiting. The reason is the core's player-facing sentence, drawn as text. */
 export function queueLine(entries) {
-  const n = (Array.isArray(entries) ? entries : []).filter((e) => NOT_UPLOADED.has(String(e?.state ?? ''))).length;
-  if (n === 0) return null;
-  return `${n} ${n === 1 ? 'game' : 'games'} not uploaded yet`;
+  const list = unsent(entries);
+  if (!list.length) return null;
+  const why = list.map((e) => (typeof e?.reason === 'string' ? e.reason.trim() : '')).find(Boolean);
+  const line = `${list.length} ${list.length === 1 ? 'game' : 'games'} not uploaded yet`;
+  return why ? `${line}: ${why}` : line;
 }
