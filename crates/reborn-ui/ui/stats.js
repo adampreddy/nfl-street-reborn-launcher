@@ -167,4 +167,13 @@ markCurrent();
 wireCoreFold();
 draw();
 load();
-setInterval(() => { if (document.visibilityState !== 'hidden') load(true); }, REFRESH_MS);
+// No refresh while a game is running (app-shell.js repeats `session-state` every 1.5 s): a match in progress
+// needs the network. When the session ends, one quiet reload picks up the game that just finished.
+let sessionActive = false;
+document.addEventListener('session-state', (e) => {
+  const next = Boolean(e?.detail);
+  const ended = sessionActive && !next;
+  sessionActive = next;
+  if (ended && document.visibilityState !== 'hidden') load(true);
+});
+setInterval(() => { if (!sessionActive && document.visibilityState !== 'hidden') load(true); }, REFRESH_MS);
