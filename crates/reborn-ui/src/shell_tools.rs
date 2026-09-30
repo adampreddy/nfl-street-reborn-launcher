@@ -8,21 +8,23 @@ use tauri::Manager;
 /// URL is a launcher that opens whatever a manifest or a mod says.
 const SITE: &str = "https://nflstreetreborn.com/";
 
-/// The one other thing this launcher will open: the web game's live-match page for a single
-/// match, built from the backend origin rather than a second literal so it cannot drift from
-/// `identity::DEFAULT_ORIGIN`.
-fn live_prefix() -> String {
-    format!("{}/live/", reborn_core::identity::DEFAULT_ORIGIN)
-}
-
 /// Whether `url` is one this launcher will hand to the shell: a page on the site, or exactly
-/// `<backend origin>/live/<uuid>` for the web game's live-match page.
+/// `<origin>/<live|games|u>/<uuid>` on the backend origin or the page origin.
+///
+/// Three kinds of page -- `live` (a match in progress), `games` (a finished game) and `u` (a
+/// public profile) -- each reachable on either of two origins: `identity::DEFAULT_ORIGIN` (the
+/// backend, which also serves these pages) and `identity::PAGE_ORIGIN` (the web game proper).
+/// Neither origin is a second literal here; both are imported so this cannot drift from the
+/// constants the rest of the launcher uses.
 ///
 /// Pure and side-effect free, so tests drive it directly without spawning a process. This is the
-/// ONLY place either rule is decided; `open_website` calls it and does not re-derive either
-/// check. The UUID rule is the same [`reborn_core::live_view::is_canonical_uuid`] the core client
-/// checks a match id against before it is ever sent to the network -- reused rather than
-/// reimplemented, so the two can never drift apart on what a "real" id looks like.
+/// ONLY place any of these rules is decided; `open_website` calls it and does not re-derive any
+/// of them. The UUID rule is the same [`reborn_core::live_view::is_canonical_uuid`] the core
+/// client checks a match id against before it is ever sent to the network -- reused rather than
+/// reimplemented, so the two can never drift apart on what a "real" id looks like. A profile page
+/// is always opened by id, never by the player's display name: this function has no way to tell
+/// an id from a name other than the UUID check, so `/u/<name>` is refused along with everything
+/// else that is not a canonical UUID.
 ///
 /// `strip_prefix` is what makes this strict: anything left over after the prefix other than
 /// exactly 36 canonical-UUID characters -- `../admin`, a `?query`, a `#fragment`, a trailing
@@ -32,10 +34,13 @@ fn allowed(url: &str) -> bool {
     if url.starts_with(SITE) {
         return true;
     }
-    match url.strip_prefix(&live_prefix()) {
-        Some(rest) => reborn_core::live_view::is_canonical_uuid(rest),
-        None => false,
-    }
+    use reborn_core::identity::{DEFAULT_ORIGIN, PAGE_ORIGIN};
+    [DEFAULT_ORIGIN, PAGE_ORIGIN].iter().any(|origin| {
+        ["live", "games", "u"].iter().any(|kind| {
+            url.strip_prefix(&format!("{origin}/{kind}/"))
+                .is_some_and(reborn_core::live_view::is_canonical_uuid)
+        })
+    })
 }
 
 /// One size while first run is incomplete: every setup screen is laid out for
@@ -152,6 +157,20 @@ mod tests {
         assert!(!allowed("https://api.nflstreetreborn.com/v1/live"));
         // The right path and a real id, wrong origin entirely.
         assert!(!allowed(&format!("https://evil.com/live/{LIVE_ID}")));
+    }
+
+    #[test]
+    fn game_and_profile_pages_open_on_both_origins() {
+        for origin in [reborn_core::identity::DEFAULT_ORIGIN, reborn_core::identity::PAGE_ORIGIN] {
+            for kind in ["live", "games", "u"] {
+                assert!(allowed(&format!("{origin}/{kind}/{LIVE_ID}")), "{origin}/{kind}");
+                assert!(!allowed(&format!("{origin}/{kind}/{LIVE_ID}?x=1")));
+                assert!(!allowed(&format!("{origin}/{kind}/../admin")));
+            }
+            assert!(!allowed(&format!("{origin}/v1/players/{LIVE_ID}/profile")));
+            assert!(!allowed(&format!("{origin}/u/Adam")), "only an id, never a name, from the launcher");
+        }
+        assert!(!allowed(&format!("https://online.nflstreetreborn.com.evil.example/u/{LIVE_ID}")));
     }
 
     /// The CSP's `img-src` is the one directive this feature widens, and only to let a live

@@ -18,7 +18,7 @@
 // static CSP, so its images would simply fail to load and draw their badges instead.
 // The renderers (header, the three tabs, "not found") live in live-game-render.js, shared with game.js.
 import { bridge, call, el, quietCall, reason } from './shell.js';
-import { LIVE_ORIGIN, makePoller } from './live-common.js';
+import { PAGE_ORIGIN, makePoller } from './live-common.js';
 import { TABS, header, newestGame, notFound } from './live-game-render.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -81,7 +81,7 @@ function draw() {
 }
 
 async function watchOnWeb() {
-  try { await call('open_website', { url: `${LIVE_ORIGIN}/live/${matchId}` }); } catch (e) { state.error = reason(e); draw(); }
+  try { await call('open_website', { url: `${PAGE_ORIGIN}/live/${matchId}` }); } catch (e) { state.error = reason(e); draw(); }
 }
 
 // One request at a time; errors back off from 5 s up to 60 s (a rate limit waits a full minute)

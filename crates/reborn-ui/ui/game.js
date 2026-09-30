@@ -4,7 +4,7 @@
 // the top of live.js hold here too: untrusted server data is drawn with textContent only, and images only ever
 // come from our own /live-assets/ catalog.
 import { bridge, call, el, quietCall, reason } from './shell.js';
-import { LIVE_ORIGIN } from './live-common.js';
+import { PAGE_ORIGIN } from './live-common.js';
 import { TABS, header, notFound } from './live-game-render.js';
 import { snapshotOf, webLinkShown } from './stats-rows.js';
 
@@ -49,7 +49,7 @@ function draw() {
 }
 
 async function openOnWeb() {
-  try { await call('open_website', { url: `${LIVE_ORIGIN}/games/${gameId}` }); } catch (e) { state.error = reason(e); draw(); }
+  try { await call('open_website', { url: `${PAGE_ORIGIN}/games/${gameId}` }); } catch (e) { state.error = reason(e); draw(); }
 }
 
 async function load() {

@@ -40,6 +40,7 @@ pub fn forget_retired_league_token(platform: &Platform) {
     }
 }
 pub const DEFAULT_ORIGIN: &str = "https://api.nflstreetreborn.com";
+pub const PAGE_ORIGIN: &str = "https://online.nflstreetreborn.com";
 const IDENTITY_FILE: &str = "identity.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

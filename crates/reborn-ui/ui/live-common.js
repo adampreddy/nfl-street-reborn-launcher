@@ -13,6 +13,10 @@
 // backend's images simply fail to load and draw their badges instead. "Watch on web" also opens
 // this origin's page: the production site only.
 export const LIVE_ORIGIN = 'https://api.nflstreetreborn.com';
+// Where a game/live/profile page actually opens (identity::PAGE_ORIGIN on the Rust side): the
+// web game itself, not the backend. Images still come from LIVE_ORIGIN -- this only changes
+// where `open_website` sends the player for "Open on web" / "Watch on web" links.
+export const PAGE_ORIGIN = 'https://online.nflstreetreborn.com';
 export const AVATAR_PREFIX = 'https://cdn.discordapp.com/avatars/';
 export const ASSET_RE = /^\/live-assets\/[A-Za-z0-9._/-]+\.png$/;
 
