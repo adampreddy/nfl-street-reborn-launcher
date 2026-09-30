@@ -154,7 +154,6 @@ try {
     }
     assert.ok(rects.every((r) => r === rects[0]), 'sidebar logo size differs between pages: ' + rects.join(' | '));
   }
-  // mods.html still runs its legacy page script against this stub; only Play and Settings errors count here.
-  assert.deepEqual(errors.filter((e) => !e.startsWith('mods.html')), []);
+  assert.deepEqual(errors, []);
   console.log(`check-glass-pages: PASS (${written.size} screens in ${out})`);
 } finally { await browser.close(); server.close(); }

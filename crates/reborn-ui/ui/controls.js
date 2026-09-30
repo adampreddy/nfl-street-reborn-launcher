@@ -17,10 +17,10 @@ function mappingNote(){
  if(get('bx-note-dismissed'))return null;
  const note=el('section',{class:'glass ctl-note',role:'note','aria-label':'B and X mapping'},icon(WARN_ICON),
   el('p',{},el('strong',{text:'B maps to B. X maps to X.'}),' Older installs may have these reversed. Check the bindings below.'),
-  el('button',{type:'button',class:'btn sm quiet',text:'Dismiss',onclick:()=>{set('bx-note-dismissed','1');note.remove();document.getElementById(`player-tab-${active}`)?.focus({preventScroll:true});}}));
+  el('button',{type:'button',class:'btn sm quiet',text:'Dismiss',onclick:()=>{set('bx-note-dismissed','1');note.remove();const tab=document.getElementById(`player-tab-${active}`);(tab&&!tab.disabled?tab:screen.querySelector('button:not(:disabled),select:not(:disabled)'))?.focus({preventScroll:true});}}));
  return note;
 }
-function lock(value){busy=value;screen.querySelectorAll('.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);}
+function lock(value){busy=value;screen.querySelectorAll('.ctl-note button,.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);}
 async function refresh(){
  if(busy)return;lock(true);problem='';
  try{
