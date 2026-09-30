@@ -1,3 +1,5 @@
+import { mountSaveBar } from "./savebar.js";
+
 // A soundtrack list with focused editing and one apply action.
 // The core owns soundtrack changes; this page presents them for review.
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
@@ -55,22 +57,71 @@ async function load() {
   }
 }
 
-async function act(cmd, args) {
+// One action, then the fresh status. From the save bar ({ fromBar: true }) a failure is thrown back to
+// the bar, which says it in its failure line (spec §7); anywhere else it is drawn at the top of the page.
+async function act(cmd, args, { fromBar = false } = {}) {
   if (busy) return;
   busy = true;
   problem = null;
   notice = null;
+  if (cmd === "music_apply") applyWatch = false; // a new attempt: the last one's reason no longer stands
   draw();
+  const before = pendingSigs();
+  let failure = null;
   try {
     const r = await call(cmd, args);
     if (r && typeof r === "object" && Array.isArray(r.slots)) status = r;
     else await load();
+    noteChange(cmd, args, before);
   } catch (e) {
-    problem = reason(e);
+    if (fromBar) failure = e;
+    else problem = reason(e);
   }
   busy = false;
   draw();
   schedulePoll();
+  if (failure) throw failure;
+}
+
+// The change the bar names last ("Song 3 replaced"). It is kept with the pending state its song had right
+// after the change, and named only while that song still has exactly that change pending: an Undo, a
+// Discard, or a later change to the same song (a pack, a move) never leaves an older change named.
+let lastChange = null;
+const pendingSig = (n) => JSON.stringify(slotAt(n)?.pending ?? null);
+const pendingSigs = () => new Map(slots().map((s) => [s.slot, JSON.stringify(s.pending ?? null)]));
+function noteLast(slot, label) {
+  lastChange = { slot, label, sig: pendingSig(slot) };
+}
+function noteChange(cmd, args, before) {
+  if (cmd === "music_move") noteLast(args.to, `Song ${args.from} moved to ${args.to}`);
+  else if (cmd === "music_stage_stock") noteLast(args.slot, `Song ${args.slot} restored`);
+  else if (cmd === "music_apply" || cmd === "music_reset_all" || (cmd === "music_unstage" && args?.slot === null)) lastChange = null;
+  else {
+    // Anything else that staged songs (a pack): name the last song whose pending change is new.
+    const changed = slots().filter((s) => s.pending && JSON.stringify(s.pending) !== before.get(s.slot));
+    const last = changed.at(-1);
+    if (last) noteLast(last.slot, `Song ${last.slot} ${PENDING_WORD[last.pending.kind] || "changed"}`);
+  }
+  if (cmd === "music_apply") applyWatch = true;
+}
+const PENDING_WORD = { original: "restored", your_file: "replaced", pack: "replaced", original_moved: "moved" };
+// The save bar's list (spec §7): one line per song waiting to be applied, the one changed last at the end.
+function pendingChanges() {
+  const list = slots().filter((s) => s.pending).map((s) => ({ slot: s.slot, label: `Song ${s.slot} ${PENDING_WORD[s.pending.kind] || "changed"}` }));
+  const last = lastChange && lastChange.sig === pendingSig(lastChange.slot) ? list.find((c) => c.slot === lastChange.slot) : null;
+  if (!last) return list.map((c) => c.label);
+  return [...list.filter((c) => c !== last).map((c) => c.label), lastChange.label];
+}
+// An Apply the core accepted reports its outcome later (music_status polling). While one is out, a
+// "problem" outcome is said in the bar's failure line and the changes stay pending (Review Focus 1).
+let applyWatch = false;
+function applyOutcome() {
+  if (!applyWatch) return;
+  if (status?.phase === "problem") bar.fail(status.note || "Your soundtrack could not be applied.");
+  else if (!working()) {
+    applyWatch = false;
+    bar.fail("");
+  }
 }
 
 async function refresh() {
@@ -156,13 +207,27 @@ function locked() {
   return busy || working();
 }
 
-const SOURCE_LABEL = {
-  original: "original song",
-  original_moved: "original song, moved",
-  your_file: "your song",
-  pack: "from a pack",
-  soundtrack_mod: "soundtrack mod",
+// Where a song comes from, for the line under its name (spec §8.4).
+const SOURCE_WORD = {
+  original: "On your disc",
+  original_moved: "On your disc, moved",
+  your_file: "Your song",
+  soundtrack_mod: "Soundtrack mod",
 };
+
+// The line under a song: who sings it and where it comes from; or, while a change waits to be applied,
+// what it does, ending in " · Pending" (spec §8.4; a chip and Pending in the actions were rejected).
+function sourceLine(song, artist) {
+  const p = song.pending;
+  if (p) {
+    const what = p.kind === "original" ? "Restoring the original" : p.kind === "original_moved" ? "Moved here" : `Replacing ${slotTitle(song)}`;
+    return [what, el("span", { class: "pend", text: " · Pending" })];
+  }
+  const where = song.source === "pack" ? (song.source_name ? `From ${song.source_name}` : "From a pack")
+    : song.source === "soundtrack_mod" && song.source_name ? song.source_name
+    : SOURCE_WORD[song.source] || "";
+  return [[artist, where].filter(Boolean).join(" · ")];
+}
 
 function slotTitle(s) {
   if (!s) return "";
@@ -302,31 +367,36 @@ async function addToQueue(){
   try{
     const result=await call(editing!==null?'music_stage_details':'music_stage_file',editing!==null?args:{...args,path:picked.path});
     if(result?.slots)status=result;else await load();
+    lastChange={slot:args.slot,label:editing!==null?`Song ${args.slot} details changed`:`Song ${args.slot} replaced`,sig:pendingSig(args.slot)};
     editor.close();notice=null;problem=null;
   }catch(e){editorProblem=reason(e);}
   finally{busy=false;if(editor?.open)renderEditor();draw();schedulePoll();}
 }
 
+// The header row (spec §8.4): the Custom soundtrack switch on the left; Reset, Import pack and Export pack
+// (quiet) and Add songs… on the right. One song at a time is added from its row's Replace.
 function discNow(){
-  const toggle=el('input',{type:'checkbox',role:'switch','aria-label':'Custom soundtrack',checked:!!status?.enabled,disabled:locked()||!status?.image_ok,onchange:ev=>act('music_set_enabled',{on:ev.target.checked})});
+  const on=!!status?.enabled,off=locked()||!status?.image_ok;
+  const toggle=el('button',{type:'button',id:'music-enabled',class:'look-switch',role:'switch','aria-label':'Custom soundtrack','aria-checked':String(on),disabled:off,onclick:()=>act('music_set_enabled',{on:!on})});
   const nothingCustom=!slots().some(s=>s.source!=='original'||s.pending)&&status?.base?.kind!=='package';
-  const buttons=el('div',{class:'music-toolbar-actions'},el('button',{type:'button',class:'music-quiet',text:'Reset soundtrack',disabled:locked()||!status?.image_ok||nothingCustom,onclick:resetDialog}),el('button',{type:'button',text:'Import pack',disabled:locked()||!status?.image_ok,onclick:packDialog}),el('button',{type:'button',text:'Export pack',disabled:locked()||!status?.image_ok,onclick:shareDialog}),el('button',{type:'button',text:'Add songs…',disabled:locked()||!status?.image_ok,onclick:bulkDialog}),el('button',{type:'button',class:'primary',text:'Add song',disabled:locked()||!status?.image_ok,onclick:()=>chooseFile()}));
-  return el('section',{class:'music-toolbar'},el('label',{class:'music-toggle'},toggle,el('span',{},el('strong',{text:'Custom soundtrack'}),el('small',{text:status?.enabled?'Your selected songs play in-game.':'Your game’s default soundtrack plays. Custom songs are kept.'}))),buttons);
+  const buttons=el('div',{class:'music-toolbar-actions'},
+    el('button',{type:'button',class:'btn quiet',text:'Reset','aria-label':'Reset soundtrack',disabled:off||nothingCustom,onclick:resetDialog}),
+    el('button',{type:'button',class:'btn quiet',text:'Import pack',disabled:off,onclick:packDialog}),
+    el('button',{type:'button',class:'btn quiet',text:'Export pack',disabled:off,onclick:shareDialog}),
+    el('button',{type:'button',class:'btn',text:'Add songs…',disabled:off,onclick:bulkDialog}));
+  return el('section',{class:'music-toolbar'},
+    el('div',{class:'music-toggle'},toggle,el('label',{for:'music-enabled'},el('span',{class:'t',text:'Custom soundtrack'}),el('span',{class:'d',text:on?'Your selected songs play in-game.':'Your game’s default soundtrack plays. Custom songs are kept.'}))),
+    buttons);
 }
 function statusLine(){
   if(working()){
     const p=status.progress||{},pct=p.total?Math.min(100,Math.max(0,Math.round((p.done||0)/p.total*100))):null;
     // Several songs at once say which one: "Adding song 2 of 5: name".
     const label=status.phase==='encoding'?(/^Adding song /.test(status.progress?.label||'')?status.progress.label:'Preparing your song'):'Applying your soundtrack';
-    return el('div',{class:'music-progress',role:'status'},el('div',{},el('strong',{text:label}),el('span',{text:pct===null?'Please wait…':`${pct}%`})),el('progress',{max:'100',value:pct,'aria-label':label}),el('p',{class:'note',text:status.phase==='encoding'?'Your song will appear in the list when it is ready.':'Keep the launcher open until this finishes.'}));
+    return el('div',{class:'glass music-progress',role:'status'},el('div',{},el('strong',{text:label}),el('span',{text:pct===null?'Please wait…':`${pct}%`})),el('progress',{max:'100',value:pct,'aria-label':label}),el('p',{class:'note',text:status.phase==='encoding'?'Your song will appear in the list when it is ready.':'Keep the launcher open until this finishes.'}));
   }
-  if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
+  if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'glass mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
   return null;
-}
-function queue(){
-  const count=slots().filter(s=>s.pending).length;
-  if(!count)return null;
-  return el('section',{class:'music-apply', 'aria-label':'Pending changes'},el('div',{},el('strong',{text:`${count} pending change${count===1?'':'s'}`}),el('p',{text:'Apply once when you are finished editing.'})),el('div',{class:'mz-row'},el('button',{type:'button',text:'Discard changes',disabled:locked(),onclick:()=>act('music_unstage',{slot:null})}),el('button',{type:'button',class:'primary',text:'Apply changes',disabled:locked()||!status?.image_ok,onclick:()=>act('music_apply',{confirm:true})})));
 }
 // A row dragged by the mouse: after a few pixels of movement the row is
 // lifted (a ghost follows the pointer, the row itself dims), the row under
@@ -377,12 +447,12 @@ function beginRowDrag(ev,row,from){
 
 function discList(){
   const list=slots();
-  const sec=el('section',{class:'mz-disc',id:'disc'});
+  const sec=el('section',{class:'glass mz-disc',id:'disc'});
   const custom=list.filter(s=>s.source!=='original').length;
   sec.append(el('div',{class:'music-list-heading'},el('h2',{text:'Soundtrack'}),el('span',{text:`${list.length} songs${custom?` · ${custom} custom`:''}`})));
   if(!list.length){sec.append(el('div',{class:'music-empty'},el('h3',{text:status?.image_ok?'No songs found':'Set up your game first'}),el('p',{class:'note',text:status?.image_note||problem||'Your soundtrack will appear here once your game is ready.'}),el('button',{type:'button',text:'Try again',disabled:busy,onclick:refresh})));return sec;}
   const table=el('table',{class:'mz-table','aria-label':'Soundtrack songs'});
-  table.append(el('thead',{},el('tr',{},el('th',{scope:'col',class:'mz-col-n',text:'#'}),el('th',{scope:'col',text:'Song'}),el('th',{scope:'col',class:'mz-col-time',text:'Length'}),el('th',{scope:'col',class:'mz-col-actions',text:'Actions'}))));
+  table.append(el('thead',{},el('tr',{},el('th',{scope:'col',class:'mz-col-n',text:'#'}),el('th',{scope:'col',class:'mz-col-mv','aria-label':'Order'}),el('th',{scope:'col',text:'Song'}),el('th',{scope:'col',class:'mz-col-time',text:'Length'}),el('th',{scope:'col',class:'mz-col-actions',text:'Actions'}))));
   const body=el('tbody');
   const last=list.length?list[list.length-1].slot:0;
   for(const song of list){
@@ -393,25 +463,30 @@ function discList(){
     // disc's own text. "Restore original" (a pending reset) shows the disc's.
     const renamed=!pending&&song.source==='original'&&!!o&&(song.title!==o.title||song.artist!==o.artist||song.album!==o.album);
     const title=original?((pending?'':song.title)||o?.title||slotTitle({...song,title:'',original:null,source:'original'})):(pending?.title||song.title||'Untitled');
-    const artist=original?((pending?'':song.artist)||o?.artist||'On your disc'):(pending?.artist??song.artist)||'Unknown artist';
-    const actions=el('td',{class:'mz-col-actions'},el('button',{type:'button',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
-    if(pending)actions.append(el('button',{type:'button',class:'music-quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
-    else if(song.source!=='original'||renamed)actions.append(el('button',{type:'button',class:'music-quiet',text:'Reset','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
-    const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),el('small',{text:artist}));
-    if(pending)name.append(el('span',{class:'music-pending',text:original?'Restore original':'Pending'}));
+    const artist=original?((pending?'':song.artist)||o?.artist||''):((pending?.artist??song.artist)||'');
+    // Actions (spec §8.4): a pending song offers Undo only; a custom (or renamed) song, Restore
+    // original and Replace; the disc's own song, Replace. They wrap in a narrow window, never clip.
+    const acts=el('div',{class:'mz-acts'});
+    if(pending)acts.append(el('button',{type:'button',class:'btn sm quiet',text:'Undo','aria-label':`Undo changes to song ${song.slot}`,disabled:locked(),onclick:()=>act('music_unstage',{slot:song.slot})}));
+    else{
+      if(song.source!=='original'||renamed)acts.append(el('button',{type:'button',class:'btn sm quiet',text:'Restore original','aria-label':`Restore original song ${song.slot}`,disabled:locked(),onclick:()=>act('music_stage_stock',{slot:song.slot})}));
+      acts.append(el('button',{type:'button',class:'btn sm',text:'Replace','aria-label':`Replace song ${song.slot}`,disabled:locked(),onclick:()=>chooseFile(song.slot)}));
+    }
+    const actions=el('td',{class:'mz-col-actions'},acts);
+    const name=el('td',{class:'mz-col-what'},el('button',{type:'button',class:'music-song-name',text:title,'aria-label':`Edit details for song ${song.slot}: ${title}`,disabled:locked(),onclick:()=>editDetails(song.slot)}),el('span',{class:'mz-src'},...sourceLine(song,artist)));
     // The order is the player's to change: drag a row onto another (the
     // songs between shift by one), or use the arrows, which a pad or the
     // keyboard can reach. Both go through music_move.
     const arrows=el('span',{class:'mz-move'},
-      el('button',{type:'button',text:'▲','aria-label':`Move song ${song.slot} up`,disabled:locked()||song.slot<=1,onclick:()=>act('music_move',{from:song.slot,to:song.slot-1})}),
-      el('button',{type:'button',text:'▼','aria-label':`Move song ${song.slot} down`,disabled:locked()||song.slot>=last,onclick:()=>act('music_move',{from:song.slot,to:song.slot+1})}));
-    const row=el('tr',{class:`mz-track${pending?' staged':''}`,'data-slot':String(song.slot)});
+      el('button',{type:'button',class:'mz-arrow',text:'▲','aria-label':`Move song ${song.slot} up`,disabled:locked()||song.slot<=1,onclick:()=>act('music_move',{from:song.slot,to:song.slot-1})}),
+      el('button',{type:'button',class:'mz-arrow',text:'▼','aria-label':`Move song ${song.slot} down`,disabled:locked()||song.slot>=last,onclick:()=>act('music_move',{from:song.slot,to:song.slot+1})}));
+    const row=el('tr',{class:`mz-track${pending?' staged':''}${!pending&&song.source!=='original'?' custom':''}`,'data-slot':String(song.slot)});
     // Plain pointer events, not HTML5 drag and drop: the launcher's window
     // never delivers dragstart (Tauri owns OS drag and drop on Windows), so
     // the row follows the mouse itself. Press anywhere on the row that is
     // not a control, move, and let go over the place it should take.
     row.addEventListener('pointerdown',ev=>{if(ev.button!==0||locked()||ev.target.closest('button,select,input,a'))return;beginRowDrag(ev,row,song.slot);});
-    row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')}),arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(song.duration_ms??o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
+    row.append(el('td',{class:'mz-col-n'},el('span',{class:'mz-n',text:String(song.slot).padStart(2,'0')})),el('td',{class:'mz-col-mv'},arrows),name,el('td',{class:'mz-col-time',text:pending?'':original?(mmss(song.duration_ms??o?.duration_ms)||''):(mmss(song.duration_ms)||'')}),actions);
     body.append(row);
   }
   table.append(body);sec.append(table);return sec;
@@ -422,11 +497,16 @@ function draw(){
   if(notice)parts.push(el('p',{class:'note',role:'status',text:notice}));
   if(status&&!status.image_ok&&slots().length)parts.push(el('p',{class:'music-error',role:'status',text:status.image_note||'Set up your game before editing its soundtrack.'}));
   const progress=statusLine();if(progress)parts.push(progress);
-  parts.push(discList());const bar=queue();if(bar)parts.push(bar);
+  parts.push(discList());
   parts.push(el('p',{class:'music-footnote',text:'Custom music applies to offline play. Online uses the shared Reborn soundtrack.'}));
   const focus=document.activeElement?.getAttribute?.('aria-label');
   screen.replaceChildren(...parts);
   if(focus&&!editor?.open)Array.from(screen.querySelectorAll('[aria-label]')).find(n=>n.getAttribute('aria-label')===focus)?.focus({preventScroll:true});
+  // The bar lists every pending song. Apply waits while the game image is missing or the core is
+  // working (a second Apply would start a second rebuild); Discard waits only while the core works.
+  bar.update(pendingChanges());
+  bar.lock(locked()||!status?.image_ok,locked());
+  applyOutcome();
   return parts;
 }
 
@@ -590,6 +670,16 @@ function shareDialog() {
   dialog.append(body);
   showDialog(dialog);
 }
+
+// The one save bar (spec §7, §8.4): the songs waiting to be applied, then Discard and Apply changes,
+// in its own lane under the page. The core owns the pending list; Apply rebuilds the disc once.
+const bar = mountSaveBar(document.getElementById("save-lane"), {
+  noun: "pending change",
+  saveText: "Apply changes",
+  onSave: () => act("music_apply", { confirm: true }, { fromBar: true }),
+  onDiscard: () => act("music_unstage", { slot: null }, { fromBar: true }),
+  returnFocus: () => document.querySelector("#disc .mz-track button:not(:disabled)"),
+});
 
 // ---------------------------------------------------------------------------
 // Boot

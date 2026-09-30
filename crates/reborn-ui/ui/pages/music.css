@@ -1,0 +1,113 @@
+/* Music (spec §8.4; mockup "MUSIC"). Layout only: colours, radii and durations come from theme.css.
+   The header row, the soundtrack table, then the save bar in its own lane (theme.css, has-save-lane). */
+body.page-music #main{padding:36px 36px 32px}
+.page-music .page-heading,.page-music #screen{max-width:942px}
+.page-music #screen{display:flex;flex-direction:column;gap:16px;margin-top:24px}
+body.page-music .save-bar{margin:8px 36px 16px}
+
+/* header row: the switch on the left, the pack actions on the right */
+.music-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.music-toggle{display:flex;align-items:center;gap:12px;min-width:0}
+.music-toggle label{display:flex;flex-direction:column;cursor:pointer}
+.music-toggle .t{font-size:14px;font-weight:600}
+.music-toggle .d{font-size:12.5px;color:var(--fg-2)}
+.music-toolbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* the soundtrack table: # | order | song + source line | length | actions */
+.mz-disc{overflow:hidden}
+.music-list-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px 8px}
+.music-list-heading h2{font-size:15px;font-weight:600}
+.music-list-heading>span{font-size:12.5px;color:var(--fg-3)}
+.mz-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}
+.mz-table th{padding:8px;border-top:1px solid var(--stroke);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;text-align:left;color:var(--fg-3)}
+.mz-table td{padding:8px;border-top:1px solid var(--stroke);vertical-align:middle;overflow-wrap:anywhere}
+.mz-table :is(th,td):first-child{padding-left:20px}
+.mz-table :is(th,td):last-child{padding-right:20px}
+.mz-table .mz-col-n{width:64px;color:var(--fg-3);font-size:12.5px;font-variant-numeric:tabular-nums}
+.mz-table .mz-col-mv{width:36px}
+.mz-table .mz-col-time{width:90px;color:var(--fg-2);font-size:12.5px;font-variant-numeric:tabular-nums}
+.mz-table .mz-col-actions{width:260px;text-align:right}
+/* the row actions may wrap onto a second line in a narrow window, never clip */
+.mz-acts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+/* the order arrows: classed and prefixed, so theme.css's look for classless buttons never makes them 38px buttons */
+.mz-move{display:flex;flex-direction:column;align-items:flex-start}
+body.page-music .mz-move button.mz-arrow{height:14px;min-height:0;padding:0 4px;border:0;border-radius:var(--r-sm);background:transparent;box-shadow:none;color:var(--fg-3);font-size:9px;line-height:1;cursor:pointer}
+body.page-music .mz-move button.mz-arrow:hover:not(:disabled){color:var(--fg)}
+body.page-music .mz-move button.mz-arrow:disabled{opacity:.25;cursor:default}
+body.page-music .music-song-name{display:block;max-width:100%;padding:0;border:0;background:transparent;color:var(--fg);font:600 13.5px Inter,system-ui,sans-serif;text-align:left;overflow-wrap:anywhere;cursor:pointer}
+body.page-music .music-song-name:hover:not(:disabled){text-decoration:underline;text-underline-offset:3px}
+.mz-src{display:block;margin-top:2px;font-size:12px;color:var(--fg-3)}
+.mz-track.custom .mz-src{color:var(--fg-2)}
+.mz-src .pend{font-weight:600;color:var(--red-ink)}
+/* a pending row: a faint red tint and a red left edge (spec §8.4) */
+.mz-table tr.staged td{background:color-mix(in srgb,var(--red) 6%,transparent)}
+.mz-table tr.staged td:first-child{position:relative}
+.mz-table tr.staged td:first-child::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--red)}
+/* reordering (music.js): drag a row with the mouse (a ghost follows, a line marks where it lands), or the arrows.
+   The landing line is a painted 3px band, not a box-shadow (no coloured shadows anywhere). */
+.mz-table tbody tr.mz-track{cursor:grab}
+.mz-table tr.dragging{opacity:.4}
+.mz-table tr:is(.drop-above,.drop-below) td{background-image:linear-gradient(var(--red),var(--red));background-repeat:no-repeat;background-size:100% 3px}
+.mz-table tr.drop-above td{background-position:top}
+.mz-table tr.drop-below td{background-position:bottom}
+body.mz-dragging{cursor:grabbing;user-select:none}
+body.mz-dragging .mz-table tbody tr.mz-track{cursor:grabbing}
+.mz-ghost{position:fixed;left:0;top:0;z-index:20;display:flex;align-items:center;gap:16px;padding:8px 16px;border-radius:var(--r-md);border:1px solid var(--red);background:var(--surface-solid);box-shadow:var(--shadow);font-size:13px;pointer-events:none}
+.mz-ghost td{display:inline;padding:0;border:0;background:none}
+.mz-ghost td::before{display:none}
+.mz-ghost :is(.mz-col-mv,.mz-col-actions,.mz-col-time,.mz-src){display:none}
+
+/* progress, done, messages */
+.music-progress{padding:16px 20px}
+.music-progress>div{display:flex;justify-content:space-between;gap:16px;font-size:13px}
+.music-progress strong{font-weight:600}
+.music-progress progress{display:block;width:100%;height:6px;margin:16px 0 8px}
+.music-progress .note{font-size:12px;color:var(--fg-2)}
+.mz-done{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;font-size:12.5px}
+.music-error{padding:12px 16px;border-radius:var(--r-md);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);background:color-mix(in srgb,var(--red) 8%,transparent);color:var(--red-ink);font-size:12.5px;overflow-wrap:anywhere}
+.music-empty{padding:48px 24px;text-align:center}
+.music-empty h3{margin-bottom:8px;font-size:16px;font-weight:600}
+.music-empty button{margin-top:16px}
+.music-footnote{font-size:12.5px;color:var(--fg-3)}
+
+/* dialogs: song details, import a pack, add songs, share, reset */
+body.page-music dialog.music-dialog{width:min(570px,calc(100vw - 40px));max-height:calc(100dvh - 48px);padding:0;overflow:auto}
+.music-editor-form,.music-dialog .mod-dialog-body{display:flex;flex-direction:column;gap:16px;padding:24px}
+.music-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.music-dialog h2{font-size:20px;font-weight:600;letter-spacing:-.02em}
+.music-dialog .mod-dialog-body>p:not([class]){font-size:13px;color:var(--fg-2)}
+.music-file{display:flex;align-items:center;gap:16px;padding:12px 16px;border:1px solid var(--stroke);border-radius:var(--r-md)}
+.music-file>div{flex:1;min-width:0}
+.music-file strong{display:block;font-size:13px;font-weight:500;overflow-wrap:anywhere}
+.music-file small{display:block;margin-top:4px;font-size:12px;color:var(--fg-2)}
+.mz-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.mz-fields>.mz-field:first-child{grid-column:1/-1}
+.mz-field{display:flex;flex-direction:column;gap:8px;font-size:12.5px;color:var(--fg-2)}
+.mz-field :is(input,select){width:100%;min-width:0}
+.music-dialog .note{font-size:12px;color:var(--fg-2)}
+.music-extra{padding-top:16px;border-top:1px solid var(--stroke)}
+.music-extra summary{font-size:12.5px;color:var(--fg-2);cursor:pointer}
+.music-extra .mz-row{display:flex;gap:8px;margin-top:16px}
+.music-extra .mz-row input{flex:1;min-width:0}
+.music-extra .mz-privacy{margin-top:8px}
+.mz-candidates{display:flex;flex-direction:column;gap:8px;max-height:155px;margin:16px 0 0;padding:0;list-style:none;overflow:auto}
+body.page-music .mz-candidate{width:100%;padding:8px 12px;border-radius:var(--r-sm);border:1px solid var(--stroke);background:var(--glass-1);color:var(--fg);font:500 12px Inter,system-ui,sans-serif;text-align:left;white-space:normal;cursor:pointer}
+body.page-music .mz-candidate:hover:not(:disabled){background:var(--glass-2)}
+.music-dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:16px;border-top:1px solid var(--stroke)}
+.music-dialog-footer .note{max-width:240px}
+.store-kicker{font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.store-dialog-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.mz-preview{max-height:260px;padding-left:20px;overflow:auto;font-size:12.5px;line-height:1.8}
+.mz-share-list{display:flex;flex-direction:column;gap:8px;max-height:210px;overflow:auto}
+.mz-share-row{display:flex;align-items:center;gap:8px;font-size:12.5px}
+
+@media (max-width:900px){
+  body.page-music #main{padding:24px 24px 16px}
+  body.page-music .save-bar{margin:8px 24px 16px}
+  .mz-table .mz-col-n{width:44px}
+  .mz-table .mz-col-time{width:56px}
+  .mz-table .mz-col-actions{width:200px}
+  .mz-table :is(th,td):first-child{padding-left:16px}
+  .mz-table :is(th,td):last-child{padding-right:16px}
+}
+@media (max-width:760px){.mz-fields{grid-template-columns:1fr}.mz-table .mz-col-time{display:none}}

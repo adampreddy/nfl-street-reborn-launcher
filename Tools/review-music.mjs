@@ -77,7 +77,8 @@ if (process.env.RULES) {
     return out;
   }));
 }
-await page.getByRole("button", { name: "Add song", exact: true }).click();
+// One song is added from its row's Replace (there is no separate "Add song" button).
+await page.getByRole("button", { name: "Replace song 1", exact: true }).click();
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${OUT}/music-add.png`, fullPage: true });
 await browser.close();
