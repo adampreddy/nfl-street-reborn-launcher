@@ -115,11 +115,11 @@ html[data-glass="on"] body.shell.page-setup #nav{background:rgba(24,25,30,.78)!i
 body.shell.page-setup .mapping-tabs,body.shell.page-setup .graphics-tabs,body.shell.page-setup .import-override-fields,
 body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{background:var(--glass-1)}
 /* the setup binding editor is an absolutely positioned overlay on the mapping grid (onboarding-polish.css:76): it needs a solid surface */
-body.shell.page-setup .binding-editor{background:#1b1e24}
+body.shell.page-setup .binding-editor{background:var(--surface-solid)}
 body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{color-scheme:dark}
 
 /* save lane (savebar.js): any page with body.has-save-lane gets its own grid row under #main, in the same
-   column, so the bar never covers content (spec §6.2, §7). Settings now; Music in plan 3.
+   column, so the bar never covers content (spec §6.2, §7). Settings and Music use it.
    html … :not(.page-setup) so it outranks the shell grid below (html body.shell:not(.page-setup)) in mouse
    and controller mode alike: the .gamepad-input twin keeps that headroom when the pad class is on. */
 html body.shell.has-save-lane:not(.page-setup),html body.shell.has-save-lane.gamepad-input:not(.page-setup){grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
@@ -137,7 +137,7 @@ body.shell button.look-switch[aria-checked="false"]{background-color:rgba(255,25
 
 /* floating surfaces: content moves behind them, so --panel (a 4.5% white wash) is not enough.
    Same selectors as the originals (finish.css:112/115, play.css:34, music.css:47/39); theme is last, so equal specificity wins. */
-.update-card,body.shell .update-dialog,.page-home .play-dialog,body.shell.page-music dialog.music-dialog,body.shell.page-music .music-apply,dialog{background:rgba(24,25,30,.92);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+.update-card,body.shell .update-dialog,.page-home .play-dialog,body.shell.page-music dialog.music-dialog,dialog{background:rgba(24,25,30,.92);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
 
 /* hover/press only move (transform); colours change instantly. The legacy rule (launcher.css:77, 0,2,1) animated colour and shadow at 480-720 ms. */
 html body.shell button,html body.shell .button,html body.shell .choice,html body.shell .shell-nav a,html body.shell .quick-link{transition:transform var(--d1) var(--ease)}

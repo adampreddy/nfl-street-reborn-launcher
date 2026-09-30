@@ -17,7 +17,8 @@ body.page-mods #main{padding:36px 36px 32px}
 .store-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .store-card{display:flex;flex-direction:column;min-width:0;overflow:hidden}
 /* align-items:stretch: the browser's own button style is flex-start, which would shrink the preview to nothing */
-.store-open{display:flex;flex-direction:column;align-items:stretch;width:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer}
+/* body.page-mods (ruling P3-5): outranks theme.css:70 body.shell button (0,1,2), which set a 10px radius */
+body.page-mods .store-open{display:flex;flex-direction:column;align-items:stretch;width:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer}
 .store-art{position:relative;display:block;height:150px;background:var(--thumb-bg);border-bottom:1px solid var(--stroke)}
 .store-check{position:absolute;top:12px;right:12px;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--red);color:var(--fg);box-shadow:var(--sheen)}
 .store-check svg{width:14px;height:14px;stroke-width:3}

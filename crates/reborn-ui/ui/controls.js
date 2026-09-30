@@ -44,9 +44,10 @@ function draw(){
  workspace?.dispose?.();workspace=null;delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));
  const tabs=el('div',{class:'player-tabs',role:'tablist','aria-label':'Players'});
  for(let i=0;i<4;i++){
-  const device=state.slots[i];const tab=el('button',{type:'button',role:'tab',class:'player-card'+(device?'':' is-empty'),id:`player-tab-${i}`,'aria-selected':String(i===active),'aria-controls':'player-panel',tabindex:'0',onclick:()=>{if(busy)return;active=i;draw();document.getElementById(`player-tab-${i}`).focus({preventScroll:true});}},
+  // the subline clamps to two lines in a narrow window (pages/controls.css): its tooltip holds the full text
+  const device=state.slots[i],sub=device?(connected(device)?friendly(device):'Disconnected'):'No controller';const tab=el('button',{type:'button',role:'tab',class:'player-card'+(device?'':' is-empty'),id:`player-tab-${i}`,'aria-selected':String(i===active),'aria-controls':'player-panel',tabindex:'0',onclick:()=>{if(busy)return;active=i;draw();document.getElementById(`player-tab-${i}`).focus({preventScroll:true});}},
    el('span',{class:'player-icon'},padIcon()),
-   el('span',{class:'player-text'},el('span',{class:'t',text:`Player ${i+1}`}),el('small',{class:device?(connected(device)?'connected':'disconnected'):'',text:device?(connected(device)?friendly(device):'Disconnected'):'No controller'})));
+   el('span',{class:'player-text'},el('span',{class:'t',text:`Player ${i+1}`}),el('small',{class:device?(connected(device)?'connected':'disconnected'):'',text:sub,title:sub})));
   tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||busy)return;event.preventDefault();active=event.key==='Home'?0:event.key==='End'?3:(i+(event.key==='ArrowRight'?1:3))%4;draw();document.getElementById(`player-tab-${active}`).focus({preventScroll:true});});tabs.append(tab);
  }
  const panel=el('section',{id:'player-panel',class:'player-panel',role:'tabpanel','aria-labelledby':`player-tab-${active}`});

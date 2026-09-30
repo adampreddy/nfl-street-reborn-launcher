@@ -136,7 +136,18 @@ try {
       await settle(page);
       const edge = await page.evaluate(() => ({ main: document.getElementById('main').getBoundingClientRect().bottom, lane: document.getElementById('save-lane').getBoundingClientRect().top,
         bar: Math.round(document.querySelector('.save-bar').getBoundingClientRect().x), table: Math.round(document.getElementById('disc').getBoundingClientRect().x) }));
-      assert.ok(Math.abs(edge.main - edge.lane) < 1, 'the main area ends where the save lane begins');
+      // Real geometry, not the grid rows: the last song row that is actually painted (hit-tested) ends above the
+      // lane, nothing of the table shows through the lane, and the lane is inside the window.
+      const lane0 = await page.evaluate(() => {
+        const lane = document.getElementById('save-lane').getBoundingClientRect(), x = document.getElementById('disc').getBoundingClientRect().left + 40;
+        const shown = Array.from(document.querySelectorAll('.mz-track')).filter((r) => { const b = r.getBoundingClientRect(); return b.top + 2 < innerHeight && r.contains(document.elementFromPoint(x, b.top + 2)); });
+        const last = shown.pop()?.getBoundingClientRect();
+        const through = [lane.top + 2, (lane.top + lane.bottom) / 2, lane.bottom - 2].map((y) => document.elementFromPoint(x, y)?.closest('.mz-track, #save-lane')?.id ?? 'none');
+        return { lastTop: last?.top, lastBottom: last?.bottom, laneTop: lane.top, laneBottom: lane.bottom, laneH: lane.height, vh: innerHeight, through };
+      });
+      assert.ok(lane0.lastTop !== undefined && lane0.lastTop < lane0.laneTop, 'a song row is visible above the save lane: ' + JSON.stringify(lane0));
+      assert.ok(lane0.through.every((id) => id === 'save-lane'), 'no song row shows through the save lane: ' + JSON.stringify(lane0));
+      assert.ok(lane0.laneH > 0 && lane0.laneTop >= 0 && lane0.laneBottom <= lane0.vh + 0.5, 'the save lane sits inside the window: ' + JSON.stringify(lane0));
       await page.evaluate(() => { const m = document.getElementById('main'); m.scrollTop = m.scrollHeight; });
       const fit = await page.evaluate(() => { const lane = document.getElementById('save-lane').getBoundingClientRect(), bar = document.querySelector('.save-bar').getBoundingClientRect(), last = Array.from(document.querySelectorAll('.mz-track')).pop().getBoundingClientRect();
         return { laneTop: lane.top, laneBottom: lane.bottom, barTop: bar.top, barBottom: bar.bottom, lastBottom: last.bottom, vh: innerHeight, vw: innerWidth, barR: bar.right }; });
@@ -188,6 +199,13 @@ try {
       assert.ok(cards.every((c) => Math.abs(c.y - cards[0].y) < 1 && Math.abs(c.w - cards[0].w) < 1), 'four equal player cards: ' + JSON.stringify(cards));
       assert.equal(await style(page, '.player-card[aria-selected="true"]', 'borderTopColor'), 'rgb(224, 39, 46)', 'the selected player has a red border');
       assert.equal(await style(page, '.player-card.is-empty .player-icon', 'opacity'), '0.45', 'an empty player: the icon at 45%');
+      assert.equal(await style(page, '.player-card', 'borderTopLeftRadius'), '14px', 'player cards use --r-lg, not the 10px button radius');
+      if (viewport.width === 800) { // the device row stays on one line; long device names get two lines, not "No cont…"
+        const scan = await rect(page, '#scan-pads'), label = await rect(page, '.player-device label'), sel = await rect(page, '.player-device select');
+        assert.ok(scan.h <= 40 && Math.abs(scan.y - sel.y) < 8 && Math.abs(label.y + label.h / 2 - (sel.y + sel.h / 2)) < 4, 'Input device, the select and Scan again share one line: ' + JSON.stringify({ scan, label, sel }));
+        assert.equal(await page.locator('#scan-pads').evaluate((n) => n.getClientRects().length === 1 && n.scrollHeight <= n.clientHeight + 1), true, 'Scan again is a single-line button');
+        assert.ok(await page.locator('.player-text small').evaluateAll((ns) => ns.every((n) => n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1)), 'every player subline shows in full');
+      }
       const setup = await rect(page, '#menu-pad-setup'), screen = await rect(page, '#screen'), head = await rect(page, '.page-heading');
       assert.ok(Math.abs(setup.r - screen.r) < 1.5, 'Set up launcher controls sits on the content column\'s right edge');
       assert.ok(setup.y >= head.y - 1 && setup.b <= head.b + 1, 'it sits in the header row');

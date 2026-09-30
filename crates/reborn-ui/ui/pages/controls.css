@@ -32,6 +32,8 @@ body.page-controls #main{display:grid;grid-template-columns:minmax(0,1fr) auto;a
 /* player cards, 16px apart at every width */
 .player-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:24px}
 .player-card{display:flex;align-items:center;gap:12px;min-width:0;padding:14px 16px;border-radius:var(--r-lg);border:1px solid var(--stroke);background:var(--glass-1);box-shadow:var(--sheen);color:var(--fg);font:inherit;text-align:left;cursor:pointer;backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+/* theme.css:70 body.shell button{border-radius:var(--r-md)} (0,1,2) outranks .player-card: the card radius needs the page class */
+body.page-controls .player-card{border-radius:var(--r-lg)}
 .player-card:hover:not(:disabled){background:var(--glass-2)}
 .player-card:disabled{cursor:default}
 .player-card[aria-selected="true"]{border-color:var(--red);background:color-mix(in srgb,var(--red) 8%,transparent)}
@@ -47,7 +49,8 @@ body.page-controls #main{display:grid;grid-template-columns:minmax(0,1fr) auto;a
 /* input device row */
 .player-panel{min-width:0}
 .player-device{display:flex;align-items:center;gap:16px;margin:16px 0}
-.player-device label{font-size:13px;color:var(--fg-2)}
+.player-device label{flex:none;white-space:nowrap;font-size:13px;color:var(--fg-2)}
+.player-device button{flex:none;white-space:nowrap}
 .player-device select{flex:0 1 380px;min-width:0}
 
 /* the mapping panel (setup-controller.js, layout "players") */
@@ -127,6 +130,16 @@ body.page-controls .player-workspace .controller-preview svg{width:100%;max-heig
 @media (max-width:900px){
   body.page-controls #main{padding:24px max(24px,calc(100% - 966px)) 16px 24px}
   .player-card{padding:12px}
+  /* a narrow card: a smaller icon beside "Player N", and the device name under both at the card's full width,
+     on up to two lines (its tooltip holds the full text), instead of "No cont…" */
+  .player-card{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px}
+  .player-text{display:contents}
+  .player-icon{width:26px;height:26px}
+  .player-icon svg{width:14px;height:14px}
+  .player-text small{grid-column:1/-1;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;white-space:normal;overflow-wrap:anywhere}
+  /* the device row stays on one line: the select gives up width first */
+  .player-device{gap:12px}
+  .player-device select{flex:1 1 auto}
   .page-controls .player-workspace{grid-template-columns:minmax(0,1fr) minmax(0,200px) minmax(0,1fr);gap:16px;padding:16px}
   .player-workspace .controller-art{max-width:175px}
   body.page-controls .player-workspace .controller-preview svg{max-height:160px}
