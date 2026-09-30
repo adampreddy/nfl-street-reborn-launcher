@@ -7,6 +7,7 @@ import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN } from './live-common.js';
 import { TABS, header, notFound } from './live-game-render.js';
 import { sideTeams, snapshotOf, webLinkShown } from './stats-rows.js';
+import { neighbours } from './stats-model.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
@@ -15,6 +16,44 @@ const gameId = (params.get('game') || '').toLowerCase();
 const screen = document.getElementById('screen');
 // online: whether the game is an online one (only those get "Open on web"; see webLinkShown in stats-rows.js).
 const state = { snap: null, verified: false, online: false, error: null, tab: 'plays', missing: !UUID_RE.test(gameId) };
+
+// The list of game ids the page we came from was showing (stats.js / profile.js write this, right before
+// navigating here, as the ids of their own current match list). Missing, unparsable, or not naming an ids
+// array: no list to step through, same as gameList being null throughout this file.
+function readGameList() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem('nsr.gameList'));
+    return parsed && Array.isArray(parsed.ids) ? parsed : null;
+  } catch { return null; }
+}
+const gameList = readGameList();
+
+function openGame(id) {
+  if (!id) return;
+  location.href = `game.html?game=${encodeURIComponent(id)}`;
+}
+
+// ‹ Previous / Next › above the header: drawn only when this game is actually in the list we came from
+// (neighbours() alone can't tell "not in the list" apart from "at one end of it", since both give a null
+// neighbour on that side).
+function prevNextBar() {
+  if (!gameList || !gameList.ids.includes(gameId)) return null;
+  const { prev, next } = neighbours(gameList.ids, gameId);
+  return el('div', { class: 'lv-actions', role: 'group', 'aria-label': gameList.label || 'Games' },
+    el('button', { type: 'button', 'data-key': 'game-prev', text: '‹ Previous', disabled: prev === null, onclick: () => openGame(prev) }),
+    el('button', { type: 'button', 'data-key': 'game-next', text: 'Next ›', disabled: next === null, onclick: () => openGame(next) }));
+}
+
+// Left/Right step to the neighbouring game, same as the buttons, unless the arrow key is meant for a text
+// field (there is none on this page today, but the rule holds for whatever lands here later).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (!gameList) return;
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) return;
+  const { prev, next } = neighbours(gameList.ids, gameId);
+  openGame(e.key === 'ArrowLeft' ? prev : next);
+});
 
 function draw() {
   if (!screen) return;
@@ -29,6 +68,8 @@ function draw() {
   if (!snap && !state.error) parts.push(el('p', { class: 'loading', text: 'Loading the game…' }));
   if (snap) {
     const game = snap.games[0];
+    const bar = prevNextBar();
+    if (bar) parts.push(bar);
     parts.push(header(snap, game));
     if (!state.verified) {
       parts.push(el('p', { class: 'lv-empty', text: TOTALS_ONLY }));

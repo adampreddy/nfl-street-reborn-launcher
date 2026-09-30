@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints } from './stats-model.js';
+import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints, neighbours } from './stats-model.js';
 
 test('number formats', () => {
   assert.equal(fmtInt(1284), '1,284'); assert.equal(fmtInt(null), '—'); assert.equal(fmtInt(NaN), '—');
@@ -62,4 +62,11 @@ test('youGrid and trendPoints', () => {
   assert.equal(youGrid({ wins: 0, losses: 0, ties: 0, win_pct: null, streak: null, pts_per_game: null, yds_per_game: null }, null)[2].value, '—');
   assert.equal(trendPoints([{ rating: 1000 }]), '');
   assert.equal(trendPoints([{ rating: 1000 }, { rating: 1100 }], 100, 50), '0,50 100,0');
+});
+
+test('neighbours in a newest-first list', () => {
+  assert.deepEqual(neighbours(['a', 'b', 'c'], 'b'), { prev: 'c', next: 'a' });
+  assert.deepEqual(neighbours(['a', 'b'], 'a'), { prev: 'b', next: null });
+  assert.deepEqual(neighbours(['a'], 'x'), { prev: null, next: null });
+  assert.deepEqual(neighbours(null, 'a'), { prev: null, next: null });
 });

@@ -59,7 +59,28 @@ async function load(quiet = false) {
 
 const profileHref = (id, hash = '') => `profile.html?player=${encodeURIComponent(id)}${hash ? `#${hash}` : ''}`;
 const gameHref = (id) => `game.html?game=${encodeURIComponent(id)}`;
-const go = (href) => () => { location.href = href; };
+
+// The ids of a set of matches' games, newest first (matches here already are; the server sends each match's own
+// games oldest first, so each match's games are reversed on the way in). This is the ordered list game.html's
+// ‹ Previous / Next › bar steps through, remembered in sessionStorage['nsr.gameList'] right before we navigate
+// to one of them.
+function gameIdsOf(matches) {
+  const ids = [];
+  for (const m of matches) {
+    const games = Array.isArray(m?.games) ? m.games : [];
+    for (let i = games.length - 1; i >= 0; i--) {
+      const g = games[i];
+      if (g && typeof g.id === 'string') ids.push(g.id);
+    }
+  }
+  return ids;
+}
+
+function storeGameList(matches, label) {
+  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label })); } catch { /* best effort */ }
+}
+
+const goToGame = (id, matches, label) => () => { storeGameList(matches, label); location.href = gameHref(id); };
 
 function initial(name) {
   const first = Array.from(String(name || '').trim())[0];
@@ -113,7 +134,7 @@ function matchLabel(m, r) {
   return `${parts.join('. ')}.`;
 }
 
-function matchRow(m) {
+function matchRow(m, list) {
   const r = matchRowModel(m);
   const key = `match-${r.id}`;
   const open = r.expandable && state.expanded.has(r.id);
@@ -135,7 +156,7 @@ function matchRow(m) {
     row = el('button', { ...attrs, type: 'button', 'aria-expanded': String(open), 'aria-controls': gamesId,
       onclick: () => { if (state.expanded.has(r.id)) state.expanded.delete(r.id); else state.expanded.add(r.id); draw(); } }, ...cells);
   } else if (r.onlyGame) {
-    row = el('button', { ...attrs, type: 'button', onclick: go(gameHref(r.onlyGame)) }, ...cells);
+    row = el('button', { ...attrs, type: 'button', onclick: goToGame(r.onlyGame, list, 'Your matches') }, ...cells);
   } else {
     // A match with no recorded game has nothing to open.
     row = el('div', { ...attrs, role: 'group' }, ...cells);
@@ -144,7 +165,7 @@ function matchRow(m) {
   const games = el('div', { class: 'stats-games', id: gamesId, hidden: open ? null : '' },
     ...r.games.map((g, i) => {
       const label = `Game ${i + 1}. ${g.score !== '—' ? `Score ${g.score}` : 'No score'}${g.result ? `, ${RESULT_WORD[g.result]}` : ''}. ${g.date} ${g.time}.`;
-      return el('button', { type: 'button', class: 'stats-row game', 'data-key': `game-${g.id}`, 'aria-label': label, onclick: go(gameHref(g.id)) },
+      return el('button', { type: 'button', class: 'stats-row game', 'data-key': `game-${g.id}`, 'aria-label': label, onclick: goToGame(g.id, list, 'Your matches') },
         el('span', { class: 'stats-when' }, el('b', { text: `Game ${i + 1}` })),
         el('span', { class: 'stats-mu' }, teamLogo(g.me), el('span', { class: 'stats-vs', text: 'vs' }), teamLogo(g.opp),
           el('span', { class: 'stats-game-time', text: g.time })),
@@ -168,7 +189,7 @@ function matchesBlock(matches) {
   }
   const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   state.page = Math.max(0, Math.min(state.page, pages - 1));
-  out.push(el('div', { class: 'stats-glass stats-list' }, ...list.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).flatMap(matchRow)));
+  out.push(el('div', { class: 'stats-glass stats-list' }, ...list.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).flatMap((m) => matchRow(m, list))));
   if (pages > 1) out.push(el('div', { class: 'stats-pager' },
     el('button', { type: 'button', 'data-key': 'newer', text: 'Newer', disabled: state.page === 0, onclick: () => { state.page--; draw(); } }),
     el('span', { text: `Page ${state.page + 1} of ${pages}` }),

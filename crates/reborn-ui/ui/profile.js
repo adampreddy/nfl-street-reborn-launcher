@@ -42,6 +42,26 @@ const profileHref = (id) => `profile.html?player=${encodeURIComponent(id)}`;
 const gameHref = (id) => `game.html?game=${encodeURIComponent(id)}`;
 const webUrl = () => `${PAGE_ORIGIN}/u/${playerId}`;
 
+// The ids of a set of matches' games, newest first (matches here already are; the server sends each match's own
+// games oldest first, so each match's games are reversed on the way in). This is the ordered list game.html's
+// ‹ Previous / Next › bar steps through, remembered in sessionStorage['nsr.gameList'] right before we navigate
+// to one of them.
+function gameIdsOf(matches) {
+  const ids = [];
+  for (const m of matches) {
+    const games = Array.isArray(m?.games) ? m.games : [];
+    for (let i = games.length - 1; i >= 0; i--) {
+      const g = games[i];
+      if (g && typeof g.id === 'string') ids.push(g.id);
+    }
+  }
+  return ids;
+}
+
+function storeGameList(matches, label) {
+  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label })); } catch { /* best effort */ }
+}
+
 function initial(name) {
   const first = Array.from(String(name || '').trim())[0];
   return first ? first.toUpperCase() : '?';
@@ -263,7 +283,10 @@ function rowCells(when, me, opp, opponent, sc, result, tag, tagKind, caret) {
 }
 
 let matchSeq = 0;
-function matchRow(m) {
+// `loaded` is every match shown so far (the initial page plus every "All ›" load); `listLabel` is the
+// "<name>'s matches" line stored beside them. Both stay live across "All ›" clicks: matchesSection mutates
+// `loaded` in place (push, never reassign), so a row built before a later load still stores the fuller list.
+function matchRow(m, loaded, listLabel) {
   const r = matchRowModel({ ...m, games: list(m.games) });
   const opponent = el('span', { class: 'pf-opp' },
     m.opponent_kind === 'cpu' || !m.opponent ? null : avatar(r.avatar, r.opponent),
@@ -273,13 +296,15 @@ function matchRow(m) {
   if (!r.expandable) {
     const attrs = { class: 'pf-row', 'data-key': `match-${r.id}`, 'aria-label': matchLabel(m, r) };
     // A match with no recorded game has nothing to open.
-    wrap.append(r.onlyGame ? el('a', { ...attrs, href: gameHref(r.onlyGame) }, ...cells) : el('div', { ...attrs, role: 'group' }, ...cells));
+    wrap.append(r.onlyGame
+      ? el('a', { ...attrs, href: gameHref(r.onlyGame), onclick: () => storeGameList(loaded, listLabel) }, ...cells)
+      : el('div', { ...attrs, role: 'group' }, ...cells));
     return wrap;
   }
   const gamesId = `pf-games-${++matchSeq}`;
   const games = el('div', { class: 'pf-games', id: gamesId, hidden: '' }, ...r.games.map((g, i) => {
     const label = `Game ${i + 1}. ${g.score !== DASH ? `Score ${g.score}` : 'No score'}${g.result ? `, ${RESULT_WORD[g.result]}` : ''}. ${g.date} ${g.time}.`;
-    return el('a', { class: 'pf-row pf-game', href: gameHref(g.id), 'data-key': `game-${g.id}`, 'aria-label': label },
+    return el('a', { class: 'pf-row pf-game', href: gameHref(g.id), 'data-key': `game-${g.id}`, 'aria-label': label, onclick: () => storeGameList(loaded, listLabel) },
       ...rowCells([`Game ${i + 1}`, ''], g.me, g.opp, el('span', { class: 'pf-gtime', text: g.time }), g.score, g.result, '', '', ''));
   }));
   const row = el('button', { type: 'button', class: 'pf-row pf-exp', 'data-key': `match-${r.id}`, 'aria-expanded': 'false', 'aria-controls': gamesId, 'aria-label': matchLabel(m, r) }, ...cells);
@@ -296,7 +321,12 @@ function matchesSection(p) {
   const { s, head, body } = section('matches', 'Recent matches');
   const first = list(p.recent_matches);
   if (!first.length) { body.append(none()); return s; }
-  const rows = el('div', { class: 'pf-rows', id: 'pf-match-rows' }, ...first.map(matchRow));
+  const listLabel = `${p.header?.display_name || 'Player'}'s matches`;
+  // Every match rendered so far, oldest loaded last: matchRow's click handlers close over this array by
+  // reference, so pushing onto it (never reassigning) keeps every already-built row's ‹ Previous / Next › list
+  // current, including games from a later "All ›" load.
+  const loaded = first.slice();
+  const rows = el('div', { class: 'pf-rows', id: 'pf-match-rows' }, ...first.map((m) => matchRow(m, loaded, listLabel)));
   body.append(rows);
   let last = first.at(-1)?.at ?? null;
   let shown = first.length;
@@ -311,7 +341,8 @@ function matchesSection(p) {
         const page = await quietCall('player_profile', { playerId, before: last });
         const ms = list(page?.matches);
         if (page && page.ok === false) throw new Error(typeof page.error === 'string' && page.error ? page.error : 'More matches could not be loaded.');
-        rows.append(...ms.map(matchRow));
+        loaded.push(...ms);
+        rows.append(...ms.map((m) => matchRow(m, loaded, listLabel)));
         shown += ms.length;
         if (ms.length) last = ms.at(-1).at;
         if (!ms.length || shown >= total || !last) more.remove();

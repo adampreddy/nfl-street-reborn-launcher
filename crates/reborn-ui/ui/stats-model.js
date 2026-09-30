@@ -337,6 +337,21 @@ export function youGrid(summary, playsAs) {
 }
 
 /**
+ * Find a game's neighbours in a newest-first list of game ids: "Previous" is the older game (the next
+ * entry in the list), "Next" the newer one (the entry before it). Used by the game view's ‹ Previous / Next ›
+ * bar to step through the list of games the page it was opened from was showing.
+ * @param {Array<string>|null|undefined} list
+ * @param {string} id
+ * @returns {{prev: string|null, next: string|null}}
+ */
+export function neighbours(list, id) {
+  const ids = Array.isArray(list) ? list : [];
+  const i = ids.indexOf(id);
+  if (i === -1) return { prev: null, next: null };
+  return { prev: ids[i + 1] ?? null, next: ids[i - 1] ?? null };
+}
+
+/**
  * Generate SVG polyline points string for trend chart.
  * Maps ratings to a box: min at bottom, max at top, x evenly spaced.
  * @param {Array<{rating: number}>} history
