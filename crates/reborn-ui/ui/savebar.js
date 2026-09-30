@@ -55,9 +55,14 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
   return {
     update(changes) {
       const n = changes.length;
-      title.textContent = `${n} ${noun}${n === 1 ? "" : "s"}`;
-      detail.textContent = changes.at(-1) || "";
-      if (detail.textContent) detail.title = detail.textContent; else detail.removeAttribute("title");
+      // The text sits in an aria-live region and pages call update() on every status poll (Music while
+      // it encodes): write only what changed, so a screen reader hears the bar once, not on every poll.
+      const heading = `${n} ${noun}${n === 1 ? "" : "s"}`, last = changes.at(-1) || "";
+      if (title.textContent !== heading) title.textContent = heading;
+      if (detail.textContent !== last) {
+        detail.textContent = last;
+        if (last) detail.title = last; else detail.removeAttribute("title");
+      }
       const hadFocus = n === 0 && lane.contains(document.activeElement);
       lane.classList.toggle("open", n > 0);
       lane.inert = n === 0;

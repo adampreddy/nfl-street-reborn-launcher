@@ -78,6 +78,18 @@ try{
  assert.equal(await page.locator('.save-bar [role=alert]').isVisible(),true,'the same list keeps its reason');
  await page.evaluate(()=>bar.update(['Emulator location','Window glass']));
  assert.equal(await page.locator('.save-bar [role=alert]').isHidden(),true,'a changed list clears the old reason');
+ // The text is an aria-live region and Music calls update() on every status poll: the same list twice must not
+ // rewrite it (a screen reader would hear the bar again), yet the open/inert toggles still apply every call.
+ const quiet=await page.evaluate(async()=>{
+  const live=document.querySelector('.save-bar [aria-live]'),seen=[];
+  const mo=new MutationObserver(r=>seen.push(...r));mo.observe(live,{subtree:true,childList:true,characterData:true,attributes:true});
+  const lane=document.getElementById('save-lane');lane.inert=true;
+  bar.update(['Emulator location','Window glass']);bar.update(['Emulator location','Window glass']);
+  await new Promise(r=>setTimeout(r,0));seen.push(...mo.takeRecords());mo.disconnect();
+  return {mutations:seen.length,inert:lane.inert,open:lane.classList.contains('open'),text:live.innerText};});
+ assert.equal(quiet.mutations,0,'update() with an unchanged list leaves the live text alone: '+JSON.stringify(quiet));
+ assert.equal(quiet.inert,false,'update() still re-applies the lane toggles');
+ assert.match(quiet.text,/2 unsaved changes[\s\S]*Window glass/);
  await page.evaluate(()=>bar.update(['Emulator location']));
  // The next attempt clears the old reason.
  await page.evaluate(()=>window.outcome='The disk is full.');
