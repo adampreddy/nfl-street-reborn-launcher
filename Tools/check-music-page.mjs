@@ -104,6 +104,10 @@ try {
  assert.ok(edge.barTop>=edge.laneTop&&edge.barBottom<=edge.h,'the bar is inside its lane and the window');
  assert.ok(edge.lastBottom<=edge.barTop,'the last song scrolled into view ends above the bar');
  assert.equal(await page.getByRole('button',{name:'Add song',exact:true}).count(),0,'the duplicate Add song is gone (spec §8.4)');
+ // P3-14: staged songs live in the core and survive navigation, so the bar never traps the player.
+ const leaves=sel=>page.evaluate(sel=>{let seen=null;const l=e=>{seen=e.defaultPrevented;e.preventDefault();};window.addEventListener('click',l);document.querySelector(sel).click();window.removeEventListener('click',l);return seen;},sel);
+ assert.equal(await page.locator('#save-lane[data-keeps]').count(),1,'the Music lane is marked keeps');
+ assert.equal(await leaves('.shell-nav a[href="mods.html"]'),false,'a sidebar click with a pending change is not intercepted');
  // The header row: the switch, then Reset, Import pack, Export pack and Add songs….
  assert.equal(await page.locator('#music-enabled[role=switch]').getAttribute('aria-checked'),'true');
  assert.deepEqual(await page.locator('.music-toolbar-actions button').allInnerTexts(),['Reset','Import pack','Export pack','Add songs…']);
@@ -271,16 +275,13 @@ try {
  // Review Focus 3: while the core builds, Apply AND Discard are held (a second Apply would start a second rebuild).
  assert.equal(await apply.isDisabled(),true);
  assert.equal(await discard.isDisabled(),true,'Discard waits for the build too');
- // P3-2: with both buttons held the bar itself takes focus; B from the sidebar lands on it, never off the page.
+ // P3-2: with both buttons held the bar itself takes focus (pointAtSaveBar / toSaveBar never focus nothing).
  assert.equal(await page.locator('.save-bar').getAttribute('tabindex'),'-1');
- await page.evaluate(()=>{window.pads=[{id:'Test pad',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:18},()=>({pressed:false,value:0}))}];window.dispatchEvent(new Event('gamepadconnected'));});
- const press=async b=>{await page.evaluate(b=>{pads[0].buttons[b]={pressed:true,value:1};},b);await page.waitForTimeout(120);await page.evaluate(b=>{pads[0].buttons[b]={pressed:false,value:0};},b);await page.waitForTimeout(120);};
- await page.waitForTimeout(150);
  await page.evaluate(()=>document.querySelector('.shell-nav a.current').focus());
- await press(1);
- assert.equal(await page.evaluate(()=>location.pathname),'/music.html','B from the sidebar with pending changes stays on Music');
- assert.equal(await page.evaluate(()=>document.activeElement?.classList.contains('save-bar')),true,'B from the sidebar lands on the locked save bar');
- await page.evaluate(()=>{window.pads=[];window.dispatchEvent(new Event('gamepaddisconnected'));});
+ await page.evaluate(()=>window.pointAtSaveBar());
+ assert.equal(await page.evaluate(()=>document.activeElement?.classList.contains('save-bar')),true,'the locked bar takes focus');
+ // P3-14: a whole rebuild with both buttons held never traps the player either.
+ assert.equal(await leaves('.shell-nav a[href="controls.html"]'),false,'a sidebar click during a build is not intercepted');
  assert.ok(await page.evaluate(()=>window.__musicCalls.some(c=>c.cmd==='music_apply'&&c.args.confirm===true)));
  await page.evaluate(()=>{window.__musicStatus.phase='done';window.__musicStatus.slots.forEach(s=>s.pending=null);});
  await page.getByText('Your soundtrack is up to date.',{exact:true}).waitFor({timeout:4000});
@@ -298,5 +299,14 @@ try {
   await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
  }
  assert.deepEqual(errors,[]);
+ // P3-14 with a pad: a change pending (the core keeps it), B from the page, then B from the sidebar leaves Music.
+ await page.getByRole('button',{name:'Restore original song 21',exact:true}).click();
+ await page.locator('.save-lane.open').waitFor();
+ await page.evaluate(()=>{window.pads=[{id:'Test pad',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:18},()=>({pressed:false,value:0}))}];window.dispatchEvent(new Event('gamepadconnected'));});
+ await page.waitForTimeout(150);
+ await page.evaluate(()=>document.querySelector('.shell-nav a.current').focus());
+ // Hold B until the page is gone (the release would land on the next page).
+ await page.evaluate(()=>{pads[0].buttons[1]={pressed:true,value:1};});
+ await page.waitForURL(/\/index\.html$/,{timeout:4000});
  console.log('PASS: song list, add/replace/edit/reset/undo, error recovery, import/export, apply progress, switch, responsive dialogs.');
 } finally {await browser.close();}

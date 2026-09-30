@@ -395,7 +395,7 @@ function statusLine(){
     const label=status.phase==='encoding'?(/^Adding song /.test(status.progress?.label||'')?status.progress.label:'Preparing your song'):'Applying your soundtrack';
     return el('div',{class:'glass music-progress',role:'status'},el('div',{},el('strong',{text:label}),el('span',{text:pct===null?'Please wait…':`${pct}%`})),el('progress',{max:'100',value:pct,'aria-label':label}),el('p',{class:'note',text:status.phase==='encoding'?'Your song will appear in the list when it is ready.':'Keep the launcher open until this finishes.'}));
   }
-  if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'glass mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
+  if(status?.phase==='done'||status?.phase==='problem')return el('div',{class:'glass mz-done'+(status.phase==='problem'?' music-error':''),role:status.phase==='problem'&&!applyWatch?'alert':'status'},el('span',{text:status.phase==='done'?(slots().some(s=>s.pending)?'Changes saved. Apply them when you are ready.':'Your soundtrack is up to date.'):(status.note||'Something went wrong.')}),el('button',{type:'button',text:'Dismiss',onclick:()=>act('music_dismiss')}));
   return null;
 }
 // A row dragged by the mouse: after a few pixels of movement the row is
@@ -676,6 +676,8 @@ function shareDialog() {
 const bar = mountSaveBar(document.getElementById("save-lane"), {
   noun: "pending change",
   saveText: "Apply changes",
+  // Staged songs live in the core and survive navigation: the bar never traps the player on Music.
+  keepsOnLeave: true,
   onSave: () => act("music_apply", { confirm: true }, { fromBar: true }),
   onDiscard: () => act("music_unstage", { slot: null }, { fromBar: true }),
   returnFocus: () => document.querySelector("#disc .mz-track button:not(:disabled)"),

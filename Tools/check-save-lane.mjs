@@ -166,6 +166,13 @@ try{
  await page.waitForTimeout(150);
  assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','a locked bar still refuses to leave');
  assert.equal(await page.evaluate(()=>document.activeElement.classList.contains('save-bar')),true,'a refused click focuses the locked bar');
+ // P3-14: a lane marked keeps (keepsOnLeave: Music, changes held by the core) lets a sidebar click through;
+ // an unmarked lane (Settings, a page-local draft) keeps refusing it.
+ const leaves=sel=>page.evaluate(sel=>{let seen=null;const l=e=>{seen=e.defaultPrevented;e.preventDefault();};window.addEventListener('click',l);document.querySelector(sel).click();window.removeEventListener('click',l);return seen;},sel);
+ await page.evaluate(()=>document.getElementById('save-lane').dataset.keeps='');
+ assert.equal(await leaves('.shell-nav a[href="mods.html"]'),false,'a keeps lane does not intercept leaving');
+ await page.evaluate(()=>delete document.getElementById('save-lane').dataset.keeps);
+ assert.equal(await leaves('.shell-nav a[href="mods.html"]'),null,'an unmarked lane still intercepts leaving');
  await page.evaluate(()=>bar.lock(false));
  assert.equal(await page.evaluate(()=>document.querySelector('.save-bar').hasAttribute('tabindex')),false,'the bar is not a tab stop once a button is free');
  assert.equal(await page.getByRole('button',{name:'Save changes'}).isEnabled(),true,'lock(false) frees them');

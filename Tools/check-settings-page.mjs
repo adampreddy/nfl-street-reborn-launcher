@@ -206,6 +206,10 @@ try{
   assert.deepEqual([(await at()).lane,(await at()).text],[true,'Save changes'],'B again with changes pending lands on the save bar');
   assert.ok(page.url().includes('/settings.html'),'and never leaves the page');
   assert.equal(await page.locator('.save-lane.open').count(),1,'the change is still pending');
+  // P3-14: Settings' draft is page-local, so its lane is never marked keeps and a sidebar click is refused.
+  assert.equal(await page.locator('#save-lane[data-keeps]').count(),0,'the Settings lane is not keeps');
+  assert.equal(await page.evaluate(sel=>{let seen=null;const l=e=>{seen=e.defaultPrevented;e.preventDefault();};window.addEventListener('click',l);document.querySelector(sel).click();window.removeEventListener('click',l);return seen;},'.shell-nav a[href="mods.html"]'),null,'a sidebar click with a Settings change pending is intercepted');
+  assert.ok(page.url().includes('/settings.html'),'still on Settings');
   await page.context().close();
  }
  {

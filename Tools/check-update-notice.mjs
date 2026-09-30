@@ -36,7 +36,7 @@ async function run({automatic=false,active=false,current=false,ready=false,at='i
   window.advance=async ms=>{offset+=ms;for(const [id,t] of [...timers])if(t.next<=Date.now()&&timers.has(id)){t.next=Date.now()+t.ms;await t.fn();}await new Promise(r=>realTimeout(r,80));};
  });
  const p=await context.newPage();
- await p.route('http://updates.test/**',r=>r.fulfill({contentType:'text/html',body:'<body class="page-home"><main id="main"><div id="screen"></div></main><div id="save-lane"'+(lane?' class="open"':'')+'></div></body>'}));
+ await p.route('http://updates.test/**',r=>r.fulfill({contentType:'text/html',body:'<body class="page-home"><main id="main"><div id="screen"></div></main><div id="save-lane"'+(lane?' class="open"':'')+(lane==='keeps'?' data-keeps':'')+'></div></body>'}));
  await p.goto('http://updates.test/'+at);
  await p.addScriptTag({content:source});
  await p.waitForTimeout(180);
@@ -66,7 +66,7 @@ try{
  await t.context.close();
  // "View updates" is scripted navigation, not an <a> click: with the save bar open it must not leave the
  // page (it points at the bar instead); a hash change on the same page, or no pending changes, still goes.
- for(const [at,lane,expect] of [['index.html',true,/\/index\.html$/],['index.html',false,/\/settings\.html#updates$/],['settings.html',true,/\/settings\.html#updates$/]]){
+ for(const [at,lane,expect] of [['index.html',true,/\/index\.html$/],['index.html',false,/\/settings\.html#updates$/],['settings.html',true,/\/settings\.html#updates$/],['index.html','keeps',/\/settings\.html#updates$/]]){
   t=await run({ready:true,at,lane});
   await t.p.getByRole('button',{name:'View updates',exact:true}).click();
   await t.p.waitForTimeout(200);

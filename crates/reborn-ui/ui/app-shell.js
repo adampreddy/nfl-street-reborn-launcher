@@ -24,6 +24,9 @@ const inContent = n => !!n && (main.contains(n) || !!saveLane()?.contains(n));
 // Pending changes are never dropped silently: while the bar is open, leaving the page is refused and
 // the save bar (which states how many changes are unsaved) takes focus instead.
 const pending = () => !!saveLane()?.classList.contains('open');
+// A lane marked data-keeps (savebar.js keepsOnLeave: Music, whose staged songs the core holds) never
+// traps the player: its changes survive leaving, so only the page-local drafts (Settings) block it.
+const blocksLeave = () => pending() && !saveLane().hasAttribute('data-keeps');
 let calledTimer = 0;
 function uncall() { clearTimeout(calledTimer); document.querySelector('.save-bar.called')?.classList.remove('called'); }
 // Save first; with both buttons locked (savebar.js lock()) the bar itself, so focus never goes nowhere.
@@ -49,7 +52,7 @@ function leavesPage(link) {
   return !(samePage && url.hash);
 }
 document.addEventListener('click', e => {
-  if (!pending() || !(e.target instanceof Element)) return;
+  if (!blocksLeave() || !(e.target instanceof Element)) return;
   const link = e.target.closest('a[href]');
   if (!link || !leavesPage(link)) return;
   e.preventDefault(); e.stopImmediatePropagation();
@@ -297,7 +300,7 @@ function back() {
   if (visible(wizardBack)) { wizardBack.click(); return; }
   if (inContent(current)) { focus(document.querySelector('.shell-nav a.current') || document.querySelector('.shell-nav a[href="index.html"]')); return; }
   // Back from the sidebar would leave the page: never while changes are pending.
-  if (pending()) { toSaveBar(); return; }
+  if (blocksLeave()) { toSaveBar(); return; }
   if (!location.pathname.endsWith('/index.html') && location.pathname !== '/') location.href = 'index.html';
 }
 function pageStep(delta) {
@@ -305,7 +308,7 @@ function pageStep(delta) {
   // First run has saved, ordered steps; bumpers must not bypass its Next action.
   if (document.body.classList.contains('page-setup')||document.querySelector('dialog[open]')) return;
   // Unsaved changes are never dropped by a bumper: LB/RB do nothing while the save bar is open.
-  if (pending()) return;
+  if (blocksLeave()) return;
   const links = [...document.querySelectorAll('.shell-nav a:not(.brand)')].filter(visible);
   const index = links.findIndex(n => n.classList.contains('current'));
   const next = links[index+delta];

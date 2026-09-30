@@ -11,10 +11,15 @@
 // - bar.lock(saveHeld, discardHeld = saveHeld) keeps the buttons disabled until lock(false); while both are,
 //   .save-bar itself is focusable (tabindex -1) and app-shell falls back to it.
 // - The detail line is one line (ellipsis); its full text is in its tooltip.
+// - keepsOnLeave: true is for changes held outside the page (Music: the core stages songs and keeps them
+//   across navigation). It marks the lane data-keeps, and app-shell's leave guards (link clicks, B from the
+//   sidebar, LB/RB, update-notice's View updates) then let the player leave; nothing is lost by leaving.
+//   Pad moves into the bar and toSaveBar focus are unchanged. A page-local draft (Settings) must not set it.
 import { el, reason } from "./shell.js";
 
-export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "unsaved change", saveText = "Save changes" }) {
+export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "unsaved change", saveText = "Save changes", keepsOnLeave = false }) {
   lane.classList.add("save-lane");
+  if (keepsOnLeave) lane.dataset.keeps = "";
   lane.inert = true; // closed = not focusable, not clickable
   const title = el("div", { class: "t" }), detail = el("div", { class: "d" });
   const error = el("p", { class: "err", role: "alert" });

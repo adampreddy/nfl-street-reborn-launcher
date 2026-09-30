@@ -16,10 +16,11 @@ const size=bytes=>Math.max(1,Math.round((bytes||0)/1048576))+' MB';
 
 // "View updates" is scripted navigation, which app-shell's leave guard (a[href] clicks) never sees. While
 // the save bar is open, leaving the page points at the bar instead; a hash change on this page is fine.
+// A lane marked data-keeps (changes held by the core, e.g. Music) does not hold the player back.
 function openUpdates(){
  const to=new URL('settings.html#updates',location.href);
  const samePage=to.origin===location.origin&&to.pathname===location.pathname&&to.search===location.search;
- if(!samePage&&document.getElementById('save-lane')?.classList.contains('open')){window.pointAtSaveBar?.();return;}
+ if(!samePage&&document.querySelector('#save-lane.open:not([data-keeps])')){window.pointAtSaveBar?.();return;}
  location.assign(to.href);
 }
 function later(kind){put(updateKey(kind,version(kind)),{until:Date.now()+LATER_MS});}
