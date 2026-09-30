@@ -4498,6 +4498,9 @@ fn look_view(
     os: launcher_look::Os,
 ) -> LookView {
     let glass_note = match (material, os) {
+        (Some(_), _) if saved.window_glass && !applied => {
+            Some("The window glass could not be turned on.".to_string())
+        }
         (Some(_), _) => None,
         (None, launcher_look::Os::Linux) => Some("Frosted glass isn't available on Linux.".to_string()),
         (None, _) => Some("Not available on this system.".to_string()),
@@ -4520,14 +4523,25 @@ fn apply_glass(window: &tauri::WebviewWindow, material: Option<launcher_look::Ma
         (true, Some(launcher_look::Material::Vibrancy)) => Some(Effect::UnderWindowBackground),
         _ => None,
     };
-    match effect {
-        Some(e) => window.set_effects(EffectsBuilder::new().effect(e).build()).is_ok(),
+    let shown = match effect {
+        Some(e) => match window.set_effects(EffectsBuilder::new().effect(e).build()) {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("Could not turn the window glass on: {why}");
+                false
+            }
+        },
         None => {
             let _ = window.set_effects(None);
             false
         }
-    }
+    };
+    GLASS_APPLIED.store(shown, std::sync::atomic::Ordering::Relaxed);
+    shown
 }
+
+/// What the last glass apply really did (startup, save or preview).
+static GLASS_APPLIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn material_here() -> Option<launcher_look::Material> {
     launcher_look::pick_material(launcher_look::current_os(), launcher_look::windows_build())
@@ -4542,7 +4556,7 @@ async fn launcher_look(_window: tauri::WebviewWindow) -> Result<LookView, String
     .await
     .map_err(|e| e.to_string())??;
     let material = material_here();
-    let applied = saved.window_glass && material.is_some();
+    let applied = GLASS_APPLIED.load(std::sync::atomic::Ordering::Relaxed);
     Ok(look_view(saved, material, applied, launcher_look::current_os()))
 }
 
@@ -4565,6 +4579,7 @@ async fn launcher_look_set(
 }
 
 /// Preview glass on or off WITHOUT saving (Settings uses this before Save).
+/// The returned `windowGlass` is the SAVED value; `glassApplied` is the live preview.
 #[tauri::command]
 async fn window_glass_apply(window: tauri::WebviewWindow, enabled: bool) -> Result<LookView, String> {
     let saved = tauri::async_runtime::spawn_blocking(|| {
@@ -4575,7 +4590,11 @@ async fn window_glass_apply(window: tauri::WebviewWindow, enabled: bool) -> Resu
     .map_err(|e| e.to_string())??;
     let material = material_here();
     let applied = apply_glass(&window, material, enabled);
-    Ok(look_view(saved, material, applied, launcher_look::current_os()))
+    let mut view = look_view(saved, material, applied, launcher_look::current_os());
+    if !enabled {
+        view.glass_note = None; // turning it off on purpose is not a failure
+    }
+    Ok(view)
 }
 
 fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<PathBuf>, String> {
