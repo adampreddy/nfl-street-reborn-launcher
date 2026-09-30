@@ -28,7 +28,7 @@ const page = context.pages().find((p) => !p.url().startsWith("devtools")) || con
 console.log("attached to", page.url());
 const base = new URL(page.url());
 await page.goto(`${base.origin}/music.html`);
-await page.waitForSelector(".music-grid .store-card", { timeout: 15000 });
+await page.waitForSelector("#disc .mz-track", { timeout: 15000 });
 await page.waitForTimeout(800);
 
 const invoke = (cmd, args) => page.evaluate(([c, a]) => window.__TAURI__.core.invoke(c, a), [cmd, args]);
@@ -55,7 +55,7 @@ if (st.phase !== "done") {
 }
 await invoke("music_dismiss", {});
 await page.reload();
-await page.waitForSelector(".music-apply", { timeout: 15000 });
+await page.waitForSelector(".save-lane.open", { timeout: 15000 });
 await page.screenshot({ path: `${OUT}/window-music-staged.png` }).catch((e) => console.log("screenshot skipped:", e.message.slice(0, 80)));
 
 // The real Apply button.
@@ -80,7 +80,7 @@ for (let i = 0; i < 1200 && (st.phase === "building"); i++) {
 }
 console.log("after switch off:", st.phase, st.note, "enabled", st.enabled);
 await page.reload();
-await page.waitForSelector(".music-grid .store-card", { timeout: 15000 });
+await page.waitForSelector("#disc .mz-track", { timeout: 15000 });
 await page.waitForTimeout(800);
 await page.screenshot({ path: `${OUT}/window-music-off.png` }).catch((e) => console.log("screenshot skipped:", e.message.slice(0, 80)));
 await browser.close();

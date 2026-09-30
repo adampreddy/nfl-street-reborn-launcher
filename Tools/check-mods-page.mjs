@@ -234,7 +234,11 @@ check("enable sends the package identity", calls.some(([cmd, args]) => cmd === "
 for(const [label,value] of [["missing",null],["empty",{packages:[],activation:[]}],["null fields",{packages:null,activation:null,exclusive:null,unreadable:null,managed_by_controls:null}]]){
  __set({library:value,problem:null,notice:null});try{draw();check("store survives "+label,true);}catch(e){check("store survives "+label,false,e.message);}
 }
-check("empty store offers import",text(screen()).includes("Import mods"));
+{ // the toolbar also links to import, so look inside the empty state itself
+ const empty=walk(screen()).find((n)=>hasClass(n,"store-empty"));
+ const action=empty&&walk(empty).find((n)=>n.tagName==="a"&&n.textContent==="Import mods");
+ check("empty store offers import",!!action&&action.attrs.href==="onboarding.html");
+}
 __set({library,problem:"Could not apply the selected mod."});draw();
 check("mutation failures are displayed",text(screen()).includes("Could not apply the selected mod."));
 console.log(fails===0?"PASS: mod store preserves core actions and failure states":`FAIL: ${fails}`);process.exit(fails?1:0);

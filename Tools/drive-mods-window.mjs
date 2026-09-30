@@ -46,7 +46,7 @@ let st = await invoke("music_status", {});
 const fromMod = st.slots.filter((s) => s.source === "soundtrack_mod");
 console.log("music_status: base", JSON.stringify(st.base), "soundtrack_mod slots", fromMod.length, "first:", fromMod[0] && `${fromMod[0].title} / ${fromMod[0].artist}`);
 await page.goto(`${origin}/music.html`);
-await page.waitForSelector(".music-grid .store-card", { timeout: 15000 });
+await page.waitForSelector("#disc .mz-track", { timeout: 15000 });
 await page.waitForTimeout(800);
 await shot("window-music-ns1");
 
