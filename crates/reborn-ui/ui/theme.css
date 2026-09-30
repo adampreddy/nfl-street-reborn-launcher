@@ -127,17 +127,9 @@ html body.shell.has-save-lane #save-lane{grid-area:save;min-width:0}
 /* a refused leave points at Save (app-shell.js toSaveBar): a plain outline, no glow, not animated */
 .save-bar.called .btn.primary{outline:2px solid #fff;outline-offset:3px}
 
-/* Launcher window section (settings > Display) */
-.look-section{padding:6px 0;margin:16px 0}
-.look-section h2{font:600 15px Inter;padding:16px 22px 2px}
-.look-lead{color:var(--fg-2);font-size:12.5px;padding:0 22px 10px}
-.look-row{display:grid;grid-template-columns:150px 1fr auto;gap:8px 16px;align-items:center;padding:14px 22px;border-top:1px solid var(--stroke)}
-.look-label{font-weight:600;font-size:13px}
-.look-help{grid-column:1/-1;font-size:12px;color:var(--fg-3);margin:0}
 /* older page stylesheets restyle every button and h2; the switch and section heading keep the glass look */
 body.shell button.look-switch{width:40px;height:22px;min-height:22px;padding:0;border:0;border-radius:999px;background-color:var(--red);color:inherit}
 body.shell button.look-switch[aria-checked="false"]{background-color:rgba(255,255,255,.14)}
-body.shell .look-section h2{text-transform:none;letter-spacing:0;color:var(--fg)}
 .look-error{color:#ffb5b8}
 
 /* floating surfaces: content moves behind them, so --panel (a 4.5% white wash) is not enough.
@@ -235,6 +227,9 @@ body.themed dialog:not(.menu){max-width:calc(100vw - 48px);color:var(--fg);borde
 body.themed dialog:not(.menu)::backdrop{background:rgba(8,9,12,.6)}
 body.themed .update-center{position:fixed;right:24px;bottom:24px;z-index:50;display:grid;gap:16px;width:min(360px,calc(100vw - 48px));max-height:65vh;overflow:auto}
 body.themed:has(#input-hints:not(:empty)) .update-center{bottom:58px}
+/* an open save bar sits in the bottom-right too: the dock rises above it (the lane is at most ~132px with a
+   two-line failure), so an update notice never covers Save changes */
+body.themed:has(#save-lane.open) .update-center{bottom:calc(var(--hint-height,0px) + 144px)}
 body.themed .update-card{display:grid;gap:8px;padding:16px;border:1px solid var(--stroke-hi);border-radius:var(--r-lg);box-shadow:var(--sheen),var(--shadow)}
 body.themed .update-card .notice-headline{font-size:14px;font-weight:600}
 body.themed .update-card .update-message{font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere}
@@ -271,3 +266,8 @@ dialog.menu .menu-item[aria-checked="true"] .menu-check{visibility:visible}
 .tabs .tab[aria-pressed="true"]{color:var(--fg)}
 .tab-ind{position:absolute;top:4px;bottom:4px;left:0;width:100px;transform-origin:0 50%;transform:translateX(0) scaleX(0);border-radius:var(--r-sm);background:var(--glass-3);box-shadow:var(--sheen),0 0 0 1px var(--stroke);transition:transform var(--d2) var(--ease);pointer-events:none}
 .tab-ind.still{transition:none}
+
+/* field (spec §8.2 path rows): a value in a recessed box, with the green Auto tag while nothing was chosen */
+.field{display:flex;align-items:center;gap:8px;height:38px;min-width:0;padding:0 12px;border-radius:var(--r-md);background:var(--field-bg);border:1px solid var(--stroke);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+body.shell .field input{flex:1;min-width:0;height:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif;text-overflow:ellipsis;box-shadow:none}
+.field .auto{flex:none;margin-left:auto;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:var(--ok);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.25)}

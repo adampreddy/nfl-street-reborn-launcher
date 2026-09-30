@@ -1,0 +1,48 @@
+/* Settings (spec §8.2; mockup "SETTINGS"): header, the Dolphin card, the tabs, then glass sections of rows.
+   Layout only: colours, radii and durations come from theme.css. The form column is 942px, the mockup's
+   .inner (max-width 1014 including 36px padding each side). */
+body.page-settings #main{padding:36px 36px 28px}
+.page-settings .page-heading,.page-settings #screen{max-width:942px}
+.page-settings #screen{display:flex;flex-direction:column}
+.page-settings #screen>.refusal,.page-settings .loading{margin-top:24px}
+.page-settings .settings-status{margin-top:16px;font-size:12.5px;color:var(--fg-2)}
+body.page-settings .save-bar{margin:10px 36px 18px}
+
+.dolphin-card{display:flex;align-items:center;gap:16px;margin-top:24px;padding:14px 16px 14px 18px}
+.dolphin-icon{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:var(--r-md);color:var(--dolphin);background:linear-gradient(135deg,color-mix(in srgb,var(--dolphin) 35%,transparent),color-mix(in srgb,var(--dolphin) 8%,transparent));border:1px solid color-mix(in srgb,var(--dolphin) 35%,transparent)}
+.dolphin-icon svg{width:18px;height:18px}
+.dolphin-text{flex:1;min-width:0}
+.dolphin-text h2{font-size:14px;font-weight:600}
+.dolphin-text p{margin-top:2px;font-size:12.5px;color:var(--fg-2)}
+
+.page-settings .tabs{align-self:flex-start;margin-top:24px}
+
+.pref-section{margin-top:24px;padding:6px 0}
+.pref-section>h2{padding:16px 22px 2px;font-size:15px;font-weight:600}
+.pref-lead{padding:0 22px 10px;font-size:12.5px;color:var(--fg-2)}
+.pref-section>.partial,.pref-section>.refusal{margin:8px 22px 14px}
+.pref-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;align-items:center;gap:8px 18px;padding:14px 22px;border-top:1px solid var(--stroke)}
+.pref-label{font-size:13px;font-weight:600}
+.pref-value{min-width:0;font-size:13px;color:var(--fg-2);overflow-wrap:anywhere}
+.pref-control{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.pref-help{grid-column:2/4;margin-top:-6px;font-size:12px;color:var(--fg-3)}
+.pref-state{font-size:13px;color:var(--fg-2)}
+.pref-row select{width:220px}
+.pref-row input[type=range]{width:100%}
+.pref-list{margin:0 22px 14px;padding-left:18px;font-size:12.5px;color:var(--fg-2)}
+.pref-section .settings-progress{display:block;width:calc(100% - 44px);height:8px;margin:0 22px 14px}
+.look-section .look-error{padding:0 22px 14px}
+.page-settings .refresh{align-self:flex-start;margin-top:24px}
+
+.settings-choice{width:min(520px,calc(100vw - 48px))}
+.settings-choice h2{margin-bottom:8px;font-size:18px;font-weight:600}
+.settings-choice p{font-size:13px;color:var(--fg-2)}
+.settings-choice .settings-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:24px}
+
+@media (max-width:900px){
+  body.page-settings #main{padding:24px 24px 16px}
+  body.page-settings .save-bar{margin:8px 24px 16px}
+  .pref-row{grid-template-columns:120px minmax(0,1fr) auto;padding:14px 16px}
+  .pref-row select{width:180px}
+}
+.dolphin-text .dolphin-said:empty{display:none}
