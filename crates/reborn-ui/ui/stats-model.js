@@ -91,7 +91,9 @@ function unitLabel(unit) {
  */
 function getOpponentName(row) {
   if (!row.opponent) {
-    return row.opponent_kind === 'cpu' ? 'CPU' : '—';
+    if (row.opponent_kind === 'cpu') return 'CPU';
+    if (row.opponent_kind === 'guest') return 'Guest';
+    return '—';
   }
   return row.opponent.display_name || '—';
 }

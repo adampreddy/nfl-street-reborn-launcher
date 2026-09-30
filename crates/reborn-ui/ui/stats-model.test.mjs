@@ -24,6 +24,8 @@ test('gameRowModel: ranked Elo, offline tag, CPU', () => {
   const off = gameRowModel({ ...base, mode: 'offline', opponent: null, opponent_kind: 'cpu', elo_delta: null });
   assert.equal(off.tag, 'Offline'); assert.equal(off.tagKind, 'offline'); assert.equal(off.opponent, 'CPU');
   assert.equal(gameRowModel({ ...base, score: null, result: null }).score, '—');
+  const guest = gameRowModel({ ...base, opponent: null, opponent_kind: 'guest', elo_delta: null });
+  assert.equal(guest.opponent, 'Guest');
 });
 
 test('matchRowModel: a series shows 2–1 and expands; one game shows its score and opens it', () => {
@@ -36,6 +38,9 @@ test('matchRowModel: a series shows 2–1 and expands; one game shows its score 
   const one = matchRowModel({ id: 'g:a', at: g1.at, mode: 'offline', series: null, score: [36, 14], result: 'win', elo_delta: null,
     opponent: null, opponent_kind: 'cpu', me: {}, opp: {}, games: [{ ...g1, mode: 'offline' }] });
   assert.equal(one.score, '36–14'); assert.equal(one.expandable, false); assert.equal(one.onlyGame, 'a'); assert.equal(one.tag, 'Offline');
+  const guest = matchRowModel({ id: 'g:b', at: g1.at, mode: 'online', series: null, score: [28, 21], result: 'win', elo_delta: null,
+    opponent: null, opponent_kind: 'guest', me: {}, opp: {}, games: [{ ...g1, id: 'b', opponent_kind: 'guest' }] });
+  assert.equal(guest.opponent, 'Guest');
 });
 
 test('roleCards: six cards in order, None yet when empty', () => {
