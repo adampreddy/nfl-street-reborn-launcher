@@ -1,0 +1,1147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reborn Glass Mockup</title>
+<style>
+@font-face{font-family:SairaC;src:url("file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/fonts/SairaCondensed-800.woff2") format("woff2");font-weight:800}
+@font-face{font-family:Inter;src:url("file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/fonts/InterVariable.woff2") format("woff2");font-weight:100 900}
+:root{
+  --art:"file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/art/";
+  /* window material */
+  --mica-tint:rgba(18,19,23,.66);
+  /* glass surfaces, layered on the material */
+  --glass-1:rgba(255,255,255,.045);
+  --glass-2:rgba(255,255,255,.075);
+  --glass-3:rgba(255,255,255,.11);
+  --stroke:rgba(255,255,255,.09);
+  --stroke-hi:rgba(255,255,255,.16);
+  --sheen:inset 0 1px 0 rgba(255,255,255,.07);
+  --shadow:0 12px 40px -12px rgba(0,0,0,.55);
+  /* text */
+  --fg:#F4F5F7;--fg-2:#AEB5C0;--fg-3:#7C8491;
+  /* brand */
+  --red:#E0272E;--red-hi:#F04A50;--red-ink:#FF7A7F;--ok:#3DDC97;
+  --r-lg:14px;--r-md:10px;--r-sm:8px;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{font:14px/1.45 Inter,system-ui,sans-serif;color:var(--fg);background:#0b0c10;overflow:hidden;
+  display:grid;place-items:center;-webkit-font-smoothing:antialiased}
+
+/* ---------- simulated desktop wallpaper (what Mica samples) ---------- */
+.desk{position:fixed;inset:0;z-index:0;transition:background .5s}
+.desk.bloom{background:
+  radial-gradient(60% 70% at 30% 40%,#2b5cff 0,transparent 60%),
+  radial-gradient(50% 60% at 70% 65%,#7a3cff 0,transparent 60%),
+  radial-gradient(40% 50% at 80% 20%,#00b3ff 0,transparent 60%),#0a1030}
+.desk.sunset{background:
+  radial-gradient(60% 70% at 25% 70%,#ff6a3d 0,transparent 60%),
+  radial-gradient(55% 60% at 75% 35%,#c2185b 0,transparent 60%),
+  radial-gradient(40% 40% at 50% 90%,#ffb300 0,transparent 60%),#1a0a14}
+.desk.dark{background:radial-gradient(60% 60% at 50% 40%,#23262d 0,transparent 70%),#0d0e11}
+
+/* ---------- the launcher window ---------- */
+.win{position:relative;z-index:1;width:1280px;height:800px;border-radius:10px;overflow:hidden;
+  display:grid;grid-template-rows:32px 1fr;box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.08)}
+/* Mica: the OS blurs the wallpaper under the window and tints it. Simulated with backdrop-filter. */
+.win.mica{background:var(--mica-tint);backdrop-filter:blur(90px) saturate(1.7);-webkit-backdrop-filter:blur(90px) saturate(1.7)}
+/* Fallback (Linux / Steam Deck / no OS effect): the app paints its own frosted backdrop from the art */
+.win.fallback{background:linear-gradient(var(--mica-tint),var(--mica-tint)),radial-gradient(60% 60% at 50% 40%,#23262d 0,transparent 70%),#0d0e11}
+.titlebar{display:flex;align-items:center;justify-content:space-between;padding-left:14px;font-size:12px;color:var(--fg-2);
+  -webkit-app-region:drag}
+.titlebar .ctl{display:flex}.titlebar .ctl span{width:46px;height:32px;display:grid;place-items:center;color:var(--fg-2)}
+.titlebar .ctl span:last-child:hover{background:#c42b1c;color:#fff}
+
+.app{display:grid;grid-template-columns:184px 1fr;min-height:0}
+
+/* ---------- sidebar: sits directly on the material ---------- */
+.side{display:flex;flex-direction:column;padding:6px 12px 14px;border-right:1px solid var(--stroke)}
+.side .logo{height:84px;margin:4px 0 22px;display:flex;align-items:center;padding-left:4px}
+.side .logo>*{display:none}
+.side[data-logo=tidy] .lg-tidy,.side[data-logo=type] .lg-type,.side[data-logo=mark] .lg-mark{display:flex}
+.mk{background:url("file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/art/nsr-sidebar.png") 0 44%/100% auto no-repeat}
+.lg-tidy{width:136px;height:72px}
+.lg-type,.lg-mark{flex-direction:column;justify-content:center;gap:3px}
+.lg-type .a,.lg-mark .a{font:600 10.5px Inter;letter-spacing:.28em;color:var(--fg-2)}
+.lg-type .b{font:800 34px/0.9 SairaC,Inter;letter-spacing:.01em;color:var(--fg);text-transform:uppercase}
+.lg-type .b i,.lg-mark .b i{font-style:normal;color:var(--red)}
+.lg-type .rule{width:34px;height:3px;border-radius:2px;background:var(--red);box-shadow:0 0 10px var(--red);margin-top:6px}
+.side[data-logo=mark] .lg-mark{flex-direction:row;align-items:center;gap:10px}
+.lg-mark .mk{width:54px;height:40px;flex:none;background-size:54px auto}
+.lg-mark .a{white-space:nowrap;letter-spacing:.2em}
+.lg-mark .b{font:800 22px/0.95 SairaC,Inter;color:var(--fg);text-transform:uppercase}
+.nav{display:flex;flex-direction:column;gap:3px}
+.nav a{position:relative;display:flex;align-items:center;gap:12px;height:40px;padding:0 12px;border-radius:var(--r-md);
+  color:var(--fg-2);text-decoration:none;font-weight:500;transition:background .15s,color .15s;cursor:pointer}
+.nav a svg{width:17px;height:17px;flex:none;opacity:.85}
+.nav a:hover{background:var(--glass-1);color:var(--fg)}
+.nav a.on{background:var(--glass-3);color:var(--fg);box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
+.nav a.on::before{content:"";position:absolute;left:-12px;top:11px;bottom:11px;width:3px;border-radius:0 3px 3px 0;background:var(--red);box-shadow:0 0 12px var(--red)}
+.nav.bottom{margin-top:auto}
+
+/* ---------- shared glass pieces ---------- */
+.glass{background:var(--glass-1);border:1px solid var(--stroke);border-radius:var(--r-lg);box-shadow:var(--sheen),var(--shadow);
+  backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);
+  font:600 13px Inter;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer;
+  transition:background .15s,border-color .15s,transform .1s}
+.btn:hover{background:var(--glass-3);border-color:var(--stroke-hi)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:linear-gradient(180deg,#ec3a41,#c91f26);border-color:rgba(255,255,255,.18);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px -8px rgba(0,0,0,.6)}
+.btn.primary:hover{background:linear-gradient(180deg,#f4545a,#d6262d)}
+/* gamepad focus: always visible, never only colour */
+.pad-focus{outline:2px solid #fff;outline-offset:3px}
+
+.page{position:relative;overflow:hidden;display:none}
+.page.show{display:block}
+
+/* ---------- PLAY ---------- */
+.play .hero{position:absolute;inset:0;background:url("file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/art/play-background.png") 62% 18%/cover}
+.play .hero::after{content:"";position:absolute;inset:0;background:
+  linear-gradient(90deg,rgba(10,11,14,.78) 0,rgba(10,11,14,.35) 38%,transparent 62%),
+  linear-gradient(0deg,rgba(10,11,14,.85) 0,transparent 42%)}
+.play .content{position:absolute;inset:0;padding:0 42px 0 42px}
+.play .wordmark{position:absolute;left:38px;top:246px;width:470px;height:188px;background:url("file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/art/play-logo.png") left center/contain no-repeat;
+  filter:drop-shadow(0 10px 30px rgba(0,0,0,.6))}
+.play .cta{position:absolute;left:42px;top:458px;display:flex;align-items:center;gap:22px}
+/* one hero action: big, bright, glowing */
+.play .cta .btn.primary{height:52px;min-width:250px;padding:0 40px;border-radius:12px;font:700 18px Inter;letter-spacing:.01em}
+.play .cta .btn.primary svg{width:16px;height:16px}
+/* secondary: no fill, no border, reads as a link-weight action */
+.btn.ghost{height:40px;padding:0 6px;background:none;border-color:transparent;box-shadow:none;color:var(--fg-2);font-weight:600}
+.btn.ghost:hover{background:none;border-color:transparent;color:var(--fg)}
+.btn.ghost .kbd{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:6px;background:var(--glass-2);border:1px solid var(--stroke);font:700 10px Inter;color:var(--fg)}
+.play .status{position:absolute;left:44px;top:526px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2)}
+.play .status .sep{color:var(--fg-3)}
+.chip{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 12px;border-radius:999px;background:var(--glass-2);border:1px solid var(--stroke);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--sheen)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.avatar{width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#E0272E,#7a1216);display:grid;place-items:center;font:700 10px Inter;margin-left:-6px}
+.play .strip{position:absolute;left:42px;right:42px;bottom:48px;height:78px;display:grid;grid-template-columns:1fr 1fr 1fr;padding:0 6px}
+.strip .cell{display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-radius:10px;cursor:pointer;transition:background .15s}
+.strip .cell+.cell{border-left:1px solid var(--stroke);border-radius:0}
+.strip .cell:hover{background:var(--glass-1)}
+.strip .k{font-size:11.5px;color:var(--fg-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.strip .v{font-size:15px;font-weight:600;margin-top:3px}
+.strip svg{width:16px;height:16px;color:var(--fg-3)}
+.switch{width:40px;height:22px;border-radius:999px;background:var(--red);position:relative;box-shadow:inset 0 1px 2px rgba(0,0,0,.3)}
+.switch::after{content:"";position:absolute;right:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.hints{position:absolute;left:0;right:0;bottom:0;height:34px;display:flex;align-items:center;gap:22px;padding:0 42px;font-size:11.5px;color:var(--fg-3);
+  background:rgba(10,11,14,.45);border-top:1px solid var(--stroke);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.hints b{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 5px;margin-right:7px;border-radius:5px;background:var(--glass-3);
+  border:1px solid var(--stroke-hi);color:var(--fg);font:700 10px Inter}
+
+/* ---------- SETTINGS (sits on the material; content scrolls) ---------- */
+.settings.show{display:flex;flex-direction:column;height:100%}
+.settings .scroll{flex:1;min-height:0;overflow-y:auto}
+.settings .inner{max-width:1014px;padding:36px 36px 28px}
+h1{font:700 30px/1.1 Inter;letter-spacing:-.02em}
+.sub{color:var(--fg-2);margin-top:8px}
+.dolphin{margin-top:24px;display:flex;align-items:center;gap:16px;padding:14px 16px 14px 18px}
+.dolphin .ic{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,rgba(34,199,180,.35),rgba(34,199,180,.08));border:1px solid rgba(34,199,180,.35);display:grid;place-items:center}
+.dolphin .t{font-weight:600}.dolphin .d{font-size:12.5px;color:var(--fg-2)}
+.dolphin .btn{margin-left:auto}
+.tabs{margin-top:26px;display:inline-flex;gap:2px;padding:4px;border-radius:12px;background:rgba(0,0,0,.22);border:1px solid var(--stroke)}
+.tabs a{height:32px;padding:0 14px;display:grid;place-items:center;border-radius:8px;color:var(--fg-2);font-weight:500;font-size:13px;cursor:pointer}
+.tabs a:hover{color:var(--fg)}
+.tabs a.on{background:var(--glass-3);color:var(--fg);box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
+.section{margin-top:22px;padding:6px 0}
+.section h2{font:600 15px Inter;padding:16px 22px 2px}
+.section .lead{color:var(--fg-2);font-size:12.5px;padding:0 22px 10px}
+.row{display:grid;grid-template-columns:150px 1fr auto;gap:18px;align-items:center;padding:14px 22px;border-top:1px solid var(--stroke)}
+.row .lbl{font-weight:600;font-size:13px}
+.field{height:38px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:var(--r-md);background:rgba(0,0,0,.25);border:1px solid var(--stroke);color:var(--fg-3);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+.field .auto{margin-left:auto;font-size:11px;font-weight:600;color:var(--ok);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.25);padding:2px 8px;border-radius:999px}
+.help{grid-column:2/4;font-size:12px;color:var(--fg-3);margin-top:-8px}
+/* footer lane: part of the page flow, so the scroll area ends above it; the bar floats inside it */
+.savelane{flex:none;padding:10px 36px 18px}
+.savebar{max-width:942px;display:flex;align-items:center;gap:14px;padding:12px 14px 12px 20px;border-radius:14px;
+  border:1px solid var(--stroke-hi);background:rgba(24,25,30,.78);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3);
+  box-shadow:var(--sheen),0 16px 40px -14px rgba(0,0,0,.75)}
+.savebar .ind{width:8px;height:8px;border-radius:50%;background:var(--red)}
+.savelane:has(.savebar.clean){display:none}
+.savebar.clean .btn{opacity:.4;pointer-events:none}
+.savebar .dirty,.savebar.clean .isclean{display:block}.savebar .isclean,.savebar.clean .dirty{display:none}
+.savebar .t{font-weight:600}.savebar .d{color:var(--fg-2);font-size:12.5px}
+.savebar .btn:first-of-type{margin-left:auto}
+
+
+
+
+/* ---------- shared page frame for the inner pages ---------- */
+.lanepage.show{display:flex;flex-direction:column;height:100%}
+.lanepage .scroll,.scrollpage.show{overflow-y:auto}
+.lanepage .scroll{flex:1;min-height:0}
+.scrollpage.show{display:block;height:100%}
+.pinner{max-width:1014px;padding:36px 36px 32px}
+.head{display:flex;align-items:flex-end;gap:16px}
+.head .actions{margin-left:auto;display:flex;gap:8px}
+.btn.quiet{background:transparent;border-color:var(--stroke);box-shadow:none;color:var(--fg-2)}
+.btn.quiet:hover{color:var(--fg);background:var(--glass-1)}
+.btn.sm{height:32px;padding:0 12px;font-size:12.5px}
+.pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:999px;font:600 11px Inter;background:var(--glass-2);border:1px solid var(--stroke);color:var(--fg-2)}
+.pill.on{color:var(--ok);background:rgba(61,220,151,.08);border-color:rgba(61,220,151,.25)}
+.pill.warn{color:#FFC46B;background:rgba(255,196,107,.08);border-color:rgba(255,196,107,.25)}
+.pill.red{color:var(--red-ink);background:rgba(224,39,46,.1);border-color:rgba(224,39,46,.3)}
+.pill .d{width:6px;height:6px;border-radius:50%;background:currentColor}
+.count{margin:18px 0 12px;color:var(--fg-3);font-size:12.5px}
+.foot-note{margin-top:22px;color:var(--fg-3);font-size:12.5px}
+
+/* ---------- MODS ---------- */
+.toolbar{display:flex;align-items:center;gap:10px;margin-top:24px}
+.search{width:420px}
+.search svg{width:15px;height:15px;color:var(--fg-3)}
+.toolbar .btn:first-of-type{margin-left:auto}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.card{overflow:hidden;padding:0;display:flex;flex-direction:column}
+.card .thumb{height:150px;display:grid;place-items:center;border-bottom:1px solid var(--stroke)}
+.card .thumb svg{width:120px;filter:drop-shadow(0 10px 18px rgba(0,0,0,.45))}
+.card .body{padding:14px 16px 4px}
+.card .name{font-weight:600;font-size:14.5px}
+.card .meta{color:var(--fg-3);font-size:12px;margin-top:2px}
+.card .foot{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 14px}
+.card.active{border-color:rgba(255,255,255,.2)}
+
+/* ---------- MUSIC ---------- */
+.toggle{display:flex;align-items:center;gap:12px}
+.toggle .t{font-weight:600}.toggle .d{color:var(--fg-2);font-size:12.5px}
+.table{margin-top:22px;padding:0;overflow:hidden}
+.table .th{display:flex;align-items:center;justify-content:space-between;padding:16px 20px 10px}
+.table .th h2{font:600 15px Inter}
+.tr{display:grid;grid-template-columns:44px 28px 1fr 90px 240px;align-items:center;gap:8px;padding:10px 20px;border-top:1px solid var(--stroke);position:relative}
+.tr.hd{color:var(--fg-3);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:8px 20px}
+.tr .n{color:var(--fg-3);font-variant-numeric:tabular-nums;font-size:12.5px}
+.tr .mv{display:flex;flex-direction:column;color:var(--fg-3);font-size:9px;line-height:1.1}
+.tr .song{font-weight:600;font-size:13.5px}.tr .src{color:var(--fg-3);font-size:12px}
+.tr .len{color:var(--fg-2);font-variant-numeric:tabular-nums;font-size:12.5px}
+.tr .act{white-space:nowrap;display:flex;gap:6px;justify-content:flex-end}
+.tr.pending{background:rgba(224,39,46,.06)}
+.tr.pending::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--red)}
+.tr.custom .src{color:var(--fg-2)}
+
+/* ---------- CONTROLLERS ---------- */
+.note{margin-top:18px;display:flex;align-items:center;gap:12px;padding:12px 16px;font-size:12.5px;color:var(--fg-2)}
+.note b{color:var(--fg)}
+.note .btn{margin-left:auto}
+.players{margin-top:18px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.player{padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px}
+.player .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--glass-2);border:1px solid var(--stroke)}
+.player .t{font-weight:600}.player .d{font-size:12px;color:var(--fg-3)}
+.player.sel{border-color:var(--red);background:rgba(224,39,46,.08)}
+.player.sel .ic{background:rgba(224,39,46,.18);border-color:rgba(224,39,46,.45)}
+.device{margin-top:16px;display:flex;align-items:center;gap:12px}
+.device .lbl{color:var(--fg-2);font-size:13px}
+.device .field{width:380px;color:var(--fg);justify-content:space-between}
+.map{margin-top:16px;padding:18px 20px;display:grid;grid-template-columns:1fr 300px 1fr;gap:24px}
+.map .lead{grid-column:1/-1;color:var(--fg-2);font-size:12.5px;margin-bottom:-6px}
+.grp h3{font:600 12px Inter;color:var(--fg-2);text-transform:uppercase;letter-spacing:.06em;margin:4px 0 10px}
+.grp+.grp{margin-top:18px}
+.binds{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.bind{padding:9px 12px;border-radius:10px;background:var(--glass-1);border:1px solid var(--stroke);cursor:pointer}
+.bind:hover{background:var(--glass-2);border-color:var(--stroke-hi)}
+.bind .k{font-weight:600;font-size:13px}.bind .v{font-size:11.5px;color:var(--fg-3)}
+.pad{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+.pad img{width:230px;filter:drop-shadow(0 18px 30px rgba(0,0,0,.5))}
+.pad .h{font-size:12px;color:var(--fg-3)}
+
+/* ---------- STATS ---------- */
+.acct{margin-top:22px;display:flex;align-items:center;gap:14px;padding:12px 16px}
+.acct .av{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#5865F2,#3b44b8);display:grid;place-items:center;font:700 13px Inter}
+.acct .t{font-weight:600}.acct .d{font-size:12px;color:var(--fg-3)}
+.acct .btn{margin-left:auto}
+.statsbar{display:flex;align-items:center;gap:16px;margin-top:22px}
+.statsbar h2{font:600 17px Inter;margin-right:auto}
+.games{margin-top:14px;padding:0;overflow:hidden}
+.game{display:grid;grid-template-columns:96px 1fr 44px 76px 120px 18px;align-items:center;gap:14px;padding:12px 18px;cursor:pointer;transition:background .15s}
+.game+.game{border-top:1px solid var(--stroke)}
+.game:hover{background:var(--glass-1)}
+.game .dt{font-size:12.5px;color:var(--fg-2)}.game .dt small{display:block;color:var(--fg-3);font-size:11.5px}
+.mu{display:flex;flex-direction:column;gap:4px;max-width:340px}
+.tm{display:grid;grid-template-columns:24px 1fr 32px;align-items:center;gap:10px;color:var(--fg-2)}
+.tm img{width:24px;height:24px;object-fit:contain}
+.tm b{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+.tm.won{color:var(--fg)}.tm.won b{font-weight:700}
+.tm.me .nm::after{content:"YOU";margin-left:8px;font:700 9.5px Inter;letter-spacing:.08em;color:var(--fg-3);border:1px solid var(--stroke);padding:1px 5px;border-radius:4px;vertical-align:1px}
+.res{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;font:700 13px Inter}
+.res.W{color:var(--ok);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.25)}
+.res.L{color:var(--red-ink);background:rgba(224,39,46,.1);border:1px solid rgba(224,39,46,.3)}
+.res.T{color:var(--fg-2);background:var(--glass-2);border:1px solid var(--stroke)}
+.game .md{font-size:12.5px;color:var(--fg-2)}
+.game .chev{color:var(--fg-3)}
+.pager{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:16px;color:var(--fg-3);font-size:12.5px}
+
+
+.switch.off{background:rgba(255,255,255,.14)}
+.switch.off::after{right:auto;left:3px;background:#cfd3da}
+.card .foot{border-top:1px solid var(--stroke);padding:12px 16px;margin-top:10px}
+.card .st{font-size:12.5px;color:var(--fg-3)}
+.card.active .st{color:var(--fg)}
+.card .thumb{position:relative}
+.card.active .thumb::after{content:"";position:absolute;top:12px;right:12px;width:24px;height:24px;border-radius:50%;
+  background:var(--red) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E") center/14px no-repeat;
+  box-shadow:0 2px 8px rgba(0,0,0,.4)}
+
+
+.card .thumb{background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(0,0,0,.18))}
+.play .cta{gap:10px}
+.btn.more{width:52px;height:52px!important;padding:0!important;border-radius:12px;color:var(--fg-2)}
+.btn.more:hover{color:var(--fg)}
+.play .status{gap:8px;color:var(--fg);font-weight:500}
+.acct-hero{position:absolute;top:22px;right:28px;display:flex;align-items:center;gap:10px;padding:6px 14px 6px 6px;border-radius:999px;cursor:pointer;
+  background:rgba(10,11,14,.35);border:1px solid var(--stroke);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.acct-hero .av{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#5865F2,#3b44b8);display:grid;place-items:center;font:700 13px Inter}
+.acct-hero .nm{font-weight:600;font-size:13px;line-height:1.2}.acct-hero .pt{font-size:11.5px;color:var(--fg-2)}
+
+
+.seg{display:inline-flex;gap:2px;padding:3px;margin-top:5px;border-radius:9px;background:rgba(0,0,0,.28);border:1px solid var(--stroke)}
+.seg a{padding:4px 12px;border-radius:6px;font-size:12.5px;font-weight:600;color:var(--fg-2);cursor:pointer}
+.seg a.on{background:var(--glass-3);color:var(--fg);box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
+.play .status .act{color:var(--fg-2);text-decoration:underline;text-underline-offset:3px;cursor:pointer;font-weight:500;margin-left:6px}
+.play .status .act:empty{display:none}
+.play .status.amber .dot{background:#FFC46B;box-shadow:none}
+.play .status.bad .dot{background:var(--red);box-shadow:none}
+.play .status.live .dot{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+.play .dot{box-shadow:none}
+
+
+.strip .cell{position:relative}
+.menu{position:absolute;right:10px;bottom:calc(100% + 10px);width:200px;padding:6px;display:none;z-index:5;background:rgba(24,25,30,.9)}
+.menu.open{display:block}
+.menu a{display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:8px;font-weight:500;color:var(--fg-2);cursor:pointer}
+.menu a:hover{background:var(--glass-2);color:var(--fg)}
+.menu a i{font-style:normal;visibility:hidden;color:var(--fg)}
+.menu a.on{color:var(--fg)}.menu a.on i{visibility:visible}
+/* controller prompts + focus ring only while a controller is driving the launcher */
+body:not(.padmode) .hints{display:none}
+body:not(.padmode) .pad-focus{outline:none}
+
+
+.tabs a[data-tab]{cursor:pointer}
+.tabs a:not([data-tab]){cursor:default}
+.tabpanel[hidden]{display:none}
+.gl{color:var(--fg-2);font-size:13px}
+#glass{cursor:pointer}
+
+
+/* ================= MOTION: one vocabulary, opacity + transform only ================= */
+:root{--slow:1;--ease:cubic-bezier(.2,.8,.2,1);
+  --d1:calc(120ms * var(--slow));   /* hover, press, colour */
+  --d2:calc(180ms * var(--slow));   /* menus, switches, tabs */
+  --d3:calc(240ms * var(--slow));}  /* page enter, save bar, expand, nav marker */
+body.slow{--d1:480ms;--d2:720ms;--d3:960ms}
+.btn{transition:background var(--d1) var(--ease),border-color var(--d1) var(--ease),color var(--d1) var(--ease),transform var(--d1) var(--ease),opacity var(--d1)}
+.btn:active{transform:scale(.98)}
+.nav a{transition:background var(--d2) var(--ease),color var(--d2) var(--ease)}
+/* page enter: content fades up 6px; sidebar never moves */
+@keyframes enter{from{opacity:0;transform:translateY(6px)}}
+@keyframes fade{from{opacity:0}}
+.page.show .pinner,.page.show .inner,.play.show .content{animation:enter var(--d3) var(--ease) both}
+.play.show .hero{animation:fade var(--d3) ease-out both}
+/* one sliding nav marker instead of a marker per item */
+.side{position:relative}
+.nav a.on::before{display:none}
+.nav-ind{position:absolute;left:0;top:0;width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--red);transition:transform var(--d3) var(--ease)}
+.nav-ind.still{transition:none}
+/* tabs: one indicator that slides between options */
+.tabs{position:relative}
+.tabs a{position:relative;z-index:1;transition:color var(--d2) var(--ease)}
+.tabs a.on{background:none!important;box-shadow:none!important}
+.tab-ind{position:absolute;top:4px;bottom:4px;left:0;border-radius:8px;background:var(--glass-3);box-shadow:var(--sheen),0 0 0 1px var(--stroke);
+  transition:transform var(--d2) var(--ease),width var(--d2) var(--ease)}
+.tab-ind.still{transition:none}
+/* switches: thumb slides */
+.switch{transition:background var(--d2) var(--ease)}
+.switch::after{right:auto!important;left:3px!important;transform:translateX(18px);transition:transform var(--d2) var(--ease),background var(--d2) var(--ease)}
+.switch.off::after{transform:none}
+/* menus: fade + settle from their anchor */
+.menu{display:block!important;opacity:0;visibility:hidden;transform:translateY(4px) scale(.98);transform-origin:bottom right;
+  transition:opacity var(--d2) var(--ease),transform var(--d2) var(--ease),visibility 0s linear var(--d2)}
+.menu.open{opacity:1;visibility:visible;transform:none;transition-delay:0s}
+/* save bar: lane opens, bar rises in; content above shrinks with it, never covered */
+.savelane{padding:0!important;overflow:hidden;max-height:110px;transition:max-height var(--d3) var(--ease)}
+.savelane .savebar{margin:10px 36px 18px;transition:opacity var(--d3) var(--ease),transform var(--d3) var(--ease)}
+.savelane:has(.savebar.clean){display:block!important;max-height:0}
+.savelane .savebar.clean{opacity:0;transform:translateY(12px)}
+/* expanding rows: height via grid rows, content fades */
+.xp{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--d3) var(--ease)}
+.xp>div{overflow:hidden;min-height:0;opacity:0;transition:opacity var(--d2) var(--ease)}
+.xp.open{grid-template-rows:1fr}.xp.open>div{opacity:1}
+.cv{transition:transform var(--d2) var(--ease)}
+[aria-expanded=true] .cv{transform:rotate(180deg)}
+/* reduced motion: no movement, instant state changes */
+body.rm *,body.rm *::before,body.rm *::after{animation:none!important;transition-duration:0s!important}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition-duration:0s!important}}
+
+/* ================= STATS v2 ================= */
+.two{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:22px;margin-top:22px;align-items:start}
+.sec-h{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.sec-h h2{font:600 16px Inter;margin-right:auto}
+.sec-h a.lnk{color:var(--red-ink);font-size:12.5px;font-weight:600;cursor:pointer;text-decoration:none}
+.av{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--glass-3);border:1px solid var(--stroke);font:600 10.5px Inter;color:var(--fg);flex:none}
+.lg{width:22px;height:22px;object-fit:contain;flex:none}
+.mlist{padding:0;overflow:hidden}
+.mrow{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:70px 66px minmax(0,1fr) 52px 26px 70px 16px;align-items:center;gap:10px;padding:10px 16px;cursor:pointer;
+  transition:background var(--d1) var(--ease)}
+.mrow:hover{background:var(--glass-1)}
+.mlist .mrow+.mrow,.mlist .xp+.mrow{border-top:1px solid var(--stroke)}
+.mrow .dt{font-size:12.5px;color:var(--fg)}.mrow .dt small{display:block;color:var(--fg-3);font-size:11.5px}
+.tms{display:flex;align-items:center;gap:5px;color:var(--fg-3);font-size:11px}
+.mrow .op{display:flex;align-items:center;gap:8px;min-width:0;color:var(--fg-2)}
+.mrow .op span.n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mrow .sc{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.wl{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;font:700 11px Inter}
+.wl.W{color:var(--ok);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.25)}
+.wl.L{color:var(--red-ink);background:rgba(224,39,46,.1);border:1px solid rgba(224,39,46,.3)}
+.wl.T{color:var(--fg-2);background:var(--glass-2);border:1px solid var(--stroke)}
+.elo{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.elo.up{color:var(--ok)}.elo.dn{color:var(--red-ink)}
+.tag{justify-self:end;font:600 10.5px Inter;letter-spacing:.04em;color:var(--fg-3);border:1px solid var(--stroke);padding:2px 7px;border-radius:5px}
+.grow{display:grid;grid-template-columns:70px 66px minmax(0,1fr) 52px 26px 70px 16px;align-items:center;gap:10px;padding:8px 16px;background:rgba(0,0,0,.12);border-top:1px solid var(--stroke);color:var(--fg-2);font-size:12.5px;cursor:pointer}
+.grow:hover{background:var(--glass-1)}
+.grow .gn{padding-left:12px}
+.grow .sc{text-align:right;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.pgr{display:flex;align-items:center;justify-content:space-between;margin-top:12px;color:var(--fg-3);font-size:12.5px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+.mini{padding:14px 16px}
+.mini h3{font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3);margin-bottom:10px;display:flex;justify-content:space-between}
+.form{display:flex;gap:5px}
+.form .wl{width:22px;height:22px}
+.mini p{margin-top:10px;font-size:12.5px;color:var(--fg-2)}
+.mini p b{font-weight:600;color:var(--fg)}
+.h2h{display:grid;grid-template-columns:22px 1fr 40px 64px;align-items:center;gap:8px;padding:6px 0;font-size:12.5px}
+.h2h+.h2h{border-top:1px solid var(--stroke)}
+.h2h .r{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.bar{height:5px;border-radius:3px;background:rgba(224,39,46,.45);overflow:hidden}.bar i{display:block;height:100%;background:var(--ok)}
+.you{padding:16px 18px}
+.you .top{display:flex;align-items:flex-end;gap:16px;padding-bottom:14px;border-bottom:1px solid var(--stroke)}
+.k2{font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.big{font:700 32px/1.1 Inter;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.you .chg{font-size:12px;color:var(--fg-2)}.you .chg b{color:var(--ok);font-weight:600}
+.spark{flex:1;height:54px}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 10px;padding-top:14px}
+.kv .v{font:600 17px Inter;margin-top:2px;font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
+.pl{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pc{display:flex;align-items:center;gap:12px;padding:11px 12px}
+.hs{position:relative;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,rgba(255,255,255,.14),rgba(255,255,255,.04));border:1px solid var(--stroke-hi);display:grid;place-items:center;font:600 14px Inter;flex:none}
+.hs img{position:absolute;right:-4px;bottom:-3px;width:18px;height:18px;border-radius:50%;background:#15161a;padding:2px;border:1px solid var(--stroke)}
+.pc .k2{font-size:10px}.pc .nm{font-weight:600;font-size:13px}.pc .st{font-size:12.5px;color:var(--ok);font-weight:600}
+.btn3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.qnote{margin-top:10px;font-size:12px;color:var(--fg-3)}
+.acctbar{margin-top:22px;display:flex;align-items:center;gap:10px;padding:13px 16px;cursor:pointer}
+.acctbar .t{font-weight:600}.acctbar .d{margin-left:auto;color:var(--fg-3);font-size:12.5px}
+
+/* ================= PROFILE ================= */
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--fg-2);font-size:13px;font-weight:500;cursor:pointer;margin-bottom:14px}
+.back:hover{color:var(--fg)}
+.cover{padding:0;overflow:hidden}
+.cover .band{height:96px;background:linear-gradient(115deg,var(--c1),var(--c2));opacity:.7;
+  mask-image:linear-gradient(180deg,#000 30%,transparent);-webkit-mask-image:linear-gradient(180deg,#000 30%,transparent)}
+.cover .id{display:flex;align-items:flex-end;gap:16px;padding:0 20px;margin-top:-44px}
+.cover .pic{width:84px;height:84px;border-radius:50%;background:#15161a;border:3px solid rgba(255,255,255,.14);display:grid;place-items:center;flex:none;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.cover .pic img{width:56px}
+.cover .nm{font:700 24px Inter;letter-spacing:-.01em}
+.cover .meta{display:flex;align-items:center;gap:10px;margin-top:4px;font-size:12.5px;color:var(--fg-2);flex-wrap:wrap}
+.cover .meta .field{height:28px;padding:0 10px;gap:8px;color:var(--fg);font-size:12.5px}
+.cover .meta .live{color:var(--ok)}
+.cover .acts{margin-left:auto;display:flex;gap:8px;padding-bottom:6px}
+.cover .nums{display:flex;gap:34px;padding:16px 20px 18px}
+.cover .nums .v{font:700 19px Inter;font-variant-numeric:tabular-nums}
+.chart{padding:14px 16px 10px}
+.chart svg{width:100%;height:120px;display:block}
+.chart .lbls{display:flex;justify-content:space-between;font-size:11.5px;color:var(--fg-3);margin-top:6px}
+.tbl{padding:0;overflow:hidden}
+.tbl table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.tbl th{font:600 10.5px Inter;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3);text-align:right;padding:10px 14px 8px}
+.tbl th:first-child,.tbl td:first-child{text-align:left}
+.tbl td{padding:9px 14px;border-top:1px solid var(--stroke);text-align:right;color:var(--fg-2)}
+.tbl td:first-child{color:var(--fg)}
+.tbl td .who{display:flex;align-items:center;gap:8px}
+.tbl td .who .lg{width:18px;height:18px}
+.tbl .tot{padding:9px 14px 11px;border-top:1px solid var(--stroke);font-size:12px;color:var(--fg-3)}
+.stack>*+*{margin-top:18px}
+
+
+/* ================= STATS v2, full width + imagery ================= */
+.pinner.wide{max-width:none}
+.two2{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(330px,1fr);gap:22px;margin-top:22px;align-items:start}
+.dav{display:inline-grid;place-items:center;border-radius:50%;color:#fff;font-weight:600;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+.mr{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:58px 212px minmax(0,1fr) 24px 72px 16px;align-items:center;gap:12px;padding:10px 16px;cursor:pointer;transition:background var(--d1) var(--ease)}
+.mr:hover{background:var(--glass-1)}
+.mlist .mr+.mr,.mlist .xp+.mr{border-top:1px solid var(--stroke)}
+.mr .dt{font-size:12.5px}.mr .dt small{display:block;color:var(--fg-3);font-size:11.5px}
+.line{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
+.tm2{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--fg-2)}
+.tm2 b{font-weight:600;letter-spacing:.02em}
+.tm2.r{justify-content:flex-end}
+.tm2 .lg{width:28px;height:28px}
+.scr{font-weight:700;font-size:14.5px;font-variant-numeric:tabular-nums;min-width:48px;text-align:center}
+.mr .op{display:flex;align-items:center;gap:9px;min-width:0;color:var(--fg);font-size:13px}
+.mr .op .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gr{display:grid;grid-template-columns:58px 212px minmax(0,1fr) 24px 72px 16px;align-items:center;gap:12px;padding:7px 16px;background:rgba(0,0,0,.14);border-top:1px solid var(--stroke);font-size:12.5px;cursor:pointer}
+.gr:hover{background:var(--glass-1)}
+.gr .gn{color:var(--fg-2)}.gr .op.t{color:var(--fg-3)}
+.gr .tm2 .lg{width:22px;height:22px}.gr .scr{font-size:13px;font-weight:600}
+.tag{justify-self:end;font:600 10.5px Inter;color:var(--fg-3);border:1px solid var(--stroke);padding:2px 7px;border-radius:5px}
+.you2{position:relative;overflow:hidden;padding:16px 18px}
+.you2 .wm{position:absolute;right:-30px;top:-24px;width:190px;height:190px;object-fit:contain;opacity:.07;pointer-events:none}
+.who2{display:flex;align-items:center;gap:12px;padding-bottom:14px}
+.who2 .nm{font-weight:600;font-size:15px}.who2 .d{font-size:12px;color:var(--fg-2)}
+.you2 .top{display:flex;align-items:flex-end;gap:16px;padding:12px 0 14px;border-top:1px solid var(--stroke);border-bottom:1px solid var(--stroke)}
+.you2 .chg{font-size:12px;color:var(--fg-2)}.you2 .chg b{color:var(--ok);font-weight:600}
+.you2 .kv .v .lg{width:22px;height:22px}
+.pc2{display:flex;align-items:center;gap:12px;padding:10px 12px}
+.por{position:relative;width:50px;height:50px;flex:none}
+.por>img:first-child{width:50px;height:50px;border-radius:50%;object-fit:cover;object-position:50% 20%;background:#e9ebef;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
+.por .bdg{position:absolute;right:-5px;bottom:-4px;width:22px;height:22px;border-radius:50%;background:#16171c;padding:2px;box-shadow:0 0 0 1px var(--stroke-hi)}
+.pc2 .k2{font-size:10px}.pc2 .nm{font-weight:600;font-size:13px}.pc2 .st{font-size:12.5px;color:var(--ok);font-weight:600}
+.h2{display:grid;grid-template-columns:24px 1fr 40px 70px;align-items:center;gap:10px;padding:6px 0;font-size:12.5px}
+.h2+.h2{border-top:1px solid var(--stroke)}
+.h2 .r{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.tbl td .who .lg{width:22px;height:22px}
+.mrow .tms .lg,.grow .tms .lg{width:24px;height:24px}
+
+
+/* ================= STATS, cleaned ================= */
+.m3{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:62px 84px minmax(0,1fr) 78px 44px 14px;align-items:center;gap:14px;padding:12px 18px;cursor:pointer;transition:background var(--d1) var(--ease)}
+.m3:hover{background:var(--glass-1)}
+.mlist .m3+.m3,.mlist .xp+.m3{border-top:1px solid var(--stroke)}
+.d3{font-size:12.5px;color:var(--fg-2)}
+.vs{display:flex;align-items:center;gap:6px}
+.vs .lg{width:24px;height:24px}
+.vs i{font-style:normal;font-size:10.5px;color:var(--fg-3)}
+.o3{display:flex;align-items:center;gap:9px;min-width:0;font-size:13.5px}
+.o3 .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.o3.t{color:var(--fg-3);font-size:12.5px}
+.res3{display:flex;align-items:baseline;gap:8px;font-weight:600;font-variant-numeric:tabular-nums;font-size:14px}
+.res3 b{font-weight:700;font-size:12px;width:10px}
+.res3 b.W{color:var(--ok)}.res3 b.L{color:var(--red-ink)}.res3 b.T{color:var(--fg-3)}
+.elo3{font-size:12px;font-variant-numeric:tabular-nums;text-align:right;color:var(--fg-3)}
+.elo3.up{color:var(--ok)}.elo3.dn{color:var(--red-ink)}
+.g3{display:grid;grid-template-columns:62px 84px minmax(0,1fr) 78px 44px 14px;align-items:center;gap:14px;padding:8px 18px;background:rgba(0,0,0,.14);border-top:1px solid var(--stroke);cursor:pointer}
+.g3:hover{background:var(--glass-1)}
+.g3 .vs .lg{width:20px;height:20px}.g3 .res3{font-size:13px}
+.you3{padding:16px 18px}
+.you3 .top{display:flex;align-items:flex-end;gap:16px;padding-bottom:14px;border-bottom:1px solid var(--stroke)}
+.you3 .chg{font-size:12px;color:var(--fg-2)}.you3 .chg b{color:var(--ok);font-weight:600}
+.kv3{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:10px;padding-top:14px}
+.kv3 .v{font:600 17px Inter;margin-top:2px;font-variant-numeric:tabular-nums}
+.form3{display:flex;gap:4px;margin-top:8px}
+.fd{width:9px;height:9px;border-radius:50%}
+.fd.W{background:var(--ok)}.fd.L{background:var(--red)}.fd.T{background:var(--fg-3)}
+.links{display:flex;gap:14px}.links a{font-size:12.5px;color:var(--fg-2);cursor:pointer}.links a:hover{color:var(--fg)}
+.plist{padding:4px 16px}
+.p3{display:flex;align-items:center;gap:12px;padding:9px 0}
+.p3+.p3,.h3+.h3{border-top:1px solid var(--stroke)}
+.p3 .tx{flex:1;min-width:0}.p3 .nm{font-size:13px;font-weight:600}.p3 .k2{font-size:10px}
+.p3 .st{font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums}
+.por.sm{width:36px;height:36px}.por.sm>img:first-child{width:36px;height:36px}
+.por.sm .bdg{width:17px;height:17px;right:-4px;bottom:-3px}
+.h3{display:flex;align-items:center;gap:10px;padding:9px 0;font-size:13px}
+.h3 .n{flex:1}.h3 .r{font-weight:600;font-variant-numeric:tabular-nums}
+.foot3{display:flex;justify-content:space-between;align-items:center;margin-top:18px;font-size:12px;color:var(--fg-3)}
+.lnk2{color:var(--fg-2);font-weight:600;cursor:pointer}.lnk2:hover{color:var(--fg)}
+
+
+/* ================= YOUR MATCHES: reads left to right like a sentence ================= */
+.m4{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:86px minmax(0,1fr) 96px 44px 58px 14px;align-items:center;gap:14px;padding:11px 18px;cursor:pointer;transition:background var(--d1) var(--ease)}
+.m4:not(.hd):hover{background:var(--glass-1)}
+.m4.hd{cursor:default;padding:10px 18px 8px;font:600 10.5px Inter;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.mlist .m4+.m4,.mlist .xp+.m4{border-top:1px solid var(--stroke)}
+.c-res{display:flex;align-items:baseline;gap:9px;font:600 15px Inter;font-variant-numeric:tabular-nums}
+.c-res b{font-weight:700;font-size:13px;width:12px}
+.c-res b.W{color:var(--ok)}.c-res b.L{color:var(--red-ink)}.c-res b.T{color:var(--fg-3)}
+.c-opp{display:flex;align-items:center;gap:10px;min-width:0}
+.c-opp .tx{display:flex;flex-direction:column;min-width:0}
+.c-opp .n{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.c-opp small{font-size:11.5px;color:var(--fg-3)}
+.c-opp.g{font-size:12.5px;color:var(--fg-2);padding-left:36px}
+.c-mu{display:flex;align-items:center;gap:7px}
+.c-mu .lg{width:24px;height:24px}
+.c-mu i{font-style:normal;font-size:10.5px;color:var(--fg-3)}
+.c-elo{font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right;color:var(--fg-3)}
+.c-elo.up{color:var(--ok)}.c-elo.dn{color:var(--red-ink)}
+.c-date{font-size:12.5px;color:var(--fg-3);text-align:right}
+.g4{display:grid;grid-template-columns:86px minmax(0,1fr) 96px 44px 58px 14px;align-items:center;gap:14px;padding:8px 18px;background:rgba(0,0,0,.14);border-top:1px solid var(--stroke);cursor:pointer}
+.g4:hover{background:var(--glass-1)}
+.g4 .c-res{font-size:13.5px}.g4 .c-mu .lg{width:20px;height:20px}
+/* portraits on the team's primary, dimmed */
+.por>img:first-child{background:radial-gradient(circle at 50% 30%,color-mix(in srgb,var(--tc,#333) 70%,#fff 8%),color-mix(in srgb,var(--tc,#333) 55%,#000))!important}
+
+
+/* ================= STATS v5: even rhythm (8-pt scale: 8 / 16 / 24) ================= */
+.st5 .sub{margin-bottom:24px}
+.cols5{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:24px;align-items:start}
+.stack5{display:flex;flex-direction:column;gap:24px}
+.h5{display:flex;align-items:center;justify-content:space-between;height:40px;margin-bottom:8px}
+.h5 h2{font:600 16px Inter}
+.st5 .pgr{margin-top:16px}
+.st5 .foot3{margin-top:24px}
+.card5{padding:16px}
+.m5{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:84px 92px minmax(0,1fr) 44px 56px 14px;align-items:center;gap:16px;padding:0 16px;height:56px;cursor:pointer;transition:background var(--d1) var(--ease)}
+.m5:not(.hd):hover{background:var(--glass-1)}
+.m5.hd{cursor:default;height:36px;font:600 10.5px Inter;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.mlist .m5+.m5,.mlist .xp+.m5{border-top:1px solid var(--stroke)}
+.g5{display:grid;grid-template-columns:84px 92px minmax(0,1fr) 44px 56px 14px;align-items:center;gap:16px;padding:0 16px;height:40px;background:rgba(0,0,0,.14);border-top:1px solid var(--stroke);cursor:pointer}
+.g5:hover{background:var(--glass-1)}
+.g5 .c-res{font-size:13.5px}.g5 .c-mu .lg{width:20px;height:20px}
+.g5 .c-opp.g{padding-left:0;font-size:12.5px;color:var(--fg-2)}
+.card5 .top{display:flex;align-items:flex-end;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--stroke)}
+.card5 .chg{font-size:12px;color:var(--fg-2)}.card5 .chg b{color:var(--ok);font-weight:600}
+.kv5{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding-top:16px}
+.kv5 .v{font:600 17px Inter;margin-top:4px;font-variant-numeric:tabular-nums}
+.kv5 .v.up{color:var(--ok)}
+.list5{padding:0 16px}
+.p5{display:flex;align-items:center;gap:16px;height:64px}
+.p5+.p5{border-top:1px solid var(--stroke)}
+.p5 .tx{flex:1;min-width:0}
+.hd5{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.hd5 .nm{font-size:13.5px;font-weight:600}
+.hd5 .k2{font-size:10px}
+.line5{margin-top:4px;font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.line5 b{font-weight:600;color:var(--fg)}
+.line5 .sep{color:var(--fg-3);margin:0 6px}
+
+
+/* strip cells fill edge to edge; outer corners follow the panel (13px = 14px radius minus the 1px border) */
+.play .strip{padding:0!important}
+.strip .cell{border-radius:0!important;height:100%}
+.strip .cell:first-child{border-radius:13px 0 0 13px!important}
+.strip .cell:last-child{border-radius:0 13px 13px 0!important}
+.strip .cell:hover,.strip .cell:has(.menu.open){background:var(--glass-2)}
+/* Music: pending is plain text, not a chip */
+.tr .pend{font-size:12px;font-weight:600;color:var(--red-ink);margin-right:6px}
+/* Stats: matches card and players card end on the same line */
+.cols5{align-items:stretch!important}
+.cols5>section{display:flex;flex-direction:column}
+.cols5>section .mlist{flex:1;display:flex;flex-direction:column}
+.stack5{height:100%}
+.stack5>section:last-child{flex:1;display:flex;flex-direction:column}
+.stack5>section:last-child .list5{flex:1;display:flex;flex-direction:column}
+.list5 .p5{flex:1;height:auto;min-height:60px}
+.mlist .pgr5{margin-top:auto;display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 16px;border-top:1px solid var(--stroke);color:var(--fg-3);font-size:12.5px}
+
+
+/* ================= PROFILE: stats first ================= */
+.pf .cover .pic img{width:56px;height:56px}
+.pfsec{margin-top:24px}
+.career{display:grid;grid-template-columns:repeat(9,1fr);padding:0}
+.tile{padding:16px}
+.tile+.tile{border-left:1px solid var(--stroke)}
+.tile .v{font:700 22px Inter;letter-spacing:-.01em;margin-top:6px;font-variant-numeric:tabular-nums}
+.tile .pgv{font-size:11.5px;color:var(--fg-3);margin-top:2px;font-variant-numeric:tabular-nums}
+.pftabs{margin-top:24px}
+.ptab{display:flex;flex-direction:column;gap:24px;margin-top:8px}
+.ptab[hidden]{display:none}
+.ptab section .h5{margin-bottom:8px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.pg{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:16px}
+.pg .v{font:600 17px Inter;margin-top:4px;font-variant-numeric:tabular-nums}
+.tbl.lefty td,.tbl.lefty th{text-align:left}
+.tbl .rw{color:var(--ok);font-weight:700;margin-right:6px}.tbl .rl{color:var(--red-ink);font-weight:700;margin-right:6px}
+.tbl .up{color:var(--ok)}.tbl .dn{color:var(--red-ink)}
+.tbl td .who{display:inline-flex;align-items:center;gap:8px}
+
+
+.pend2{color:var(--red-ink);font-weight:600}
+.tr .act{align-items:center}
+.tbl td{vertical-align:middle}
+.tbl td .who{vertical-align:middle}
+
+
+/* ================= PROFILE v6: the online player hub ================= */
+.pf6>*+*{margin-top:24px}
+.pf6 .back{margin-bottom:0}
+.hero6{padding:0;overflow:hidden;position:relative}
+.hero6 .band{height:84px;background:linear-gradient(115deg,var(--c1),var(--c2));opacity:.75;mask-image:linear-gradient(180deg,#000 30%,transparent);-webkit-mask-image:linear-gradient(180deg,#000 30%,transparent)}
+.row6{display:grid;grid-template-columns:auto 1fr auto;gap:20px;align-items:end;padding:0 24px 20px;margin-top:-48px}
+.pic6{position:relative;width:96px;height:96px;border-radius:50%;background:#16171c;border:3px solid rgba(255,255,255,.14);display:grid;place-items:center;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.pic6 .lg{width:62px;height:62px}
+.on6{position:absolute;right:4px;bottom:4px;width:16px;height:16px;border-radius:50%;background:var(--ok);border:3px solid #16171c}
+.idt .nm{font:700 26px Inter;letter-spacing:-.01em}
+.idt .meta{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12.5px;color:var(--fg-2);flex-wrap:wrap}
+.idt .meta .field{height:28px;padding:0 10px;gap:8px;color:var(--fg);font-size:12.5px}
+.idt .meta .live{color:var(--ok);font-weight:600}
+.acts6{display:flex;gap:8px;margin-top:12px}
+.rank6{text-align:right;padding-left:24px;border-left:1px solid var(--stroke)}
+.elo6{font:700 40px/1.05 Inter;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:4px}
+.rank6 .s{font-size:12.5px;color:var(--fg-2);margin-top:4px}
+.live6{display:flex;align-items:center;gap:16px;padding:12px 16px;border-color:rgba(224,39,46,.35)}
+.dot6{width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1.6s ease-in-out infinite}
+.live6 .lbl{font:700 11px Inter;letter-spacing:.08em;text-transform:uppercase;color:var(--red-ink)}
+.sc6{display:flex;align-items:center;gap:8px}
+.sc6 .lg{width:26px;height:26px}.sc6 b{font-weight:600;font-size:12.5px;color:var(--fg-2)}
+.sc6 strong{font:700 17px Inter;font-variant-numeric:tabular-nums;margin:0 6px}
+.vs6{display:flex;align-items:center;gap:6px;color:var(--fg-2);font-size:12.5px;margin-right:auto}
+.tri6{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.tri6>section{display:flex;flex-direction:column}.tri6 .card5{flex:1}
+.eloc{padding:16px 16px 12px}
+.elo-mini{width:100%;height:90px;display:block}
+.eloc .lbls{display:flex;justify-content:space-between;font-size:11.5px;color:var(--fg-3);margin-top:8px}
+.qr{display:grid;grid-template-columns:96px 1fr 52px 40px;align-items:center;gap:12px;height:34px;font-size:13px}
+.qr .rec{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}.qr .pct{text-align:right;color:var(--fg-3);font-size:12px;font-variant-numeric:tabular-nums}
+.bar2{height:6px;border-radius:3px;background:rgba(224,39,46,.4);overflow:hidden}.bar2 i{display:block;height:100%;background:var(--ok)}
+.qtot{display:flex;justify-content:space-between;margin-top:8px;padding-top:12px;border-top:1px solid var(--stroke);font-size:12.5px;color:var(--fg-2)}
+.qtot b{color:var(--fg);font-weight:600}
+.form6{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.nn .v{font:600 20px Inter;margin-top:4px;font-variant-numeric:tabular-nums}.nn .v.up{color:var(--ok)}
+.nn .s{font-size:11.5px;color:var(--fg-3);margin-top:2px}
+.car3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.car3 .v{font-size:18px}
+.rv{display:flex;align-items:center;gap:12px;flex:1;min-height:56px}
+.rv+.rv,.rc+.rc{border-top:1px solid var(--stroke)}
+.rv .tx{flex:1}.rv .nm{font-weight:600;font-size:13.5px}.rv .s{font-size:12px;color:var(--fg-3)}
+.rv .rec{text-align:right}.rv .rec b{display:block;font:600 15px Inter;font-variant-numeric:tabular-nums}.rv .rec span{font-size:11.5px;color:var(--fg-3)}
+.rc{display:grid;grid-template-columns:1fr auto 44px 48px;align-items:center;gap:12px;flex:1;min-height:44px;font-size:12.5px}
+.rc .k{color:var(--fg-2)}.rc .w .lg{width:18px;height:18px}.rc .w{display:inline-flex;align-items:center}.rc .w .who{display:inline-flex;align-items:center;gap:6px}.rc b{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}.rc .d{text-align:right;color:var(--fg-3)}
+.pfcols{margin-top:24px}
+.full6 [hidden]{display:none}
+
+
+/* profile round 7 */
+.tbl tr.total td{border-top:1px solid var(--stroke-hi)}
+.ld{display:grid;grid-template-columns:36px 28px 1fr auto;align-items:center;gap:12px;flex:1;min-height:48px;font-size:13px}
+.ld+.ld{border-top:1px solid var(--stroke)}
+.ld .pos{color:var(--fg-3);font-variant-numeric:tabular-nums}
+.ld .el{font-weight:600;font-variant-numeric:tabular-nums}
+.ld.me{margin:0 -16px;padding:0 16px;background:rgba(224,39,46,.08);box-shadow:inset 3px 0 0 var(--red)}
+.ld.me .nm{font-weight:600}
+#live6[hidden]{display:none}
+
+.pfcols .mlist>.m5:not(.hd){flex:1 0 56px;height:auto}
+
+/* ================= PROFILE hero v7: identity + how good ================= */
+.hero7 .band{height:96px}
+.row7{display:grid;grid-template-columns:auto 1fr auto;gap:20px;align-items:end;padding:0 24px 20px;margin-top:-52px}
+.np7{width:260px;padding:12px 14px;border-radius:12px;background:rgba(10,11,14,.45);border:1px solid rgba(224,39,46,.35);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.np7[hidden]{display:none}
+.np7 .top{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-2)}
+.np7 .lv{font:700 11px Inter;letter-spacing:.08em;text-transform:uppercase;color:var(--red-ink)}
+.np7 .q{margin-left:auto}
+.sc7{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;margin:10px 0}
+.sc7 .t{display:flex;align-items:center;gap:6px}.sc7 .t.r{justify-content:flex-end}
+.sc7 .lg{width:28px;height:28px}.sc7 b{font-weight:600;font-size:12px;color:var(--fg-2)}
+.sc7 strong{font:700 22px Inter;font-variant-numeric:tabular-nums}.sc7 strong i{font-style:normal;color:var(--fg-3);margin:0 6px;font-weight:600}
+.np7 .bot{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--fg-2)}
+.strip7{display:grid;grid-template-columns:repeat(6,1fr);border-top:1px solid var(--stroke)}
+.hs7{padding:16px 24px}
+.hs7+.hs7{border-left:1px solid var(--stroke)}
+.hs7 .v{font:700 24px Inter;letter-spacing:-.01em;margin-top:6px;font-variant-numeric:tabular-nums}
+.hs7 .v .up{color:var(--ok)}
+.hs7 .s{font-size:11.5px;color:var(--fg-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+
+/* profile round 9 */
+.sum7{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:10px;font-size:13.5px;color:var(--fg-2)}
+.sum7 b{font:700 15px Inter;color:var(--fg);font-variant-numeric:tabular-nums;margin-right:2px}
+.sum7 b.up{color:var(--ok)}
+.hero7 .row7{padding-bottom:22px}
+.car3 .s .rk{color:var(--fg);font-weight:600}
+.rknote{margin-top:14px;padding-top:12px;border-top:1px solid var(--stroke);font-size:11.5px;color:var(--fg-3)}
+.top5 tr.more{display:none}
+.top5.open tr.more{display:table-row}
+.top5 tr.reveal td{padding:0;border-top:1px solid var(--stroke)}
+.top5.open tr.reveal{display:none}
+.showall{all:unset;box-sizing:border-box;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;height:38px;cursor:pointer;
+  font-size:12.5px;font-weight:600;color:var(--fg-2);transition:background var(--d1) var(--ease),color var(--d1) var(--ease)}
+.showall:hover{background:var(--glass-1);color:var(--fg)}
+
+.pnote{font-style:normal;color:var(--fg-3);font-size:11.5px}
+
+/* profile card: avatar centred on the identity block, cover gradient behind the whole card */
+.hero7{position:relative}
+.hero7 .band{position:absolute;inset:0;height:auto;opacity:.55;mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%);-webkit-mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%)}
+.hero7 .row7{position:relative;margin-top:0;padding:24px;align-items:center}
+.pic7{position:relative;width:104px;height:104px;border-radius:50%;display:grid;place-items:center;
+  background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c1) 85%,#fff),var(--c1) 45%,var(--c2));
+  box-shadow:0 0 0 4px rgba(255,255,255,.08),0 10px 28px rgba(0,0,0,.45)}
+.pic7 .ini{font:700 42px Inter;color:rgba(255,255,255,.92)}
+.pic7 .on6{right:6px;bottom:6px;width:18px;height:18px;border-color:#1a1b21}
+.hero7 .idt .nm{font-size:28px}
+
+
+/* round 10 */
+.sum7{gap:0;margin-top:10px}
+.sum7>span{display:inline-flex;align-items:baseline;gap:6px;padding:0 16px;line-height:20px}
+.sum7>span:first-child{padding-left:0}
+.sum7>span+span{border-left:1px solid var(--stroke-hi)}
+.sum7 b{margin:0}
+/* online record: label / record / pct on one line, full-width bar under it */
+.tri6 .card5:has(.q8){display:flex;flex-direction:column;justify-content:space-between;gap:12px}
+.q8 .l{display:grid;grid-template-columns:1fr 56px 48px;align-items:baseline;font-size:13.5px}
+.q8 .rec{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.q8 .pct{text-align:right;color:var(--fg-2);font-size:12.5px;font-variant-numeric:tabular-nums}
+.bar8{display:block;height:4px;margin-top:8px;border-radius:2px;background:rgba(224,39,46,.35);overflow:hidden}
+.bar8 i{display:block;height:100%;background:var(--ok)}
+.q8.tot{padding-top:12px;border-top:1px solid var(--stroke)}
+.q8.tot .q,.q8.tot .rec,.q8.tot .pct{font-weight:700;color:var(--fg)}
+.qnote8{font-size:11.5px;color:var(--fg-3)}
+/* full stats: every table shares one column grid */
+.full6 .tbl table{table-layout:fixed}
+.full6 .tbl th:first-child,.full6 .tbl td:first-child{width:220px}
+
+
+/* overview panel: one surface, three identical columns */
+.ov9{display:grid;grid-template-columns:repeat(3,1fr);padding:0}
+.ov9>section{padding:20px 24px;display:flex;flex-direction:column}
+.ov9>section+section{border-left:1px solid var(--stroke)}
+.h9{display:flex;align-items:baseline;justify-content:space-between}
+.h9 h2{font:600 14px Inter}.h9 span{font-size:12px;color:var(--fg-3)}
+.big9{font:700 34px/1.1 Inter;letter-spacing:-.02em;margin-top:14px;font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:10px}
+.big9 em{font:600 15px Inter;font-style:normal;color:var(--fg-2)}.big9 em.up{color:var(--ok)}
+.sub9{font-size:12.5px;color:var(--fg-3);margin-top:4px}
+.sp9{width:100%;height:70px;margin-top:auto;padding-top:16px;box-sizing:content-box;display:block}
+.bars9,.pair9{margin-top:auto;padding-top:16px}
+.br9{display:grid;grid-template-columns:62px 1fr 40px 36px;align-items:center;gap:10px;font-size:13px;height:28px}
+.br9 .b{height:4px;border-radius:2px;background:rgba(224,39,46,.35);overflow:hidden}.br9 .b i{display:block;height:100%;background:var(--ok)}
+.br9 .r{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}.br9 .p{text-align:right;color:var(--fg-3);font-size:12px;font-variant-numeric:tabular-nums}
+.pair9{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.pair9 span{display:block;font-size:12px;color:var(--fg-3)}.pair9 b{font:600 18px Inter;font-variant-numeric:tabular-nums}
+.pf6 .ov9{margin-top:24px}
+
+/* ---------- mockup controls (not part of the design) ---------- */
+.mock{position:fixed;z-index:9;right:16px;top:16px;width:270px;padding:14px;border-radius:12px;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.14);font-size:12px;color:#ddd;backdrop-filter:blur(10px)}
+.mock h3{font:700 11px Inter;letter-spacing:.08em;text-transform:uppercase;color:#999;margin:10px 0 6px}.mock h3:first-child{margin-top:0}
+.mock .opts{display:flex;flex-wrap:wrap;gap:5px}
+.mock button{font:600 11.5px Inter;color:#eee;background:#2a2c31;border:1px solid #444;border-radius:6px;padding:5px 9px;cursor:pointer}
+.mock button.on{background:#E0272E;border-color:#E0272E}
+.mock ul{padding-left:16px;color:#bbb;line-height:1.5}
+@media (max-width:1330px),(max-height:830px){.win{transform:scale(.8);transform-origin:center}}
+</style>
+</head>
+<body class="slow">
+<div class="desk bloom" id="desk"></div>
+
+<div class="win mica" id="win">
+  <div class="titlebar"><span>NFL Street Reborn</span><div class="ctl"><span>&#8211;</span><span>&#9633;</span><span>&#10005;</span></div></div>
+  <div class="app">
+    <aside class="side" id="side" data-logo="tidy">
+      <div class="logo">
+        <div class="lg-tidy mk"></div>
+        <div class="lg-type"><span class="a">NFL STREET</span><span class="b">Reborn</span><span class="rule"></span></div>
+        <div class="lg-mark"><div class="mk"></div><div><div class="a">NFL STREET</div><div class="b">Reborn</div></div></div>
+      </div>
+      <nav class="nav">
+        <a data-p="play" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 4l13 8-13 8z"/></svg>Play</a>
+        <a data-p="mods"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/></svg>Mods</a>
+        <a data-p="music"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>Music</a>
+        <a data-p="controls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10c3 0 5 11 2 11-2 0-3-3-4-3H9c-1 0-2 3-4 3C2 18 4 7 7 7Z"/><path d="M8 9v5m-2-2h4m5-1h.01m3 2h.01"/></svg>Controllers</a>
+        <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Online</a>
+        <a data-p="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Stats</a>
+      </nav>
+      <nav class="nav bottom">
+        <a data-p="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Settings</a>
+        <a><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 015 .5c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></svg>Help</a>
+      </nav>
+    </aside>
+
+    <!-- PLAY: same layout as today; hero stays full-bleed -->
+    <main class="page play show" id="play">
+      <div class="hero"></div>
+      <div class="content">
+        <div class="wordmark"></div>
+        <div class="acct-hero"><span class="av">A</span><div><div class="nm">Adam</div><div class="pt">12 min played</div></div></div>
+        <div class="cta">
+          <button class="btn primary pad-focus"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>Play now</button>
+          <button class="btn more" title="Game details" aria-label="Game details"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+        </div>
+        <div class="status" id="pstatus"><span class="dot"></span><span class="txt">Ready to play</span><a class="act"></a></div>
+        <div class="strip glass">
+          <div class="cell"><div><div class="k">Controllers</div><div class="v">1 connected</div></div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6"/></svg></div>
+          <div class="cell" data-menu><div><div class="k">Graphics</div><div class="v">Balanced</div></div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6"/></svg><div class="menu glass"><a data-v="Performance">Performance<i>&#10003;</i></a><a class="on" data-v="Balanced">Balanced<i>&#10003;</i></a><a data-v="All-Out">All-Out<i>&#10003;</i></a></div></div>
+          <div class="cell" id="dispcell" data-menu><div><div class="k">Display</div><div class="v" id="dispv">Fullscreen</div></div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 6l6 6-6 6"/></svg><div class="menu glass" id="dispmenu"><a class="on" data-v="Fullscreen">Fullscreen<i>&#10003;</i></a><a data-v="Windowed">Windowed<i>&#10003;</i></a></div></div>
+        </div>
+      </div>
+      <div class="hints"><span><b>&#10010;</b>Navigate</span><span><b>A</b>Select</span><span><b>B</b>Back</span><span><b>LB</b><b>RB</b>Pages</span><span><b>R</b>Scroll</span></div>
+    </main>
+
+    <!-- SETTINGS: same order (header, Dolphin, 7 tabs, rows); decluttered -->
+    <main class="page settings" id="settings">
+      <div class="scroll"><div class="inner">
+        <h1>Settings</h1>
+        <div class="sub">Your installation, updates, and preferences.</div>
+        <div class="dolphin glass">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22C7B4" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+          <div><div class="t">NFL Street Reborn Dolphin</div><div class="d">Everyday settings are here. Open Dolphin for its full set of tools.</div></div>
+          <button class="btn">Open Dolphin</button>
+        </div>
+        <div class="tabs" id="stabs"><a>General</a><a>Graphics</a><a data-tab="display">Display</a><a>Audio</a><a>Saves</a><a>Updates</a><a class="on" data-tab="files">Files &amp; storage</a></div>
+        <div class="tabpanel" data-panel="display" hidden>
+        <section class="section glass">
+          <h2>Launcher window</h2>
+          <div class="lead">How the launcher itself looks. The game is not affected.</div>
+          <div class="row"><div class="lbl">Window glass</div><div class="gl"><span class="glstate" id="glstate">On</span></div><span class="switch" id="glass" role="switch" aria-checked="true"></span>
+            <div class="help">Frosted glass that picks up your desktop colours. Turn it off for a solid dark background.</div></div>
+          <div class="row"><div class="lbl">Slow animations</div><div class="gl"><span class="glstate" id="slstate">On</span></div><span class="switch" id="slowsw" role="switch" aria-checked="true"></span>
+            <div class="help">Slower, smoother movement when you change pages, open menus and expand matches. Turn it off for quick animations. Windows’ reduce-motion setting always turns movement off.</div></div>
+        </section>
+        </div>
+        <div class="tabpanel" data-panel="files">
+        <section class="section glass">
+          <h2>Game &amp; installation</h2>
+          <div class="lead">Found automatically. Choose a different location only to override it.</div>
+          <div class="row"><div class="lbl">Game image</div><div class="field">C:\Reborn\Games\NSR.iso<span class="auto">Auto</span></div><button class="btn">Change&#8230;</button>
+            <div class="help">Your game image.</div></div>
+          <div class="row"><div class="lbl">Existing install</div><div class="field">%APPDATA%\NFL Street Reborn<span class="auto">Auto</span></div><button class="btn">Change&#8230;</button>
+            <div class="help">Your earlier Reborn installation, with its User and MODS folders.</div></div>
+          <div class="row"><div class="lbl">Emulator</div><div class="field">Bundled Reborn Dolphin<span class="auto">Auto</span></div><button class="btn">Change&#8230;</button>
+            <div class="help">The bundled Reborn Dolphin is used on Windows.</div></div>
+          <div class="row"><div class="lbl">User folder</div><div class="field">Beside the emulator<span class="auto">Auto</span></div><button class="btn">Change&#8230;</button>
+            <div class="help">Holds your saves and Dolphin settings.</div></div>
+        </section>
+        <section class="section glass">
+          <h2>Storage</h2>
+          <div class="lead">Space used by Reborn on this PC.</div>
+          <div class="row"><div class="lbl">Textures</div><div class="field" style="color:var(--fg-2)">2.4 GB</div><button class="btn">Open folder</button></div>
+          <div class="row"><div class="lbl">Shader cache</div><div class="field" style="color:var(--fg-2)">310 MB</div><button class="btn">Clear</button></div>
+        </section>
+        </div>
+      </div></div>
+      <div class="savelane"><div class="savebar clean" id="savebar"><span class="ind"></span><div class="dirty"><div class="t">1 unsaved change</div><div class="d" id="dirtywhat">Emulator location</div></div><div class="isclean"><div class="t">All changes saved</div><div class="d">Edits wait here until you save.</div></div><button class="btn">Discard</button><button class="btn primary">Save changes</button></div></div>
+    </main>
+    <main class="page scrollpage" id="mods"><svg width="0" height="0" style="position:absolute"><defs><radialGradient id="sh" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></radialGradient></defs></svg>
+      <div class="pinner">
+        <h1>Mods</h1><div class="sub">Choose your football and soundtrack.</div>
+        <div class="toolbar">
+          <div class="field search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>Search your mods</div>
+          <button class="btn">Import mods</button><button class="btn quiet" title="Refresh">Refresh</button>
+        </div>
+        <div class="tabs" style="margin-top:20px"><a class="on">Footballs</a><a>Soundtrack</a></div>
+        <div class="count">3 footballs · 1 enabled · only one football can be on at a time</div>
+        <div class="cards">
+          <div class="card glass active"><div class="thumb"></div><div class="body"><div class="name">Red football</div><div class="meta">Footballs · Version 1.0</div></div><div class="foot"><span class="st">Enabled</span><span class="switch" role="switch" aria-checked="true"></span></div></div>
+          <div class="card glass"><div class="thumb"></div><div class="body"><div class="name">Black football</div><div class="meta">Footballs · Version 1.0</div></div><div class="foot"><span class="st">Off</span><span class="switch off" role="switch" aria-checked="false"></span></div></div>
+          <div class="card glass"><div class="thumb"></div><div class="body"><div class="name">Classic brown</div><div class="meta">Footballs · Version 1.2</div></div><div class="foot"><span class="st">Off</span><span class="switch off" role="switch" aria-checked="false"></span></div></div>
+        </div>
+        <div class="foot-note">Mods are applied automatically when you start the game. Button textures are in Controllers.</div>
+      </div>
+    </main>
+    <main class="page lanepage" id="music">
+      <div class="scroll"><div class="pinner">
+        <h1>Music</h1><div class="sub">Replace songs and build your own soundtrack.</div>
+        <div class="head" style="margin-top:22px">
+          <div class="toggle"><span class="switch"></span><div><div class="t">Custom soundtrack</div><div class="d">Your selected songs play in-game.</div></div></div>
+          <div class="actions"><button class="btn quiet">Reset</button><button class="btn quiet">Import pack</button><button class="btn quiet">Export pack</button><button class="btn">Add songs&#8230;</button></div>
+        </div>
+        <div class="table glass">
+          <div class="th"><h2>Soundtrack</h2><span class="count" style="margin:0">21 songs · 2 custom</span></div>
+          <div class="tr hd"><span>#</span><span></span><span>Song</span><span>Length</span><span style="text-align:right">Actions</span></div>
+          <div class="tr "><span class="n">01</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 1</div><div class="src">On your disc</div></div><span class="len">2:48</span><div class="act"><button class="btn sm">Replace</button></div></div><div class="tr "><span class="n">02</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 2</div><div class="src">On your disc</div></div><span class="len">3:12</span><div class="act"><button class="btn sm">Replace</button></div></div><div class="tr pending"><span class="n">03</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Blinding Lights</div><div class="src">Replacing Original song 3<span class="pend2"> · Pending</span></div></div><span class="len">3:20</span><div class="act"><button class="btn sm quiet">Undo</button></div></div><div class="tr "><span class="n">04</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 4</div><div class="src">On your disc</div></div><span class="len">2:55</span><div class="act"><button class="btn sm">Replace</button></div></div><div class="tr custom"><span class="n">05</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">HUMBLE.</div><div class="src">Your song</div></div><span class="len">2:57</span><div class="act"><button class="btn sm quiet">Restore original</button><button class="btn sm">Replace</button></div></div><div class="tr "><span class="n">06</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 6</div><div class="src">On your disc</div></div><span class="len">3:05</span><div class="act"><button class="btn sm">Replace</button></div></div><div class="tr "><span class="n">07</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 7</div><div class="src">On your disc</div></div><span class="len">2:41</span><div class="act"><button class="btn sm">Replace</button></div></div><div class="tr "><span class="n">08</span><span class="mv"><span>&#9650;</span><span>&#9660;</span></span><div><div class="song">Original song 8</div><div class="src">On your disc</div></div><span class="len">3:30</span><div class="act"><button class="btn sm">Replace</button></div></div>
+        </div>
+      </div></div>
+      <div class="savelane"><div class="savebar"><span class="ind"></span><div><div class="t">1 pending change</div><div class="d">Song 3 replaced</div></div><button class="btn">Discard</button><button class="btn primary">Apply changes</button></div></div>
+    </main>
+    <main class="page scrollpage" id="controls">
+      <div class="pinner">
+        <div class="head"><div><h1>Controllers</h1><div class="sub">Set up your controllers for up to four players.</div></div>
+          <div class="actions"><button class="btn">Set up launcher controls</button></div></div>
+        <div class="note glass"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFC46B" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <span><b>B maps to B. X maps to X.</b> Older installs may have these reversed. Check the bindings below.</span><button class="btn sm quiet">Dismiss</button></div>
+        <div class="players"><div class="player glass"><div class="ic" style="opacity:.45"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10c3 0 5 11 2 11-2 0-3-3-4-3H9c-1 0-2 3-4 3C2 18 4 7 7 7Z"/><path d="M8 9v5m-2-2h4m5-1h.01m3 2h.01"/></svg></div><div><div class="t">Player 1</div><div class="d">No controller</div></div></div><div class="player glass"><div class="ic" style=""><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10c3 0 5 11 2 11-2 0-3-3-4-3H9c-1 0-2 3-4 3C2 18 4 7 7 7Z"/><path d="M8 9v5m-2-2h4m5-1h.01m3 2h.01"/></svg></div><div><div class="t">Player 2</div><div class="d">Xbox controller · 2</div></div></div><div class="player glass sel"><div class="ic" style=""><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10c3 0 5 11 2 11-2 0-3-3-4-3H9c-1 0-2 3-4 3C2 18 4 7 7 7Z"/><path d="M8 9v5m-2-2h4m5-1h.01m3 2h.01"/></svg></div><div><div class="t">Player 3</div><div class="d">Xbox controller · 3</div></div></div><div class="player glass"><div class="ic" style=""><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10c3 0 5 11 2 11-2 0-3-3-4-3H9c-1 0-2 3-4 3C2 18 4 7 7 7Z"/><path d="M8 9v5m-2-2h4m5-1h.01m3 2h.01"/></svg></div><div><div class="t">Player 4</div><div class="d">Xbox controller · 4</div></div></div></div>
+        <div class="device"><span class="lbl">Input device</span><div class="field">Xbox controller · 3<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div><button class="btn">Scan again</button></div>
+        <div class="map glass">
+          <div class="lead">Standard controls mapped automatically. Select a control to change it.</div>
+          <div><div class="grp"><h3>Left stick</h3><div class="binds"><div class="bind"><div class="k">Up</div><div class="v">Up</div></div><div class="bind"><div class="k">Down</div><div class="v">Down</div></div><div class="bind"><div class="k">Left</div><div class="v">Left</div></div><div class="bind"><div class="k">Right</div><div class="v">Right</div></div></div></div>
+               <div class="grp"><h3>D-pad</h3><div class="binds"><div class="bind"><div class="k">Up</div><div class="v">Up</div></div><div class="bind"><div class="k">Down</div><div class="v">Down</div></div><div class="bind"><div class="k">Left</div><div class="v">Left</div></div><div class="bind"><div class="k">Right</div><div class="v">Right</div></div></div></div></div>
+          <div class="pad"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/NFL%20Street%20Reborn%20Launcher%20rel-pbp/crates/reborn-ui/ui/art/controllers/xbox.svg" alt=""><div class="h">Press any button to wake your controller.</div><button class="btn">Test controller</button></div>
+          <div><div class="grp"><h3>Buttons</h3><div class="binds"><div class="bind"><div class="k">A</div><div class="v">Button A</div></div><div class="bind"><div class="k">B</div><div class="v">Button B</div></div><div class="bind"><div class="k">X</div><div class="v">Button X</div></div><div class="bind"><div class="k">Y</div><div class="v">Button Y</div></div><div class="bind"><div class="k">Z</div><div class="v">Button Z</div></div><div class="bind"><div class="k">Start</div><div class="v">Button Start</div></div></div></div>
+               <div class="grp"><h3>Right stick</h3><div class="binds"><div class="bind"><div class="k">Up</div><div class="v">Up</div></div><div class="bind"><div class="k">Down</div><div class="v">Down</div></div><div class="bind"><div class="k">Left</div><div class="v">Left</div></div><div class="bind"><div class="k">Right</div><div class="v">Right</div></div></div></div></div>
+        </div>
+      </div>
+    </main>
+    <main class="page scrollpage" id="stats">
+      <div class="pinner wide st5">
+        <h1>Stats</h1><div class="sub">Every match you&#8217;ve played, where your Elo stands, and who&#8217;s carrying your team.</div>
+        <div class="cols5">
+          <section>
+            <div class="h5"><h2>Your matches</h2><div class="tabs" style="margin:0"><a class="on">All</a><a>Online</a><a>Offline</a></div></div>
+            <div class="mlist glass"><div class="m5 hd"><span>Result</span><span>Matchup</span><span>Opponent</span><span style="text-align:right">Elo</span><span style="text-align:right">Date</span><span></span></div><button class="m5" data-key="match-m1" aria-expanded="false" data-x="m1"><span class="c-res"><b class="W">W</b>2–1</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span></span></span><span class="c-elo up">+16</span><span class="c-date">Sep 26</span><svg class="cv" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></button><div class="xp" id="x-m1"><div><div class="g5" data-key="game-m11"><span class="c-res"><b class="W">W</b>28–21</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 1 · 5:00 PM</span><span></span><span></span><span></span></div><div class="g5" data-key="game-m12"><span class="c-res"><b class="L">L</b>20–31</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 2 · 5:20 PM</span><span></span><span></span><span></span></div><div class="g5" data-key="game-m13"><span class="c-res"><b class="W">W</b>40–18</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 3 · 5:41 PM</span><span></span><span></span><span></span></div></div></div><button class="m5" data-key="match-m2" ><span class="c-res"><b class="L">L</b>14–36</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span></span></span><span class="c-elo dn">−18</span><span class="c-date">Sep 25</span><span></span></button><button class="m5" data-key="match-m3" ><span class="c-res"><b class="W">W</b>28–21</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#52525b,#27272a)">C</span><span class="tx"><span class="n">CPU</span><small>Offline</small></span></span><span class="c-elo"></span><span class="c-date">Sep 25</span><span></span></button><button class="m5" data-key="match-m4" ><span class="c-res"><b class="W">W</b>35–28</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/1-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#0ea5e9,#14b8a6)">M</span><span class="tx"><span class="n">Mikel</span></span></span><span class="c-elo"></span><span class="c-date">Sep 24</span><span></span></button><button class="m5" data-key="match-m5" ><span class="c-res"><b class="W">W</b>30–24</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#0ea5e9,#14b8a6)">M</span><span class="tx"><span class="n">Mikel</span></span></span><span class="c-elo up">+9</span><span class="c-date">Sep 19</span><span></span></button><button class="m5" data-key="match-m6" ><span class="c-res"><b class="W">W</b>24–21</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#f59e0b,#ef4444)">A</span><span class="tx"><span class="n">a_very_long_display_name</span></span></span><span class="c-elo"></span><span class="c-date">Sep 18</span><span></span></button><button class="m5" data-key="match-m7" ><span class="c-res"><b class="L">L</b>10–42</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#52525b,#27272a)">C</span><span class="tx"><span class="n">CPU</span><small>Offline</small></span></span><span class="c-elo"></span><span class="c-date">Sep 17</span><span></span></button><button class="m5" data-key="match-m8" ><span class="c-res"><b class="W">W</b>33–7</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span></span></span><span class="c-elo up">+12</span><span class="c-date">Sep 16</span><span></span></button><button class="m5" data-key="match-m9" ><span class="c-res"><b class="L">L</b>17–24</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span></span></span><span class="c-elo dn">−11</span><span class="c-date">Sep 15</span><span></span></button><button class="m5" data-key="match-m10" ><span class="c-res"><b class="W">W</b>27–20</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span></span></span><span class="c-elo up">+10</span><span class="c-date">Sep 14</span><span></span></button><div class="pgr5"><button class="btn sm quiet" data-key="newer" style="opacity:.4">Newer</button><span>Page 1 of 2</span><button class="btn sm" data-key="older">Older</button></div></div>
+          </section>
+          <div class="stack5">
+            <section>
+              <div class="h5"><h2>You</h2><a class="lnk" data-go-profile>Your profile ›</a></div>
+              <div class="card5 glass">
+                <div class="top"><div><div class="k2">Elo</div><div class="big">1,184</div><div class="chg"><b>▲ 16</b> · #7 on the leaderboard</div></div><svg class="spark" viewBox="0 0 200 54" preserveAspectRatio="none"><polyline fill="none" stroke="#E0272E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="0,44 20,40 40,42 60,34 80,37 100,28 120,31 140,20 160,23 180,10 200,6"/></svg></div>
+                <div class="kv5">
+                  <div><div class="k2">Record</div><div class="v">14–9</div></div>
+                  <div><div class="k2">Win %</div><div class="v">.609</div></div>
+                  <div><div class="k2">Last 10</div><div class="v">6–4</div></div>
+                  <div><div class="k2">Streak</div><div class="v up">W2</div></div>
+                </div>
+              </div>
+            </section>
+            <section>
+              <div class="h5"><h2>Your players</h2><span class="links"><a>Offense</a><a>Defense</a><a>Records</a></span></div>
+              <div class="card5 glass list5"><div class="p5"><span class="por sm" style="--tc:#141414"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/221-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">M. Penix Jr.</span><span class="k2">Best passer</span></div><div class="line5"><span><b>3,108</b> YDS</span><span class="sep">·</span><span><b>31</b> TD</span><span class="sep">·</span><span><b>11</b> INT</span><span class="sep">·</span><span><b>108.9</b> RTG</span></div></div></div><div class="p5"><span class="por sm" style="--tc:#032E2F"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/198-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">S. Barkley</span><span class="k2">Best rusher</span></div><div class="line5"><span><b>171</b> ATT</span><span class="sep">·</span><span><b>1,284</b> YDS</span><span class="sep">·</span><span><b>14</b> TD</span><span class="sep">·</span><span><b>7.5</b> AVG</span></div></div></div><div class="p5"><span class="por sm" style="--tc:#141414"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/216-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">D. London</span><span class="k2">Best receiver</span></div><div class="line5"><span><b>71</b> REC</span><span class="sep">·</span><span><b>1,102</b> YDS</span><span class="sep">·</span><span><b>17</b> TD</span><span class="sep">·</span><span><b>15.5</b> AVG</span></div></div></div><div class="p5"><span class="por sm" style="--tc:#A0181D"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/128-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">N. Bolton</span><span class="k2">Best DL/LB</span></div><div class="line5"><span><b>88</b> TKL</span><span class="sep">·</span><span><b>9</b> SCK</span><span class="sep">·</span><span><b>12</b> TFL</span><span class="sep">·</span><span><b>14</b> PBU</span></div></div></div><div class="p5"><span class="por sm" style="--tc:#141414"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/224-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">A. Terrell Jr.</span><span class="k2">Ballhawk</span></div><div class="line5"><span><b>11</b> INT</span><span class="sep">·</span><span><b>13</b> PBU</span><span class="sep">·</span><span><b>41</b> TKL</span><span class="sep">·</span><span><b>2</b> TD</span></div></div></div><div class="p5"><span class="por sm" style="--tc:#141414"><img src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/portraits/223-192.png" alt=""><img class="bdg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><div class="tx"><div class="hd5"><span class="nm">B. Robinson</span><span class="k2">Most played</span></div><div class="line5"><span><b>19</b> GAMES</span><span class="sep">·</span><span><b>96</b> ATT</span><span class="sep">·</span><span><b>431</b> YDS</span><span class="sep">·</span><span><b>6</b> TD</span></div></div></div></div>
+            </section>
+          </div>
+        </div>
+        <div class="foot3"><span>2 games not uploaded yet: The server did not answer.</span><a class="lnk2">Profile &amp; sync ›</a></div>
+      </div>
+    </main>
+    <main class="page scrollpage" id="profile">
+      <div class="pinner wide pf6">
+        <div class="back" data-back><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 6l-6 6 6 6"/></svg>Back</div>
+        <div class="hero6 hero7 glass" id="cover">
+          <div class="band"></div>
+          <div class="row7">
+            <div class="pic7"><span class="ini">A</span><span class="on6"></span></div>
+            <div class="idt">
+              <div class="nm">adamknowsball</div>
+              <div class="meta"><span class="live" id="pstat">● In a match</span><span>·</span><span>Joined Sep 2026</span><span>·</span><span>Plays as</span><span class="field"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">Chiefs<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></div>
+              <div class="sum7"><span><b>#7</b>on the leaderboard</span><span><b>1,184</b>Elo</span><span><b>60.9%</b>win rate</span></div><div class="acts6"><button class="btn primary sm">Share profile</button><button class="btn sm">View on web</button></div>
+            </div>
+            <div class="np7" id="live6">
+              <div class="top"><span class="dot6"></span><span class="lv">Live</span><span class="q">Ranked · Game 2 of 3</span></div>
+              <div class="sc7"><span class="t"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><b>ATL</b></span><strong>14<i>–</i>7</strong><span class="t r"><b>PHI</b><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span></div>
+              <div class="bot"><span>vs Mikel · Series 1–0</span><button class="btn sm">Live feed</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="ov9 glass">
+          <section><div class="h9"><h2>Elo</h2><span>Last 30 days</span></div>
+            <div class="big9">1,184<em class="up">+16</em></div><div class="sub9">Peak 1,212 · started at 1,000</div><svg class="sp9" viewBox="0 0 300 70" preserveAspectRatio="none"><defs><linearGradient id="ef9" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#E0272E" stop-opacity=".22"/><stop offset="1" stop-color="#E0272E" stop-opacity="0"/></linearGradient></defs>
+<path d="M0,58 L30,55 L60,56 L90,46 L120,49 L150,38 L180,41 L210,24 L240,28 L270,10 L300,15 L300,70 L0,70Z" fill="url(#ef9)"/>
+<polyline fill="none" stroke="#E0272E" stroke-width="2" stroke-linejoin="round" points="0,58 30,55 60,56 90,46 120,49 150,38 180,41 210,24 240,28 270,10 300,15"/></svg></section>
+          <section><div class="h9"><h2>Record</h2><span>23 matches</span></div>
+            <div class="big9">14–9<em>60.9%</em></div><div class="sub9">Ranked and casual</div>
+            <div class="bars9"><div class="br9"><span class="n">Ranked</span><span class="b"><i style="width:61.5%"></i></span><span class="r">8–5</span><span class="p">.615</span></div><div class="br9"><span class="n">Casual</span><span class="b"><i style="width:60%"></i></span><span class="r">6–4</span><span class="p">.600</span></div></div></section>
+          <section><div class="h9"><h2>Last 10 games</h2><span>Sep 11 – Sep 26</span></div>
+            <div class="big9">6–4<em class="up">+6.4</em></div><div class="sub9">Average winning margin</div>
+            <div class="pair9"><div><span>Points scored</span><b>31.4</b></div><div><span>Points allowed</span><b>25.0</b></div></div></section>
+        </div>
+        <div class="cols5 pfcols">
+          <section>
+            <div class="h5"><h2>Match history</h2><div class="tabs" style="margin:0"><a class="on">All</a><a>Ranked</a><a>Casual</a></div></div>
+            <div class="mlist glass"><div class="m5 hd"><span>Result</span><span>Matchup</span><span>Opponent</span><span style="text-align:right">Elo</span><span style="text-align:right">Date</span><span></span></div><button class="m5" data-key="match-q1" aria-expanded="false" data-x="q1"><span class="c-res"><b class="W">W</b>2–1</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Ranked</small></span></span><span class="c-elo up">+16</span><span class="c-date">Sep 26</span><svg class="cv" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></button><div class="xp" id="x-q1"><div><div class="g5" data-key="game-q11"><span class="c-res"><b class="W">W</b>28–21</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 1 · 5:00 PM</span><span></span><span></span><span></span></div><div class="g5" data-key="game-q12"><span class="c-res"><b class="L">L</b>20–31</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 2 · 5:20 PM</span><span></span><span></span><span></span></div><div class="g5" data-key="game-q13"><span class="c-res"><b class="W">W</b>40–18</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp g">Game 3 · 5:41 PM</span><span></span><span></span><span></span></div></div></div><button class="m5" data-key="match-q2" ><span class="c-res"><b class="L">L</b>14–36</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Ranked</small></span></span><span class="c-elo dn">−18</span><span class="c-date">Sep 25</span><span></span></button><button class="m5" data-key="match-q3" ><span class="c-res"><b class="W">W</b>35–28</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/1-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#0ea5e9,#14b8a6)">M</span><span class="tx"><span class="n">Mikel</span><small>Casual</small></span></span><span class="c-elo"></span><span class="c-date">Sep 24</span><span></span></button><button class="m5" data-key="match-q4" ><span class="c-res"><b class="W">W</b>30–24</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#0ea5e9,#14b8a6)">M</span><span class="tx"><span class="n">Mikel</span><small>Ranked</small></span></span><span class="c-elo up">+9</span><span class="c-date">Sep 19</span><span></span></button><button class="m5" data-key="match-q5" ><span class="c-res"><b class="W">W</b>24–21</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#f59e0b,#ef4444)">A</span><span class="tx"><span class="n">a_very_long_display_name</span><small>Casual</small></span></span><span class="c-elo"></span><span class="c-date">Sep 18</span><span></span></button><button class="m5" data-key="match-q6" ><span class="c-res"><b class="W">W</b>33–7</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Ranked</small></span></span><span class="c-elo up">+12</span><span class="c-date">Sep 16</span><span></span></button><button class="m5" data-key="match-q7" ><span class="c-res"><b class="L">L</b>17–24</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Ranked</small></span></span><span class="c-elo dn">−11</span><span class="c-date">Sep 15</span><span></span></button><button class="m5" data-key="match-q8" ><span class="c-res"><b class="W">W</b>27–20</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Ranked</small></span></span><span class="c-elo up">+10</span><span class="c-date">Sep 14</span><span></span></button><button class="m5" data-key="match-q9" ><span class="c-res"><b class="W">W</b>24–17</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/16-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#22c55e,#0f766e)">R</span><span class="tx"><span class="n">Rook</span><small>Casual</small></span></span><span class="c-elo"></span><span class="c-date">Sep 13</span><span></span></button><button class="m5" data-key="match-q10" ><span class="c-res"><b class="W">W</b>21–14</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#ec4899,#8b5cf6)">S</span><span class="tx"><span class="n">Sam</span><small>Ranked</small></span></span><span class="c-elo up">+8</span><span class="c-date">Sep 13</span><span></span></button><button class="m5" data-key="match-q11" ><span class="c-res"><b class="L">L</b>10–14</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/11-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#f97316,#b91c1c)">D</span><span class="tx"><span class="n">Dee</span><small>Ranked</small></span></span><span class="c-elo dn">−9</span><span class="c-date">Sep 12</span><span></span></button><button class="m5" data-key="match-q12" ><span class="c-res"><b class="W">W</b>31–3</span><span class="c-mu"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt=""><i>vs</i><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt=""></span><span class="c-opp"><span class="dav" style="width:26px;height:26px;font-size:12px;background:linear-gradient(135deg,#7c3aed,#2563eb)">P</span><span class="tx"><span class="n">Playz</span><small>Casual</small></span></span><span class="c-elo"></span><span class="c-date">Sep 11</span><span></span></button><div class="pgr5"><button class="btn sm quiet" style="opacity:.4">Newer</button><span>Page 1 of 2</span><button class="btn sm">Older</button></div></div>
+          </section>
+          <div class="stack5">
+            <section><div class="h5"><h2>Career</h2><a class="lnk" data-full>Full stats ›</a></div><div class="card5 glass"><div class="car3"><div class="nn"><div class="k2">Passing Yards</div><div class="v">3,021</div><div class="s"><b class="rk">#3</b> · 125.9 / G</div></div><div class="nn"><div class="k2">Passing TD</div><div class="v">40</div><div class="s"><b class="rk">#2</b> · 1.7 / G</div></div><div class="nn"><div class="k2">Passer Rating</div><div class="v">104.2</div><div class="s"><b class="rk">#5</b></div></div><div class="nn"><div class="k2">Rushing Yards</div><div class="v">1,715</div><div class="s"><b class="rk">#4</b> · 71.5 / G</div></div><div class="nn"><div class="k2">Receiving Yards</div><div class="v">1,714</div><div class="s"><b class="rk">#6</b> · 71.4 / G</div></div><div class="nn"><div class="k2">Total TD</div><div class="v">65</div><div class="s"><b class="rk">#2</b> · 2.7 / G</div></div><div class="nn"><div class="k2">Tackles</div><div class="v">287</div><div class="s"><b class="rk">#8</b> · 12.0 / G</div></div><div class="nn"><div class="k2">Sacks</div><div class="v">42</div><div class="s"><b class="rk">#5</b> · 1.8 / G</div></div><div class="nn"><div class="k2">Interceptions</div><div class="v">14</div><div class="s"><b class="rk">#3</b> · 0.6 / G</div></div></div><div class="rknote">Rank among 214 online players</div></div></section>
+            <section><div class="h5"><h2>Leaderboard</h2><a class="lnk">Full leaderboard ›</a></div><div class="card5 glass list5"><div class="ld "><span class="pos">#5</span><span class="dav" style="width:28px;height:28px;font-size:12px;background:linear-gradient(135deg,#eab308,#b45309)">K</span><span class="nm">Kay</span><span class="el">1,231</span></div><div class="ld "><span class="pos">#6</span><span class="dav" style="width:28px;height:28px;font-size:12px;background:linear-gradient(135deg,#06b6d4,#1d4ed8)">L</span><span class="nm">Lo</span><span class="el">1,197</span></div><div class="ld me"><span class="pos">#7</span><span class="dav" style="width:28px;height:28px;font-size:12px;background:linear-gradient(135deg,#E0272E,#7a1216)">A</span><span class="nm">You</span><span class="el">1,184</span></div><div class="ld "><span class="pos">#8</span><span class="dav" style="width:28px;height:28px;font-size:12px;background:linear-gradient(135deg,#0ea5e9,#14b8a6)">M</span><span class="nm">Mikel</span><span class="el">1,166</span></div><div class="ld "><span class="pos">#9</span><span class="dav" style="width:28px;height:28px;font-size:12px;background:linear-gradient(135deg,#ec4899,#8b5cf6)">S</span><span class="nm">Sam</span><span class="el">1,152</span></div></div></section>
+            <section><div class="h5"><h2>Records</h2><a class="lnk">All ›</a></div><div class="card5 glass list5"><div class="rc"><span class="k">Passing Yards</span><span class="w"><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">M. Penix Jr.</span></span><b>288</b><span class="d">Sep 19</span></div><div class="rc"><span class="k">Rushing Yards</span><span class="w"><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt="">S. Barkley</span></span><b>171</b><span class="d">Sep 19</span></div><div class="rc"><span class="k">Most points</span><span class="w"></span><b>49</b><span class="d">Sep 19</span></div><div class="rc"><span class="k">Biggest comeback</span><span class="w"></span><b>21</b><span class="d">Sep 19</span></div></div></section>
+          </div>
+        </div>
+        <section class="full6" id="fullstats">
+          <div class="h5"><h2>Full stats</h2><div class="tabs" id="fstabs" style="margin:0"><a class="on" data-fs="pass">Passing</a><a data-fs="rush">Rushing</a><a data-fs="rec">Receiving</a><a data-fs="def">Defense</a></div></div>
+          <div data-fp="pass"><div class="tbl glass top5" id="t-pass"><table><thead><tr><th>Player</th><th>C/ATT</th><th>YDS</th><th>TD</th><th>INT</th><th>AIR</th><th>YAC</th><th>Y/A</th><th>RTG</th><th>LNG</th></tr></thead><tbody><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">M. Penix Jr.</span></td><td>141/238</td><td>2,210</td><td>31</td><td>11</td><td>1,402</td><td>808</td><td>9.3</td><td>110.5</td><td>74</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt="">J. Hurts</span></td><td>44/81</td><td>561</td><td>6</td><td>4</td><td>330</td><td>231</td><td>6.9</td><td>80.3</td><td>52</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">P. Mahomes</span></td><td>19/34</td><td>250</td><td>3</td><td>2</td><td>150</td><td>100</td><td>7.4</td><td>84.2</td><td>41</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt="">J. Herbert</span></td><td>15/27</td><td>198</td><td>2</td><td>1</td><td>121</td><td>77</td><td>7.3</td><td>88.2</td><td>38</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt="">J. Allen</span></td><td>12/22</td><td>176</td><td>1</td><td>2</td><td>109</td><td>67</td><td>8.0</td><td>58.1</td><td>33</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/1-128.png" alt="">C. Williams</span></td><td>9/18</td><td>102</td><td>1</td><td>1</td><td>70</td><td>32</td><td>5.7</td><td>62.7</td><td>24</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">K. Cousins</span></td><td>4/9</td><td>41</td><td>0</td><td>1</td><td>29</td><td>12</td><td>4.6</td><td>18.5</td><td>15</td></tr><tr class="reveal"><td colspan="10"><button class="showall" data-t="pass">Show all 7 players<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button></td></tr><tr class="total"><td>Total</td><td>244/429</td><td>3,538</td><td>44</td><td>22</td><td>2,211</td><td>1,327</td><td>8.2</td><td>96.7</td><td>74</td></tr></tbody></table></div></div><div data-fp="rush" hidden><div class="tbl glass top5" id="t-rush"><table><thead><tr><th>Player</th><th>ATT</th><th>YDS</th><th>AVG</th><th>TD</th><th>LNG</th><th>BTK</th><th>YCO</th></tr></thead><tbody><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt="">S. Barkley</span></td><td>171</td><td>1,284</td><td>7.5</td><td>14</td><td>58</td><td>31</td><td>604</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">B. Robinson</span></td><td>96</td><td>431</td><td>4.5</td><td>6</td><td>61</td><td>38</td><td>210</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt="">J. Hurts</span></td><td>38</td><td>212</td><td>5.6</td><td>4</td><td>29</td><td>9</td><td>88</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">I. Pacheco</span></td><td>22</td><td>118</td><td>5.4</td><td>1</td><td>17</td><td>6</td><td>51</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt="">J. Cook</span></td><td>17</td><td>96</td><td>5.6</td><td>1</td><td>22</td><td>4</td><td>37</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/1-128.png" alt="">D. Swift</span></td><td>12</td><td>44</td><td>3.7</td><td>0</td><td>9</td><td>2</td><td>18</td></tr><tr class="reveal"><td colspan="8"><button class="showall" data-t="rush">Show all 6 players<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button></td></tr><tr class="total"><td>Total</td><td>356</td><td>2,185</td><td>6.1</td><td>26</td><td>61</td><td>90</td><td>1,008</td></tr></tbody></table></div></div><div data-fp="rec" hidden><div class="tbl glass top5" id="t-rec"><table><thead><tr><th>Player</th><th>REC</th><th>YDS</th><th>AVG</th><th>YAC</th><th>TD</th><th>LNG</th><th>DRP</th></tr></thead><tbody><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">D. London</span></td><td>71</td><td>1,102</td><td>15.5</td><td>402</td><td>17</td><td>74</td><td>3</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">K. Pitts</span></td><td>48</td><td>612</td><td>12.8</td><td>190</td><td>8</td><td>44</td><td>2</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/13-128.png" alt="">A.J. Brown</span></td><td>22</td><td>301</td><td>13.7</td><td>88</td><td>4</td><td>52</td><td>1</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">T. Kelce</span></td><td>14</td><td>160</td><td>11.4</td><td>61</td><td>2</td><td>28</td><td>0</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/1-128.png" alt="">D. Moore</span></td><td>9</td><td>121</td><td>13.4</td><td>40</td><td>1</td><td>33</td><td>1</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/8-128.png" alt="">L. McConkey</span></td><td>7</td><td>88</td><td>12.6</td><td>31</td><td>1</td><td>24</td><td>0</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/3-128.png" alt="">K. Coleman</span></td><td>4</td><td>41</td><td>10.2</td><td>9</td><td>0</td><td>15</td><td>1</td></tr><tr class="reveal"><td colspan="8"><button class="showall" data-t="rec">Show all 7 players<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button></td></tr><tr class="total"><td>Total</td><td>175</td><td>2,425</td><td>13.9</td><td>821</td><td>33</td><td>74</td><td>8</td></tr></tbody></table></div></div><div data-fp="def" hidden><div class="tbl glass top5" id="t-def"><table><thead><tr><th>Player</th><th>TKL</th><th>TFL</th><th>SCK</th><th>INT</th><th>PBU</th><th>FF</th><th>FR</th><th>TD</th></tr></thead><tbody><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">N. Bolton</span></td><td>88</td><td>12</td><td>9</td><td>0</td><td>14</td><td>0</td><td>1</td><td>0</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">A. Terrell Jr.</span></td><td>41</td><td>11</td><td>8</td><td>11</td><td>13</td><td>1</td><td>1</td><td>2</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">K. Elliss</span></td><td>57</td><td>10</td><td>7</td><td>0</td><td>12</td><td>2</td><td>1</td><td>0</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">J. Bates</span></td><td>33</td><td>9</td><td>6</td><td>1</td><td>11</td><td>0</td><td>1</td><td>0</td></tr><tr class=""><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">G. Jarrett</span></td><td>29</td><td>8</td><td>5</td><td>0</td><td>10</td><td>1</td><td>1</td><td>0</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/14-128.png" alt="">D. Onyemata</span></td><td>21</td><td>7</td><td>4</td><td>1</td><td>9</td><td>2</td><td>1</td><td>0</td></tr><tr class="more"><td><span class="who"><img class="lg" src="file:///C:/Users/Adam/Desktop/Reborn%20Installer/reborn-backend-stats-v2/assets/live/teams/9-128.png" alt="">C. Jones</span></td><td>18</td><td>6</td><td>3</td><td>0</td><td>8</td><td>0</td><td>1</td><td>0</td></tr><tr class="reveal"><td colspan="9"><button class="showall" data-t="def">Show all 7 players<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button></td></tr><tr class="total"><td>Total</td><td>287</td><td>63</td><td>42</td><td>13</td><td>77</td><td>6</td><td>7</td><td>2</td></tr></tbody></table></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="mock">
+  <h3>Page</h3><div class="opts"><button data-go="play" class="on">Play</button><button data-go="settings">Settings</button><button data-go="mods">Mods</button><button data-go="music">Music</button><button data-go="controls">Controllers</button><button data-go="stats">Stats</button><button data-go="profile">Profile</button></div>
+  <h3>Window backdrop</h3><div class="opts"><button data-win="mica" class="on">Mica (Win 11 / macOS)</button><button data-win="fallback">Glass off / Linux / Deck</button></div>
+  <h3>Desktop wallpaper</h3><div class="opts"><button data-desk="bloom" class="on">Blue</button><button data-desk="sunset">Warm</button><button data-desk="dark">Dark</button></div>
+  <h3>Profile: live game</h3><div class="opts"><button data-lg="on" class="on">In a match</button><button data-lg="off">Not in a game</button></div>
+  <h3>Motion</h3><div class="opts"><button data-mo="normal">Quick</button><button data-mo="slow" class="on">Slow (default)</button><button data-mo="rm">Reduced motion</button></div>
+  <h3>Last input</h3><div class="opts"><button data-in="mouse" class="on">Mouse / keyboard</button><button data-in="pad">Controller</button></div>
+  <h3>Play status</h3><div class="opts"><button data-st="ready" class="on">Ready</button><button data-st="live">Playing</button><button data-st="setup">Setup</button><button data-st="fail">Failed</button><button data-st="crash">Crashed</button></div>
+  <h3>Save bar</h3><div class="opts"><button data-save="dirty">Unsaved changes</button><button data-save="clean" class="on">Nothing changed</button></div>
+  <h3>What changed</h3>
+  <ul>
+    <li>Layout identical; only the look changed</li>
+    <li>Stats = Stats v2 + Profile (feat/stats-profile-v2), restyled; behaviour and wording unchanged</li>
+    <li>Motion: fades + short slides only, 120/180/240 ms, one easing; sliding nav marker and tab indicator; menus settle from their anchor; save bar rises in; best-of-3 rows expand; all off with reduced motion</li>
+    <li>Settings &#8250; Display &#8250; Slow animations: ON by default (480/720/960 ms); off = quick (120/180/240 ms)</li>
+    <li>Mods/Music/Controllers/Stats: sample data, same layouts as today</li>
+    <li>One token set for every page (fixes 4 backgrounds, 2 reds)</li>
+    <li>Sidebar + page sit on the OS glass; cards are frosted panels</li>
+    <li>Settings &#8250; Display &#8250; Window glass: players can turn glass off; off = the same solid dark look as Linux / Deck</li>
+    <li>No glows anywhere; focus is a plain white ring</li>
+    <li>Play: account + playtime top-right; Play now with a &#8943; Game details button beside it; Ready to play under it; glass action strip; Display works like the other cells (opens a small menu)</li>
+    <li>Settings: one floating Save bar at the bottom, only when something changed (content scrolls above it, never under it) instead of 4 Save buttons; Browse+Save becomes "Change&#8230;"; shorter Dolphin card</li>
+    <li>Controller prompts + white focus ring only while a controller is driving the launcher (switch Last input)</li>
+  </ul>
+</div>
+
+<script>
+const $=s=>document.querySelectorAll(s);
+function go(p){$('.page').forEach(e=>e.classList.toggle('show',e.id===p));
+  $('.nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===p));
+  $('[data-go]').forEach(b=>b.classList.toggle('on',b.dataset.go===p));}
+$('.nav a[data-p]').forEach(a=>a.onclick=()=>go(a.dataset.p));
+$('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
+$('[data-win]').forEach(b=>b.onclick=()=>{win.className='win '+b.dataset.win;$('[data-win]').forEach(x=>x.classList.toggle('on',x===b));});
+$('.mock [data-logo]').forEach(b=>b.onclick=()=>{side.dataset.logo=b.dataset.logo;$('.mock [data-logo]').forEach(x=>x.classList.toggle('on',x===b));});
+$('[data-save]').forEach(b=>b.onclick=()=>{savebar.classList.toggle('clean',b.dataset.save==='clean');$('[data-save]').forEach(x=>x.classList.toggle('on',x===b));});
+$('[data-desk]').forEach(b=>b.onclick=()=>{desk.className='desk '+b.dataset.desk;$('[data-desk]').forEach(x=>x.classList.toggle('on',x===b));});
+
+const ST={ready:['','Ready to play','','Play now'],live:['live','Enjoy the game','','Playing'],setup:['amber','Setup required','Finish setup','Play now'],
+ fail:['bad','Your game could not start','See why','Play now'],crash:['bad','Game closed unexpectedly','See why','Play now']};
+$('[data-st]').forEach(b=>b.onclick=()=>{const [c,t,a,btn]=ST[b.dataset.st];pstatus.className='status '+c;pstatus.querySelector('.txt').textContent=t;
+ pstatus.querySelector('.act').textContent=a;const pb=document.querySelector('.play .btn.primary');pb.lastChild.textContent=btn;
+ pb.style.opacity=b.dataset.st==='live'?'.55':'';$('[data-st]').forEach(x=>x.classList.toggle('on',x===b));});
+
+$('[data-in]').forEach(b=>b.onclick=()=>{document.body.classList.toggle('padmode',b.dataset.in==='pad');$('[data-in]').forEach(x=>x.classList.toggle('on',x===b));});
+$('[data-menu]').forEach(c=>c.onclick=e=>{const m=c.querySelector('.menu'),a=e.target.closest('.menu a');
+ if(a){m.querySelectorAll('a').forEach(x=>x.classList.toggle('on',x===a));c.querySelector('.v').textContent=a.dataset.v;m.classList.remove('open');e.stopPropagation();return;}
+ $('.menu').forEach(x=>x!==m&&x.classList.remove('open'));m.classList.toggle('open');});
+document.addEventListener('click',e=>{if(!e.target.closest('[data-menu]'))$('.menu').forEach(x=>x.classList.remove('open'));});
+
+const dirty=v=>{savebar.classList.toggle('clean',!v);$('[data-save]').forEach(x=>x.classList.toggle('on',x.dataset.save===(v?'dirty':'clean')));};
+$('#settings .row .btn').forEach(b=>b.addEventListener('click',()=>dirty(true)));
+$('#savebar .btn').forEach(b=>b.addEventListener('click',()=>dirty(false)));
+
+let savedGlass=true;
+const setGlass=on=>{win.className='win '+(on?'mica':'fallback');glass.classList.toggle('off',!on);glass.setAttribute('aria-checked',on);glstate.textContent=on?'On':'Off';
+  $('[data-win]').forEach(x=>x.classList.toggle('on',x.dataset.win===(on?'mica':'fallback')));};
+$('#stabs a[data-tab]').forEach(a=>a.onclick=()=>{$('#stabs a').forEach(x=>x.classList.toggle('on',x===a));
+  $('.tabpanel').forEach(t=>t.hidden=t.dataset.panel!==a.dataset.tab);});
+glass.onclick=()=>{const on=glass.classList.contains('off');setGlass(on);dirtywhat.textContent='Window glass';dirty(on!==savedGlass);};
+$('#savebar .btn').forEach(b=>b.addEventListener('click',()=>{if(b.classList.contains('primary'))savedGlass=!glass.classList.contains('off');else setGlass(savedGlass);}));
+$('#settings .row .btn').forEach(b=>b.addEventListener('click',()=>{dirtywhat.textContent='Emulator location';}));
+
+/* ---- motion wiring ---- */
+const side=document.getElementById('side'); const navInd=document.createElement('span'); navInd.className='nav-ind still'; side.appendChild(navInd);
+function placeNav(){const a=side.querySelector('.nav a.on'); if(!a){navInd.style.opacity=0;return;} navInd.style.opacity=1;
+  navInd.style.transform=`translateY(${a.offsetTop+(a.offsetHeight-18)/2}px)`;}
+function placeTabs(){$('.tabs').forEach(t=>{let i=t.querySelector('.tab-ind'); if(!i){i=document.createElement('span');i.className='tab-ind still';t.prepend(i);}
+  const a=t.querySelector('a.on'); if(!a||!t.offsetParent)return; i.style.width=a.offsetWidth+'px'; i.style.transform=`translateX(${a.offsetLeft}px)`;
+  requestAnimationFrame(()=>i.classList.remove('still'));});}
+$('.tabs a').forEach(a=>a.addEventListener('click',()=>{const t=a.parentElement; if(t.id==='stabs'&&!a.dataset.tab)return;
+  t.querySelectorAll('a').forEach(x=>x.classList.toggle('on',x===a)); placeTabs();}));
+let lastPage='play';
+go=function(p){const cur=document.querySelector('.page.show'); if(cur&&cur.id!==p)lastPage=cur.id;
+  $('.page').forEach(e=>e.classList.toggle('show',e.id===p)); const nk=p==='profile'?'stats':p;
+  $('.nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===nk)); $('[data-go]').forEach(b=>b.classList.toggle('on',b.dataset.go===p));
+  placeNav(); placeTabs(); const sc=document.getElementById(p); if(sc)sc.scrollTop=0;};
+$('[data-go-profile]').forEach(a=>a.onclick=()=>go('profile'));
+$('[data-back]').forEach(a=>a.onclick=()=>go(lastPage==='profile'?'stats':lastPage));
+$('[data-x]').forEach(b=>b.onclick=()=>{const x=document.getElementById('x-'+b.dataset.x); const open=!x.classList.contains('open');
+  x.classList.toggle('open',open); b.setAttribute('aria-expanded',open);});
+$('[data-mo]').forEach(b=>b.onclick=()=>{document.body.classList.toggle('slow',b.dataset.mo==='slow');document.body.classList.toggle('rm',b.dataset.mo==='rm');
+  $('[data-mo]').forEach(x=>x.classList.toggle('on',x===b));});
+document.getElementById('cover').style.setProperty('--c1','#A71930'); document.getElementById('cover').style.setProperty('--c2','#2b0a10');
+window.addEventListener('resize',()=>{placeNav();placeTabs();});
+placeNav(); placeTabs(); requestAnimationFrame(()=>navInd.classList.remove('still'));
+
+/* ---- Slow animations setting: previews live, saved through the save bar ---- */
+let savedSlow=true;
+const isSlow=()=>document.body.classList.contains('slow');
+const setSlow=on=>{document.body.classList.toggle('slow',on);document.body.classList.remove('rm');slowsw.classList.toggle('off',!on);slowsw.setAttribute('aria-checked',on);
+  slstate.textContent=on?'On':'Off';$('[data-mo]').forEach(x=>x.classList.toggle('on',x.dataset.mo===(on?'slow':'normal')));};
+const anyDirty=()=>isSlow()!==savedSlow||glass.classList.contains('off')===savedGlass;
+slowsw.onclick=()=>{setSlow(!isSlow());dirtywhat.textContent='Slow animations';dirty(anyDirty());};
+glass.addEventListener('click',()=>dirty(anyDirty()));
+$('#savebar .btn').forEach(b=>b.addEventListener('click',()=>{if(b.classList.contains('primary'))savedSlow=isSlow();else setSlow(savedSlow);}));
+$('[data-mo]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.mo!=='rm')setSlow(b.dataset.mo==='slow');}));
+
+$('#pftabs a').forEach(a=>a.addEventListener('click',()=>{$('#profile .ptab').forEach(t=>t.hidden=t.dataset.pp!==a.dataset.pt);}));
+
+$('#fstabs a').forEach(a=>a.addEventListener('click',()=>{$('#fullstats [data-fp]').forEach(t=>t.hidden=t.dataset.fp!==a.dataset.fs);}));
+$('[data-full]').forEach(a=>a.onclick=()=>document.getElementById('fullstats').scrollIntoView({behavior:document.body.classList.contains('rm')?'auto':'smooth',block:'start'}));
+$('#profile [data-x]').forEach(b=>b.onclick=()=>{const x=document.getElementById('x-'+b.dataset.x);const o=!x.classList.contains('open');x.classList.toggle('open',o);b.setAttribute('aria-expanded',o);});
+
+$('[data-lg]').forEach(b=>b.onclick=()=>{const on=b.dataset.lg==='on';document.getElementById('live6').hidden=!on;
+  document.getElementById('pstat').textContent=on?'● In a match':'● Online now';$('[data-lg]').forEach(x=>x.classList.toggle('on',x===b));});
+
+$('.showall').forEach(b=>b.onclick=()=>document.getElementById('t-'+b.dataset.t).classList.add('open'));
+</script>
+</body>
+</html>
