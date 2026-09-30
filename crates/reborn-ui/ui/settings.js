@@ -383,6 +383,7 @@ function lookSwitch(id, label, on, disabled, flip) {
   return el('button', { type: 'button', id, class: 'look-switch', role: 'switch', 'aria-label': label, 'aria-checked': String(on), disabled, onclick: flip });
 }
 function lookBlock() {
+  if (!look && lookError) return el('p', { class: 'partial', role: 'alert', text: 'Couldn’t read the launcher window settings: ' + reason(lookError) });
   if (!look) return el('p', { class: 'partial', text: 'Reading the launcher window settings…' });
   ensureSaveBar();
   const glassOn = lookDraft.windowGlass && look.glassSupported;

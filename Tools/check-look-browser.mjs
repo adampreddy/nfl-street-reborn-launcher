@@ -96,6 +96,16 @@ const settled=()=>page.waitForFunction(()=>{const m=document.querySelector('.nav
   const pg=await variant('preview-left');
   assert.deepEqual(await pg.evaluate(()=>applies),[true],'restored once');
  }
+ { // launcher_look fails: the reason is shown, not "Reading..." forever
+  const c=await browser.newContext({viewport:{width:1280,height:800}});
+  await c.addInitScript(()=>{window.__TAURI__={core:{invoke:async(cmd)=>{if(cmd==='launcher_look')throw 'settings file is unreadable';return null;}}};});
+  const pg=await c.newPage();pg.on('pageerror',e=>errors.push(e.message));
+  await pg.goto(base+'/settings.html#display');
+  await pg.getByText('Couldn’t read the launcher window settings:').waitFor({timeout:5000});
+  const t=await pg.locator('#screen').innerText();
+  assert.match(t,/Couldn’t read the launcher window settings: .*settings file is unreadable/,'failure reason shown');
+  assert.doesNotMatch(t,/Reading the launcher window settings/,'not stuck on Reading');
+ }
  assert.deepEqual(errors,[]);
  console.log('check-look-browser: PASS');
 }finally{await browser.close();server.close();}
