@@ -17,6 +17,25 @@ const selector = 'a[href],button,input,select,textarea,summary';
 const main = document.getElementById('main');
 const screen = document.getElementById('screen');
 const hints = document.getElementById('input-hints');
+// Pages with a save bar keep it in its own lane after #main (spec §7). It is content too: the pad reaches
+// it from the bottom of the page, and Back from it goes to the sidebar, never off the page.
+const saveLane = () => document.getElementById('save-lane');
+const inContent = n => !!n && (main.contains(n) || !!saveLane()?.contains(n));
+// Pending changes are never dropped silently: while the bar is open, leaving the page is refused and
+// the save bar (which states how many changes are unsaved) takes focus instead.
+const pending = () => !!saveLane()?.classList.contains('open');
+function toSaveBar() {
+  const lane = saveLane();
+  const target = lane && (reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);
+  if (target) focus(target, false);
+}
+document.addEventListener('click', e => {
+  if (!pending() || !(e.target instanceof Element)) return;
+  const link = e.target.closest('.shell-nav a[href]');
+  if (!link) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  toSaveBar();
+}, true);
 let active = false, checking = false, lastFocus = null, contentFocus = null, selectEdit = null;
 let controllerMode = false, restorePending = false;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -114,9 +133,10 @@ function focus(n, reveal = true) {
   document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
   n.focus({preventScroll:true});
   n.classList.add('pad-focus');
-  if (reveal) {
+  // The save lane never scrolls; everything else scrolls its own area to show the control.
+  const area = n.closest('dialog[open]') || n.closest('.shell-nav') || (main.contains(n) ? main : null);
+  if (reveal && area) {
     const target = n.closest('label.choice') || n;
-    const area = n.closest('dialog[open]') || n.closest('.shell-nav') || main;
     const rect = target.getBoundingClientRect(), viewport = area.getBoundingClientRect();
     const top = viewport.top + 16, bottom = viewport.bottom - 16;
     const delta = rect.top < top ? rect.top-top : rect.bottom > bottom ? rect.bottom-bottom : 0;
@@ -138,7 +158,7 @@ document.addEventListener('focusin',e => {
   document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
   n.classList.add('pad-focus');
   lastFocus = {node:n,key:identity(n),index:reachable().indexOf(n)};
-  if (main.contains(n)) contentFocus = lastFocus;
+  if (inContent(n)) contentFocus = lastFocus;
 });
 new MutationObserver(() => {
   if (restorePending) return;
@@ -178,15 +198,18 @@ function move(direction) {
   if (!visible(current)) { focus(primary()); return; }
   const inNav = !!current.closest('.shell-nav');
   if (inNav && direction === 'right') {
-    focus(contentFocus && reachable(main).find(n => identity(n) === contentFocus.key) || primary()); return;
+    const content = [...reachable(main), ...(saveLane() ? reachable(saveLane()) : [])];
+    focus(contentFocus && content.find(n => identity(n) === contentFocus.key) || primary()); return;
   }
   // Keep vertical movement within content or navigation. A distant sidebar
   // control should never steal focus from the next settings row.
   const modal = document.querySelector('dialog[open]');
-  const items = reachable(modal || (inNav ? document.querySelector('.shell-nav') : main));
+  const lane = saveLane(), inLane = !modal && !!lane?.contains(current);
+  // From the save bar, Up goes back into the page; Left and Right stay on the bar.
+  const items = reachable(modal || (inNav ? document.querySelector('.shell-nav') : inLane && direction !== 'up' ? lane : main));
   const a = box(current), ax = a.x+a.width/2, ay = a.y+a.height/2;
   const viewport = (current.closest('dialog[open]') || main).getBoundingClientRect();
-  if (!inNav && (a.bottom < viewport.top || a.top > viewport.bottom)) {
+  if (!inNav && !inLane && (a.bottom < viewport.top || a.top > viewport.bottom)) {
     const onScreen = items.filter(n => { const b = box(n); return b.top >= viewport.top && b.bottom <= viewport.bottom; });
     if (onScreen.length) { focus(direction === 'up' ? onScreen.at(-1) : onScreen[0]); return; }
   }
@@ -201,6 +224,8 @@ function move(direction) {
   }).filter(x => x.distance > 4 && (!horizontal || x.overlap > 0));
   ranked.sort((a,b) => Number(b.overlap > 0)-Number(a.overlap > 0) || a.score-b.score);
   if (ranked[0]) focus(ranked[0].n);
+  // Nothing further down the page: the save bar, while it is open, comes next (Save first).
+  else if (!modal && !inNav && !inLane && direction === 'down' && lane && reachable(lane).length) focus(reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);
   else if (!modal && !inNav && direction === 'left') focus(document.querySelector('.shell-nav a.current') || reachable(document.querySelector('.shell-nav'))[0]);
 }
 function endSelect(commit) {
@@ -239,13 +264,15 @@ function back() {
   }
   const wizardBack = document.getElementById('back');
   if (visible(wizardBack)) { wizardBack.click(); return; }
-  if (main.contains(current)) { focus(document.querySelector('.shell-nav a.current') || document.querySelector('.shell-nav a[href="index.html"]')); return; }
+  if (inContent(current)) { focus(document.querySelector('.shell-nav a.current') || document.querySelector('.shell-nav a[href="index.html"]')); return; }
   if (!location.pathname.endsWith('/index.html') && location.pathname !== '/') location.href = 'index.html';
 }
 function pageStep(delta) {
   if (selectEdit) endSelect(false);
   // First run has saved, ordered steps; bumpers must not bypass its Next action.
   if (document.body.classList.contains('page-setup')||document.querySelector('dialog[open]')) return;
+  // Unsaved changes are never dropped by a bumper: LB/RB do nothing while the save bar is open.
+  if (pending()) return;
   const links = [...document.querySelectorAll('.shell-nav a:not(.brand)')].filter(visible);
   const index = links.findIndex(n => n.classList.contains('current'));
   const next = links[index+delta];

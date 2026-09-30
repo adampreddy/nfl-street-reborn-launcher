@@ -115,10 +115,14 @@ body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-ac
 body.shell.page-setup .binding-editor{background:#1b1e24}
 body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{color-scheme:dark}
 
-/* settings: the save lane is its own grid row under #main, in the same column (never over content).
-   html … :not(.page-setup) so it outranks the shell grid below (html body.shell:not(.page-setup), 0,2,2) */
-html body.shell.page-settings:not(.page-setup),html body.shell.page-settings.gamepad-input:not(.page-setup){grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
-body.shell.page-settings #save-lane{grid-area:save;min-width:0}
+/* save lane (savebar.js): any page with body.has-save-lane gets its own grid row under #main, in the same
+   column, so the bar never covers content (spec §6.2, §7). Settings now; Music in plan 3.
+   html … :not(.page-setup) so it outranks the shell grid below (html body.shell:not(.page-setup)) in mouse
+   and controller mode alike: the .gamepad-input twin keeps that headroom when the pad class is on. */
+html body.shell.has-save-lane:not(.page-setup),html body.shell.has-save-lane.gamepad-input:not(.page-setup){grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
+html body.shell.has-save-lane #save-lane{grid-area:save;min-width:0}
+.save-bar .save-text{min-width:0}
+.save-bar .err{margin-top:2px;font-size:12.5px;color:var(--red-ink);overflow-wrap:anywhere}
 
 /* Launcher window section (settings > Display) */
 .look-section{padding:6px 0;margin:16px 0}
