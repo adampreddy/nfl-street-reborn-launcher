@@ -354,43 +354,53 @@ function dolphinBlock(){
  return wrap;
 }
 // Launcher window (spec §4.3, §5.3): previews live, saved through the save bar.
-let look = null, lookSaved = null, lookDraft = null, saveBar = null;
+let look = null, lookSaved = null, lookDraft = null, saveBar = null, lookBusy = false, lookMsg = '', lookLastId = '';
 const lookChanges = () => !lookSaved || !lookDraft ? [] : [
   ...(lookDraft.windowGlass !== lookSaved.windowGlass ? ['Window glass'] : []),
   ...(lookDraft.slowAnimations !== lookSaved.slowAnimations ? ['Slow animations'] : []),
 ];
+// One guarded step: ignored while another is in flight; a failure is shown, never thrown.
+async function lookStep(id, fn) {
+  if (lookBusy) return;
+  lookBusy = true; lookMsg = ''; if (id) lookLastId = id;
+  try { await fn(); } catch (e) { lookMsg = reason(e); }
+  finally { lookBusy = false; saveBar?.update(lookChanges()); draw(); if (lookLastId) document.getElementById(lookLastId)?.focus({ preventScroll: true }); }
+}
 function ensureSaveBar() {
   if (saveBar) return;
   const lane = document.getElementById('save-lane'); if (!lane) return;
   saveBar = mountSaveBar(lane, {
-    onSave: async () => { look = await call('launcher_look_set', { windowGlass: lookDraft.windowGlass, slowAnimations: lookDraft.slowAnimations });
-      applyLook(look); lookSaved = { windowGlass: look.windowGlass, slowAnimations: look.slowAnimations }; lookDraft = { ...lookSaved }; saveBar.update([]); draw(); },
-    onDiscard: async () => { lookDraft = { ...lookSaved };
-      look = await call('window_glass_apply', { enabled: lookSaved.windowGlass });
-      applyLook({ ...look, slowAnimations: lookSaved.slowAnimations }); saveBar.update([]); draw(); },
+    returnFocus: () => document.getElementById(lookLastId),
+    onSave: () => lookStep('', async () => {
+      const v = await call('launcher_look_set', { windowGlass: lookDraft.windowGlass, slowAnimations: lookDraft.slowAnimations });
+      look = v; applyLook(v); lookSaved = { windowGlass: v.windowGlass, slowAnimations: v.slowAnimations }; lookDraft = { ...lookSaved }; }),
+    onDiscard: () => lookStep('', async () => {
+      const v = await call('window_glass_apply', { enabled: lookSaved.windowGlass });
+      look = v; lookDraft = { ...lookSaved }; applyLook({ ...v, slowAnimations: lookSaved.slowAnimations }); }),
   });
 }
-function lookSwitch(label, on, disabled, flip) {
-  return el('button', { type: 'button', class: 'look-switch', role: 'switch', 'aria-label': label, 'aria-checked': String(on), disabled, onclick: flip });
+function lookSwitch(id, label, on, disabled, flip) {
+  return el('button', { type: 'button', id, class: 'look-switch', role: 'switch', 'aria-label': label, 'aria-checked': String(on), disabled, onclick: flip });
 }
 function lookBlock() {
   if (!look) return el('p', { class: 'partial', text: 'Reading the launcher window settings…' });
   ensureSaveBar();
   const glassOn = lookDraft.windowGlass && look.glassSupported;
+  const failed = look.glassSupported && lookDraft.windowGlass && !look.glassApplied;
   const row = (label, sw, help) => el('div', { class: 'look-row' }, el('div', { class: 'look-label', text: label }), sw, el('p', { class: 'look-help', text: help }));
   return el('section', { class: 'glass look-section', 'aria-label': 'Launcher window' },
     el('h2', { text: 'Launcher window' }),
     el('p', { class: 'look-lead', text: 'How the launcher itself looks. The game is not affected.' }),
-    row('Window glass', lookSwitch('Window glass', glassOn, !look.glassSupported, async () => {
-      lookDraft.windowGlass = !lookDraft.windowGlass;
-      look = await call('window_glass_apply', { enabled: lookDraft.windowGlass });
-      applyLook({ ...look, slowAnimations: lookDraft.slowAnimations }); saveBar?.update(lookChanges()); draw(); }),
-      look.glassNote || 'Frosted glass that picks up your desktop colours. Turn it off for a solid dark background.'),
-    row('Slow animations', lookSwitch('Slow animations', lookDraft.slowAnimations, false, () => {
+    row('Window glass', lookSwitch('look-glass', 'Window glass', glassOn, !look.glassSupported, () => lookStep('look-glass', async () => {
+      const next = !lookDraft.windowGlass;
+      const v = await call('window_glass_apply', { enabled: next });
+      look = v; lookDraft.windowGlass = next; applyLook({ ...v, slowAnimations: lookDraft.slowAnimations }); })),
+      failed ? 'The window glass could not be turned on.' : look.glassNote || 'Frosted glass that picks up your desktop colours. Turn it off for a solid dark background.'),
+    row('Slow animations', lookSwitch('look-motion', 'Slow animations', lookDraft.slowAnimations, false, () => lookStep('look-motion', async () => {
       lookDraft.slowAnimations = !lookDraft.slowAnimations;
-      applyLook({ glassApplied: document.documentElement.dataset.glass === 'on', slowAnimations: lookDraft.slowAnimations });
-      saveBar?.update(lookChanges()); draw(); }),
-      'Slower, smoother movement when you change pages, open menus and expand matches. Turn it off for quick animations. Windows’ reduce-motion setting always turns movement off.'));
+      applyLook({ glassApplied: document.documentElement.dataset.glass === 'on', slowAnimations: lookDraft.slowAnimations }); })),
+      'Slower, smoother movement when you change pages, open menus and expand matches. Turn it off for quick animations. Windows’ reduce-motion setting always turns movement off.'),
+    lookMsg ? el('p', { class: 'look-help look-error', role: 'status', text: lookMsg }) : null);
 }
 async function loadLook() {
   look = await refreshLook();

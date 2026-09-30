@@ -122,3 +122,4 @@ body.shell.page-settings #save-lane{grid-area:save;min-width:0}
 body.shell button.look-switch{width:40px;height:22px;min-height:22px;padding:0;border:0!important;border-radius:999px;background-color:var(--red)!important;color:inherit}
 body.shell button.look-switch[aria-checked="false"]{background-color:rgba(255,255,255,.14)!important}
 body.shell .look-section h2{text-transform:none;letter-spacing:0;color:var(--fg)}
+.look-error{color:#ffb5b8}

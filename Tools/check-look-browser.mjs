@@ -50,6 +50,52 @@ const settled=()=>page.waitForFunction(()=>{const m=document.querySelector('.nav
  // A broken cache never breaks the page (Review Focus 4)
  await page.evaluate(()=>localStorage.setItem('reborn:look','{nope'));
  await page.reload();await page.waitForFunction(()=>document.documentElement.dataset.glass==='on');
+
+ // Fix round 1: honest failure states
+ const variant=async(mode)=>{
+  const c=await browser.newContext({viewport:{width:1280,height:800}});
+  await c.addInitScript((mode)=>{
+   window.applies=[];window.savedGlass=mode==='preview-left'?true:true;
+   const view=(glass)=>({windowGlass:true,slowAnimations:true,glassSupported:mode!=='unsupported',glassApplied:mode==='unsupported'||mode==='apply-failed'?false:glass,glassNote:mode==='unsupported'?'Needs Windows 11.':null});
+   window.__TAURI__={core:{invoke:async(cmd,args={})=>{
+    if(cmd==='launcher_look')return mode==='preview-left'?{...view(true),glassApplied:false}:view(true);
+    if(cmd==='window_glass_apply'){applies.push(args.enabled);if(mode==='reject')throw 'boom';return view(args.enabled);}
+    if(cmd==='launcher_look_set')return view(true);
+    return null;}}};
+  },mode);
+  const pg=await c.newPage();pg.on('pageerror',e=>errors.push(e.message));
+  await pg.goto(base+'/settings.html#display');await pg.getByRole('switch',{name:'Slow animations'}).waitFor();
+  return pg;
+ };
+ { // (a) unsupported
+  const pg=await variant('unsupported');
+  assert.equal(await pg.getByRole('switch',{name:'Window glass'}).isDisabled(),true,'unsupported: disabled');
+  assert.match(await pg.locator('.look-section').innerText(),/Needs Windows 11\./,'unsupported: note shown');
+  assert.equal(await pg.evaluate(()=>document.documentElement.dataset.glass),'off');
+  // (d) closed lane is inert
+  assert.equal(await pg.evaluate(()=>document.getElementById('save-lane').inert),true,'closed lane inert');
+ }
+ { // (b) supported but the apply failed
+  const pg=await variant('apply-failed');
+  assert.equal(await pg.getByRole('switch',{name:'Window glass'}).isDisabled(),false,'failed: enabled');
+  assert.equal(await pg.getByRole('switch',{name:'Window glass'}).getAttribute('aria-checked'),'true','failed: reflects draft');
+  assert.match(await pg.locator('.look-section').innerText(),/The window glass could not be turned on\./);
+ }
+ { // (c) rejected preview: draft unchanged, no unhandled rejection, bar truthful, focus kept
+  const pg=await variant('reject');
+  await pg.getByRole('switch',{name:'Window glass'}).click();
+  await pg.getByText('boom').waitFor().catch(()=>{});
+  assert.equal(await pg.getByRole('switch',{name:'Window glass'}).getAttribute('aria-checked'),'true','rejected: draft unchanged');
+  assert.equal(await pg.evaluate(()=>!!document.querySelector('.save-lane.open')),false,'rejected: no bar');
+  assert.equal(await pg.evaluate(()=>document.activeElement?.id),'look-glass','focus kept');
+  await pg.getByRole('switch',{name:'Slow animations'}).click();
+  assert.equal(await pg.evaluate(()=>document.getElementById('save-lane').inert),false,'open lane not inert');
+  assert.match(await pg.locator('.save-bar').innerText(),/1 unsaved change[\s\S]*Slow animations/,'bar lists only the real change');
+ }
+ { // preview left behind by another page is restored to the saved state, once
+  const pg=await variant('preview-left');
+  assert.deepEqual(await pg.evaluate(()=>applies),[true],'restored once');
+ }
  assert.deepEqual(errors,[]);
  console.log('check-look-browser: PASS');
 }finally{await browser.close();server.close();}
