@@ -252,8 +252,9 @@ await navPad();
 await page.getByRole('dialog').getByRole('link',{name:/Graphics All-Out/}).focus();await tap(1);
 assert.equal(await page.locator('#game-details').evaluate(n=>n.open),false,'Controller Back closes game details');
 assert.equal(await page.evaluate(()=>document.activeElement?.id),'game-details-open','Back returns focus to the details opener');
-const sceneBefore=await page.locator('.hero-art').boundingBox();
 await page.getByRole('button',{name:'Game details',exact:true}).click();
+// Measured after the mouse click: leaving controller mode empties the hint bar, which gives #main its 34px back.
+const sceneBefore=await page.locator('.hero-art').boundingBox();
 await page.getByText('Files & launch details',{exact:true}).click();
 assert.deepEqual(await page.locator('.hero-art').boundingBox(),sceneBefore,'opening files does not move the artwork');
 await page.screenshot({path:path.join(out,'reborn-play-details.png')});
@@ -316,6 +317,9 @@ console.log('PASS: launcher flows, navigation, onboarding, saves, settings, and 
 await browser.close();server.close();
 
 await import('./review-players.mjs');
+
+// Above review-finish: it fails at baseline and aborts the runner, so nothing after it runs.
+await import('./check-themed-shell.mjs');
 
 await import('./review-finish.mjs');
 

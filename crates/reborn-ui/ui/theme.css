@@ -13,6 +13,12 @@
   --r-lg:14px;--r-md:10px;--r-sm:8px;
   --ease:cubic-bezier(.2,.8,.2,1);
   --d1:480ms;--d2:720ms;--d3:960ms;
+  /* surfaces with a job of their own (spec §3.4, §8.1, §8.2; mockup values) */
+  --field-bg:rgba(0,0,0,.25);
+  --hero-scrim:linear-gradient(90deg,rgba(10,11,14,.78) 0,rgba(10,11,14,.35) 38%,transparent 62%),linear-gradient(0deg,rgba(10,11,14,.85) 0,transparent 42%);
+  --on-art:rgba(10,11,14,.35);
+  --avatar-bg:linear-gradient(135deg,#5865F2,#3b44b8);
+  --dolphin:#22C7B4;
   /* the old stylesheets' variables, pointed at the new tokens (retired in the Cleanup plan) */
   --bg:transparent;--panel:var(--glass-1);--line:var(--stroke);--muted:var(--fg-2);--accent:var(--red);
   --accent-border:var(--stroke-hi);--control-bg:var(--glass-2);--control-border:var(--stroke);
@@ -132,3 +138,106 @@ body.shell .look-section h2{text-transform:none;letter-spacing:0;color:var(--fg)
 
 /* hover/press only move (transform); colours change instantly. The legacy rule (launcher.css:77, 0,2,1) animated colour and shadow at 480-720 ms. */
 html body.shell button,html body.shell .button,html body.shell .choice,html body.shell .shell-nav a,html body.shell .quick-link{transition:transform var(--d1) var(--ease)}
+
+/* ================= Shell, every page (spec §6) =================
+   Written with an html prefix so it outranks the legacy sheets (launcher/product-ui/finish.css):
+   the sidebar and frame are identical on themed and legacy pages. */
+*,*::before,*::after{box-sizing:border-box}
+html body.shell{--rail:184px;margin:0}
+@media (max-width:1000px){html body.shell{--rail:160px}}
+@media (max-width:650px){html body.shell{--rail:68px}}
+html body.shell:not(.page-setup){display:grid;grid-template-columns:var(--rail) minmax(0,1fr);grid-template-rows:0 minmax(0,1fr) var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav foot';height:100vh;overflow:hidden}
+html body.shell:not(.page-setup) .app-header{display:none}
+html body.shell:not(.page-setup) #main{grid-area:main;min-width:0;min-height:0}
+/* sidebar geometry. The logo slot is exactly today's (124px, image 100% of a 14px-padded nav): Adam's logo is never resized */
+html body.shell:not(.page-setup) .shell-nav{grid-area:nav;display:flex;flex-direction:column;gap:4px;min-height:0;overflow:auto;padding:0 14px 20px}
+html body.shell:not(.page-setup) .shell-nav .brand{display:flex;align-items:center;justify-content:center;flex:none;height:124px;padding:0;overflow:hidden;background:none;border:0}
+html body.shell:not(.page-setup) .shell-nav .brand img{display:block;width:100%;height:auto;max-height:none;object-fit:contain}
+html body.shell:not(.page-setup) .shell-nav a:not(.brand){display:flex;align-items:center;gap:12px;height:40px;min-height:40px;padding:0 12px;border:0;font:500 13px/1 Inter,system-ui,sans-serif;letter-spacing:0;text-transform:none;text-decoration:none}
+html body.shell:not(.page-setup) .shell-nav a:not(.brand)>svg{display:block;width:17px;height:17px;flex:none;opacity:.85}
+html body.shell:not(.page-setup) .shell-nav .nav-bottom{margin-top:auto;padding-top:16px;display:flex;flex-direction:column;gap:4px}
+@media (max-width:650px){
+  html body.shell:not(.page-setup) .shell-nav{padding:0 8px 16px}
+  html body.shell:not(.page-setup) .shell-nav a:not(.brand){justify-content:center;padding:0}
+  html body.shell:not(.page-setup) .shell-nav a:not(.brand)>span{display:none}
+  html body.shell:not(.page-setup) .shell-nav .brand{height:88px}
+}
+/* hint bar: exists only while there is a prompt to show (spec §6.3). :has(#id) outranks every legacy rule. */
+html body.shell:has(#input-hints:empty){--hint-height:0px}
+html body.shell:has(#input-hints:not(:empty)){--hint-height:34px}
+html body.shell:has(#input-hints:empty) .input-footer{display:none}
+html body.shell:has(#input-hints:not(:empty)) .input-footer{display:flex}
+html body.shell .input-footer{grid-area:foot;align-items:center;gap:22px;height:34px;min-height:34px;padding:0 24px;overflow:hidden;white-space:nowrap;font-size:11.5px;color:var(--fg-3);background:rgba(10,11,14,.45)!important;border-top:1px solid var(--stroke)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+html body.shell .input-footer>span:not(#input-hints){display:none}
+html body.shell #input-hints{display:flex;align-items:center;gap:22px;min-width:0}
+html body.shell .input-hint{display:inline-flex;align-items:center;white-space:nowrap}
+html body.shell .input-hint kbd{margin:0 7px 0 0!important}
+
+/* shared small components */
+.avatar{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;border-radius:50%;background:var(--avatar-bg);color:#fff;font:700 13px Inter,system-ui,sans-serif}
+@keyframes live-pulse{50%{opacity:.35}}
+.btn{text-decoration:none;white-space:nowrap}
+.btn:disabled{opacity:.55;cursor:default;pointer-events:none}
+
+/* ================= Base for pages that load only theme.css + their page file (body.themed) =================
+   Element resets sit wholly inside :where() (specificity 0), so any component class wins over them:
+   :where(body.themed button){font:inherit} must never beat .btn{font:600 13px …}. */
+body.themed{font:500 14px/1.45 Inter,system-ui,sans-serif;color:var(--fg);-webkit-font-smoothing:antialiased;color-scheme:dark}
+:where(body.themed) :where(h1,h2,h3,p,figure,ul,ol){margin:0}
+:where(body.themed a){color:inherit}
+:where(body.themed button){font:inherit;color:inherit}
+:where(body.themed img){max-width:100%}
+body.themed [hidden]{display:none!important}
+:where(body.themed *){scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+body.themed #main{overflow:auto;outline:none}
+body.themed .page-heading .eyebrow{display:none}
+body.themed .page-heading h1{font:700 30px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
+body.themed .page-heading .purpose{margin-top:8px;color:var(--fg-2)}
+body.themed .loading{color:var(--fg-2)}
+body.themed details.core{display:none}
+body.themed .skip-link{position:fixed;left:16px;top:8px;z-index:100;padding:8px 16px;border-radius:var(--r-sm);background:var(--red);color:#fff;text-decoration:none;transform:translateY(-200%)}
+body.themed .skip-link:focus{transform:none}
+body.themed.gamepad-input .skip-link{visibility:hidden}
+/* buttons with no class of their own come from shared scripts (update-notice, menu-pad-setup): they look like .btn */
+body.themed button:not([class]),body.themed button.primary:not(.btn),body.themed a.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter,system-ui,sans-serif;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer;text-decoration:none}
+body.themed button:not([class]):hover,body.themed a.button:hover{background:var(--glass-3);border-color:var(--stroke-hi)}
+body.themed button.primary:not(.btn){background:linear-gradient(180deg,#ec3a41,#c91f26);border-color:rgba(255,255,255,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px -8px rgba(0,0,0,.6)}
+:where(body.themed button:disabled){opacity:.55;cursor:default}
+/* fields (base look; a component's own field rule wins) */
+:where(body.themed select,body.themed input[type=text]){height:38px;min-width:0;padding:0 12px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--field-bg);color:var(--fg);font:500 13px Inter,system-ui,sans-serif;color-scheme:dark}
+:where(body.themed select:hover:not(:disabled)){border-color:var(--stroke-hi)}
+:where(body.themed select:disabled,body.themed input:disabled){opacity:.55}
+:where(body.themed input[type=range],body.themed progress,body.themed input[type=checkbox]){accent-color:var(--red)}
+body.themed.gamepad-input .pad-editing{outline-color:var(--red-ink)!important}
+/* messages */
+body.themed .refusal,body.themed .partial,body.themed .said{padding:12px 16px;border-radius:var(--r-md);border:1px solid;font-size:12.5px;line-height:1.6;overflow-wrap:anywhere}
+body.themed .refusal{border-color:rgba(224,39,46,.35);background:rgba(224,39,46,.08);color:var(--red-ink)}
+body.themed .partial{border-color:rgba(255,196,107,.3);background:rgba(255,196,107,.07);color:var(--warn)}
+body.themed .said{border-color:rgba(61,220,151,.3);background:rgba(61,220,151,.07);color:var(--ok)}
+body.themed .note,body.themed .hint{font-size:12px;color:var(--fg-2)}
+/* facts table */
+body.themed .facts{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
+body.themed .facts th{width:120px;padding:8px 16px 8px 0;text-align:left;vertical-align:top;font-weight:500;color:var(--fg-3)}
+body.themed .facts td{padding:8px 0;color:var(--fg-2);overflow-wrap:anywhere}
+body.themed .facts tr+tr>*{border-top:1px solid var(--stroke)}
+body.themed .facts .absent{color:var(--fg-3);font-style:italic}
+/* dialogs and the update dock (the surface colour comes from the floating-surfaces rule above).
+   dialog.menu (menu.js) is a popover, not a modal: no padding, frame or scrim from here. */
+body.themed dialog:not(.menu){max-width:calc(100vw - 48px);color:var(--fg);border:1px solid var(--stroke-hi);border-radius:var(--r-lg);padding:24px;box-shadow:var(--sheen),var(--shadow)}
+body.themed dialog:not(.menu)::backdrop{background:rgba(8,9,12,.6)}
+body.themed .update-center{position:fixed;right:24px;bottom:24px;z-index:50;display:grid;gap:16px;width:min(360px,calc(100vw - 48px));max-height:65vh;overflow:auto}
+body.themed:has(#input-hints:not(:empty)) .update-center{bottom:58px}
+body.themed .update-card{display:grid;gap:8px;padding:16px;border:1px solid var(--stroke-hi);border-radius:var(--r-lg);box-shadow:var(--sheen),var(--shadow)}
+body.themed .update-card .notice-headline{font-size:14px;font-weight:600}
+body.themed .update-card .update-message{font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere}
+body.themed .update-card button{justify-self:end}
+body.themed .update-card progress{width:100%;height:8px}
+body.themed .update-dialog{width:min(540px,calc(100vw - 48px));max-height:80vh;overflow:auto}
+body.themed .update-dialog h2{font:600 20px Inter,system-ui,sans-serif;margin-bottom:8px}
+body.themed .update-version{margin-bottom:16px;color:var(--fg-2);font-size:13px}
+body.themed .update-changes{max-height:34vh;overflow:auto;border-block:1px solid var(--stroke);padding:16px 0}
+body.themed .update-changes ul{padding-left:20px}
+body.themed .update-changes li{padding:4px 0;font-size:13px;overflow-wrap:anywhere}
+body.themed .update-countdown{margin:16px 0;font-size:12px;color:var(--fg-2)}
+body.themed .update-dialog-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+body.themed #menu-pad-setup[hidden],body.themed .menu-pad-setup-dialog [hidden]{display:none!important}
