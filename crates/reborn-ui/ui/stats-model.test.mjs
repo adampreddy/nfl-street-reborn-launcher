@@ -9,7 +9,7 @@ test('number formats', () => {
 });
 
 test('fmtElo: rated and unranked', () => {
-  assert.deepEqual(fmtElo({ rating: 1184, last_delta: 16, rank: 7 }), { value: '1,184', change: '▲ 16', rank: '#7 on the ladder' });
+  assert.deepEqual(fmtElo({ rating: 1184, last_delta: 16, rank: 7 }), { value: '1,184', change: '▲ 16', rank: '#7 on the leaderboard' });
   assert.deepEqual(fmtElo({ rating: 990, last_delta: -18, rank: 30 }).change, '▼ 18');
   assert.deepEqual(fmtElo({ rating: null }), { value: 'Unranked', change: '', rank: '' });
   assert.deepEqual(fmtElo(undefined), { value: 'Unranked', change: '', rank: '' });
@@ -79,4 +79,83 @@ test('backHref: only stats.html or a profile of a real player id, else Stats', (
     `profile.html?player=${id.toUpperCase()}`, 'https://evil.example/', 'javascript:alert(1)', '//evil.example/stats.html',
     'game.html?game=' + id, 'stats.html#x', ` stats.html`])
     assert.equal(backHref(bad), 'stats.html', String(bad));
+});
+
+import { eloChange, matchSubline, lastTen, youNumbers, statLine, teamColour, dropPrivate, resultsOf, recordOf } from './stats-model.js';
+
+test('result letters are W and L only: ties do not exist', () => {
+  const g = { id: 'g', at: '2026-09-27T01:18:00Z', mode: 'online', score: [21, 21], opponent: null, opponent_kind: 'cpu', me: {}, opp: {} };
+  assert.equal(gameRowModel({ ...g, result: 'tie' }).result, '');
+  assert.equal(gameRowModel({ ...g, result: 'LOSS' }).result, 'L');
+  assert.equal(gameRowModel({ ...g, result: null }).result, '');
+});
+
+test('eloChange: +16, −18, or nothing', () => {
+  assert.deepEqual(eloChange(16), { text: '+16', kind: 'up' });
+  assert.deepEqual(eloChange(-18), { text: '−18', kind: 'down' });
+  for (const x of [0, null, undefined, NaN]) assert.deepEqual(eloChange(x), { text: '', kind: '' });
+});
+
+test('matchSubline: Stats says Offline only, Profile says the queue, never Best of 3 or Private', () => {
+  assert.equal(matchSubline({ mode: 'offline' }), 'Offline');
+  assert.equal(matchSubline({ mode: 'online', opponent_kind: 'cpu' }), 'Offline');
+  assert.equal(matchSubline({ mode: 'online', queue: 'private' }), '');
+  assert.equal(matchSubline({ mode: 'online', queue: 'ranked', best_of: 3 }), '');
+  assert.equal(matchSubline({ queue: 'ranked', best_of: 3 }, 'profile'), 'Ranked');
+  assert.equal(matchSubline({ queue: 'casual' }, 'profile'), 'Casual');
+  assert.equal(matchSubline({ queue: 'private' }, 'profile'), '');
+});
+
+test('lastTen and youNumbers', () => {
+  assert.equal(lastTen(['W', 'W', 'L', 'W', 'L', 'W', 'W', 'L', 'W', 'L', 'W']), '6–4');
+  assert.equal(lastTen([]), '—');
+  assert.equal(lastTen(['T', 'W']), '1–0');
+  const n = youNumbers({ wins: 14, losses: 9, ties: 0, win_pct: 0.609, streak: 'W2' }, { results: ['W', 'L'] });
+  assert.deepEqual(n.map((x) => [x.label, x.value, x.kind]), [['Record', '14–9', ''], ['Win %', '.609', ''], ['Last 10', '1–1', ''], ['Streak', 'W2', 'up']]);
+  assert.deepEqual(youNumbers({}, null).map((x) => x.value), ['—', '—', '—', '—']);
+  assert.equal(youNumbers({ wins: 1, losses: 3, streak: 'L3' }, null)[3].kind, '');
+});
+
+test('statLine: the four numbers of a role when the server sends them, else its one number', () => {
+  assert.deepEqual(statLine('passer', { yds: 3108, td: 31, int: 11, rtg: 108.9, value: 3108, unit: 'pass_yds' }),
+    [{ value: '3,108', unit: 'YDS' }, { value: '31', unit: 'TD' }, { value: '11', unit: 'INT' }, { value: '108.9', unit: 'RTG' }]);
+  assert.deepEqual(statLine('rusher', { att: 212, yds: 1715, td: 12, avg: 5.6 }).map((s) => s.unit), ['CAR', 'YDS', 'TD', 'AVG']);
+  assert.deepEqual(statLine('most_played', { games: 23, att: 96, yds: 535, td: 5 }).map((s) => `${s.value} ${s.unit}`), ['23 GAMES', '96 CAR', '535 YDS', '5 TD']);
+  assert.deepEqual(statLine('most_played', { games: 23, rec: 40, yds: 535, td: 5 })[1], { value: '40', unit: 'REC' });
+  assert.deepEqual(statLine('passer', { value: 3108, unit: 'pass_yds' }), [{ value: '3,108', unit: 'YDS' }]);
+  assert.deepEqual(statLine('dl_lb', { value: 96, unit: 'tkl_sck' }), [{ value: '96', unit: 'TKL + SCK' }]);
+  assert.deepEqual(statLine('passer', null), []);
+});
+
+test('teamColour, and role cards carry the colour and the statline', () => {
+  assert.equal(teamColour('#A71930'), '#A71930');
+  for (const x of ['red', '#fff', 'url(x)', null, '#A7193']) assert.equal(teamColour(x), null);
+  const c = roleCards({ passer: { name: 'Penix', team: 'Falcons', logo_url: '/l', portrait_url: null, value: 2104, unit: 'pass_yds', primary: '#A71930' }, rusher: null });
+  assert.equal(c[0].primary, '#A71930');
+  assert.deepEqual(c[0].line, [{ value: '2,104', unit: 'YDS' }]);
+  assert.equal(c[1].primary, null);
+  assert.deepEqual(c[1].line, []);
+});
+
+// P4-3 / P4-6: private matches never reach Stats.
+const PRIV = { id: 'p', at: '2026-09-29T01:00:00Z', mode: 'online', queue: 'private', result: 'win', elo_delta: null, opponent: { display_name: 'Friend' }, opponent_kind: 'human', score: [7, 0], series: null, games: [], me: {}, opp: {} };
+const PUB = (id, result, extra = {}) => ({ id, at: '2026-09-28T01:00:00Z', mode: 'online', queue: 'ranked', result, elo_delta: result === 'win' ? 12 : -12, opponent: { display_name: 'Playz' }, opponent_kind: 'human', score: [14, 7], series: null, games: [{ id: `${id}-g1`, at: '2026-09-28T01:00:00Z', result, score: [14, 7], me: {}, opp: {} }], me: {}, opp: {}, ...extra });
+
+test('dropPrivate removes private matches and keeps order', () => {
+  const list = [PRIV, PUB('a', 'win'), PUB('b', 'loss')];
+  assert.deepEqual(dropPrivate(list).map((m) => m.id), ['a', 'b']);
+  assert.deepEqual(dropPrivate(null), []);
+});
+
+test('no Stats output counts or mentions a private match', () => {
+  const kept = dropPrivate([PRIV, PUB('a', 'win'), PUB('b', 'loss'), PUB('c', 'win')]);
+  assert.deepEqual(resultsOf(kept), ['W', 'L', 'W']);
+  assert.deepEqual(recordOf(kept), { wins: 2, losses: 1 });
+  assert.equal(lastTen(resultsOf(kept)), '2–1');
+  const nums = youNumbers({ wins: 2, losses: 1, win_pct: 0.667, streak: 'W1' }, { results: resultsOf(kept) });
+  const rows = kept.map(matchRowModel);
+  const everything = JSON.stringify([nums, rows, kept.map((m) => matchSubline(m)), kept.map((m) => matchSubline(m, 'profile')), matchSubline(PRIV), matchSubline(PRIV, 'profile')]);
+  assert.ok(!/private/i.test(everything));
+  assert.ok(!everything.includes('Friend'));
+  assert.ok(!/private/i.test(['Offline', 'Ranked', 'Casual', ''].join()));
 });

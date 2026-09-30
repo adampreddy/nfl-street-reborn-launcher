@@ -45,7 +45,7 @@ export function fmtRecord(record) {
 }
 
 /**
- * Format Elo rating with value, change indicator, and ladder rank.
+ * Format Elo rating with value, change indicator, and leaderboard rank.
  * @param {{rating: number|null, last_delta: number, rank: number}|undefined} elo
  * @returns {{value: string, change: string, rank: string}}
  */
@@ -62,7 +62,7 @@ export function fmtElo(elo) {
     change = `▼ ${-elo.last_delta}`;
   }
 
-  const rank = elo.rank ? `#${elo.rank} on the ladder` : '';
+  const rank = elo.rank ? `#${elo.rank} on the leaderboard` : '';
 
   return { value, change, rank };
 }
@@ -118,14 +118,13 @@ function formatScore(score) {
 }
 
 /**
- * Get result character or empty string.
+ * The result letter: W or L. Ties do not exist in Reborn (spec §2), so anything else draws nothing.
  * @param {string|null} result
  * @returns {string}
  */
 function getResultChar(result) {
-  if (!result) return '';
-  const char = result.charAt(0).toUpperCase();
-  return char;
+  const r = String(result || '').toLowerCase();
+  return r === 'win' ? 'W' : r === 'loss' ? 'L' : '';
 }
 
 /**
@@ -261,7 +260,9 @@ export function roleCards(best) {
         logo: '',
         portrait: '',
         initial: '',
-        stat: ''
+        stat: '',
+        primary: null,
+        line: []
       };
     }
 
@@ -276,7 +277,9 @@ export function roleCards(best) {
       logo: data.logo_url,
       portrait: data.portrait_url,
       initial,
-      stat
+      stat,
+      primary: teamColour(data.primary),
+      line: statLine(key, data)
     };
   });
 }
@@ -401,4 +404,127 @@ export function trendPoints(history, w = 160, h = 50) {
   });
 
   return points.join(' ');
+}
+
+// ---- the redesign (spec §8.6, §8.7) ----
+
+/**
+ * A row's Elo change: "+16" (up), "−18" (down), or nothing (unranked, offline, zero).
+ * @param {number|null|undefined} delta
+ * @returns {{text: string, kind: string}}
+ */
+export function eloChange(delta) {
+  if (typeof delta !== 'number' || !Number.isFinite(delta) || delta === 0) return { text: '', kind: '' };
+  return delta > 0 ? { text: `+${delta}`, kind: 'up' } : { text: `${MINUS}${-delta}`, kind: 'down' };
+}
+
+/**
+ * The second line under a match row's opponent. Stats: "Offline" for an offline or CPU match, else nothing (private
+ * matches are dropped before they get here, see dropPrivate). Profile: the queue, "Ranked" or "Casual". Never
+ * "Best of 3" and never any "Private" text.
+ * @param {Object} match
+ * @param {'stats'|'profile'} where
+ * @returns {string}
+ */
+export function matchSubline(match, where = 'stats') {
+  if (where === 'profile') return match?.queue === 'ranked' ? 'Ranked' : match?.queue === 'casual' ? 'Casual' : '';
+  if (match?.mode === 'offline' || match?.opponent_kind === 'cpu') return 'Offline';
+  return '';
+}
+
+/**
+ * Stats shows no private matches (owner ruling): drop them from a match list before anything is counted or drawn.
+ * @param {Array<Object>|null|undefined} matches
+ * @returns {Array<Object>}
+ */
+export function dropPrivate(matches) {
+  return (Array.isArray(matches) ? matches : []).filter((m) => m && m.queue !== 'private');
+}
+
+/**
+ * Result letters (newest first, W or L) of a match list, for lastTen.
+ * @param {Array<Object>|null|undefined} matches
+ * @returns {Array<string>}
+ */
+export function resultsOf(matches) {
+  return (Array.isArray(matches) ? matches : []).map((m) => getResultChar(m?.result)).filter(Boolean);
+}
+
+/**
+ * Wins and losses of a match list.
+ * @param {Array<Object>|null|undefined} matches
+ * @returns {{wins: number, losses: number}}
+ */
+export function recordOf(matches) {
+  const r = resultsOf(matches);
+  const wins = r.filter((x) => x === 'W').length;
+  return { wins, losses: r.length - wins };
+}
+
+/**
+ * "6–4" from the dashboard's recent_form.results (newest first; only W and L count), or an em dash.
+ * @param {Array<string>|null|undefined} results
+ * @returns {string}
+ */
+export function lastTen(results) {
+  const r = (Array.isArray(results) ? results : []).filter((x) => x === 'W' || x === 'L').slice(0, 10);
+  if (!r.length) return EM_DASH;
+  const w = r.filter((x) => x === 'W').length;
+  return `${w}${EN_DASH}${r.length - w}`;
+}
+
+/**
+ * The You card's four numbers (spec §8.6): Record, Win %, Last 10, Streak. A winning streak is marked 'up'.
+ * @param {Object|null} summary
+ * @param {{results: Array<string>}|null} recentForm
+ * @returns {Array<{label: string, value: string, kind: string}>}
+ */
+export function youNumbers(summary, recentForm) {
+  const s = summary || {};
+  const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
+  const streak = typeof s.streak === 'string' && /^[WL]\d+$/.test(s.streak) ? s.streak : EM_DASH;
+  return [
+    { label: 'Record', value: isNum(s.wins) && isNum(s.losses) ? `${s.wins}${EN_DASH}${s.losses}` : EM_DASH, kind: '' },
+    { label: 'Win %', value: isNum(s.win_pct) ? fmtPct(s.win_pct) : EM_DASH, kind: '' },
+    { label: 'Last 10', value: lastTen(recentForm?.results), kind: '' },
+    { label: 'Streak', value: streak, kind: streak.startsWith('W') ? 'up' : '' },
+  ];
+}
+
+// Each role's statline (spec §8.6 table): [field, unit, one decimal?].
+const STATLINES = {
+  passer: [['yds', 'YDS'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'RTG', true]],
+  rusher: [['att', 'CAR'], ['yds', 'YDS'], ['td', 'TD'], ['avg', 'AVG', true]],
+  receiver: [['rec', 'REC'], ['yds', 'YDS'], ['td', 'TD'], ['avg', 'AVG', true]],
+  dl_lb: [['tkl', 'TKL'], ['sck', 'SCK'], ['tfl', 'TFL'], ['pbu', 'PBU']],
+  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'TKL'], ['td', 'TD']],
+};
+const UNIT_SHORT = { pass_yds: 'YDS', rush_yds: 'YDS', rec_yds: 'YDS', tkl_sck: 'TKL + SCK', int: 'INT', games: 'GAMES' };
+
+/**
+ * A player row's statline: the role's four numbers when the server sends them (numbers formatted, units uppercase),
+ * else the one number it always sends (`value` + `unit`), else nothing.
+ * @param {string} role
+ * @param {Object|null} data
+ * @returns {Array<{value: string, unit: string}>}
+ */
+export function statLine(role, data) {
+  if (!data) return [];
+  const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
+  const fmt = (v, dec) => (dec ? v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : fmtInt(v));
+  const spec = role === 'most_played'
+    ? [['games', 'GAMES'], isNum(data.att) && !isNum(data.rec) ? ['att', 'CAR'] : ['rec', 'REC'], ['yds', 'YDS'], ['td', 'TD']]
+    : STATLINES[role];
+  if (spec && spec.every(([k]) => isNum(data[k]))) return spec.map(([k, unit, dec]) => ({ value: fmt(data[k], dec), unit }));
+  if (!isNum(data.value)) return [];
+  return [{ value: fmtInt(data.value), unit: UNIT_SHORT[data.unit] || String(data.unit || '').toUpperCase() }];
+}
+
+/**
+ * A team's primary colour as the server sent it, only when it is exactly #RRGGBB (it is set as a CSS custom property).
+ * @param {unknown} hex
+ * @returns {string|null}
+ */
+export function teamColour(hex) {
+  return typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
 }
