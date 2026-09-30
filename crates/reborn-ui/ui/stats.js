@@ -77,7 +77,7 @@ function gameIdsOf(matches) {
 }
 
 function storeGameList(matches, label) {
-  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label })); } catch { /* best effort */ }
+  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label, from: 'stats.html' })); } catch { /* best effort */ }
 }
 
 const goToGame = (id, matches, label) => () => { storeGameList(matches, label); location.href = gameHref(id); };
@@ -325,6 +325,8 @@ function accountBlock() {
 
 // ---- drawing ----
 
+const PAGER_OTHER = { older: 'newer', newer: 'older' };
+
 // Redraws replace everything (every refresh): put the focus back on the same control, as live.js does.
 function draw() {
   if (!screen) return;
@@ -333,7 +335,13 @@ function draw() {
   const focusKey = active?.getAttribute('data-key') ?? null, focusId = active?.id || null;
   const accountOpen = Boolean(screen.querySelector?.('.stats-account')?.open);
   paint(accountOpen);
-  if (focusKey) { for (const n of screen.querySelectorAll('[data-key]')) if (n.getAttribute('data-key') === focusKey) { n.focus({ preventScroll: true }); break; } }
+  if (focusKey) {
+    // "Older" on the last page (or "Newer" on the first) is now disabled and can't take focus: use the other one.
+    const byKey = (k) => Array.from(screen.querySelectorAll('[data-key]')).find((n) => n.getAttribute('data-key') === k) ?? null;
+    let target = byKey(focusKey);
+    if (target?.disabled && PAGER_OTHER[focusKey]) target = byKey(PAGER_OTHER[focusKey]) ?? target;
+    target?.focus({ preventScroll: true });
+  }
   else if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
 }
 

@@ -59,7 +59,7 @@ function gameIdsOf(matches) {
 }
 
 function storeGameList(matches, label) {
-  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label })); } catch { /* best effort */ }
+  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label, from: profileHref(playerId) })); } catch { /* best effort */ }
 }
 
 function initial(name) {

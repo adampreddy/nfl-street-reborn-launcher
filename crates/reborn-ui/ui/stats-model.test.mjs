@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints, neighbours } from './stats-model.js';
+import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints, neighbours, backHref } from './stats-model.js';
 
 test('number formats', () => {
   assert.equal(fmtInt(1284), '1,284'); assert.equal(fmtInt(null), '—'); assert.equal(fmtInt(NaN), '—');
@@ -69,4 +69,14 @@ test('neighbours in a newest-first list', () => {
   assert.deepEqual(neighbours(['a', 'b'], 'a'), { prev: 'b', next: null });
   assert.deepEqual(neighbours(['a'], 'x'), { prev: null, next: null });
   assert.deepEqual(neighbours(null, 'a'), { prev: null, next: null });
+});
+
+test('backHref: only stats.html or a profile of a real player id, else Stats', () => {
+  const id = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+  assert.equal(backHref('stats.html'), 'stats.html');
+  assert.equal(backHref(`profile.html?player=${id}`), `profile.html?player=${id}`);
+  for (const bad of [undefined, null, 42, '', 'profile.html', 'profile.html?player=nope', `profile.html?player=${id}&x=1`,
+    `profile.html?player=${id.toUpperCase()}`, 'https://evil.example/', 'javascript:alert(1)', '//evil.example/stats.html',
+    'game.html?game=' + id, 'stats.html#x', ` stats.html`])
+    assert.equal(backHref(bad), 'stats.html', String(bad));
 });

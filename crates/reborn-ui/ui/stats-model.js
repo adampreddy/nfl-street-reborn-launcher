@@ -351,6 +351,18 @@ export function neighbours(list, id) {
   return { prev: ids[i + 1] ?? null, next: ids[i - 1] ?? null };
 }
 
+const BACK_PROFILE_RE = /^profile\.html\?player=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Where the game view's "← Back" (and B / Esc) goes: the page that stored sessionStorage['nsr.gameList'] (its
+ * `from`), accepted only as exactly 'stats.html' or 'profile.html?player=<lowercase uuid>'; anything else is Stats.
+ * @param {unknown} from
+ * @returns {string}
+ */
+export function backHref(from) {
+  return typeof from === 'string' && (from === 'stats.html' || BACK_PROFILE_RE.test(from)) ? from : 'stats.html';
+}
+
 /**
  * Generate SVG polyline points string for trend chart.
  * Maps ratings to a box: min at bottom, max at top, x evenly spaced.
@@ -374,7 +386,7 @@ export function trendPoints(history, w = 160, h = 50) {
       // All ratings equal, y is middle
       y = h / 2;
     } else {
-      // Normalize rating: min at top, max at bottom
+      // Normalize rating: max at the top (y = 0), min at the bottom (y = h)
       y = h - ((item.rating - min) / range) * h;
     }
 

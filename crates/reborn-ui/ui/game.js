@@ -7,7 +7,7 @@ import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN } from './live-common.js';
 import { TABS, header, notFound } from './live-game-render.js';
 import { sideTeams, snapshotOf, webLinkShown } from './stats-rows.js';
-import { neighbours } from './stats-model.js';
+import { backHref, neighbours } from './stats-model.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
@@ -27,6 +27,9 @@ function readGameList() {
   } catch { return null; }
 }
 const gameList = readGameList();
+// "← Back" returns to the page that stored the list (a profile or Stats), validated by backHref; else Stats.
+const BACK = backHref(gameList?.from);
+const BACK_LABEL = BACK === 'stats.html' ? 'Back to Stats' : 'Back to profile';
 
 function openGame(id) {
   if (!id) return;
@@ -61,10 +64,10 @@ document.addEventListener('keydown', (e) => {
 function draw() {
   if (!screen) return;
   const focusKey = document.activeElement?.getAttribute?.('data-key') ?? null;
-  if (state.missing) { screen.replaceChildren(...notFound('stats.html', 'Back to Stats')); return; }
+  if (state.missing) { screen.replaceChildren(...notFound(BACK, BACK_LABEL)); return; }
   const parts = [el('div', { class: 'lv-actions' },
-    // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return to Stats.
-    el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: 'stats.html', text: '← Back' }),
+    // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return where we came from.
+    el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: BACK, text: '← Back' }),
     state.online ? el('button', { type: 'button', class: 'lv-watch', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }) : null)];
   if (state.error) parts.push(el('p', { class: 'lv-error', role: 'alert', text: state.error }));
   const snap = state.snap;
