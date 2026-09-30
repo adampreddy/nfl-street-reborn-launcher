@@ -61,3 +61,58 @@ test('discardAll reverts newest first, never saves, and reports revert failures'
   assert.deepEqual(order, ['c', 'a']);
   assert.deepEqual(d.changes(), []);
 });
+
+test('a change made while its save is in flight survives the save', async () => {
+  const d = createDraft();
+  let release;
+  d.put('a', { label: 'Alpha', value: 1, save: () => new Promise((r) => { release = r; }) });
+  const saving = d.saveAll();
+  d.put('a', { label: 'Alpha', value: 2, save: noop });
+  release();
+  assert.deepEqual(await saving, { saved: 1, stopped: null });
+  assert.deepEqual(d.changes(), ['Alpha']);
+  assert.equal(d.value('a', 0), 2);
+});
+
+test('overlapping saveAll calls run the saves once', async () => {
+  const d = createDraft();
+  let calls = 0, release;
+  d.put('a', { label: 'Alpha', value: 1, save: () => { calls++; return new Promise((r) => { release = r; }); } });
+  const first = d.saveAll(), second = d.saveAll();
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.deepEqual(d.changes(), []);
+});
+
+test('a discard pressed during a save waits for it, then reverts only what is still pending', async () => {
+  const d = createDraft(), order = [];
+  let release;
+  d.put('a', { label: 'Alpha', value: 1, save: () => new Promise((r) => { release = () => { order.push('saved a'); r(); }; }), revert: async () => { order.push('revert a'); } });
+  const saving = d.saveAll();
+  const discarding = d.discardAll();
+  release();
+  await saving;
+  assert.deepEqual(await discarding, []);
+  assert.deepEqual(order, ['saved a']);
+  assert.deepEqual(d.changes(), []);
+});
+
+test('overlapping discardAll calls revert once', async () => {
+  const d = createDraft();
+  let reverts = 0;
+  d.put('a', { label: 'Alpha', value: 1, save: noop, revert: async () => { reverts++; await new Promise((r) => setTimeout(r, 5)); } });
+  await Promise.all([d.discardAll(), d.discardAll()]);
+  assert.equal(reverts, 1);
+});
+
+test('a reason is never "{}"', async () => {
+  const d = createDraft();
+  d.put('a', { label: 'Alpha', value: 1, save: async () => { throw {}; } });
+  const { stopped } = await d.saveAll();
+  assert.notEqual(stopped.reason, '{}');
+  assert.match(stopped.reason, /^[A-Z][^{}]*\.$/);
+  d.put('b', { label: 'Beta', value: 1, save: noop, revert: async () => { throw new Error(''); } });
+  const [failed] = await d.discardAll();
+  assert.doesNotMatch(failed, /\{\}|: $/);
+});
