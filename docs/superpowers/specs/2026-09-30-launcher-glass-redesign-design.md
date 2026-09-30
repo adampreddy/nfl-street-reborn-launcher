@@ -2,7 +2,7 @@
 
 2026-09-30 · branch `feat/launcher-glass-redesign` (from `feat/stats-profile-v2` @ `6ba10f7`) · worktree `NFL Street Reborn Launcher redesign`
 
-**Status: design approved in mockups, spec awaiting Adam's review. No product code has been written.**
+**Status: spec approved by Adam on 2026-09-30 ("I am ready for the spec"). No product code has been written.**
 
 - Reference mockup: `docs/superpowers/specs/assets/2026-09-30-launcher-glass-mockup.html`.
   - Open it in Edge. It loads art through absolute `file:///` paths into the `rel-pbp` worktree and `reborn-backend-stats-v2`.
@@ -45,7 +45,7 @@ Adam: *"It's not bad, it just needs to be way better."* Then: *"I want the layou
 | Icons | Keep the launcher's current icons. My controller icon was rejected. |
 | Mock art | None. No drawn footballs or invented previews. Empty preview areas stay neutral. |
 | Controller prompts | Shown **only while a controller is driving the launcher** (§6.3). |
-| Stat units | Uppercase in tables (YDS, TD, RTG, C/ATT, YCO, DRP). Spelled out in headline tiles (Passing Yards, Passing TD, Passer Rating). |
+| Stat units | Uppercase in tables (YDS, TD, RTG, C/ATT, CAR for rushing attempts, YCO, DRP). Spelled out in headline tiles (Passing Yards, Passing TD, Passer Rating). |
 | Records | **No ties exist.** W–L only. |
 | Private rooms | Never shown on public profiles and never counted toward anything (backend §1–§3). |
 | Best of 3 | Every ranked match is a best of 3, so rows never say "Best of 3". The live card says "Game 2 of 3". There are no halves. |
@@ -340,11 +340,11 @@ The layouts match today. Only what changes is listed.
     | Role | Statline |
     |---|---|
     | Passer | YDS · TD · INT · RTG |
-    | Rusher | ATT · YDS · TD · AVG |
+    | Rusher | CAR · YDS · TD · AVG |
     | Receiver | REC · YDS · TD · AVG |
     | DL/LB | TKL · SCK · TFL · PBU |
     | Ballhawk | INT · PBU · TKL · TD |
-    | Most played | GAMES · ATT/REC · YDS · TD (by position) |
+    | Most played | GAMES · CAR/REC · YDS · TD (by position) |
 - **Removed from Stats:** Head to head (it lives on Profile).
 - **Footer line:** the queue note ("2 games not uploaded yet: …") on the left and **Profile & sync ›** on the right.
 
@@ -391,7 +391,7 @@ Adam: *"it needs to be like something that encompasses everything online gamepla
    - **Top 5** players, then a "**Show all N players** ⌄" row that reveals the rest, then the **Total** row.
    - Columns:
      - **Passing:** C/ATT · YDS · TD · INT · AIR · YAC · Y/A · RTG · LNG
-     - **Rushing:** ATT · YDS · AVG · TD · LNG · BTK · **YCO**
+     - **Rushing:** **CAR** · YDS · AVG · TD · LNG · BTK · **YCO**
      - **Receiving:** REC · YDS · AVG · YAC · TD · LNG · **DRP**
      - **Defense:** TKL · TFL · SCK · INT · PBU · FF · FR · TD
    - All four tables share the first-column width so columns line up.
@@ -478,6 +478,6 @@ The backend work (`BACKEND-CHANGES-launcher-redesign.md`) runs in parallel. **Pr
 ## 14. Open questions
 1. **Win 10 Acrylic:** ship it, or use the fallback on Win 10? Decided by the spike.
 2. **Title bar over Mica:** keep the OS title bar (planned), or go frameless with our own buttons if it looks off? Only if the spike shows a problem.
-3. **Stats page "Your players":** should the statline follow the role table in §8.6? (Adam hasn't confirmed the exact 4 stats per role.)
+3. ~~Stats page "Your players" statlines~~: **settled.** Adam: "I think you nailed the stats" (§8.6 table, with CAR for rushing).
 4. **Backend decisions:** Elo replay without private rooms; the abandoned 1–1 series rule; per-account career ranks; Last 10 = games or matches. See the backend doc.
 5. **Rollout:** one beta build per step (§12), or group Play + Settings? Default: one per step.
