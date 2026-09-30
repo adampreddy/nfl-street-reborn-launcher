@@ -64,7 +64,8 @@ const noSideways = async (page, what) => assert.ok(await page.evaluate(() => doc
 // Wait for every running animation and transition on the page to finish before measuring.
 const settle = async (page) => {
   await page.waitForFunction(() => { const m = document.querySelector('.nav-marker'); return m && !m.classList.contains('still'); });
-  await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {}))));
+  // Infinite animations (live-pulse) never finish: skipped; and never wait longer than 5 s.
+  await page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]));
 };
 try {
   for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 560 }]) for (const glass of [true, false]) for (const slow of [true, false]) {
@@ -85,7 +86,7 @@ try {
       await shot(page, `play-${tag}.png`);
       await page.locator('#play-graphics').click(); await page.locator('dialog.menu[open]').waitFor();
       assert.equal(await style(page, 'dialog.menu', 'animationDuration'), t.d2, 'menus at --d2');
-      await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {}))));
+      await page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]));
       await shot(page, `play-menu-${tag}.png`);
       await page.keyboard.press('Escape'); await page.waitForFunction(() => !document.querySelector('dialog.menu'));
       // Controller mode (spec §6.3): a pad connected, mouse in use: no prompts. Pad input: prompts + white ring. Mouse: gone.

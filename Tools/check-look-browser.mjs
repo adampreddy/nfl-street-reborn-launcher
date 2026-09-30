@@ -34,7 +34,7 @@ const settled=()=>page.waitForFunction(()=>{const m=document.querySelector('.nav
  assert.match(await page.locator('.save-bar').innerText(),/1 unsaved change[\s\S]*Window glass/);
  // The save lane keeps its own grid row under #main, on screen, in mouse and in controller mode (the shell grid must not swallow it).
  const laneGeometry=async(mode)=>{
-  const g=await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));
+  const g=await page.evaluate(async()=>{await Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]); /* infinite ones skipped, 5 s cap */
    const r=n=>{const b=document.querySelector(n).getBoundingClientRect();return {x:b.x,y:b.y,w:b.width,h:b.height};};
    return {lane:r('#save-lane'),main:r('#main'),nav:r('.shell-nav'),vw:innerWidth,vh:innerHeight};});
   assert.ok(g.lane.w>0&&g.lane.h>0,`${mode}: save lane has a size ${JSON.stringify(g.lane)}`);

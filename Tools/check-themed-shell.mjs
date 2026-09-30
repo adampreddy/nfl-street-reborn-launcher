@@ -21,7 +21,7 @@ const base=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({channel:process.env.REBORN_TEST_BROWSER||'msedge',headless:true});
 const box=(p,sel)=>p.locator(sel).first().evaluate(n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};});
 // Measure at rest: #main's page-enter translate leaves sub-pixel float error in boxes while it runs.
-const settle=p=>p.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
+const settle=p=>p.evaluate(async()=>{await document.fonts.ready;await Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]); /* infinite ones skipped, 5 s cap */});
 const navBoxes=p=>p.locator('.shell-nav a').evaluateAll(ns=>ns.map(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height].map(v=>Math.round(v*2)/2).join(',');}));
 try{
  const ctx=await browser.newContext({viewport:{width:1280,height:800}});
