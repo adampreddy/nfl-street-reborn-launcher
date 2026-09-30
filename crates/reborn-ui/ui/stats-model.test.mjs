@@ -138,7 +138,7 @@ test('teamColour, and role cards carry the colour and the statline', () => {
 });
 
 // P4-3 / P4-6: private matches never reach Stats.
-const PRIV = { id: 'p', at: '2026-09-29T01:00:00Z', mode: 'online', queue: 'private', result: 'win', elo_delta: null, opponent: { display_name: 'Friend' }, opponent_kind: 'human', score: [7, 0], series: null, games: [], me: {}, opp: {} };
+const PRIV = { id: 'p', at: '2026-09-29T01:00:00Z', mode: 'online', queue: 'private', result: 'win', elo_delta: null, opponent: { display_name: 'Friend' }, opponent_kind: 'human', score: [7, 0], series: null, games: [{ id: 'p-g1', at: '2026-09-29T01:00:00Z', result: 'win', score: [7, 0], me: {}, opp: {} }], me: {}, opp: {} };
 const PUB = (id, result, extra = {}) => ({ id, at: '2026-09-28T01:00:00Z', mode: 'online', queue: 'ranked', result, elo_delta: result === 'win' ? 12 : -12, opponent: { display_name: 'Playz' }, opponent_kind: 'human', score: [14, 7], series: null, games: [{ id: `${id}-g1`, at: '2026-09-28T01:00:00Z', result, score: [14, 7], me: {}, opp: {} }], me: {}, opp: {}, ...extra });
 
 test('dropPrivate removes private matches and keeps order', () => {
@@ -154,8 +154,28 @@ test('no Stats output counts or mentions a private match', () => {
   assert.equal(lastTen(resultsOf(kept)), '2–1');
   const nums = youNumbers({ wins: 2, losses: 1, win_pct: 0.667, streak: 'W1' }, { results: resultsOf(kept) });
   const rows = kept.map(matchRowModel);
-  const everything = JSON.stringify([nums, rows, kept.map((m) => matchSubline(m)), kept.map((m) => matchSubline(m, 'profile')), matchSubline(PRIV), matchSubline(PRIV, 'profile')]);
-  assert.ok(!/private/i.test(everything));
-  assert.ok(!everything.includes('Friend'));
-  assert.ok(!/private/i.test(['Offline', 'Ranked', 'Casual', ''].join()));
+  const keptOut = JSON.stringify([nums, rows, kept.map((m) => matchSubline(m)), kept.map((m) => matchSubline(m, 'profile'))]);
+  assert.ok(!/private/i.test(keptOut));
+  assert.ok(!keptOut.includes('Friend'));
+  const PV = { ...PRIV, value: 1, unit: 'games' };
+  const PT = { ...PRIV, cmp: 1, att: 1, yds: 1, td: 1, int: 1, rtg: 1, avg: 1, rec: 1, tkl: 1, sck: 1, pbu: 1 };
+  // The output functions called ON the private match itself never say "Private" either.
+  const onPriv = JSON.stringify([
+    matchRowModel(PRIV),
+    PRIV.games.map(gameRowModel),
+    gameRowModel(PRIV),
+    matchSubline(PRIV), matchSubline(PRIV, 'profile'),
+    roleCards({ passer: PV, rusher: PV, receiver: PV, dl_lb: PV, ballhawk: PV, most_played: PV }),
+    totalLine({ total: PT }, 'passing'), totalLine({ total: PT }, 'rushing'), totalLine({ total: PT }, 'receiving'), totalLine({ total: PT }, 'defense'),
+    fmtElo({ ...PRIV, rating: 1000, last_delta: 5, rank: 3 }), youGrid({ ...PRIV, wins: 1, losses: 0, ties: 0 }, null), youNumbers({ ...PRIV, wins: 1, losses: 0 }, null),
+  ]);
+  assert.ok(!/private/i.test(onPriv));
+  assert.equal(matchSubline(PRIV), '');
+});
+
+test('ties and unknown results count for nothing', () => {
+  assert.deepEqual(recordOf([{ result: 'tie' }, { result: 'win' }]), { wins: 1, losses: 0 });
+  assert.deepEqual(resultsOf([{ result: 'tie' }, {}, { result: 'draw' }, null, { result: 'win' }, { result: 'loss' }]), ['W', 'L']);
+  assert.ok(!resultsOf([{ result: 'tie' }, { result: 'T' }]).includes('T'));
+  assert.deepEqual(eloChange('16'), { text: '', kind: '' });
 });
