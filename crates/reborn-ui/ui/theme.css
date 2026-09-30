@@ -308,3 +308,80 @@ body.themed .layered-preview figcaption{display:none}
 body.themed .layered-preview .pad-button{border:0;border-radius:0;padding:0;min-width:0;min-height:0;box-shadow:none;transition:none}
 body.themed .vendor-dualsense{position:absolute;left:0;top:0;width:1200px;height:700px;transform-origin:0 0}
 body.themed .vendor-dualsense .controller{position:relative}
+/* ================= Stats and Profile components (spec §3.3, §3.4, §5.2, §8.6, §8.7) ================= */
+/* section header: 40px whatever it holds, so neighbouring columns' cards start on one line */
+.sec-head{display:flex;align-items:center;justify-content:space-between;gap:16px;height:40px;margin-bottom:8px}
+.sec-head h2{margin:0;font:600 16px/1.2 Inter,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:var(--fg)}
+.sec-head .tabs{padding:3px}
+.sec-link{padding:0;border:0;background:none;font:600 12.5px Inter,system-ui,sans-serif;color:var(--red-ink);text-decoration:none;cursor:pointer}
+.sec-link:hover{color:var(--fg)}
+.sec-links{display:flex;gap:16px}
+.sec-links a{font-size:12.5px;color:var(--fg-2);text-decoration:none}
+.sec-links a:hover{color:var(--fg)}
+.k-label{display:block;font:600 11px/1.3 Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.num{font-variant-numeric:tabular-nums}
+/* team logo: the backend's full-colour logos (spec §3.4); the abbreviation in a small badge when there is none */
+.team-logo{display:block;flex:none;width:24px;height:24px;object-fit:contain}
+.team-logo.text{display:inline-grid;place-items:center;border-radius:50%;background:var(--glass-2);color:var(--fg-2);font:600 8.5px Inter,system-ui,sans-serif;letter-spacing:.02em}
+img.avatar{object-fit:cover}
+/* portrait: round, on the team's primary (--tc, set per face from the server), team logo badge at the bottom right */
+.player-face{position:relative;display:block;flex:none;width:36px;height:36px}
+.player-face>.face{display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;object-position:50% 20%;box-shadow:0 0 0 2px rgba(255,255,255,.12);
+  background:radial-gradient(circle at 50% 30%,color-mix(in srgb,var(--tc,#2a2d34) 70%,#fff 8%),color-mix(in srgb,var(--tc,#2a2d34) 55%,#000))}
+.player-face>.face.letter{display:grid;place-items:center;color:var(--fg);font:700 14px Inter,system-ui,sans-serif}
+.player-face>.badge{position:absolute;right:-4px;bottom:-3px;width:17px;height:17px;padding:2px;border-radius:50%;background:#16171c;box-shadow:0 0 0 1px var(--stroke-hi);object-fit:contain}
+/* profile cover: the avatar's two colours (--c1/--c2 from cover-color.js) behind the whole card, fading out to the right */
+.cover-wash{position:absolute;inset:0;pointer-events:none;opacity:.55;background:linear-gradient(115deg,var(--c1,#2a2d34),var(--c2,#15161a));
+  -webkit-mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%);mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%)}
+.cover-pic{background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c1,#3a3d45) 85%,#fff),var(--c1,#3a3d45) 45%,var(--c2,#1b1c21));box-shadow:0 0 0 4px rgba(255,255,255,.08),0 10px 28px rgba(0,0,0,.45)}
+.presence-dot{position:absolute;right:6px;bottom:6px;width:18px;height:18px;border-radius:50%;background:var(--ok);border:3px solid #1a1b21}
+.live-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--red);animation:live-pulse 1.6s ease-in-out infinite}
+/* table: uppercase header, rows split by --stroke, a normal Total row, one fixed 220px name column shared by every table */
+.tbl{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12.5px;font-variant-numeric:tabular-nums}
+.tbl th,.tbl td{height:40px;padding:0 12px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbl thead th{height:36px;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.tbl th:first-child,.tbl td:first-child{width:220px;text-align:left}
+.tbl tbody>tr>*{border-top:1px solid var(--stroke);color:var(--fg-2)}
+.tbl tbody th{font-weight:500;color:var(--fg)}
+.tbl tr.total>*{border-top:1px solid var(--stroke-hi);font-weight:600;color:var(--fg)}
+.tbl .who{display:inline-flex;align-items:center;gap:8px;max-width:100%;vertical-align:middle;color:inherit;text-decoration:none}
+.tbl .who>span:last-child{overflow:hidden;text-overflow:ellipsis}
+.tbl .who .team-logo{width:18px;height:18px}
+.tbl .who .avatar{width:22px;height:22px;font-size:10px}
+/* best of 3: the games open in place (grid rows 0fr to 1fr, spec §5.1), fade in, and the chevron turns (§5.2) */
+.rows-reveal{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--d3) var(--ease)}
+.rows-reveal>div{min-height:0;overflow:hidden;opacity:0;transition:opacity var(--d2) var(--ease)}
+.rows-reveal.open{grid-template-rows:1fr}
+.rows-reveal.open>div{opacity:1}
+.chev{display:block;width:8px;height:8px;margin:auto;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;color:var(--fg-3);transform:translateY(-2px) rotate(45deg);transition:transform var(--d3) var(--ease)}
+[aria-expanded="true"]>.chev{transform:translateY(2px) rotate(225deg)}
+/* match list (match-rows.js): Stats "Your matches" and Profile "Match history" (spec §8.6, §8.7) */
+.m-list{display:flex;flex-direction:column;overflow:hidden}
+.m-row{all:unset;box-sizing:border-box;display:grid;grid-template-columns:84px 92px minmax(0,1fr) 44px 56px 14px;align-items:center;gap:16px;width:100%;height:56px;padding:0 16px;cursor:pointer}
+.m-row:hover{background:var(--glass-1)}
+.m-list>*+.m-row{border-top:1px solid var(--stroke)}
+.m-row.m-hd{height:36px;cursor:default;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.m-row.m-hd>:nth-child(4),.m-row.m-hd>:nth-child(5){text-align:right}
+.m-row.m-hd:hover,.m-row.m-static:hover{background:none}
+.m-row.m-static{cursor:default}
+.m-row.m-game{height:40px;border-top:1px solid var(--stroke);background:rgba(0,0,0,.14)}
+.m-row.m-game:hover{background:var(--glass-1)}
+.m-res{display:flex;align-items:baseline;gap:8px;font:600 15px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--fg)}
+.m-res b{width:12px;font-weight:700;font-size:13px}
+.m-res b.W{color:var(--ok)}
+.m-res b.L{color:var(--red-ink)}
+.m-game .m-res{font-size:13.5px}
+.m-mu{display:flex;align-items:center;gap:6px}
+.m-mu i{font-style:normal;font-size:10.5px;color:var(--fg-3)}
+.m-game .m-mu .team-logo{width:20px;height:20px}
+.m-opp{display:flex;align-items:center;gap:10px;min-width:0;font-size:12.5px;color:var(--fg-2)}
+.m-opp .avatar{width:26px;height:26px;font-size:12px}
+.m-opp-tx{display:flex;flex-direction:column;min-width:0}
+.m-opp-n{font-size:13.5px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-opp small{font-size:11.5px;color:var(--fg-3)}
+.m-elo,.m-date{font-size:12.5px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--fg-3)}
+.m-elo.up{color:var(--ok)}
+.m-elo.down{color:var(--red-ink)}
+.m-pager{margin-top:auto;display:flex;align-items:center;justify-content:space-between;min-height:52px;padding:0 16px;border-top:1px solid var(--stroke);font-size:12.5px;color:var(--fg-3)}
+.m-empty{margin:0;padding:16px;color:var(--fg-2)}
+@media (max-width:720px){.m-row{grid-template-columns:72px 76px minmax(0,1fr) 40px 14px;gap:12px}.m-row>:nth-child(5){display:none}}
