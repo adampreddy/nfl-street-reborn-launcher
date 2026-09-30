@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A private Stats dashboard in the launcher (Elo, your games, your players), and a public, online-only player profile in the launcher and on the web at `online.nflstreetreborn.com/u/<player>`.
+**Goal:** A private Stats dashboard in the launcher (Elo, your matches, your players), and a public, online-only player profile in the launcher and on the web at `online.nflstreetreborn.com/u/<player>`. **Matches come first:** every list is a list of matches, and every result counts matches.
 
-**Architecture:** The backend owns every number. It loads a player's games once into plain "game records" (`src/profile/load.js`), and pure modules turn those records into each section (`src/profile/*.js`). Two routes serve them: a public, online-only profile and a signed-in dashboard that includes offline games. The launcher and the web page only draw what the server sends. The web page and the launcher view share the same data shape and the same section order.
+**Architecture:** The backend owns every number. It loads a player's games once into plain "game records" (`src/profile/load.js`), groups them into matches (`src/profile/matches.js`), and pure modules turn those into each section (`src/profile/*.js`). Two routes serve them: a public, online-only profile and a signed-in dashboard that includes offline games. The launcher and the web page only draw what the server sends. The web page and the launcher view share the same data shape and the same section order.
 
 **Tech Stack:**
 - Backend: Node 22 ESM, Express 5, Postgres (`pg`), `node --test`.
@@ -14,12 +14,20 @@
 
 **Repos:**
 - **Backend:** `C:\Users\Adam\Desktop\Reborn Installer\reborn-backend-pbp`, branch `feat/play-by-play`. Tests: `npm test` (needs `DATABASE_URL_TEST`, already set in `.env`).
-- **Launcher:** `C:\Users\Adam\Desktop\Reborn Installer\NFL Street Reborn Launcher rel-pbp`, branch `release/3.0.27-beta-pbp`.
+- **Launcher:** work in a NEW worktree off `release/3.0.27-beta-pbp`, never in the `rel-pbp` checkout itself. A global launcher redesign runs there in parallel (Adam, 09-30).
+  - Create it once: `git -C "C:\Users\Adam\Desktop\Reborn Installer\NFL Street Reborn Launcher rel-pbp" worktree add "../NFL Street Reborn Launcher stats-v2" -b feat/stats-profile-v2 release/3.0.27-beta-pbp`.
+  - Every launcher path in this plan is relative to that new worktree. The spec and this plan stay in `rel-pbp`.
   - Tests: `cargo test -p reborn-core -p reborn-ui -j 2`. Never run a bare workspace build without `-j 2`: a run was killed for low memory.
   - UI tests: `node --test crates/reborn-ui/ui/<file>.test.mjs`.
 
 ## Global Constraints
 
+- **Matches first (spec "Matches first").** Every list shows matches, and each match holds its games. Results count matches: record, win %, streak, recent form, head to head, by team, by queue and by game type. Stats count games: pts / gm, yds / gm, per game, wins vs losses, career tables, combos and records. A matchmade match is one `match` row. A game with no match row is a match of one game. In the result rows of Task 4, the field `games` counts matches, and the UI labels it "Matches".
+- **The parallel launcher redesign is out of scope.** Build on today's look (DESIGN.md and the v17 mockup). Adam restyles these pages afterwards.
+  - Never edit `launcher.css`, `shell.css`, `styles.css`, `product-ui.css`, `onboarding.css`, `finish.css`, `live-view.css`, `DESIGN.md`, `shell.js`, `app-shell.js`, or any other page's HTML or CSS.
+  - `stats.html` keeps its markup as is. Only `stats.js` and `stats.css` change.
+  - All new CSS is scoped to `.page-stats` or `.page-profile`.
+  - If a shared file this plan must touch (`game.js`, `live-game-render.js`, `live.js`, `live-common.js`, `main.rs`) has redesign commits on `release/3.0.27-beta-pbp` by then, rebase onto them and keep their changes. Never revert or reformat them.
 - The public profile counts **online games only**. It filters with `g.mode = 'online'` in SQL, whatever `show_offline` says. Offline games appear only in `GET /v1/me/dashboard` (spec §2, §3).
 - The profile shows only `status = 'accepted'` games. The dashboard lists every non-void game. Records, streaks and head to head count only games with a result (`resultOf`).
 - Per-player stats come only from `plays_status = 'verified'` games (spec §3).
@@ -54,23 +62,23 @@
 |---|---|---|---|
 | R1 | Dashboard is `GET /v1/me/dashboard` and the team override is `POST /v1/me/plays-as`, not the spec's `/v1/players/me/*` and `PUT`. | The backend's existing "me" routes are `/v1/me/show_offline` and `/v1/me/region`, both POST. The launcher's `Http` trait has no PUT. | Two route names to change. |
 | R2 | A career player is keyed by roster PGID (`p<pid>`) when the stored plays' roster knows it, else `n<name>\|<team>`. | `player_game_stat` has no pid. `rosterOf(plays)` has it by DIGP. | A player may split in two across old and new games. |
-| R3 | Game type: a game is **pickup** when the newest play carrying `teams` has every side at `tgid -1`. It is **quick** when a side is a catalog team, by tgid or by capture name. Otherwise it is **unknown**. No runtime change. | `livegame.js` and `liveAssets.js` both record "-1 in Pick-Up mode". | If a real pickup capture lacks `teams`, those games show as unknown. Task 14 checks one real pickup game. |
+| R3 | Game type: a game is **pickup** when the newest play carrying `teams` has every side at `tgid -1`. It is **quick** when a side is a catalog team, by tgid or by capture name. Otherwise it is **unknown**. No runtime change. | `livegame.js` and `liveAssets.js` both record "-1 in Pick-Up mode". | If a real pickup capture lacks `teams`, those games show as unknown. Task 15 checks one real pickup game. |
 | R4 | The Defense "TD" column is the capture's own `pick_six + fum_td` for that DIGP, from `game.players[].stats`. | Box-score lines have no defensive TD field. | None. |
 | R5 | "Laterals & pitches" shows three tiles: **Pitches**, **Plays with a pitch**, **Yds on those plays**. | The decoder does not separate a lateral from a pitch. `summary.pitches` is the reliable list; `summary.laterals` is the fallback for older decoders. | A label change. |
 | R6 | "3-and-outs" means your drives that ended without a first down or a touchdown. | NFL Street has no punts, and this is the closest honest meaning. | A label change. |
 | R7 | A game's Elo change is the sum of that match's `rating_event.delta` for this player with `cause = 'accepted'`. It is shown on the match's LAST recorded game only. | Elo is rated per match (best of 3), not per game. | Display only. |
-| R8 | Only the game log is paged (`?section=games&before=&limit=`). Career tables and head to head are returned whole. The UI shows 5 rows and "All ›" expands in place. | A player uses at most a few hundred NFL players, so the payload stays small. | Payload size, fixable by paging later. |
+| R8 | Only the match log is paged (`?section=matches&before=&limit=`). Career tables and head to head are returned whole. The UI shows 5 rows and "All ›" expands in place. | A player uses at most a few hundred NFL players, so the payload stays small. | Payload size, fixable by paging later. |
 | R9 | By team always has a **Pickup** row, even at 0 games, placed last. By queue always lists Ranked, Casual, Private room. By game type always lists Pickup and Quick game. | Adam: "make sure pickup shows in by team". | None. |
 | R10 | Online status on the profile follows presence.js's own rule (`presence_hidden` false and seen within `ONLINE_WITHIN_MS`). It is omitted when presence is hidden. | Spec: "online status when the player shows it". | None. |
 | R11 | `/u/:player` takes a UUID, or a display name that matches exactly one live player, case-insensitive. Anything else is a 404. | Two players can share a display name. | Names that collide get no short link. |
 
 ## Review Focus
 
-1. **A two-human game where the capture order and the side order differ.** The player's stats, their team, their Elo and every play-derived number must be for the side they played. The test fixture must swap the order (Task 2 and Task 5 tests).
-2. **An owner with `show_offline = true` and offline games.** No offline game may enter any public profile number, list or record. That includes head to head, records and career tables (Task 6 test).
-3. **A player with only offline, unranked or unverified games.** The profile shows the header and "No online games yet.". Elo shows "Unranked". No role card is drawn from nothing, and nothing divides by zero (Task 3, Task 6 and Task 10 tests).
-4. **Player-typed names.** Team and display names like `<img onerror>` or `</script>` must render as text on the web page and in the launcher (Task 7 and Task 12 tests).
-5. **A game with plays but no roster, and an old capture with no `teams` on any play.** Records fall back to the name key and an unknown game type without throwing (Task 1 and Task 5 tests).
+1. **A two-human game where the capture order and the side order differ.** The player's stats, their team, their Elo and every play-derived number must be for the side they played. The test fixture must swap the order (Task 2 and Task 6 tests).
+2. **An owner with `show_offline = true` and offline games.** No offline game may enter any public profile number, list or record. That includes head to head, records and career tables (Task 7 test).
+3. **A player with only offline, unranked or unverified games.** The profile shows the header and "No online games yet.". Elo shows "Unranked". No role card is drawn from nothing, and nothing divides by zero (Task 4, Task 7 and Task 11 tests).
+4. **Player-typed names.** Team and display names like `<img onerror>` or `</script>` must render as text on the web page and in the launcher (Task 8 and Task 13 tests).
+5. **A game with plays but no roster, and an old capture with no `teams` on any play.** Records fall back to the name key and an unknown game type without throwing (Task 1 and Task 6 tests).
 
 ---
 
@@ -78,6 +86,7 @@
 
 **Backend (`reborn-backend-pbp`)**
 - Create `src/profile/classify.js`: game type, queue, and my side.
+- Create `src/profile/matches.js`: group games into matches.
 - Create `src/profile/teamGame.js`: one game's team numbers from its plays.
 - Create `src/profile/aggregate.js`: game-level sections (summary, form, head to head, by team, queue and type, wins vs losses, most played team).
 - Create `src/profile/players.js`: player-level sections (career tables, best players, combos, pitches, per game, records).
@@ -88,6 +97,7 @@
 - Modify `src/webRouter.js` (`/u/:player`, host redirect), `src/app.js` (mount), `src/pbp/avatar.js` (size argument), `src/server.js` (optional `PAGE_ORIGIN`, `API_HOSTS`).
 - Tests:
   - `test/profile_classify.test.js`
+  - `test/profile_matches.test.js`
   - `test/profile_teamgame.test.js`
   - `test/profile_aggregate.test.js`
   - `test/profile_players.test.js`
@@ -97,7 +107,7 @@
   - `test/web_host.test.js`
   - `test/cover_color.test.js`
 
-**Launcher (`rel-pbp`)**
+**Launcher (new worktree `NFL Street Reborn Launcher stats-v2`, branch `feat/stats-profile-v2`)**
 - Modify `crates/reborn-core/src/identity.rs`: add the `PAGE_ORIGIN` const.
 - Modify `crates/reborn-ui/src/shell_tools.rs`: the allow-list covers `/live/`, `/games/` and `/u/` on both origins. This also fixes today's refused "Open on web" for `/games/`.
 - Modify `crates/reborn-core/src/live_view.rs`: add `dashboard`, `player_profile` and `set_plays_as`.
@@ -384,14 +394,150 @@ git add src/profile/teamGame.js test/profile_teamgame.test.js
 git commit -m "profile: one side's team numbers for a game, from its plays"
 ```
 
-### Task 3: Game-level sections
+### Task 3: Group games into matches (matches first)
+
+**Files:**
+- Create: `src/profile/matches.js`
+- Test: `test/profile_matches.test.js`
+
+**Interfaces:**
+- Consumes GameRecords (shape in Task 4). Each carries `match: { id, status, winner_seat, my_seat, best_of, game_number } | null`, which Task 6 loads.
+- Produces:
+  - `groupMatches(records: GameRecord[] newest first) -> MatchRecord[] newest first`.
+  - `matchRow(m)` returns the MatchRecord without its heavy fields, with its `games` as `gameRow`s. `gameRow` is in `aggregate.js` (Task 4), so `matchRow` goes there too, in Task 4.
+
+```
+MatchRecord = {
+  id: match id, or "g:<game id>" for a game with no match row,
+  match_id: uuid|null, at: newest game's `at`, mode, queue, game_type, best_of: number,
+  me, opp, opponent, opponent_kind,          // from the match's newest game
+  games: GameRecord[]  (oldest first: game_number, then at),
+  series: [won, lost] | null                  // null for a one-game match
+  score: [points for, points against] | null  // summed over games with a score
+  result: 'win'|'loss'|'tie'|null,
+  elo_delta: number|null                      // sum of its games' elo_delta, null when none
+}
+```
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/profile_matches.test.js
+import test from "node:test";
+import assert from "node:assert/strict";
+import { groupMatches } from "../src/profile/matches.js";
+
+let n = 0;
+const g = (o) => ({ id: `g${++n}`, at: `2026-09-30T0${n}:00:00Z`, mode: "online", queue: "ranked", game_type: "quick", status: "accepted",
+  me: { name: "Falcons" }, opp: { name: "Eagles" }, opponent: { player_id: "p2", display_name: "Playz" }, opponent_kind: "human",
+  score: [10, 7], result: "win", elo_delta: null, match: null, ...o });
+const M = (id, game_number, extra = {}) => ({ id, status: "complete", winner_seat: 0, my_seat: 0, best_of: 3, game_number, ...extra });
+
+test("a best of three is one match: series, summed points, winner from the match row, Elo once", () => {
+  const rs = [g({ match: M("m1", 1), result: "win", score: [14, 10] }), g({ match: M("m1", 2), result: "loss", score: [7, 28] }),
+    g({ match: M("m1", 3), result: "win", score: [21, 14], elo_delta: 16 })].reverse();   // newest first, like the loader
+  const [m] = groupMatches(rs);
+  assert.equal(m.id, "m1");
+  assert.deepEqual(m.games.map((x) => x.match.game_number), [1, 2, 3]);
+  assert.deepEqual(m.series, [2, 1]);
+  assert.deepEqual(m.score, [42, 52]);
+  assert.equal(m.result, "win", "the match row's winner seat decides, not the points");
+  assert.equal(m.elo_delta, 16);
+  assert.equal(m.best_of, 3);
+});
+
+test("games with no match row are one-game matches, in newest-first order with real matches", () => {
+  const off = g({ mode: "offline", queue: null, at: "2026-09-30T09:00:00Z" });
+  const old = g({ at: "2026-09-29T09:00:00Z" });
+  const bo = g({ match: M("m2", 1, { best_of: 1 }), at: "2026-09-30T05:00:00Z" });
+  const ms = groupMatches([off, bo, old]);
+  assert.deepEqual(ms.map((m) => m.id), [`g:${off.id}`, "m2", `g:${old.id}`]);
+  assert.equal(ms[0].series, null);
+  assert.deepEqual(ms[0].score, [10, 7]);
+  assert.equal(ms[0].result, "win");
+});
+
+test("no winner seat: the series decides; nothing decided: null; a lost seat is a loss", () => {
+  const a = groupMatches([g({ match: M("m3", 2, { winner_seat: null, status: "abandoned" }), result: "loss" }),
+    g({ match: M("m3", 1, { winner_seat: null, status: "abandoned" }), result: "loss" })]);
+  assert.equal(a[0].result, "loss");
+  const b = groupMatches([g({ match: M("m4", 1, { winner_seat: null, status: "running" }), result: null, score: null })]);
+  assert.equal(b[0].result, null);
+  assert.equal(b[0].score, null);
+  const lostBySeat = groupMatches([g({ match: M("m5", 1, { winner_seat: 1, my_seat: 0 }), result: "win" })]);
+  assert.equal(lostBySeat[0].result, "loss");
+});
+
+test("empty and junk input", () => {
+  assert.deepEqual(groupMatches([]), []);
+  assert.deepEqual(groupMatches(null), []);
+  assert.deepEqual(groupMatches([null]), []);
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `node --test test/profile_matches.test.js`
+Expected: FAIL, module not found.
+
+- [ ] **Step 3: Write the implementation**
+
+```js
+// src/profile/matches.js
+// Matches first (spec "Matches first"): a matchmade match is one entry holding its games; a game with no match row is
+// a match of one game. Results come from the match row's winner seat, else from the games won and lost. Pure.
+export function groupMatches(records) {
+  const by = new Map();
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r) continue;
+    const key = r.match?.id ?? `g:${r.id}`;
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push(r);
+  }
+  const out = [];
+  for (const [key, list] of by) {
+    const games = [...list].sort((a, b) => (a.match?.game_number ?? 0) - (b.match?.game_number ?? 0) || String(a.at).localeCompare(String(b.at)));
+    const newest = [...list].sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+    const m = newest.match;
+    const won = games.filter((x) => x.result === "win").length, lost = games.filter((x) => x.result === "loss").length;
+    let result = null;
+    if (m && (m.winner_seat === 0 || m.winner_seat === 1) && (m.my_seat === 0 || m.my_seat === 1)) result = m.winner_seat === m.my_seat ? "win" : "loss";
+    else if (games.length === 1) result = games[0].result;
+    else if (games.some((x) => x.result)) result = won > lost ? "win" : lost > won ? "loss" : "tie";
+    const scored = games.filter((x) => Array.isArray(x.score));
+    const deltas = games.map((x) => x.elo_delta).filter((d) => Number.isFinite(d));
+    out.push({
+      id: key, match_id: m?.id ?? null, at: newest.at, mode: newest.mode, queue: newest.queue, game_type: newest.game_type,
+      best_of: m?.best_of ?? 1, me: newest.me, opp: newest.opp, opponent: newest.opponent, opponent_kind: newest.opponent_kind,
+      games, series: games.length > 1 || (m?.best_of ?? 1) > 1 ? [won, lost] : null,
+      score: scored.length ? [scored.reduce((a, x) => a + x.score[0], 0), scored.reduce((a, x) => a + x.score[1], 0)] : null,
+      result, elo_delta: deltas.length ? deltas.reduce((a, d) => a + d, 0) : null,
+    });
+  }
+  return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `node --test test/profile_matches.test.js`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/profile/matches.js test/profile_matches.test.js
+git commit -m "profile: group games into matches (matches first)"
+```
+
+### Task 4: Result sections by match, averages by game
 
 **Files:**
 - Create: `src/profile/aggregate.js`
 - Test: `test/profile_aggregate.test.js`
 
 **Interfaces:**
-- Consumes the **GameRecord** shape, which Task 5 produces. Records are sorted newest first.
+- Consumes **MatchRecords** from `groupMatches` (Task 3), newest first. Each MatchRecord holds its GameRecords in `games`. The GameRecord shape, produced by Task 6:
 
 ```
 GameRecord = {
@@ -403,7 +549,8 @@ GameRecord = {
   score: [mine, theirs] | null, result: 'win'|'loss'|'tie'|null, elo_delta: number|null,
   lines: Line[]  (my side only; [] unless verified),
   team: TeamGame|null (Task 2; null unless verified),
-  plays: object[] ([] unless verified),  names: Map<digp, Line-identity>
+  plays: object[] ([] unless verified),  names: Map<digp, Line-identity>,
+  match: { id, status, winner_seat, my_seat, best_of, game_number } | null   // Task 6; null for a game with no match row
 }
 Line = { key, digp, name, team, tgid, logo_url, portrait_url, stats, def_td }
 ```
@@ -420,6 +567,7 @@ Line = { key, digp, name, team, tgid, logo_url, portrait_url, stats, def_td }
   - `winsVsLosses(records) -> { wins: Split, losses: Split }`, where `Split = { games, pts, yds, to }` holds per-game averages or null.
   - `mostPlayedTeam(records) -> { name, abbrev, tgid, logo_url } | null`
   - `gameRow(record) -> the public row` (every field except `lines`, `plays`, `names`, `team`)
+  - `matchRow(match) -> the match with its games as gameRows`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -427,7 +575,9 @@ Line = { key, digp, name, team, tgid, logo_url, portrait_url, stats, def_td }
 // test/profile_aggregate.test.js
 import test from "node:test";
 import assert from "node:assert/strict";
-import { summary, recentForm, headToHead, byTeam, byQueue, byGameType, winsVsLosses, mostPlayedTeam, gameRow } from "../src/profile/aggregate.js";
+import { summary, recentForm, headToHead, byTeam, byQueue, byGameType, winsVsLosses, mostPlayedTeam, gameRow, matchRow } from "../src/profile/aggregate.js";
+import { groupMatches } from "../src/profile/matches.js";
+const M = (rs) => groupMatches(rs);
 
 const FAL = { name: "Falcons", abbrev: "ATL", tgid: 14, logo_url: "/live-assets/r/v/teams/14-256.png" };
 const EAG = { name: "Eagles", abbrev: "PHI", tgid: 13, logo_url: "/live-assets/r/v/teams/13-256.png" };
@@ -444,7 +594,7 @@ const tg = (to) => ({ turnovers: to });
 test("summary: record, win %, streak from the newest game, averages", () => {
   const rs = [rec({ result: "win", score: [30, 10], lines: lines(200, 100), team: tg(1) }), rec({ result: "win", score: [20, 13] }),
     rec({ result: "loss", score: [7, 28] }), rec({ result: null, score: null, status: "held" })];
-  const s = summary(rs);
+  const s = summary(M(rs));
   assert.deepEqual([s.games, s.wins, s.losses, s.ties], [3, 2, 1, 0]);
   assert.equal(s.win_pct, 0.667);
   assert.equal(s.streak, "W2");
@@ -459,13 +609,13 @@ test("summary of nothing is zeros and nulls, never NaN", () => {
 
 test("recentForm takes the newest decided games", () => {
   const rs = [rec({ result: "loss", score: [3, 7] }), rec({ result: null, score: null }), rec({ result: "win", score: [10, 0] })];
-  assert.deepEqual(recentForm(rs, 10), { results: ["L", "W"], pts_for: 13, pts_against: 7 });
+  assert.deepEqual(recentForm(M(rs), 10), { results: ["L", "W"], pts_for: 13, pts_against: 7 });
 });
 
 test("headToHead groups humans only, with last meeting, biggest win and loss", () => {
   const rs = [rec({ result: "loss", score: [14, 36] }), rec({ result: "win", score: [33, 7] }), rec({ result: "win", score: [21, 20] }),
     rec({ opponent: null, opponent_kind: "cpu", result: "win", score: [50, 0] })];
-  const h = headToHead(rs);
+  const h = headToHead(M(rs));
   assert.equal(h.length, 1);
   assert.equal(h[0].display_name, "Playz");
   assert.deepEqual([h[0].wins, h[0].losses, h[0].ties], [2, 1, 0]);
@@ -476,33 +626,46 @@ test("headToHead groups humans only, with last meeting, biggest win and loss", (
 
 test("byTeam: a Pickup row always exists, pickup games count there, not under a team name", () => {
   const rs = [rec({}), rec({ game_type: "pickup", me: NONE, result: "loss", score: [0, 6] })];
-  const t = byTeam(rs);
+  const t = byTeam(M(rs));
   assert.equal(t.find((r) => r.key === "tgid:14").games, 1);
   const pickup = t.find((r) => r.key === "pickup");
   assert.equal(pickup.name, "Pickup");
   assert.equal(pickup.games, 1);
-  const empty = byTeam([rec({})]);
+  const empty = byTeam(M([rec({})]));
   assert.equal(empty[empty.length - 1].key, "pickup");
   assert.equal(empty[empty.length - 1].games, 0);
 });
 
 test("byQueue and byGameType always list their rows, offline and unknown left out", () => {
   const rs = [rec({ queue: "casual" }), rec({ mode: "offline", queue: null, game_type: "pickup" }), rec({ game_type: "unknown" })];
-  assert.deepEqual(byQueue(rs).map((r) => [r.key, r.games]), [["ranked", 1], ["casual", 1], ["private", 0]]);
-  assert.deepEqual(byGameType(rs).map((r) => [r.key, r.games]), [["pickup", 1], ["quick", 1]]);
+  assert.deepEqual(byQueue(M(rs)).map((r) => [r.key, r.games]), [["ranked", 1], ["casual", 1], ["private", 0]]);
+  assert.deepEqual(byGameType(M(rs)).map((r) => [r.key, r.games]), [["pickup", 1], ["quick", 1]]);
 });
 
 test("winsVsLosses averages points, yards and turnovers per split", () => {
   const rs = [rec({ result: "win", score: [30, 10], lines: lines(200, 100), team: tg(0) }), rec({ result: "loss", score: [10, 20], lines: lines(100, 50), team: tg(3) })];
-  const w = winsVsLosses(rs);
+  const w = winsVsLosses(M(rs));
   assert.deepEqual(w.wins, { games: 1, pts: 30, yds: 300, to: 0 });
   assert.deepEqual(w.losses, { games: 1, pts: 10, yds: 150, to: 3 });
   assert.deepEqual(winsVsLosses([]).wins, { games: 0, pts: null, yds: null, to: null });
 });
 
 test("mostPlayedTeam skips pickup and unnamed teams", () => {
-  assert.equal(mostPlayedTeam([rec({}), rec({ me: EAG }), rec({ me: EAG }), rec({ game_type: "pickup", me: NONE })]).name, "Eagles");
-  assert.equal(mostPlayedTeam([rec({ game_type: "pickup", me: NONE })]), null);
+  assert.equal(mostPlayedTeam(M([rec({}), rec({ me: EAG }), rec({ me: EAG }), rec({ game_type: "pickup", me: NONE })])).name, "Eagles");
+  assert.equal(mostPlayedTeam(M([rec({ game_type: "pickup", me: NONE })])), null);
+});
+
+test("a 2–1 series is ONE match win; per-game averages use all three games", () => {
+  const mm = (num, o) => rec({ match: { id: "m9", status: "complete", winner_seat: 0, my_seat: 0, best_of: 3, game_number: num }, ...o });
+  const ms = M([mm(3, { result: "win", score: [21, 14] }), mm(2, { result: "loss", score: [7, 28] }), mm(1, { result: "win", score: [14, 10] })]);
+  const s = summary(ms);
+  assert.deepEqual([s.games, s.wins, s.losses], [1, 1, 0]);
+  assert.equal(s.pts_per_game, 14);
+  assert.deepEqual(recentForm(ms).results, ["W"]);
+  assert.equal(headToHead(ms)[0].wins, 1);
+  assert.equal(byQueue(ms)[0].games, 1);
+  assert.equal(matchRow(ms[0]).games.length, 3);
+  assert.equal("lines" in matchRow(ms[0]).games[0], false);
 });
 
 test("gameRow drops the heavy fields", () => {
@@ -527,13 +690,15 @@ const round3 = (x) => Math.round(Number((x * 1000).toPrecision(12))) / 1000;
 const avg = (xs, r = round1) => (xs.length ? r(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
 const decided = (rs) => rs.filter((r) => r.result === "win" || r.result === "loss" || r.result === "tie");
 const letter = (r) => (r === "win" ? "W" : r === "loss" ? "L" : "T");
+// Results count MATCHES; per-game numbers count the games inside them (spec "Matches first").
+const gamesOf = (ms) => ms.flatMap((m) => (Array.isArray(m.games) ? m.games : [m]));
 const yardsOf = (r) => (r.verified && r.lines.length ? r.lines.reduce((a, l) => a + (l.stats?.pass_yds ?? 0) + (l.stats?.rush_yds ?? 0), 0) : null);
 const tally = (rs) => {
   const d = decided(rs);
   const wins = d.filter((r) => r.result === "win").length, losses = d.filter((r) => r.result === "loss").length;
   const ties = d.length - wins - losses;
   return { games: d.length, wins, losses, ties, win_pct: d.length ? round3((wins + ties / 2) / d.length) : null,
-    pts_per_game: avg(d.filter((r) => r.score).map((r) => r.score[0])) };
+    pts_per_game: avg(decided(gamesOf(d)).filter((r) => r.score).map((r) => r.score[0])) };
 };
 
 export function summary(records) {
@@ -541,7 +706,7 @@ export function summary(records) {
   const d = decided(records);
   let streak = null;
   if (d.length) { const first = d[0].result; let k = 0; while (k < d.length && d[k].result === first) k += 1; streak = `${letter(first)}${k}`; }
-  const yds = d.map(yardsOf).filter((y) => y !== null);
+  const yds = gamesOf(d).map(yardsOf).filter((y) => y !== null);
   return { games: t.games, wins: t.wins, losses: t.losses, ties: t.ties, win_pct: t.win_pct, streak,
     pts_per_game: t.pts_per_game, yds_per_game: avg(yds, Math.round) };
 }
@@ -594,7 +759,7 @@ export const byGameType = (records) => TYPES.map(([k, name]) => row(k, name, nul
 
 export function winsVsLosses(records) {
   const split = (res) => {
-    const rs = decided(records).filter((r) => r.result === res);
+    const rs = decided(gamesOf(records)).filter((r) => r.result === res);
     return { games: rs.length, pts: avg(rs.filter((r) => r.score).map((r) => r.score[0])),
       yds: avg(rs.map(yardsOf).filter((y) => y !== null), Math.round), to: avg(rs.filter((r) => r.team).map((r) => r.team.turnovers)) };
   };
@@ -610,6 +775,11 @@ export function gameRow(r) {
   const { lines, plays, names, team, ...rest } = r;
   return rest;
 }
+
+export function matchRow(m) {
+  const { games, ...rest } = m;
+  return { ...rest, games: (games ?? []).map(gameRow) };
+}
 ```
 
 `byTeam` counts ALL records in `tally` but only decided games in `games`. That is intended: a team row shows the record.
@@ -617,23 +787,23 @@ export function gameRow(r) {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `node --test test/profile_aggregate.test.js`
-Expected: PASS, 9 tests.
+Expected: PASS, 10 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/profile/aggregate.js test/profile_aggregate.test.js
-git commit -m "profile: game-level sections (record, form, head to head, by team/queue/type)"
+git commit -m "profile: match-level results and game-level averages (record, form, head to head, by team/queue/type)"
 ```
 
-### Task 4: Player-level sections
+### Task 5: Player-level sections
 
 **Files:**
 - Create: `src/profile/players.js`
 - Test: `test/profile_players.test.js`
 
 **Interfaces:**
-- Consumes: `sumStats(list)` from `src/players.js` (already exported), plus the GameRecord and Line shapes (Task 3).
+- Consumes: `sumStats(list)` from `src/players.js` (already exported), plus the GameRecord and Line shapes (Task 4).
 - Produces:
   - `careerTables(records) -> { passing: Table, rushing: Table, receiving: Table, defense: Table }`, where `Table = { rows: Row[], total: Row|null }`. Each Row has `{ key, name, team, tgid, logo_url, portrait_url, games, ...columns }`.
     - Passing columns: `cmp, att, yds, td, int, air, yac, ypa, rtg, long, sacked`.
@@ -905,7 +1075,7 @@ git add src/profile/players.js test/profile_players.test.js
 git commit -m "profile: career tables, role leaders, combos, per-game numbers and records"
 ```
 
-### Task 5: Load game records, Elo and the header from the database
+### Task 6: Load game records, Elo and the header from the database
 
 **Files:**
 - Create: `src/profile/load.js`
@@ -921,7 +1091,7 @@ git commit -m "profile: career tables, role leaders, combos, per-game numbers an
   - `headerOf(pool, playerId, { assets, auto }) -> { player_id, display_name, avatar_url, joined, plays_as, plays_as_auto, online|null } | null`
     - `auto` is `mostPlayedTeam`'s answer.
     - The result is null for a missing or deleted player.
-  - `profileKey(pool, playerId, onlineOnly) -> string`: the cache key (Task 6).
+  - `profileKey(pool, playerId, onlineOnly) -> string`: the cache key (Task 7).
 
 - [ ] **Step 1: Write the migration**
 
@@ -991,6 +1161,7 @@ test("loadRecords: side mapping, lines for my side only, opponent, Elo on the ma
     assert.deepEqual(r.score, [21, 14]); assert.equal(r.result, "win");
     assert.equal(r.queue, "ranked"); assert.equal(r.game_type, "quick");
     assert.equal(r.elo_delta, 16);
+    assert.deepEqual(r.match, { id: m, status: "complete", winner_seat: null, my_seat: 0, best_of: 1, game_number: 1 });
     assert.equal(r.opponent.display_name, "Playz"); assert.equal(r.opponent_kind, "human");
     assert.deepEqual(r.lines.map((l) => l.name).sort(), ["Penix", "Terrell"], "only my side's lines");
     assert.equal(r.lines.find((l) => l.name === "Penix").key, "p777");
@@ -1001,7 +1172,7 @@ test("loadRecords: side mapping, lines for my side only, opponent, Elo on the ma
     assert.equal(r.names.get(6).name, "Terrell");
     const cpu = all[0];
     assert.equal(cpu.opponent, null); assert.equal(cpu.opponent_kind, "cpu"); assert.equal(cpu.queue, null);
-    assert.deepEqual(cpu.lines, []); assert.equal(cpu.team, null);
+    assert.deepEqual(cpu.lines, []); assert.equal(cpu.team, null); assert.equal(cpu.match, null);
   } finally { await t.close(); }
 });
 
@@ -1077,7 +1248,8 @@ function sideViews(g, plays, assets) {
 export async function loadRecords(pool, playerId, { onlineOnly, acceptedOnly, assets = liveAssets }) {
   const games = (await pool.query(
     `SELECT g.id, g.mode, g.teams, g.players, g.status, g.plays_status, g.first_seen_at, pa.team_index,
-            m.id AS match_id, m.mode AS match_mode, m.source AS match_source,
+            m.id AS match_id, m.mode AS match_mode, m.source AS match_source, m.status AS match_status, m.winner_seat AS match_winner,
+            m.best_of AS match_best_of, (m.seat0_player = $1) AS match_seat0_me, mg.game_number,
             (mg.game_number = (SELECT max(x.game_number) FROM match_game x WHERE x.match_id = m.id AND x.game_id IS NOT NULL)) AS match_last
        FROM participation pa JOIN game g ON g.id = pa.game_id
        LEFT JOIN match_game mg ON mg.game_id = g.id LEFT JOIN match m ON m.id = mg.match_id
@@ -1132,6 +1304,8 @@ export async function loadRecords(pool, playerId, { onlineOnly, acceptedOnly, as
       lines: isVerified && ti !== null ? rows.filter((row) => row.team_index === ti).map((row) => ({ ...names.get(row.digp), stats: row.stats })) : [],
       team: isVerified ? teamGame(body, side) : null,
       plays: body, names,
+      match: g.match_id ? { id: g.match_id, status: g.match_status, winner_seat: g.match_winner,
+        my_seat: g.match_seat0_me === null ? null : g.match_seat0_me ? 0 : 1, best_of: g.match_best_of, game_number: g.game_number } : null,
     };
   });
 }
@@ -1162,7 +1336,7 @@ export async function headerOf(pool, playerId, { assets = liveAssets, auto = nul
   };
 }
 
-/** Changes whenever anything a profile shows could have changed (Task 6's cache key). */
+/** Changes whenever anything a profile shows could have changed (Task 7's cache key). */
 export async function profileKey(pool, playerId, onlineOnly) {
   const r = (await pool.query(
     `SELECT count(*)::int AS n, max(g.first_seen_at) AS seen, max(g.resolved_at) AS resolved,
@@ -1188,7 +1362,7 @@ git add migrations/009_plays_as.sql src/profile/load.js src/pbp/avatar.js test/p
 git commit -m "profile: load game records, Elo and the header; plays_as column"
 ```
 
-### Task 6: Routes (profile, dashboard, plays-as) with a cache
+### Task 7: Routes (profile, dashboard, plays-as) with a cache
 
 **Files:**
 - Create: `src/profile/router.js`
@@ -1196,47 +1370,53 @@ git commit -m "profile: load game records, Elo and the header; plays_as column"
 - Test: `test/profile_routes.test.js`
 
 **Interfaces:**
-- Consumes: Tasks 3, 4 and 5; `bearerPlayer` (`src/auth.js`); `UUID_RE` (`src/admin.js`).
-- Produces the HTTP API the launcher (Task 9) and the web page (Task 7) read.
+- Consumes: Tasks 3, 4, 5 and 6 (`groupMatches`, `matchRow`); `bearerPlayer` (`src/auth.js`); `UUID_RE` (`src/admin.js`).
+- Produces the HTTP API the launcher (Task 10) and the web page (Task 8) read.
   - `GET /v1/players/:id/profile`, no auth, returns:
-    `{ ok, header, elo, summary, recent_games, best_players, per_game, career, combos, pitches, by_team, by_queue, by_game_type, wins_vs_losses, head_to_head, records, games_total }`
-    - `recent_games` is the 10 newest `gameRow`s.
-  - `GET /v1/players/:id/profile?section=games&limit=50&before=<ISO>` returns `{ ok, games: gameRow[] }`. `limit` must be a whole number from 1 to 200, else 400. `before` must be a date, else 400.
+    `{ ok, header, elo, summary, recent_matches, best_players, per_game, career, combos, pitches, by_team, by_queue, by_game_type, wins_vs_losses, head_to_head, records, matches_total }`
+    - `recent_matches` is the 10 newest `matchRow`s. Each holds its games as `gameRow`s.
+  - `GET /v1/players/:id/profile?section=matches&limit=50&before=<ISO>` returns `{ ok, matches: matchRow[] }`. `before` compares against a match's `at`. `limit` must be a whole number from 1 to 200, else 400. `before` must be a date, else 400.
   - `GET /v1/me/dashboard` needs a bearer token, else 401 `{ ok:false, error:"Sign in first" }`. It returns:
-    `{ ok, you: { player_id, display_name, elo, summary, plays_as }, games: gameRow[] (200 newest), recent_form, head_to_head, best_players }`
+    `{ ok, you: { player_id, display_name, elo, summary, plays_as }, matches: matchRow[] (200 newest), recent_form, head_to_head, best_players }`
   - `POST /v1/me/plays-as` takes `{ tgid: integer|null }` and needs a bearer. The answer is `{ ok, plays_as }`. An unknown tgid is 400 `{ ok:false, error:"No such team" }`.
 
 - [ ] **Step 1: Write the failing test**
 
-Build the app the way `test/players.test.js` does: `express()`, `app.use(profileRouter({ pool, clock, assets }))`, and `listen(0)`. Make the token with `newToken`/`hashToken` into `device_token`, copying lines 61–100 of `test/players.test.js` for the pattern. Seed with Task 5's `insertGame`/`participate` helpers, copied into this file.
+Build the app the way `test/players.test.js` does: `express()`, `app.use(profileRouter({ pool, clock, assets }))`, and `listen(0)`. Make the token with `newToken`/`hashToken` into `device_token`, copying lines 61–100 of `test/players.test.js` for the pattern. Seed with Task 6's `insertGame`/`participate` helpers, copied into this file.
 
 ```js
 // test/profile_routes.test.js  (helpers copied from profile_load.test.js and players.test.js, not shown again here)
 test("public profile is online-only even with show_offline on; dashboard includes offline", async () => {
   // Seed: player Adam with show_offline = true; one online accepted verified win vs Playz, one offline win vs CPU,
-  // one online HELD game. Adam has a token.
+  // one online HELD game, and one ranked best of three vs Playz (a `match` row, source 'queue', winner_seat = Adam's
+  // seat, three accepted online games in match_game: won, lost, won). Adam has a token.
   const prof = await (await fetch(`${base}/v1/players/${adam}/profile`)).json();
   assert.equal(prof.ok, true);
-  assert.equal(prof.summary.games, 1, "offline and held games are not in the public numbers");
-  assert.equal(prof.recent_games.length, 1);
-  assert.equal(prof.recent_games.some((g) => g.mode === "offline"), false);
+  assert.equal(prof.summary.games, 2, "two online matches: the single win and the best of three; offline and held left out");
+  assert.equal(prof.recent_matches.length, 2);
+  const bo3 = prof.recent_matches.find((m) => m.match_id === bo3MatchId);
+  assert.deepEqual(bo3.series, [2, 1]);
+  assert.equal(bo3.games.length, 3);
+  assert.equal(prof.recent_matches.some((m) => m.mode === "offline"), false);
   assert.equal(JSON.stringify(prof).includes(offlineGameId), false, "the offline game id appears nowhere");
   assert.equal(prof.by_team.at(-1).key, "pickup");
   const dash = await (await fetch(`${base}/v1/me/dashboard`, { headers: { authorization: `Bearer ${token}` } })).json();
-  assert.equal(dash.games.length, 3);
-  assert.equal(dash.you.summary.games, 2, "the held game has no result");
-  assert.equal(dash.games.find((g) => g.id === offlineGameId).mode, "offline");
+  assert.equal(dash.matches.length, 4, "single win, offline win, held game, and the best of three as one row");
+  assert.equal(dash.you.summary.games, 3, "the held game has no result");
+  assert.equal(dash.matches.find((m) => m.games[0].id === offlineGameId).mode, "offline");
 });
 
 test("profile paging, 404s and validation", async () => {
   assert.equal((await fetch(`${base}/v1/players/not-a-uuid/profile`)).status, 404);
   assert.equal((await fetch(`${base}/v1/players/${randomUUID()}/profile`)).status, 404);
-  assert.equal((await fetch(`${base}/v1/players/${adam}/profile?section=games&limit=0`)).status, 400);
-  assert.equal((await fetch(`${base}/v1/players/${adam}/profile?section=games&before=nope`)).status, 400);
-  const page = await (await fetch(`${base}/v1/players/${adam}/profile?section=games&limit=1`)).json();
-  assert.equal(page.games.length, 1);
-  const next = await (await fetch(`${base}/v1/players/${adam}/profile?section=games&limit=1&before=${encodeURIComponent(page.games[0].at)}`)).json();
-  assert.equal(next.games.length, 0);
+  assert.equal((await fetch(`${base}/v1/players/${adam}/profile?section=matches&limit=0`)).status, 400);
+  assert.equal((await fetch(`${base}/v1/players/${adam}/profile?section=matches&before=nope`)).status, 400);
+  const page = await (await fetch(`${base}/v1/players/${adam}/profile?section=matches&limit=1`)).json();
+  assert.equal(page.matches.length, 1);
+  const next = await (await fetch(`${base}/v1/players/${adam}/profile?section=matches&limit=1&before=${encodeURIComponent(page.matches[0].at)}`)).json();
+  assert.equal(next.matches.length, 1);
+  const last = await (await fetch(`${base}/v1/players/${adam}/profile?section=matches&limit=1&before=${encodeURIComponent(next.matches[0].at)}`)).json();
+  assert.equal(last.matches.length, 0);
 });
 
 test("a player with no online games: header, zeros, Unranked, no role cards", async () => {
@@ -1263,7 +1443,7 @@ test("dashboard needs a token; plays-as validates and sticks", async () => {
 });
 ```
 
-Write the seeding in full inside the test file. Every name in these tests (`adam`, `loner`, `token`, `offlineGameId`, `base`) must be defined in that file. Use the fake `assets` object from Task 5's test, so tgid 13 is the Eagles.
+Write the seeding in full inside the test file. Every name in these tests (`adam`, `loner`, `token`, `offlineGameId`, `bo3MatchId`, `base`) must be defined in that file. Give each game a distinct `first_seen_at`. Use the fake `assets` object from Task 6's test, so tgid 13 is the Eagles.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -1281,7 +1461,8 @@ import { bearerPlayer } from "../auth.js";
 import { UUID_RE } from "../admin.js";
 import { liveAssets } from "../liveAssets.js";
 import { loadRecords, eloOf, headerOf, profileKey } from "./load.js";
-import { summary, recentForm, headToHead, byTeam, byQueue, byGameType, winsVsLosses, mostPlayedTeam, gameRow } from "./aggregate.js";
+import { summary, recentForm, headToHead, byTeam, byQueue, byGameType, winsVsLosses, mostPlayedTeam, matchRow } from "./aggregate.js";
+import { groupMatches } from "./matches.js";
 import { careerTables, bestPlayers, combos, pitches, perGame, careerRecords } from "./players.js";
 
 const CACHE_MAX = 200;
@@ -1300,15 +1481,16 @@ export function profileRouter({ pool, clock, assets = liveAssets }) {
 
   const buildProfile = async (id) => {
     const records = await loadRecords(pool, id, { onlineOnly: true, acceptedOnly: true, assets });
-    const header = await headerOf(pool, id, { assets, auto: mostPlayedTeam(records) });
+    const matches = groupMatches(records);
+    const header = await headerOf(pool, id, { assets, auto: mostPlayedTeam(matches) });
     if (!header) return null;
     const career = careerTables(records);
     return {
-      header, elo: await eloOf(pool, id), summary: summary(records),
-      recent_games: records.slice(0, 10).map(gameRow), games_total: records.length,
+      header, elo: await eloOf(pool, id), summary: summary(matches),
+      recent_matches: matches.slice(0, 10).map(matchRow), matches_total: matches.length,
       best_players: bestPlayers(career), per_game: perGame(records), career, combos: combos(records), pitches: pitches(records),
-      by_team: byTeam(records), by_queue: byQueue(records), by_game_type: byGameType(records),
-      wins_vs_losses: winsVsLosses(records), head_to_head: headToHead(records), records: careerRecords(records),
+      by_team: byTeam(matches), by_queue: byQueue(matches), by_game_type: byGameType(matches),
+      wins_vs_losses: winsVsLosses(matches), head_to_head: headToHead(matches), records: careerRecords(records),
     };
   };
 
@@ -1316,14 +1498,15 @@ export function profileRouter({ pool, clock, assets = liveAssets }) {
     try {
       const id = String(req.params.id).toLowerCase();
       if (!UUID_RE.test(id)) return res.status(404).json({ ok: false, error: "No such player" });
-      if (req.query.section === "games") {
+      if (req.query.section === "matches") {
         const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
         if (!Number.isInteger(limit) || limit < 1 || limit > 200) return res.status(400).json({ ok: false, error: "limit must be a whole number from 1 to 200" });
         const before = req.query.before === undefined ? null : new Date(String(req.query.before));
         if (before !== null && Number.isNaN(before.getTime())) return res.status(400).json({ ok: false, error: "before must be a date" });
-        const all = await cached(`games|${await profileKey(pool, id, true)}`, () => loadRecords(pool, id, { onlineOnly: true, acceptedOnly: true, assets }));
-        const page = all.filter((g) => before === null || new Date(g.at) < before).slice(0, limit).map(gameRow);
-        return res.json({ ok: true, games: page });
+        const all = await cached(`matches|${await profileKey(pool, id, true)}`,
+          async () => groupMatches(await loadRecords(pool, id, { onlineOnly: true, acceptedOnly: true, assets })));
+        const page = all.filter((m) => before === null || new Date(m.at) < before).slice(0, limit).map(matchRow);
+        return res.json({ ok: true, matches: page });
       }
       const body = await cached(`profile|${await profileKey(pool, id, true)}`, () => buildProfile(id));
       if (!body) return res.status(404).json({ ok: false, error: "No such player" });
@@ -1337,10 +1520,11 @@ export function profileRouter({ pool, clock, assets = liveAssets }) {
       if (!p) return res.status(401).json({ ok: false, error: "Sign in first" });
       const body = await cached(`dash|${await profileKey(pool, p.id, false)}`, async () => {
         const records = await loadRecords(pool, p.id, { onlineOnly: false, acceptedOnly: false, assets });
-        const header = await headerOf(pool, p.id, { assets, auto: mostPlayedTeam(records) });
+        const matches = groupMatches(records);
+        const header = await headerOf(pool, p.id, { assets, auto: mostPlayedTeam(matches) });
         return {
-          you: { player_id: p.id, display_name: header?.display_name ?? p.display_name, elo: await eloOf(pool, p.id), summary: summary(records), plays_as: header?.plays_as ?? null },
-          games: records.slice(0, 200).map(gameRow), recent_form: recentForm(records), head_to_head: headToHead(records),
+          you: { player_id: p.id, display_name: header?.display_name ?? p.display_name, elo: await eloOf(pool, p.id), summary: summary(matches), plays_as: header?.plays_as ?? null },
+          matches: matches.slice(0, 200).map(matchRow), recent_form: recentForm(matches), head_to_head: headToHead(matches),
           best_players: bestPlayers(careerTables(records)),
         };
       });
@@ -1376,10 +1560,10 @@ Expected: profile_routes passes 4 tests, and the full suite prints `exit=0`.
 
 ```bash
 git add src/profile/router.js src/app.js test/profile_routes.test.js
-git commit -m "profile: public online-only profile, signed-in dashboard, plays-as, per-player cache"
+git commit -m "profile: public online-only profile and signed-in dashboard, listed by match; plays-as; per-player cache"
 ```
 
-### Task 7: Web profile page at /u/:player, and the online host
+### Task 8: Web profile page at /u/:player, and the online host
 
 **Files:**
 - Create: `src/web/profile.html`, `src/web/profile-page.js`, `src/web/profile.css`, `src/web/cover-color.js`
@@ -1389,7 +1573,7 @@ git commit -m "profile: public online-only profile, signed-in dashboard, plays-a
 - Tests: `test/web_profile_page.test.js`, `test/web_host.test.js`, `test/cover_color.test.js`
 
 **Interfaces:**
-- Consumes: `GET /v1/players/:id/profile` (Task 6), same origin.
+- Consumes: `GET /v1/players/:id/profile` (Task 7), same origin.
 - Produces:
   - `GET /u/:player` serves an HTML page with the player id in `<meta name="nsr-player" content="<uuid>">`.
   - `dominantColors(data: Uint8ClampedArray|number[], step=4) -> [hex, hex] | null` (both repos use the same algorithm).
@@ -1524,7 +1708,7 @@ In `webRouter.js`:
 
 `PAGE_PATH` does not match `/live-assets/`, because the character after `live` must be `/` or the end. `/v1/*` is not on this router's page paths.
 
-In `server.js`, read `PAGE_ORIGIN` and `API_HOSTS` with `process.env.X ?? null` or `?? ""`. They are optional, and `need()` must not be used for them. Leaving them unset in Railway keeps today's behaviour. They get set only after `online.` answers (Task 14).
+In `server.js`, read `PAGE_ORIGIN` and `API_HOSTS` with `process.env.X ?? null` or `?? ""`. They are optional, and `need()` must not be used for them. Leaving them unset in Railway keeps today's behaviour. They get set only after `online.` answers (Task 15).
 
 **The page itself:**
 - `profile.html` mirrors `game.html`: the same head, `live.css` + `teams.css` + `profile.css`, the meta slot, and one `<main id="profile">` holding a loading line.
@@ -1533,9 +1717,9 @@ In `server.js`, read `PAGE_ORIGIN` and `API_HOSTS` with `process.env.X ?? null` 
   2. fetches `/v1/players/<id>/profile`
   3. builds the sections in spec §2 order with `document.createElement` and `textContent` only
   4. reads the avatar for the cover
-- Section order and content follow the spec §2 list exactly: Elo over time, Recent games, Best players, Per game, the four Career tables, Best QB → receiver, Laterals & pitches, By team, By mode (By queue and By game type), In wins vs losses, Head to head, Records.
-- Labels, number formats and "All ›" behaviour (R8: expand in place from 5 rows) are the same as the launcher's `stats-model.js` (Task 10). Duplicate the few formatters (`fmtInt` with thousands separators, `fmtPct` as `.630`, `fmtElo` with a sign) at the top of the page script. The web page cannot import the launcher.
-- A game row links to `/games/<id>`. A head-to-head name links to `/u/<player_id>`. A record links to its `/games/<id>`.
+- Section order and content follow the spec §2 list exactly: Elo over time, Recent matches, Best players, Per game, the four Career tables, Best QB → receiver, Laterals & pitches, By team, By mode (By queue and By game type), In wins vs losses, Head to head, Records.
+- Labels, number formats and "All ›" behaviour (R8: expand in place from 5 rows) are the same as the launcher's `stats-model.js` (Task 11). Duplicate the few formatters (`fmtInt` with thousands separators, `fmtPct` as `.630`, `fmtElo` with a sign) at the top of the page script. The web page cannot import the launcher.
+- A one-game match row links to `/games/<id>`. A longer match row is a `<button aria-expanded>` that shows its game rows, each linking to `/games/<id>`. The series (`2–1`) is its score. "All ›" under Recent matches fetches more with `?section=matches&before=`. A head-to-head name links to `/u/<player_id>`. A record links to its `/games/<id>`.
 - **Cover:**
 
 ```js
@@ -1563,7 +1747,7 @@ Expected: all pass, `exit=0`.
 
 - [ ] **Step 6: Look at it**
 
-Run the backend locally against the test DB, the way `README.md` describes, and seed one player with the Task 6 seeding. Then open `http://localhost:<port>/u/<id>` in a browser. Check each item:
+Run the backend locally against the test DB, the way `README.md` describes, and seed one player with the Task 7 seeding. Then open `http://localhost:<port>/u/<id>` in a browser. Check each item:
 - every section renders
 - names with `<b>` show literally
 - a player with no online games shows the header and "No online games yet."
@@ -1582,7 +1766,7 @@ git commit -m "web: public profile page at /u/:player; page routes move to PAGE_
 
 ## Launcher
 
-### Task 8: Page origin and the open-website allow-list
+### Task 9: Page origin and the open-website allow-list
 
 **Files:**
 - Modify: `crates/reborn-core/src/identity.rs`: add `pub const PAGE_ORIGIN: &str = "https://online.nflstreetreborn.com";` next to `DEFAULT_ORIGIN`.
@@ -1650,7 +1834,7 @@ git add crates/reborn-core/src/identity.rs crates/reborn-ui/src/shell_tools.rs c
 git commit -m "launcher: pages open on online.nflstreetreborn.com; /games and /u allowed (Open on web for a game was refused)"
 ```
 
-### Task 9: Core client and commands (dashboard, profile, plays-as)
+### Task 10: Core client and commands (dashboard, profile, plays-as)
 
 **Files:**
 - Modify: `crates/reborn-core/src/live_view.rs`: three functions and their tests.
@@ -1662,7 +1846,7 @@ git commit -m "launcher: pages open on online.nflstreetreborn.com; /games and /u
   - `pub fn dashboard(http: &dyn Http, origin: &str, token: &str) -> Result<Value, LiveError>`: `GET /v1/me/dashboard`, the whole body.
   - `pub fn player_profile(http: &dyn Http, origin: &str, player_id: &str, games_before: Option<&str>) -> Result<Option<Value>, LiveError>`:
     - With `games_before = None`, it asks `GET /v1/players/{id}/profile`.
-    - With `Some(b)`, it asks `...?section=games&limit=50&before=<percent-encoded b>`.
+    - With `Some(b)`, it asks `...?section=matches&limit=50&before=<percent-encoded b>` (one more page of the match log).
     - A 404 is `Ok(None)`. A bad id is `Err(LiveError::BadId)` before any request.
   - `pub fn set_plays_as(http: &dyn Http, origin: &str, token: &str, tgid: Option<u16>) -> Result<Value, LiveError>`: `POST /v1/me/plays-as` with `{"tgid": n|null}`.
 - Produces (commands, returning `LiveCommandError` on failure like `stats_my_games`):
@@ -1688,7 +1872,7 @@ In `live_view.rs` `mod tests`, use the existing `FakeHttp` pattern: read how `pl
         let http = FakeHttp::default().reply(&format!("{ORIGIN}/v1/players/{ID}/profile"), 404, "{}");
         assert_eq!(player_profile(&http, ORIGIN, ID, None).unwrap(), None);
         assert_eq!(player_profile(&PanicHttp, ORIGIN, "../x", None), Err(LiveError::BadId));
-        let url = format!("{ORIGIN}/v1/players/{ID}/profile?section=games&limit=50&before=2026-09-30T01%3A02%3A03.000Z");
+        let url = format!("{ORIGIN}/v1/players/{ID}/profile?section=matches&limit=50&before=2026-09-30T01%3A02%3A03.000Z");
         let http = FakeHttp::default().reply(&url, 200, r#"{"ok":true,"games":[]}"#);
         assert!(player_profile(&http, ORIGIN, ID, Some("2026-09-30T01:02:03.000Z")).unwrap().is_some());
     }
@@ -1717,14 +1901,14 @@ pub fn dashboard(http: &dyn Http, origin: &str, token: &str) -> Result<Value, Li
 }
 
 /// `GET {origin}/v1/players/{id}/profile`: a player's public, online-only profile, or with `games_before` one more
-/// page of their game log. No token: the profile is the same for everyone.
+/// page of their match log. No token: the profile is the same for everyone.
 pub fn player_profile(http: &dyn Http, origin: &str, player_id: &str, games_before: Option<&str>) -> Result<Option<Value>, LiveError> {
     if !is_canonical_uuid(player_id) {
         return Err(LiveError::BadId);
     }
     let mut url = format!("{}/v1/players/{player_id}/profile", origin.trim_end_matches('/'));
     if let Some(b) = games_before {
-        url.push_str("?section=games&limit=50&before=");
+        url.push_str("?section=matches&limit=50&before=");
         url.push_str(&percent_encode(b));
     }
     get_json_opt(http, &url, None)
@@ -1783,20 +1967,21 @@ git commit -m "launcher: dashboard, player profile and plays-as commands"
 
 Add `net.rs` only if the fake was changed.
 
-### Task 10: Pure view models for both pages
+### Task 11: Pure view models for both pages
 
 **Files:**
 - Create: `crates/reborn-ui/ui/stats-model.js`
 - Test: `crates/reborn-ui/ui/stats-model.test.mjs`
 
 **Interfaces:**
-- Consumes: the Task 6 JSON shapes.
+- Consumes: the Task 7 JSON shapes.
 - Produces:
   - `fmtInt(n) -> string`: `1284` becomes `"1,284"`, and null or NaN becomes `"—"`.
   - `fmtPct(p) -> string`: `0.63` becomes `".630"`, `1` becomes `"1.000"`, and null becomes `"—"`.
   - `fmtRecord({wins, losses, ties}) -> "14–9–1"` or `"14–9"`. Ties appear only when above 0, and the separator is an en dash.
   - `fmtElo(elo) -> { value: "1,184"|"Unranked", change: "▲ 16"|"▼ 18"|"", rank: "#7 on the ladder"|"" }`
   - `gameRowModel(row) -> { id, date: "Sep 26", time: "9:18 PM", me, opp, opponent: "Playz"|"CPU"|"Guest"|"—", avatar, score: "36–14"|"—", result: "W"|"L"|"T"|"", tag: "+16 Elo"|"−18 Elo"|"Offline"|"", tagKind: "up"|"down"|"offline"|"" }`
+  - `matchRowModel(match) -> { ...gameRowModel fields for the match, score: "2–1" for a series else the game score, games: gameRowModel[] (each built with elo_delta null, so Elo shows once, on the match), expandable: games.length > 1, onlyGame: id of the single game or null }`
   - `roleCards(best) -> { role, label, name, team, logo, portrait, initial, stat }[6]`, in the order passer, rusher, receiver, dl_lb, ballhawk, most_played. The labels are "Best passer", "Best rusher", "Best receiver", "Best DL/LB", "Ballhawk", "Most played". A missing role gets `name: "None yet"`, and its stat is `""`.
   - `totalLine(table, kind) -> string`: `""` when `total` is null.
   - `youGrid(summary, playsAs) -> { label, value, logo? }[6]`: Record, Win %, Streak, Pts / gm, Yds / gm, Plays as.
@@ -1808,7 +1993,7 @@ Add `net.rs` only if the fake was changed.
 // crates/reborn-ui/ui/stats-model.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, roleCards, totalLine, youGrid, trendPoints } from './stats-model.js';
+import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints } from './stats-model.js';
 
 test('number formats', () => {
   assert.equal(fmtInt(1284), '1,284'); assert.equal(fmtInt(null), '—'); assert.equal(fmtInt(NaN), '—');
@@ -1832,6 +2017,18 @@ test('gameRowModel: ranked Elo, offline tag, CPU', () => {
   const off = gameRowModel({ ...base, mode: 'offline', opponent: null, opponent_kind: 'cpu', elo_delta: null });
   assert.equal(off.tag, 'Offline'); assert.equal(off.tagKind, 'offline'); assert.equal(off.opponent, 'CPU');
   assert.equal(gameRowModel({ ...base, score: null, result: null }).score, '—');
+});
+
+test('matchRowModel: a series shows 2–1 and expands; one game shows its score and opens it', () => {
+  const g1 = { id: 'a', at: '2026-09-27T01:00:00Z', mode: 'online', score: [14, 10], result: 'win', elo_delta: 16, opponent: { display_name: 'Playz' }, opponent_kind: 'human', me: {}, opp: {} };
+  const m = matchRowModel({ id: 'm1', at: '2026-09-27T02:00:00Z', mode: 'online', series: [2, 1], score: [42, 52], result: 'win', elo_delta: 16,
+    opponent: { display_name: 'Playz' }, opponent_kind: 'human', me: {}, opp: {}, games: [g1, { ...g1, id: 'b' }, { ...g1, id: 'c' }] });
+  assert.equal(m.score, '2–1'); assert.equal(m.expandable, true); assert.equal(m.onlyGame, null);
+  assert.equal(m.tag, '+16 Elo'); assert.equal(m.result, 'W');
+  assert.equal(m.games.length, 3); assert.equal(m.games[0].tag, '', 'Elo shows once, on the match');
+  const one = matchRowModel({ id: 'g:a', at: g1.at, mode: 'offline', series: null, score: [36, 14], result: 'win', elo_delta: null,
+    opponent: null, opponent_kind: 'cpu', me: {}, opp: {}, games: [{ ...g1, mode: 'offline' }] });
+  assert.equal(one.score, '36–14'); assert.equal(one.expandable, false); assert.equal(one.onlyGame, 'a'); assert.equal(one.tag, 'Offline');
 });
 
 test('roleCards: six cards in order, None yet when empty', () => {
@@ -1878,7 +2075,7 @@ Write `stats-model.js` with the exports above. The rules the tests pin:
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `node --test crates/reborn-ui/ui/stats-model.test.mjs`
-Expected: PASS, 6 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1887,15 +2084,15 @@ git add crates/reborn-ui/ui/stats-model.js crates/reborn-ui/ui/stats-model.test.
 git commit -m "stats: pure view models for the dashboard and profile"
 ```
 
-### Task 11: Stats page rewrite (the dashboard)
+### Task 12: Stats page rewrite (the dashboard)
 
 **Files:**
 - Rewrite: `crates/reborn-ui/ui/stats.js`, `crates/reborn-ui/ui/stats.css`
-- Modify: `crates/reborn-ui/ui/stats.html` (only if the page heading or purpose line needs to change)
+- Do NOT modify `crates/reborn-ui/ui/stats.html`: the redesign owns page markup.
 - Keep: `stats-rows.js`, and its `queueLine`/`unsentCount` for the "N games not uploaded yet" line.
 
 **Interfaces:**
-- Consumes: `stats_dashboard`, `stats_queue` and `identity_status` (existing) commands; Task 10 models; `assetUrl` and `avatarSrc` from `live-common.js`.
+- Consumes: `stats_dashboard` (its `matches`), `stats_queue` and `identity_status` (existing) commands; Task 11 models; `assetUrl` and `avatarSrc` from `live-common.js`.
 - Produces: the Stats page. A game row opens `game.html?game=<id>`. "Your profile ›" opens `profile.html?player=<you.player_id>`.
 
 - [ ] **Step 1: Read what you are replacing**
@@ -1913,7 +2110,9 @@ Only the data source (`stats_dashboard` instead of `stats_my_games`) and the dra
 
 Open `.superpowers/brainstorm/181729-1790747853/content/stats-layout-v17.html`, the first frame ("Stats page (yours)"). Reproduce its structure with `el()` from `shell.js`, with text only.
 - **Left column:**
-  - **Your games:** the filter buttons All, Online and Offline (`aria-pressed`). Then 42px rows, 8 per page with the existing pager. Each row is a `<button>` holding date and time, my logo, "vs", opp logo, the opponent (avatar + name, or "CPU"), the score, W/L/T, and the tag from `gameRowModel`.
+  - **Your matches:** the filter buttons All, Online and Offline (`aria-pressed`). Then 42px rows, 8 matches per page with the existing pager. Each row is a `<button>` holding date and time, my logo, "vs", opp logo, the opponent (avatar + name, or "CPU"), the score (the series `2–1` for a best of three), W/L/T, and the tag from `matchRowModel`.
+    - A row with `onlyGame` opens `game.html?game=<onlyGame>`.
+    - An `expandable` row toggles `aria-expanded`, and shows its game rows indented under it ("Game 1", "Game 2", …, each with its score and W/L). Each game row opens that game.
   - **Recent form:** W/L/T tiles (`aria-label="Win"` and so on), then `Points for 213 · against 150`.
   - **Head to head:** 5 rows (avatar, name, record, a win-share bar with `role="img"` and `aria-label="6 wins, 5 losses"`). "All ›" expands in place.
 - **Right column:**
@@ -1933,7 +2132,7 @@ Scope everything to `.page-stats`, as today.
 - [ ] **Step 4: Check in the real launcher**
 
 Build and run the launcher UI in dev, the way the repo's README or `installer/windows/build.ps1 -LauncherOnly` describes, signed in as Adam. Check each item:
-1. Online games show "+N Elo" only on ranked match-ending games. Offline games show "Offline".
+1. A ranked best of three is ONE row with its series and one "+N Elo", and it expands to three games. Offline games show "Offline".
 2. Tab reaches every row, filter, card and link, with focus visible.
 3. At 1280×800 nothing overflows.
 4. Signed out shows the sign-in sentence.
@@ -1943,22 +2142,22 @@ Save screenshots to the SDD workspace.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/reborn-ui/ui/stats.js crates/reborn-ui/ui/stats.css crates/reborn-ui/ui/stats.html
-git commit -m "stats: the dashboard (Elo, your games, your players, recent form, head to head)"
+git add crates/reborn-ui/ui/stats.js crates/reborn-ui/ui/stats.css
+git commit -m "stats: the dashboard (Elo, your matches, your players, recent form, head to head)"
 ```
 
-### Task 12: Native public profile view
+### Task 13: Native public profile view
 
 **Files:**
 - Create: `crates/reborn-ui/ui/profile.html`, `crates/reborn-ui/ui/profile.js`, `crates/reborn-ui/ui/profile.css`, `crates/reborn-ui/ui/cover-color.js`, `crates/reborn-ui/ui/cover-color.test.mjs`
 - Modify: every place that shows an opponent's name, so it links to the profile:
-  - `stats.js` game rows and head to head (Task 11)
+  - `stats.js` game rows and head to head (Task 12)
   - `game.js` header seats
   - `live-game-render.js` `seatCard`
   - Each name becomes an `<a href="profile.html?player=<id>">` when the seat has a `player_id`.
 
 **Interfaces:**
-- Consumes: the `player_profile` and `set_plays_as` commands (Task 9); Task 10 models; `dominantColors` (the same algorithm as backend Task 7).
+- Consumes: the `player_profile` and `set_plays_as` commands (Task 10); Task 11 models; `dominantColors` (the same algorithm as backend Task 8).
 - Produces: `profile.html?player=<uuid>[#section]`.
 
 - [ ] **Step 1: Write the cover-colour test and the module**
@@ -1973,20 +2172,20 @@ Copy `game.html` (shell, nav, backdrop, skip link, diagnostics fold). Set the ti
 
 Use frames 2 to 4 of `stats-layout-v17.html` ("Full profile 1 of 3" to "3 of 3"), in the spec §2 order, with `el()` and text only.
 - **Header:**
-  - The cover: neutral by default, and avatar colours through `style.setProperty('--c1'|'--c2')` after `dominantColors`, with the same `crossOrigin` and canvas code as Task 7.
+  - The cover: neutral by default, and avatar colours through `style.setProperty('--c1'|'--c2')` after `dominantColors`, with the same `crossOrigin` and canvas code as Task 8.
   - The avatar, name, "Joined Sep 2026", "Plays as" with the team logo, and the online dot when `online === true`.
   - A **Plays as** `<select>` shown only when `header.player_id` equals the signed-in player's id (from `identity_status`). Its first option is "Most played" (value `""`), followed by every team in `by_team` except Pickup. On change it calls `set_plays_as`.
   - The main strip: Elo (`fmtElo`), Ranked # (`#7` or "—"), Record, Win % and Games.
   - Buttons: **Share profile** copies `PAGE_ORIGIN + '/u/' + id` with `navigator.clipboard.writeText` and shows "Link copied" for 2 s. **View on web** calls `open_website` with that URL.
 - **Sections:** each is an `<section id="...">` with an `<h2>` and an "All ›" `<button aria-expanded>` that shows every row instead of 5 (R8). The ids let `#career`, `#defense` and `#records` from the Stats page scroll there.
-- **Recent games:** the rows use `gameRowModel`. "All ›" loads more pages with `player_profile(id, before = last.at)` until an empty page. A row opens `game.html?game=<id>`.
+- **Recent matches:** the rows use `matchRowModel`, and they expand and open exactly as on the Stats page. "All ›" loads more pages with `player_profile(id, before = last match's at)` until an empty page.
 - **Tables:** the name cell has a 16px logo, then the name. Under each table goes `totalLine(...)` as one muted line. Column headers are `<th scope="col">`.
 - **Empty states:** a player with no games shows the header plus "No online games yet." and no sections. Each empty table or card shows "None yet".
 - **Hidden or deleted player** (`player_profile` returns null): use `notFound('stats.html', 'Back to Stats')` from `live-game-render.js`.
 
 - [ ] **Step 4: Write `profile.css`**
 
-Use the same tokens and weights as Task 11. The cover is 140px tall. `.cover.has-colour` uses the `color-mix` gradient from Task 7. Tables scroll inside their panel.
+Use the same tokens and weights as Task 12. The cover is 140px tall. `.cover.has-colour` uses the `color-mix` gradient from Task 8. Tables scroll inside their panel.
 
 - [ ] **Step 5: Add a test that names stay text**
 
@@ -2003,7 +2202,7 @@ Run it. Expected: PASS.
 
 - [ ] **Step 6: Check in the real launcher**
 
-With the local backend from Task 7, or after deploy, use Adam's profile and a profile with no online games. Check every section, keyboard reach, the Share copy, the Plays as change sticking after a reload, and the neutral cover when the avatar can't be read. Save screenshots.
+With the local backend from Task 8, or after deploy, use Adam's profile and a profile with no online games. Check every section, keyboard reach, the Share copy, the Plays as change sticking after a reload, and the neutral cover when the avatar can't be read. Save screenshots.
 
 - [ ] **Step 7: Commit**
 
@@ -2012,14 +2211,14 @@ git add crates/reborn-ui/ui/profile.html crates/reborn-ui/ui/profile.js crates/r
 git commit -m "profile: native public profile view; opponent names open it"
 ```
 
-### Task 13: Game view ‹ Previous / Next ›
+### Task 14: Game view ‹ Previous / Next ›
 
 **Files:**
 - Modify: `crates/reborn-ui/ui/game.js`, `crates/reborn-ui/ui/stats.js`, `crates/reborn-ui/ui/profile.js`
 - Modify: `crates/reborn-ui/ui/stats-model.js` + test: add `neighbours(list, id) -> { prev: id|null, next: id|null }`
 
 **Interfaces:**
-- Produces: when a list page opens a game, it stores the ordered ids it is showing in `sessionStorage['nsr.gameList']` as JSON `{ ids: [...], label: 'Your games'|'<name>'s games' }`. Wrap the write in try/catch. `game.js` reads the key (also in try/catch) and draws ‹ Previous and Next › buttons, disabled at the ends. It draws nothing when the key is missing or the id is not in the list.
+- Produces: when a list page opens a game, it stores the ordered GAME ids of the matches it is showing in `sessionStorage['nsr.gameList']`. Matches go newest first, and each match's games are newest first within it, so "Previous" is always the older game. It is stored as JSON `{ ids: [...], label: 'Your matches'|'<name>'s matches' }`. Wrap the write in try/catch. `game.js` reads the key (also in try/catch) and draws ‹ Previous and Next › buttons, disabled at the ends. It draws nothing when the key is missing or the id is not in the list.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2059,7 +2258,7 @@ git add crates/reborn-ui/ui/game.js crates/reborn-ui/ui/stats.js crates/reborn-u
 git commit -m "game view: step through the list you came from"
 ```
 
-### Task 14: Whole-branch verification (no deploy)
+### Task 15: Whole-branch verification (no deploy)
 
 **Files:** none new. This task only runs checks and writes the report.
 
@@ -2077,7 +2276,7 @@ cargo test -p reborn-core -p reborn-ui -j 2
 for f in crates/reborn-ui/ui/*.test.mjs; do node --test "$f" || echo "FAIL $f"; done
 ```
 
-Expected: no failures beyond the baseline recorded in Task 9.
+Expected: no failures beyond the baseline recorded in Task 10.
 
 - [ ] **Step 3: CRLF guard**
 
@@ -2097,11 +2296,13 @@ grep -rl '"tgid":-1' "$LOCALAPPDATA/NFL Street Reborn" 2>/dev/null | head
 
 - [ ] **Step 5: Visual comparison**
 
-Put the Task 11 and Task 12 screenshots side by side with `stats-layout-v17.html`. List every visible difference, then fix or rule on each. Pay particular attention to:
+Put the Task 12 and Task 13 screenshots side by side with `stats-layout-v17.html`. List every visible difference, then fix or rule on each. Pay particular attention to:
 - text weight (Adam: "too bold")
 - the totals line (one plain line)
 - the Pickup row in By team
 - the "Offline" tag
+- a best of three shown as one match row
+- no edits to shared launcher files: `git diff --stat release/3.0.27-beta-pbp...HEAD -- crates/reborn-ui/ui` lists only this plan's files
 
 - [ ] **Step 6: Write the release checklist into the report**
 

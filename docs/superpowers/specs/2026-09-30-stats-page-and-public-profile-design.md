@@ -9,6 +9,7 @@ Builds on `2026-09-26-stats-everywhere-and-stats-tab-design.md`, which shipped i
 - The launcher's **Stats page** becomes the player's private dashboard: Elo, record, their games (online and offline), their best players by role, recent form and head to head.
 - A new **public profile**, viewable by anyone in the launcher and on the web, is the full picture of a player's **online** career. It is readable like a profile on a website or social app.
 - The page must use every stat the game records, and everything on it must be reachable.
+- **Matches come first** (Adam, 09-30: "It's important that we log matches instead of games"). Every list is a list of matches. Every record, win %, streak, recent form and head to head counts matches. A match's games sit inside it. See "Matches first" below.
 
 What Adam said:
 - "B v1 was peak". The look is the first two-column mockup: launcher art backdrop, glass panels, our red, Inter at normal weights.
@@ -19,7 +20,31 @@ What Adam said:
 - "Sum totals look ass, can be way simpler". "Make sure pickup shows in by team".
 - "Make sure everything works properly and looks proper".
 
+## Matches first (binding)
+
+- **What a match is:**
+  - A matchmade match (one `match` row: ranked best of three, casual, rematch or private room) is one match, holding its recorded games in `match_game` order.
+  - Any game with no match row (every offline game, and online games from before matchmaking) is a match of one game.
+- **The result of a match:** win or loss from `match.winner_seat` against the player's seat. When the match has no winner seat, the result comes from its games won and lost. It is null when no game in it has a result.
+- **Score of a match:**
+  - A best of three shows its series (`2–1`).
+  - A one-game match shows the game's score (`36–14`).
+  - Points for and against are summed over the match's games.
+- **Results count matches. Stats count games.**
+  - Records, win %, streak, recent form, head to head, by team, by queue and by game type count matches.
+  - Pts / gm, Yds / gm, per-game numbers, wins vs losses, career tables, combos and records count games, because they describe single-game play.
+- **Elo** is already per match. A match row shows its Elo change once.
+- **Lists:**
+  - A match row opens its game when it has one game.
+  - With more than one game, it expands in place to its game rows, and each game row opens that game.
+  - The game view's ‹ Previous / Next › steps through the games in list order.
+
 ## Look (binding)
+
+- **The parallel launcher redesign is ignored here** (Adam, 09-30). These pages are built on today's launcher look (DESIGN.md, v17 mockup), and they are restyled to the redesign afterwards as a separate step.
+  - This work touches no shared stylesheet, shell script or other page's markup.
+  - All CSS is scoped to `.page-stats` / `.page-profile`.
+  - It runs in its own git worktree, so the redesign's edits and ours never share a checkout.
 
 - Follow the launcher's `crates/reborn-ui/ui/DESIGN.md` tokens:
   - Surfaces: `--bg`, `--panel`, `--line`.
@@ -45,15 +70,15 @@ What Adam said:
 The layout is two columns, as in B v1.
 
 **Left column**
-- **Your games:** newest first, 42px rows. Filters: All / Online / Offline.
+- **Your matches:** newest first, 42px rows. Filters: All / Online / Offline.
   - Each row shows:
     - date and time;
     - your team logo, "vs", the opponent team logo;
     - the opponent (avatar and name, or `CPU`);
-    - the score;
+    - the series score for a best of three (`2–1`), else the game score;
     - W / L / T;
     - the Elo change for a ranked game (`+16 Elo`), `Offline` for an offline game, otherwise blank.
-  - A row opens the game view (shipped in beta.13). The game view gains ‹ Previous / Next › to step through the listed games.
+  - A one-game row opens the game view (shipped in beta.13). A longer match expands to its game rows first. The game view gains ‹ Previous / Next › to step through the listed games.
 - **Recent form · last 10:** W/L/T tiles, plus a points-for vs points-allowed line.
 - **Head to head:** one row per opponent, with record and a win-share bar.
 
@@ -81,11 +106,11 @@ The Stats page includes offline games. Every number on it counts **all** the pla
   - A cover whose colours come from the player's Discord avatar (two dominant colours). Fallback: a neutral `--panel-2` gradient when there is no avatar or its colours can't be read.
   - Avatar, display name, `Joined <month year>`, `Plays as <team>` with a team selector, and online status when the player shows it.
   - `Plays as` defaults to the most-played team. The owner can pick another, and the choice is stored on the server.
-  - Main strip: **Elo · Ranked # · Record · Win % · Games**.
+  - Main strip: **Elo · Ranked # · Record · Win % · Matches**. Record and win % count matches.
   - Buttons: Share profile, View on web (launcher only).
 - **Sections, in scroll order.** Each has `All ›` to the complete list:
   1. **Elo over time:** the full ranked history, with start, peak and current.
-  2. **Recent games:** the last 10 online games in the Stats page row format with Elo change. `All ›` opens the full online game log. Every game opens its game page with ‹ › through the log.
+  2. **Recent matches:** the last 10 online matches in the Stats page row format with Elo change. `All ›` opens the full match log. A match opens or expands to its games, and every game opens its game page with ‹ › through the log.
   3. **Best players:** the same six role cards.
   4. **Per game:** total yds, pass/rush split, first downs, turnovers, 1-pt conv %, 2-pt conv %, pts/drive, 3-and-outs, longest drive (plays), lead changes, biggest lead, safeties.
   5. **Career stats:** Passing, Rushing, Receiving, Defense. Every player the owner has used, sortable by any column, with a total line.
@@ -125,13 +150,13 @@ The Stats page includes offline games. Every number on it counts **all** the pla
 - `GET /v1/players/:id/profile`: public and online-only. It returns:
   - header: name, avatar, joined, plays_as, elo, rank, record, win%, games, streaks;
   - elo_history;
-  - recent_games;
+  - recent_matches (each with its games);
   - best_players;
   - per_game;
   - career tables (passing, rushing, receiving, defense);
   - combos, laterals, by_team, by_mode, wins_vs_losses, head_to_head, records.
-  - `?section=<name>&limit&before` pages the long lists (game log, career tables, head to head).
-- `GET /v1/players/me/dashboard`: token required. The Stats page's data, **including offline games**: you, games (with elo_delta and offline flag), recent_form, head_to_head, best_players.
+  - `?section=<name>&limit&before` pages the long lists (match log, career tables, head to head).
+- `GET /v1/players/me/dashboard`: token required. The Stats page's data, **including offline games**: you, matches (each with its games, elo_delta and offline flag), recent_form, head_to_head, best_players.
 - `PUT /v1/players/me/plays-as`: the profile team override.
 - The page `GET /u/:player` shares the CSP, versioning and 404 of `/games/:id`, and is linked on the `online.` host. `:player` is the player id; a display-name lookup resolves to the id.
 
