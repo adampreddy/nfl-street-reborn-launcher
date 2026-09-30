@@ -34,9 +34,10 @@ export function mountNavMarker() {
   let from = null;
   try { from = sessionStorage.getItem("reborn:nav-marker"); } catch (_) {}
   if (from) marker.style.transform = from;
+  else place(); // first load: appear at the target, no glide from the logo
   requestAnimationFrame(() => {
-    marker.classList.remove("still");
-    place();
+    if (from) { marker.classList.remove("still"); place(); }
+    else requestAnimationFrame(() => marker.classList.remove("still"));
     try { sessionStorage.setItem("reborn:nav-marker", marker.style.transform); } catch (_) {}
   });
   addEventListener("resize", () => { marker.classList.add("still"); place(); requestAnimationFrame(() => marker.classList.remove("still")); });

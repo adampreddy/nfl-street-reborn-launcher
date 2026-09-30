@@ -22,7 +22,7 @@
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}
 @media (prefers-reduced-motion:reduce){
-  html{--d1:0ms;--d2:0ms;--d3:0ms}
+  html[data-motion]{--d1:0ms;--d2:0ms;--d3:0ms}
   *,*::before,*::after{animation:none!important;transition-duration:0s!important}
 }
 
@@ -36,13 +36,13 @@ body.shell .backdrop{display:none}
 /* shell surfaces carry no opaque fill of their own, so the material shows through.
    Originals: launcher.css:4/6/7/23/29, product-ui.css:3/4/5/12/49, finish.css:14/15/26/60/61, play.css:2, onboarding-polish.css:2 */
 body.shell .app-header,body.shell .shell-nav,body.shell .input-footer,
-body.shell #main,body.shell main,body.shell.page-home main,body.shell.page-setup main,body.shell.page-setup #nav,
+body.shell #main,body.shell main,body.shell.page-home main,body.shell.page-setup main,
 body.shell.page-home details.core,body.shell.page-home #screen{background:transparent!important}
 body.shell .shell-nav{border-right:1px solid var(--stroke)!important}
 
 /* sidebar: one sliding marker (look.js), no per-item marker */
 body.shell .shell-nav{position:relative}
-.shell-nav a:not(.brand){border-radius:var(--r-md)!important;color:var(--fg-2)!important;transition:background var(--d2) var(--ease),color var(--d2) var(--ease)}
+.shell-nav a:not(.brand){border-radius:var(--r-md)!important;color:var(--fg-2)!important}
 .shell-nav a:not(.brand):hover{background:var(--glass-1)!important;color:var(--fg)!important}
 .shell-nav a.current:not(.brand){background:var(--glass-3)!important;color:var(--fg)!important;box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
 .shell-nav a.current:not(.brand)::before{display:none!important}
@@ -58,7 +58,7 @@ body.shell #main{animation:look-enter var(--d3) var(--ease) backwards}
 body.shell.page-home #main{animation-name:look-enter-fade}
 
 /* buttons */
-body.shell button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:background var(--d1) var(--ease),border-color var(--d1) var(--ease),color var(--d1) var(--ease),transform var(--d1) var(--ease)}
+body.shell button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:transform var(--d1) var(--ease)}
 body.shell button:active{transform:scale(.98)}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer}
 .btn:hover{background:var(--glass-3);border-color:var(--stroke-hi)}
@@ -68,10 +68,10 @@ body.shell button:active{transform:scale(.98)}
 .btn.sm{height:32px;padding:0 12px;font-size:12.5px}
 
 /* focus: controller only (app-shell sets body.gamepad-input); keyboard keeps the browser default */
-body.gamepad-input :focus-visible{outline:2px solid #fff!important;outline-offset:3px;box-shadow:none!important}
+body.shell :focus-visible,body.gamepad-input :focus-visible{outline:2px solid #fff!important;outline-offset:3px!important;box-shadow:none!important}
 
 /* switch */
-.look-switch{position:relative;width:40px;height:22px;border-radius:999px;border:0;padding:0;cursor:pointer;background:var(--red);transition:background var(--d2) var(--ease)}
+.look-switch{position:relative;width:40px;height:22px;border-radius:999px;border:0;padding:0;cursor:pointer;background:var(--red)}
 .look-switch::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transform:translateX(18px);transition:transform var(--d2) var(--ease)}
 .look-switch[aria-checked="false"]{background:rgba(255,255,255,.14)}
 .look-switch[aria-checked="false"]::after{transform:none;background:#cfd3da}
@@ -93,3 +93,12 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 .save-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
 .save-bar .t{font-weight:600}.save-bar .d{color:var(--fg-2);font-size:12.5px}
 .save-bar .btn:first-of-type{margin-left:auto}
+
+/* onboarding action bar: sticky at the bottom, content scrolls UNDER it, so it keeps its own surface */
+body.shell.page-setup #nav{background:#0d0e11!important}
+html[data-glass="on"] body.shell.page-setup #nav{background:rgba(24,25,30,.78)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+
+/* inset fills that the --bg:transparent alias would otherwise erase (onboarding-polish.css:51/58/109/113/152) */
+body.shell .binding-editor,body.shell .mapping-tabs,body.shell .graphics-tabs,body.shell .import-override-fields,
+body.shell .advanced-row select,body.shell .import-game-actions select{background:var(--glass-1)}
+body.shell .advanced-row select,body.shell .import-game-actions select{color-scheme:dark}
