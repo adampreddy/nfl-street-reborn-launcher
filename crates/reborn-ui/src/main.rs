@@ -4536,6 +4536,15 @@ fn apply_glass(window: &tauri::WebviewWindow, material: Option<launcher_look::Ma
             false
         }
     };
+    // Never a transparent window with nothing behind it: glass off (or failed) = an opaque dark window AND webview;
+    // glass on = fully transparent webview so the material shows, and no opaque fill on the window layer.
+    // (Windows ignores alpha on the window layer, so "clear" there means removing the fill, not painting alpha 0.)
+    if shown {
+        let _ = window.as_ref().window().set_background_color(None);
+        let _ = window.as_ref().set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    } else if let Err(why) = window.set_background_color(Some(tauri::window::Color(13, 14, 17, 255))) {
+        eprintln!("Could not give the window its solid background: {why}");
+    }
     GLASS_APPLIED.store(shown, std::sync::atomic::Ordering::Relaxed);
     shown
 }
@@ -6495,6 +6504,20 @@ mod tests {
         let off = LauncherLook { window_glass: false, slow_animations: false };
         let v = look_view(off, Some(Material::Mica), false, Os::Windows);
         assert!(v.glass_supported && !v.glass_applied && !v.slow_animations && v.glass_note.is_none());
+        // Saved on, the OS has a material, but it did not go on: say so.
+        let v = look_view(on, Some(Material::Mica), false, Os::Windows);
+        assert!(v.glass_supported && !v.glass_applied);
+        assert_eq!(v.glass_note.as_deref(), Some("The window glass could not be turned on."));
+    }
+
+    #[test]
+    fn the_window_is_opaque_from_creation_and_glass_clears_it() {
+        // tauri.conf.json gives the window a solid dark background so nothing is ever see-through before apply_glass runs;
+        // apply_glass takes it off only when a material really is showing.
+        let conf = include_str!("../tauri.conf.json");
+        assert!(conf.contains("\"backgroundColor\": \"#0d0e11\""), "the window must be opaque from creation");
+        let body = command_body(include_str!("main.rs"), "fn apply_glass");
+        assert!(body.contains("Color(13, 14, 17, 255)") && body.contains("Color(0, 0, 0, 0)"));
     }
 
     /// The text of one command, from its signature to the start of the next

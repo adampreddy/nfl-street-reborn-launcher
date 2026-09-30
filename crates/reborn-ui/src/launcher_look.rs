@@ -12,16 +12,16 @@ const WIN11_FIRST_BUILD: u32 = 22000;
 pub enum Material { Mica, Acrylic, Vibrancy }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Os { Windows, MacOs, Linux }
+pub enum Os { Windows, Mac, Linux }
 
 pub fn current_os() -> Os {
-    if cfg!(target_os = "windows") { Os::Windows } else if cfg!(target_os = "macos") { Os::MacOs } else { Os::Linux }
+    if cfg!(target_os = "windows") { Os::Windows } else if cfg!(target_os = "macos") { Os::Mac } else { Os::Linux }
 }
 
 /// The material this OS can show, or None for the solid dark fallback.
 pub fn pick_material(os: Os, windows_build: Option<u32>) -> Option<Material> {
     match os {
-        Os::MacOs => Some(Material::Vibrancy),
+        Os::Mac => Some(Material::Vibrancy),
         Os::Linux => None,
         Os::Windows => match windows_build {
             Some(b) if b >= WIN11_FIRST_BUILD => Some(Material::Mica),
@@ -40,15 +40,24 @@ pub fn parse_windows_build(reg_query_stdout: &str) -> Option<u32> {
         .and_then(|n| n.parse().ok())
 }
 
-/// The running Windows build, or None (not Windows, or unreadable).
+/// The running Windows build, or None (not Windows, or unreadable). Read once: the build cannot change while we run,
+/// and every look command asks.
 pub fn windows_build() -> Option<u32> {
+    static BUILD: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(read_windows_build)
+}
+
+fn read_windows_build() -> Option<u32> {
     if current_os() != Os::Windows {
         return None;
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("reg")
+        // The system copy by full path, never whatever `reg` PATH happens to find first.
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let reg = std::path::Path::new(&root).join("System32").join("reg.exe");
+        let out = std::process::Command::new(reg)
             .args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "CurrentBuildNumber"])
             .creation_flags(0x0800_0000)
             .output()
@@ -85,7 +94,7 @@ mod tests {
 
     #[test]
     fn mac_gets_vibrancy_and_linux_gets_nothing() {
-        assert_eq!(pick_material(Os::MacOs, None), Some(Material::Vibrancy));
+        assert_eq!(pick_material(Os::Mac, None), Some(Material::Vibrancy));
         assert_eq!(pick_material(Os::Linux, None), None);
     }
 
