@@ -111,10 +111,18 @@ export function teamName(team) {
   return el('span', attrs);
 }
 
+// A seat's name; a link to the player's profile when the seat carries their player id.
+const PLAYER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function seatName(seat) {
+  const attrs = { class: 'lv-player-name', text: str(seat?.display_name) || 'Unknown player' };
+  const id = str(seat?.player_id);
+  return PLAYER_ID_RE.test(id) ? el('a', { ...attrs, href: `profile.html?player=${encodeURIComponent(id.toLowerCase())}` }) : el('span', attrs);
+}
+
 export function seatCard(i, seat, team, points, cpu) {
   const body = cpu
     ? el('span', { class: 'lv-player lv-cpu' }, el('span', { class: 'lv-player-name', text: 'CPU' }))
-    : el('span', { class: 'lv-player' }, seatAvatar(seat), el('span', { class: 'lv-player-name', text: str(seat?.display_name) || 'Unknown player' }));
+    : el('span', { class: 'lv-player' }, seatAvatar(seat), seatName(seat));
   return el('div', { class: `lv-seat lv-seat-${i}${team ? ' has-team' : ''}` },
     team ? teamLogo(team) : null,
     el('div', { class: 'lv-seat-id' },

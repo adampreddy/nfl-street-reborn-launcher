@@ -6,7 +6,7 @@
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN } from './live-common.js';
 import { TABS, header, notFound } from './live-game-render.js';
-import { snapshotOf, webLinkShown } from './stats-rows.js';
+import { sideTeams, snapshotOf, webLinkShown } from './stats-rows.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
@@ -48,6 +48,19 @@ function draw() {
   }
 }
 
+// The header's seat names link to each player's profile: the seat of each side gets the player id of the same
+// participant participantSeats (stats-rows.js) chose for it -- the first human with an account on that side's team.
+function withPlayerIds(snap, game) {
+  const { team } = sideTeams(game, Array.isArray(game.teams_view) ? game.teams_view : null);
+  const people = Array.isArray(game.participants) ? game.participants : [];
+  (Array.isArray(snap.sides) ? snap.sides : []).forEach((s, side) => {
+    const seat = s && Number.isInteger(s.seat) ? snap.seats[s.seat] : null;
+    const p = seat ? people.find((x) => x && x.kind === 'human' && x.player_id && x.team_index === team[side]) : null;
+    if (p && typeof p.player_id === 'string') seat.player_id = p.player_id;
+  });
+  return snap;
+}
+
 async function openOnWeb() {
   try { await call('open_website', { url: `${PAGE_ORIGIN}/games/${gameId}` }); } catch (e) { state.error = reason(e); draw(); }
 }
@@ -60,7 +73,7 @@ async function load() {
     const record = await quietCall('stats_game', { gameId });
     if (!record || typeof record !== 'object' || !record.game) state.missing = true;
     else {
-      state.snap = snapshotOf(record);
+      state.snap = withPlayerIds(snapshotOf(record), record.game);
       // The server's own verdict, not whether any rows came back: only a verified game's plays are trusted.
       state.verified = record.game.plays_status === 'verified';
       state.online = webLinkShown(record.game);
