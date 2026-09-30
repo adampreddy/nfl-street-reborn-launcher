@@ -17,7 +17,7 @@ const html=`<!doctype html><html lang="en" data-glass="off" data-motion="quick">
 import {mountSaveBar} from './savebar.js';
 window.outcome=null;window.saves=0;
 window.bar=mountSaveBar(document.getElementById('save-lane'),{
- onSave:async()=>{if(window.outcome)throw new Error(window.outcome);window.saves++;window.bar.update([]);},
+ onSave:async()=>{if(window.lockDuring)window.bar.lock(true);if(window.outcome)throw new Error(window.outcome);window.saves++;window.bar.update([]);},
  onDiscard:async()=>{window.bar.update([]);},
  returnFocus:()=>document.getElementById('b')});
 window.ready=true;
@@ -150,6 +150,32 @@ try{
  assert.deepEqual([detail.ws,detail.to],['nowrap','ellipsis'],'the detail line is clamped with an ellipsis');
  assert.ok(detail.h<=detail.lh*1.5,`the detail stays on one line ${JSON.stringify(detail)}`);
  await page.evaluate(()=>bar.update(['Window glass']));
+ // lock() (plan 3, Music): the page holds Save, and optionally Discard, while its own work runs.
+ await page.evaluate(()=>{bar.update(['Song 3 replaced']);bar.lock(true,false);});
+ assert.equal(await page.getByRole('button',{name:'Save changes'}).isDisabled(),true,'lock holds Save');
+ assert.equal(await page.getByRole('button',{name:'Discard'}).isDisabled(),false,'Discard can stay free');
+ await page.evaluate(()=>bar.lock(true));
+ assert.equal(await page.getByRole('button',{name:'Discard'}).isDisabled(),true,'one argument holds both');
+ // P3-2: with both buttons held the bar itself is focusable, so a refused leave still lands somewhere.
+ await page.evaluate(()=>document.querySelector('.shell-nav a[href="mods.html"]').focus());
+ await page.evaluate(()=>window.pointAtSaveBar());
+ assert.equal(await page.evaluate(()=>document.activeElement.classList.contains('save-bar')),true,'toSaveBar focuses .save-bar when both buttons are locked');
+ await page.evaluate(()=>document.getElementById('b').focus());await press(13);
+ assert.equal(await page.evaluate(()=>document.activeElement.classList.contains('save-bar')),true,'D-pad down reaches the locked bar');
+ await page.locator('.shell-nav a[href="mods.html"]').click();
+ await page.waitForTimeout(150);
+ assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','a locked bar still refuses to leave');
+ assert.equal(await page.evaluate(()=>document.activeElement.classList.contains('save-bar')),true,'a refused click focuses the locked bar');
+ await page.evaluate(()=>bar.lock(false));
+ assert.equal(await page.evaluate(()=>document.querySelector('.save-bar').hasAttribute('tabindex')),false,'the bar is not a tab stop once a button is free');
+ assert.equal(await page.getByRole('button',{name:'Save changes'}).isEnabled(),true,'lock(false) frees them');
+ // A save that ends while the page holds the bar leaves the buttons held (it used to free them in finally).
+ await page.evaluate(()=>{window.lockDuring=true;window.outcome='The disk is full.';});
+ await page.getByRole('button',{name:'Save changes'}).click();
+ await page.locator('.save-bar [role=alert]').waitFor();
+ assert.equal(await page.getByRole('button',{name:'Save changes'}).isDisabled(),true,'still held after the save ended');
+ await page.evaluate(()=>{window.lockDuring=false;window.outcome=null;bar.lock(false);});
+ assert.equal(await page.getByRole('button',{name:'Save changes'}).isEnabled(),true);
  assert.deepEqual(errors,[]);
  // With nothing pending, the sidebar navigates exactly as before.
  await page.evaluate(()=>bar.update([]));

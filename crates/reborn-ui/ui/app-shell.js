@@ -26,9 +26,11 @@ const inContent = n => !!n && (main.contains(n) || !!saveLane()?.contains(n));
 const pending = () => !!saveLane()?.classList.contains('open');
 let calledTimer = 0;
 function uncall() { clearTimeout(calledTimer); document.querySelector('.save-bar.called')?.classList.remove('called'); }
+// Save first; with both buttons locked (savebar.js lock()) the bar itself, so focus never goes nowhere.
+const barTarget = lane => lane && (reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0] || lane.querySelector('.save-bar[tabindex]'));
 function toSaveBar() {
   const lane = saveLane();
-  const target = lane && (reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);
+  const target = barTarget(lane);
   if (target) focus(target, false);
   // A visible cue for mouse users too (the pad ring only shows in controller mode): Save is outlined briefly.
   const bar = lane?.querySelector('.save-bar');
@@ -146,7 +148,8 @@ function mode(value) {
   renderHints();
 }
 function focus(n, reveal = true) {
-  if (!visible(n)) return;
+  // The locked save bar (tabindex -1, no enabled button) is a valid target though visible() skips it.
+  if (!visible(n) && !(n?.matches('.save-bar[tabindex]') && !n.closest('[inert]'))) return;
   document.querySelectorAll('.pad-focus').forEach(x => x.classList.remove('pad-focus'));
   n.focus({preventScroll:true});
   n.classList.add('pad-focus');
@@ -253,7 +256,7 @@ function move(direction) {
   }
   if (ranked[0]) focus(ranked[0].n);
   // Nothing further down the page: the save bar, while it is open, comes next (Save first).
-  else if (!modal && !inNav && !inLane && direction === 'down' && lane && reachable(lane).length) focus(reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);
+  else if (!modal && !inNav && !inLane && direction === 'down' && lane && pending() && barTarget(lane)) focus(barTarget(lane));
   else if (!modal && !inNav && direction === 'left') focus(document.querySelector('.shell-nav a.current') || reachable(document.querySelector('.shell-nav'))[0]);
 }
 function endSelect(commit) {

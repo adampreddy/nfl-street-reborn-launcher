@@ -19,6 +19,9 @@
   --on-art:rgba(10,11,14,.35);
   --avatar-bg:linear-gradient(135deg,#5865F2,#3b44b8);
   --dolphin:#22C7B4;
+  /* plan 3: the neutral mod preview (spec §8.3, no drawn art), and an opaque surface for popovers over content */
+  --thumb-bg:linear-gradient(160deg,rgba(255,255,255,.05),rgba(0,0,0,.18));
+  --surface-solid:#1b1e24;
   /* the old stylesheets' variables, pointed at the new tokens (retired in the Cleanup plan) */
   --bg:transparent;--panel:var(--glass-1);--line:var(--stroke);--muted:var(--fg-2);--accent:var(--red);
   --accent-border:var(--stroke-hi);--control-bg:var(--glass-2);--control-border:var(--stroke);
@@ -283,3 +286,25 @@ dialog.menu .menu-item[aria-checked="true"] .menu-check{visibility:visible}
 .field{display:flex;align-items:center;gap:8px;height:38px;min-width:0;padding:0 12px;border-radius:var(--r-md);background:var(--field-bg);border:1px solid var(--stroke);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
 body.shell .field input{flex:1;min-width:0;height:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif;text-overflow:ellipsis;box-shadow:none}
 .field .auto{flex:none;margin-left:auto;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:var(--ok);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.25)}
+
+/* ================= Plan 3 shared pieces ================= */
+/* search boxes and text areas look like the other fields; inside .field (an icon + a box) the search box is bare */
+body.themed input[type=search],body.themed textarea{min-width:0;padding:0 12px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--field-bg);color:var(--fg);font:500 13px Inter,system-ui,sans-serif;color-scheme:dark}
+body.themed input[type=search]{height:38px}
+body.themed textarea{padding:8px 12px;resize:vertical}
+body.themed .field input[type=search]{flex:1;height:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+
+/* controller art (controller-preview.js) on themed pages. The onboarding page keeps launcher.css's copy until plan 4. */
+body.themed .controller-preview{margin:0 auto;width:min(100%,360px);color:var(--fg-2)}
+body.themed .controller-preview svg{display:block;width:100%;height:auto;overflow:visible}
+body.themed .controller-preview figcaption{margin-top:2px;text-align:center;font-size:11px;letter-spacing:.03em;color:var(--fg-3)}
+body.themed .sourced-preview svg{width:100%;max-height:280px;object-fit:contain}
+body.themed .sourced-preview:has(svg) figcaption{display:none}
+body.themed .layered-preview{position:relative;display:block!important;aspect-ratio:var(--controller-ratio);min-height:0;margin:0 auto}
+body.themed .layered-preview>[class^="vendor-"]{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none}
+body.themed .layered-preview>[class^="vendor-"] span{display:block}
+body.themed .layered-preview>[class^="vendor-"] .clear{clear:both}
+body.themed .layered-preview figcaption{display:none}
+body.themed .layered-preview .pad-button{border:0;border-radius:0;padding:0;min-width:0;min-height:0;box-shadow:none;transition:none}
+body.themed .vendor-dualsense{position:absolute;left:0;top:0;width:1200px;height:700px;transform-origin:0 0}
+body.themed .vendor-dualsense .controller{position:relative}

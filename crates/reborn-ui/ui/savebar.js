@@ -8,6 +8,8 @@
 //   the leave guard (a[href] clicks, B twice and LB/RB while it is .open) and window.pointAtSaveBar.
 // - A page whose content is a column of rows (Settings) opts into row-first vertical pad moves with
 //   data-nav="rows" on its content container; without it, Up/Down pick the nearest control by position.
+// - bar.lock(saveHeld, discardHeld = saveHeld) keeps the buttons disabled until lock(false); while both are,
+//   .save-bar itself is focusable (tabindex -1) and app-shell falls back to it.
 // - The detail line is one line (ellipsis); its full text is in its tooltip.
 import { el, reason } from "./shell.js";
 
@@ -20,6 +22,15 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
   const discard = el("button", { type: "button", class: "btn", text: "Discard" });
   const save = el("button", { type: "button", class: "btn primary", text: saveText });
   let busy = false, listed = "[]";
+  // A page may hold the buttons while its own work runs (Music: while the core encodes or builds).
+  let held = { save: false, discard: false };
+  const bar = el("div", { class: "save-bar", role: "region", "aria-label": "Unsaved changes" });
+  const sync = () => {
+    save.disabled = busy || held.save; discard.disabled = busy || held.discard;
+    // With both buttons disabled nothing in the bar can take focus, so the bar itself does (a refused
+    // leave, or a pad moving down into it, must never focus nothing).
+    if (save.disabled && discard.disabled) bar.tabIndex = -1; else bar.removeAttribute("tabindex");
+  };
   // The line shows two lines at most; the full reason is always in its tooltip.
   const fail = (message) => {
     error.textContent = message || ""; error.hidden = !message;
@@ -27,14 +38,15 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
   };
   const run = (fn) => async () => {
     if (busy) return;
-    busy = true; discard.disabled = save.disabled = true; fail("");
+    busy = true; sync(); fail("");
     try { await fn(); } catch (e) { fail(reason(e)); }
-    finally { busy = false; discard.disabled = save.disabled = false; }
+    finally { busy = false; sync(); }
   };
   discard.addEventListener("click", run(onDiscard));
   save.addEventListener("click", run(onSave));
-  lane.replaceChildren(el("div", { class: "save-bar", role: "region", "aria-label": "Unsaved changes" },
-    el("span", { class: "dot", "aria-hidden": "true" }), el("div", { class: "save-text" }, title, detail, error), discard, save));
+  bar.append(el("span", { class: "dot", "aria-hidden": "true" }),
+    el("div", { class: "save-text", "aria-live": "polite" }, title, detail, error), discard, save);
+  lane.replaceChildren(bar);
   return {
     update(changes) {
       const n = changes.length;
@@ -51,5 +63,7 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
       if (hadFocus) (returnFocus?.() || document.getElementById("main"))?.focus({ preventScroll: true });
     },
     fail,
+    // Keep Save (and Discard, unless told otherwise) disabled until lock(false).
+    lock(saveHeld, discardHeld = saveHeld) { held = { save: !!saveHeld, discard: !!discardHeld }; sync(); },
   };
 }
