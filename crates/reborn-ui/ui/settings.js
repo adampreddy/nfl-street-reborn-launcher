@@ -100,12 +100,20 @@ async function saveAll() {
   if (result.stopped && result.stopped.reason !== HELD) throw new Error(`${result.stopped.label}: ${result.stopped.reason}`);
 }
 
+// Put everything back. A revert that fails throws its reason, which the bar shows; that change and the
+// older ones stay pending and the bar stays open, so nothing still previewed is shown as discarded.
 async function discardAll() {
-  const failed = await draft.discardAll();
-  unverified = null;
-  draw();
-  refreshBar();
-  if (failed.length) throw new Error(failed.join(" · "));
+  try { await draft.discardAll(); }
+  finally {
+    unverified = null;
+    // The look switches show what is still pending, not what was hoped for.
+    if (lookSaved && lookDraft) {
+      lookDraft.windowGlass = draft.value("look.glass", lookSaved.windowGlass);
+      lookDraft.slowAnimations = draft.value("look.motion", lookSaved.slowAnimations);
+    }
+    draw();
+    refreshBar();
+  }
 }
 
 // ---- building blocks ----------------------------------------------------------------------------
@@ -175,7 +183,7 @@ async function openDolphin() {
 
 const preferenceGroups = {
   General: [["confirm_stop", "Confirm before stopping", "Ask before closing a game.", "bool"], ["pause_unfocused", "Pause when unfocused", "Pause local play when you switch to another app.", "bool"], ["osd_messages", "Game notifications", "Show Dolphin messages over the game.", "bool"]],
-  Graphics: [["internal_resolution", "Internal resolution", "How sharp the game renders. 3× is the Reborn default; lower it if the game runs slowly.", "resolution"], ["msaa", "Anti-aliasing", "Smooths edges. Off is the Reborn default and is what the game has always run at; raising it costs frame rate and softens the depth-based ReShade effects.", "msaa"], ["video_backend", "Graphics backend", "Direct3D 11 is the Reborn default. Vulkan or OpenGL can run better on some drivers, but the ReShade visual effects hook Direct3D, so they do not load on the other backends.", "video_backend"], ["sync_gpu", "Synchronize GPU thread", "Off is faster. Turn it on only if you see graphical glitches.", "bool"], ["vsync", "V-Sync", "Reduce screen tearing. May add a small amount of input delay.", "bool"], ["show_fps", "Frame rate", "Show a small frames-per-second counter.", "bool"]],
+  Graphics: [["internal_resolution", "Internal resolution", "How sharp the game renders. 3× is the Reborn default; lower it if the game runs slowly.", "resolution"], ["msaa", "Anti-aliasing", "Smooths edges. Off is the Reborn default and is what the game has always run at; raising it costs frame rate.", "msaa"], ["video_backend", "Graphics backend", "Direct3D 11 is the Reborn default. Vulkan or OpenGL can run better on some drivers.", "video_backend"], ["sync_gpu", "Synchronize GPU thread", "Off is faster. Turn it on only if you see graphical glitches.", "bool"], ["vsync", "V-Sync", "Reduce screen tearing. May add a small amount of input delay.", "bool"], ["show_fps", "Frame rate", "Show a small frames-per-second counter.", "bool"]],
   Display: [["fullscreen", "Start in fullscreen", "Open the game in fullscreen mode.", "bool"], ["show_ping", "Netplay ping", "Show connection latency during online play.", "bool"], ["always_on_top", "Keep game on top", "Keep the game window above other windows.", "bool"]],
   Audio: [["audio_backend", "Audio output", "Default shares audio with other apps. Windows exclusive gives Dolphin sole use of the output device.", "backend"], ["volume", "Game volume", "Adjust Dolphin audio output.", "range", 0, 100], ["muted", "Mute audio", "Silence game audio without changing the volume.", "bool"], ["audio_stretch", "Audio stretching", "Smooth out audio during brief slowdowns.", "bool"], ["audio_latency", "Audio buffer", "Audio buffering in milliseconds. Raise it if sound crackles.", "range", 0, 200]],
   Saves: [["slot_a", "Memory Slot A", "Choose where Player 1 saves game progress.", "slot"], ["card_a", "Slot A memory card", "Used when Slot A is set to Memory card. Leave blank for Dolphin’s default.", "card"], ["gci_a", "Slot A save folder", "Used when Slot A is set to GCI folder. Leave blank for the default folder.", "folder"], ["slot_b", "Memory Slot B", "An optional second card. Existing saves are kept when you change the type.", "slot"], ["card_b", "Slot B memory card", "Used when Slot B is set to Memory card.", "card"], ["gci_b", "Slot B save folder", "Used when Slot B is set to GCI folder.", "folder"]],
@@ -207,9 +215,16 @@ function typedPath(input, shown, onValue) {
 // is open they are not held for the save bar.
 async function saveLive(key, label, value, focusId) {
   let said;
-  try { await call("dolphin_preference_set", { runtime: get("runtime"), key, value }); state.dolphin.values[key] = value; said = `${label} saved.`; }
+  try {
+    await call("dolphin_preference_set", { runtime: get("runtime"), key, value });
+    state.dolphin.values[key] = value; said = `${label} saved.`;
+    // What the game has now is newer than anything staged before it went live: a later Save must not
+    // write the old value over it.
+    draft.drop("pref." + key);
+  }
   catch (e) { said = reason(e); }
   draw();
+  refreshBar();
   const status = document.getElementById("dolphin-status");
   if (status) status.textContent = said;
   document.getElementById(focusId)?.focus({ preventScroll: true });
@@ -505,8 +520,10 @@ function pathRow(b) {
   };
   // Editable, so a path can be pasted (spec §10). It shows what is in use; typing over it stages a choice
   // and clearing it goes back to automatic.
-  const shown = value || detected(b.key) || "";
-  const input = el("input", { id, type: "text", value: shown, placeholder: "Found automatically", spellcheck: "false", disabled: busy, "aria-describedby": value ? null : `${id}-auto` });
+  const found = value ? "" : detected(b.key) || "";
+  const shown = value || found;
+  // "Auto" only when something was actually found; with nothing chosen and nothing found the box is empty.
+  const input = el("input", { id, type: "text", value: shown, placeholder: "Not set", spellcheck: "false", disabled: busy, "aria-describedby": found ? `${id}-auto` : null });
   typedPath(input, shown, (v, loud) => {
     if (loud) stagePath(v, id);
     else { draft.put(key, entry(v)); lastChangedId = id; refreshBar(); }
@@ -514,7 +531,7 @@ function pathRow(b) {
   return row(b.name, { id, cls: "path-entry",
     value: el("div", { class: "field" },
       input,
-      value ? null : el("span", { class: "auto", id: `${id}-auto`, text: "Auto" })),
+      found ? el("span", { class: "auto", id: `${id}-auto`, text: "Auto" }) : null),
     control: [
       el("button", { type: "button", id: `change-${b.key}`, class: "btn", text: "Change…", "aria-label": `Change ${b.name}`, disabled: busy, onclick: change }),
       value ? el("button", { type: "button", class: "btn quiet sm", text: "Reset", "aria-label": `Reset ${b.name} to automatic`, disabled: busy, onclick: () => stagePath("") }) : null,

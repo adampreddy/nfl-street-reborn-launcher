@@ -237,6 +237,14 @@ function move(direction) {
     return {n,distance,overlap,score:distance+cross*2};
   }).filter(x => x.distance > 4 && (!horizontal || x.overlap > 0));
   ranked.sort((a,b) => Number(b.overlap > 0)-Number(a.overlap > 0) || a.score-b.score);
+  // A control in the same column far below must not jump over nearer rows whose controls sit in another
+  // column (Settings: tabs on the left, each row's switch on the right, Refresh on the left at the end).
+  // When the column pick is more than a row farther than the nearest control, the nearest row wins.
+  if (!horizontal && ranked.length > 1) {
+    const gap = x => { const b = box(x.n); return sign > 0 ? b.top-a.bottom : a.top-b.bottom; };
+    const nearest = Math.min(...ranked.map(gap));
+    if (gap(ranked[0]) > nearest+48) ranked.unshift(ranked.filter(x => gap(x) <= nearest+8).sort((p,q) => p.score-q.score)[0]);
+  }
   if (ranked[0]) focus(ranked[0].n);
   // Nothing further down the page: the save bar, while it is open, comes next (Save first).
   else if (!modal && !inNav && !inLane && direction === 'down' && lane && reachable(lane).length) focus(reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);

@@ -49,17 +49,18 @@ export function createDraft() {
         return { saved, stopped: null };
       });
     },
-    // Put every previewed change back, newest first. Nothing is saved. Returns what could not be put back.
+    // Put every previewed change back, newest first. Nothing is saved. A revert that fails stops the
+    // discard and throws its reason: that change, and every older one not yet put back, stay pending, so
+    // nothing still previewed is ever shown as discarded (spec §7).
     discardAll() {
       return once("discard", async () => {
-        const failed = [];
-        const all = [...entries];
-        for (const [, e] of all.reverse()) {
-          if (!e.revert) continue;
-          try { await e.revert(); } catch (err) { failed.push(`${e.label}: ${message(err)}`); }
+        for (const [key, e] of [...entries].reverse()) {
+          if (entries.get(key) !== e) continue;
+          if (e.revert) {
+            try { await e.revert(); } catch (err) { throw new Error(`${e.label}: ${message(err)}`); }
+          }
+          if (entries.get(key) === e) entries.delete(key);
         }
-        entries.clear();
-        return failed;
       });
     },
   };

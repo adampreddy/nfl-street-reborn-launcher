@@ -52,14 +52,26 @@ test('a held save stops without an error and stays pending', async () => {
   assert.deepEqual(d.changes(), ['Game image', 'Emulator']);
 });
 
-test('discardAll reverts newest first, never saves, and reports revert failures', async () => {
+test('discardAll reverts newest first and never saves', async () => {
   const d = createDraft(), order = [];
   d.put('a', { label: 'Window glass', value: false, save: async () => { throw new Error('no save on discard'); }, revert: async () => { order.push('a'); } });
   d.put('b', { label: 'Pause', value: 'true', save: async () => { throw new Error('no save on discard'); } });
-  d.put('c', { label: 'Slow animations', value: false, save: async () => {}, revert: async () => { order.push('c'); throw new Error('could not'); } });
-  assert.deepEqual(await d.discardAll(), ['Slow animations: could not']);
+  d.put('c', { label: 'Slow animations', value: false, save: async () => { throw new Error('no save on discard'); }, revert: async () => { order.push('c'); } });
+  await d.discardAll();
   assert.deepEqual(order, ['c', 'a']);
   assert.deepEqual(d.changes(), []);
+});
+
+test('a revert that fails throws its reason and keeps it and everything not yet reverted', async () => {
+  const d = createDraft(), order = [];
+  d.put('a', { label: 'Window glass', value: false, save: noop, revert: async () => { order.push('a'); } });
+  d.put('b', { label: 'Pause', value: 'true', save: noop });
+  d.put('c', { label: 'Slow animations', value: false, save: noop, revert: async () => { order.push('c'); throw new Error('could not'); } });
+  d.put('e', { label: 'Emulator', value: 'x.exe', save: noop });
+  await assert.rejects(d.discardAll(), { message: 'Slow animations: could not' });
+  assert.deepEqual(order, ['c'], 'nothing older is reverted after a failure');
+  assert.deepEqual(d.changes(), ['Window glass', 'Pause', 'Slow animations'], 'the failed change and the older ones stay pending');
+  assert.equal(d.value('c', true), false);
 });
 
 test('a change made while its save is in flight survives the save', async () => {
@@ -93,7 +105,7 @@ test('a discard pressed during a save waits for it, then reverts only what is st
   const discarding = d.discardAll();
   release();
   await saving;
-  assert.deepEqual(await discarding, []);
+  assert.equal(await discarding, undefined);
   assert.deepEqual(order, ['saved a']);
   assert.deepEqual(d.changes(), []);
 });
@@ -113,6 +125,5 @@ test('a reason is never "{}"', async () => {
   assert.notEqual(stopped.reason, '{}');
   assert.match(stopped.reason, /^[A-Z][^{}]*\.$/);
   d.put('b', { label: 'Beta', value: 1, save: noop, revert: async () => { throw new Error(''); } });
-  const [failed] = await d.discardAll();
-  assert.doesNotMatch(failed, /\{\}|: $/);
+  await assert.rejects(d.discardAll(), (e) => !/\{\}|: $/.test(e.message));
 });

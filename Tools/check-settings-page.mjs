@@ -15,8 +15,14 @@ const base=`http://127.0.0.1:${server.address().port}`;
 const VALUES={confirm_stop:'True',pause_unfocused:'False',osd_messages:'True',internal_resolution:'3',msaa:'1',video_backend:'D3D',sync_gpu:'False',vsync:'False',show_fps:'False',fullscreen:'True',show_ping:'False',always_on_top:'False',audio_backend:'Cubeb',volume:'40',muted:'False',audio_stretch:'False',audio_latency:'20',slot_a:'8',card_a:'',gci_a:'',slot_b:'255',card_b:'',gci_b:''};
 const browser=await chromium.launch({channel:process.env.REBORN_TEST_BROWSER||'msedge',headless:true});
 const errors=[];
-async function open(hash='',variant={},viewport={width:1280,height:800}){
+async function open(hash='',variant={},viewport={width:1280,height:800},pad=false){
  const ctx=await browser.newContext({viewport});
+ if(pad)await ctx.addInitScript(()=>{
+  window.pads=[{id:'Test pad',index:0,connected:true,mapping:'standard',axes:[0,0,0,0],buttons:Array.from({length:18},()=>({pressed:false,value:0}))}];
+  Object.defineProperty(navigator,'getGamepads',{value:()=>pads});document.hasFocus=()=>true;
+  window.frames=[];window.clock=0;window.requestAnimationFrame=fn=>(frames.push(fn),frames.length);window.cancelAnimationFrame=()=>{};
+  window.tick=()=>{clock+=16;frames.splice(0).forEach(fn=>fn(clock));};
+ });
  await ctx.addInitScript(({values,variant})=>{
   window.calls=[];window.reject=null;
   const data={
@@ -107,6 +113,7 @@ try{
   const field=page.getByLabel('Game image',{exact:true});
   assert.match(await field.inputValue(),/NSR\.iso/,'shows the detected image');
   assert.equal(await page.locator('#path-game-auto').innerText(),'Auto');
+  assert.equal(await page.locator('#path-legacyRoot-auto').count(),0,'nothing found for Existing install, so no Auto');
   await page.getByRole('button',{name:'Change Game image',exact:true}).click();
   await page.locator('.save-lane.open').waitFor();
   assert.match(await field.inputValue(),/Other\.iso/,'shows the pending path');
@@ -133,6 +140,69 @@ try{
   await page.getByRole('button',{name:'Save changes',exact:true}).click();
   await page.waitForFunction(()=>!document.querySelector('.save-lane.open'));
   assert.deepEqual(await page.evaluate(()=>calls.filter(c=>c.cmd==='settings_set_path').map(c=>[c.args.which,c.args.value])),[['game','C:\\Pasted\\NSR.iso'],['legacy_root','D:\\Old Reborn']]);
+  await page.context().close();
+ }
+ {
+  // Live audio leaves the draft (spec §10): a volume staged while Dolphin was closed must not be written
+  // over the value set live once Dolphin opened.
+  const page=await open('#audio');
+  const vol=()=>page.getByRole('slider',{name:'Game volume',exact:true});
+  await vol().evaluate(n=>{n.value='50';n.dispatchEvent(new Event('change',{bubbles:true}));});
+  await page.locator('.save-lane.open').waitFor();
+  await page.evaluate(()=>{data.dolphin_preferences={...data.dolphin_preferences,editable:false,live_editable:['volume','muted'],readonly_reason:'Close Dolphin to change these.'};document.dispatchEvent(new Event('session-state'));});
+  await page.waitForFunction(()=>document.getElementById('dolphin-status')?.textContent.includes('Volume and mute change as you set them'));
+  await vol().evaluate(n=>{n.value='70';n.dispatchEvent(new Event('change',{bubbles:true}));});
+  await page.waitForFunction(()=>calls.some(c=>c.cmd==='dolphin_preference_set'&&c.args.key==='volume'&&c.args.value==='70'));
+  await page.waitForFunction(()=>!document.querySelector('.save-lane.open'));
+  assert.equal(await vol().inputValue(),'70','the slider keeps the live value, not the staged one');
+  assert.deepEqual(await sets(page),[['volume','70']],'the staged 50 is never written');
+  await page.context().close();
+ }
+ {
+  // A Discard that cannot put a preview back says so and keeps the change (P2-12): nothing still
+  // previewed is shown as discarded.
+  const page=await open('#display');
+  const glass=()=>page.getByRole('switch',{name:'Window glass'});
+  await glass().click();
+  await page.locator('.save-lane.open').waitFor();
+  await page.evaluate(()=>window.reject='window_glass_apply');
+  await page.getByRole('button',{name:'Discard',exact:true}).click();
+  await page.locator('.save-bar [role=alert]').waitFor();
+  assert.match(await page.locator('.save-bar [role=alert]').innerText(),/Window glass: Dolphin is open/);
+  assert.deepEqual(await page.evaluate(()=>{const l=document.getElementById('save-lane');return {open:l.classList.contains('open'),inert:l.inert};}),{open:true,inert:false},'the bar stays open and usable');
+  assert.match(await page.locator('.save-bar').innerText(),/1 unsaved change[\s\S]*Window glass/,'Window glass is still listed');
+  assert.equal(await glass().getAttribute('aria-checked'),'true','the switch shows what is still previewed');
+  await page.evaluate(()=>window.reject=null);
+  await page.getByRole('button',{name:'Discard',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.save-lane.open'));
+  assert.equal(await glass().getAttribute('aria-checked'),'false','a second Discard puts it back');
+  await page.context().close();
+ }
+ {
+  // The pad on Settings (spec §6, §7): tabs → a row, a change opens the bar, Down reaches Save changes,
+  // Up goes back, and B twice with changes pending lands on the bar instead of leaving.
+  const page=await open('#general',{},{width:1280,height:800},true);
+  await page.evaluate(()=>tick());
+  const press=b=>page.evaluate(b=>{pads[0].buttons[b]={pressed:true,value:1};tick();pads[0].buttons[b]={pressed:false,value:0};tick();},b);
+  const at=()=>page.evaluate(()=>{const a=document.activeElement;return {id:a?.id||'',text:(a?.textContent||'').trim(),row:!!a?.closest('.pref-row'),tab:!!a?.closest('.tabs'),main:!!document.getElementById('main').contains(a),lane:!!document.getElementById('save-lane').contains(a),nav:!!a?.closest('.shell-nav')};});
+  await page.locator('.tabs .tab[aria-pressed="true"]').focus();
+  assert.equal((await at()).tab,true,'starts on the tabs');
+  for(let i=0;i<3&&!(await at()).row;i++)await press(13);
+  const first=await at();
+  assert.equal(first.row,true,'D-pad Down from the tabs reaches a row '+JSON.stringify(first));
+  await press(0);
+  await page.locator('.save-lane.open').waitFor();
+  assert.equal((await at()).id,first.id,'focus stays on the control that changed');
+  for(let i=0;i<12&&(await at()).text!=='Save changes';i++)await press(13);
+  assert.deepEqual([(await at()).lane,(await at()).text],[true,'Save changes'],'D-pad Down reaches Save changes');
+  await press(12);
+  assert.equal((await at()).main,true,'Up goes back into the page');
+  await press(1);
+  assert.equal((await at()).nav,true,'B from the page goes to the sidebar');
+  await press(1);
+  assert.deepEqual([(await at()).lane,(await at()).text],[true,'Save changes'],'B again with changes pending lands on the save bar');
+  assert.ok(page.url().includes('/settings.html'),'and never leaves the page');
+  assert.equal(await page.locator('.save-lane.open').count(),1,'the change is still pending');
   await page.context().close();
  }
  {
