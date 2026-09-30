@@ -280,6 +280,40 @@ pub mod fake {
             self.replies.insert(url.to_string(), (status, body.as_ref().to_vec()));
             self
         }
+
+        /// The bearer sent with the most recent `GET` (via `get_text_as`), for a test that asks
+        /// for a signed request's token without reading `gets` directly. Reads `gets`, not
+        /// `posts` -- a caller checking a `POST`'s bearer wants [`FakeHttp::last_body`]'s sibling
+        /// data from `posts` instead.
+        pub fn last_bearer(&self) -> Option<String> {
+            self.gets.lock().unwrap().last().and_then(|(_, bearer)| bearer.clone())
+        }
+
+        /// The body of the most recent `POST`, for a test that checks what was sent without
+        /// reading `posts` directly.
+        pub fn last_body(&self) -> Option<Vec<u8>> {
+            self.posts.lock().unwrap().last().map(|(_, body, _)| body.clone())
+        }
+    }
+
+    /// A fake that panics if it is ever asked to make a request, for a bad-id (or otherwise
+    /// should-never-reach-the-network) test: the request is refused before anything is sent, and
+    /// this fake proves it by having nothing it could answer with.
+    #[derive(Debug, Default)]
+    pub struct PanicHttp;
+
+    impl Http for PanicHttp {
+        fn get_text(&self, url: &str) -> Result<HttpResponse> {
+            panic!("no request expected, got a GET for {url}");
+        }
+
+        fn get_to_file(&self, url: &str, _to: &Path) -> Result<u64> {
+            panic!("no request expected, got a download for {url}");
+        }
+
+        fn post_json(&self, url: &str, _body: &[u8], _bearer: Option<&str>) -> Result<HttpResponse> {
+            panic!("no request expected, got a POST for {url}");
+        }
     }
 
     impl Http for FakeHttp {

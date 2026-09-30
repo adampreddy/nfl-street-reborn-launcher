@@ -121,6 +121,58 @@ pub async fn stats_game(game_id: String) -> Result<Option<serde_json::Value>, Li
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
 }
 
+/// The Stats page (dashboard). Signed out is `{ signed_in: false }`, a shape rather than an error.
+#[tauri::command]
+pub async fn stats_dashboard() -> Result<serde_json::Value, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let signed_in = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?.is_some();
+        let token = if signed_in { identity::token(&p).unwrap_or(None) } else { None };
+        let Some(token) = token else { return Ok(serde_json::json!({ "signed_in": false })) };
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        let mut v = reborn_core::live_view::dashboard(&crate::http_client(), &origin, &token).map_err(LiveCommandError::from)?;
+        v["signed_in"] = serde_json::Value::Bool(true);
+        Ok(v)
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
+/// A player's public profile: `GET /v1/players/{id}/profile`, or with `before` one more page of
+/// their match log. No token -- the profile is the same for every viewer, signed in or not -- and
+/// `None` once the id does not exist.
+#[tauri::command]
+pub async fn player_profile(player_id: String, before: Option<String>) -> Result<Option<serde_json::Value>, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        let http = crate::http_client();
+        reborn_core::live_view::player_profile(&http, &origin, &player_id, before.as_deref()).map_err(LiveCommandError::from)
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
+/// `POST /v1/me/plays-as`: which team the signed-in player's own profile shows, or `None` for
+/// "most played". Unlike `stats_dashboard`, there is no signed-out shape here -- a player cannot
+/// set their own display team without an identity to set it on -- so signed out is the same
+/// `unavailable` error every other command that needs a token uses.
+#[tauri::command]
+pub async fn set_plays_as(tgid: Option<u16>) -> Result<serde_json::Value, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let signed_in = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?.is_some();
+        let token = if signed_in { identity::token(&p).unwrap_or(None) } else { None };
+        let Some(token) = token else {
+            return Err(LiveCommandError::unavailable("Sign in with Discord on the Play page first."));
+        };
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        reborn_core::live_view::set_plays_as(&crate::http_client(), &origin, &token, tgid).map_err(LiveCommandError::from)
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

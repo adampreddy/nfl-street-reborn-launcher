@@ -217,10 +217,41 @@ pub fn game_record(http: &dyn Http, origin: &str, token: Option<&str>, game_id: 
     })))
 }
 
+/// `GET {origin}/v1/me/dashboard`: the signed-in player's Stats page (every game, offline included).
+pub fn dashboard(http: &dyn Http, origin: &str, token: &str) -> Result<Value, LiveError> {
+    get_json(http, &format!("{}/v1/me/dashboard", origin.trim_end_matches('/')), Some(token))
+}
+
+/// `GET {origin}/v1/players/{id}/profile`: a player's public, online-only profile, or with `games_before` one more
+/// page of their match log. No token: the profile is the same for everyone.
+pub fn player_profile(http: &dyn Http, origin: &str, player_id: &str, games_before: Option<&str>) -> Result<Option<Value>, LiveError> {
+    if !is_canonical_uuid(player_id) {
+        return Err(LiveError::BadId);
+    }
+    let mut url = format!("{}/v1/players/{player_id}/profile", origin.trim_end_matches('/'));
+    if let Some(b) = games_before {
+        url.push_str("?section=matches&limit=50&before=");
+        url.push_str(&percent_encode(b));
+    }
+    get_json_opt(http, &url, None)
+}
+
+/// `POST {origin}/v1/me/plays-as`: the team the player's profile shows, or `None` for "most played".
+pub fn set_plays_as(http: &dyn Http, origin: &str, token: &str, tgid: Option<u16>) -> Result<Value, LiveError> {
+    let body = serde_json::to_vec(&serde_json::json!({ "tgid": tgid })).map_err(|_| LiveError::BadReply)?;
+    let reply = http
+        .post_json(&format!("{}/v1/me/plays-as", origin.trim_end_matches('/')), &body, Some(token))
+        .map_err(|_| LiveError::Unreachable)?;
+    if !reply.is_success() {
+        return Err(status_error(reply.status));
+    }
+    serde_json::from_str(&reply.body).map_err(|_| LiveError::BadReply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::fake::FakeHttp;
+    use crate::net::fake::{FakeHttp, PanicHttp};
     use crate::net::HttpResponse;
 
     const ORIGIN: &str = "https://api.test";
@@ -406,5 +437,30 @@ mod tests {
     #[test]
     fn game_record_refuses_a_bad_id_before_any_request() {
         assert_eq!(game_record(&NoCalls, ORIGIN, None, "../x").unwrap_err(), LiveError::BadId);
+    }
+
+    #[test]
+    fn dashboard_sends_the_token_and_returns_the_body() {
+        let http = FakeHttp::default().reply(&format!("{ORIGIN}/v1/me/dashboard"), 200, r#"{"ok":true,"games":[]}"#);
+        let v = dashboard(&http, ORIGIN, "tok").unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(http.last_bearer().as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn player_profile_404_is_none_bad_id_is_refused_and_paging_builds_the_query() {
+        let http = FakeHttp::default().reply(&format!("{ORIGIN}/v1/players/{ID}/profile"), 404, "{}");
+        assert_eq!(player_profile(&http, ORIGIN, ID, None).unwrap(), None);
+        assert_eq!(player_profile(&PanicHttp, ORIGIN, "../x", None), Err(LiveError::BadId));
+        let url = format!("{ORIGIN}/v1/players/{ID}/profile?section=matches&limit=50&before=2026-09-30T01%3A02%3A03.000Z");
+        let http = FakeHttp::default().reply(&url, 200, r#"{"ok":true,"games":[]}"#);
+        assert!(player_profile(&http, ORIGIN, ID, Some("2026-09-30T01:02:03.000Z")).unwrap().is_some());
+    }
+
+    #[test]
+    fn set_plays_as_posts_the_tgid_or_null() {
+        let http = FakeHttp::default().reply(&format!("{ORIGIN}/v1/me/plays-as"), 200, r#"{"ok":true,"plays_as":null}"#);
+        set_plays_as(&http, ORIGIN, "tok", None).unwrap();
+        assert_eq!(http.last_body().as_deref(), Some(br#"{"tgid":null}"#.as_slice()));
     }
 }
