@@ -16,6 +16,10 @@ import path from "node:path";
 function fakeEl(tag) {
   return {
     tagName: tag, children: [], className: "", textContent: "", attrs: {}, listeners: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    contains() { return false; },
+    focus() {},
+    removeAttribute(k) { delete this.attrs[k]; },
     append(...c) { this.children.push(...c); },
     replaceChildren(...c) { this.children = c; },
     addEventListener(k, f) { (this.listeners[k] ||= []).push(f); },
@@ -255,6 +259,7 @@ for (const [file, name] of PAGES) {
  const CHOICE={headline:"Your game file isn't NFL Street Reborn.",detail:"This is NFL Street 2, but not a Reborn build, so rosters, faces and stats won't match. This usually means setup couldn't convert your disc.",repair:"Repair my game",play_anyway:"Play it anyway"};
  const invoke=async(cmd,args)=>{
    seen.push([cmd,args||{}]);
+   if(cmd==="pick_path")return "C:\\x\\NSR2.iso";
    if(cmd==="settings_set_path"){
      if(args&&args.acknowledgeUnverified===true)return {which:args.which,value:args.value};
      return {which:args.which,value:null,unverified:CHOICE};
@@ -264,18 +269,25 @@ for (const [file, name] of PAGES) {
  };
  const page=await loadPageDriven("crates/reborn-ui/ui/settings.js",invoke);
  const press=async node=>{ for(const fn of node.listeners.click||[]) await fn(); await tick(); await tick(); await tick(); };
- const saveButton=findByAttr(page.screen(),"aria-label","Save Game image");
- if(!saveButton){check("Settings has a Save button for the game image",false);}
+ const changeButton=findByAttr(page.screen(),"aria-label","Change Game image");
+ if(!changeButton){check("Settings has a Change… button for the game image",false);}
  else{
-   await press(saveButton);
-   const t=text(page.screen());
-   check("Choosing an unconverted image puts the choice to the player", t.includes(CHOICE.headline)&&t.includes("Repair my game")&&t.includes("Play it anyway"), t.slice(0,400));
-   check("Nothing is acknowledged before the player answers", !seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
-   const anyway=findByText(page.screen(),"Play it anyway");
-   if(!anyway){check("The escape hatch is offered",false);}
+   await press(changeButton);
+   check("Choosing an image waits for Save changes", !seen.some(([cmd])=>cmd==="settings_set_path"), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+   const saveButton=findByText(byId["save-lane"],"Save changes");
+   if(!saveButton){check("The save bar offers Save changes",false);}
    else{
-     await press(anyway);
-     check("Play it anyway is the only thing that acknowledges", seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+     await press(saveButton);
+     const t=text(page.screen());
+     check("Choosing an unconverted image puts the choice to the player", t.includes(CHOICE.headline)&&t.includes("Repair my game")&&t.includes("Play it anyway"), t.slice(0,400));
+     check("Nothing is acknowledged before the player answers", !seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+     check("The held change stays pending", text(byId["save-lane"]).includes("Game image"), text(byId["save-lane"]).slice(0,200));
+     const anyway=findByText(page.screen(),"Play it anyway");
+     if(!anyway){check("The escape hatch is offered",false);}
+     else{
+       await press(anyway);
+       check("Play it anyway is the only thing that acknowledges", seen.some(([cmd,args])=>cmd==="settings_set_path"&&args.acknowledgeUnverified===true), JSON.stringify(seen.filter(([c])=>c==="settings_set_path")));
+     }
    }
  }
  page.done();

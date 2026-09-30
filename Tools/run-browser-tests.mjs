@@ -92,6 +92,7 @@ await page.screenshot({path:path.join(out,'reborn-launcher-home.png')});
 await page.getByRole('button',{name:'Game details',exact:true}).click();
 await page.getByRole('dialog').getByRole('link',{name:/Graphics Balanced/}).click();
 await page.getByLabel('Graphics preset',{exact:true}).selectOption('quality');
+await page.getByRole('button',{name:'Save changes',exact:true}).click();
 await page.waitForFunction(()=>localStorage.getItem('h:preset')==='quality');
 await page.goto(url);await page.getByRole('button',{name:'Play now'}).waitFor();
 await page.bringToFront();
@@ -119,14 +120,21 @@ await page.keyboard.press('Escape');
 assert.equal(await page.getByRole('button',{name:'Play now'}).isEnabled(),true);
 await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Files & storage',exact:true}).click();await page.getByLabel('Game image',{exact:true}).waitFor();
 await page.screenshot({path:path.join(out,'reborn-launcher-settings.png')});
-await page.getByRole('button',{name:'Browse for Game image',exact:true}).click();
+// Change… stages the path; nothing is saved before Save changes (spec §8.2).
+await page.getByRole('button',{name:'Change Game image',exact:true}).click();
+await page.locator('.save-lane.open').waitFor();
+assert.match(await page.locator('.save-bar').innerText(),/1 unsaved change[\s\S]*Game image/);
+assert.equal(await page.evaluate(()=>localStorage.getItem('h:game')),null,'nothing is saved before Save changes');
+await page.getByRole('button',{name:'Save changes',exact:true}).click();
 await page.waitForFunction(()=>localStorage.getItem('h:game')?.includes('NSR.iso'));
 await page.reload();await page.getByRole('button',{name:'Files & storage',exact:true}).click();await page.getByLabel('Game image',{exact:true}).waitFor();
 assert.match(await page.getByLabel('Game image',{exact:true}).inputValue(),/NSR.iso/);
+// A save that fails says which and why in the bar, and changes nothing.
 await page.evaluate(()=>window.__reject='settings_set_path');
-await page.getByLabel('Game image',{exact:true}).fill('C:\\invalid.iso');
-await page.getByRole('button',{name:'Save Game image',exact:true}).click();
-await page.getByRole('alert').waitFor();
+await page.getByRole('button',{name:'Reset Game image to automatic',exact:true}).click();
+await page.getByRole('button',{name:'Save changes',exact:true}).click();
+await page.locator('.save-bar [role=alert]').waitFor();
+assert.match(await page.locator('.save-bar [role=alert]').innerText(),/Game image: Test failure: settings_set_path/);
 assert.match(await page.evaluate(()=>localStorage.getItem('h:game')),/NSR.iso/);
 // Four-player mapping and live input are covered in review-players.mjs.
 await page.goto(url+'/mods.html');await page.getByText('Red football',{exact:true}).waitFor();
@@ -329,6 +337,7 @@ await import('./check-save-lane.mjs');
 await import('./check-menu.mjs');
 await import('./check-tabs.mjs');
 await import('./check-play-page.mjs');
+await import('./check-settings-page.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
