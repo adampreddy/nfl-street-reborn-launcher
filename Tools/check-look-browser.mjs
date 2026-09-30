@@ -32,6 +32,21 @@ const settled=()=>page.waitForFunction(()=>{const m=document.querySelector('.nav
  assert.equal(await page.evaluate(()=>document.documentElement.dataset.glass),'off','glass previews off');
  await page.locator('.save-lane.open').waitFor();
  assert.match(await page.locator('.save-bar').innerText(),/1 unsaved change[\s\S]*Window glass/);
+ // The save lane keeps its own grid row under #main, on screen, in mouse and in controller mode (the shell grid must not swallow it).
+ const laneGeometry=async(mode)=>{
+  const g=await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));
+   const r=n=>{const b=document.querySelector(n).getBoundingClientRect();return {x:b.x,y:b.y,w:b.width,h:b.height};};
+   return {lane:r('#save-lane'),main:r('#main'),nav:r('.shell-nav'),vw:innerWidth,vh:innerHeight};});
+  assert.ok(g.lane.w>0&&g.lane.h>0,`${mode}: save lane has a size ${JSON.stringify(g.lane)}`);
+  assert.ok(g.lane.x>=0&&g.lane.x+g.lane.w<=g.vw&&g.lane.y>=0&&g.lane.y+g.lane.h<=g.vh,`${mode}: save lane inside the window ${JSON.stringify(g.lane)}`);
+  assert.ok(g.lane.y>=g.main.y+g.main.h-0.5,`${mode}: save lane below #main ${JSON.stringify(g)}`);
+  assert.deepEqual([g.main.x,g.main.w],[g.nav.w,g.vw-g.nav.w],`${mode}: #main keeps the full content column`);
+  assert.deepEqual([g.lane.x,g.lane.w],[g.nav.w,g.vw-g.nav.w],`${mode}: the lane is in the content column`);
+ };
+ await laneGeometry('mouse');
+ await page.evaluate(()=>document.body.classList.add('gamepad-input'));
+ await laneGeometry('controller');
+ await page.evaluate(()=>document.body.classList.remove('gamepad-input'));
  await page.getByRole('button',{name:'Discard'}).click();
  assert.equal(await page.evaluate(()=>document.documentElement.dataset.glass),'on','discard restores glass');
  await page.waitForFunction(()=>!document.querySelector('.save-lane.open'));

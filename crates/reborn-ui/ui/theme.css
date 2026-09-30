@@ -115,8 +115,9 @@ body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-ac
 body.shell.page-setup .binding-editor{background:#1b1e24}
 body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{color-scheme:dark}
 
-/* settings: the save lane is its own grid row under #main, in the same column (never over content) */
-body.shell.page-settings,body.shell.page-settings.gamepad-input{grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
+/* settings: the save lane is its own grid row under #main, in the same column (never over content).
+   html … :not(.page-setup) so it outranks the shell grid below (html body.shell:not(.page-setup), 0,2,2) */
+html body.shell.page-settings:not(.page-setup),html body.shell.page-settings.gamepad-input:not(.page-setup){grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
 body.shell.page-settings #save-lane{grid-area:save;min-width:0}
 
 /* Launcher window section (settings > Display) */
