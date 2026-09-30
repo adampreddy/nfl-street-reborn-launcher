@@ -32,6 +32,7 @@ mod dolphin_settings;
 mod online_mm;
 mod live_settings;
 mod live_view;
+mod launcher_look;
 
 use std::path::{Path, PathBuf};
 use tauri::Manager;
