@@ -29,8 +29,8 @@ body.page-home #screen{position:relative;display:flex;flex-direction:column;min-
 .page-home .play-actions{display:flex;align-items:center;gap:8px;margin-top:24px}
 .page-home .play-actions .play{height:52px;min-width:250px;padding:0 40px;font:700 18px Inter,system-ui,sans-serif;letter-spacing:.01em}
 .page-home .play-actions .play svg{width:16px;height:16px}
-.page-home .play-more{width:52px;height:52px;padding:0;color:var(--fg-2)}
-.page-home .play-more:hover{color:var(--fg)}
+/* the only permanent way into Game details: the account chip's on-art surface, so it reads over any part of the art (WCAG 1.4.11) */
+.page-home .play-more{width:52px;height:52px;padding:0;color:var(--fg);background:var(--on-art);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
 .page-home .play-more svg{width:18px;height:18px}
 .page-home .play-status{display:flex;align-items:center;gap:8px;min-height:20px;margin-top:16px;font-size:13px;font-weight:500;color:var(--fg)}
 .page-home .play-status .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ok)}
@@ -76,7 +76,7 @@ body.shell.page-home .play-strip .play-cell:focus-visible,body.gamepad-input.pag
 .page-home .play-detail-links a:hover{background:var(--glass-1)}
 .page-home .play-detail-value{margin-left:auto;color:var(--fg-2);font-size:12px}
 .page-home .play-detail-message{margin:0 0 8px;font-size:12.5px;line-height:1.6;color:var(--warn);overflow-wrap:anywhere}
-.page-home .play-copy{margin-bottom:16px}
+.page-home .play-copy{margin:0 12px 16px 0}
 .page-home .play-copy-box{position:fixed;left:-9999px;top:0}
 .page-home .play-help{display:inline-block;margin:0 0 16px;font-size:12.5px;color:var(--fg-2);text-underline-offset:4px}
 .page-home .play-files summary{padding:8px 0;color:var(--fg-2);font-size:12.5px;cursor:pointer}
