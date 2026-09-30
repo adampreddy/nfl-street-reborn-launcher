@@ -338,6 +338,7 @@ await import('./check-menu.mjs');
 await import('./check-tabs.mjs');
 await import('./check-play-page.mjs');
 await import('./check-settings-page.mjs');
+await import('./check-pad-columns.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
