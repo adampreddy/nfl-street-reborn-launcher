@@ -144,8 +144,8 @@ try {
  await page.waitForFunction(()=>calls.some(c=>c.cmd==='dolphin_preference_set'&&c.args.key==='volume'&&c.args.value==='37'));
  assert.equal(await page.getByRole('combobox',{name:/Audio output/}).isDisabled(),true);
  await page.evaluate(()=>sessionStorage.removeItem('live'));
- await page.goto(base+'/index.html');await page.getByRole('checkbox',{name:'Fullscreen',exact:true}).waitFor();
- await page.getByRole('checkbox',{name:'Fullscreen',exact:true}).uncheck();
+ await page.goto(base+'/index.html');await page.locator('#play-display').waitFor();
+ await page.locator('#play-display').click();await page.getByRole('menuitemradio',{name:'Windowed',exact:true}).click();
  await page.waitForFunction(()=>calls.some(c=>c.cmd==='dolphin_preference_set'&&c.args.key==='fullscreen'&&c.args.value==='false'));
  await page.screenshot({path:path.join(out,'polish-play.png')});
  assert.deepEqual(errors,[]);

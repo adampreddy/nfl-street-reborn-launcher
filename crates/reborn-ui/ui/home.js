@@ -1,7 +1,8 @@
 // A focused Play screen. Launch checks remain visible; settings and paths
 // live in Game details without moving the artwork or interrupting navigation.
 
-import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
+import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason, set, wireCoreFold } from "./shell.js";
+import { openMenu } from "./menu.js";
 
 // Opened from a friend's invite link: straight on to Online, which fills in
 // the room. Play is the window's first page, so this is where the hand-off
@@ -391,7 +392,8 @@ function cell(tag, attrs, key, value) {
     icon(CHEVRON));
 }
 
-// The strip (spec §8.1): Controllers, Graphics, Display; no checkboxes or switches in it.
+// The strip (spec §8.1): Controllers, Graphics, Display. Graphics and Display open a small menu
+// (names only); no checkboxes, switches or segmented controls in the strip.
 function strip(inSession) {
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const dolphin = ok(state.dolphin) ? state.dolphin : null;
@@ -399,18 +401,49 @@ function strip(inSession) {
   const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
   return el("nav", { class: "glass play-strip", "aria-label": "Game preferences" },
     cell("a", { href: "controls.html" }, "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"),
-    cell("a", { href: "settings.html#graphics", id: "play-graphics" }, "Graphics", graphicsLabel()),
-    cell("button", { type: "button", id: "play-display", disabled: displayLocked, onclick: () => pickDisplay(String(!fullscreen)) }, "Display", fullscreen ? "Fullscreen" : "Windowed"));
+    cell("button", { type: "button", id: "play-graphics", "aria-haspopup": "menu", "aria-expanded": "false", disabled: busy || inSession,
+      onclick: (e) => openMenu(e.currentTarget, { label: "Graphics", options: PRESETS.map(([value, label]) => ({ value, label })),
+        // A saved custom or previous-install setting is not one of the three: nothing is checked.
+        current: ok(state.graphicsOptions) && state.graphicsOptions.current ? null : preset(), onPick: pickGraphics }) },
+      "Graphics", graphicsLabel()),
+    // While a Display write is out the cell stays focusable (a pad keeps its place; app-shell skips
+    // disabled and aria-disabled controls) but does not open.
+    cell("button", { type: "button", id: "play-display", "aria-haspopup": "menu", "aria-expanded": "false", disabled: displayLocked,
+      ...(displaySaving ? { "aria-busy": "true" } : {}),
+      onclick: (e) => { if (!displaySaving) openMenu(e.currentTarget, { label: "Display", options: [{ value: "true", label: "Fullscreen" }, { value: "false", label: "Windowed" }],
+        current: String(fullscreen), onPick: pickDisplay }); } },
+      "Display", fullscreen ? "Fullscreen" : "Windowed"));
 }
+
+// The same write Settings' graphics preset has always made; the preset name is kept where Play reads it.
+async function pickGraphics(value) {
+  if (busy) return;
+  notice = null;
+  try {
+    await call("setup_save_graphics_options", { mode: "preset", resolution: 3, msaa: 1, ssaa: false });
+    set("preset", value);
+    if (ok(state.graphicsOptions)) state.graphicsOptions = { ...state.graphicsOptions, current: null };
+  } catch (e) { notice = `Graphics: ${reason(e)}`; }
+  draw();
+}
+
+// One Display write at a time (the old checkbox disabled itself while its write was out): a quick
+// second pick is dropped, never sent twice. Picking the value already set sends nothing, as a
+// checkbox could not "change" to its own state.
+let displaySaving = false;
 
 async function pickDisplay(value) {
   const dolphin = ok(state.dolphin) ? state.dolphin : null;
-  if (!dolphin || busy) return;
+  if (!dolphin || busy || displaySaving) return;
+  if (String(dolphin.values?.fullscreen ?? "True").toLowerCase() === value) return;
+  displaySaving = true;
   notice = null;
+  draw();
   try {
     await call("dolphin_preference_set", { runtime: get("runtime"), key: "fullscreen", value });
     dolphin.values = { ...(dolphin.values || {}), fullscreen: value };
   } catch (e) { notice = `Display: ${reason(e)}`; }
+  finally { displaySaving = false; }
   draw();
 }
 

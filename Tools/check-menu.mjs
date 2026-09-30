@@ -16,6 +16,7 @@ const html=`<!doctype html><html lang="en" data-glass="off" data-motion="quick">
 import {openMenu} from './menu.js';
 const options=[{value:'performance',label:'Performance'},{value:'balanced',label:'Balanced'},{value:'quality',label:'All-Out'}];
 for(const id of ['low','high'])document.getElementById(id).addEventListener('click',e=>openMenu(e.currentTarget,{label:id,options,current:'balanced',onPick:v=>{window.picked=v;}}));
+window.openMenu=openMenu;window.options=options;
 window.ready=true;
 </script><script type="module" src="app-shell.js"></script></body></html>`;
 const types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
@@ -58,6 +59,17 @@ try{
  assert.equal(await active(),'low','Esc closes');
  await page.locator('#low').click();await menu.waitFor();await page.mouse.click(640,200);await closed();
  assert.equal(await page.evaluate(()=>window.picked),'quality','a click outside picks nothing');
+ // Ruling P2-18: the same anchor opened again while its menu is open (a redraw reopening it by id).
+ // The first menu's close event arrives after the second menu is up and must not touch the anchor.
+ await page.locator('#low').click();await menu.waitFor();
+ await page.evaluate(()=>openMenu(document.getElementById('low'),{label:'low',options,current:'performance',onPick:v=>{window.picked=v;}}));
+ await page.evaluate(()=>new Promise(r=>setTimeout(r,100)));
+ assert.equal(await page.locator('dialog.menu').count(),1,'one menu after a reopen');
+ assert.equal(await page.locator('#low').getAttribute('aria-expanded'),'true','aria-expanded stays true while the reopened menu is open');
+ assert.equal(await active(),'performance','focus stays in the reopened menu');
+ await page.keyboard.press('Escape');await closed();
+ assert.equal(await active(),'low','the reopened menu still returns focus');
+ assert.equal(await page.locator('#low').getAttribute('aria-expanded'),'false');
  await page.locator('#high').click();await menu.waitFor();
  assert.equal(await page.evaluate(()=>document.querySelector('dialog.menu').dataset.side),'below','no room above: opens below');
  await page.keyboard.press('Escape');await closed();

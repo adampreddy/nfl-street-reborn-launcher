@@ -30,6 +30,9 @@ export function openMenu(anchor, { label, options, current = null, onPick }) {
   menu.addEventListener("close", () => {
     menu.remove();
     if (openNow === menu) openNow = null;
+    // `close` is queued, so it can arrive after another menu has opened, even one on this same
+    // anchor (a redraw reopening it by id, ruling P2-18). That menu owns the anchor now: leave it be.
+    if (openNow && openNow !== menu) return;
     anchor.setAttribute("aria-expanded", "false");
     // The page may have redrawn while the menu was open: go back to the button that replaced this one.
     const back = anchor.isConnected ? anchor : anchor.id ? document.getElementById(anchor.id) : null;
