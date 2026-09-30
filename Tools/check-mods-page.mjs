@@ -14,9 +14,14 @@
 // checked: point it at a copy with a guard removed and it must fail.
 
 import { readFileSync } from "fs";
+import { resolve } from "path";
+import { pathToFileURL } from "url";
 
 const file = process.env.MODS_JS || "crates/reborn-ui/ui/mods.js";
-const src = readFileSync(file, "utf8");
+// mods.js imports its neighbours (tabs.js, shell.js). A data: module cannot resolve "./x.js", so
+// those imports point at the real files in the UI folder (also when MODS_JS is a copy elsewhere).
+const UI_DIR = resolve("crates/reborn-ui/ui");
+const src = readFileSync(file, "utf8").replace(/from\s*(["'])\.\/([\w.-]+)\1/g, (_, q, f) => `from ${q}${pathToFileURL(resolve(UI_DIR, f)).href}${q}`);
 
 // A DOM that records structure, so assertions can read it back.
 function fakeEl(tag) {
@@ -198,25 +203,34 @@ const sections = (title) =>
 const inputs = (node) => walk(node).filter((n) => n.tagName === "input");
 
 // Store behavior, using the same catalog and core mutation contract.
-check("store starts with installed footballs",walk(screen()).filter(n=>n.className==="store-card").length===7);
-check("button texture packs stay in Controllers",!walk(screen()).some(n=>n.attrs["aria-label"]==="XBOX Controls"));
-check("stale activations remain removable",text(screen()).includes("jsgme.ghost-football"));
-check("unreadable packages remain visible",text(screen()).includes("not a readable manifest"));
-const enable=walk(screen()).find(n=>n.attrs["aria-label"]==="Enable Aqua Football");
-await enable.listeners.click[0]();
+const hasClass = (n, c) => String(n.className || "").split(" ").includes(c);
+const cards = () => walk(screen()).filter((n) => hasClass(n, "store-card"));
+const switchFor = (name) => walk(screen()).find((n) => n.attrs.role === "switch" && n.attrs["aria-label"] === name);
+check("store starts with installed footballs", cards().length === 7);
+check("button texture packs stay in Controllers", !walk(screen()).some((n) => n.attrs["aria-label"] === "XBOX Controls"));
+check("stale activations remain removable", text(screen()).includes("jsgme.ghost-football"));
+check("unreadable packages remain visible", text(screen()).includes("not a readable manifest"));
+// The glass cards (spec §8.3): one switch each, a red check on the enabled one, and no drawn art.
+check("one switch per card", cards().every((c) => walk(c).filter((n) => n.attrs.role === "switch").length === 1));
+check("the switch says the state", switchFor("Purple Football")?.attrs["aria-checked"] === "true" && switchFor("Aqua Football")?.attrs["aria-checked"] === "false");
+check("the enabled card carries the check", cards().filter((c) => walk(c).some((n) => hasClass(n, "store-check"))).length === 1 && cards().find((c) => hasClass(c, "active")) && walk(cards().find((c) => hasClass(c, "active"))).some((n) => hasClass(n, "store-check")));
+check("no drawn art: the preview has no colour of its own", walk(screen()).filter((n) => hasClass(n, "store-art")).every((n) => !n.style.backgroundColor));
+check("the count line says how many, how many are on, and the pick-one rule", text(screen()).includes("7 footballs · 1 enabled · only one football can be on at a time"), text(screen()).slice(0, 300));
+check("the categories are the shared sliding tabs", walk(screen()).some((n) => hasClass(n, "tabs") && walk(n).some((c) => hasClass(c, "tab-ind"))));
+await switchFor("Aqua Football").listeners.click[0]();
 {
   const tab = walk(screen()).find((n) => n.tagName === "button" && n.textContent === "Soundtrack");
   tab.listeners.click[0]();
-  check("the Soundtrack tab lists the soundtrack packages", walk(screen()).filter((n) => n.className.split(" ").includes("store-card")).length === 3 && text(screen()).includes("NFL Street 1 Soundtrack") && text(screen()).includes("NFL Street Reborn Soundtrack"));
-  const enable = walk(screen()).find((n) => n.attrs["aria-label"] === "Enable NFL Street 1 Soundtrack");
-  check("a soundtrack package offers Enable", !!enable);
+  check("the Soundtrack tab lists the soundtrack packages", cards().length === 3 && text(screen()).includes("NFL Street 1 Soundtrack") && text(screen()).includes("NFL Street Reborn Soundtrack"));
+  const enable = switchFor("NFL Street 1 Soundtrack");
+  check("a soundtrack package offers a switch", !!enable && enable.attrs["aria-checked"] === "false");
   await enable.listeners.click[0]();
   await tick(); await tick(); await tick();
   check("switching a soundtrack package shows what the disc rebuild did", text(screen()).includes("14 custom songs"));
   const back = walk(screen()).find((n) => n.tagName === "button" && n.textContent === "Footballs");
   back.listeners.click[0]();
 }
-check("enable sends the package identity",calls.some(([cmd,args])=>cmd==="mods_toggle"&&args.id==="jsgme.aqua-football"&&args.on===true));
+check("enable sends the package identity", calls.some(([cmd, args]) => cmd === "mods_toggle" && args.id === "jsgme.aqua-football" && args.on === true));
 for(const [label,value] of [["missing",null],["empty",{packages:[],activation:[]}],["null fields",{packages:null,activation:null,exclusive:null,unreadable:null,managed_by_controls:null}]]){
  __set({library:value,problem:null,notice:null});try{draw();check("store survives "+label,true);}catch(e){check("store survives "+label,false,e.message);}
 }

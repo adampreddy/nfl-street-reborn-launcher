@@ -139,8 +139,14 @@ assert.match(await page.evaluate(()=>localStorage.getItem('h:game')),/NSR.iso/);
 // Four-player mapping and live input are covered in review-players.mjs.
 await page.goto(url+'/mods.html');await page.getByText('Red football',{exact:true}).waitFor();
 await page.screenshot({path:path.join(out,'reborn-launcher-mods.png')});
-await page.getByRole('button',{name:'Enable Black football',exact:true}).click();
+await page.getByRole('switch',{name:'Black football',exact:true}).click();
 await page.waitForFunction(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='football-black').active);
+// Review Focus 4: a pick-one group. After the core answers, one card is on, with the check, and the other switch reads off.
+await page.waitForFunction(()=>document.querySelector('[role=switch][aria-label="Black football"]')?.getAttribute('aria-checked')==='true');
+assert.equal(await page.getByRole('switch',{name:'Red football',exact:true}).getAttribute('aria-checked'),'false');
+assert.equal(await page.locator('.store-card.active').count(),1);
+assert.equal(await page.locator('.store-card.active .store-check').count(),1);
+assert.match(await page.locator('.store-card.active').innerText(),/Black football[\s\S]*Enabled/);
 for(const viewport of [{width:960,height:600},{width:800,height:600},{width:1920,height:1080}]) {
  await page.setViewportSize(viewport);await page.goto(url+'/index.html');await page.getByRole('button',{name:'Play now'}).waitFor();
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'horizontal overflow');

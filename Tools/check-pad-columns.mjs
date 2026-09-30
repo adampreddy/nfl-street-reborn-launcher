@@ -1,4 +1,4 @@
-// Pad moves keep to their column outside Settings (spec §6; P2-22). Settings asks for a "nearest row"
+// Pad moves keep to their column outside Settings and Mods (spec §6; P2-22). Settings and Mods ask for a "nearest row"
 // tie-break (data-nav="rows"); every other page keeps plain column moves. Driven with the real app-shell
 // pad reader, a stubbed getGamepads and a hand-cranked animation clock (as check-controller-navigation).
 //     node Tools/check-pad-columns.mjs
@@ -67,6 +67,27 @@ try{
   const got=await active(page);
   assert.notEqual(got,'Sign out','Up from Send results now never goes sideways to Sign out');
   assert.match(got,/^Profile & sync/,`Up from Send results now goes up its column (got "${got}")`);
+  await page.context().close();
+ }
+ {
+  // Mods asks for rows too (data-nav="rows"): Down from Refresh, at the right end of the toolbar, stops at
+  // the category tabs on the left instead of dropping into the third card; Up from a second-row card's
+  // switch goes to that card's preview, not up the column to the first-row card's switch.
+  fixture.mod_packages={packages_root:'x',unreadable:[],managed_by_controls:[],activation:[{id:'f-red',version:'1'}],
+   packages:['Red','Black','Camo','Gold'].map((c,i)=>({id:'f-'+c.toLowerCase(),version:'1',name:c+' football',active:i===0})),
+   exclusive:[{members:['f-red','f-black','f-camo','f-gold'],computed:true}]};
+  const page=await open('mods.html');
+  const refresh=page.getByRole('button',{name:'Refresh',exact:true});
+  await refresh.waitFor();await refresh.focus();
+  await press(page,13);
+  const got=await active(page);
+  assert.ok(['Footballs','Soundtrack'].includes(got),`Down from Refresh reaches the category tabs (got "${got}")`);
+  await page.getByRole('switch',{name:'Gold football',exact:true}).focus();
+  await press(page,12);
+  assert.equal(await active(page),'About Gold football','Up from a card\'s switch goes to that card\'s preview');
+  await page.getByRole('button',{name:'About Gold football',exact:true}).focus();
+  await press(page,13);
+  assert.equal(await active(page),'Gold football','Down from a card\'s preview goes to its switch');
   await page.context().close();
  }
  assert.deepEqual(errors,[]);

@@ -16,15 +16,16 @@ const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` }).catch((e)
 
 async function soundtrackTab() {
   await page.goto(`${origin}/mods.html`);
-  await page.waitForSelector(".section-tabs", { timeout: 15000 });
+  await page.waitForSelector('[aria-label="Mod categories"]', { timeout: 15000 });
   await page.getByRole("button", { name: "Soundtrack", exact: true }).click();
   await page.waitForTimeout(400);
 }
 
 async function toggle(name, expectText) {
-  const button = page.locator(`button[aria-label="Enable ${name}"]`);
+  // One switch per card, named by the package; an off switch reads aria-checked="false".
+  const button = page.locator(`[role=switch][aria-label="${name}"][aria-checked="false"]`);
   if ((await button.count()) === 0) {
-    console.log(`no Enable button for ${name} (already enabled?)`);
+    console.log(`no off switch for ${name} (already enabled?)`);
     return;
   }
   await button.first().click();

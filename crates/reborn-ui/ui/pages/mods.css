@@ -1,0 +1,56 @@
+/* Mods (spec §8.3; mockup "MODS"). Layout only: every colour, radius and duration comes from theme.css.
+   A toolbar, the sliding category tabs, a count line, then three columns of cards with one switch each. */
+body.page-mods #main{padding:36px 36px 32px}
+.page-mods .page-heading,.page-mods #screen{max-width:942px}
+.page-mods #screen{display:flex;flex-direction:column}
+.page-mods #screen>.refusal,.page-mods #screen>.partial,.page-mods .loading{margin-top:24px}
+
+.mods-toolbar{display:flex;align-items:center;gap:8px;margin-top:24px}
+.mods-search{flex:0 1 420px;min-width:0}
+.mods-search svg{width:15px;height:15px;flex:none;color:var(--fg-3)}
+/* the link (Import mods) is the first button-looking item after the search box; :first-of-type would also match the Refresh <button> */
+.mods-toolbar>a.btn{margin-left:auto}
+.page-mods .tabs{align-self:flex-start;margin-top:24px}
+.mods-count{margin:16px 0;font-size:12.5px;color:var(--fg-3)}
+
+/* cards: a neutral preview (packages ship no art), name and meta, then Enabled/Off and one switch */
+.store-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.store-card{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+/* align-items:stretch: the browser's own button style is flex-start, which would shrink the preview to nothing */
+.store-open{display:flex;flex-direction:column;align-items:stretch;width:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer}
+.store-art{position:relative;display:block;height:150px;background:var(--thumb-bg);border-bottom:1px solid var(--stroke)}
+.store-check{position:absolute;top:12px;right:12px;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--red);color:var(--fg);box-shadow:var(--sheen)}
+.store-check svg{width:14px;height:14px;stroke-width:3}
+.store-card-body{display:block;padding:16px 16px 8px}
+.store-card-body strong{display:block;font-size:14.5px;font-weight:600;overflow-wrap:anywhere}
+.store-card-body small{display:block;margin-top:2px;font-size:12px;color:var(--fg-3)}
+.store-card-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding:12px 16px;border-top:1px solid var(--stroke)}
+.store-state{font-size:12.5px;color:var(--fg-3)}
+.store-card.active{border-color:var(--stroke-hi)}
+.store-card.active .store-state{color:var(--fg)}
+/* the card clips its corners, so the focus ring sits inside the preview button */
+body.shell.page-mods .store-card .store-open:focus-visible,body.gamepad-input.page-mods .store-card .store-open.pad-focus{outline-offset:-4px!important}
+.store-empty{grid-column:1/-1;display:flex;flex-direction:column;align-items:center;gap:8px;padding:48px 24px;text-align:center}
+.store-empty h2{font-size:16px;font-weight:600}
+.store-empty p{max-width:460px;font-size:12.5px;color:var(--fg-2)}
+.store-empty .btn{margin-top:8px}
+
+/* missing and unreadable packages */
+.page-mods .block{margin-top:24px;padding:16px}
+.page-mods .block h2{font-size:15px;font-weight:600}
+.page-mods .block .note,.page-mods .block .partial{margin-top:8px}
+.page-mods .mod{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:8px;padding-top:8px;border-top:1px solid var(--stroke);font-size:13px}
+.page-mods .mod .what{min-width:0;overflow-wrap:anywhere}
+.store-footnote{margin-top:24px;font-size:12.5px;color:var(--fg-3)}
+
+/* details: the card's preview and name open it */
+body.page-mods dialog.mod-dialog{width:min(480px,calc(100vw - 48px));padding:0;overflow:hidden}
+.mod-dialog>.store-art{height:150px}
+.mod-dialog-body{display:flex;flex-direction:column;gap:8px;padding:24px}
+.mod-dialog-body h2{font-size:20px;font-weight:600;letter-spacing:-.02em}
+.mod-dialog-body p{font-size:13px;color:var(--fg-2)}
+.store-kicker{font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.store-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+
+@media (max-width:900px){body.page-mods #main{padding:24px 24px 16px}}
+@media (max-width:760px){.store-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.mods-toolbar{flex-wrap:wrap}.mods-search{flex-basis:100%}}

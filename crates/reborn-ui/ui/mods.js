@@ -1,3 +1,5 @@
+import { icon } from "./shell.js";
+import { tabs } from "./tabs.js";
 // Installed mod collection. The core owns package conflicts and activation.
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
 
@@ -152,7 +154,7 @@ function staleSection() {
   const listed = library && Array.isArray(library.activation) ? library.activation : [];
   const stale = listed.filter((a) => !packages().some((p) => p.id === a.id && p.version === a.version));
   if (stale.length === 0) return null;
-  const sec = el("section", { class: "block" }, el("h2", { text: "Missing mod files" }));
+  const sec = el("section", { class: "block glass" }, el("h2", { text: "Missing mod files" }));
   sec.append(
     el("p", {
       class: "note",
@@ -182,26 +184,48 @@ function staleSection() {
 function unreadableSection() {
   const list = library && Array.isArray(library.unreadable) ? library.unreadable : [];
   if (list.length === 0) return null;
-  const sec = el("section", { class: "block" }, el("h2", { text: "Unavailable mods" }));
+  const sec = el("section", { class: "block glass" }, el("h2", { text: "Unavailable mods" }));
   for (const why of list) sec.append(el("p", { class: "partial", text: String(why) }));
   return sec;
 }
 
-let query = '', category = 'Footballs', selectedMod = null;
+let query = '', category = 'Footballs';
 const categoryOf = p => p.kind==='soundtrack'?'Soundtrack':/football/i.test(p.name+' '+p.id)?'Footballs':/soundtrack|music|audio/i.test(p.name+' '+p.id)?'Soundtrack':null;
-const colors = ['#514941','#3f4c49','#484357','#49505b','#59464a','#514f3e'];
-function storeCard(p, index) {
-  const card=el('article',{class:'store-card'});
-  const open=el('button',{type:'button',class:'store-open','aria-label':p.name||p.id,onclick:()=>showMod(p)});
-  const art=el('span',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[index%colors.length];
-  open.append(art,el('span',{class:'store-card-body'},el('strong',{text:p.name||p.id}),el('small',{text:categoryOf(p)+' · '+(p.version?'Version '+p.version:'Installed')})));
-  card.append(open,el('div',{class:'store-card-actions'},el('span',{class:p.active?'store-state active':'store-state',text:p.active?'Enabled':'Installed'}),el('button',{type:'button',text:p.active?'Disable':'Enable','aria-label':(p.active?'Disable ':'Enable ')+(p.name||p.id),disabled:busy,onclick:()=>{if(p.kind==='soundtrack'){notice='Rebuilding your game disc with this soundtrack…';draw();}else notice=null;return act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}})));
-  return card;
+const NOUN = { Footballs: ['football', 'footballs'], Soundtrack: ['soundtrack', 'soundtracks'] };
+const SEARCH_ICON = ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z', 'M20 20l-4-4'];
+const CHECK_ICON = 'M5 12l5 5 9-10';
+
+// "3 footballs · 1 enabled · only one football can be on at a time" (spec §8.3). The pick-one rule is
+// said only when the core's exclusive groups hold more than one of the packages listed.
+function countLine(list) {
+  const [one, many] = NOUN[category] || ['mod', 'mods'];
+  const on = list.filter((p) => p.active).length;
+  const groups = library && Array.isArray(library.exclusive) ? library.exclusive : [];
+  const pickOne = groups.some((g) => list.filter((p) => (g.members || []).includes(p.id)).length > 1);
+  return [`${list.length} ${list.length === 1 ? one : many}`, `${on} enabled`, pickOne ? `only one ${one} can be on at a time` : null].filter(Boolean).join(' · ');
+}
+
+// The same core call the Enable/Disable buttons made. A soundtrack rebuilds the disc, so it says so first.
+function toggle(p) {
+  if (p.kind === 'soundtrack') { notice = 'Rebuilding your game disc with this soundtrack…'; draw(); } else notice = null;
+  return act('mods_toggle', { id: p.id, version: p.version, on: !p.active, runtime: runtimeHint() });
+}
+
+// One card (spec §8.3): a neutral preview (packages ship no art, so nothing is drawn), the name and
+// meta, and one switch. The enabled card carries a red check. The preview and name open the details.
+function storeCard(p) {
+  const name = p.name || p.id;
+  const art = el('span', { class: 'store-art', 'aria-hidden': 'true' }, p.active ? el('span', { class: 'store-check' }, icon(CHECK_ICON)) : null);
+  const open = el('button', { type: 'button', class: 'store-open', 'aria-label': `About ${name}`, onclick: () => showMod(p) }, art,
+    el('span', { class: 'store-card-body' }, el('strong', { text: name }), el('small', { text: categoryOf(p) + ' · ' + (p.version ? 'Version ' + p.version : 'Installed') })));
+  const flip = el('button', { type: 'button', class: 'look-switch', role: 'switch', 'aria-checked': String(!!p.active), 'aria-label': name, disabled: busy, onclick: () => toggle(p) });
+  return el('article', { class: 'store-card glass' + (p.active ? ' active' : '') }, open,
+    el('div', { class: 'store-card-actions' }, el('span', { class: 'store-state', text: p.active ? 'Enabled' : 'Off' }), flip));
 }
 function showMod(p) {
   document.querySelector('.mod-dialog')?.remove();
   const dialog=el('dialog',{class:'mod-dialog','aria-label':p.name||p.id});
-  const art=el('div',{class:'store-art','aria-hidden':'true'});art.style.backgroundColor=colors[Math.max(0,packages().indexOf(p))%colors.length];
+  const art=el('div',{class:'store-art','aria-hidden':'true'});
   const conflict=(library?.exclusive||[]).find(g=>(g.members||[]).includes(p.id));
   dialog.append(art,el('div',{class:'mod-dialog-body'},el('span',{class:'store-kicker',text:categoryOf(p)}),el('h2',{text:p.name||p.id}),el('p',{text:p.description||'Customize your game with this installed Reborn mod.'}),el('p',{class:'note',text:['Version '+p.version,mb(p.bytes),typeof p.files==='number'?p.files+' files':null].filter(Boolean).join(' · ')}),conflict?el('p',{class:'note',text:'Enabling this mod replaces other enabled mods that change the same files.'}):null,el('div',{class:'store-dialog-actions'},el('button',{type:'button',text:'Close',onclick:()=>dialog.close()}),el('button',{type:'button',class:'primary',text:p.active?'Disable mod':'Enable mod',disabled:busy,onclick:()=>{dialog.close();act('mods_toggle',{id:p.id,version:p.version,on:!p.active,runtime:runtimeHint()});}}))));
   dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
@@ -211,15 +235,20 @@ function draw() {
   if(problem)parts.push(el('p',{class:'refusal',role:'alert',text:problem}));
   if(notice)parts.push(el('p',{class:'partial',role:'status',text:notice}));
   const all=packages().filter(p=>!managed(p.id));
-  const toolbar=el('div',{class:'store-toolbar'}),search=el('input',{type:'search',placeholder:'Search your mods','aria-label':'Search mods',value:query});
-  const results=el('section',{class:'store-grid','aria-label':'Mods'}),count=el('p',{class:'store-count',role:'status'});
-  const renderResults=()=>{const list=all.filter(p=>categoryOf(p)===category&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));count.textContent=list.length+' '+(list.length===1?'mod':'mods');results.replaceChildren(...list.map((p)=>storeCard(p,all.indexOf(p))));if(!list.length)results.append(el('div',{class:'store-empty'},el('h2',{text:category==='Soundtrack'&&!list.length&&all.length?'No soundtrack mods yet':all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:category==='Soundtrack'&&all.length?'Soundtrack mods such as the NFL Street 1 soundtrack arrive with game content updates. Your own songs live on the Music page.':all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'button',text:'Import mods'}):null));};
+  const search=el('input',{type:'search',placeholder:'Search your mods','aria-label':'Search mods',value:query});
+  const results=el('section',{class:'store-grid','aria-label':'Mods'}),count=el('p',{class:'mods-count',role:'status'});
+  const renderResults=()=>{
+    const list=all.filter(p=>categoryOf(p)===category&&((p.name||'')+' '+p.id).toLowerCase().includes(query.toLowerCase()));
+    count.textContent=countLine(list);
+    results.replaceChildren(...list.map(storeCard));
+    if(!list.length)results.append(el('div',{class:'store-empty glass'},el('h2',{text:category==='Soundtrack'&&all.length?'No soundtrack mods yet':all.length?'No matching mods':'Your mod library starts here'}),el('p',{text:category==='Soundtrack'&&all.length?'Soundtrack mods such as the NFL Street 1 soundtrack arrive with game content updates. Your own songs live on the Music page.':all.length?'Try another search or category.':'Import your existing installation to bring your mods with you.'}),!all.length?el('a',{href:'onboarding.html',class:'btn',text:'Import mods'}):null));
+  };
   search.addEventListener('input',()=>{query=search.value;renderResults();});
-  toolbar.append(search,el('a',{href:'onboarding.html',class:'button',text:'Import mods'}),el('button',{type:'button',text:'Refresh',disabled:busy,onclick:refresh}));parts.push(toolbar);
-  const tabs=el('div',{class:'section-tabs','aria-label':'Mod categories'});for(const name of ['Footballs','Soundtrack'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===category),onclick:()=>{category=name;tabs.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.textContent===category)));renderResults();}}));parts.push(tabs);
+  parts.push(el('div',{class:'mods-toolbar'},el('label',{class:'field mods-search'},icon(SEARCH_ICON),search),el('a',{href:'onboarding.html',class:'btn',text:'Import mods'}),el('button',{type:'button',class:'btn quiet',text:'Refresh',disabled:busy,onclick:refresh})));
+  parts.push(tabs('mod-categories',['Footballs','Soundtrack'],category,(name)=>{category=name;draw();},{label:'Mod categories'}));
   parts.push(count,results);renderResults();
   const stale=staleSection(),unreadable=unreadableSection();if(stale)parts.push(stale);if(unreadable)parts.push(unreadable);
-  parts.push(el('p',{class:'note store-footnote',text:'Mods are applied automatically when you start the game. Button textures are in Controllers.'}));
+  parts.push(el('p',{class:'store-footnote',text:'Mods are applied automatically when you start the game. Button textures are in Controllers.'}));
   screen.replaceChildren(...parts);return parts;
 }
 

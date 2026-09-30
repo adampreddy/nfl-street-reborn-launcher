@@ -48,7 +48,8 @@ try{
  // The same sidebar on a page that still loads the legacy sheets.
  const legacy=await ctx.newPage();
  await legacy.addInitScript(()=>{window.__TAURI__={core:{invoke:async()=>null}};});
- await legacy.goto(base+'/mods.html');await legacy.locator('.shell-nav a').first().waitFor();await settle(legacy);
+ // Online keeps its own layout (spec §9), so it is the page that still loads the legacy sheets.
+ await legacy.goto(base+'/online.html');await legacy.locator('.shell-nav a').first().waitFor();await settle(legacy);
  assert.deepEqual(await navBoxes(legacy),themedNav,'legacy and themed sidebars match');
  assert.equal(await legacy.locator('.input-footer').evaluate(n=>getComputedStyle(n).display),'none','legacy page: no prompt, no hint bar');
  // Minimum window.

@@ -103,17 +103,17 @@ await context.addInitScript(data=>{
 
 const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
 try{
- await page.goto(url+'/mods.html');await page.getByRole('button',{name:'Red football',exact:true}).waitFor();
+ await page.goto(url+'/mods.html');await page.getByRole('button',{name:'About Red football',exact:true}).waitFor();
  assert.equal(await page.locator('.store-card').count(),2);
  assert.deepEqual(await page.locator('[aria-label="Mod categories"] button').allTextContents(),['Footballs','Soundtrack']);
  assert.equal(await page.locator('.store-featured').count(),0);
- await page.getByRole('button',{name:'Red football',exact:true}).click();await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),0);assert.ok(page.url().endsWith('/mods.html'));
+ await page.getByRole('button',{name:'About Red football',exact:true}).click();await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),0);assert.ok(page.url().endsWith('/mods.html'));
  await page.getByRole('searchbox',{name:'Search mods'}).fill('black');assert.equal(await page.locator('.store-card').count(),1);
- await page.getByRole('button',{name:'Black football',exact:true}).click();await page.getByRole('dialog').waitFor();
+ await page.getByRole('button',{name:'About Black football',exact:true}).click();await page.getByRole('dialog').waitFor();
  await page.getByRole('button',{name:'Enable mod',exact:true}).click();await page.waitForFunction(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='football-black').active);
  assert.equal(await page.evaluate(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='football-red').active),false);
  await page.getByRole('searchbox',{name:'Search mods'}).fill('');await page.getByRole('button',{name:'Soundtrack',exact:true}).click();assert.equal(await page.locator('.store-card').count(),1);
- await page.getByRole('button',{name:'Classic soundtrack',exact:true}).click();await page.getByRole('button',{name:'Enable mod',exact:true}).click();await page.waitForFunction(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='soundtrack-classic').active);
+ await page.getByRole('button',{name:'About Classic soundtrack',exact:true}).click();await page.getByRole('button',{name:'Enable mod',exact:true}).click();await page.waitForFunction(()=>window.__fixture.mod_packages.packages.find(p=>p.id==='soundtrack-classic').active);
  assert.equal(await page.getByRole('button',{name:'Soundtrack',exact:true}).getAttribute('aria-pressed'),'true');
  await page.getByRole('button',{name:'Footballs',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Footballs',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.getByRole('button',{name:'Soundtrack',exact:true}).getAttribute('aria-pressed'),'false');await page.waitForTimeout(250);await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-mods.png')});
  await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Open Dolphin',exact:true}).waitFor();
