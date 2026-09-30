@@ -1,6 +1,8 @@
 // Settings, as a page: where things live, and the few paths a person can set.
 
 import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
+import { applyLook, refreshLook } from './look.js';
+import { mountSaveBar } from './savebar.js';
 
 const state = {};
 // What changed in each release, on the site. Opened in the browser.
@@ -351,13 +353,58 @@ function dolphinBlock(){
  
  return wrap;
 }
+// Launcher window (spec §4.3, §5.3): previews live, saved through the save bar.
+let look = null, lookSaved = null, lookDraft = null, saveBar = null;
+const lookChanges = () => !lookSaved || !lookDraft ? [] : [
+  ...(lookDraft.windowGlass !== lookSaved.windowGlass ? ['Window glass'] : []),
+  ...(lookDraft.slowAnimations !== lookSaved.slowAnimations ? ['Slow animations'] : []),
+];
+function ensureSaveBar() {
+  if (saveBar) return;
+  const lane = document.getElementById('save-lane'); if (!lane) return;
+  saveBar = mountSaveBar(lane, {
+    onSave: async () => { look = await call('launcher_look_set', { windowGlass: lookDraft.windowGlass, slowAnimations: lookDraft.slowAnimations });
+      applyLook(look); lookSaved = { windowGlass: look.windowGlass, slowAnimations: look.slowAnimations }; lookDraft = { ...lookSaved }; saveBar.update([]); draw(); },
+    onDiscard: async () => { lookDraft = { ...lookSaved };
+      look = await call('window_glass_apply', { enabled: lookSaved.windowGlass });
+      applyLook({ ...look, slowAnimations: lookSaved.slowAnimations }); saveBar.update([]); draw(); },
+  });
+}
+function lookSwitch(label, on, disabled, flip) {
+  return el('button', { type: 'button', class: 'look-switch', role: 'switch', 'aria-label': label, 'aria-checked': String(on), disabled, onclick: flip });
+}
+function lookBlock() {
+  if (!look) return el('p', { class: 'partial', text: 'Reading the launcher window settings…' });
+  ensureSaveBar();
+  const glassOn = lookDraft.windowGlass && look.glassSupported;
+  const row = (label, sw, help) => el('div', { class: 'look-row' }, el('div', { class: 'look-label', text: label }), sw, el('p', { class: 'look-help', text: help }));
+  return el('section', { class: 'glass look-section', 'aria-label': 'Launcher window' },
+    el('h2', { text: 'Launcher window' }),
+    el('p', { class: 'look-lead', text: 'How the launcher itself looks. The game is not affected.' }),
+    row('Window glass', lookSwitch('Window glass', glassOn, !look.glassSupported, async () => {
+      lookDraft.windowGlass = !lookDraft.windowGlass;
+      look = await call('window_glass_apply', { enabled: lookDraft.windowGlass });
+      applyLook({ ...look, slowAnimations: lookDraft.slowAnimations }); saveBar?.update(lookChanges()); draw(); }),
+      look.glassNote || 'Frosted glass that picks up your desktop colours. Turn it off for a solid dark background.'),
+    row('Slow animations', lookSwitch('Slow animations', lookDraft.slowAnimations, false, () => {
+      lookDraft.slowAnimations = !lookDraft.slowAnimations;
+      applyLook({ glassApplied: document.documentElement.dataset.glass === 'on', slowAnimations: lookDraft.slowAnimations });
+      saveBar?.update(lookChanges()); draw(); }),
+      'Slower, smoother movement when you change pages, open menus and expand matches. Turn it off for quick animations. Windows’ reduce-motion setting always turns movement off.'));
+}
+async function loadLook() {
+  look = await refreshLook();
+  if (look) { lookSaved = { windowGlass: look.windowGlass, slowAnimations: look.slowAnimations }; lookDraft = { ...lookSaved }; }
+  draw();
+}
+loadLook();
 function draw() {
  const screen=document.getElementById('screen'),parts=[];
  if(problem)parts.push(refusal(problem));
  const status=el('p',{class:'settings-status',role:'status'});
  parts.push(el('div',{class:'settings-toolbar'},el('div',{},el('h2',{text:'NFL Street Reborn Dolphin'}),el('p',{text:"Everyday settings below. Open Dolphin for its complete set of tools. Reborn's textures apply to any NFL Street 2 disc you open here, so another copy will show Reborn's players."})),el('button',{type:'button',text:'Open Dolphin',onclick:async()=>{try{await call('open_runtime',{runtime:get('runtime'),userDir:get('userDir')});status.textContent='Dolphin opened.';await refresh();}catch(e){status.textContent=reason(e);}}})),status);
  const tabs=el('div',{class:'section-tabs','aria-label':'Settings sections'});for(const name of ['General','Graphics','Display','Audio','Saves','Updates','Files & storage'])tabs.append(el('button',{type:'button',text:name,'aria-pressed':String(name===settingsTab),disabled:busy,onclick:()=>{if(busy)return;settingsTab=name;draw();}}));parts.push(tabs);
- if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(repairBlock(),unverifiedChoice(),boxesBlock(),foundBlock(),whereBlock());else parts.push(dolphinBlock());
+ if(settingsTab==='Updates')parts.push(updatesBlock());else if(settingsTab==='Graphics')parts.push(graphicsBlock());else if(settingsTab==='Files & storage')parts.push(repairBlock(),unverifiedChoice(),boxesBlock(),foundBlock(),whereBlock());else if(settingsTab==='Display')parts.push(lookBlock(),dolphinBlock());else parts.push(dolphinBlock());
  parts.push(el('button',{type:'button',text:'Refresh settings',disabled:busy,onclick:refresh}));
  // `repairBlock` and `unverifiedChoice` draw nothing most of the time, and a
  // null handed to replaceChildren becomes the word "null" on the page.
