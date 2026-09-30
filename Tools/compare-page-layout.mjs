@@ -3,9 +3,14 @@
 //        writes <dir>/<page>.json and, per state and window size, <state>-<w>.png (top) and <state>-<w>-end.png (scrolled)
 //   node Tools/compare-page-layout.mjs diff <page> <beforeDir> <afterDir> [--loose <regex>]...
 // Each element's box is taken relative to its parent's box, so a taller heading moves nothing but its own row.
-// FAIL: an element appears, disappears or changes visibility, or moves / resizes SIDEWAYS by more than 2px (unless its
-//       ancestor chain matches a --loose regex). WARN: a vertical move or height change over 2px; judge each one in the
-//       before/after screenshots. The page heading, the diagnostic fold and the shell are not compared.
+// FAIL: an element appears, disappears or changes visibility; moves / resizes by more than 2px, sideways OR vertically;
+//       or differs in a key computed style (display, position, overflow, font-size/weight, line-height, padding, gap,
+//       flex-direction, grid track count, text-align, background painted or not). Colours are NOT compared: the theme
+//       changes them on purpose. --loose <regex> is the explicit opt-out: a change on an element whose ancestor chain
+//       matches is downgraded to WARN (size, position and style alike). Judge every WARN in the screenshots.
+//       The page heading, the diagnostic fold and the shell are not compared.
+// Baseline comparisons elsewhere (checkers failing at the start of plan 4) must key failures on the normalised failure
+// MESSAGE (strip file:line, paths, timings), never file:line: later tasks edit those checkers and shift their lines.
 // Scrollbars are hidden in every capture (ruling P4-10): the themed thin scrollbar is 10px narrower than the default
 // one and would shift every full-width box. The page-scope root is keyed `body` without its classes (the `themed`
 // class would otherwise rename every key).
@@ -46,7 +51,16 @@ async function capture(dir) {
             const c = `${chain} > ${name(child)}`;
             const r = child.getBoundingClientRect(), pr = node.getBoundingClientRect(), cs = getComputedStyle(child);
             const shown = cs.display !== 'none' && cs.visibility !== 'hidden' && (r.width > 0 || r.height > 0);
-            rows[k] = { chain: c, shown, dx: Math.round(r.left - pr.left), dy: Math.round(r.top - pr.top), w: Math.round(r.width), h: Math.round(r.height) };
+            const px = (v) => v.replace(/-?\d+\.\d+/g, (m) => String(Math.round(Number(m) * 10) / 10)); // sub-pixel noise: 40.00000762939453px
+            const painted = cs.backgroundImage !== 'none' || !/^(transparent|rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0\s*\))$/.test(cs.backgroundColor);
+            const flex = /flex/.test(cs.display) ? cs.flexDirection : '';
+            const grid = /grid/.test(cs.display) && cs.gridTemplateColumns !== 'none' ? `${cs.gridTemplateColumns.trim().split(/\s+/).length} cols` : '';
+            const style = { display: cs.display, position: cs.position, 'overflow-x': cs.overflowX, 'overflow-y': cs.overflowY,
+              'font-size': cs.fontSize, 'font-weight': cs.fontWeight, 'line-height': cs.lineHeight,
+              'padding-top': cs.paddingTop, 'padding-right': cs.paddingRight, 'padding-bottom': cs.paddingBottom, 'padding-left': cs.paddingLeft,
+              gap: cs.gap, 'flex-direction': flex, 'grid-columns': grid, 'text-align': cs.textAlign, painted: painted ? 'painted' : 'not painted' };
+            for (const n of Object.keys(style)) style[n] = px(String(style[n]));
+            rows[k] = { chain: c, shown, s: style, dx: Math.round(r.left - pr.left), dy: Math.round(r.top - pr.top), w: Math.round(r.width), h: Math.round(r.height) };
             if (shown) walk(child, k, c);
           });
         };
@@ -84,8 +98,12 @@ function diff(beforeDir, afterDir, loose) {
       const side = Math.abs(x.dx - y.dx) > 2 || Math.abs(x.w - y.w) > 2;
       const vert = Math.abs(x.dy - y.dy) > 2 || Math.abs(x.h - y.h) > 2;
       const line = `${screen} ${x.chain}: x ${x.dx}→${y.dx} w ${x.w}→${y.w} y ${x.dy}→${y.dy} h ${x.h}→${y.h}`;
-      if (side && !loose.some((re) => re.test(x.chain))) fails.push(line);
-      else if (side || vert) warns.push(line);
+      const isLoose = loose.some((re) => re.test(x.chain));
+      if (side || vert) (isLoose ? warns : fails).push(line);
+      if (x.s && y.s) {
+        const d = Object.keys(x.s).filter((n) => x.s[n] !== y.s[n]).map((n) => `${n} ${x.s[n]} → ${y.s[n]}`);
+        if (d.length) (isLoose ? warns : fails).push(`${screen} ${x.chain}: STYLE ${d.join('; ')}`);
+      }
     }
     for (const k of Object.keys(y0)) if (!k.startsWith('__') && !x0[k]) fails.push(`${screen} ${y0[k].chain}: new after`);
   }

@@ -15,15 +15,44 @@ const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_pr
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
 
+const SESSION = (id, ended, needs) => ({ id, build: 'offline', minutes: 3.2, ended, needs_recovery: needs });
+const PADS = (n) => ({ pads: Array.from({ length: n }, (_, i) => ({ device_string: `XInput/${i}/Gamepad`, family: 'xbox', port: i + 1, set_aside: null })), other: [], complete: true, unsearched: [], source: 'builtin' });
+const PREP = { summary: { controller: 'XInput/0/Gamepad', controller_port: 0, controls_profile: 'xbox', graphics: 'balanced', automatic_updates: true },
+  preparation_remaining: [{ slug: 'write_config', label: 'Writing your settings' }, { slug: 'check_everything', label: 'Checking everything' }],
+  tasks_done: [{ slug: 'verify_game', label: 'Checking your game' }] };
+// A state may also carry: data (answers replacing the defaults), progress (extra onboarding_progress fields) and
+// click (a selector clicked after load, to reach a tab).
 export const STATES = {
   stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }],
   profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' }],
-  recovery: [{ name: 'recovery', url: 'recovery.html', scope: 'main' }],
-  game: [{ name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' }, { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' }],
+  recovery: [
+    { name: 'recovery', url: 'recovery.html', scope: 'main' },
+    { name: 'recovery-clean', url: 'recovery.html', scope: 'main', data: { sessions: [SESSION('s1', 'Exited', false)] } },
+    { name: 'recovery-empty', url: 'recovery.html', scope: 'main', data: { sessions: [] } },
+    { name: 'recovery-notready', url: 'recovery.html', scope: 'main', data: { launch_check: { ...answers().launch_check, ready: false, problem: 'The game file could not be found.' } } },
+  ],
+  game: [
+    { name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' },
+    { name: 'game-plays', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() } },
+    { name: 'game-box', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-box"]' },
+    { name: 'game-drives', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-drives"]' },
+    { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
+  ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }],
-  onboarding: STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),
+  onboarding: [
+    ...STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),
+    { name: 'onboarding-preparation-tasks', url: 'onboarding.html?stage=preparation', scope: 'page', progress: PREP },
+    { name: 'onboarding-controller-nopad', url: 'onboarding.html?stage=controller_setup', scope: 'page', data: { devices: PADS(0) } },
+    { name: 'onboarding-controller-twopads', url: 'onboarding.html?stage=controller_setup', scope: 'page', data: { devices: PADS(2) } },
+  ],
 };
+
+/** stats_game for a VERIFIED game (plays_status 'verified'), so game.js draws the tabs: plays, box score, drives. */
+function verifiedGame() {
+  const g = answers().stats_game;
+  return { ...g, game: { ...g.game, plays_status: 'verified' }, plays: SNAP.games[1]?.plays ?? [] };
+}
 
 /** Every command's answer (check-shell-pages.mjs's FULL, plus what these pages read). Unknown commands answer null. */
 export function answers() {
@@ -89,8 +118,8 @@ export async function openState(browser, base, state, { viewport = { width: 1280
   const context = await browser.newContext({ viewport, reducedMotion, timezoneId: 'UTC', locale: 'en-US' });
   const png = readFileSync(path.join(ui, 'art/cover.png'));
   await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
-  const all = { ...answers(), ...(data || {}) };
-  await context.addInitScript(({ data, stages, glass, slow, pad }) => {
+  const all = { ...answers(), ...(state.data || {}), ...(data || {}) };
+  await context.addInitScript(({ data, stages, glass, slow, pad, extra }) => {
     const FIXED = Date.UTC(2026, 8, 30, 20, 0, 0);
     const RealDate = Date;
     class FixedDate extends RealDate { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } }
@@ -98,7 +127,7 @@ export async function openState(browser, base, state, { viewport = { width: 1280
     try { localStorage.setItem('reborn:look', JSON.stringify({ glass, slow })); } catch { /* private mode */ }
     const stage = new URL(location.href).searchParams.get('stage');
     if (stage) data.onboarding_progress = { complete: false, next: { kind: 'show', stage, position: stages.indexOf(stage) + 1, total: stages.length },
-      plan: stages.map((s) => ({ stage: s, satisfied: stages.indexOf(s) < stages.indexOf(stage) })), set_aside: [], summary: {}, preparation_remaining: [], tasks_done: [] };
+      plan: stages.map((s) => ({ stage: s, satisfied: stages.indexOf(s) < stages.indexOf(stage) })), set_aside: [], summary: {}, preparation_remaining: [], tasks_done: [], ...(extra || {}) };
     if (pad) {
       window.pads = [{ id: 'Xbox Wireless Controller', index: 0, connected: true, mapping: 'standard', axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })) }];
       Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => window.pads });
@@ -115,13 +144,14 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       if (/^onboarding_/.test(cmd)) return { outcome: 'recorded' };
       return null;
     } } };
-  }, { data: JSON.parse(JSON.stringify(all)), stages: STAGES, glass, slow, pad });
+  }, { data: JSON.parse(JSON.stringify(all)), stages: STAGES, glass, slow, pad, extra: state.progress || null });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(`${state.name}: ${e.message}`));
   await page.goto(`${base}/${state.url}`);
   await page.waitForFunction(() => { const s = document.getElementById('screen'); return s && !s.querySelector('.loading'); }, null, { timeout: 8000 }).catch(() => {});
   await page.evaluate(() => document.fonts.ready);
+  if (state.click) await page.locator(state.click).first().click();
   await page.waitForTimeout(600);
   await settle(page);
   return { page, errors, context, close: () => context.close() };
