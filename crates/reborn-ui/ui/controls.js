@@ -20,7 +20,7 @@ function mappingNote(){
   el('button',{type:'button',class:'btn sm quiet',text:'Dismiss',onclick:()=>{set('bx-note-dismissed','1');note.remove();const tab=document.getElementById(`player-tab-${active}`);(tab&&!tab.disabled?tab:screen.querySelector('button:not(:disabled),select:not(:disabled)'))?.focus({preventScroll:true});}}));
  return note;
 }
-function lock(value){busy=value;screen.querySelectorAll('.ctl-note button,.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);}
+function lock(value){const held=value&&screen.contains(document.activeElement)?document.activeElement:null;busy=value;screen.querySelectorAll('.ctl-note button,.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);if(held?.disabled)(screen.querySelector('button:not(:disabled),select:not(:disabled)')||document.querySelector('.shell-nav [aria-current],.shell-nav a'))?.focus({preventScroll:true});}
 async function refresh(){
  if(busy)return;lock(true);problem='';
  try{

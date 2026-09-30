@@ -15,6 +15,7 @@ const LONG = 'Classic brown football with a very long package name that has to w
 const slots = Array.from({ length: 21 }, (_, i) => ({ slot: i + 1, title: `Song ${i + 1}`, artist: `Artist ${i + 1}`, album: '', duration_ms: 180000 + i * 1000, source: 'original', source_name: null, pending: null,
   original: { title: `Song ${i + 1}`, artist: `Artist ${i + 1}`, album: '', duration_ms: 180000 + i * 1000 } }));
 slots[2].pending = { kind: 'your_file', title: 'Blinding Lights', artist: 'The Weeknd', album: '' };
+slots[6] = { ...slots[6], title: 'Renamed on the disc' };
 slots[4] = { ...slots[4], title: 'HUMBLE. (A much longer title than any real song, to test the narrow window)', artist: 'Kendrick Lamar', source: 'your_file', source_name: 'humble.mp3' };
 const ROWS = [...['A', 'B', 'X', 'Y', 'Z', 'Start'].map((x) => ({ key: 'Buttons/' + x, label: x, binding: '`Button ' + x + '`' })),
   ...['Up', 'Down', 'Left', 'Right'].flatMap((x) => ['Main Stick', 'C-Stick', 'D-Pad'].map((g) => ({ key: g + '/' + x, label: g + ' ' + x, binding: '`' + x + '`' }))),
@@ -74,7 +75,12 @@ async function open(file, { glass = true, slow = true, viewport = { width: 1280,
   await page.evaluate(() => document.fonts.ready);
   return page;
 }
-const press = async (page, b) => { await page.evaluate((b) => { pads[0].buttons[b] = { pressed: true, value: 1 }; }, b); await page.waitForTimeout(90); await page.evaluate((b) => { pads[0].buttons[b] = { pressed: false, value: 0 }; }, b); await page.waitForTimeout(90); };
+// Hold the button until the expected effect is seen (bounded), then release: no fixed wall-clock edge to miss.
+const press = async (page, b, until) => {
+  await page.evaluate((b) => { pads[0].buttons[b] = { pressed: true, value: 1 }; }, b);
+  try { await page.waitForFunction(until, null, { timeout: 4000, polling: 'raf' }); } finally { await page.evaluate((b) => { pads[0].buttons[b] = { pressed: false, value: 0 }; }, b); }
+  await page.waitForTimeout(90);
+};
 const style = (page, sel, prop, pseudo = null) => page.locator(sel).first().evaluate((n, [p, ps]) => getComputedStyle(n, ps)[p], [prop, pseudo]);
 const rect = (page, sel) => page.locator(sel).first().evaluate((n) => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom }; });
 const rects = (page, sel) => page.locator(sel).evaluateAll((ns) => ns.map((n) => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }));
@@ -142,6 +148,7 @@ try {
       assert.equal(await style(page, '[data-slot="3"] .mz-src .pend', 'color'), 'rgb(255, 122, 127)', '· Pending is --red-ink');
       assert.deepEqual(await page.locator('[data-slot="3"] .mz-col-actions button').allInnerTexts(), ['Undo']);
       assert.deepEqual(await page.locator('[data-slot="5"] .mz-col-actions button').allInnerTexts(), ['Restore original', 'Replace']);
+      assert.deepEqual(await page.locator('[data-slot="7"] .mz-col-actions button').allInnerTexts(), ['Restore original', 'Replace'], 'a renamed original can be restored');
       assert.deepEqual(await page.locator('[data-slot="1"] .mz-col-actions button').allInnerTexts(), ['Replace']);
       assert.equal(await page.getByRole('button', { name: 'Add song', exact: true }).count(), 0, 'no duplicate Add song');
       assert.equal(await page.getByRole('switch', { name: 'Custom soundtrack' }).getAttribute('aria-checked'), 'true');
@@ -154,9 +161,9 @@ try {
       if (viewport.width === 1280 && glass && slow) { // Review Focus 2: the pad reaches the bar, and Back never leaves the page
         await page.locator('[aria-label="Replace song 21"]').scrollIntoViewIfNeeded();
         await page.locator('[aria-label="Replace song 21"]').focus();
-        await press(page, 13);
+        await press(page, 13, () => document.activeElement?.textContent === 'Apply changes');
         assert.equal(await page.evaluate(() => document.activeElement.textContent), 'Apply changes', 'D-pad down from the last song reaches Apply changes');
-        await press(page, 1);
+        await press(page, 1, () => !!document.activeElement?.closest('.shell-nav'));
         assert.ok(page.url().endsWith('/music.html'), 'Back from the bar stays on Music');
         assert.equal(await page.evaluate(() => !!document.activeElement.closest('.shell-nav')), true, 'Back from the bar goes to the sidebar');
         await page.mouse.move(300, 300); await page.mouse.move(360, 340);
@@ -172,6 +179,7 @@ try {
     { // Controllers (spec §8.5, §6.3)
       const page = await open('controls.html', { glass, slow, viewport });
       await page.getByRole('button', { name: 'Assign A', exact: true }).waitFor();
+      await settle(page);
       await noSideways(page, `controls ${tag}`);
       await material(page, glass);
       const cards = await rects(page, '.player-card');
@@ -198,7 +206,7 @@ try {
       await page.waitForFunction(() => !document.body.classList.contains('gamepad-input'));
       assert.equal(await style(page, '.input-footer', 'display'), 'none', 'pad connected, mouse user: no hint bar');
       await page.locator('#player-tab-0').focus();
-      await press(page, 15);
+      await press(page, 15, () => document.body.classList.contains('gamepad-input'));
       await page.waitForFunction(() => document.body.classList.contains('gamepad-input'));
       assert.equal(await style(page, '.input-footer', 'display'), 'flex', 'pad input: the hint bar');
       const ring = await page.evaluate(() => { const s = getComputedStyle(document.activeElement); return `${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor}`; });
@@ -211,19 +219,27 @@ try {
       await page.context().close();
     }
   }
-  { // Controllers: Dismiss while a save is running must not drop focus to the page.
+  { // Controllers: Dismiss while busy, and the refresh that locks the page under a focused Dismiss.
     const page = await open('controls.html');
     await page.getByRole('button', { name: 'Assign A', exact: true }).waitFor();
+    await settle(page);
     await page.evaluate(() => { window.__holdAssign = true; });
-    const select = page.locator('.player-device select').first();
-    await select.selectOption({ index: 1 });
+    await page.locator('.player-device select').first().focus();
+    await page.locator('.player-device select').first().selectOption({ index: 1 });
     await page.waitForFunction(() => document.querySelector('#player-tab-0').disabled);
-    assert.equal(await page.locator('.ctl-note button').isDisabled(), true, 'Dismiss is held with the other controls while busy');
+    assert.equal(await page.locator('.ctl-note button').isDisabled(), true, 'Dismiss cannot be activated while busy');
+    assert.notEqual(await page.evaluate(() => document.activeElement?.tagName), 'BODY', 'busy: focus is not on the page');
     await page.evaluate(() => window.__release());
+    await page.waitForFunction(() => !document.querySelector('#player-tab-0').disabled);
+    // Pad focus on Dismiss when a device refresh locks the page.
+    await page.locator('.ctl-note button').focus();
+    await page.evaluate(() => document.dispatchEvent(new Event('refresh-devices')));
+    await page.waitForFunction(() => document.querySelector('#player-tab-0').disabled || document.activeElement?.tagName !== 'BODY');
+    assert.notEqual(await page.evaluate(() => document.activeElement?.tagName), 'BODY', 'a refresh under a focused Dismiss does not drop focus to the page');
     await page.waitForFunction(() => !document.querySelector('#player-tab-0').disabled);
     await page.locator('.ctl-note button').click();
     assert.equal(await page.locator('.ctl-note').count(), 0, 'the note goes');
-    assert.equal(await page.evaluate(() => document.activeElement?.id), 'player-tab-0', 'Dismiss hands focus to the player tab, not the page');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'player-tab-0', 'Dismiss hands focus to the player tab');
     await page.context().close();
   }
   { // Mods: an empty library offers the in-page import action (not just the toolbar link).
