@@ -101,6 +101,18 @@ try {
  await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
  assert.equal(await page.getByRole('tab').count(),4);
  assert.equal(await page.locator('.mapping-group').count(),5);
+ // The glass page (spec §8.5): four player cards with the launcher's own controller icon, and the B/X note.
+ assert.equal(await page.locator('.player-card .player-icon svg').count(),4);
+ const bxNote=page.getByRole('note',{name:'B and X mapping'});
+ assert.match(await bxNote.innerText(),/B maps to B\. X maps to X\./);
+ assert.equal(await bxNote.getByRole('button',{name:'Dismiss',exact:true}).count(),1);
+ assert.equal(await page.locator('.ctl-note svg').evaluate(n=>getComputedStyle(n).color),'rgb(255, 196, 107)','the note icon is amber');
+ // Spec §8.5 (ruling P3-7): Set up launcher controls is never greyed out. With no controller it says so.
+ const padSetup=page.getByRole('button',{name:'Set up launcher controls',exact:true});
+ assert.equal(await padSetup.isEnabled(),true,'Set up launcher controls is not greyed out without a controller');
+ await padSetup.click();
+ await page.getByText('Connect a controller first.',{exact:true}).waitFor();
+ assert.equal(await page.locator('dialog[open]').count(),0,'no dialog opens without a controller');
  await page.getByRole('tab',{name:/Player 3/}).click();
  await page.getByRole('button',{name:'Assign A',exact:true}).waitFor();
  assert.equal(await page.getByRole('combobox',{name:'Controller for Player 3'}).inputValue(),'XInput/2/Gamepad');
@@ -109,6 +121,7 @@ try {
   Object.defineProperty(navigator,'getGamepads',{value:()=>window.__pads,configurable:true});
  });
  assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),undefined,'Entering Controllers keeps navigation on');
+ await page.waitForFunction(()=>document.querySelector('.menu-pad-note')?.textContent==='');
  await page.getByRole('button',{name:'Test controller',exact:true}).click();
  await page.getByRole('combobox',{name:'Controller to test'}).selectOption('2');
  assert.equal(await page.evaluate(()=>document.body.dataset.controllerTesting),'setup');
@@ -130,6 +143,9 @@ try {
  await page.getByRole('button',{name:'Test controller',exact:true}).click();
  await page.getByRole('button',{name:'Assign A',exact:true}).click();
  assert.equal(await page.getByRole('tab').first().isDisabled(),true);
+ // The binding popover floats over the bindings: it stays opaque.
+ const editorBg=await page.locator('.binding-editor').evaluate(n=>getComputedStyle(n).backgroundColor);
+ assert.match(editorBg,/^rgb\(/,'the binding popover is opaque: '+editorBg);
  await page.waitForTimeout(100);
  await page.evaluate(()=>window.__pads[0].buttons[0]={pressed:true,value:1});
  await page.waitForTimeout(100);
@@ -173,6 +189,24 @@ try {
  await page.waitForFunction(()=>document.querySelector('[aria-label="Assign A"]')?.textContent.includes('Button A'));
  await page.getByRole('combobox',{name:'Button textures',exact:true}).selectOption('playstation');
  await page.getByText('Button textures saved. They apply to all players.',{exact:true}).waitFor();
+ // Dismiss hides the B/X note, and it stays dismissed for this install.
+ await page.getByRole('note',{name:'B and X mapping'}).getByRole('button',{name:'Dismiss',exact:true}).click();
+ assert.equal(await page.getByRole('note',{name:'B and X mapping'}).count(),0);
+ await page.reload();await page.getByRole('tab').first().waitFor();
+ assert.equal(await page.getByRole('note',{name:'B and X mapping'}).count(),0,'the dismissal is remembered');
+ // Ruling P3-6: a pressed control on the drawn art is a solid red outline, never a blurred glow.
+ const pressedArt=await page.evaluate(async()=>{
+  const fig=window.createControllerPreview('GameCube Controller');document.body.append(fig);
+  for(let i=0;i<50&&!fig.querySelector('svg');i++)await new Promise(r=>setTimeout(r,20));
+  fig.update({buttons:[{pressed:true,value:1}],axes:[0,0,0,0]});
+  const a=fig.querySelector('[id="Button_A"]'),b=fig.querySelector('[id="Button_B"]');
+  const out={filter:a.style.filter,stroke:getComputedStyle(a).stroke,width:getComputedStyle(a).strokeWidth,idle:getComputedStyle(b).stroke};
+  fig.update({buttons:[{pressed:false,value:0}],axes:[0,0,0,0]});out.released=getComputedStyle(a).stroke;fig.remove();return out;
+ });
+ assert.equal(pressedArt.filter,'','no filter (glow) on a pressed control');
+ assert.equal(pressedArt.stroke,'rgb(224, 39, 46)','a pressed control is outlined in solid red');
+ assert.equal(pressedArt.width,'28px');
+ assert.equal(pressedArt.idle,'none');assert.equal(pressedArt.released,'none','the outline goes when released');
  for(const width of [1280,800]){
   await page.setViewportSize({width,height:800});await page.evaluate(()=>document.fonts.ready);await page.waitForTimeout(200);
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no horizontal overflow');

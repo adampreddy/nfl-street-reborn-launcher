@@ -33,8 +33,10 @@
   }
   host.update=pad=>{
    if(!svg)return;
+   // A pressed control gets a solid red outline, no glow and no blur (owner rule). The art has no strokes of
+   // its own, so a stroke on the control's group reaches every shape in it; 28 user units is about 2px on screen.
    const names=['Button_A','Button_B','Button_X','Button_Y','Button_L','Button_R','Analog_L','Analog_R','Button_Select','Button_Start','Analog_Stick','Analog_C_Stick','Dpad_Up','Dpad_Down','Dpad_Left','Dpad_Right'];
-   names.forEach((name,i)=>{const node=svg.querySelector(`[id="${name}"]`);if(node)node.style.filter=pad?.buttons?.[i]?.pressed?'brightness(1.8) drop-shadow(0 0 12px #ef6670)':'';});
+   names.forEach((name,i)=>{const node=svg.querySelector(`[id="${name}"]`);if(node){const on=!!pad?.buttons?.[i]?.pressed;node.style.stroke=on?'var(--red,#E0272E)':'';node.style.strokeWidth=on?'28px':'';}});
    ['Analog_Stick','Analog_C_Stick'].forEach((name,i)=>{const node=svg.querySelector(`[id="${name}"]`);if(node)node.style.transform=`translate(${(pad?.axes?.[i*2]||0)*22}px,${(pad?.axes?.[i*2+1]||0)*22}px)`;});
   };
   return host;

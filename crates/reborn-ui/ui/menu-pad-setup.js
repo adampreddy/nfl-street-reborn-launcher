@@ -21,17 +21,25 @@ export function mountMenuPadSetup() {
   const button=document.createElement('button');
   button.type='button'; button.id='menu-pad-setup'; button.textContent='Set up launcher controls';
   button.hidden=true; main.insertBefore(button,document.getElementById('screen'));
+  // Controllers page (spec §8.5): the button is never greyed out. Pressed with no controller connected, it says
+  // so in a plain line instead of doing nothing; the line clears once a controller is there. Elsewhere the button
+  // only shows while a controller needs setup, so the line lives on Controllers alone.
+  let note=null;
+  if (document.body.classList.contains('page-controls')) {
+    note=document.createElement('p');note.className='menu-pad-note';note.setAttribute('role','status');
+    main.insertBefore(note,document.getElementById('screen'));
+  }
   let pads=[];
   const refresh=()=>{
     try { pads=[...(navigator.getGamepads?.()||[])].filter(p=>p?.connected); } catch { pads=[]; }
     button.hidden=!document.body.classList.contains('page-controls')
       && !pads.some(p=>p.mapping!=='standard' && !readLayout(p));
-    button.disabled=!pads.length;
+    if (pads.length && note) note.textContent='';
   };
   refresh(); const timer=setInterval(refresh,1000);
   window.addEventListener('pagehide',()=>clearInterval(timer),{once:true});
   button.addEventListener('click',()=>{
-    refresh(); if (!pads.length) return;
+    refresh(); if (!pads.length) { if (note) note.textContent='Connect a controller first.'; return; }
     const dialog=document.createElement('dialog');dialog.className='update-dialog menu-pad-setup-dialog';
     const title=document.createElement('h2');title.textContent='Launcher controls';
     const text=document.createElement('p');text.textContent='Choose your controller, release its controls, then begin. These controls navigate the launcher. Game controls are set on the Controllers page.';

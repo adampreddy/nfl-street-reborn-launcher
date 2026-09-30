@@ -1,0 +1,134 @@
+/* Controllers (spec §8.5; mockup "CONTROLLERS"). Layout only: colours, radii and durations come from theme.css.
+   Header (title + "Set up launcher controls"), the B/X note, four player cards, the input device row, then the
+   mapping panel in three columns (sticks and D-pad | controller art + Test controller | buttons and right stick).
+   The workspace markup comes from setup-controller.js, unchanged; this file replaces players.css on this page. */
+
+/* header: #menu-pad-setup (menu-pad-setup.js puts it before #screen) sits top right, level with the title.
+   The right padding keeps the content column at 942px: min(width - 72, 942). */
+body.page-controls #main{display:grid;grid-template-columns:minmax(0,1fr) auto;align-content:start;column-gap:16px;padding:36px max(36px,calc(100% - 978px)) 32px 36px}
+.page-controls .page-heading{grid-column:1;grid-row:1;min-width:0}
+.page-controls #menu-pad-setup{grid-column:2;grid-row:1;align-self:end}
+/* "Connect a controller first." (menu-pad-setup.js), under the button when it is pressed with no controller.
+   Empty, it stays in the layout at no height so its status role is announced when the line arrives. */
+.page-controls .menu-pad-note{grid-column:2;grid-row:2;justify-self:end;font-size:12px;color:var(--fg-2)}
+.page-controls .menu-pad-note:not(:empty){margin-top:8px}
+.page-controls #screen,.page-controls details.core{grid-column:1/-1;min-width:0}
+.page-controls #screen{display:flex;flex-direction:column}
+.page-controls .loading{margin-top:24px}
+
+/* the B/X note and any one-time notices from the core */
+.page-controls .notices{display:flex;flex-direction:column;gap:8px;margin-top:24px}
+.page-controls .notices:empty{display:none}
+.ctl-note{display:flex;align-items:center;gap:16px;padding:12px 16px;font-size:12.5px;color:var(--fg-2)}
+.ctl-note>svg{width:16px;height:16px;flex:none;color:var(--warn)}
+.ctl-note p{flex:1;min-width:0}
+.ctl-note strong{font-weight:600;color:var(--fg)}
+.page-controls .notice.migration{display:grid;gap:8px;padding:12px 16px;border-radius:var(--r-lg);border:1px solid var(--stroke);background:var(--glass-1);box-shadow:var(--sheen)}
+.page-controls .notice.migration strong{font-size:14px;font-weight:600}
+.page-controls .notice.migration p{font-size:12.5px;color:var(--fg-2)}
+.page-controls .notice-dismiss{justify-self:start;height:32px;padding:0 12px;border-radius:var(--r-md);border:1px solid var(--stroke);background:transparent;color:var(--fg-2);font:600 12.5px Inter,system-ui,sans-serif;cursor:pointer}
+.page-controls .notice-dismiss:hover{color:var(--fg);background:var(--glass-1)}
+
+/* player cards, 16px apart at every width */
+.player-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:24px}
+.player-card{display:flex;align-items:center;gap:12px;min-width:0;padding:14px 16px;border-radius:var(--r-lg);border:1px solid var(--stroke);background:var(--glass-1);box-shadow:var(--sheen);color:var(--fg);font:inherit;text-align:left;cursor:pointer;backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+.player-card:hover:not(:disabled){background:var(--glass-2)}
+.player-card:disabled{cursor:default}
+.player-card[aria-selected="true"]{border-color:var(--red);background:color-mix(in srgb,var(--red) 8%,transparent)}
+.player-icon{display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:var(--r-sm);border:1px solid var(--stroke);background:var(--glass-2)}
+.player-card[aria-selected="true"] .player-icon{border-color:color-mix(in srgb,var(--red) 45%,transparent);background:color-mix(in srgb,var(--red) 18%,transparent)}
+.player-icon svg{width:18px;height:18px}
+.player-card.is-empty .player-icon{opacity:.45}
+.player-text{display:flex;flex-direction:column;min-width:0}
+.player-text .t{font-size:13.5px;font-weight:600}
+.player-text small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--fg-3)}
+.player-text small.disconnected{color:var(--warn)}
+
+/* input device row */
+.player-panel{min-width:0}
+.player-device{display:flex;align-items:center;gap:16px;margin:16px 0}
+.player-device label{font-size:13px;color:var(--fg-2)}
+.player-device select{flex:0 1 380px;min-width:0}
+
+/* the mapping panel (setup-controller.js, layout "players") */
+.page-controls .player-workspace{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,300px) minmax(0,1fr);gap:16px 24px;min-width:0;padding:16px 20px;border-radius:var(--r-lg);border:1px solid var(--stroke);background:var(--glass-1);box-shadow:var(--sheen),var(--shadow);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+.player-workspace .controller-controls,.player-workspace .compact-mappings{display:contents}
+.player-workspace .controller-controls>h2,.player-workspace .mapping-tabs{display:none}
+.player-workspace .mapping-status{grid-column:1/-1;grid-row:1;min-height:20px;font-size:12.5px;color:var(--fg-2)}
+.player-workspace .left-stick{grid-column:1;grid-row:2}
+.player-workspace .direction-pad{grid-column:1;grid-row:3}
+.player-workspace .face-buttons{grid-column:3;grid-row:2}
+.player-workspace .right-stick{grid-column:3;grid-row:3}
+.player-workspace .shoulders{grid-column:2;grid-row:4}
+.player-workspace .controller-stage{grid-column:2;grid-row:2/span 2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0;text-align:center}
+.player-workspace .controller-art{display:flex;align-items:center;justify-content:center;width:100%;max-width:230px}
+.player-workspace .controller-preview{width:100%}
+/* body.page-controls: outranks theme.css's body.themed .sourced-preview svg (max-height 280px) */
+body.page-controls .player-workspace .controller-preview svg{width:100%;max-height:210px}
+.player-workspace .controller-live{font-size:12px;color:var(--fg-3)}
+.player-workspace .controller-stage .note{max-width:240px;font-size:12px;color:var(--fg-3)}
+.player-workspace .live-device{width:100%}
+.player-workspace .mapping-group h3{margin:4px 0 8px;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-2)}
+.player-workspace .group-bindings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.player-workspace .mapping-key{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--glass-1);color:var(--fg);font:600 13px Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+.player-workspace .mapping-key:hover:not(:disabled){border-color:var(--stroke-hi);background:var(--glass-2)}
+.player-workspace .mapping-key:disabled{opacity:.55;cursor:default}
+.player-workspace .mapping-key small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;font-weight:500;color:var(--fg-3)}
+.player-workspace .mapping-key[data-dead="true"] small{color:var(--red-ink)}
+.player-workspace .mapping-buttons{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.player-workspace :is(.test-toggle,.mapping-reset,.mapping-swap){display:inline-flex;align-items:center;justify-content:center;height:38px;padding:0 16px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--glass-2);box-shadow:var(--sheen);color:var(--fg);font:600 13px Inter,system-ui,sans-serif;cursor:pointer}
+.player-workspace :is(.mapping-reset,.mapping-swap){height:32px;padding:0 12px;font-size:12.5px}
+.player-workspace :is(.test-toggle,.mapping-reset,.mapping-swap):hover:not(:disabled){border-color:var(--stroke-hi);background:var(--glass-3)}
+.player-workspace :is(.test-toggle,.mapping-reset,.mapping-swap):disabled{opacity:.55;cursor:default}
+.player-workspace[data-testing="true"] .test-toggle{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.page-controls .controller-needs-setup{padding:12px 16px;border-radius:var(--r-md);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);background:color-mix(in srgb,var(--red) 8%,transparent)}
+.page-controls .controller-needs-setup strong{display:block;font-size:14px;font-weight:600}
+.page-controls .controller-needs-setup p{margin:8px 0 16px;font-size:12.5px;color:var(--fg-2)}
+/* the binding popover floats over the bindings: always OPAQUE */
+.player-workspace .binding-editor{position:absolute;z-index:5;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;gap:16px;width:min(420px,85%);padding:24px;border-radius:var(--r-lg);border:1px solid var(--stroke-hi);background:var(--surface-solid);box-shadow:var(--shadow)}
+.player-workspace .binding-editor .note{width:100%;font-size:13px;color:var(--fg)}
+.player-workspace .binding-editor label{display:grid;gap:8px;width:100%;font-size:13px}
+/* setup-controller.js builds the input with no type and the buttons with class="" (so the theme's
+   input[type=text] and button:not([class]) rules miss them): they get the field and .btn looks here */
+.player-workspace .binding-editor input{width:100%;height:38px;min-width:0;padding:0 12px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--field-bg);color:var(--fg);font:500 13px Inter,system-ui,sans-serif;color-scheme:dark}
+.player-workspace .binding-editor button{display:inline-flex;align-items:center;justify-content:center;height:38px;padding:0 16px;border-radius:var(--r-md);border:1px solid var(--stroke);background:var(--glass-2);box-shadow:var(--sheen);color:var(--fg);font:600 13px Inter,system-ui,sans-serif;cursor:pointer}
+.player-workspace .binding-editor button:hover:not(:disabled){border-color:var(--stroke-hi);background:var(--glass-3)}
+.player-workspace .binding-editor button:disabled{opacity:.55;cursor:default}
+.player-workspace .typed-binding>button{margin-top:8px}
+.player-workspace .typed-binding{width:100%}
+.player-workspace .typed-binding>summary{font-size:12px;color:var(--fg-2);cursor:pointer}
+.player-workspace .typed-binding[open]>summary{margin-bottom:8px}
+
+/* no controller for this player */
+.page-controls .player-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:240px;padding:40px 24px;border-radius:var(--r-lg);border:1px solid var(--stroke);background:var(--glass-1);text-align:center}
+.page-controls .player-empty>*{text-align:center}
+.page-controls .player-empty strong{font-size:18px;font-weight:600;letter-spacing:-.02em}
+.page-controls .player-empty p{max-width:460px;font-size:12.5px;color:var(--fg-2)}
+
+/* button textures, the save line, and the controller report */
+.player-textures{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin-top:24px;padding-top:16px;border-top:1px solid var(--stroke);font-size:13px}
+.player-textures label{color:var(--fg-2)}
+.player-textures select{min-width:160px}
+.player-textures span{font-size:12px;color:var(--fg-3)}
+.player-feedback{margin-top:8px;font-size:12px;color:var(--fg-3)}
+.controller-report-entry{display:grid;justify-items:start;gap:8px;margin-top:24px;padding-top:16px;border-top:1px solid var(--stroke)}
+.controller-report-entry h2{font-size:15px;font-weight:600}
+.controller-report-entry p{font-size:12.5px;color:var(--fg-2)}
+.controller-report-dialog [hidden]{display:none!important}
+.controller-report-dialog h3{margin:16px 0 8px;font-size:15px;font-weight:600}
+.controller-report-dialog>p{font-size:13px;color:var(--fg-2)}
+.controller-report-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+.controller-report-fields label{display:grid;gap:8px;min-width:0;font-size:13px}
+.controller-report-fields label:last-child{grid-column:1/-1}
+.controller-report-fields :is(select,textarea){width:100%;min-width:0}
+.controller-report-note{font-size:12px;color:var(--fg-2)}
+.menu-pad-setup-dialog select{width:100%;margin:16px 0}
+
+@media (max-width:900px){
+  body.page-controls #main{padding:24px max(24px,calc(100% - 966px)) 16px 24px}
+  .player-card{padding:12px}
+  .page-controls .player-workspace{grid-template-columns:minmax(0,1fr) minmax(0,200px) minmax(0,1fr);gap:16px;padding:16px}
+  .player-workspace .controller-art{max-width:175px}
+  body.page-controls .player-workspace .controller-preview svg{max-height:160px}
+  .player-workspace .mapping-key{padding:8px}
+}
