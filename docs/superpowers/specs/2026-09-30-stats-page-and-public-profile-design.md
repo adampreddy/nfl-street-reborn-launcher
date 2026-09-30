@@ -75,8 +75,7 @@ The Stats page includes offline games. Every number on it counts **all** the pla
 
 ## 2. Public profile (launcher and web, anyone): online games only
 
-- **URLs:** `https://api.nflstreetreborn.com/u/<player>`, a web page on the backend beside `/games/:id`, and a native launcher view `profile.html?player=<id>`.
-  - The short link `https://nflstreetreborn.com/u/<name>` is one redirect rule on the league site to the backend page. It ships only with Adam's go, like every live-site change.
+- **URLs:** `https://online.nflstreetreborn.com/u/<player>` on the web (see section 8), and a native launcher view `profile.html?player=<id>`.
   - Opened from: an opponent's name anywhere, the live page, the Stats page ("Your profile ›"), and Share profile (which copies the web URL).
 - **Header:**
   - A cover whose colours come from the player's Discord avatar (two dominant colours). Fallback: a neutral `--panel-2` gradient when there is no avatar or its colours can't be read.
@@ -134,7 +133,7 @@ The Stats page includes offline games. Every number on it counts **all** the pla
   - `?section=<name>&limit&before` pages the long lists (game log, career tables, head to head).
 - `GET /v1/players/me/dashboard`: token required. The Stats page's data, **including offline games**: you, games (with elo_delta and offline flag), recent_form, head_to_head, best_players.
 - `PUT /v1/players/me/plays-as`: the profile team override.
-- The page `GET /u/:player` shares the CSP, versioning and 404 of `/games/:id`. `:player` is the player id; a display-name lookup resolves to the id.
+- The page `GET /u/:player` shares the CSP, versioning and 404 of `/games/:id`, and is linked on the `online.` host. `:player` is the player id; a display-name lookup resolves to the id.
 
 ## 5. Launcher
 
@@ -145,7 +144,24 @@ The Stats page includes offline games. Every number on it counts **all** the pla
   - `player_profile(player_id, section?, before?)`
   - `set_plays_as(team)`
   - Token handling follows `stats_my_games`.
-- `open_website` is allowed for `/u/<id>`.
+- `open_website` is allowed for `https://online.nflstreetreborn.com/u/<id>`, `/games/<id>` and `/live/<id>`. `api.` pages stay allowed so older links still open.
+- One constant, `LIVE_ORIGIN` in `live-common.js`, becomes the page origin `online.`. A new `API_ORIGIN` keeps `api.` for data calls. `DEFAULT_ORIGIN` in `identity.rs` and the CSP's `live-assets` source stay on `api.`.
+
+## 8. Web host: `online.nflstreetreborn.com`
+
+- Public pages move to `https://online.nflstreetreborn.com`: `/u/:player`, `/games/:id`, `/live` and `/live/:id`.
+- It is a second custom domain on the same Railway backend service. There is no new server and no data move.
+- `api.nflstreetreborn.com` stays for everything that isn't a page, forever:
+  - Every installed launcher has `api.` built in (`identity.rs` `DEFAULT_ORIGIN`).
+  - Device sign-in (`PUBLIC_ORIGIN`, the `/link` page) and the Discord login redirect (`DISCORD_REDIRECT_URI`, registered in the Discord app) use it.
+  - Moving those would log out or break every current install, so they don't move.
+- On `api.`, the page routes `/u`, `/games` and `/live` answer 301 to the same path on `online.`, so links already shared keep working.
+- Every link the backend or launcher prints for a page (Share profile, Open on web, the live link, the bot's future posts) uses `online.`.
+- **Outside the repos:**
+  - A `CNAME online -> <railway target>` DNS record.
+  - Adding the domain in Railway (`railway domain online.nflstreetreborn.com`).
+  - Both are outward-facing and happen only with Adam's go, before the release that prints `online.` links.
+- **Tests:** backend route tests for the 301s, plus a host check that `/v1/*` still answers on both hosts. Launcher tests for the allow-list and the two origins.
 
 ## 6. Errors and edge cases
 
