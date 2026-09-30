@@ -35,6 +35,9 @@ function toSaveBar() {
   if (bar) { uncall(); bar.classList.add('called'); calledTimer = setTimeout(uncall, 800); }
 }
 document.addEventListener('pointerdown', uncall, true);
+// Scripted navigation (update-notice.js "View updates") is no <a> click, so the guard below never sees
+// it: such callers ask first and, while changes are pending, point here instead of leaving.
+window.pointAtSaveBar = toSaveBar;
 // Any link that would leave this page (sidebar, "Resume game setup", "Developer tools", a reload of this
 // page) is refused while changes are pending. In-page anchors (#…) and links opened elsewhere still work.
 function leavesPage(link) {

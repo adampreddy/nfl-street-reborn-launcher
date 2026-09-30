@@ -65,11 +65,11 @@ body.shell.page-home #main{animation-name:look-enter-fade}
 
 /* buttons */
 body.shell button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:transform var(--d1) var(--ease)}
-body.shell button:active{transform:scale(.98)}
+body.shell button:active:where(:not(:disabled)){transform:scale(.98)}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer}
-.btn:hover{background:var(--glass-3);border-color:var(--stroke-hi)}
+.btn:hover:where(:not(:disabled)){background:var(--glass-3);border-color:var(--stroke-hi)}
 .btn.primary{background:linear-gradient(180deg,#ec3a41,#c91f26);border-color:rgba(255,255,255,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px -8px rgba(0,0,0,.6)}
-.btn.primary:hover{background:linear-gradient(180deg,#f4545a,#d6262d)}
+.btn.primary:hover:where(:not(:disabled)){background:linear-gradient(180deg,#f4545a,#d6262d)}
 .btn.quiet{background:transparent;box-shadow:none;color:var(--fg-2)}
 .btn.sm{height:32px;padding:0 12px;font-size:12.5px}
 
@@ -99,7 +99,7 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 .save-bar{margin:10px 24px 18px;max-width:942px;display:flex;align-items:center;gap:16px;padding:12px 14px 12px 20px;border-radius:var(--r-lg);border:1px solid var(--stroke-hi);background:rgba(24,25,30,.78);backdrop-filter:blur(24px) saturate(1.3);box-shadow:var(--sheen),0 16px 40px -14px rgba(0,0,0,.75);opacity:0;transform:translateY(12px);transition:opacity var(--d3) var(--ease),transform var(--d3) var(--ease)}
 .save-lane.open .save-bar{opacity:1;transform:none}
 .save-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
-.save-bar .t{font-weight:600}.save-bar .d{color:var(--fg-2);font-size:12.5px}
+.save-bar .t{font-weight:600}.save-bar .d{color:var(--fg-2);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .save-bar .btn:first-of-type{margin-left:auto}
 
 /* onboarding action bar: sticky at the bottom, content scrolls UNDER it, so it keeps its own surface */
@@ -162,6 +162,13 @@ html body.shell:not(.page-setup) .shell-nav .nav-bottom{margin-top:auto;padding-
   html body.shell:not(.page-setup) .shell-nav a:not(.brand)>span{display:none}
   html body.shell:not(.page-setup) .shell-nav .brand{height:88px}
 }
+/* Short windows (the minimum window is 800x560 outside, about 530 tall inside): a tighter vertical rhythm so
+   the whole nav fits with no scrollbar. The 124px logo slot is never shrunk here (the owner's logo keeps its size). */
+@media (max-height:620px){
+  html body.shell:not(.page-setup) .shell-nav{gap:2px;padding-bottom:10px}
+  html body.shell:not(.page-setup) .shell-nav a:not(.brand){height:36px;min-height:36px}
+  html body.shell:not(.page-setup) .shell-nav .nav-bottom{gap:2px;padding-top:8px}
+}
 /* hint bar: exists only while there is a prompt to show (spec §6.3). :has(#id) outranks every legacy rule. */
 html body.shell:has(#input-hints:empty){--hint-height:0px}
 html body.shell:has(#input-hints:not(:empty)){--hint-height:34px}
@@ -177,7 +184,9 @@ html body.shell .input-hint kbd{margin:0 7px 0 0!important}
 .avatar{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;border-radius:50%;background:var(--avatar-bg);color:#fff;font:700 13px Inter,system-ui,sans-serif}
 @keyframes live-pulse{50%{opacity:.35}}
 .btn{text-decoration:none;white-space:nowrap}
-.btn:disabled{opacity:.55;cursor:default;pointer-events:none}
+/* A disabled button keeps pointer events so its title tooltip (why it is disabled) still shows; the
+   disabled attribute alone keeps it from being activated, and hover/press looks skip it (:where = no specificity). */
+.btn:disabled{opacity:.55;cursor:default}
 
 /* ================= Base for pages that load only theme.css + their page file (body.themed) =================
    Element resets sit wholly inside :where() (specificity 0), so any component class wins over them:
@@ -266,6 +275,9 @@ dialog.menu .menu-item[aria-checked="true"] .menu-check{visibility:visible}
 .tabs .tab[aria-pressed="true"]{color:var(--fg)}
 .tab-ind{position:absolute;top:4px;bottom:4px;left:0;width:100px;transform-origin:0 50%;transform:translateX(0) scaleX(0);border-radius:var(--r-sm);background:var(--glass-3);box-shadow:var(--sheen),0 0 0 1px var(--stroke);transition:transform var(--d2) var(--ease);pointer-events:none}
 .tab-ind.still{transition:none}
+/* Narrow windows (the minimum is about 780 wide inside): tighter tabs, so all seven Settings tabs stay whole.
+   A longer strip still scrolls inside itself (overflow-x above; tabs.js keeps the selected tab in view), never the page. */
+@media (max-width:900px){.tabs .tab{padding:0 10px}}
 
 /* field (spec §8.2 path rows): a value in a recessed box, with the green Auto tag while nothing was chosen */
 .field{display:flex;align-items:center;gap:8px;height:38px;min-width:0;padding:0 12px;border-radius:var(--r-md);background:var(--field-bg);border:1px solid var(--stroke);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}

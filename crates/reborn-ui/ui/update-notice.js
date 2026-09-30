@@ -14,6 +14,14 @@ const host=()=>{let h=document.getElementById('update-center');if(!h){h=node('as
 const downloadPhase=()=>activity.downloading||content?.phase==='fetching';
 const size=bytes=>Math.max(1,Math.round((bytes||0)/1048576))+' MB';
 
+// "View updates" is scripted navigation, which app-shell's leave guard (a[href] clicks) never sees. While
+// the save bar is open, leaving the page points at the bar instead; a hash change on this page is fine.
+function openUpdates(){
+ const to=new URL('settings.html#updates',location.href);
+ const samePage=to.origin===location.origin&&to.pathname===location.pathname&&to.search===location.search;
+ if(!samePage&&document.getElementById('save-lane')?.classList.contains('open')){window.pointAtSaveBar?.();return;}
+ location.assign(to.href);
+}
 function later(kind){put(updateKey(kind,version(kind)),{until:Date.now()+LATER_MS});}
 function dismissDialog(){if(dialog){dialog.close();dialog.remove();dialog=null;}}
 function showDialog(kind){
@@ -62,7 +70,7 @@ function render(){
   card('launcher',activity.downloading?'Downloading launcher':pending?'Launcher update ready':'Launcher update available',
    activity.downloading?'Your download continues while you use the launcher.':pending?'Installs when your game and other changes are finished.':'Reborn '+launcher?.latest+(deferred('launcher')?' · Reminder postponed':''),
    activity.downloading?null:undefined,activity.downloading?null:pending?'View updates':'View update',
-   ()=>pending?location.assign('settings.html#updates'):showDialog('launcher'));
+   ()=>pending?openUpdates():showDialog('launcher'));
  }else removeCard('launcher');
  if(content&&['available','fetching','staged','installing','installed','problem'].includes(content.phase)){
   const phase=content.phase;
@@ -73,7 +81,7 @@ function render(){
   const message=phase==='fetching'?size(content.fetched_bytes)+' of '+size(content.download_bytes)+(progress===null?'':' · '+progress+'%'):
    phase==='staged'?'Installs when your game and other changes are finished.':content.installed?.note||content.note||'New Reborn content is available.';
   card('content',title,message,progress,['fetching','installing'].includes(phase)?null:phase==='installed'?'Got it':'View update',
-   ()=>{if(phase==='installed'){invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else location.assign('settings.html#updates');});
+   ()=>{if(phase==='installed'){invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else openUpdates();});
  }else removeCard('content');
 }
 async function canInstall(){
@@ -82,7 +90,7 @@ async function canInstall(){
  return !music||!['encoding','building'].includes(music.phase);
 }
 async function job(kind,fn){if(jobs.has(kind))return;jobs.add(kind);try{await fn();}catch(e){
- card(kind, 'Update could not finish', String(e?.message||e),undefined,'View updates',()=>location.assign('settings.html#updates'));
+ card(kind, 'Update could not finish', String(e?.message||e),undefined,'View updates',()=>openUpdates());
  // A failed automatic operation must not spin or keep stealing focus.
  later(kind);
 }finally{jobs.delete(kind);}}

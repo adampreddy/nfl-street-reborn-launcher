@@ -58,7 +58,7 @@ try{
  assert.equal(await page.getByRole('button',{name:'Save changes'}).isEnabled(),true);
  // A long reason shows two lines (full text in the tooltip) and the bar never runs past its lane, at any size.
  const long='Could not write the settings file because another program is holding it open. Close Dolphin and any file browser showing the Reborn folder, then press Save changes again. If this keeps happening, restart the launcher and try once more.';
- const settle=()=>page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
+ const settle=()=>page.evaluate(async()=>{await Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]); /* infinite ones skipped, 5 s cap */});
  for(const size of [{width:1280,height:800},{width:800,height:560}]){
   await page.setViewportSize(size);
   await page.evaluate(l=>window.outcome=l,long);
@@ -137,6 +137,19 @@ try{
  assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','second B with pending changes never leaves the page');
  assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','second B with pending changes points at Save');
  assert.equal((await lane()).open,true,'the changes are still pending after B twice');
+ // Scripted navigation (update-notice.js "View updates") asks the shell to point at the bar instead of leaving.
+ await page.evaluate(()=>document.querySelector('.shell-nav a[href="mods.html"]').focus());
+ assert.equal(await page.evaluate(()=>typeof window.pointAtSaveBar),'function','app-shell exposes pointAtSaveBar');
+ await page.evaluate(()=>window.pointAtSaveBar());
+ assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','pointAtSaveBar focuses Save');
+ // The detail line is one line with an ellipsis (Music shows long song names there); the full text is its tooltip.
+ const song='A very long song name from a custom soundtrack that goes on and on — Extended Stadium Remix (Live at the Reborn Bowl 2026)';
+ await page.evaluate(s=>bar.update(['Window glass',s]),song);
+ const detail=await page.evaluate(()=>{const d=document.querySelector('.save-bar .d'),cs=getComputedStyle(d);return {title:d.title,ws:cs.whiteSpace,to:cs.textOverflow,h:d.getBoundingClientRect().height,lh:parseFloat(cs.lineHeight)||parseFloat(cs.fontSize)*1.5,fits:d.scrollWidth>d.clientWidth};});
+ assert.equal(detail.title,song,'the full detail is in the tooltip');
+ assert.deepEqual([detail.ws,detail.to],['nowrap','ellipsis'],'the detail line is clamped with an ellipsis');
+ assert.ok(detail.h<=detail.lh*1.5,`the detail stays on one line ${JSON.stringify(detail)}`);
+ await page.evaluate(()=>bar.update(['Window glass']));
  assert.deepEqual(errors,[]);
  // With nothing pending, the sidebar navigates exactly as before.
  await page.evaluate(()=>bar.update([]));

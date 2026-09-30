@@ -1,6 +1,14 @@
 // The one save bar (spec §7). It lives in its own lane at the bottom of the page, so it never covers content.
-// A page opts in with <body class="… has-save-lane"> and an empty <div id="save-lane"></div> after #main.
 // A save or discard that throws is said in the bar (its reason, not thrown past it); the bar stays open.
+//
+// Seams a page must honour (app-shell.js relies on them):
+// - <body class="… has-save-lane">: theme.css gives the shell grid its extra 'save' row only then.
+// - The lane is an empty <div id="save-lane"></div> right after #main, and its id must be exactly
+//   "save-lane": app-shell looks it up by id for pad navigation (Down from the page reaches the bar),
+//   the leave guard (a[href] clicks, B twice and LB/RB while it is .open) and window.pointAtSaveBar.
+// - A page whose content is a column of rows (Settings) opts into row-first vertical pad moves with
+//   data-nav="rows" on its content container; without it, Up/Down pick the nearest control by position.
+// - The detail line is one line (ellipsis); its full text is in its tooltip.
 import { el, reason } from "./shell.js";
 
 export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "unsaved change", saveText = "Save changes" }) {
@@ -32,6 +40,7 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
       const n = changes.length;
       title.textContent = `${n} ${noun}${n === 1 ? "" : "s"}`;
       detail.textContent = changes.at(-1) || "";
+      if (detail.textContent) detail.title = detail.textContent; else detail.removeAttribute("title");
       const hadFocus = n === 0 && lane.contains(document.activeElement);
       lane.classList.toggle("open", n > 0);
       lane.inert = n === 0;
