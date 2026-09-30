@@ -24,15 +24,29 @@ const inContent = n => !!n && (main.contains(n) || !!saveLane()?.contains(n));
 // Pending changes are never dropped silently: while the bar is open, leaving the page is refused and
 // the save bar (which states how many changes are unsaved) takes focus instead.
 const pending = () => !!saveLane()?.classList.contains('open');
+let calledTimer = 0;
+function uncall() { clearTimeout(calledTimer); document.querySelector('.save-bar.called')?.classList.remove('called'); }
 function toSaveBar() {
   const lane = saveLane();
   const target = lane && (reachable(lane).find(n => n.matches('.primary')) || reachable(lane)[0]);
   if (target) focus(target, false);
+  // A visible cue for mouse users too (the pad ring only shows in controller mode): Save is outlined briefly.
+  const bar = lane?.querySelector('.save-bar');
+  if (bar) { uncall(); bar.classList.add('called'); calledTimer = setTimeout(uncall, 800); }
+}
+document.addEventListener('pointerdown', uncall, true);
+// Any link that would leave this page (sidebar, "Resume game setup", "Developer tools", a reload of this
+// page) is refused while changes are pending. In-page anchors (#…) and links opened elsewhere still work.
+function leavesPage(link) {
+  if (link.hasAttribute('download') || (link.target && link.target !== '_self')) return false;
+  let url; try { url = new URL(link.href, location.href); } catch (_) { return false; }
+  const samePage = url.origin === location.origin && url.pathname === location.pathname && url.search === location.search;
+  return !(samePage && url.hash);
 }
 document.addEventListener('click', e => {
   if (!pending() || !(e.target instanceof Element)) return;
-  const link = e.target.closest('.shell-nav a[href]');
-  if (!link) return;
+  const link = e.target.closest('a[href]');
+  if (!link || !leavesPage(link)) return;
   e.preventDefault(); e.stopImmediatePropagation();
   toSaveBar();
 }, true);
@@ -265,6 +279,8 @@ function back() {
   const wizardBack = document.getElementById('back');
   if (visible(wizardBack)) { wizardBack.click(); return; }
   if (inContent(current)) { focus(document.querySelector('.shell-nav a.current') || document.querySelector('.shell-nav a[href="index.html"]')); return; }
+  // Back from the sidebar would leave the page: never while changes are pending.
+  if (pending()) { toSaveBar(); return; }
   if (!location.pathname.endsWith('/index.html') && location.pathname !== '/') location.href = 'index.html';
 }
 function pageStep(delta) {

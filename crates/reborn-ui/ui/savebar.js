@@ -11,8 +11,12 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
   error.hidden = true;
   const discard = el("button", { type: "button", class: "btn", text: "Discard" });
   const save = el("button", { type: "button", class: "btn primary", text: saveText });
-  let busy = false;
-  const fail = (message) => { error.textContent = message || ""; error.hidden = !message; };
+  let busy = false, listed = "[]";
+  // The line shows two lines at most; the full reason is always in its tooltip.
+  const fail = (message) => {
+    error.textContent = message || ""; error.hidden = !message;
+    if (message) error.title = message; else error.removeAttribute("title");
+  };
   const run = (fn) => async () => {
     if (busy) return;
     busy = true; discard.disabled = save.disabled = true; fail("");
@@ -31,7 +35,10 @@ export function mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "uns
       const hadFocus = n === 0 && lane.contains(document.activeElement);
       lane.classList.toggle("open", n > 0);
       lane.inert = n === 0;
-      if (n === 0) fail("");
+      // A reason belongs to the list it failed on: a different list (or none) clears it.
+      const key = JSON.stringify(changes);
+      if (n === 0 || key !== listed) fail("");
+      listed = key;
       if (hadFocus) (returnFocus?.() || document.getElementById("main"))?.focus({ preventScroll: true });
     },
     fail,

@@ -95,7 +95,7 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 
 /* save bar (savebar.js): its own lane, never over content, appears only when something changed */
 .save-lane{flex:none;overflow:hidden;max-height:0;transition:max-height var(--d3) var(--ease)}
-.save-lane.open{max-height:110px}
+.save-lane.open{max-height:180px} /* room for the bar with a two-line failure reason, at any window size */
 .save-bar{margin:10px 24px 18px;max-width:942px;display:flex;align-items:center;gap:16px;padding:12px 14px 12px 20px;border-radius:var(--r-lg);border:1px solid var(--stroke-hi);background:rgba(24,25,30,.78);backdrop-filter:blur(24px) saturate(1.3);box-shadow:var(--sheen),0 16px 40px -14px rgba(0,0,0,.75);opacity:0;transform:translateY(12px);transition:opacity var(--d3) var(--ease),transform var(--d3) var(--ease)}
 .save-lane.open .save-bar{opacity:1;transform:none}
 .save-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
@@ -122,7 +122,10 @@ body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-ac
 html body.shell.has-save-lane:not(.page-setup),html body.shell.has-save-lane.gamepad-input:not(.page-setup){grid-template-rows:0 minmax(0,1fr) auto var(--hint-height);grid-template-areas:'nav head' 'nav main' 'nav save' 'nav foot'}
 html body.shell.has-save-lane #save-lane{grid-area:save;min-width:0}
 .save-bar .save-text{min-width:0}
-.save-bar .err{margin-top:2px;font-size:12.5px;color:var(--red-ink);overflow-wrap:anywhere}
+.save-bar .err{margin-top:2px;font-size:12.5px;line-height:1.45;color:var(--red-ink);overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.save-bar .err[hidden]{display:none}
+/* a refused leave points at Save (app-shell.js toSaveBar): a plain outline, no glow, not animated */
+.save-bar.called .btn.primary{outline:2px solid #fff;outline-offset:3px}
 
 /* Launcher window section (settings > Display) */
 .look-section{padding:6px 0;margin:16px 0}

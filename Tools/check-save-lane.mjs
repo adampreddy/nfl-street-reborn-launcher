@@ -11,7 +11,7 @@ const root=path.resolve(import.meta.dirname,'..'),ui=path.join(root,'crates/rebo
 const nav=readFileSync(path.join(ui,'index.html'),'utf8').match(/<nav class="shell-nav"[\s\S]*?<\/nav>/)[0];
 const html=`<!doctype html><html lang="en" data-glass="off" data-motion="quick"><head><meta charset="utf-8"><link rel="stylesheet" href="theme.css"></head>
 <body class="shell themed page-test has-save-lane">${nav}
-<main id="main" tabindex="-1"><section id="screen"><button class="btn" id="a">First</button><br><button class="btn" id="b">Second</button></section></main>
+<main id="main" tabindex="-1"><section id="screen"><p><a id="here" href="#b">Jump to Second</a> <a id="away" href="onboarding.html">Resume game setup</a></p><button class="btn" id="a">First</button><br><button class="btn" id="b">Second</button></section></main>
 <div id="save-lane"></div><footer class="input-footer"><span id="input-hints"></span></footer>
 <script type="module">
 import {mountSaveBar} from './savebar.js';
@@ -56,7 +56,33 @@ try{
  assert.equal(await page.locator('.save-bar [role=alert]').innerText(),'The disk is full.');
  assert.equal((await lane()).open,true,'the bar stays open');
  assert.equal(await page.getByRole('button',{name:'Save changes'}).isEnabled(),true);
+ // A long reason shows two lines (full text in the tooltip) and the bar never runs past its lane, at any size.
+ const long='Could not write the settings file because another program is holding it open. Close Dolphin and any file browser showing the Reborn folder, then press Save changes again. If this keeps happening, restart the launcher and try once more.';
+ const settle=()=>page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
+ for(const size of [{width:1280,height:800},{width:800,height:560}]){
+  await page.setViewportSize(size);
+  await page.evaluate(l=>window.outcome=l,long);
+  await page.getByRole('button',{name:'Save changes'}).click();
+  await page.waitForFunction(l=>document.querySelector('.save-bar [role=alert]').textContent===l,long);
+  await settle();
+  const fit=await page.evaluate(()=>{const err=document.querySelector('.save-bar .err'),r=n=>n.getBoundingClientRect();
+   return {bar:r(document.querySelector('.save-bar')).bottom,lane:r(document.getElementById('save-lane')).bottom,
+    lines:Math.round(r(err).height/parseFloat(getComputedStyle(err).lineHeight)),title:err.title};});
+  assert.ok(fit.bar<=fit.lane+0.5,`${size.width}x${size.height}: a long reason keeps the bar inside its lane ${JSON.stringify(fit)}`);
+  assert.ok(fit.lines<=2,`${size.width}x${size.height}: the reason shows at most two lines ${JSON.stringify(fit)}`);
+  assert.equal(fit.title,long,'the full reason is in the tooltip');
+ }
+ await page.setViewportSize({width:1280,height:800});
+ // A different change list clears a stale reason; the same list keeps it.
+ await page.evaluate(()=>bar.update(['Emulator location']));
+ assert.equal(await page.locator('.save-bar [role=alert]').isVisible(),true,'the same list keeps its reason');
+ await page.evaluate(()=>bar.update(['Emulator location','Window glass']));
+ assert.equal(await page.locator('.save-bar [role=alert]').isHidden(),true,'a changed list clears the old reason');
+ await page.evaluate(()=>bar.update(['Emulator location']));
  // The next attempt clears the old reason.
+ await page.evaluate(()=>window.outcome='The disk is full.');
+ await page.getByRole('button',{name:'Save changes'}).click();
+ await page.locator('.save-bar [role=alert]').waitFor();
  await page.evaluate(()=>window.outcome=null);
  await page.getByRole('button',{name:'Save changes'}).click();
  await page.waitForFunction(()=>!document.getElementById('save-lane').classList.contains('open'));
@@ -86,12 +112,31 @@ try{
  await page.waitForTimeout(150);
  assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','a sidebar click with pending changes stays on the page');
  assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','a sidebar click with pending changes moves focus to the save bar');
+ assert.equal(await page.evaluate(()=>document.querySelector('.save-bar').classList.contains('called')),true,'a refused click points at Save');
+ assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('.save-bar .btn.primary')).outlineStyle),'solid','Save is outlined for a mouse user');
+ await page.waitForTimeout(900);
+ assert.equal(await page.evaluate(()=>document.querySelector('.save-bar').classList.contains('called')),false,'the pointer cue clears on its own');
+ // In-page links that leave the page are refused too; anchors within the page still work.
+ await page.locator('#away').click();
+ await page.waitForTimeout(150);
+ assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','an in-page link to another page is refused while changes are pending');
+ assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','a refused in-page link moves focus to the save bar');
+ await page.locator('#here').click();
+ assert.equal(await page.evaluate(()=>location.hash),'#b','an in-page anchor still works while changes are pending');
  await page.evaluate(()=>document.querySelector('.shell-nav a[href="music.html"]').focus());
  await press(0);
  await page.waitForTimeout(150);
  assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','pad A on a sidebar link with pending changes stays on the page');
  assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','pad A on a sidebar link moves focus to the save bar');
  assert.equal((await lane()).open,true,'the changes are still pending after a sidebar click');
+ // B twice: the first goes from the bar to the sidebar, the second must not leave the page either.
+ await press(1);
+ assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.shell-nav')),true,'first B: the sidebar');
+ await press(1);
+ await page.waitForTimeout(150);
+ assert.equal(await page.evaluate(()=>location.pathname),'/lane.html','second B with pending changes never leaves the page');
+ assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Save changes','second B with pending changes points at Save');
+ assert.equal((await lane()).open,true,'the changes are still pending after B twice');
  assert.deepEqual(errors,[]);
  // With nothing pending, the sidebar navigates exactly as before.
  await page.evaluate(()=>bar.update([]));
