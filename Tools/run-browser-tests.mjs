@@ -322,6 +322,7 @@ await import('./review-players.mjs');
 await import('./check-themed-shell.mjs');
 await import('./check-save-lane.mjs');
 
+await import('./check-menu.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
