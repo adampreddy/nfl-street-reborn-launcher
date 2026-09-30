@@ -85,6 +85,9 @@ function renderHints() {
   const ps = /playstation|dualsense|dualshock|054c/i.test(pad.id);
   const testing = !!document.body.dataset.controllerTesting;
   const needsSetup = pad.mapping !== 'standard' && !readLayout(pad);
+  // Prompts are for whoever is holding the controller (spec §6.3). A pad the launcher
+  // cannot read yet still says how to set it up, or it could never be set up.
+  if (!controllerMode && !(needsSetup && !testing)) { hints.replaceChildren(); delete hints.dataset.layout; return; }
   const items = needsSetup && !testing ? [['Setup','Set up launcher controls']] : testing
     ? [[document.body.classList.contains('page-controls') ? 'Esc' : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
     : selectEdit ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
@@ -250,9 +253,12 @@ function pageStep(delta) {
 }
 document.addEventListener('keydown',e => {
   if (e.key === 'Escape') { e.preventDefault(); back(); }
-  else if (e.key === 'Tab') { endSelect(false); mode(false); }
+  if (e.key === 'Tab') endSelect(false);
+  mode(false);
 });
 document.addEventListener('pointerdown',() => { endSelect(false); mode(false); });
+// A real mouse move (not the synthetic one a scroll under a still cursor fires) leaves controller mode.
+document.addEventListener('mousemove',e => { if (controllerMode && (Math.abs(e.movementX) + Math.abs(e.movementY)) > 2) mode(false); });
 document.addEventListener('controller-test-state',() => { stopScrolling(); renderHints(); });
 
 async function sessionState() {
