@@ -18,8 +18,8 @@ body.shell:not(.page-setup) #screen{gap:24px}
 body.shell:not(.page-setup) .block{padding:22px 0;margin:0;border-top:1px solid var(--line)}
 body.shell:not(.page-setup) .block h2{font:600 16px/1.4 Inter,Segoe UI,sans-serif;letter-spacing:-.01em;margin:0 0 12px;text-transform:none}
 body.shell:not(.page-setup) .block>p{margin:0 0 16px;line-height:1.65}
-body.shell button,body.shell .button{font-family:Inter,Segoe UI,sans-serif;font-size:12px;font-weight:550;line-height:1.45;letter-spacing:0;border-radius:6px;min-height:38px;padding:9px 14px;gap:8px;text-transform:none}
-body.shell button:not(.primary):not(.play):not(.write),body.shell .button:not(.primary){background:#ffffff05;border-color:#ffffff26}
+body.shell button:not(.btn):not(.look-switch),body.shell .button{font-family:Inter,Segoe UI,sans-serif;font-size:12px;font-weight:550;line-height:1.45;letter-spacing:0;border-radius:6px;min-height:38px;padding:9px 14px;gap:8px;text-transform:none}
+body.shell button:not(.btn):not(.look-switch):not(.primary):not(.play):not(.write),body.shell .button:not(.primary){background:#ffffff05;border-color:#ffffff26}
 body.shell button:disabled{cursor:default}
 body.shell .hero .play{font-size:15px;font-weight:650;min-height:48px}
 body.shell .note,body.shell .why,body.shell .hint{font-size:12px;line-height:1.6;color:var(--muted);letter-spacing:0;word-spacing:normal}

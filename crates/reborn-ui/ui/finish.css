@@ -19,10 +19,10 @@ body.shell:not(.page-setup) main{max-width:none}body.shell:not(.page-setup) #scr
 body.shell:not(.page-setup) .page-heading{max-width:1280px;margin:0 auto 26px}body.shell:not(.page-setup) .page-heading .eyebrow{display:none}
 body.shell:not(.page-setup) .page-heading h1{font-size:29px;font-weight:600;letter-spacing:-.025em}body.shell:not(.page-setup) .purpose{color:#a6a89e;max-width:760px}
 body.shell:not(.page-setup) input:not([type=radio]):not([type=checkbox]):not([type=range]),body.shell:not(.page-setup) select{border:1px solid #484a41;background:#292b26;color:#eeefe7;border-radius:7px;min-height:40px;padding:9px 12px;font:400 13px/1.4 Inter,Segoe UI,sans-serif}
-body.shell:not(.page-setup) button:not(.play):not(.mapping-key):not(.store-open),body.shell:not(.page-setup) a.button{border-radius:7px;background-color:#30322c;border-color:#47493f;color:#e3e5db;font-weight:500}
-body.shell:not(.page-setup) button.primary{background:#eceee4;color:#252722;border-color:#eceee4}
-body.shell:not(.page-setup) button:hover:not(:disabled):not(.store-open){border-color:#777b6b;background-color:#3b3e35}
-body.shell:not(.page-setup) button.primary:hover:not(:disabled){background:#fff;color:#171a14}
+body.shell:not(.page-setup) button:not(.btn):not(.look-switch):not(.play):not(.mapping-key):not(.store-open),body.shell:not(.page-setup) a.button{border-radius:7px;background-color:#30322c;border-color:#47493f;color:#e3e5db;font-weight:500}
+body.shell:not(.page-setup) button.primary:not(.btn):not(.look-switch){background:#eceee4;color:#252722;border-color:#eceee4}
+body.shell:not(.page-setup) button:not(.btn):not(.look-switch):hover:not(:disabled):not(.store-open){border-color:#777b6b;background-color:#3b3e35}
+body.shell:not(.page-setup) button.primary:not(.btn):not(.look-switch):hover:not(:disabled){background:#fff;color:#171a14}
 body.shell:not(.page-setup) .input-footer{background:#242521;color:#a1a495;border-color:#373930}
 body.shell:not(.page-setup) .player-empty,body.shell:not(.page-setup) .player-workspace{background:#272923;border-color:#43463c}
 body.shell:not(.page-setup) .player-tabs button{background:#292b25!important;border-color:#42453b!important}body.shell:not(.page-setup) .player-tabs button[aria-selected=true]{background:var(--selected-bg)!important;border-color:var(--accent-border)!important}
@@ -48,7 +48,7 @@ body.shell .store-open{display:block;width:100%;padding:0;border:0;border-radius
 body.shell:not(.page-setup) .store-featured h2,body.shell:not(.page-setup) .settings-toolbar h2,body.shell:not(.page-setup) .preference-group h2,body.shell:not(.page-setup) .online-coming h2,body.shell:not(.page-setup) .netplay-form h2,body.shell:not(.page-setup) .mod-dialog h2{font-family:Inter,Segoe UI,sans-serif;text-transform:none;letter-spacing:-.015em;color:#ebeee1;line-height:1.35}body.shell:not(.page-setup) .store-featured h2{font-weight:550;color:#f2f3e9}body.shell:not(.page-setup) .preference-description p{margin:5px 0 0!important}
 
 body.shell:not(.page-setup) .store-empty h2{font:550 19px/1.4 Inter,Segoe UI,sans-serif;text-transform:none;letter-spacing:-.015em;color:#e8ecdf}
-body.shell:not(.page-setup) button.primary:not(.play):not(.mapping-key):not(.store-open){background-color:#eceee4;color:#252722;border-color:#eceee4}
+body.shell:not(.page-setup) button.primary:not(.btn):not(.look-switch):not(.play):not(.mapping-key):not(.store-open){background-color:#eceee4;color:#252722;border-color:#eceee4}
 /* Supplied Play artwork: retain its colors and keep the portrait in frame. */
 .page-home .hero-art img{object-position:65% center;filter:none}
 .page-home .hero:before{background:linear-gradient(90deg,#10101c66,transparent 65%),linear-gradient(0deg,#101016ed,transparent 60%)}
@@ -60,10 +60,10 @@ body.shell.page-setup{background:var(--bg);color:var(--fg)}
 body.shell.page-setup main,body.shell.page-setup #nav{background:var(--bg)}
 body.shell.page-setup .app-header{background:var(--bg)}
 body.shell.page-setup .input-footer{background:#242521;border-color:#373930;color:#a1a495}
-body.shell.page-setup button{background-color:var(--control-bg);border-color:var(--control-border);color:var(--fg)}
-body.shell.page-setup button:hover:not(:disabled){background-color:#3b3e35;border-color:#777b6b}
-body.shell.page-setup button.primary,body.shell.page-setup #next{background:#eceee4;color:#252722;border-color:#eceee4}
-body.shell.page-setup button.primary:hover:not(:disabled),body.shell.page-setup #next:hover:not(:disabled){background:#fff;color:#171a14}
+body.shell.page-setup button:not(.btn):not(.look-switch){background-color:var(--control-bg);border-color:var(--control-border);color:var(--fg)}
+body.shell.page-setup button:not(.btn):not(.look-switch):hover:not(:disabled){background-color:#3b3e35;border-color:#777b6b}
+body.shell.page-setup button.primary:not(.btn):not(.look-switch),body.shell.page-setup #next{background:#eceee4;color:#252722;border-color:#eceee4}
+body.shell.page-setup button.primary:not(.btn):not(.look-switch):hover:not(:disabled),body.shell.page-setup #next:hover:not(:disabled){background:#fff;color:#171a14}
 body.shell.page-setup input:not([type=radio]):not([type=checkbox]):not([type=range]),body.shell.page-setup select{background:#292b26;border-color:var(--control-border);color:var(--fg)}
 body.shell.page-setup .choice:hover{background:#30342b}
 body.shell.page-setup .choice input{accent-color:var(--focus)}
