@@ -4480,6 +4480,104 @@ async fn update_policy_set(automatic: bool) -> Result<UpdatePolicyView, String> 
     update_policy().await
 }
 
+/// How the launcher window looks right now, for the page.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LookView {
+    window_glass: bool,
+    slow_animations: bool,
+    glass_supported: bool,
+    glass_applied: bool,
+    glass_note: Option<String>,
+}
+
+fn look_view(
+    saved: reborn_core::settings::LauncherLook,
+    material: Option<launcher_look::Material>,
+    applied: bool,
+    os: launcher_look::Os,
+) -> LookView {
+    let glass_note = match (material, os) {
+        (Some(_), _) => None,
+        (None, launcher_look::Os::Linux) => Some("Frosted glass isn't available on Linux.".to_string()),
+        (None, _) => Some("Not available on this system.".to_string()),
+    };
+    LookView {
+        window_glass: saved.window_glass,
+        slow_animations: saved.slow_animations,
+        glass_supported: material.is_some(),
+        glass_applied: applied,
+        glass_note,
+    }
+}
+
+/// Put the material on the window, or take it off. Returns whether glass is showing.
+fn apply_glass(window: &tauri::WebviewWindow, material: Option<launcher_look::Material>, enabled: bool) -> bool {
+    use tauri::window::{Effect, EffectsBuilder};
+    let effect = match (enabled, material) {
+        (true, Some(launcher_look::Material::Mica)) => Some(Effect::Mica),
+        (true, Some(launcher_look::Material::Acrylic)) => Some(Effect::Acrylic),
+        (true, Some(launcher_look::Material::Vibrancy)) => Some(Effect::UnderWindowBackground),
+        _ => None,
+    };
+    match effect {
+        Some(e) => window.set_effects(EffectsBuilder::new().effect(e).build()).is_ok(),
+        None => {
+            let _ = window.set_effects(None);
+            false
+        }
+    }
+}
+
+fn material_here() -> Option<launcher_look::Material> {
+    launcher_look::pick_material(launcher_look::current_os(), launcher_look::windows_build())
+}
+
+#[tauri::command]
+async fn launcher_look(_window: tauri::WebviewWindow) -> Result<LookView, String> {
+    let saved = tauri::async_runtime::spawn_blocking(|| {
+        let file = reborn_core::settings::settings_path(&Platform::detect()).map_err(|e| e.to_string())?;
+        reborn_core::settings::launcher_look(&file).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let material = material_here();
+    let applied = saved.window_glass && material.is_some();
+    Ok(look_view(saved, material, applied, launcher_look::current_os()))
+}
+
+/// Save a change (either field; null leaves it). Glass is re-applied to match.
+#[tauri::command]
+async fn launcher_look_set(
+    window: tauri::WebviewWindow,
+    window_glass: Option<bool>,
+    slow_animations: Option<bool>,
+) -> Result<LookView, String> {
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        let file = reborn_core::settings::settings_path(&Platform::detect()).map_err(|e| e.to_string())?;
+        reborn_core::settings::set_launcher_look(&file, window_glass, slow_animations).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let material = material_here();
+    let applied = apply_glass(&window, material, saved.window_glass);
+    Ok(look_view(saved, material, applied, launcher_look::current_os()))
+}
+
+/// Preview glass on or off WITHOUT saving (Settings uses this before Save).
+#[tauri::command]
+async fn window_glass_apply(window: tauri::WebviewWindow, enabled: bool) -> Result<LookView, String> {
+    let saved = tauri::async_runtime::spawn_blocking(|| {
+        let file = reborn_core::settings::settings_path(&Platform::detect()).map_err(|e| e.to_string())?;
+        reborn_core::settings::launcher_look(&file).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let material = material_here();
+    let applied = apply_glass(&window, material, enabled);
+    Ok(look_view(saved, material, applied, launcher_look::current_os()))
+}
+
 fn selected_user_dir(platform: &Platform, hint: Option<&str>) -> Result<Option<PathBuf>, String> {
     if let Some(value) = hint.filter(|v| !v.trim().is_empty()) {
         return Ok(Some(reborn_core::session::user_path(value)));
@@ -6176,6 +6274,17 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .setup(|app| {
+            // Glass before the first paint; the page's cached look covers the rest.
+            if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                let saved = reborn_core::settings::settings_path(&Platform::detect())
+                    .and_then(|f| reborn_core::settings::launcher_look(&f))
+                    .map(|l| l.window_glass)
+                    .unwrap_or(true);
+                apply_glass(&w, material_here(), saved);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Already here.
             online_mm::mm_state,
@@ -6279,6 +6388,9 @@ fn main() {
             content_updates::content_dismiss,
             content_updates::content_repair_image,
             texture_policy,
+            launcher_look,
+            launcher_look_set,
+            window_glass_apply,
             texture_policy_set,
             controls_set,
             controls_current,
@@ -6348,6 +6460,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_look_view_says_why_there_is_no_glass() {
+        use reborn_core::settings::LauncherLook;
+        use launcher_look::{Material, Os};
+        let on = LauncherLook { window_glass: true, slow_animations: true };
+        let v = look_view(on, Some(Material::Mica), true, Os::Windows);
+        assert!(v.glass_supported && v.glass_applied && v.glass_note.is_none());
+        let v = look_view(on, None, false, Os::Linux);
+        assert!(!v.glass_supported && !v.glass_applied);
+        assert_eq!(v.glass_note.as_deref(), Some("Frosted glass isn't available on Linux."));
+        let v = look_view(on, None, false, Os::Windows);
+        assert_eq!(v.glass_note.as_deref(), Some("Not available on this system."));
+        let off = LauncherLook { window_glass: false, slow_animations: false };
+        let v = look_view(off, Some(Material::Mica), false, Os::Windows);
+        assert!(v.glass_supported && !v.glass_applied && !v.slow_animations && v.glass_note.is_none());
+    }
 
     /// The text of one command, from its signature to the start of the next
     /// `#[tauri::command]`.

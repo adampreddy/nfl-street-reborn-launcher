@@ -17,9 +17,10 @@
         "resizable": true,
         "center": true,
         "decorations": true,
-        "backgroundColor": "#0B0C0E"
+        "transparent": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https://api.nflstreetreborn.com/live-assets/ https://cdn.discordapp.com/avatars/; font-src 'self'"
     },
