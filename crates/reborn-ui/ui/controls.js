@@ -20,7 +20,13 @@ function mappingNote(){
   el('button',{type:'button',class:'btn sm quiet',text:'Dismiss',onclick:()=>{set('bx-note-dismissed','1');note.remove();const tab=document.getElementById(`player-tab-${active}`);(tab&&!tab.disabled?tab:screen.querySelector('button:not(:disabled),select:not(:disabled)'))?.focus({preventScroll:true});}}));
  return note;
 }
-function lock(value){const held=value&&screen.contains(document.activeElement)?document.activeElement:null;busy=value;screen.querySelectorAll('.ctl-note button,.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);if(held?.disabled)(screen.querySelector('button:not(:disabled),select:not(:disabled)')||document.querySelector('.shell-nav [aria-current],.shell-nav a'))?.focus({preventScroll:true});}
+let handed=null,fallback=null; // the control focus was moved off by lock(true), and where it went
+function lock(value){
+ const held=value&&screen.contains(document.activeElement)?document.activeElement:null;busy=value;
+ screen.querySelectorAll('.ctl-note button,.player-tabs button,.player-device select,.player-device button,.player-textures select').forEach(n=>n.disabled=value);
+ if(value){handed=fallback=null;if(held?.disabled){(screen.querySelector('button:not(:disabled),select:not(:disabled)')||document.querySelector('.shell-nav [aria-current],.shell-nav a'))?.focus({preventScroll:true});handed=held;fallback=document.activeElement;}}
+ else{if(handed?.isConnected&&!handed.disabled&&document.activeElement===fallback)handed.focus({preventScroll:true});handed=fallback=null;}
+}
 async function refresh(){
  if(busy)return;lock(true);problem='';
  try{

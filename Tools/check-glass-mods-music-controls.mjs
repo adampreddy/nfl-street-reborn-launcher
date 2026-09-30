@@ -64,6 +64,7 @@ async function open(file, { glass = true, slow = true, viewport = { width: 1280,
       if (cmd === 'window_glass_apply') return { ...look, glassApplied: args.enabled };
       if (cmd === 'music_unstage') { data.music_status.slots.forEach((s) => { if (args.slot === null || s.slot === args.slot) s.pending = null; }); return data.music_status; }
       if (cmd === 'controller_assign_player' && window.__holdAssign) return new Promise((r) => { window.__release = () => r({ slots: data.controller_slots.slots }); });
+      if (cmd === 'controls_set') { await new Promise((r) => setTimeout(r, 300)); return { sync_note: 'Button textures saved.' }; }
       if (cmd === 'remap_detect') return new Promise(() => {});
       if (cmd in data) return data[cmd];
       return null;
@@ -240,6 +241,19 @@ try {
     await page.locator('.ctl-note button').click();
     assert.equal(await page.locator('.ctl-note').count(), 0, 'the note goes');
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'player-tab-0', 'Dismiss hands focus to the player tab');
+    await page.context().close();
+  }
+  { // Controllers: focus returns to the Button textures select once its save finishes.
+    const page = await open('controls.html');
+    await page.getByRole('button', { name: 'Assign A', exact: true }).waitFor();
+    await settle(page);
+    const tex = page.locator('#player-textures');
+    await tex.focus();
+    await tex.selectOption('gamecube');
+    await page.waitForFunction(() => document.querySelector('#player-textures').disabled);
+    assert.notEqual(await page.evaluate(() => document.activeElement?.tagName), 'BODY', 'busy: focus is not on the page');
+    await page.waitForFunction(() => !document.querySelector('#player-textures').disabled);
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'player-textures', 'after the save, focus is back on the Button textures select');
     await page.context().close();
   }
   { // Mods: an empty library offers the in-page import action (not just the toolbar link).
