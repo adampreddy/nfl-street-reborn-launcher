@@ -124,6 +124,14 @@ pub struct Settings {
     /// different image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unverified_game_ack: Option<String>,
+    /// Frosted window glass. `None` means on wherever the OS has it; the
+    /// launcher falls back to a solid dark window where it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_glass: Option<bool>,
+    /// Slow, smooth animations. `None` means on: Adam chose slow as the
+    /// default on 2026-09-30. The OS reduce-motion setting always wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_animations: Option<bool>,
 }
 
 /// Optional user-selected graphics values. Required game compatibility keys remain managed.
@@ -192,6 +200,8 @@ impl Default for Settings {
             graphics_override: None,
             migrated_texture_root: None,
             unverified_game_ack: None,
+            window_glass: None,
+            slow_animations: None,
         }
     }
 }
@@ -321,6 +331,39 @@ pub fn set_automatic_updates(path: &Path, automatic: bool) -> Result<Option<bool
     settings.automatic_updates = Some(automatic);
     settings.save(path)?;
     Ok(was)
+}
+
+/// How the launcher window looks, as the player set it (absent = on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LauncherLook {
+    pub window_glass: bool,
+    pub slow_animations: bool,
+}
+
+/// Read the look.
+pub fn launcher_look(path: &Path) -> Result<LauncherLook> {
+    let s = Settings::load(path)?;
+    Ok(LauncherLook {
+        window_glass: s.window_glass.unwrap_or(true),
+        slow_animations: s.slow_animations.unwrap_or(true),
+    })
+}
+
+/// Change either field; `None` leaves that field as it is. Returns the new look.
+pub fn set_launcher_look(
+    path: &Path,
+    window_glass: Option<bool>,
+    slow_animations: Option<bool>,
+) -> Result<LauncherLook> {
+    let mut s = Settings::load(path)?;
+    if let Some(v) = window_glass {
+        s.window_glass = Some(v);
+    }
+    if let Some(v) = slow_animations {
+        s.slow_animations = Some(v);
+    }
+    s.save(path)?;
+    launcher_look(path)
 }
 
 pub fn effective_controls_profile(
@@ -519,5 +562,36 @@ mod tests {
         s.unverified_game_ack = Some("aa".into());
         assert!(s.ack_matches("aa"));
         assert!(!s.ack_matches("bb"), "the ack is per image, never a global mode");
+    }
+
+    #[test]
+    fn the_look_defaults_to_glass_and_slow_animations() {
+        // Adam, 2026-09-30: glass where the OS has it, slow animations on by
+        // default. Absent means never set, and never set means on.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: true, slow_animations: true });
+        assert!(!path.exists(), "reading must not create the file");
+    }
+
+    #[test]
+    fn the_look_can_be_changed_one_field_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        let after = set_launcher_look(&path, Some(false), None).unwrap();
+        assert_eq!(after, LauncherLook { window_glass: false, slow_animations: true });
+        let after = set_launcher_look(&path, None, Some(false)).unwrap();
+        assert_eq!(after, LauncherLook { window_glass: false, slow_animations: false });
+        assert_eq!(launcher_look(&path).unwrap(), after);
+    }
+
+    #[test]
+    fn a_settings_file_from_before_the_look_still_reads() {
+        // An older launcher wrote no look fields at all.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        std::fs::write(&path, format!(r#"{{"schema":"{SETTINGS_SCHEMA}","automatic_updates":true}}"#)).unwrap();
+        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: true, slow_animations: true });
+        assert_eq!(Settings::load(&path).unwrap().automatic_updates, Some(true));
     }
 }
