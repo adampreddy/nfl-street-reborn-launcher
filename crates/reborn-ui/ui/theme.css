@@ -1,0 +1,95 @@
+/* The launcher's one design system. Spec: docs/superpowers/specs/2026-09-30-launcher-glass-redesign-design.md
+   If a value is not in this file, it is not a decision anyone gets to make in a page stylesheet. */
+@font-face{font-family:Inter;src:url("fonts/InterVariable.woff2") format("woff2");font-weight:100 900;font-display:block}
+
+:root{
+  --mica-tint:rgba(18,19,23,.66);
+  --fallback-bg:radial-gradient(60% 60% at 50% 40%,#23262d 0,transparent 70%),#0d0e11;
+  --glass-1:rgba(255,255,255,.045);--glass-2:rgba(255,255,255,.075);--glass-3:rgba(255,255,255,.11);
+  --stroke:rgba(255,255,255,.09);--stroke-hi:rgba(255,255,255,.16);
+  --sheen:inset 0 1px 0 rgba(255,255,255,.07);--shadow:0 12px 40px -12px rgba(0,0,0,.55);
+  --fg:#F4F5F7;--fg-2:#AEB5C0;--fg-3:#7C8491;
+  --red:#E0272E;--red-hi:#F04A50;--red-ink:#FF7A7F;--ok:#3DDC97;--warn:#FFC46B;
+  --r-lg:14px;--r-md:10px;--r-sm:8px;
+  --ease:cubic-bezier(.2,.8,.2,1);
+  --d1:480ms;--d2:720ms;--d3:960ms;
+  /* the old stylesheets' variables, pointed at the new tokens (retired in the Cleanup plan) */
+  --bg:transparent;--panel:var(--glass-1);--line:var(--stroke);--muted:var(--fg-2);--accent:var(--red);
+  --accent-border:var(--stroke-hi);--control-bg:var(--glass-2);--control-border:var(--stroke);
+  --panel-border:var(--stroke);--selected-bg:var(--glass-3);--focus:#fff;--teal:var(--ok);
+  --motion-ease:var(--ease);--motion-fast:var(--d1);--motion-normal:var(--d2);
+}
+html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
+html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}
+@media (prefers-reduced-motion:reduce){
+  html{--d1:0ms;--d2:0ms;--d3:0ms}
+  *,*::before,*::after{animation:none!important;transition-duration:0s!important}
+}
+
+/* material: the rule sits on the ROOT so every page (and any short body) always has a surface.
+   glass on = the OS material under our tint; off/unsupported = solid dark. Body stays transparent, so the tint is painted once. */
+html[data-glass="off"]{background:var(--fallback-bg)}
+html[data-glass="on"]{background:var(--mica-tint)}
+body,body.shell{background:transparent!important}
+body.shell{color:var(--fg);font-family:Inter,system-ui,sans-serif}
+body.shell .backdrop{display:none}
+/* shell surfaces carry no opaque fill of their own, so the material shows through.
+   Originals: launcher.css:4/6/7/23/29, product-ui.css:3/4/5/12/49, finish.css:14/15/26/60/61, play.css:2, onboarding-polish.css:2 */
+body.shell .app-header,body.shell .shell-nav,body.shell .input-footer,
+body.shell #main,body.shell main,body.shell.page-home main,body.shell.page-setup main,body.shell.page-setup #nav,
+body.shell.page-home details.core,body.shell.page-home #screen{background:transparent!important}
+body.shell .shell-nav{border-right:1px solid var(--stroke)!important}
+
+/* sidebar: one sliding marker (look.js), no per-item marker */
+body.shell .shell-nav{position:relative}
+.shell-nav a:not(.brand){border-radius:var(--r-md)!important;color:var(--fg-2)!important;transition:background var(--d2) var(--ease),color var(--d2) var(--ease)}
+.shell-nav a:not(.brand):hover{background:var(--glass-1)!important;color:var(--fg)!important}
+.shell-nav a.current:not(.brand){background:var(--glass-3)!important;color:var(--fg)!important;box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
+.shell-nav a.current:not(.brand)::before{display:none!important}
+.nav-marker{position:absolute;left:0;top:0;width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--red);transition:transform var(--d3) var(--ease);pointer-events:none}
+.nav-marker.still{transition:none}
+
+/* page enter: content fades up 6px; the sidebar never moves */
+@keyframes look-enter{from{opacity:0;transform:translateY(6px)}}
+/* backwards, not both: a finished transform animation would keep #main a containing block for position:fixed descendants */
+body.shell #main{animation:look-enter var(--d3) var(--ease) backwards}
+/* Play's hero is position:fixed inside #main (launcher.css:83); a transform on #main would re-anchor it, so Play fades only */
+@keyframes look-enter-fade{from{opacity:0}}
+body.shell.page-home #main{animation-name:look-enter-fade}
+
+/* buttons */
+body.shell button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:background var(--d1) var(--ease),border-color var(--d1) var(--ease),color var(--d1) var(--ease),transform var(--d1) var(--ease)}
+body.shell button:active{transform:scale(.98)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer}
+.btn:hover{background:var(--glass-3);border-color:var(--stroke-hi)}
+.btn.primary{background:linear-gradient(180deg,#ec3a41,#c91f26);border-color:rgba(255,255,255,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px -8px rgba(0,0,0,.6)}
+.btn.primary:hover{background:linear-gradient(180deg,#f4545a,#d6262d)}
+.btn.quiet{background:transparent;box-shadow:none;color:var(--fg-2)}
+.btn.sm{height:32px;padding:0 12px;font-size:12.5px}
+
+/* focus: controller only (app-shell sets body.gamepad-input); keyboard keeps the browser default */
+body.gamepad-input :focus-visible{outline:2px solid #fff!important;outline-offset:3px;box-shadow:none!important}
+
+/* switch */
+.look-switch{position:relative;width:40px;height:22px;border-radius:999px;border:0;padding:0;cursor:pointer;background:var(--red);transition:background var(--d2) var(--ease)}
+.look-switch::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transform:translateX(18px);transition:transform var(--d2) var(--ease)}
+.look-switch[aria-checked="false"]{background:rgba(255,255,255,.14)}
+.look-switch[aria-checked="false"]::after{transform:none;background:#cfd3da}
+.look-switch:disabled{opacity:.45;cursor:not-allowed}
+
+/* glass card */
+.glass{background:var(--glass-1);border:1px solid var(--stroke);border-radius:var(--r-lg);box-shadow:var(--sheen),var(--shadow);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
+
+/* hint bar: only exists in controller mode (app-shell) */
+body.shell .input-footer{border-top:1px solid var(--stroke)!important;color:var(--fg-3)}
+body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
+.input-footer kbd{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 5px;border-radius:5px;background:var(--glass-3);border:1px solid var(--stroke-hi);color:var(--fg);font:700 10px Inter}
+
+/* save bar (savebar.js): its own lane, never over content, appears only when something changed */
+.save-lane{flex:none;overflow:hidden;max-height:0;transition:max-height var(--d3) var(--ease)}
+.save-lane.open{max-height:110px}
+.save-bar{margin:10px 24px 18px;max-width:942px;display:flex;align-items:center;gap:16px;padding:12px 14px 12px 20px;border-radius:var(--r-lg);border:1px solid var(--stroke-hi);background:rgba(24,25,30,.78);backdrop-filter:blur(24px) saturate(1.3);box-shadow:var(--sheen),0 16px 40px -14px rgba(0,0,0,.75);opacity:0;transform:translateY(12px);transition:opacity var(--d3) var(--ease),transform var(--d3) var(--ease)}
+.save-lane.open .save-bar{opacity:1;transform:none}
+.save-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
+.save-bar .t{font-weight:600}.save-bar .d{color:var(--fg-2);font-size:12.5px}
+.save-bar .btn:first-of-type{margin-left:auto}

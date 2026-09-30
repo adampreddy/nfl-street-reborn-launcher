@@ -149,3 +149,5 @@ if (bridge) {
     }
   } catch (_) { /* Pages surface their own read failures and keep existing values. */ }
 }
+
+import("./look.js").then(m => { m.refreshLook(); m.mountNavMarker(); }).catch(() => {});
