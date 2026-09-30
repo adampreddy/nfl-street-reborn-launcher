@@ -1,0 +1,91 @@
+/* Play (spec §8.1; mockup "PLAY"). Layout only: every colour, radius and duration comes from theme.css.
+   The art covers the page; the launch group sits bottom-left over it; the strip runs along the bottom. */
+/* position:relative: #menu-pad-setup (a child of #main) anchors inside the content, never over the sidebar */
+body.page-home #main{position:relative;padding:0;overflow-x:hidden;overflow-y:auto}
+body.page-home #screen{position:relative;display:flex;flex-direction:column;min-height:100%;isolation:isolate}
+.page-home .loading{padding:24px 42px}
+.page-home #menu-pad-setup{position:absolute;top:24px;left:42px;z-index:2}
+
+/* art: full bleed, never moves; the scrim keeps the words readable */
+.page-home .play-scene{position:absolute;inset:0;z-index:-1;overflow:hidden}
+.page-home .hero-art{position:absolute;inset:0}
+.page-home .hero-art img{display:block;width:100%;height:100%;object-fit:cover;object-position:62% 18%}
+.page-home .play-scene::after{content:"";position:absolute;inset:0;background:var(--hero-scrim);pointer-events:none}
+
+/* account, top right */
+.page-home .play-account{position:absolute;top:24px;right:24px;z-index:1;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:min(340px,45%)}
+.page-home .play-account-chip{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 14px 6px 6px;border-radius:999px;background:var(--on-art);border:1px solid var(--stroke);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);color:var(--fg);text-decoration:none}
+.page-home .play-account-text{display:flex;flex-direction:column;min-width:0}
+.page-home .play-account-text .nm{font-size:13px;font-weight:600;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.page-home .play-account-text .pt{font-size:11.5px;color:var(--fg-2)}
+.page-home .play-account-note{font-size:12px;color:var(--fg-2);text-align:right;overflow-wrap:anywhere}
+.page-home .play-account-card{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere}
+.page-home .play-account-card p:first-child{color:var(--fg)}
+
+/* the launch group, bottom left */
+.page-home .play-content{position:relative;flex:1;display:flex;flex-direction:column;justify-content:flex-end;min-height:0;padding:96px 42px clamp(24px,10vh,96px)}
+.page-home .play-wordmark{margin:0;line-height:0;font-size:0}
+.page-home .play-wordmark img{display:block;width:470px;max-width:100%;height:auto}
+.page-home .play-actions{display:flex;align-items:center;gap:8px;margin-top:24px}
+.page-home .play-actions .play{height:52px;min-width:250px;padding:0 40px;font:700 18px Inter,system-ui,sans-serif;letter-spacing:.01em}
+.page-home .play-actions .play svg{width:16px;height:16px}
+.page-home .play-more{width:52px;height:52px;padding:0;color:var(--fg-2)}
+.page-home .play-more:hover{color:var(--fg)}
+.page-home .play-more svg{width:18px;height:18px}
+.page-home .play-status{display:flex;align-items:center;gap:8px;min-height:20px;margin-top:16px;font-size:13px;font-weight:500;color:var(--fg)}
+.page-home .play-status .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ok)}
+.page-home .play-status.is-setup .dot{background:var(--warn)}
+.page-home .play-status.is-error .dot{background:var(--red)}
+.page-home .play-status.is-live .dot{animation:live-pulse 1.6s ease-in-out infinite}
+.page-home .play-status-action{margin-left:4px;padding:0;border:0;background:none;color:var(--fg-2);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.page-home .play-status-action:hover{color:var(--fg)}
+.page-home .play-notes{display:flex;flex-direction:column;gap:8px;margin-top:16px;max-width:480px}
+.page-home .play-notes:empty{display:none}
+.page-home .play-note{display:flex;align-items:center;gap:16px;padding:12px 16px;font-size:12.5px;color:var(--fg-2)}
+.page-home .play-note>span:not(.dot){flex:1;min-width:0}
+.page-home .play-note .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--warn)}
+.page-home .play-note a{color:var(--fg);font-weight:600;text-underline-offset:3px;white-space:nowrap}
+.page-home .play-controller-setup{flex-direction:column;align-items:flex-start;gap:8px}
+.page-home .play-controller-setup strong{font-size:14px;color:var(--fg)}
+.page-home .play-controller-setup-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* the strip: one glass panel, three cells edge to edge; hover fills the whole cell; the panel's radius clips the outer corners */
+.page-home .play-strip{flex:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));height:78px;margin:0 42px 24px;padding:0;overflow:hidden}
+.page-home .play-cell{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:100%;padding:0 18px;border:0;border-radius:0;background:transparent;color:var(--fg);font:inherit;text-align:left;text-decoration:none;cursor:pointer}
+.page-home .play-cell+.play-cell{border-left:1px solid var(--stroke)}
+.page-home .play-cell:hover:not(:disabled){background:var(--glass-1)}
+.page-home .play-cell:disabled{cursor:default;opacity:.55}
+.page-home .play-cell>span:first-child{min-width:0}
+.page-home .play-cell .k{display:block;font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.page-home .play-cell .v{display:block;margin-top:3px;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.page-home .play-cell svg{width:16px;height:16px;flex:none;color:var(--fg-3)}
+/* the panel clips its cells, so the focus ring sits inside the cell */
+body.shell.page-home .play-strip .play-cell:focus-visible,body.gamepad-input.page-home .play-strip .play-cell.pad-focus{outline-offset:-4px!important}
+
+/* content rises in on the page's FIRST draw only (home.js sets .is-entering once); redraws never replay it.
+   The art only fades with #main (theme.css). */
+.page-home #screen.is-entering .play-content,.page-home #screen.is-entering .play-strip,.page-home #screen.is-entering .play-account{animation:look-enter var(--d3) var(--ease) backwards}
+
+/* Game details (the ⋯ button) */
+.page-home .play-dialog{width:min(540px,calc(100vw - 48px));max-height:calc(100vh - 64px);overflow:auto}
+.page-home .play-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
+.page-home .play-dialog h2{font-size:20px;font-weight:600;letter-spacing:-.02em}
+.page-home .play-detail-links{margin-bottom:16px;border:1px solid var(--stroke);border-radius:var(--r-md);overflow:hidden}
+.page-home .play-detail-links a{display:flex;align-items:center;gap:16px;min-height:56px;padding:0 16px;color:var(--fg);font-size:13px;text-decoration:none}
+.page-home .play-detail-links a+a{border-top:1px solid var(--stroke)}
+.page-home .play-detail-links a:hover{background:var(--glass-1)}
+.page-home .play-detail-value{margin-left:auto;color:var(--fg-2);font-size:12px}
+.page-home .play-detail-message{margin:0 0 8px;font-size:12.5px;line-height:1.6;color:var(--warn);overflow-wrap:anywhere}
+.page-home .play-copy{margin-bottom:16px}
+.page-home .play-copy-box{position:fixed;left:-9999px;top:0}
+.page-home .play-help{display:inline-block;margin:0 0 16px;font-size:12.5px;color:var(--fg-2);text-underline-offset:4px}
+.page-home .play-files summary{padding:8px 0;color:var(--fg-2);font-size:12.5px;cursor:pointer}
+.page-home .play-files .block h2{display:none}
+.page-home .play-dialog-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid var(--stroke)}
+.page-home .play-dialog-actions a{color:var(--fg-2);font-size:12.5px;text-underline-offset:4px}
+
+@media (max-width:900px),(max-height:650px){
+  .page-home .play-content{padding:88px 28px 24px}
+  .page-home .play-strip{height:64px;margin:0 28px 16px}
+  .page-home .play-account{top:16px;right:16px}
+}

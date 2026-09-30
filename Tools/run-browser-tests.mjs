@@ -108,10 +108,14 @@ assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'play-now','
 assert.match(await page.locator('#input-hints').innerText(),/A\s+Select/);
 await page.evaluate(()=>{window.__testPad.connected=false;});
 await page.getByRole('button',{name:'Play now'}).click();
-await page.getByRole('button',{name:'Session active'}).waitFor();
-assert.equal(await page.getByRole('button',{name:'Session active'}).isDisabled(),true);
+await page.getByRole('button',{name:'Playing'}).waitFor();
+assert.equal(await page.getByRole('button',{name:'Playing'}).isDisabled(),true);
 await page.evaluate(()=>window.__finishLaunch({started:false,message:'The emulator could not start.'}));
-await page.getByRole('alert').filter({hasText:'The emulator could not start.'}).waitFor();
+// The status line says it could not start; "See why" opens the reason in Game details (spec §8.1).
+await page.getByRole('alert').filter({hasText:'Your game could not start'}).waitFor();
+await page.getByRole('button',{name:'See why',exact:true}).click();
+await page.locator('#game-details[open]').getByText('The emulator could not start.').waitFor();
+await page.keyboard.press('Escape');
 assert.equal(await page.getByRole('button',{name:'Play now'}).isEnabled(),true);
 await page.goto(url+'/settings.html');await page.getByRole('button',{name:'Files & storage',exact:true}).click();await page.getByLabel('Game image',{exact:true}).waitFor();
 await page.screenshot({path:path.join(out,'reborn-launcher-settings.png')});

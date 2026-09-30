@@ -186,7 +186,8 @@ for (const [file, name] of PAGES) {
   check("Play names the image and why", t.includes("NSR.iso") && t.includes("found by name"));
   check("Play names the user folder", t.includes("beside the emulator"));
   check("Play says a pad list may be incomplete when it is", t.includes("Not every backend"));
-  check("Play shows who is signed in", t.includes("Signed in as Adam"));
+  // The account block (spec §8.1): avatar, name and playtime; "Signed in as" is its accessible name.
+  check("Play shows who is signed in", !!findByAttr(screen, "aria-label", "Signed in as Adam") && t.includes("12 min played"), t.slice(0, 300));
   // The league site is parked and its results endpoint is unbuilt; a toggle a
   // player could tick that then does nothing is worse than no toggle at all.
   check("Play does not offer the league toggle", !t.includes("This is a league match"));
@@ -332,7 +333,7 @@ for (const [file, name] of PAGES) {
       await tick(); await tick(); await tick(); await tick();
     }
     const t = text(page.screen());
-    check("A finished sign-in is shown", t.includes("Signed in as Adam"), t.slice(0, 300));
+    check("A finished sign-in is shown", !!findByAttr(page.screen(), "aria-label", "Signed in as Adam"), t.slice(0, 300));
     check("A finished sign-in leaves no failure text beside it", !t.includes("expired"), t.slice(0, 300));
   }
   page.done();

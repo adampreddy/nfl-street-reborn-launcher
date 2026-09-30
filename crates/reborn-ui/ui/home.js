@@ -1,7 +1,7 @@
 // A focused Play screen. Launch checks remain visible; settings and paths
 // live in Game details without moving the artwork or interrupting navigation.
 
-import { bridge, call, el, fact, facts, get, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
+import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason, wireCoreFold } from "./shell.js";
 
 // Opened from a friend's invite link: straight on to Online, which fills in
 // the room. Play is the window's first page, so this is where the hand-off
@@ -29,6 +29,9 @@ let busy = false;
 let playing = false;
 let result = null;
 let problem = null;
+// One line about a strip change that did not apply (Display, Graphics). Never the red "could not
+// start": that state is for the game itself.
+let notice = null;
 let externalSession = false;
 let leagueMatch = false;
 // Set when Play was NOT started because player one's pad cannot press Start or
@@ -44,11 +47,16 @@ const signIn = { active: false, starting: false, deviceCode: null, userCode: nul
 // for one state.
 const ACCOUNT_UNREADABLE = "Whether you are signed in could not be read just now. Try again in a moment.";
 
+// Names only (spec §8.1): the ReShade text they used to carry is stale since 3.0.20.
 const PRESETS = [
-  ["performance", "Performance", "1080p · 3×. ReShade disabled."],
-  ["balanced", "Balanced", "1080p · 3×. ReShade with lighter effects."],
-  ["quality", "All-Out", "1080p · 3×. ReShade with high-end effects."],
+  ["performance", "Performance"],
+  ["balanced", "Balanced"],
+  ["quality", "All-Out"],
 ];
+
+const GLYPH_PLAY = "M7 4l13 8-13 8z";
+const GLYPH_MORE = "M5 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm7 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm7 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z";
+const CHEVRON = "M9 6l6 6-6 6";
 
 function graphicsLabel() { return state.graphicsOptions?.current?.label || PRESETS.find(p=>p[0]===preset())?.[1] || "Balanced"; }
 
@@ -85,6 +93,7 @@ async function play() {
   playing = true;
   result = null;
   problem = null;
+  notice = null;
   controllerSetup = null;
   draw();
   try {
@@ -172,39 +181,33 @@ function stopSignIn(message) {
   signIn.message = message || null;
 }
 
-function identityCard() {
+// Top right (spec §8.1): avatar, name and playtime, in place of "Signed in as …". identity_status has no
+// avatar picture, so the avatar is the name's first letter on the avatar colours (spec §3.4).
+function accountBlock() {
   const id = state.identity;
-  const card = el("section", { class: "block play-identity", "aria-label": "Account" });
+  const box = el("div", { class: "play-account", role: "group", "aria-label": "Account" });
   if (signIn.active) {
-    card.append(el("p", { text: `Waiting for Discord. Your code is ${signIn.userCode}.` }));
-    // The address, in every case, not only when the browser did not open. A
-    // browser can open on another monitor, behind this window, or in a profile
-    // that is not signed into Discord, and the launcher counts all three as
-    // success. A player holding a code with nowhere to type it has no way
-    // forward, and this is the only thing on the card they can act on alone.
-    // One sentence for both cases, because "where to go" is the same sentence
-    // whether or not something already went there. The address is not a secret
-    // from the person whose code it is.
-    if (signIn.verifyUrl) card.append(el("p", { class: "note", text: `Go to ${signIn.verifyUrl} to approve it.` }));
-    card.append(el("button", { type: "button", text: "Cancel", onclick: () => { stopSignIn(); draw(); } }));
+    // The address, in every case, not only when the browser did not open: it can open on another
+    // monitor, behind this window, or in a profile not signed into Discord.
+    box.append(el("div", { class: "glass play-account-card", role: "status" },
+      el("p", { text: `Waiting for Discord. Your code is ${signIn.userCode}.` }),
+      signIn.verifyUrl ? el("p", { text: `Go to ${signIn.verifyUrl} to approve it.` }) : null,
+      el("button", { type: "button", class: "btn sm", text: "Cancel", onclick: () => { stopSignIn(); draw(); } })));
   } else if (ok(id) && id.signed_in) {
-    card.append(el("p", { text: `Signed in as ${id.display_name}` }));
+    const name = id.display_name || "Player";
+    const played = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "No games played yet";
+    box.append(el("a", { class: "play-account-chip", href: "stats.html", "aria-label": `Signed in as ${name}` },
+      el("span", { class: "avatar", "aria-hidden": "true", text: name.slice(0, 1).toUpperCase() }),
+      el("span", { class: "play-account-text" }, el("span", { class: "nm", text: name }), el("span", { class: "pt", text: played }))));
   } else {
-    // Never `id.error`. A failed read hands back the command's own name, the
-    // credential vault's wording or a path, and none of that is something a
-    // player can act on. The one sentence covers every way the read can fail,
-    // because from where they are sitting there is no difference between them
-    // and nothing different to do about any of them.
-    card.append(el("p", { text: ok(id) ? "Sign in with Discord to track your stats from your games." : ACCOUNT_UNREADABLE }));
-    card.append(el("button", { type: "button", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
+    box.append(el("button", { type: "button", class: "btn sm", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
+    // Never `id.error`: a failed read hands back the command's own name or a vault's wording.
+    box.append(el("p", { class: "play-account-note", text: ok(id) ? "Sign in with Discord to track your stats from your games." : ACCOUNT_UNREADABLE }));
   }
-  // In every state, not only when signed in. The sentence written for a
-  // signed-out player -- their game was recorded and is waiting for them to
-  // sign in -- used to be drawn inside the signed-in branch, so the only
-  // person it was written for never saw it.
-  if (result?.stats_note) card.append(el("p", { class: "note", text: result.stats_note }));
-  if (signIn.message) card.append(el("p", { class: "note", text: signIn.message }));
-  return card;
+  // In every state: the note written for a signed-out player (their game is waiting for sign-in).
+  if (result?.stats_note) box.append(el("p", { class: "play-account-note", text: result.stats_note }));
+  if (signIn.message) box.append(el("p", { class: "play-account-note", text: signIn.message }));
+  return box;
 }
 
 async function openDolphin() {
@@ -276,6 +279,10 @@ function factsBlock() {
   if (pads.note) rows.push(fact("", pads.note));
   rows.push(fact("Mods", mods.text));
   if (mods.note) rows.push(fact("", mods.note));
+  // The player's own test for a right pack is "can I see stuff, and what version is it": read off the
+  // folder the launch will use. It moved here from the Play screen (decluttered, spec §8.1).
+  const pack = ok(check) ? check.pack : null;
+  rows.push(fact("Texture pack", pack ? (pack.reachable ? (pack.version || "loaded") : "not loading") : null));
   rows.push(fact("Button art", ok(c) && c.label ? `${c.label}, from ${c.source === "settings" ? "Settings" : "first run"}` : ok(c) ? "nothing chosen; the disc's own art" : null));
   rows.push(fact("Graphics", graphicsLabel()));
   rows.push(fact("Channel", ok(paths) ? paths.channel : null));
@@ -304,7 +311,7 @@ function detailsDialog() {
   const dialog = el("dialog", { id: "game-details", class: "play-dialog", "aria-labelledby": "game-details-title" });
   dialog.append(el("div", { class: "play-dialog-heading" },
     el("h2", { id: "game-details-title", text: "Game details" }),
-    el("button", { type: "button", text: "Close", onclick: () => dialog.close() })));
+    el("button", { type: "button", class: "btn sm", text: "Close", onclick: () => dialog.close() })));
   const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
   const mods = ok(state.mods) && Array.isArray(state.mods.activation) ? state.mods.activation : null;
   const links = el("div", { class: "play-detail-links" });
@@ -318,7 +325,7 @@ function detailsDialog() {
   if (message) {
     // The message plus the launch details, for pasting into a forum post or
     // a Discord message, whole, however narrow the window is.
-    const copy = el("button", { type: "button", class: "play-copy", text: "Copy error", onclick: async () => {
+    const copy = el("button", { type: "button", class: "btn sm play-copy", text: "Copy error", onclick: async () => {
       const report = [message, factsBlock().textContent.trim()].filter(Boolean).join("\n\n");
       try { await navigator.clipboard.writeText(report); copy.textContent = "Copied"; }
       catch (_) {
@@ -335,11 +342,81 @@ function detailsDialog() {
   const files = el("details", { class: "play-files" }, el("summary", { text: "Files & launch details" }), factsBlock());
   dialog.append(files, el("div", { class: "play-dialog-actions" },
     el("a", { href: "settings.html#files", text: "Manage files" }),
-    el("button", { type: "button", text: "Open Dolphin settings", disabled: busy || externalSession, onclick: () => { dialog.close(); openDolphin(); } })));
+    el("button", { type: "button", class: "btn", text: "Open Dolphin settings", disabled: busy || externalSession, onclick: () => { dialog.close(); openDolphin(); } })));
   dialog.addEventListener("close", () => document.getElementById("game-details-open")?.focus());
   dialog.addEventListener("click", event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } });
   return dialog;
 }
+
+// The one line under the button (spec §8.1): five states, in the words Play has always used. A setup
+// that is not finished is "Setup required", never "could not start"; the reason is in Game details.
+function playStatus(ready, inSession, error) {
+  const crashed = !inSession && !error && result?.needs_recovery;
+  const [tone, text] = inSession ? ["live", "Enjoy the game"]
+    : error ? ["error", "Your game could not start"]
+    : crashed ? ["error", "Game closed unexpectedly"]
+    : !ready ? ["setup", "Setup required"]
+    : ["ready", "Ready to play"];
+  const action = tone === "setup" ? el("a", { class: "play-status-action", href: "onboarding.html", text: "Finish setup" })
+    : tone === "error" ? el("button", { type: "button", class: "play-status-action", text: "See why", onclick: openDetails })
+    : null;
+  return el("div", { class: `play-status is-${tone}`, role: tone === "error" ? "alert" : "status" },
+    el("span", { class: "dot", "aria-hidden": "true" }), el("span", { class: "play-state-title", text }), action);
+}
+
+// Things the player must act on before, or instead of, playing. Quiet otherwise (empty = hidden).
+function notes() {
+  const box = el("div", { class: "play-notes" });
+  // Play was NOT started because player one's pad cannot press Start or A. Not a failure: a setup to offer.
+  if (controllerSetup) box.append(el("div", { class: "glass play-note play-controller-setup", role: "alert" },
+    el("strong", { text: "Your controller needs a one-time setup" }),
+    el("p", { text: controllerSetup.message }),
+    el("div", { class: "play-controller-setup-actions" },
+      el("a", { class: "btn primary sm", href: "controls.html", text: "Set up controller" }),
+      el("button", { type: "button", id: "play-anyway", class: "btn sm", disabled: busy, text: "Play anyway", onclick: () => { playAnyway = true; play(); } }))));
+  // Tier 2 of the game-image law: a disc this launcher could not verify as a Reborn build. Always a
+  // fault to repair, never a preference.
+  if (state.check?.game_verdict === "unconverted") box.append(el("div", { class: "glass play-note play-warning", role: "status" },
+    el("span", { class: "dot", "aria-hidden": "true" }), el("span", { text: "Not a Reborn build" }),
+    el("a", { class: "play-warning-repair", href: "settings.html#files", text: "Repair" })));
+  if (state.check?.pack && !state.check.pack.reachable) box.append(el("div", { class: "glass play-note play-warning", role: "status" },
+    el("span", { class: "dot", "aria-hidden": "true" }), el("span", { text: "Texture pack not loading" })));
+  if (notice) box.append(el("div", { class: "glass play-note", role: "status" }, el("span", { text: notice })));
+  return box;
+}
+
+function cell(tag, attrs, key, value) {
+  return el(tag, { class: "play-cell", ...attrs },
+    el("span", {}, el("span", { class: "k", text: key }), el("span", { class: "v", text: value })),
+    icon(CHEVRON));
+}
+
+// The strip (spec §8.1): Controllers, Graphics, Display; no checkboxes or switches in it.
+function strip(inSession) {
+  const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
+  const dolphin = ok(state.dolphin) ? state.dolphin : null;
+  const fullscreen = String(dolphin?.values?.fullscreen ?? "True").toLowerCase() === "true";
+  const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
+  return el("nav", { class: "glass play-strip", "aria-label": "Game preferences" },
+    cell("a", { href: "controls.html" }, "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"),
+    cell("a", { href: "settings.html#graphics", id: "play-graphics" }, "Graphics", graphicsLabel()),
+    cell("button", { type: "button", id: "play-display", disabled: displayLocked, onclick: () => pickDisplay(String(!fullscreen)) }, "Display", fullscreen ? "Fullscreen" : "Windowed"));
+}
+
+async function pickDisplay(value) {
+  const dolphin = ok(state.dolphin) ? state.dolphin : null;
+  if (!dolphin || busy) return;
+  notice = null;
+  try {
+    await call("dolphin_preference_set", { runtime: get("runtime"), key: "fullscreen", value });
+    dolphin.values = { ...(dolphin.values || {}), fullscreen: value };
+  } catch (e) { notice = `Display: ${reason(e)}`; }
+  draw();
+}
+
+// The launch group rises in on the page's first draw only (ruling P2-6): every later draw (Play, a pick,
+// a refresh, a session change) rebuilds the same elements, and replaying the animation would make them jump.
+let entered = false;
 
 function draw() {
   if (typeof state.active === "boolean") externalSession = state.active;
@@ -351,79 +428,27 @@ function draw() {
   const focusedId = document.activeElement?.id;
   const ready = ok(state.check) && state.check.ready;
   const inSession = playing || externalSession;
-  const scene = el("section", { class: "play-scene", "aria-label": "NFL Street Reborn" },
-    el("div", { class: "hero-art", "aria-hidden": "true" }, el("img", { src: "art/play-background.png", alt: "" })),
-    el("h1", { class: "play-wordmark" }, el("img", { src: "art/play-logo.png", alt: "NFL Street Reborn" })));
+  const scene = el("section", { class: "play-scene", "aria-hidden": "true" },
+    el("div", { class: "hero-art" }, el("img", { src: "art/play-background.png", alt: "" })));
+  // The artwork element itself survives every redraw, so it never flickers or moves.
   const art = screen.querySelector?.(".hero-art");
   if (art) scene.querySelector(".hero-art").replaceWith(art);
-  const controls = el("div", { class: "play-controls" });
-  const error = problem || state.check?.error || (!ready && state.check?.problem);
-  const bar = el("div", { class: "play-bar" });
-  if (ready || inSession) bar.append(el("button", { type: "button", id: "play-now", "data-primary": "true", class: "play", disabled: busy || inSession, onclick: play },
-    el("span", { class: "play-glyph", text: inSession ? "" : "▶", "aria-hidden": "true" }),
-    el("span", { text: inSession ? "Session active" : busy ? "Opening…" : "Play now" })));
-  else bar.append(el("a", { href: "onboarding.html", class: "button primary play", "data-primary": "true", text: "Set up your game" }));
-  const history = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "Ready to play";
-  bar.append(el("div", { class: "play-state" + (error || result?.needs_recovery ? " has-error" : ""), role: error || result?.needs_recovery ? "alert" : "status" },
-    el("span", { class: "play-state-title", text: inSession ? "Enjoy the game" : error ? "Your game could not start" : result?.needs_recovery ? "Game closed unexpectedly" : ready ? "Ready to play" : "Setup required" }),
-    el("span", { class: "play-history", text: inSession ? "Settings apply to your next session" : error || (result?.needs_recovery ? result.message : null) || history })));
-  bar.append(el("button", { type: "button", id: "game-details-open", class: "play-details-button", "aria-haspopup": "dialog", onclick: openDetails },
-    el("span", { text: "Game details" }), el("span", { text: "···", "aria-hidden": "true" })));
-  controls.append(bar);
-  // Tier 2 of the game-image law: a disc this launcher could not verify as
-  // a Reborn build, but the player chose to play anyway from Settings. That
-  // choice must stay visible and reversible, and the wording here must
-  // never suggest a preference the player chose, since it is almost always
-  // a fault to repair instead.
-  if (controllerSetup) {
-    controls.append(el("div", { class: "play-controller-setup", role: "alert" },
-      el("strong", { text: "Your controller needs a one-time setup" }),
-      el("p", { text: controllerSetup.message }),
-      el("div", { class: "play-controller-setup-actions" },
-        el("a", { class: "button primary", href: "controls.html", text: "Set up controller" }),
-        el("button", { type: "button", id: "play-anyway", disabled: busy, text: "Play anyway", onclick: () => { playAnyway = true; play(); } }))));
-  }
-  if (state.check?.game_verdict === "unconverted") {
-    controls.append(el("div", { class: "play-warning", role: "status" },
-      el("span", { text: "Not a Reborn build" }),
-      el("a", { class: "play-warning-repair", href: "settings.html#files", text: "Repair" })));
-  }
-  // The player's own test for a right pack is "can I see stuff, and what
-  // version is it". This is that answer, read straight off the folder the
-  // launch will actually use, not asked about separately.
-  if (state.check?.pack) {
-    const pack = state.check.pack;
-    if (pack.reachable) {
-      controls.append(el("p", { class: "note", text: pack.version ? `Texture pack ${pack.version}` : "Texture pack loaded" }));
-    } else {
-      controls.append(el("div", { class: "play-warning", role: "status" },
-        el("span", { text: "Texture pack not loading" })));
-    }
-  }
-  controls.append(identityCard());
-  const pads = ok(state.devices) && Array.isArray(state.devices.pads) ? state.devices.pads : null;
-  const overview = el("nav", { class: "play-overview", "aria-label": "Game preferences" });
-  for (const [href, title, value] of [
-    ["controls.html", "Controllers", pads ? pads.length ? `${pads.length} connected` : "Connect a controller" : "Manage devices"],
-    ["settings.html#graphics", "Graphics", graphicsLabel()],
-  ]) overview.append(el("a", { href }, el("span", { text: title }), el("strong", { text: value }), el("span", { class: "play-overview-arrow", text: "\u203a", "aria-hidden": "true" })));
-  const dolphin = ok(state.dolphin) ? state.dolphin : null;
-  const fullscreen = String(dolphin?.values?.fullscreen ?? "True").toLowerCase() === "true";
-  const displayLocked = busy || inSession || !dolphin || dolphin.editable === false;
-  const display = el("input", {type:"checkbox", id:"play-fullscreen", checked:fullscreen, disabled:displayLocked});
-  display.addEventListener("change", async () => {
-    display.disabled = true;
-    try {
-      await call("dolphin_preference_set", {runtime:get("runtime"), key:"fullscreen", value:String(display.checked)});
-      dolphin.values.fullscreen = String(display.checked);
-    } catch (e) { display.checked = fullscreen; problem = reason(e); draw(); }
-    finally { display.disabled = displayLocked; }
-  });
-  overview.append(el("label", {class:"play-fullscreen", for:"play-fullscreen"}, display, el("span", {text:"Fullscreen"})));
+  const error = problem || state.check?.error || null;
+  const actions = el("div", { class: "play-actions" });
+  if (ready || inSession) actions.append(el("button", { type: "button", id: "play-now", "data-primary": "true", class: "btn primary play", disabled: busy || inSession, onclick: play },
+    icon(GLYPH_PLAY, { fill: true }), el("span", { text: inSession ? "Playing" : busy ? "Opening…" : "Play now" })));
+  else actions.append(el("a", { href: "onboarding.html", class: "btn primary play", "data-primary": "true", text: "Set up your game" }));
+  actions.append(el("button", { type: "button", id: "game-details-open", class: "btn play-more", title: "Game details", "aria-label": "Game details", "aria-haspopup": "dialog", onclick: openDetails },
+    icon(GLYPH_MORE, { fill: true })));
+  const content = el("div", { class: "play-content" },
+    el("h1", { class: "play-wordmark" }, el("img", { src: "art/play-logo.png", alt: "NFL Street Reborn" })),
+    actions, playStatus(ready, inSession, error), notes());
   const dialog = detailsDialog();
-  screen.replaceChildren(scene, controls, overview, dialog);
+  screen.classList?.toggle("is-entering", !entered);
+  entered = true;
+  screen.replaceChildren(scene, accountBlock(), content, strip(inSession), dialog);
   if (wasOpen) { dialog.showModal(); if (filesOpen) dialog.querySelector("details").open = true; }
-  else if (focusedId) { const target = document.getElementById(focusedId); if (target && !target.disabled) target.focus({preventScroll:true}); }
+  else if (focusedId) { const target = document.getElementById(focusedId); if (target && !target.disabled) target.focus({ preventScroll: true }); }
 }
 
 async function refresh() {

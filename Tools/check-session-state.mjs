@@ -54,8 +54,8 @@ try{
   assert.ok(await page.getByRole('button',{name:'Play now',exact:true}).isEnabled(),'An idle snapshot clears a transient active read');
 
   await page.goto(base+'/index.html');await page.getByRole('button',{name:'Play now',exact:true}).waitFor();
-  await page.evaluate(()=>live=true);await page.getByRole('button',{name:'Session active',exact:true}).waitFor();
-  assert.ok(await page.getByRole('button',{name:'Session active',exact:true}).isDisabled(),'A real session still prevents duplicate launches');
+  await page.evaluate(()=>live=true);await page.getByRole('button',{name:'Playing',exact:true}).waitFor();
+  assert.ok(await page.getByRole('button',{name:'Playing',exact:true}).isDisabled(),'A real session still prevents duplicate launches');
   await page.evaluate(()=>live=false);await page.getByRole('button',{name:'Play now',exact:true}).waitFor();
   const loads=await page.evaluate(()=>calls.filter(cmd=>cmd==='home_state').length);
   await page.waitForTimeout(3200);

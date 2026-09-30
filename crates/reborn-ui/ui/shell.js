@@ -108,6 +108,23 @@ export function partial(text) {
   return el("p", { class: "partial", text });
 }
 
+// A small inline icon (24×24 viewBox), drawn in the SVG namespace, which el() cannot do.
+// Null where there is no real DOM (the page checkers' stand-in); el() skips null children.
+export function icon(paths, { fill = false } = {}) {
+  if (typeof document.createElementNS !== "function") return null;
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  if (fill) svg.setAttribute("fill", "currentColor");
+  else {
+    svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+  }
+  for (const d of [].concat(paths)) { const p = document.createElementNS(ns, "path"); p.setAttribute("d", d); svg.append(p); }
+  return svg;
+}
+
 // Mark the nav link for this page, by file name.
 export function markCurrent() {
   const here = (location.pathname.split("/").pop() || "index.html").toLowerCase();
