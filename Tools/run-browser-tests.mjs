@@ -280,7 +280,9 @@ await page.getByRole('alert').waitFor();
 assert.deepEqual(await page.locator('.hero-art').boundingBox(),sceneBefore,'launch failure does not resize the artwork');
 await page.screenshot({path:path.join(out,'reborn-play-error.png')});
 await page.setViewportSize({width:800,height:600});
+await page.evaluate(()=>{document.querySelector('#input-hints').textContent='Move / Select'}); // the footer is display:none while the hints are empty, which measures as null
 const footerBefore=await page.locator('.input-footer').boundingBox();
+assert.ok(footerBefore&&footerBefore.height>0,'the footer has a real measurement before input mode changes');
 await page.evaluate(()=>document.body.classList.toggle('gamepad-input'));
 assert.deepEqual(await page.locator('.input-footer').boundingBox(),footerBefore,'input mode does not change viewport height');
 await page.emulateMedia({reducedMotion:'reduce'});
@@ -339,6 +341,7 @@ await import('./check-tabs.mjs');
 await import('./check-play-page.mjs');
 await import('./check-settings-page.mjs');
 await import('./check-pad-columns.mjs');
+await import('./check-glass-pages.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
