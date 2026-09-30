@@ -1,7 +1,7 @@
 // Settings, as a page: where things live, and the few paths a person can set.
 
 import { bridge, call, cleanPath, el, fact, facts, get, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
-import { applyLook, refreshLook } from './look.js';
+import { applyLook, refreshLookResult } from './look.js';
 import { mountSaveBar } from './savebar.js';
 
 const state = {};
@@ -354,7 +354,7 @@ function dolphinBlock(){
  return wrap;
 }
 // Launcher window (spec §4.3, §5.3): previews live, saved through the save bar.
-let look = null, lookSaved = null, lookDraft = null, saveBar = null, lookBusy = false, lookMsg = '', lookLastId = '';
+let look = null, lookError = null, lookSaved = null, lookDraft = null, saveBar = null, lookBusy = false, lookMsg = '', lookLastId = '';
 const lookChanges = () => !lookSaved || !lookDraft ? [] : [
   ...(lookDraft.windowGlass !== lookSaved.windowGlass ? ['Window glass'] : []),
   ...(lookDraft.slowAnimations !== lookSaved.slowAnimations ? ['Slow animations'] : []),
@@ -403,7 +403,8 @@ function lookBlock() {
     lookMsg ? el('p', { class: 'look-help look-error', role: 'status', text: lookMsg }) : null);
 }
 async function loadLook() {
-  look = await refreshLook();
+  const r = await refreshLookResult();
+  look = r.view; lookError = r.error;
   if (look) { lookSaved = { windowGlass: look.windowGlass, slowAnimations: look.slowAnimations }; lookDraft = { ...lookSaved }; }
   draw();
 }

@@ -32,6 +32,11 @@ try{
  await page.evaluate(()=>{pads[0].buttons[13]={pressed:true,value:1};tick();pads[0].buttons[13]={pressed:false,value:0};tick();});
  await page.keyboard.press('a');
  assert.equal(await hints(),0,'any key: hints go');
+ // A controller test started with the mouse must still show its way out
+ await page.evaluate(()=>{document.body.dataset.controllerTesting='1';window.dispatchEvent(new Event('gamepadconnected'));tick();});
+ assert.match(await page.locator('#input-hints').innerText(),/Finish test/,'mouse-started test shows the exit hint');
+ await page.evaluate(()=>{delete document.body.dataset.controllerTesting;window.dispatchEvent(new Event('gamepadconnected'));tick();});
+ assert.equal(await hints(),0,'test over, mouse user: hints go again');
  // Review Focus 1: an unmapped pad must still say how to set it up
  await page.evaluate(()=>{pads[0].mapping='';pads[0].id='Unknown USB pad';window.dispatchEvent(new Event('gamepadconnected'));tick();});
  assert.match(await page.locator('#input-hints').innerText(),/Set up launcher controls/,'unmapped pad still offered setup');

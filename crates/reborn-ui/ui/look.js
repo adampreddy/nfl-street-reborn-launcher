@@ -10,19 +10,25 @@ export function applyLook(view) {
   try { localStorage.setItem("reborn:look", JSON.stringify({ glass, slow })); } catch (_) {}
 }
 
-let restoredOnce = false;
-export async function refreshLook() {
-  if (!bridge) return null;
-  try {
-    let v = await bridge.invoke("launcher_look");
-    // A glass preview that was never saved must not outlive its page: put the window back to the SAVED state (once per page load).
-    if (v && v.glassSupported && v.glassApplied !== v.windowGlass && !restoredOnce) {
-      restoredOnce = true;
-      try { const r = await bridge.invoke("window_glass_apply", { enabled: v.windowGlass }); if (r && typeof r === "object") v = r; } catch (_) {}
-    }
-    applyLook(v); return v;
-  } catch (_) { return null; }
+// One read per page: the shell's own call and Settings' both get the SAME corrected view.
+// A glass preview that was never saved must not outlive its page, so the first read puts the window back to the SAVED state.
+let pending = null;
+async function readLook() {
+  let v = await bridge.invoke("launcher_look");
+  if (v && v.glassSupported && v.glassApplied !== v.windowGlass) {
+    try { const r = await bridge.invoke("window_glass_apply", { enabled: v.windowGlass }); if (r && typeof r === "object") v = r; } catch (_) {}
+  }
+  applyLook(v); return v;
 }
+// { view, error }: error is the raw failure (for a page that must say why), view is null when it failed.
+export function refreshLookResult() {
+  if (!bridge) return Promise.resolve({ view: null, error: null });
+  if (!pending) {
+    pending = readLook().then(view => ({ view, error: null }), error => { pending = null; return { view: null, error }; });
+  }
+  return pending;
+}
+export async function refreshLook() { return (await refreshLookResult()).view; }
 
 // One marker that glides to the current nav item (spec §5.2, §6.1).
 export function mountNavMarker() {

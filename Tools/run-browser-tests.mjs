@@ -320,6 +320,7 @@ await import('./review-players.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
+await import('./check-theme.mjs');
 
 await import('./test-menu-pad.mjs');
 await import('./check-controller-navigation.mjs');
