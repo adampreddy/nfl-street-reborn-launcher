@@ -8,6 +8,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 const root=path.resolve(import.meta.dirname,'..'),ui=path.join(root,'crates/reborn-ui/ui');
 const out=path.join(root,'target/glass-review');mkdirSync(out,{recursive:true});
+const fixOut=path.join(root,'target/p2-fix');mkdirSync(fixOut,{recursive:true});
 const types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
 const server=createServer((req,res)=>{try{const f=path.resolve(ui,'.'+decodeURIComponent(new URL(req.url,'http://x').pathname));if(!f.startsWith(ui+path.sep))throw 0;res.setHeader('Content-Type',types[path.extname(f)]||'application/octet-stream');res.end(readFileSync(f));}catch{res.writeHead(404).end();}});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
@@ -24,7 +25,7 @@ async function open(hash='',variant={},viewport={width:1280,height:800},pad=fals
   window.tick=()=>{clock+=16;frames.splice(0).forEach(fn=>fn(clock));};
  });
  await ctx.addInitScript(({values,variant})=>{
-  window.calls=[];window.reject=null;
+  window.calls=[];window.reject=null;window.hold=null;window.unverifiedPath=false;
   const data={
    dolphin_preferences:{values,editable:true,live_editable:[],user_dir:'C:\\Users\\A\\Dolphin User'},
    settings_paths:{runtime:null,game:null,userDir:null,legacyRoot:null},
@@ -37,7 +38,9 @@ async function open(hash='',variant={},viewport={width:1280,height:800},pad=fals
   window.data=data;
   window.__TAURI__={core:{invoke:async(cmd,args={})=>{
    calls.push({cmd,args:JSON.parse(JSON.stringify(args))});
+   if(window.hold===cmd){window.hold=null;await new Promise(r=>{window.release=r;});}
    if(window.reject===cmd)throw 'Dolphin is open';
+   if(cmd==='settings_set_path'&&window.unverifiedPath)return {unverified:{headline:'This is not a Reborn build.',detail:'Rosters and faces will not match.',play_anyway:'Play it anyway',repair:'Repair my game'}};
    if(cmd==='pick_path')return 'C:\\Games\\Other.iso';
    if(cmd==='settings_set_path'){const k={game:'game',runtime:'runtime',user_dir:'userDir',legacy_root:'legacyRoot'}[args.which];data.settings_paths={...data.settings_paths,[k]:args.value||null};return {which:args.which,value:args.value||null};}
    if(cmd==='dolphin_preference_set'){data.dolphin_preferences.values[args.key]=args.value;return null;}
@@ -204,6 +207,77 @@ try{
   assert.ok(page.url().includes('/settings.html'),'and never leaves the page');
   assert.equal(await page.locator('.save-lane.open').count(),1,'the change is still pending');
   await page.context().close();
+ }
+ {
+  // The Tier 2 choice: Esc (the shell's B does the same: cancel, then close) is Cancel. The next draw must
+  // not reopen it, and the game path change stays pending.
+  const page=await open('#files');
+  await page.evaluate(()=>window.unverifiedPath=true);
+  await page.getByRole('button',{name:'Change Game image',exact:true}).click();
+  await page.getByRole('button',{name:'Save changes',exact:true}).click();
+  await page.locator('#unverified-game[open]').waitFor();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!document.querySelector('#unverified-game[open]'));
+  await page.getByRole('button',{name:'Updates',exact:true}).click();
+  await page.getByRole('button',{name:'Files & storage',exact:true}).click();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#unverified-game[open]').count(),0,'Esc keeps the Tier 2 choice closed after the next draw');
+  assert.equal(await page.locator('.save-lane.open').count(),1,'the change stays pending after Esc');
+  // B through the shell's back(): cancel, then close. Same result.
+  await page.getByRole('button',{name:'Save changes',exact:true}).click();
+  await page.locator('#unverified-game[open]').waitFor();
+  await page.evaluate(()=>{const d=document.getElementById('unverified-game');if(d.dispatchEvent(new Event('cancel',{cancelable:true})))d.close();});
+  await page.getByRole('button',{name:'Updates',exact:true}).click();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#unverified-game[open]').count(),0,'B (cancel + close) keeps the Tier 2 choice closed after the next draw');
+  await page.context().close();
+ }
+ {
+  // Save holds the page (P2 final): while it runs, #screen is aria-busy and no action can start, even
+  // after something redraws; when it ends, or fails, the page is usable again.
+  const page=await open();
+  const openDolphin=()=>page.getByRole('button',{name:'Open Dolphin',exact:true});
+  await page.getByRole('switch',{name:'Pause when unfocused'}).click();
+  await page.evaluate(()=>window.hold='dolphin_preference_set');
+  await page.getByRole('button',{name:'Save changes',exact:true}).click();
+  await page.waitForFunction(()=>typeof window.release==='function');
+  assert.equal(await page.locator('#screen').getAttribute('aria-busy'),'true','Save marks the page busy');
+  await page.evaluate(()=>{data.dolphin_preferences={...data.dolphin_preferences,readonly_reason:'changed'};document.dispatchEvent(new Event('session-state'));});
+  await page.waitForTimeout(150);
+  assert.equal(await openDolphin().isDisabled(),true,'Open Dolphin cannot start mid-save');
+  assert.equal(await page.evaluate(()=>calls.some(c=>c.cmd==='open_runtime')),false);
+  assert.notEqual(await openDolphin().evaluate(n=>getComputedStyle(n).pointerEvents),'none','a disabled .btn keeps pointer events, so its tooltip still shows');
+  await openDolphin().click({force:true});await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>calls.some(c=>c.cmd==='open_runtime')),false,'a disabled .btn still cannot be activated');
+  await page.evaluate(()=>{window.reject='dolphin_preference_set';window.release();});
+  await page.locator('.save-bar [role=alert]').waitFor();
+  assert.equal(await page.locator('#screen').getAttribute('aria-busy'),null,'a failed save leaves the page not busy');
+  assert.equal(await openDolphin().isEnabled(),true,'a failed save leaves the page usable');
+  await page.evaluate(()=>window.reject=null);
+  await openDolphin().click();
+  await page.waitForFunction(()=>calls.some(c=>c.cmd==='open_runtime'));
+  await page.getByRole('button',{name:'Discard',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.save-lane.open'));
+  assert.equal(await page.locator('#screen').getAttribute('aria-busy'),null,'Discard leaves the page not busy');
+  await page.context().close();
+ }
+ {
+  // The smallest window (spec §4.3; about 780x530 inside the 800x560 frame): all seven tabs whole, and the
+  // sidebar fits with no scrollbar, at 780x540 and with headroom below it (500: the old rhythm needed 512).
+  for(const height of [540,500]){
+   const page=await open('#files',{},{width:780,height});
+   await page.waitForTimeout(500);
+   const fit=await page.evaluate(()=>{const bar=document.querySelector('.tabs'),last=bar.querySelector('.tab:last-of-type'),b=bar.getBoundingClientRect(),l=last.getBoundingClientRect(),nav=document.querySelector('.shell-nav');
+    return {last:last.textContent,lastRight:l.right,barRight:b.right,lastLeft:l.left,barLeft:b.left,scrolls:bar.scrollWidth>bar.clientWidth,navScroll:nav.scrollHeight,navClient:nav.clientHeight,page:document.documentElement.scrollWidth<=innerWidth};});
+   assert.equal(fit.last,'Files & storage');
+   assert.ok(fit.lastRight<=fit.barRight+0.5&&fit.lastLeft>=fit.barLeft-0.5,`780x${height}: the last tab is fully visible ${JSON.stringify(fit)}`);
+   assert.equal(fit.page,true,`780x${height}: no sideways page scroll`);
+   assert.ok(fit.navScroll<=fit.navClient,`780x${height}: the sidebar has no vertical overflow ${JSON.stringify(fit)}`);
+   const ind=await page.evaluate(()=>{const i=document.querySelector('.tab-ind').getBoundingClientRect(),t=document.querySelector('.tabs .tab[aria-pressed="true"]').getBoundingClientRect();return Math.max(Math.abs(i.x-t.x),Math.abs(i.width-t.width));});
+   assert.ok(ind<1.5,`780x${height}: the highlight sits on Files & storage (${ind})`);
+   if(height===540)await page.screenshot({path:path.join(fixOut,'settings-files-780x540.png')});
+   await page.context().close();
+  }
  }
  {
   const page=await open('',{},{width:800,height:560});

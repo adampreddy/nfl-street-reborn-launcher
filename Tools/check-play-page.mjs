@@ -60,7 +60,8 @@ async function open(variant = {}, viewport = { width: 1280, height: 800 }, { pad
   return page;
 }
 // The first draw rises in (look-enter); geometry is read once every finite animation has finished.
-const settled = (page) => page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))));
+// Infinite ones (live-pulse) are skipped, and it never waits longer than 5 s.
+const settled = (page) => page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,5000))]));
 const rect = (page, sel) => page.locator(sel).first().evaluate((n) => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, r: r.right, b: r.bottom }; });
 const overlap = (a, b) => a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b;
 try {
@@ -214,6 +215,16 @@ try {
     assert.ok(cellNow.y >= 0 && cellNow.b <= 560 && cellNow.scrolled > 0, 'the strip scrolls into view: ' + JSON.stringify(cellNow));
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'still no sideways scroll');
     await page.screenshot({ path: path.join(out, 'play-setup-note-800-strip-focused.png') });
+    await page.context().close();
+  }
+  { // 780x540 (about the inside of the minimum 800x560 window): the sidebar fits without a scrollbar.
+    const page = await open({}, { width: 780, height: 540 });
+    await page.getByRole('button', { name: 'Play now', exact: true }).waitFor(); await settled(page);
+    const nav = await page.evaluate(() => { const n = document.querySelector('.shell-nav'); return { scroll: n.scrollHeight, client: n.clientHeight }; });
+    assert.ok(nav.scroll <= nav.client, '780x540: the sidebar has no vertical overflow ' + JSON.stringify(nav));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '780x540: no sideways scroll');
+    const fixOut = path.join(root, 'target/p2-fix'); mkdirSync(fixOut, { recursive: true });
+    await page.screenshot({ path: path.join(fixOut, 'play-780x540.png') });
     await page.context().close();
   }
   assert.deepEqual(errors, []);

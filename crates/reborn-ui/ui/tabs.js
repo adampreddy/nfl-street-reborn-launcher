@@ -32,6 +32,12 @@ function place(group, bar, ind) {
   const on = bar.querySelector('[aria-pressed="true"]');
   if (!bar.isConnected || !on) return;
   const to = { x: on.offsetLeft, w: on.offsetWidth };
+  // A strip wider than its box scrolls inside itself: keep the selected tab in view (the highlight scrolls with it).
+  if (bar.scrollWidth > bar.clientWidth) {
+    const right = on.offsetLeft + on.offsetWidth;
+    if (on.offsetLeft < bar.scrollLeft) bar.scrollLeft = on.offsetLeft - 4;
+    else if (right > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = right - bar.clientWidth + 4;
+  }
   const from = last.get(group) || to;
   ind.style.transform = at(from);
   last.set(group, to);

@@ -65,6 +65,15 @@ async function load() {
 
 // ---- the save bar -------------------------------------------------------------------------------
 
+// Busy for the page: actions refuse to start, and #screen says aria-busy (which update-notice.js also
+// reads, so nothing installs mid-save). The shell's setLauncherBusy also disables the page's controls.
+function holdPage(on) {
+  busy = on;
+  const screen = document.getElementById("screen");
+  if (on) screen?.setAttribute("aria-busy", "true"); else screen?.removeAttribute("aria-busy");
+  window.setLauncherBusy?.(on);
+}
+
 function refreshBar() {
   const changes = draft.changes();
   if (!saveBar && !changes.length) return;
@@ -87,15 +96,19 @@ function stage(key, focusId, entry) {
 
 // Save everything, in the order it changed. A failure is thrown so the bar says which and why; a
 // change held for the Tier 2 choice is not a failure (the dialog asks), and it stays pending.
+// The page is busy for the whole save, so no action (Open Dolphin, Check for updates, Repair…) runs in the
+// middle of it; busy is cleared in finally, so a failed save leaves the page usable.
 async function saveAll() {
-  window.setLauncherBusy?.(true);
+  holdPage(true);
   let result;
   try { result = await draft.saveAll(); }
   finally {
-    await load();
-    window.setLauncherBusy?.(false);
-    draw();
-    refreshBar();
+    try { await load(); }
+    finally {
+      holdPage(false);
+      draw();
+      refreshBar();
+    }
   }
   if (result.stopped && result.stopped.reason !== HELD) throw new Error(`${result.stopped.label}: ${result.stopped.reason}`);
 }
@@ -103,8 +116,10 @@ async function saveAll() {
 // Put everything back. A revert that fails throws its reason, which the bar shows; that change and the
 // older ones stay pending and the bar stays open, so nothing still previewed is shown as discarded.
 async function discardAll() {
+  holdPage(true);
   try { await draft.discardAll(); }
   finally {
+    holdPage(false);
     unverified = null;
     // The look switches show what is still pending, not what was hoped for.
     if (lookSaved && lookDraft) {
@@ -168,10 +183,11 @@ function dolphinCard() {
       el("h2", { text: "NFL Street Reborn Dolphin" }),
       el("p", { text: "Everyday settings below. Open Dolphin for its complete set of tools. Reborn's textures apply to any NFL Street 2 disc you open here, so another copy will show Reborn's players." }),
       el("p", { class: "dolphin-said", role: "status", text: dolphinSaid || "" })),
-    el("button", { type: "button", class: "btn", text: "Open Dolphin", onclick: openDolphin }));
+    el("button", { type: "button", class: "btn", text: "Open Dolphin", disabled: busy, onclick: openDolphin }));
 }
 
 async function openDolphin() {
+  if (busy) return;
   try {
     await call("open_runtime", { runtime: get("runtime"), userDir: get("userDir") });
     dolphinSaid = "Dolphin opened.";
@@ -561,13 +577,17 @@ async function playItAnyway(choice) {
 function unverifiedChoice() {
   const choice = unverified;
   if (!choice) return null;
-  return el("dialog", { id: "unverified-game", class: "settings-choice", role: "alertdialog", "aria-labelledby": "unverified-game-title" },
+  const dialog = el("dialog", { id: "unverified-game", class: "settings-choice", role: "alertdialog", "aria-labelledby": "unverified-game-title" },
     el("h2", { id: "unverified-game-title", text: choice.headline }),
     el("p", { text: choice.detail }),
     el("div", { class: "settings-actions" },
       el("button", { type: "button", class: "btn quiet", text: "Cancel", disabled: busy, onclick: () => { unverified = null; draw(); } }),
       el("button", { type: "button", class: "btn", text: choice.play_anyway, disabled: busy, onclick: () => playItAnyway(choice) }),
       el("button", { type: "button", class: "btn primary", "data-primary": "true", text: choice.repair, disabled: busy, onclick: () => repairGame() })));
+  // Esc, or B through the shell (cancel then close), is Cancel: the choice is over (so the next draw does
+  // not reopen it) and the change stays pending. No redraw here. A dialog a redraw removed is not an answer.
+  dialog.addEventListener("close", () => { if (dialog.isConnected && unverified === choice) unverified = null; });
+  return dialog;
 }
 
 // The standing repair, for a player whose saved game file is already an unconverted disc.
