@@ -147,22 +147,6 @@ The Stats page includes offline games. Every number on it counts **all** the pla
 - `open_website` is allowed for `https://online.nflstreetreborn.com/u/<id>`, `/games/<id>` and `/live/<id>`. `api.` pages stay allowed so older links still open.
 - One constant, `LIVE_ORIGIN` in `live-common.js`, becomes the page origin `online.`. A new `API_ORIGIN` keeps `api.` for data calls. `DEFAULT_ORIGIN` in `identity.rs` and the CSP's `live-assets` source stay on `api.`.
 
-## 8. Web host: `online.nflstreetreborn.com`
-
-- Public pages move to `https://online.nflstreetreborn.com`: `/u/:player`, `/games/:id`, `/live` and `/live/:id`.
-- It is a second custom domain on the same Railway backend service. There is no new server and no data move.
-- `api.nflstreetreborn.com` stays for everything that isn't a page, forever:
-  - Every installed launcher has `api.` built in (`identity.rs` `DEFAULT_ORIGIN`).
-  - Device sign-in (`PUBLIC_ORIGIN`, the `/link` page) and the Discord login redirect (`DISCORD_REDIRECT_URI`, registered in the Discord app) use it.
-  - Moving those would log out or break every current install, so they don't move.
-- On `api.`, the page routes `/u`, `/games` and `/live` answer 301 to the same path on `online.`, so links already shared keep working.
-- Every link the backend or launcher prints for a page (Share profile, Open on web, the live link, the bot's future posts) uses `online.`.
-- **Outside the repos:**
-  - A `CNAME online -> <railway target>` DNS record.
-  - Adding the domain in Railway (`railway domain online.nflstreetreborn.com`).
-  - Both are outward-facing and happen only with Adam's go, before the release that prints `online.` links.
-- **Tests:** backend route tests for the 301s, plus a host check that `/v1/*` still answers on both hosts. Launcher tests for the allow-list and the two origins.
-
 ## 6. Errors and edge cases
 
 - Unreachable, rate limited: keep the last good view, and show one line above it (Live now pattern).
@@ -189,6 +173,22 @@ The Stats page includes offline games. Every number on it counts **all** the pla
 
 **Visual**
 - Screenshot both pages in the real launcher (signed in as Adam), and compare against `stats-layout-v17.html` before shipping.
+
+## 8. Web host: `online.nflstreetreborn.com`
+
+- Public pages move to `https://online.nflstreetreborn.com`: `/u/:player`, `/games/:id`, `/live` and `/live/:id`.
+- It is a second custom domain on the same Railway backend service. There is no new server and no data move.
+- `api.nflstreetreborn.com` stays for everything that isn't a page, forever:
+  - Every installed launcher has `api.` built in (`identity.rs` `DEFAULT_ORIGIN`).
+  - Device sign-in (`PUBLIC_ORIGIN`, the `/link` page) and the Discord login redirect (`DISCORD_REDIRECT_URI`, registered in the Discord app) use it.
+  - Moving those would log out or break every current install, so they don't move.
+- On `api.`, the page routes `/u`, `/games` and `/live` answer 301 to the same path on `online.`, so links already shared keep working.
+- Every link the backend or launcher prints for a page (Share profile, Open on web, the live link, the bot's future posts) uses `online.`.
+- **Outside the repos:**
+  - A `CNAME online -> <railway target>` DNS record.
+  - Adding the domain in Railway (`railway domain online.nflstreetreborn.com`).
+  - Both are outward-facing and happen only with Adam's go, before the release that prints `online.` links.
+- **Tests:** backend route tests for the 301s, plus a host check that `/v1/*` still answers on both hosts. Launcher tests for the allow-list and the two origins.
 
 ## Not in scope
 
