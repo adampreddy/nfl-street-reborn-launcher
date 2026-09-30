@@ -45,9 +45,12 @@ function prevNextBar() {
 }
 
 // Left/Right step to the neighbouring game, same as the buttons, unless the arrow key is meant for a text
-// field (there is none on this page today, but the rule holds for whatever lands here later).
+// field (there is none on this page today, but the rule holds for whatever lands here later), carries a
+// modifier (Alt+Left is WebView2's own "navigate back" accelerator -- plain arrows only, so that one keystroke
+// doesn't fire both the browser's back navigation and openGame() at once), or was already handled.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
   if (!gameList) return;
   const a = document.activeElement;
   if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) return;
