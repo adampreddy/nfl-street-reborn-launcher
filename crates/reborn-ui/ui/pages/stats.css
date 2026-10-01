@@ -50,9 +50,11 @@ a.st-player:hover .st-pname{text-decoration:underline}
 @media (max-width:1100px){.st-cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:1000px){body.page-stats #main{padding:24px 24px 16px}}
 @media (max-width:720px){.st-nums{grid-template-columns:repeat(2,minmax(0,1fr))}.st-account-body{grid-template-columns:minmax(0,1fr)}}
-/* Signed out: the sign-in card, big and front and centre. */
-.st-signin{display:flex;flex-direction:column;align-items:flex-start;gap:12px;max-width:640px;margin-top:24px;padding:32px}
-.st-signin h2{font-size:28px;font-weight:700;line-height:1.15}
-.st-signin p{font-size:15px;color:var(--fg-2)}
-.st-signin .st-signin-code{font-size:20px;font-weight:700;color:var(--fg);letter-spacing:.04em}
-.st-signin .st-signin-go{height:52px;min-width:280px;margin-top:8px;padding:0 32px;font-size:17px;font-weight:700}
+/* Signed out: the sign-in card, centred on the page, one even rhythm: title 12, message 24, button 16, note. */
+.st-signin{display:flex;flex-direction:column;align-items:center;max-width:640px;margin:64px auto 0;padding:40px 48px;text-align:center}
+.st-signin h2{margin:0 0 12px;font-size:28px;font-weight:700;line-height:1.15}
+.st-signin p{margin:0 0 24px;font-size:15px;line-height:1.45;color:var(--fg-2)}
+.st-signin .st-signin-code{margin-bottom:8px;font-size:20px;font-weight:700;color:var(--fg);letter-spacing:.04em}
+.st-signin .st-signin-go{height:52px;min-width:280px;padding:0 32px;font-size:17px;font-weight:700}
+.st-signin .refusal{margin:16px 0 0}
+.st-signin .st-signin-note{margin:16px 0 0;font-size:12.5px;color:var(--fg-3)}

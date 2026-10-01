@@ -189,7 +189,7 @@ function accountBlock() {
 
 // Redraws replace everything (every refresh): put the focus back on the same control, by data-key (spec §10).
 // Signed out: a big sign-in card. While waiting for Discord, the code and the address to approve it.
-function signInCard() {
+function signInCard(waiting) {
   const si = signIn.state;
   const card = el('section', { class: 'glass st-signin', 'aria-label': 'Sign in' });
   if (si.active) {
@@ -199,9 +199,10 @@ function signInCard() {
       el('button', { type: 'button', class: 'btn', 'data-key': 'signin-cancel', text: 'Cancel', onclick: () => signIn.cancel() })].filter(Boolean));
   } else {
     card.append(...[el('h2', { text: 'Sign in to see your stats' }),
-      el('p', { text: 'Connect your Discord account to track every match, your Elo and your players.' }),
+      el('p', { text: 'Connect your Discord account to play online and track your stats!' }),
       el('button', { type: 'button', class: 'btn primary st-signin-go', 'data-key': 'signin', text: si.starting ? 'Opening Discord…' : 'Sign in with Discord', disabled: si.starting, onclick: () => signIn.start() }),
-      si.message ? el('p', { class: 'refusal', role: 'alert', text: si.message }) : null].filter(Boolean));
+      si.message ? el('p', { class: 'refusal', role: 'alert', text: si.message }) : null,
+      waiting ? el('p', { class: 'st-signin-note', text: waiting }) : null].filter(Boolean));
   }
   return card;
 }
@@ -233,9 +234,13 @@ function paint(accountOpen) {
   if (!state.signedIn) {
     // Signed out: no rows, only the way in (and what is waiting locally). Never answered at all: only the error.
     // The way in, front and centre: one big card with the Discord sign-in right here (same flow as Play).
-    if (state.answered) parts.push(signInCard());
     const n = unsentCount(state.queue);
-    screen.replaceChildren(...parts, foot(n ? `${n} ${n === 1 ? 'game' : 'games'} will upload when you sign in.` : null));
+    const waiting = n ? `${n} ${n === 1 ? 'game' : 'games'} will upload when you sign in.` : null;
+    // The account is signed in but the stats server says otherwise: keep Profile & sync (sign out, send results).
+    if (ok(state.identity) && state.identity.signed_in) { screen.replaceChildren(...parts, foot(waiting)); return; }
+    // No account yet: only the sign-in card, no Profile & sync. What is waiting locally goes in the card.
+    if (state.answered) parts.push(signInCard(waiting));
+    screen.replaceChildren(...parts);
     return;
   }
   const d = state.dash;
