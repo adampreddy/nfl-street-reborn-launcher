@@ -93,7 +93,16 @@ const HAND_KEPT = {
   // under the theme's alias. Before, theme.css won by source order; the html:not(#_) prefix now outranks it.
   onboarding: [['the inset fills theme.css gives first run (theme.css "inset fills that the --bg:transparent alias would otherwise erase")',
     'html:not(#_) body.shell.page-setup :is(.mapping-tabs,.graphics-tabs,.import-override-fields,.advanced-row select,.import-game-actions select){background-color:var(--glass-1)}\n'
-    + 'html:not(#_) body.shell.page-setup .binding-editor{background-color:var(--surface-solid)}']],
+    + 'html:not(#_) body.shell.page-setup .binding-editor{background-color:var(--surface-solid)}'],
+  // Colour states the token mapping flattened (P4-27, Task 11), found by comparing every element's colours legacy vs themed.
+  ['the step dots keep done (grey) apart from now (white): legacy onboarding-polish.css:8 done was var(--muted), which maps to --fg like now',
+    'html:not(#_) .page-setup #steps span.done{background-color:var(--fg-2)}'],
+  ['success and live-status text stays green (legacy onboarding-polish.css sage #c1d2ad, mapped to grey; as Online\'s .netplay-safe, P4-29 ruling)',
+    'html:not(#_) :is(.setup-success,.controller-live,.detected-icon,.detected-check,.page-setup .recommendation-badge,.patch-complete .import-status){color:var(--ok)}'],
+  ['a selected choice keeps its white outline and no red edge: legacy onboarding-polish.css:15 border-color:var(--focus) (#fff, mapped to --stroke-hi) and launcher.css:133 box-shadow:none (dropped as a shadow, so launcher.css:81\'s red inset showed)',
+    'html:not(#_) .page-setup .choice:has(input:checked){border-top-color:var(--fg)!important;border-right-color:var(--fg)!important;border-bottom-color:var(--fg)!important;border-left-color:var(--fg)!important;box-shadow:none}'],
+  ['a disabled Continue keeps 3:1 text and still reads as disabled: the old 0.4 dimming left 2.3:1 (P4-27)',
+    'html:not(#_) .page-setup #next:disabled{opacity:.6}']],
   // game + live share pages/live.css (run as `game,live`). Colour states the token mapping flattened (P4-27, Task 9):
   // theme.css's classless-button sheen drew a line above every unselected tab; the old control and selected fills
   // both map to --glass-3, so the picked game no longer stood out; the disputed play's --muted edge became a faint line.

@@ -12,6 +12,7 @@
 //       element whose chain matches is a WARN; any other style change, move or resize of it still FAILs.
 //       The page heading, the diagnostic fold and the shell are not compared. The heading's own height change is taken out of
 //       the y of #main's later children (reported as one WARN per screen), so a theme heading 2px shorter moves nothing.
+//       That discount is capped at 4px: a larger heading change is not taken out, so it cannot hide content moves.
 // Baseline comparisons elsewhere (checkers failing at the start of plan 4) must key failures on the normalised failure
 // MESSAGE (strip file:line, paths, timings), never file:line: later tasks edit those checkers and shift their lines.
 // Scrollbars are hidden in every capture (ruling P4-10): the themed thin scrollbar is 10px narrower than the default
@@ -97,9 +98,14 @@ function diff(beforeDir, afterDir, loose, looseProps = []) {
     if (!y0) { fails.push(`${screen}: not captured after`); continue; }
     if (y0.__errors) fails.push(`${screen}: page errors after: ${y0.__errors.join(' | ')}`);
     // A direct child of #main below the (ignored) page heading moves with the heading's height; that move is the theme's.
-    const hd = typeof x0.__heading === 'number' && typeof y0.__heading === 'number' ? y0.__heading - x0.__heading : 0;
+    // Capped (Task 11 carry): only a small heading change (|hd| <= 4px, rounding of the theme's heading) is taken out. A
+    // larger one is a real change, and discounting it could hide content moves, so then nothing is taken out.
+    const HD_CAP = 4;
+    const raw = typeof x0.__heading === 'number' && typeof y0.__heading === 'number' ? y0.__heading - x0.__heading : 0;
+    const hd = Math.abs(raw) <= HD_CAP ? raw : 0;
     const headingMove = (k, x) => (hd && /^main#main\/[^/]+$/.test(k) && x.dy > 0 ? hd : 0);
-    if (Math.abs(hd) > 0.01) warns.push(`${screen} .page-heading (theme's, not compared): outer height ${x0.__heading.toFixed(2)} → ${y0.__heading.toFixed(2)}; #main's children below it are compared without that move`);
+    if (Math.abs(raw) > HD_CAP) warns.push(`${screen} .page-heading (theme's, not compared): outer height ${x0.__heading.toFixed(2)} → ${y0.__heading.toFixed(2)}; more than ${HD_CAP}px, so #main's children are compared WITH that move`);
+    else if (Math.abs(hd) > 0.01) warns.push(`${screen} .page-heading (theme's, not compared): outer height ${x0.__heading.toFixed(2)} → ${y0.__heading.toFixed(2)}; #main's children below it are compared without that move`);
     for (const k of Object.keys(x0)) {
       if (k.startsWith('__')) continue;
       const x = x0[k], y = y0[k];
