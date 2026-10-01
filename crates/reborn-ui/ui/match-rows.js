@@ -24,10 +24,18 @@ export function teamLogo(team, cls = '') {
   return img;
 }
 
-/** A player's Discord avatar, or the first letter of their name in the same circle. */
-export function avatar(url, name, cls = '') {
+/** The letter circle's colour for a name: one of theme.css's eight `.av-N`, the same name always the same one. */
+export function letterColour(name) {
+  let h = 0;
+  for (const ch of Array.from(String(name || ''))) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return `av-${h % 8}`;
+}
+
+/** A player's Discord avatar, or the first letter of their name in a circle coloured from the name (`cpu: true` = the
+ *  CPU's neutral circle). */
+export function avatar(url, name, cls = '', { cpu = false } = {}) {
   const c = `avatar${cls ? ` ${cls}` : ''}`;
-  const letter = () => el('span', { class: c, 'aria-hidden': 'true', text: initial(name) });
+  const letter = () => el('span', { class: `${c} ${cpu ? 'av-cpu' : letterColour(name)}`, 'aria-hidden': 'true', text: initial(name) });
   const src = avatarSrc({ avatar_url: url });
   if (!src) return letter();
   const img = el('img', { class: c, alt: '', src });
@@ -71,8 +79,8 @@ function label(m, r, sub, elo) {
 }
 
 /**
- * A match's row, and for a best of 3 its games under it. `where` picks the second line ('stats': Offline / Private
- * room; 'profile': Ranked / Casual). `open` (a Set of match ids) is read and updated, so it survives redraws; opening
+ * A match's row, and for a best of 3 its games under it. `where` picks the second line ('stats': Offline only;
+ * 'profile': Ranked / Casual). `open` (a Set of match ids) is read and updated, so it survives redraws; opening
  * toggles classes in place (the reveal animates), closed games are inert. `openGame(id)` opens one game.
  */
 export function matchRows(m, { where, open, openGame }) {
@@ -83,7 +91,7 @@ export function matchRows(m, { where, open, openGame }) {
     resultCell(r.result, r.score),
     matchup(r.me, r.opp),
     // The CPU (or an unknown opponent) gets the same circle with its first letter, so every name starts on one line.
-    el('span', { class: 'm-opp' }, avatar(m?.opponent_kind === 'cpu' || !m?.opponent ? null : r.avatar, r.opponent),
+    el('span', { class: 'm-opp' }, avatar(m?.opponent_kind === 'cpu' || !m?.opponent ? null : r.avatar, r.opponent, '', { cpu: m?.opponent_kind === 'cpu' }),
       el('span', { class: 'm-opp-tx' }, el('span', { class: 'm-opp-n', text: r.opponent }), sub ? el('small', { text: sub }) : null)),
     el('span', { class: `m-elo${elo.kind ? ` ${elo.kind}` : ''}`, text: elo.text }),
     el('span', { class: 'm-date', text: r.date }),
