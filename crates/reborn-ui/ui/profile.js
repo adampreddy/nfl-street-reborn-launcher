@@ -1,92 +1,44 @@
-// The native public profile (spec §2): one player's ONLINE career from the server (`player_profile`), opened as
-// profile.html?player=<uuid>[#section]. The same page as the web's /u/<id> (reborn-backend src/web/profile-page.js),
-// with the launcher's own row, number and role-card models (stats-model.js).
-// Everything drawn here is server data (display names, team names and player names are typed by people): el()'s
-// `text` (textContent) only, never markup. An image only ever comes through assetUrl() (our own /live-assets/ catalog)
-// or avatarSrc() (the Discord avatar CDN), the two image prefixes the CSP allows. The only style the script sets is
-// the cover's two colour custom properties, through the CSSOM (style.setProperty), never a style attribute.
+// The public profile, the online player hub (spec §8.7): one player's ONLINE games (`player_profile`), opened as
+// profile.html?player=<uuid>[#section]. Top to bottom: Back · the profile card (the cover from the avatar's colours,
+// avatar, name, status, Joined, Plays as, the summary line, Share profile / View on web, the live card while they
+// play) · the overview (Elo | Record | Last 10 games) · Match history beside Career, Leaderboard and Records.
+// A piece whose data the server does not send yet is left out, never drawn as a placeholder (spec §8.7). Private rooms
+// never show (the deployed server still sends them; they are dropped on the way in).
+// Everything drawn is server data: el()'s `text` (textContent) only, never markup. Images only through assetUrl() or
+// avatarSrc() (the CSP's two image prefixes). Script-set styles are the card's --c1/--c2 and a bar's width, through the
+// CSSOM, never a style attribute.
 import { bridge, call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
-import { PAGE_ORIGIN, assetUrl, avatarSrc } from './live-common.js';
+import { PAGE_ORIGIN, avatarSrc } from './live-common.js';
 import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
-import { fmtElo, fmtInt, fmtPct, fmtRecord, matchRowModel, roleCards, totalLine } from './stats-model.js';
+import { fmtInt } from './stats-model.js';
+import { avatar, matchHeader, matchRows, pager, storeGameList, teamLogo } from './match-rows.js';
+import { careerTiles, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, recordOverview, statusLine, summaryFacts } from './profile-model.js';
+import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHOWN = 5; // R8: a long list shows five rows; "All ›" shows every row in place.
-const DASH = '—', EN = '–', MINUS = '−';
-const RESULT_WORD = { W: 'win', L: 'loss', T: 'tie' };
-const LETTER = { win: 'W', loss: 'L', tie: 'T' };
+const SHOWN = 5;     // a long list shows five rows; "All ›" shows every row in place
+const HPAGE = 10;    // Match history rows per page
+const DASH = '—';
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const HISTORY_TABS = [['all', 'All'], ['ranked', 'Ranked'], ['casual', 'Casual']];
+const PAGER_OTHER = { older: 'newer', newer: 'older' };
+// The empty states never say a player has never played: private rooms count on the server but never show here.
+const NONE_TEXT = 'No online matches to show yet.';
+const NONE_OF = { all: NONE_TEXT, ranked: 'No ranked matches to show yet.', casual: 'No casual matches to show yet.' };
 
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 const playerId = (params.get('player') || '').toLowerCase();
 const screen = document.getElementById('screen');
 
-// ---- numbers (every formatter here is null-safe: a field the server left out draws as a dash, never a throw) ----
-
 const num = (n) => typeof n === 'number' && Number.isFinite(n);
+const list = (v) => (Array.isArray(v) ? v : []);
 const int = (n) => fmtInt(num(n) ? Math.round(n) : null);
-const pct = (p) => fmtPct(num(p) ? p : null);
-const one = (n) => (num(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : DASH);
-const numOr1 = (n) => (num(n) ? (Number.isInteger(n) ? int(n) : one(n)) : DASH);
-const conv = (p) => (num(p) ? `${Math.round(p * 100)}%` : DASH);
-const record = (r) => (r ? fmtRecord({ wins: r.wins ?? 0, losses: r.losses ?? 0, ties: r.ties ?? 0 }) : DASH);
-const score = (s) => (Array.isArray(s) && num(s[0]) && num(s[1]) ? `${s[0]}${EN}${s[1]}` : DASH);
 const day = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : DASH; };
 const monthYear = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : null; };
-const list = (v) => (Array.isArray(v) ? v : []);
-
-// ---- small pieces ----
-
 const profileHref = (id) => `profile.html?player=${encodeURIComponent(id)}`;
 const gameHref = (id) => `game.html?game=${encodeURIComponent(id)}`;
 const webUrl = () => `${PAGE_ORIGIN}/u/${playerId}`;
-
-// The ids of a set of matches' games, newest first (matches here already are; the server sends each match's own
-// games oldest first, so each match's games are reversed on the way in). This is the ordered list game.html's
-// ‹ Previous / Next › bar steps through, remembered in sessionStorage['nsr.gameList'] right before we navigate
-// to one of them.
-function gameIdsOf(matches) {
-  const ids = [];
-  for (const m of matches) {
-    const games = Array.isArray(m?.games) ? m.games : [];
-    for (let i = games.length - 1; i >= 0; i--) {
-      const g = games[i];
-      if (g && typeof g.id === 'string') ids.push(g.id);
-    }
-  }
-  return ids;
-}
-
-function storeGameList(matches, label) {
-  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label, from: profileHref(playerId) })); } catch { /* best effort */ }
-}
-
-function initial(name) {
-  const first = Array.from(String(name || '').trim())[0];
-  return first ? first.toUpperCase() : '?';
-}
-
-/** A team's logo (16px by default, 22px in match rows), or its abbreviation in a small chip when it has none or the
-    image fails. `alt` is empty: the team or player name always stands beside it. */
-function teamLogo(t, cls = 'pf-logo') {
-  const chip = () => el('span', { class: `${cls} pf-nologo`, 'aria-hidden': 'true', text: t?.abbrev || (t?.name ? String(t.name).slice(0, 3).toUpperCase() : DASH) });
-  const src = assetUrl(t?.logo_url);
-  if (!src) return chip();
-  const img = el('img', { class: cls, alt: '', src, title: t?.name || null });
-  img.addEventListener('error', () => img.replaceWith(chip()), { once: true });
-  return img;
-}
-
-/** A player's Discord avatar, or the first letter of their name in the same circle. */
-function avatar(url, name, cls = 'pf-av') {
-  const letter = () => el('span', { class: `${cls} pf-blank`, 'aria-hidden': 'true', text: initial(name) });
-  const src = avatarSrc({ avatar_url: url });
-  if (!src) return letter();
-  const img = el('img', { class: cls, alt: '', src });
-  img.addEventListener('error', () => img.replaceWith(letter()), { once: true });
-  return img;
-}
 
 function svg(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -94,23 +46,17 @@ function svg(tag, attrs = {}) {
   return node;
 }
 
-const none = (text = 'None yet') => el('p', { class: 'pf-none', text });
-
-/** A section: `<section id>` with its `<h2>` in a head row (where "All ›" goes) and a glass panel after it. */
-function section(id, title, { panel = true } = {}) {
-  const h = el('h2', { id: `${id}-h`, text: title });
-  const head = el('div', { class: 'pf-sec' }, h);
-  const body = el('div', { class: panel ? 'pf-glass' : 'pf-bare' });
-  const s = el('section', { id, class: 'pf-section', 'aria-labelledby': `${id}-h` }, head, body);
-  return { s, head, body };
+/** A section's 40px header: its <h2> and, on the right, a link or tabs. */
+function sectionHead(id, title, extra = null) {
+  return el('div', { class: 'sec-head' }, el('h2', { id: `${id}-h`, text: title }), extra);
 }
 
-/** R8: hide every row after the fifth; "All ›" shows them in place, "Fewer ‹" hides them again. */
+/** Hide every row after the fifth; "All ›" shows them in place, "Fewer ‹" hides them again. */
 function expandable(id, head, rows, what) {
   if (rows.length <= SHOWN) return;
   const set = (open) => rows.slice(SHOWN).forEach((r) => { r.hidden = !open; });
   set(false);
-  const b = el('button', { type: 'button', class: 'pf-all', 'aria-expanded': 'false', 'aria-controls': id, text: 'All ›', 'aria-label': `Show all ${rows.length} ${what}` });
+  const b = el('button', { type: 'button', class: 'sec-link', 'aria-expanded': 'false', 'aria-controls': id, text: 'All ›', 'aria-label': `Show all ${rows.length} ${what}` });
   b.addEventListener('click', () => {
     const open = b.getAttribute('aria-expanded') !== 'true';
     set(open);
@@ -121,64 +67,25 @@ function expandable(id, head, rows, what) {
   head.append(b);
 }
 
-/** One labelled number in a stat grid: the label above, the number under it. */
-function stat(label, value) {
-  return el('div', {}, el('span', { class: 'pf-label', text: label }), el('b', { class: 'pf-num', text: value }));
+// ---- Back ----
+
+// Back returns to the launcher page this one was opened from (Stats, a game, the live view, another profile); opened
+// any other way, it goes to Stats.
+function backButton() {
+  const b = el('button', { type: 'button', class: 'pf-back', id: 'back', 'data-key': 'back' }, el('span', { class: 'chev', 'aria-hidden': 'true' }), el('span', { text: 'Back' }));
+  b.addEventListener('click', () => {
+    let fromLauncher = false;
+    try { fromLauncher = Boolean(document.referrer) && new URL(document.referrer).origin === location.origin; } catch { /* no referrer */ }
+    if (fromLauncher && history.length > 1) history.back(); else location.href = 'stats.html';
+  });
+  return b;
 }
 
-// ---- header ----
-
-function header(p, ownerId) {
-  const h = p.header || {};
-  const cover = el('div', { class: 'pf-cover', 'aria-hidden': 'true' });
-  const meta = el('p', { class: 'pf-meta' });
-  const bits = [];
-  const joined = monthYear(h.joined);
-  if (joined) bits.push(el('span', { text: `Joined ${joined}` }));
-  const owner = Boolean(ownerId) && String(h.player_id || '').toLowerCase() === ownerId;
-  bits.push(owner ? playsAsPicker(p) : playsAsText(h.plays_as));
-  if (h.online === true) bits.push(el('span', { class: 'pf-online', text: 'Online now' }));
-  bits.filter(Boolean).forEach((b, i) => { if (i) meta.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); meta.append(b); });
-
-  const said = el('span', { class: 'pf-copied', role: 'status' });
-  let saidTimer = null;
-  const share = el('button', { type: 'button', class: 'pf-btn', 'data-key': 'share', text: 'Share profile' });
-  share.addEventListener('click', async () => {
-    const url = webUrl();
-    try { await navigator.clipboard.writeText(url); said.textContent = 'Link copied'; } catch { said.textContent = url; }
-    clearTimeout(saidTimer);
-    saidTimer = setTimeout(() => { said.textContent = ''; }, 2000);
-  });
-  const web = el('button', { type: 'button', class: 'pf-btn pf-btn-o', 'data-key': 'web', text: 'View on web' });
-  web.addEventListener('click', async () => {
-    try { await call('open_website', { url: webUrl() }); } catch (e) { said.textContent = reason(e); }
-  });
-
-  const name = h.display_name || 'Player';
-  const body = el('div', { class: 'pf-body' },
-    avatar(h.avatar_url, name, 'pf-pav'),
-    el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta),
-    el('div', { class: 'pf-act' }, share, web, said));
-
-  const elo = fmtElo(num(p.elo?.rating) ? p.elo : null);
-  const s = p.summary || {};
-  const count = (label, value, cls = '') => el('div', { class: cls || null }, el('dt', { text: label }), el('dd', { class: 'pf-num', text: value }));
-  const counts = el('dl', { class: 'pf-counts' },
-    count('Elo', elo.value, num(p.elo?.rating) ? '' : 'pf-unranked'),
-    count('Ranked', num(p.elo?.rank) ? `#${p.elo.rank}` : DASH),
-    count('Record', record(s)),
-    count('Win %', pct(s.win_pct)),
-    count('Matches', int(s.games ?? 0)));
-  // A div, not <header>: styles.css gives every header element the shell's grid-area and bar look.
-  const prof = el('div', { class: 'pf-glass pf-prof' }, cover, body, counts);
-  coverColours(cover, h.avatar_url);
-  if (typeof document.title === 'string') document.title = `${name} | NFL Street Reborn`;
-  return prof;
-}
+// ---- the profile card ----
 
 function playsAsText(team) {
   if (!team || !team.name) return null;
-  return el('span', { class: 'pf-team' }, el('span', { class: 'pf-team-l', text: 'Plays as' }), teamLogo(team), el('span', { text: team.name }));
+  return el('span', { class: 'pf-team' }, el('span', { text: 'Plays as' }), teamLogo(team), el('span', { text: team.name }));
 }
 
 /** The owner's own "Plays as" choice: "Most played" (the server's pick) or any team in By team except Pickup. */
@@ -187,12 +94,12 @@ function playsAsPicker(p) {
   const teams = list(p.by_team).filter((t) => t && t.key !== 'pickup' && Number.isInteger(t.tgid));
   const mostPlayed = () => { const t = teams.find((x) => (x.games ?? 0) > 0); return t ? { name: t.name, abbrev: t.abbrev, tgid: t.tgid, logo_url: t.logo_url } : null; };
   const current = h.plays_as_auto === false && Number.isInteger(h.plays_as?.tgid) ? String(h.plays_as.tgid) : '';
-  const select = el('select', { id: 'plays-as', class: 'pf-select', 'data-key': 'plays-as' },
+  const select = el('select', { id: 'plays-as', 'data-key': 'plays-as' },
     el('option', { value: '', text: 'Most played' }),
     ...teams.map((t) => el('option', { value: String(t.tgid), text: t.name })));
   select.value = current;
   const logoSlot = el('span', { class: 'pf-team-logo' }, h.plays_as ? teamLogo(h.plays_as) : null);
-  const note = el('span', { class: 'pf-saved', role: 'status' });
+  const note = el('span', { class: 'pf-said', role: 'status' });
   let saved = current;
   select.addEventListener('change', async () => {
     const value = select.value;
@@ -212,11 +119,11 @@ function playsAsPicker(p) {
     }
     select.disabled = false;
   });
-  return el('span', { class: 'pf-team pf-team-own' }, el('label', { class: 'pf-team-l', for: 'plays-as', text: 'Plays as' }), logoSlot, select, note);
+  return el('span', { class: 'pf-team' }, el('label', { for: 'plays-as', text: 'Plays as' }), logoSlot, select, note);
 }
 
 /** The cover's two colours from the avatar; any failure (no avatar, CORS, a tainted canvas) keeps the neutral cover. */
-function coverColours(cover, url) {
+function coverColours(target, url) {
   const src = avatarSrc({ avatar_url: url });
   if (!src || typeof Image === 'undefined') return;
   const im = new Image();
@@ -229,364 +136,237 @@ function coverColours(cover, url) {
       const x = c.getContext('2d');
       x.drawImage(im, 0, 0, 32, 32);
       const cols = dominantColors(x.getImageData(0, 0, 32, 32).data);
-      if (cols) { cover.style.setProperty('--c1', cols[0]); cover.style.setProperty('--c2', cols[1]); cover.classList.add('has-colour'); }
+      if (cols) { target.style.setProperty('--c1', cols[0]); target.style.setProperty('--c2', cols[1]); target.classList.add('has-colour'); }
     } catch { /* tainted canvas: keep the neutral cover */ }
   };
   im.src = src;
 }
 
-// ---- 1. Elo over time ----
-
-function eloSection(elo) {
-  const { s, body } = section('elo', 'Elo over time');
-  const hist = list(elo?.history).filter((x) => x && num(x.rating));
-  if (!num(elo?.rating) || !hist.length) { body.append(none('Unranked')); return s; }
-  const start = hist[0].rating - (num(hist[0].delta) ? hist[0].delta : 0);
-  const pts = [start, ...hist.map((x) => x.rating)];
-  const W = 400, H = 110, pad = 8, lo = Math.min(...pts), hi = Math.max(...pts);
-  const y = (r) => (hi === lo ? H / 2 : pad + (H - 2 * pad) * (1 - (r - lo) / (hi - lo)));
-  const chart = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'pf-chart', role: 'img',
-    'aria-label': `Elo from ${int(start)} to ${int(elo.rating)} over ${hist.length} ranked matches` });
-  const grid = svg('g', { class: 'pf-gridl' });
-  for (const gy of [25, 60, 95]) grid.append(svg('line', { x1: 0, x2: W, y1: gy, y2: gy }));
-  chart.append(grid, svg('polyline', { class: 'pf-trend', points: pts.map((r, i) => `${Math.round((i / (pts.length - 1)) * W * 10) / 10},${Math.round(y(r) * 10) / 10}`).join(' ') }));
-  const peak = hist.reduce((a, x) => (x.rating > a.rating ? x : a), hist[0]);
-  body.classList.add('pf-pad');
-  body.append(chart, el('div', { class: 'pf-chart-foot' },
-    el('span', { text: `Start ${int(start)}${hist[0].at ? ` · ${day(hist[0].at)}` : ''}` }),
-    el('span', { text: `Peak ${int(Math.max(peak.rating, start))}${peak.rating >= start && peak.at ? ` · ${day(peak.at)}` : ''}` }),
-    el('span', { text: `Now ${int(elo.rating)}` })));
-  return s;
+/** The live card, only while they play a public match (spec §8.7.2): LIVE · queue · game, the score, vs · series. */
+function liveBlock(raw) {
+  const c = liveCard(raw && raw.queue !== 'ranked' ? { ...raw, best_of: 1 } : raw);
+  if (!c) return null;
+  const side = (t, right) => el('span', { class: `t${right ? ' r' : ''}` },
+    ...(right ? [el('b', { text: t?.abbrev || '' }), teamLogo(t)] : [teamLogo(t), el('b', { text: t?.abbrev || '' })]));
+  return el('div', { class: 'pf-live', role: 'group', 'aria-label': `Live now: ${c.head}` },
+    el('div', { class: 'pf-live-top' }, el('span', { class: 'live-dot', 'aria-hidden': 'true' }), el('span', { class: 'lbl', text: 'Live' }), el('span', { class: 'q', text: c.head })),
+    c.score ? el('div', { class: 'pf-live-sc' }, side(c.me, false), el('strong', { class: 'num', text: c.score }), side(c.opp, true)) : null,
+    el('div', { class: 'pf-live-bot' }, el('span', { text: c.line }),
+      el('button', { type: 'button', class: 'btn sm', 'data-key': 'live-feed', text: 'Live feed', onclick: () => { location.href = c.href; } })));
 }
 
-// ---- 2. Recent matches (rows as on the Stats page: one game opens it, a longer match expands to its games) ----
-
-function matchLabel(m, r) {
-  const teams = `${m.me?.name || 'Their team'} vs ${m.opp?.name || 'the other team'}`;
-  const who = m.opponent_kind === 'cpu' ? 'against the CPU' : r.opponent !== DASH ? `against ${r.opponent}` : '';
-  const sc = r.expandable ? `series ${r.score}` : r.score !== DASH ? `score ${r.score}` : 'no score';
-  const parts = [`${r.date} ${r.time}`, [teams, who].filter(Boolean).join(', '), [sc, RESULT_WORD[r.result]].filter(Boolean).join(', ')];
-  if (r.tag) parts.push(r.tag);
-  if (r.expandable) parts.push(`${r.games.length} games`);
-  return `${parts.join('. ')}.`;
-}
-
-function rowCells(when, me, opp, opponent, sc, result, tag, tagKind, caret) {
-  return [
-    el('span', { class: 'pf-when' }, el('b', { text: when[0] }), when[1] ? el('span', { text: when[1] }) : null),
-    el('span', { class: 'pf-mu' }, teamLogo(me, 'pf-rlogo'), el('span', { class: 'pf-vs', text: 'vs' }), teamLogo(opp, 'pf-rlogo'), opponent),
-    el('span', { class: 'pf-sc', text: sc }),
-    el('span', { class: `pf-res${result ? ` ${result}` : ''}`, text: result }),
-    el('span', { class: `pf-tag${tagKind ? ` ${tagKind}` : ''}`, text: tag }),
-    el('span', { class: 'pf-caret', 'aria-hidden': 'true', text: caret }),
-  ];
-}
-
-let matchSeq = 0;
-// `loaded` is every match shown so far (the initial page plus every "All ›" load); `listLabel` is the
-// "<name>'s matches" line stored beside them. Both stay live across "All ›" clicks: matchesSection mutates
-// `loaded` in place (push, never reassign), so a row built before a later load still stores the fuller list.
-function matchRow(m, loaded, listLabel) {
-  const r = matchRowModel({ ...m, games: list(m.games) });
-  const opponent = el('span', { class: 'pf-opp' },
-    m.opponent_kind === 'cpu' || !m.opponent ? null : avatar(r.avatar, r.opponent),
-    el('span', { class: 'pf-oname', text: r.opponent }));
-  const cells = rowCells([r.date, r.time], r.me, r.opp, opponent, r.score, r.result, r.tag, r.tagKind, r.expandable ? '›' : '');
-  const wrap = el('div', { class: 'pf-match' });
-  if (!r.expandable) {
-    const attrs = { class: 'pf-row', 'data-key': `match-${r.id}`, 'aria-label': matchLabel(m, r) };
-    // A match with no recorded game has nothing to open.
-    wrap.append(r.onlyGame
-      ? el('a', { ...attrs, href: gameHref(r.onlyGame), onclick: () => storeGameList(loaded, listLabel) }, ...cells)
-      : el('div', { ...attrs, role: 'group' }, ...cells));
-    return wrap;
-  }
-  const gamesId = `pf-games-${++matchSeq}`;
-  const games = el('div', { class: 'pf-games', id: gamesId, hidden: '' }, ...r.games.map((g, i) => {
-    const label = `Game ${i + 1}. ${g.score !== DASH ? `Score ${g.score}` : 'No score'}${g.result ? `, ${RESULT_WORD[g.result]}` : ''}. ${g.date} ${g.time}.`;
-    return el('a', { class: 'pf-row pf-game', href: gameHref(g.id), 'data-key': `game-${g.id}`, 'aria-label': label, onclick: () => storeGameList(loaded, listLabel) },
-      ...rowCells([`Game ${i + 1}`, ''], g.me, g.opp, el('span', { class: 'pf-gtime', text: g.time }), g.score, g.result, '', '', ''));
-  }));
-  const row = el('button', { type: 'button', class: 'pf-row pf-exp', 'data-key': `match-${r.id}`, 'aria-expanded': 'false', 'aria-controls': gamesId, 'aria-label': matchLabel(m, r) }, ...cells);
-  row.addEventListener('click', () => {
-    const open = row.getAttribute('aria-expanded') !== 'true';
-    row.setAttribute('aria-expanded', String(open));
-    games.hidden = !open;
+function card(p, ownerId) {
+  const h = p.header || {};
+  const name = h.display_name || 'Player';
+  const status = statusLine(h);
+  const pic = el('div', { class: 'pf-pic cover-pic' }, avatar(h.avatar_url, name, 'pf-avatar'), status ? el('span', { class: 'presence-dot', 'aria-hidden': 'true' }) : null);
+  const meta = el('p', { class: 'pf-meta' });
+  const bits = [];
+  if (status) bits.push(el('span', { class: 'pf-status', text: `● ${status.text}` }));
+  const joined = monthYear(h.joined);
+  if (joined) bits.push(el('span', { text: `Joined ${joined}` }));
+  const owner = Boolean(ownerId) && String(h.player_id || '').toLowerCase() === ownerId;
+  const team = owner ? playsAsPicker(p) : playsAsText(h.plays_as);
+  if (team) bits.push(team);
+  bits.forEach((b, i) => { if (i) meta.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); meta.append(b); });
+  const facts = summaryFacts(p);
+  const said = el('span', { class: 'pf-said', role: 'status' });
+  let saidTimer = null;
+  const share = el('button', { type: 'button', class: 'btn primary sm', 'data-key': 'share', text: 'Share profile' });
+  share.addEventListener('click', async () => {
+    const url = webUrl();
+    try { await navigator.clipboard.writeText(url); said.textContent = 'Link copied'; } catch { said.textContent = url; }
+    clearTimeout(saidTimer);
+    saidTimer = setTimeout(() => { said.textContent = ''; }, 2000);
   });
-  wrap.append(row, games);
-  return wrap;
-}
-
-function matchesSection(p) {
-  const { s, head, body } = section('matches', 'Recent matches');
-  const first = list(p.recent_matches);
-  if (!first.length) { body.append(none()); return s; }
-  const listLabel = `${p.header?.display_name || 'Player'}'s matches`;
-  // Every match rendered so far, oldest loaded last: matchRow's click handlers close over this array by
-  // reference, so pushing onto it (never reassigning) keeps every already-built row's ‹ Previous / Next › list
-  // current, including games from a later "All ›" load.
-  const loaded = first.slice();
-  const rows = el('div', { class: 'pf-rows', id: 'pf-match-rows' }, ...first.map((m) => matchRow(m, loaded, listLabel)));
-  body.append(rows);
-  let last = first.at(-1)?.at ?? null;
-  let shown = first.length;
-  const total = num(p.matches_total) ? p.matches_total : shown;
-  if (shown < total && last) {
-    const msg = el('p', { class: 'pf-err', role: 'status' });
-    const more = el('button', { type: 'button', class: 'pf-all', 'data-key': 'matches-all', 'aria-controls': 'pf-match-rows', text: 'All ›', 'aria-label': `Show all ${total} matches` });
-    more.addEventListener('click', async () => {
-      more.disabled = true;
-      msg.textContent = '';
-      try {
-        const page = await quietCall('player_profile', { playerId, before: last });
-        const ms = list(page?.matches);
-        if (page && page.ok === false) throw new Error(typeof page.error === 'string' && page.error ? page.error : 'More matches could not be loaded.');
-        loaded.push(...ms);
-        rows.append(...ms.map((m) => matchRow(m, loaded, listLabel)));
-        shown += ms.length;
-        if (ms.length) last = ms.at(-1).at;
-        if (!ms.length || shown >= total || !last) more.remove();
-        else more.disabled = false;
-      } catch (e) {
-        msg.textContent = `More matches could not be loaded: ${reason(e)}`;
-        more.disabled = false;
-      }
-    });
-    head.append(more);
-    s.insertBefore(msg, body);
-  }
-  return s;
-}
-
-// ---- 3. Best players (the Stats page's six role cards) ----
-
-function playersSection(best) {
-  const { s, body } = section('players', 'Best players', { panel: false });
-  body.className = 'pf-pgrid';
-  for (const c of roleCards(best || {})) {
-    const face = el('span', { class: 'pf-face', 'aria-hidden': 'true' });
-    const letter = () => el('span', { class: 'pf-face-initial', text: c.initial || '' });
-    const src = assetUrl(c.portrait);
-    if (src) { const img = el('img', { class: 'pf-face-img', alt: '', src }); img.addEventListener('error', () => img.replaceWith(letter()), { once: true }); face.append(img); }
-    else face.append(letter());
-    if (c.stat) face.append(teamLogo({ name: c.team, logo_url: c.logo }, 'pf-face-badge'));
-    body.append(el('div', { class: `pf-glass pf-lead${c.stat ? '' : ' none'}` }, face,
-      el('span', { class: 'pf-lead-text' }, el('span', { class: 'pf-label', text: c.label }),
-        el('span', { class: 'pf-lead-n', text: c.name }), c.stat ? el('span', { class: 'pf-lead-s', text: c.stat }) : null)));
-  }
-  return s;
-}
-
-// ---- 4. Per game ----
-
-function perGameSection(pg) {
-  const { s, body } = section('per-game', 'Per game');
-  if (!pg || !pg.games) { body.append(none()); return s; }
-  body.append(el('div', { class: 'pf-gs' },
-    stat('Total yds', numOr1(pg.yds)), stat('Pass / rush', `${numOr1(pg.pass)} / ${numOr1(pg.rush)}`),
-    stat('First downs', numOr1(pg.first_downs)), stat('Turnovers', numOr1(pg.turnovers)),
-    stat('1-pt conv', conv(pg.conv1_pct)), stat('2-pt conv', conv(pg.conv2_pct)),
-    stat('Pts / drive', numOr1(pg.pts_per_drive)), stat('3-and-outs', numOr1(pg.three_outs)),
-    stat('Longest drive', num(pg.longest_drive) ? `${pg.longest_drive} plays` : DASH), stat('Lead changes', numOr1(pg.lead_changes)),
-    stat('Biggest lead', numOr1(pg.biggest_lead)), stat('Safeties', int(pg.safeties))),
-  el('p', { class: 'pf-total', text: `Over ${int(pg.games)} game${pg.games === 1 ? '' : 's'} with play-by-play` }));
-  return s;
-}
-
-// ---- 5. Career stats: every player used, sortable by any column, one muted total line ----
-
-const CA = (r) => `${int(r.cmp)}/${int(r.att)}`;
-const CAREER = {
-  passing: { title: 'Passing', cols: [['ca', 'C/A', 'Completions / attempts', CA, (r) => r.cmp], ['yds', 'Yds', 'Passing yards'], ['td', 'TD', 'Touchdowns'], ['int', 'INT', 'Interceptions'],
-    ['air', 'Air', 'Air yards'], ['yac', 'YAC', 'Yards after catch'], ['ypa', 'Y/A', 'Yards per attempt', (r) => one(r.ypa)], ['rtg', 'Rtg', 'Passer rating', (r) => one(r.rtg)], ['long', 'Lng', 'Longest'], ['sacked', 'Sacked', 'Times sacked']] },
-  rushing: { title: 'Rushing', cols: [['att', 'Att', 'Attempts'], ['yds', 'Yds', 'Rushing yards'], ['avg', 'Avg', 'Yards per carry', (r) => one(r.avg)], ['td', 'TD', 'Touchdowns'], ['long', 'Lng', 'Longest'],
-    ['btk', 'BTK', 'Broken tackles'], ['yac', 'YAC', 'Yards after contact']] },
-  receiving: { title: 'Receiving', cols: [['rec', 'Rec', 'Receptions'], ['yds', 'Yds', 'Receiving yards'], ['avg', 'Avg', 'Yards per catch', (r) => one(r.avg)], ['yac', 'YAC', 'Yards after catch'],
-    ['td', 'TD', 'Touchdowns'], ['long', 'Lng', 'Longest'], ['drops', 'Drops', 'Drops']] },
-  defense: { title: 'Defense', cols: [['tkl', 'Tkl', 'Tackles'], ['tfl', 'TFL', 'Tackles for loss'], ['sck', 'Sck', 'Sacks'], ['int', 'INT', 'Interceptions'], ['pbu', 'PBU', 'Passes broken up'],
-    ['ff', 'FF', 'Forced fumbles'], ['fr', 'FR', 'Fumble recoveries'], ['td', 'TD', 'Defensive touchdowns']] },
-};
-
-/** A player (or team) name with its 16px team logo in front. */
-function named(team, logoUrl, name, abbrev = null) {
-  return el('span', { class: 'pf-pl' }, teamLogo({ name: team, logo_url: logoUrl, abbrev }), el('span', { class: 'pf-nm', text: name }));
-}
-
-/** A table. `rows` are arrays of cells (a string or a node); the first cell is the row's `<th scope="row">`. */
-function table(caption, headers, rows) {
-  const trs = rows.map((cells) => el('tr', {}, ...cells.map((c, i) => {
-    const cell = i === 0 ? el('th', { scope: 'row', class: 'pf-who' }) : el('td', { class: 'pf-num' });
-    if (typeof c === 'string') cell.textContent = c; else if (c) cell.append(c);
-    return cell;
-  })));
-  const hr = el('tr', {}, ...headers.map((h, i) => (h instanceof Node ? h : el('th', { scope: 'col', class: i === 0 ? 'pf-who' : null, text: h }))));
-  const tbody = el('tbody', {}, ...trs);
-  const t = el('table', { class: 'pf-table' }, el('caption', { class: 'pf-sr', text: caption }), el('thead', {}, hr), tbody);
-  return { wrap: el('div', { class: 'pf-tbwrap' }, t), trs, tbody, hr };
-}
-
-function careerTable(kind, data) {
-  const def = CAREER[kind];
-  const { s, head, body } = section(kind, def.title);
-  const rows = list(data?.rows);
-  if (!rows.length) { body.append(none()); return s; }
-  const tr = new Map(rows.map((r) => [r, [named(r.team, r.logo_url, r.name || DASH), ...def.cols.map(([key, , , f]) => (f ? f(r) : int(r[key])))]]));
-  let expanded = false, order = { key: null, dir: -1 }, current = rows.slice();
-  const heads = [['name', 'Player', 'Player', null, (r) => String(r.name ?? '')], ...def.cols].map(([key, label, title, , sortBy], i) => {
-    const th = el('th', { scope: 'col', class: i === 0 ? 'pf-who' : null });
-    const b = el('button', { type: 'button', class: 'pf-sort', text: label, title: `Sort by ${title.toLowerCase()}`, 'aria-label': `${title}, sort` });
-    b.addEventListener('click', () => {
-      const dir = order.key === key ? -order.dir : key === 'name' ? 1 : -1;
-      order = { key, dir };
-      const val = sortBy ?? ((r) => r[key]);
-      current = rows.slice().sort((a, z) => {
-        const x = val(a), y = val(z);
-        if (typeof x === 'string' || typeof y === 'string') return dir * String(x ?? '').localeCompare(String(y ?? ''));
-        return dir * ((num(x) ? x : -Infinity) - (num(y) ? y : -Infinity));
-      });
-      for (const h of built.hr.children) h.removeAttribute('aria-sort');
-      th.setAttribute('aria-sort', dir > 0 ? 'ascending' : 'descending');
-      draw();
-    });
-    th.append(b);
-    return th;
+  const web = el('button', { type: 'button', class: 'btn sm', 'data-key': 'web', text: 'View on web' });
+  web.addEventListener('click', async () => {
+    try { await call('open_website', { url: webUrl() }); } catch (e) { said.textContent = reason(e); }
   });
-  const built = table(`${def.title}, every player used. Select a column heading to sort.`, heads, rows.map((r) => tr.get(r)));
-  const rowOf = new Map(rows.map((r, i) => [r, built.trs[i]]));
-  const draw = () => {
-    built.tbody.replaceChildren(...current.map((r) => rowOf.get(r)));
-    current.forEach((r, i) => { rowOf.get(r).hidden = !expanded && i >= SHOWN; });
+  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta,
+    facts.length ? el('p', { class: 'pf-sum' }, ...facts.map((f) => el('span', {}, el('b', { class: 'num', text: f.strong }), ` ${f.text}`))) : null,
+    el('div', { class: 'pf-acts' }, share, web, said));
+  const box = el('div', { class: 'glass pf-card' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), el('div', { class: 'pf-row' }, pic, id, liveBlock(h.live)));
+  coverColours(box, h.avatar_url);
+  if (typeof document.title === 'string') document.title = `${name} | NFL Street Reborn`;
+  return box;
+}
+
+// ---- the overview: one surface, three identical columns (spec §8.7.3) ----
+
+function areaChart(points, label) {
+  if (!points || typeof document.createElementNS !== 'function') return null;
+  const s = svg('svg', { class: 'pf-spark', viewBox: '0 0 300 70', preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
+  const defs = svg('defs'), grad = svg('linearGradient', { id: 'pf-elo-fill', x1: 0, x2: 0, y1: 0, y2: 1 });
+  grad.append(svg('stop', { offset: 0, 'stop-color': 'currentColor', 'stop-opacity': 0.22 }), svg('stop', { offset: 1, 'stop-color': 'currentColor', 'stop-opacity': 0 }));
+  defs.append(grad);
+  s.append(defs, svg('path', { d: points.area, fill: 'url(#pf-elo-fill)' }),
+    svg('polyline', { points: points.line, fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }));
+  return s;
+}
+
+function ovColumn(title, note, big, side, kind, sub, visual) {
+  return el('section', { class: 'pf-ovc' },
+    el('div', { class: 'pf-ovh' }, el('h2', { text: title }), note ? el('span', { text: note }) : null),
+    el('div', { class: 'pf-big num' }, el('span', { text: big }), side ? el('em', { class: kind || null, text: side }) : null),
+    el('p', { class: 'pf-sub', text: sub }), visual);
+}
+
+function overview(p) {
+  const cols = [];
+  const e = eloOverview(p.elo);
+  if (e) {
+    // No rating history yet: no "0 ranked matches" note, no "started at", no chart; the peak only when the server sends it.
+    const hasHistory = list(p.elo.history).some((x) => x && num(x.rating));
+    const note = hasHistory ? e.note : null;
+    const sub = hasHistory ? e.sub : num(p.elo.peak) ? `Peak ${int(p.elo.peak)}` : '';
+    cols.push(ovColumn('Elo', note, e.value, e.change.text, e.change.kind, sub, hasHistory ? areaChart(e.points, `Elo over ${e.note}, now ${e.value}`) : null));
+  }
+  const rr = recordOverview(p.summary, p.by_queue);
+  // A new player (0–0) reads "—", with no "0 matches" filler and no empty bars (P4-23).
+  const r = rr && rr.value === '0–0' ? { ...rr, value: DASH, pct: '', note: null, rows: [] } : rr;
+  if (r) cols.push(ovColumn('Record', r.note, r.value, r.pct, '', r.sub, r.rows.length ? el('div', { class: 'pf-bars' }, ...r.rows.map((row) => {
+    const fill = el('i');
+    if (fill.style) fill.style.width = `${row.share}%`;
+    return el('div', { class: 'pf-bar-row' }, el('span', { text: row.label }), el('span', { class: 'pf-bar', role: 'img', 'aria-label': `${row.label}: ${row.record}` }, fill),
+      el('b', { class: 'num', text: row.record }), el('span', { class: 'pf-mute num', text: row.pct }));
+  })) : null));
+  const l = lastTenOverview(p.recent_form);
+  if (l) cols.push(ovColumn('Last 10 games', null, l.value, l.margin.text, l.margin.kind, 'Average winning margin', el('div', { class: 'pf-pair' },
+    el('div', {}, el('span', { text: 'Points scored' }), el('b', { class: 'num', text: l.scored })),
+    el('div', {}, el('span', { text: 'Points allowed' }), el('b', { class: 'num', text: l.allowed })))));
+  if (!cols.length) return null;
+  return el('div', { class: `glass pf-ov cols-${cols.length}` }, ...cols);
+}
+
+// ---- Match history: the Stats rows, the queue as the second line; All / Ranked / Casual (spec §8.7.4) ----
+// `player_profile` takes no queue, so the filter runs here, over the matches loaded so far, and "Older" loads more
+// pages (`before`) until the page on screen is full or the server has no more.
+
+const hist = { filter: 'all', page: 0, loaded: [], cursor: null, total: 0, done: false, busy: false, error: '', open: new Set(), render: () => {} };
+const shownMatches = () => hist.loaded.filter((m) => hist.filter === 'all' || m.queue === hist.filter);
+
+async function fill() {
+  if (hist.busy) return;
+  const need = () => shownMatches().length < (hist.page + 1) * HPAGE;
+  if (hist.done || !need()) return;
+  hist.busy = true; hist.error = ''; hist.render();
+  try {
+    while (!hist.done && need()) {
+      const page = await quietCall('player_profile', { playerId, before: hist.cursor });
+      if (page && page.ok === false) throw new Error(typeof page.error === 'string' && page.error ? page.error : 'More matches could not be loaded.');
+      const raw = list(page?.matches);
+      hist.loaded.push(...raw.filter(isPublic));
+      if (raw.length) hist.cursor = raw.at(-1).at;
+      if (!raw.length || !hist.cursor) hist.done = true;
+    }
+  } catch (e) { hist.error = `More matches could not be loaded: ${reason(e)}`; }
+  hist.busy = false;
+  hist.render();
+}
+
+function historySection(p) {
+  const raw = list(p.recent_matches);
+  Object.assign(hist, { filter: 'all', page: 0, loaded: raw.filter(isPublic), cursor: raw.at(-1)?.at ?? null,
+    total: num(p.matches_total) ? p.matches_total : raw.length, busy: false, error: '' });
+  hist.done = raw.length >= hist.total || !hist.cursor;
+  const label = `${p.header?.display_name || 'Player'}'s matches`;
+  const openGame = (id) => { storeGameList(hist.loaded, label, profileHref(playerId)); location.href = gameHref(id); };
+  const head = el('div', { class: 'sec-head' });
+  const cardEl = el('div', { class: 'glass m-list' });
+  hist.render = () => {
+    const tabFocus = typeof head.contains === 'function' && head.contains(document.activeElement);
+    const active = typeof cardEl.contains === 'function' && cardEl.contains(document.activeElement) ? document.activeElement?.getAttribute('data-key') : null;
+    head.replaceChildren(el('h2', { id: 'history-h', text: 'Match history' }),
+      tabs('profile-history', HISTORY_TABS.map(([, l]) => l), HISTORY_TABS.find(([k]) => k === hist.filter)[1],
+        (l) => { hist.filter = HISTORY_TABS.find(([, x]) => x === l)[0]; hist.page = 0; hist.render(); fill(); }, { label: 'Show matches' }));
+    const rows = shownMatches();
+    const pageRows = rows.slice(hist.page * HPAGE, (hist.page + 1) * HPAGE);
+    cardEl.replaceChildren(matchHeader());
+    if (pageRows.length) cardEl.append(...pageRows.flatMap((m) => matchRows(m, { where: 'profile', open: hist.open, openGame })));
+    else cardEl.append(el('p', { class: 'm-empty', text: hist.busy ? 'Loading…' : NONE_OF[hist.filter] }));
+    if (hist.error) cardEl.append(el('p', { class: 'pf-err', role: 'status', text: hist.error }));
+    const more = (hist.page + 1) * HPAGE < rows.length || !hist.done;
+    if (hist.page > 0 || more) cardEl.append(pager({ page: hist.page, pages: hist.done ? Math.max(1, Math.ceil(rows.length / HPAGE)) : null,
+      onNewer: () => { hist.page--; hist.render(); }, onOlder: () => { hist.page++; hist.render(); fill(); }, olderDisabled: !more || hist.busy }));
+    if (tabFocus) head.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    else if (active) {
+      const all = Array.from(cardEl.querySelectorAll('[data-key]'));
+      let t = all.find((n) => n.getAttribute('data-key') === active);
+      if (t?.disabled && PAGER_OTHER[active]) t = all.find((n) => n.getAttribute('data-key') === PAGER_OTHER[active]) ?? t;
+      t?.focus({ preventScroll: true });
+    }
   };
-  draw();
-  body.append(built.wrap);
-  const line = data?.total ? totalLine(data, kind) : '';
-  if (line) body.append(el('p', { class: 'pf-total pf-num', text: line }));
-  if (rows.length > SHOWN) {
-    const b = el('button', { type: 'button', class: 'pf-all', 'aria-expanded': 'false', 'aria-controls': kind, text: 'All ›', 'aria-label': `Show all ${rows.length} ${def.title.toLowerCase()} players` });
-    b.addEventListener('click', () => {
-      expanded = !expanded;
-      b.setAttribute('aria-expanded', String(expanded));
-      b.textContent = expanded ? 'Fewer ‹' : 'All ›';
-      b.setAttribute('aria-label', expanded ? `Show the first ${SHOWN} ${def.title.toLowerCase()} players` : `Show all ${rows.length} ${def.title.toLowerCase()} players`);
-      draw();
-    });
-    head.append(b);
-  }
-  return s;
+  hist.render();
+  return el('section', { id: 'history', class: 'pf-col', 'aria-labelledby': 'history-h' }, head, cardEl);
 }
 
-// ---- 6-12: the right column ----
+// ---- the right column: Career, Leaderboard, Records ----
 
-function combosSection(combos) {
-  const { s, head, body } = section('combos', 'Best QB → receiver');
-  const rows = list(combos).filter((c) => c && c.passer && c.receiver);
-  if (!rows.length) { body.append(none()); return s; }
-  const { wrap, trs } = table('Quarterback to receiver combinations', ['Combo', 'Rec', 'Yds', 'TD'],
-    rows.map((c) => [named(c.passer.team, c.passer.logo_url, `${c.passer.name} → ${c.receiver.name}`), int(c.rec), int(c.yds), int(c.td)]));
-  body.append(wrap);
-  expandable('combos', head, trs, 'combos');
-  return s;
+function careerSection(p) {
+  const { tiles, footnote } = careerTiles(p.career, p.career_rank, p.per_game?.games);
+  if (tiles.every((t) => t.value === DASH)) return null;
+  const grid = el('div', { class: 'pf-car' }, ...tiles.map((t) => el('div', {},
+    el('span', { class: 'k-label', text: t.label }), el('b', { class: 'num', text: t.value }),
+    t.rank || t.perGame ? el('span', { class: 'pf-car-s num' }, t.rank ? el('b', { text: t.rank }) : null, t.rank && t.perGame ? ' · ' : null, t.perGame) : null)));
+  return el('section', { id: 'career', 'aria-labelledby': 'career-h' }, sectionHead('career', 'Career'),
+    el('div', { class: 'glass pf-pad' }, grid, footnote ? el('p', { class: 'pf-note', text: footnote }) : null));
 }
 
-function pitchesSection(pt) {
-  const { s, body } = section('pitches', 'Laterals & pitches');
-  if (!pt || !(pt.pitches || pt.pitch_plays)) { body.append(none()); return s; }
-  body.append(el('div', { class: 'pf-gs pf-three' }, stat('Pitches', int(pt.pitches)), stat('Plays with a pitch', int(pt.pitch_plays)), stat('Yds on those plays', int(pt.pitch_yds))));
-  return s;
+function leaderboardSection(p, self) {
+  const rows = leaderboardRows(p.elo?.around, { self });
+  if (!rows.length) return null;
+  return el('section', { id: 'leaderboard', 'aria-labelledby': 'leaderboard-h' }, sectionHead('leaderboard', 'Leaderboard'),
+    el('div', { class: 'glass pf-lb' }, ...rows.map((r) => {
+      const cells = [el('span', { class: 'pf-lb-rank num', text: r.rank }), avatar(r.avatar_url, r.letterOf), el('span', { class: 'pf-lb-name', text: r.name }), el('b', { class: 'num', text: r.elo })];
+      if (r.player_id && !r.me && UUID_RE.test(r.player_id)) return el('a', { class: 'pf-lb-row', href: profileHref(r.player_id), 'data-key': `lb-${r.player_id}` }, ...cells);
+      return el('div', { class: `pf-lb-row${r.me ? ' me' : ''}` }, ...cells);
+    })));
 }
 
-const recCells = (r) => [record(r), num(r.pts_per_game) ? one(r.pts_per_game) : DASH, pct(r.win_pct)];
-
-function byTeamSection(teams) {
-  const { s, head, body } = section('by-team', 'By team');
-  const rows = list(teams).filter(Boolean);
-  if (!rows.length) { body.append(none()); return s; }
-  const { wrap, trs } = table('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'], rows.map((r) => [
-    r.key === 'pickup'
-      ? el('span', { class: 'pf-pl' }, el('span', { class: 'pf-logo pf-nologo', 'aria-hidden': 'true', text: 'PU' }), el('span', { class: 'pf-nm', text: 'Pickup' }))
-      : named(r.name, r.logo_url, r.name || DASH, r.abbrev),
-    ...recCells(r)]));
-  body.append(wrap);
-  expandable('by-team', head, trs, 'teams');
-  return s;
-}
-
-function byModeSection(queue, type) {
-  const { s, body } = section('by-mode', 'By mode', { panel: false });
-  body.className = 'pf-stack';
-  const small = (caption, first, rows) => el('div', { class: 'pf-glass' },
-    list(rows).length ? table(caption, [first, 'Record', 'Pts / gm', 'Win %'], list(rows).map((r) => [String(r.name ?? DASH), ...recCells(r)])).wrap : none());
-  body.append(small('Record by queue', 'Queue', queue), small('Record by game type', 'Game type', type));
-  return s;
-}
-
-function winsLossesSection(wl) {
-  const { s, body } = section('wins-losses', 'In wins vs losses');
-  const w = wl?.wins, l = wl?.losses;
-  if (!w?.games && !l?.games) { body.append(none()); return s; }
-  const row = (label, x) => [`${label} (${int(x?.games ?? 0)})`, numOr1(x?.pts), numOr1(x?.yds), numOr1(x?.to)];
-  body.append(table('Per-game numbers in wins and in losses', ['Games', 'Pts', 'Yds', 'TO'], [row('Wins', w), row('Losses', l)]).wrap);
-  return s;
-}
-
-function h2hSection(opponents) {
-  const { s, head, body } = section('h2h', 'Head to head');
-  const rows = list(opponents).filter(Boolean);
-  if (!rows.length) { body.append(none()); return s; }
-  const margin = (ref, sign) => (ref && num(ref.margin) ? `${sign}${ref.margin}` : DASH);
-  const { wrap, trs } = table('Record against every opponent', ['Opponent', 'Record', 'Pts', 'Allowed', 'Last', 'Best win', 'Worst loss'], rows.map((h) => {
-    const name = h.display_name || 'Player';
-    const who = [avatar(h.avatar_url, name), el('span', { class: 'pf-nm', text: name })];
-    const cell = h.player_id
-      ? el('a', { class: 'pf-pl pf-who-link', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...who)
-      : el('span', { class: 'pf-pl' }, ...who);
-    // A one-game match ("g:<game id>") shows its score; a series' summed points would read like a tie, so it shows its date.
-    const single = typeof h.last?.game_id === 'string' && h.last.game_id.startsWith('g:');
-    const last = h.last ? `${LETTER[h.last.result] ?? ''} ${single ? score(h.last.score) : day(h.last.at)}`.trim() : DASH;
-    return [cell, record(h), int(h.pts_for), int(h.pts_against), last, margin(h.biggest_win, '+'), margin(h.biggest_loss, MINUS)];
-  }));
-  body.append(wrap);
-  expandable('h2h', head, trs, 'opponents');
-  return s;
-}
-
-function recordsSection(records) {
-  const { s, head, body } = section('records', 'Records');
-  const rows = list(records).filter((r) => r && r.label);
-  if (!rows.length) { body.append(none()); return s; }
+function recordsSection(p) {
+  const rows = list(p.records).filter((r) => r && r.label);
+  if (!rows.length) return null;
+  const head = sectionHead('records', 'Records');
   const nodes = rows.map((r) => {
-    const cells = [el('span', { class: 'pf-mut', text: r.label }),
-      r.name ? named(r.team, r.logo_url, r.name) : el('span'),
-      el('b', { class: 'pf-num', text: int(r.value) }),
-      el('span', { class: 'pf-mut pf-num', text: day(r.at) })];
+    const cells = [el('span', { class: 'k', text: r.label }),
+      r.name ? el('span', { class: 'who' }, teamLogo({ name: r.team, logo_url: r.logo_url, abbrev: r.abbrev }), el('span', { text: r.name })) : el('span'),
+      el('b', { class: 'num', text: int(r.value) }), el('span', { class: 'pf-mute num', text: day(r.at) })];
     const label = `${r.label}: ${int(r.value)}${r.name ? `, ${r.name}` : ''}, ${day(r.at)}`;
     return r.game_id
-      ? el('a', { class: 'pf-rrow', href: gameHref(r.game_id), 'aria-label': `${label}. Open the game` }, ...cells)
-      : el('div', { class: 'pf-rrow', role: 'group', 'aria-label': label }, ...cells);
+      ? el('a', { class: 'pf-rec', href: gameHref(r.game_id), 'aria-label': `${label}. Open the game` }, ...cells)
+      : el('div', { class: 'pf-rec', role: 'group', 'aria-label': label }, ...cells);
   });
-  body.append(el('div', { class: 'pf-rows' }, ...nodes));
-  expandable('records', head, nodes, 'records');
-  return s;
+  const body = el('div', { class: 'glass pf-recs', id: 'records-rows' }, ...nodes);
+  expandable('records-rows', head, nodes, 'records');
+  return el('section', { id: 'records', 'aria-labelledby': 'records-h' }, head, body);
 }
 
 // ---- the page ----
 
+function jump() {
+  const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
+  if (hash) document.getElementById(hash)?.scrollIntoView?.({ block: 'start' });
+}
+
 function draw(p, ownerId) {
-  const out = [header(p, ownerId)];
-  if (!(num(p.matches_total) && p.matches_total > 0)) {
-    out.push(el('p', { class: 'pf-none pf-big', text: 'No online games yet.' }));
+  const self = Boolean(ownerId) && ownerId === String(p.header?.player_id || '').toLowerCase();
+  const out = [backButton(), card(p, ownerId)];
+  // Nothing public to show: no matches at all, or only private rooms (dropped) and nothing more to load.
+  const raw = list(p.recent_matches);
+  const onlyHidden = !raw.some(isPublic) && raw.length >= (num(p.matches_total) ? p.matches_total : raw.length);
+  if (!(num(p.matches_total) && p.matches_total > 0) || onlyHidden) {
+    out.push(el('p', { class: 'pf-none', text: NONE_TEXT }));
     screen.replaceChildren(...out);
     return;
   }
-  // Spec §2's scroll order: sections 1-5 are the left column and 6-12 the right; one column when narrow.
-  const career = el('div', { class: 'pf-career', id: 'career' }, ...['passing', 'rushing', 'receiving', 'defense'].map((k) => careerTable(k, p.career?.[k])));
-  const left = el('div', { class: 'pf-col' }, eloSection(p.elo), matchesSection(p), playersSection(p.best_players), perGameSection(p.per_game), career);
-  const right = el('div', { class: 'pf-col' }, combosSection(p.combos), pitchesSection(p.pitches), byTeamSection(p.by_team),
-    byModeSection(p.by_queue, p.by_game_type), winsLossesSection(p.wins_vs_losses), h2hSection(p.head_to_head), recordsSection(p.records));
-  out.push(el('div', { class: 'pf-two' }, left, right));
+  const ov = overview(p);
+  if (ov) out.push(ov);
+  out.push(el('div', { class: 'pf-cols' }, historySection(p),
+    el('div', { class: 'pf-side' }, ...[careerSection(p), leaderboardSection(p, self), recordsSection(p)].filter(Boolean))));
+  // More sections below the columns (plan 4 Task 7)
   screen.replaceChildren(...out);
-  const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
-  if (hash) document.getElementById(hash)?.scrollIntoView?.({ block: 'start' });
+  jump();
 }
 
 function missing() {

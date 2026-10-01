@@ -351,6 +351,7 @@ await import('./check-glass-pages.mjs');
 await import('./check-glass-mods-music-controls.mjs');
 await import('./check-stat-components.mjs');
 await import('./check-stats-page.mjs');
+await import('./check-profile-page.mjs');
 await import('./review-finish.mjs');
 
 await import('./check-session-state.mjs');
