@@ -1,6 +1,6 @@
 // Every product page gets the new look the same way, and theme.css holds the rules.
 //     node Tools/check-theme.mjs
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import assert from "node:assert/strict";
 const ui = "crates/reborn-ui/ui/";
 const PAGES = ["index","controls","game","live","mods","music","onboarding","online","profile","recovery","settings","stats"];
@@ -34,4 +34,18 @@ assert.match(theme, /prefers-reduced-motion:\s*reduce/, "reduced motion override
 assert.doesNotMatch(theme, /--slow\b|calc\([^)]*--slow/, "no motion multiplier variable");
 for (const m of theme.matchAll(/font-weight:\s*(\d+)|font:\s*(\d{3})\s/g)) assert.ok(+(m[1]||m[2]) <= 700, `weight ${m[1]||m[2]} > 700`);
 assert.doesNotMatch(theme, /box-shadow:[^;]*(rgba\(224,\s*39,\s*46|var\(--red\))/, "no red glow");
+// Spec §11: the old stylesheets are retired once no page loads them. Every shell page is on the design system; the
+// developer harness (spec §9, untouched) keeps its own sheet, renamed from styles.css.
+const RETIRED = ["styles.css", "launcher.css", "product-ui.css", "finish.css", "shell.css", "play.css", "players.css", "stats.css", "onboarding-polish.css", "live-view.css", "music.css", "profile.css"];
+for (const p of PAGES) assert.ok(THEMED[p], `${p} must load only theme.css + its page file (spec §11)`);
+for (const f of RETIRED) assert.ok(!existsSync(ui + f), `ui/${f} is retired (spec §11) and must be gone`);
+for (const f of readdirSync(ui).filter((x) => x.endsWith(".html"))) {
+  const html = readFileSync(ui + f, "utf8");
+  for (const r of RETIRED) assert.ok(!html.includes(`href="${r}"`), `${f} still loads ${r}`);
+}
+assert.match(readFileSync(ui + "harness.html", "utf8"), /href="harness\.css"/, "the developer harness keeps its own stylesheet");
+assert.doesNotMatch(theme, /--(bg|panel|line|muted|accent|accent-border|control-bg|control-border|panel-border|selected-bg|focus|teal|motion-ease|motion-fast|motion-normal)\s*:/, "the old stylesheets' variable aliases are gone");
+// P4-17: the element rule for buttons has no specificity of its own, so component classes win without page prefixes.
+assert.match(theme, /:where\(body\.shell\) button,/, "theme.css's button element rule sits in :where(body.shell)");
+assert.doesNotMatch(theme.replace(/\/\*[\s\S]*?\*\//g, ""), /(^|[},])\s*body\.shell button[,{]/m, "no bare body.shell button element rule (0,1,2)");
 console.log(`check-theme: PASS (${PAGES.length} pages)`);

@@ -1,6 +1,7 @@
 // The layout a page gets from the retired stylesheets, written as one page stylesheet that loads after theme.css
 // (spec §9, §11): layout properties kept exactly, every colour turned into a theme token (Tools/lib/colour-tokens.mjs),
 // shadows, glows, filters, transitions and font families dropped. Run it while the page STILL loads the old sheets.
+// Plan 4 Task 12 deleted those sheets: to regenerate a page file, run this on a checkout of 8fa5111 or earlier.
 //     node Tools/extract-layout-css.mjs <page>[,<page>...] <out.css>
 // Which rules: every rule of an old sheet that matches an element in one of the pages' states (Tools/lib/page-states.mjs),
 // plus every rule whose class and id names all appear in the pages' own HTML and scripts, so a state the fixtures never
