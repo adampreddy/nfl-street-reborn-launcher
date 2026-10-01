@@ -1,170 +1,280 @@
 # Locked design spec
 
-**Direction A, approved September 1 2026.** Art-led: the picture fills the
-window and the interface sits on it.
+**Frosted glass, approved by Adam on 2026-09-30.** A clean platform launcher (Steam, Battle.net) on real OS glass. Every page keeps its layout and shares one set of colours, one type and spacing scale, and one motion system. It replaces "Direction A" (art-led, 2026-09-01). The reasoning is in `docs/superpowers/specs/2026-09-30-launcher-glass-redesign-design.md`.
 
-This file exists because five earlier attempts failed for one mechanical
-reason. The research on why AI-built interfaces read as generated puts it
-plainly: *"Generic is what one prompt does when it has to pick taste, explore,
-and write code all at once,"* and *"coding agents sidestep layouts that are
-hard to implement right away."* Every earlier attempt decided taste while
-typing CSS, and every one of them came out as flat fills, rounded rectangles
-and a grid of equal cards, because those are the cheap things to type.
+Every value below lives in `ui/theme.css` and nowhere else. **If a value is not in this file, it is not a decision anyone gets to make in a stylesheet.**
 
-So taste is settled here, and implementation follows it. **If a value is not in
-this file, it is not a decision anyone gets to make in a stylesheet.**
+Section 12 lists the checkers that hold this file to the code. A page change follows this file; if the file and the code disagree, fix the file in the same commit.
 
 ---
 
-## 1. Colour
+## 1. Tokens
 
-From `docs/design/DESIGN_TOKENS.md`, which is the authority and which two of my
-earlier attempts contradicted.
+All are defined on `:root` in `theme.css`. Never write the value in a page file; use the token.
 
-| Token | Hex | Role |
+### Colour and surface
+
+| Token | Value | Role |
 |---|---|---|
-| `--red` | `#E0272E` | **Primary fill, and selection.** Play, Continue, Install |
-| `--red-hi` | `#F04A50` | Hover on a red fill |
-| `--red-ink` | `#FF7A7F` | Red as **text**, only |
-| `--teal` | `#22C7B4` | Data series, live status, progress. **Never a button** |
+| `--mica-tint` | `rgba(18,19,23,.66)` | painted over the OS material when glass is on |
+| `--fallback-bg` | radial `#23262d` centre on `#0d0e11` | the solid look: glass off, Linux, Steam Deck, Windows 10 |
+| `--glass-1` | `rgba(255,255,255,.045)` | card |
+| `--glass-2` | `rgba(255,255,255,.075)` | button, chip, hover |
+| `--glass-3` | `rgba(255,255,255,.11)` | selected tab, selected nav item |
+| `--stroke` | `rgba(255,255,255,.09)` | every border and row rule |
+| `--stroke-hi` | `rgba(255,255,255,.16)` | stronger line: Total rows, floating surfaces |
+| `--sheen` | `inset 0 1px 0 rgba(255,255,255,.07)` | top highlight of a glass surface |
+| `--shadow` | `0 12px 40px -12px rgba(0,0,0,.55)` | a card's drop shadow |
+| `--fg` | `#F4F5F7` | text |
+| `--fg-2` | `#AEB5C0` | secondary text |
+| `--fg-3` | `#7C8491` | labels, meta, table headers |
+| `--red` | `#E0272E` | the accent, as a **fill**: nav marker, switch on, dots |
+| `--red-hi` | `#F04A50` | hover on a red fill |
+| `--red-ink` | `#FF7A7F` | red as **text**, and L |
+| `--ok` | `#3DDC97` | W, "Ready", Elo up, online |
+| `--warn` | `#FFC46B` | "Setup required", warnings |
+| `--dolphin` | `#22C7B4` | the Dolphin tile, nothing else |
 
-Two rules that are easy to invert and were inverted:
+W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 
-**`--red` is a fill, never text.** It measures about 3.9:1 on the shell, which
-clears 3:1 for a control boundary and fails 4.5:1 for body text. White on red
-measures about 5:1 and passes. Red text uses `--red-ink`.
+### Shape
 
-**Selection is red, not blue.** The tokens say selection is a red left edge
-plus red at 12 percent. An earlier version used `#0a84ff` throughout, borrowed
-from the roster site. That site is a database and its accent is selection only;
-this is a launcher whose whole job is one action.
+| Token | Value | Role |
+|---|---|---|
+| `--r-lg` | 14px | cards, menus, dialogs |
+| `--r-md` | 10px | buttons, fields |
+| `--r-sm` | 8px | small controls, tabs |
 
-### Surfaces
+### Motion
 
-The shell is near-black rather than tinted, because the artwork supplies all
-the colour and a tinted shell fights it.
+| Token | Value | Role |
+|---|---|---|
+| `--ease` | `cubic-bezier(.2,.8,.2,1)` | the only curve |
+| `--d1` | 480 ms slow, 120 ms quick | hover, press |
+| `--d2` | 720 ms slow, 180 ms quick | menus, switches, tabs |
+| `--d3` | 960 ms slow, 240 ms quick | page enter, save bar, reveals, nav marker |
 
-| Token | Hex |
+### Surfaces with a job of their own
+
+| Token | Value | Used by |
+|---|---|---|
+| `--field-bg` | `rgba(0,0,0,.25)` | `.field`, text inputs, selects |
+| `--hero-scrim` | two linear gradients | Play hero text |
+| `--on-art` | `rgba(10,11,14,.35)` | chips on art |
+| `--avatar-bg` | `135deg #5865F2 to #3b44b8` | Discord avatar with no picture |
+| `--av-0` to `--av-7`, `--av-cpu` | 135deg gradients | letter avatars, one colour per player name (`match-rows.js`) |
+| `--thumb-bg` | 160deg `rgba(255,255,255,.05)` to `rgba(0,0,0,.18)` | the neutral mod preview. No drawn art |
+| `--surface-solid` | `#1b1e24` | an opaque popover over content (the controller binding editor) |
+
+### Stats and Profile components
+
+| Token | Value | Used by |
+|---|---|---|
+| `--face-ring` | `0 0 0 2px rgba(255,255,255,.12)` | portrait ring |
+| `--badge-bg` | `#16171c` | the team-logo badge on a portrait |
+| `--dot-ring` | `#1a1b21` | the presence dot's ring: the card colour it sits on |
+| `--team-fallback` | `#2a2d34` | portrait and cover while the team or avatar colour is unknown |
+| `--cover-c2` | `#15161a` | cover second colour fallback |
+| `--cover-pic-c1`, `--cover-pic-c2` | `#3a3d45`, `#1b1c21` | cover avatar fallbacks |
+| `--cover-pic-shadow` | ring + soft drop | the cover avatar |
+| `--cover-mask` | 100deg black to transparent | the cover wash fading to the right |
+| `--mix-light`, `--mix-dark` | `#fff`, `#000` | `color-mix` ends for portrait and cover gradients |
+| `--game-row-bg` | `rgba(0,0,0,.14)` | a best-of-3 game row |
+
+Set per element, not on `:root`: `--tc` (portrait team colour, from the server), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
+
+Colour rules:
+
+- The accent is red. No purple, no teal accent.
+- `--red` is a fill. Red text is `--red-ink`.
+
+## 2. Material and fallback
+
+The page background is painted on `<html>`, so a short body never shows nothing:
+
+| `html[data-glass]` | Background |
 |---|---|
-| `--bg` | `#0A0B0D` |
-| `--panel` | `#131519` |
-| `--panel-2` | `#1A1D22` |
-| `--line` | `rgba(255,255,255,.10)` |
-| `--line-soft` | `rgba(255,255,255,.06)` |
+| `"on"` | `--mica-tint` over the OS material |
+| `"off"` | `--fallback-bg` |
 
-Hairlines are translucent, not solid hex, so they sit on artwork without
-banding. This is lifted from `nsr_roster/public/assets/app.css` and it is the
-one thing from that system that matters more here than there, because here
-everything sits on a photograph.
+`body` stays transparent so the tint is painted once.
 
-### Text
+| Platform | Material |
+|---|---|
+| Windows 11 | Mica (`launcher_look.rs`, build 22000 and up) |
+| Windows 10 | the solid look (`WIN10_ACRYLIC` is false) |
+| macOS | vibrancy |
+| Linux, Steam Deck, glass turned off | the solid look |
 
-| Token | Hex | On |
+Who sets `data-glass`:
+
+- `look-boot.js` is a classic script that runs before first paint. It reads `localStorage["reborn:look"]` and sets `data-glass` and `data-motion`. Glass defaults **off** and slow motion **on**, so a window is never transparent with nothing behind it.
+- `look.js` asks the core (`launcher_look`) and sets both from the answer: `data-glass="on"` only when `glassApplied` is true. It stores the answer for the next first paint. If a glass preview was never saved, the first read puts the window back to the saved state (`window_glass_apply`).
+- `html[data-motion="slow|quick"]` is set the same way (section 4).
+- Settings > Display > Launcher window has **Window glass** and **Slow animations**. Both preview live and go through the save bar.
+
+Never paint a transparent window unless `data-glass="on"` is set. Never use a flat fill in place of glass without the fallback look. Floating surfaces (dialogs, menus, the update card, the save bar) use `rgba(24,25,30,.92)` or `.78` with `backdrop-filter`, because content moves behind them and `--glass-1` is too thin.
+
+## 3. Type, spacing, size
+
+- **Inter** (`fonts/InterVariable.woff2`) for everything. Anton and Saira are not used.
+- **Weights:** 500 UI text, 600 labels and values, 700 headline numbers and page titles. **Nothing above 700.**
+- **Sizes:** page title 30/1.1 at 700; section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
+- Numbers use `font-variant-numeric: tabular-nums` (`.num`).
+- **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows.
+- **Section headers are 40px** (`.sec-head`), whatever they hold, so neighbouring cards start on one line.
+- **Rows:** match row 56, game row 40, table row 40, table header 36, nav item 40 (36 in short windows).
+- **Form column:** Settings, Mods and Music are at most 942px wide. Stats and Profile use the full content width.
+- **Logos:** `art/nsr-sidebar.png` and `art/play-logo.png` are Adam's. The sidebar logo slot is 124px tall with the image at 100% width. Never resize, stretch or redraw a logo.
+- **No glows.** No coloured `box-shadow`. The primary button's shadow is a plain dark drop.
+
+## 4. Motion
+
+- One curve, `--ease`. Three speeds, `--d1`, `--d2`, `--d3` (section 1).
+- Only `opacity` and `transform` animate. Heights use `grid-template-rows` (`.rows-reveal`) or `max-height` (`.save-lane`). Never animate `width`, `left`, `top` or `height`.
+- `html[data-motion="slow"]` and `[data-motion="quick"]` set `--d1`, `--d2`, `--d3` **directly**. There is no multiplier variable: a custom property resolves where it is declared, so a multiplier would not reach the tokens.
+- **Reduced motion** (`prefers-reduced-motion: reduce`) sets all three to 0ms, and every animation to `none` and every transition to 0s. The OS setting always wins over `data-motion`.
+- Hover and press only move (`transform`). Colours change instantly.
+- The page enter is `look-enter` on `#main`: fade up 6px over `--d3`, with `animation-fill-mode: backwards` (not `both`). Play uses `look-enter-fade` (opacity only). The sidebar never moves.
+- **Containing block:** a transform on `#main` makes it the containing block for `position:fixed` children. So `position:fixed` UI (menus, dialogs, the update dock) is attached to `<body>`, never inside `#main`. `menu.js` appends its `<dialog>` to `<body>` for this reason.
+- No bounce, count-up numbers, parallax or looping motion. The one loop is `.live-dot`.
+
+## 5. Shell
+
+- **Grid:** `body.shell` is a grid of the sidebar (`--rail`: 184px, 160px under 1000px wide, 68px under 650px) and the page. Each page scrolls inside `#main`; the sidebar never scrolls with it.
+- **Sidebar:** logo slot, then Play, Mods, Music, Controllers, Online, Stats, with Settings and Help pinned to the bottom. Hover is `--glass-1`; the current item is `--glass-3` with `--sheen`. **One** `.nav-marker` (3px, `--red`) glides to the current item (`look.js`, `mountNavMarker`); there is no per-item marker.
+- **Focus ring:** 2px solid white, 3px offset, never a glow. It shows on `:focus-visible` and on `.pad-focus` while the pad drives.
+- **Controller mode** is `body.gamepad-input` (`app-shell.js`): on while the last input was a pad, off on any mouse move, click or key.
+- **Hint bar** (`.input-footer`, `#input-hints`): it exists only while there is a prompt. An empty `#input-hints` sets `--hint-height:0px` and hides the bar; a filled one sets `34px`. Every page ships `<span id="input-hints"></span>` empty. The hints come from `app-shell.js` and appear only in controller mode.
+- The sidebar, frame, hint bar and save lane are defined once in `theme.css` and are identical on every page (`html body.shell` prefix to outrank page sheets).
+
+## 6. Components
+
+One definition each, in `theme.css`. A page file may place them, never restyle them.
+
+| Class | What | File |
 |---|---|---|
-| `--fg` | `#F4F5F7` | Titles, values |
-| `--fg-2` | `#A4ACB8` | Supporting |
-| `--fg-3` | `#767F8C` | Labels, units |
+| `.glass` | card: `--glass-1`, `--stroke`, 14px radius, `--sheen` and `--shadow`, blur 24px saturate 1.3 | |
+| `.btn`, `.btn.primary`, `.btn.quiet`, `.btn.sm` | 38px glass button; red gradient primary; transparent; 32px | |
+| `.look-switch` | 40 by 22 switch, `aria-checked`, thumb slides, on = `--red` | `settings.js` |
+| `.field` | recessed 38px box for a value, with an optional `.auto` tag (green) | |
+| `.tabs`, `.tab`, `.tab-ind` | segmented control, one highlight that slides with `translateX` and `scaleX` | `tabs.js` |
+| `dialog.menu` | anchored glass list in the top layer, check on the current option, D-pad inside it, B closes | `menu.js` |
+| `.save-lane`, `.save-bar` | the save bar in its own lane | `savebar.js`, `settings-draft.js` |
+| `.sec-head`, `.sec-link`, `.sec-links`, `.k-label` | 40px section header, its links, an uppercase label | |
+| `.m-list`, `.m-row`, `.m-hd`, `.m-game`, `.m-pager` | the match list of Stats and Profile (grid columns 84, 92, flexible, 44, 56, 14) | `match-rows.js` |
+| `.rows-reveal`, `.chev` | a best of 3 opening in place; the chevron turns | `match-rows.js` |
+| `.tbl`, `tr.total` | table: uppercase header, fixed 220px name column shared by every table, Total row with a `--stroke-hi` rule | |
+| `.avatar`, `.av-0` to `.av-7`, `.av-cpu` | round Discord picture, or the first letter | `match-rows.js` |
+| `.player-face` (`.face`, `.badge`) | round portrait on the team colour (`--tc`), team logo badge bottom right | |
+| `.team-logo` | the backend's full-colour logo, or the abbreviation (`.text`) | |
+| `.cover-wash`, `.cover-pic`, `.presence-dot`, `.live-dot` | profile cover from the avatar colours, its avatar, the online dot, the pulsing live dot | `cover-color.js` |
+| `.refusal`, `.partial`, `.said` | messages: red, amber, green | |
+| `.facts` | label and value table | |
+| `.update-card`, `.update-dialog`, `.update-center` | update notice, fixed to the bottom right | `update-notice.js` |
 
----
+Buttons with no class, from shared scripts (`update-notice`, `menu-pad-setup`), are styled like `.btn` by `body.themed button:not([class])`. The plain `button` element rule sits in `:where(body.shell)` (specificity 0), so any component class wins without a page prefix.
 
-## 2. Type
+### The save bar
 
-Two families. Both bundled as woff2, both OFL, so a Windows build and a macOS
-build render identically. Nothing falls back to a system font.
+Used by Settings (a page-local draft) and Music (changes the core holds).
 
-| Role | Family | Use |
+- `<body>` has class `has-save-lane`. `theme.css` gives the grid its extra `save` row only then.
+- The lane is an empty `<div id="save-lane" inert></div>` right after `#main`. **The id must be exactly `save-lane`.** `app-shell.js` finds it by id.
+- `mountSaveBar(lane, { onSave, onDiscard, returnFocus, noun = "unsaved change", saveText = "Save changes", keepsOnLeave = false })` returns `{ update(changes), fail(message), lock(saveHeld, discardHeld = saveHeld) }`.
+  - `update(changes)` takes the list of change names. The bar shows `N <noun>(s)` and the last name, opens when the list is not empty, and is `inert` while closed.
+  - `fail(message)` shows a reason in the bar (two lines at most, full text in the tooltip). A save or discard that throws is shown there and the bar stays open.
+  - `lock()` keeps the buttons disabled until `lock(false)`. With both disabled the `.save-bar` itself gets `tabindex="-1"`, and `app-shell.js` focuses it, so focus never goes nowhere.
+- The bar sits in its own lane, never over content. A window-bottom update dock rises above an open bar.
+- Music passes `noun: "pending change"`, `saveText: "Apply changes"`, `keepsOnLeave: true`.
+
+**Leaving a page with the bar open:**
+
+| Page | `keepsOnLeave` | Leaving |
 |---|---|---|
-| Display | **Anton** | Hero titles only, 56px and up, uppercase, tracking `-0.01em` |
-| UI | **Inter** | Everything else |
-| Data | **Inter**, `font-variant-numeric: tabular-nums` | Counts, durations, device strings |
+| Settings | false | blocked. The draft lives in the page, so it would be lost |
+| Music | true | allowed. The lane gets `data-keeps`; the core holds the staged songs |
 
-**Why Anton.** It is the shippable equivalent of Haettenschweiler, which is
-what the approved mockup used and what this era of EA sports games shouted in.
-One heavy weight, no temptation to pick a wrong one. Its weakness is stated
-rather than hidden: Anton is a common poster face, and the defence is that
-identity here comes from art and composition, not from the font. `SairaCondensed-800.woff2`
-is bundled as the alternative if that trade ever needs revisiting.
+The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves the page, **B twice** (B from content goes to the sidebar; B from the sidebar would leave), **LB/RB** (bumpers do nothing), and update-notice's **View updates** (it asks `window.pointAtSaveBar`). When blocked, focus goes to Save (`toSaveBar`) and `.save-bar.called` outlines it for 800 ms. In-page `#` links and links opened elsewhere still work.
 
-**Anton never appears below 56px.** Ultra-condensed heavy type is unreadable
-small, and using it for labels is how a poster face becomes a costume.
+### The settings draft
 
-### Scale
+`settings-draft.js` is pure (no DOM): `createDraft()` holds pending Settings changes (`put`, `drop`, `has`, `value`, `changes`, `saveAll`, `discardAll`). Each entry brings its own save and, for a live preview, its own revert. One save or discard runs at a time. A save stops at the first failure or `HELD`; a failed revert stops the discard, so nothing still previewed is shown as discarded.
 
-| Step | Size / weight / tracking | Family |
+## 7. Pad navigation opt-ins
+
+`app-shell.js`. The default is **column-first**: Up and Down pick the nearest control by position. Controllers depends on this; do not change it.
+
+| Attribute | Where | Effect |
 |---|---|---|
-| Hero | `clamp(56px, 6.5vw, 104px)` / 400 / `-0.01em` / `0.86` line | Anton |
-| Page title | 28px / 700 / `-0.015em` | Inter |
-| Section | 15px / 600 | Inter |
-| Body | 13px / 400 | Inter |
-| Label | 11px / 600 / `0.08em` / uppercase | Inter |
-| Nav | 13px / 500 | Inter |
+| `data-nav="rows"` | Settings and Mods `#screen`; Profile's Back button and its card | Up and Down prefer the nearest row, so a far control in the same column does not skip nearer rows |
+| `[data-nav-seq]` | Profile name block (Plays as, Share profile, View on web) | inside a `data-nav="rows"` area, Up and Down step through the block in reading order |
+| `data-nav="column"` | Profile's Match history | Up and Down stay in the block while it has a control that way, so the last row's Down is the pager |
 
----
+## 8. Page files and CSS architecture
 
-## 3. Spacing and size
+- Each page loads exactly `theme.css` then its page file, and `<body class="shell themed …">`.
+- A page file holds **layout only**: no colour literals (no hex, `rgb()`, `hsl()`), no weight above 700, no glow, no new duration.
 
-4px base. `4 8 12 16 20 24 32 48`. Nothing else.
+| Page | Page file |
+|---|---|
+| `index.html` (Play) | `pages/play.css` |
+| `settings.html`, `mods.html`, `music.html`, `controls.html` | `pages/settings.css`, `mods.css`, `music.css`, `controls.css` |
+| `stats.html`, `profile.html` | `pages/stats.css`, `pages/profile.css` |
+| `recovery.html` | `pages/recovery.css` |
+| `online.html` | `pages/online.css` |
+| `live.html`, `game.html` | `pages/live.css` |
+| `onboarding.html` | `onboarding.css` |
+| `harness.html` | `harness.css` (the developer page only; its own plain look) |
 
-| Token | Value | Note |
-|---|---|---|
-| `--rail` | 236px | Full height, glass |
-| `--tap` | 40px | Anything controller-reachable |
-| `--r` | 8px | Standard radius |
-| `--r-lg` | 12px | Panels |
+- The legacy sheets (`styles.css`, `launcher.css`, `product-ui.css`, `finish.css`, `shell.css`, `players.css`, `onboarding-polish.css`, `live-view.css`, and the old `play.css`, `stats.css`, `music.css`, `profile.css`) are retired and must stay gone.
+- Pages not redesigned in plan 4 (recovery, live, online, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens.
 
----
+## 9. Words
 
-## 4. The art layer
+- "Leaderboard", never "ladder". "Live feed", not "Watch live". "Last 10 games", not "Form".
+- A row never says "Best of 3" (every ranked match is one). The live card says "Game 2 of 3". There are no halves.
+- Stat units are uppercase in tables (YDS, TD, RTG, C/ATT, CAR, YCO, DRP) and spelled out in headline tiles (Passing Yards, Passing TD, Passer Rating).
+- Records are W-L. Private rooms never show on a profile and never count.
 
-This is the part that is expensive, and therefore the part earlier attempts
-skipped. It is not optional.
+## 10. Never
 
-1. The backdrop **cover-fits the whole window**, anchored at `center 72%`.
-2. Saturation `1.14`.
-3. **Two scrims**: dark from the bottom, dark from the left. One flat overlay
-   would have to be dark enough to kill the picture.
-4. The mark is **composited into the scene** with a blurred copy of itself
-   behind it, not placed in a box.
-5. Chrome is **glass**: `backdrop-filter: blur(24px)` over a translucent tint,
-   so the artwork reads through it.
+- A glow, anywhere. A coloured `box-shadow`.
+- A colour, size or duration in a page file that is not a `theme.css` token.
+- Drawn or invented art: an empty preview stays neutral (`--thumb-bg`). Every number comes from a command, never from the mockup.
+- Server text through `innerHTML`, or an image from anywhere but `assetUrl()` and the Discord avatar prefix (`avatarSrc`).
+- Resizing, stretching or redrawing Adam's logos.
+- Content under a `position:fixed` rule inside `#main` (section 4).
+- A page that loads a retired sheet, or a second stylesheet.
 
-Art rules for the source images live in `art/README.md`. The one that keeps
-being violated: **no frame may carry the game's own HUD.** A launcher wearing
-another interface's scoreboard reads as a screenshot.
+## 11. Adding to the system
 
----
+1. New colour, size, duration or component: add the token or class to `theme.css`, document it here, add it to the right checker. Then use it.
+2. New page: load `theme.css` and its page file, give `<body>` `shell themed page-<name>`, add an empty `<span id="input-hints"></span>`, add the page to `THEMED` in `Tools/check-theme.mjs`.
+3. New page with a save bar: add `has-save-lane` and `<div id="save-lane" inert></div>` after `#main`.
 
-## 5. Motion
+## 12. Checks
 
-One curve, three speeds, lifted from the roster site so the two products move
-alike.
+Run from the repo root with `node Tools/<name>.mjs`. The browser checks need Playwright and Edge.
 
-```
---ease: cubic-bezier(.2,.7,.3,1)
---t1: 90ms    state
---t2: 160ms   hover, glass
---t3: 220ms   arrivals
-```
+| Check | Guards |
+|---|---|
+| `check-theme` | every page loads exactly `theme.css` + its page file; tokens exist; motion values and reduced motion; no weight above 700 or red glow in `theme.css`; legacy sheets gone; this file keeps its warning and names every token |
+| `check-theme-tokens` | page files: no colour literals, no weight above 700 |
+| `check-themed-shell` | the shell (sidebar, frame, hint bar) on a themed page and on `online.html` |
+| `check-save-lane` | the lane's own row, failure shown in the bar, pad reaches the bar, LB/RB and links blocked while changes are pending |
+| `check-menu` | menu anchored to its button, check on the current option, keys and pad, closing |
+| `check-tabs` | the sliding highlight uses transform only, at `--d2` |
+| `check-glass-pages` | Play and Settings in each look (glass, motion, controller mode, save bar), alignment, one logo size |
+| `check-glass-mods-music-controls` | Mods, Music and Controllers in each look, the Music save bar |
+| `check-stat-components` | the Stats and Profile components in `theme.css`: headers, rows, table grid, portrait, cover, reveal, live dot |
+| `check-stats-page` | the Stats page: aligned columns, match list, W/L only, reveal, small window, signed out, refusals |
+| `check-profile-page` | the Profile page: card, overview, history, Full stats, pad moves, edge cases |
+| `check-pad-columns` | pad moves stay in their column outside Settings and Mods |
+| `check-controller-hints` | the hint bar appears with pad input and goes with mouse or key |
+| `check-look-browser` | glass and motion preview, Discard restores, the save lane sits below `#main` |
+| `compare-page-layout` | element-by-element layout before and after a stylesheet change (`capture`, `diff`) |
+| `lib/page-states.mjs` | the fixed page states those checks open (frozen clock, no network, optional pad) |
+| `baseline-messages` | compares checker failure messages between two recorded runs |
 
-One arrival keyframe, `rise`, `translateY(6px)` plus opacity. Exits are
-instant: leaving should never make anyone wait. `prefers-reduced-motion`
-collapses everything to `0.01ms`.
-
----
-
-## 6. Known risks, written down rather than discovered later
-
-**Glass costs GPU.** `backdrop-filter` is real in WebView2 but it composites
-every frame, and on a Steam Deck that competes with the emulator. If it
-measures badly the fallback is a pre-blurred image slice, **not** a flat
-panel. Swapping glass for a flat fill and still calling it glass is exactly
-how this drifts back to generic.
-
-**Anton has no lowercase discipline.** It is caps-only by use here. Any
-sentence-case string in Anton will look wrong, so the hero takes short
-uppercase strings and nothing else.
-
-**Contrast on artwork is not verifiable from hex values.** Every ratio in this
-file is computed against `--bg`. Text over a photograph depends on the
-photograph. The scrims are specified to make it safe; it still needs checking
-against each real image, and `art/README.md` is where that requirement lives.
+Also useful: `check-shell-chrome`, `check-shell-pages` (every page survives every core answer) and `audit-ui`.

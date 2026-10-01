@@ -48,4 +48,16 @@ assert.doesNotMatch(theme, /--(bg|panel|line|muted|accent|accent-border|control-
 // P4-17: the element rule for buttons has no specificity of its own, so component classes win without page prefixes.
 assert.match(theme, /:where\(body\.shell\) button,/, "theme.css's button element rule sits in :where(body.shell)");
 assert.doesNotMatch(theme.replace(/\/\*[\s\S]*?\*\//g, ""), /(^|[},])\s*body\.shell button[,{]/m, "no bare body.shell button element rule (0,1,2)");
+// DESIGN.md is the written form of theme.css (spec §11): it keeps its opening warning and names every token.
+const design = readFileSync(ui + "DESIGN.md", "utf8");
+assert.match(design, /If a value is not in this file, it is not a decision anyone gets to make in a stylesheet\./, "DESIGN.md keeps its opening warning");
+assert.doesNotMatch(design, /Direction A, approved/, "DESIGN.md no longer describes Direction A as current");
+for (const t of ["--mica-tint", "--fallback-bg", "--glass-1", "--glass-2", "--glass-3", "--stroke", "--stroke-hi", "--sheen", "--shadow", "--fg", "--fg-2", "--fg-3", "--red", "--red-hi", "--red-ink", "--ok", "--warn", "--ease", "--d1", "--d2", "--d3"])
+  assert.ok(design.includes(`\`${t}\``), `DESIGN.md names ${t}`);
+// P4-18: every token theme.css defines on :root is named (a token removed from theme.css must leave DESIGN.md too).
+const rootBlock = theme.slice(theme.indexOf(":root{"), theme.indexOf("\n}", theme.indexOf(":root{")));
+for (const m of new Set([...rootBlock.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((x) => x[1]))) {
+  if (/^--av-[0-7]$/.test(m)) continue; // named as a range
+  assert.ok(design.includes(m), `DESIGN.md names ${m}`);
+}
 console.log(`check-theme: PASS (${PAGES.length} pages)`);
