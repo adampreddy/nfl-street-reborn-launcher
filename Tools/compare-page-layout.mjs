@@ -1,13 +1,15 @@
 // Layout snapshots of a page before and after its stylesheets change (spec §9 "no layout work", §13).
 //   node Tools/compare-page-layout.mjs capture <page> <dir>
 //        writes <dir>/<page>.json and, per state and window size, <state>-<w>.png (top) and <state>-<w>-end.png (scrolled)
-//   node Tools/compare-page-layout.mjs diff <page> <beforeDir> <afterDir> [--loose <regex>]...
+//   node Tools/compare-page-layout.mjs diff <page> <beforeDir> <afterDir> [--loose <regex>]... [--loose-prop <regex> <property>]...
 // Each element's box is taken relative to its parent's box, so a taller heading moves nothing but its own row.
 // FAIL: an element appears, disappears or changes visibility; moves / resizes by more than 2px, sideways OR vertically;
 //       or differs in a key computed style (display, position, overflow, font-size/weight, line-height, padding, gap,
 //       flex-direction, grid track count, text-align, background painted or not). Colours are NOT compared: the theme
 //       changes them on purpose. --loose <regex> is the explicit opt-out: a change on an element whose ancestor chain
 //       matches is downgraded to WARN (size, position and style alike). Judge every WARN in the screenshots.
+//       --loose-prop <regex> <property> is the narrow one (ruling P4-28): only a change of that ONE computed style on an
+//       element whose chain matches is a WARN; any other style change, move or resize of it still FAILs.
 //       The page heading, the diagnostic fold and the shell are not compared.
 // Baseline comparisons elsewhere (checkers failing at the start of plan 4) must key failures on the normalised failure
 // MESSAGE (strip file:line, paths, timings), never file:line: later tasks edit those checkers and shift their lines.
@@ -81,7 +83,7 @@ async function capture(dir) {
   console.log(`compare-page-layout: captured ${Object.keys(out).length} screen(s) of ${page} in ${dir}`);
 }
 
-function diff(beforeDir, afterDir, loose) {
+function diff(beforeDir, afterDir, loose, looseProps = []) {
   const A = JSON.parse(readFileSync(path.join(beforeDir, `${page}.json`), 'utf8'));
   const B = JSON.parse(readFileSync(path.join(afterDir, `${page}.json`), 'utf8'));
   const fails = [], warns = [];
@@ -101,8 +103,12 @@ function diff(beforeDir, afterDir, loose) {
       const isLoose = loose.some((re) => re.test(x.chain));
       if (side || vert) (isLoose ? warns : fails).push(line);
       if (x.s && y.s) {
-        const d = Object.keys(x.s).filter((n) => x.s[n] !== y.s[n]).map((n) => `${n} ${x.s[n]} → ${y.s[n]}`);
-        if (d.length) (isLoose ? warns : fails).push(`${screen} ${x.chain}: STYLE ${d.join('; ')}`);
+        const changed = Object.keys(x.s).filter((n) => x.s[n] !== y.s[n]);
+        const propLoose = (n) => looseProps.some(([re, prop]) => prop === n && re.test(x.chain));
+        const say = (ns) => ns.map((n) => `${n} ${x.s[n]} → ${y.s[n]}`).join('; ');
+        const strict = isLoose ? [] : changed.filter((n) => !propLoose(n)), soft = changed.filter((n) => !strict.includes(n));
+        if (strict.length) fails.push(`${screen} ${x.chain}: STYLE ${say(strict)}`);
+        if (soft.length) warns.push(`${screen} ${x.chain}: STYLE ${say(soft)}`);
       }
     }
     for (const k of Object.keys(y0)) if (!k.startsWith('__') && !x0[k]) fails.push(`${screen} ${y0[k].chain}: new after`);
@@ -115,7 +121,10 @@ function diff(beforeDir, afterDir, loose) {
 
 if (mode === 'capture') await capture(path.resolve(a));
 else {
-  const loose = [];
-  for (let i = 0; i < rest.length; i++) if (rest[i] === '--loose') loose.push(new RegExp(rest[++i]));
-  diff(path.resolve(a), path.resolve(b), loose);
+  const loose = [], looseProps = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--loose') loose.push(new RegExp(rest[++i]));
+    else if (rest[i] === '--loose-prop') { looseProps.push([new RegExp(rest[i + 1]), rest[i + 2]]); i += 2; }
+  }
+  diff(path.resolve(a), path.resolve(b), loose, looseProps);
 }

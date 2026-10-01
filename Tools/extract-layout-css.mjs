@@ -81,7 +81,8 @@ const BASE_UNDO = [
 ];
 
 // Restores theme.css's body.themed base takes away and the old sheets never declared (plan Task 9 Step 3, "hand-kept").
-// Written at the end of the file, below a `/* hand-kept: <why> */` comment each. Layout only.
+// Written at the end of the file, below a `/* hand-kept: <why> */` comment each. Layout, plus the few colour states
+// (selected, disputed, painted) the token mapping would otherwise lose (P4-27); colours are tokens only.
 const HAND_KEPT = {
   recovery: [['the diagnostic fold stays visible on Recovery (P4-14; legacy product-ui.css:76 exempted page-recovery)',
     'html:not(#_) body.page-recovery details.core{display:block}']],
@@ -90,6 +91,16 @@ const HAND_KEPT = {
   onboarding: [['the inset fills theme.css gives first run (theme.css "inset fills that the --bg:transparent alias would otherwise erase")',
     'html:not(#_) body.shell.page-setup :is(.mapping-tabs,.graphics-tabs,.import-override-fields,.advanced-row select,.import-game-actions select){background-color:var(--glass-1)}\n'
     + 'html:not(#_) body.shell.page-setup .binding-editor{background-color:var(--surface-solid)}']],
+  // game + live share pages/live.css (run as `game,live`). Colour states the token mapping flattened (P4-27, Task 9):
+  // theme.css's classless-button sheen drew a line above every unselected tab; the old control and selected fills
+  // both map to --glass-3, so the picked game no longer stood out; the disputed play's --muted edge became a faint line.
+  live: [['tabs are bare text with an underline when selected (P4-13): no theme button sheen on them',
+    'html:not(#_) body.shell #screen .lv-tabs button{box-shadow:none}'],
+  ['the picked game stays distinct from the others (legacy live-view.css:104 selected fill + accent border)',
+    'html:not(#_) body.shell #screen .lv-picker button:not([aria-pressed="true"]){background-color:var(--glass-1)}\n'
+    + 'html:not(#_) body.shell #screen .lv-picker button[aria-pressed="true"]{border-color:var(--fg-3)}'],
+  ['a disputed play keeps its light left edge (legacy live-view.css:110 border-left-color:var(--muted))',
+    'html:not(#_) .lv-play.disputed{border-left-color:var(--fg-2)}']],
 };
 
 // ---- the pages' own sources: their HTML and every script they load, followed through imports ----
