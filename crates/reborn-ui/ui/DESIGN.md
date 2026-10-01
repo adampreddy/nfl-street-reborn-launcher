@@ -126,6 +126,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 - **Rows:** match row 56, game row 40, table row 40, table header 36, nav item 40 (36 in short windows).
 - **Form column:** Settings, Mods and Music are at most 942px wide. Stats and Profile use the full content width.
 - **Logos:** `art/nsr-sidebar.png` and `art/play-logo.png` are Adam's. The sidebar logo slot is 124px tall with the image at 100% width. Never resize, stretch or redraw a logo.
+- **Display copies:** pages load `art/nsr-sidebar-display.png` (512 px), `art/play-logo-display.png` (1100 px wide) and `art/play-background-display.jpg` (2560x1440), made from the full-size originals above, never the originals (decoding a 4096 px PNG on every page made pages slow). When an original is replaced, remake its copy at the same size (Pillow LANCZOS; the background as JPEG quality 90).
 - **No glows.** No coloured `box-shadow`. The primary button's shadow is a plain dark drop.
 
 ## 4. Motion
