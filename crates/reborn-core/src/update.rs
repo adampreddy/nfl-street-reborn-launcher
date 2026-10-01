@@ -76,6 +76,15 @@ pub struct ReleaseManifest {
     pub linux: Option<Asset>,
 }
 
+/// The manifest key [`ReleaseManifest::asset_for_this_platform`] reads.
+pub const THIS_PLATFORM_KEY: &str = if cfg!(windows) {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else {
+    "linux"
+};
+
 impl ReleaseManifest {
     /// The asset for the platform this binary was built for.
     pub fn asset_for_this_platform(&self) -> Option<&Asset> {
@@ -376,7 +385,10 @@ mod tests {
     use super::*;
     use crate::net::fake::FakeHttp;
 
+    /// Windows only: the switch is for Inno Setup, `apply` refuses off Windows,
+    /// and the paths here are Windows paths that Linux would not split on `\`.
     #[test]
+    #[cfg(windows)]
     fn the_installer_is_told_the_folder_except_the_retired_programs_default() {
         let programs = Path::new(r"C:\Users\Adam\AppData\Local\Programs");
         let app = Path::new(r"C:\Users\Adam\AppData\Roaming\NFL Street Reborn Beta\app");
@@ -400,9 +412,12 @@ mod tests {
         assert!(dir_switch(launcher_era_stable, None).is_none());
     }
 
+    /// A manifest with one asset, filed under the platform running the test, so
+    /// the same test reads as "an update exists" on Windows, macOS and Linux.
     fn manifest(version: &str, sha: &str) -> String {
+        let platform = THIS_PLATFORM_KEY;
         format!(
-            r#"{{"schema":"{MANIFEST_SCHEMA}","version":"{version}","notes":"fixes","windows":{{"url":"https://x/setup.exe","sha256":"{sha}","bytes":5,"file_name":"Setup {version}.exe"}},"macos":null,"linux":null}}"#
+            r#"{{"schema":"{MANIFEST_SCHEMA}","version":"{version}","notes":"fixes","{platform}":{{"url":"https://x/setup.exe","sha256":"{sha}","bytes":5,"file_name":"Setup {version}.exe"}}}}"#
         )
     }
 

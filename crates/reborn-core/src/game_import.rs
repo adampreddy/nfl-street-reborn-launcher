@@ -109,5 +109,10 @@ pub fn import_with_progress(bundle:&Path,source:&Path,data:&Path,progress:impl F
 
 #[cfg(test)]mod tests {
     use super::*;
-    #[test]fn patch_paths_cannot_escape(){for path in ["../save.raw","C:/save.raw","/absolute"]{assert!(contained(Path::new("bundle"),path).is_err());}}
+    #[test]fn patch_paths_cannot_escape(){
+        for path in ["../save.raw","/absolute"]{assert!(contained(Path::new("bundle"),path).is_err());}
+        // A drive letter is only a root on Windows. On Linux `C:/save.raw` is a
+        // relative path into a folder called `C:`, which stays inside the bundle.
+        if cfg!(windows){assert!(contained(Path::new("bundle"),"C:/save.raw").is_err());}
+    }
 }

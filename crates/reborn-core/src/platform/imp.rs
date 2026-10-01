@@ -1428,11 +1428,18 @@ mod tests {
         // launcher's data, and uninstalling the beta would remove it.
         let stable = RealPaths { channel: Channel::Stable };
         let beta = RealPaths { channel: Channel::Beta };
-        for (name, s, b) in [
-            ("install", stable.install_root(), beta.install_root()),
+        // On Linux the install root is the running executable's own folder (an
+        // AppImage lives wherever the player put it), so two channels run from
+        // one test binary share it. The roots an uninstall could reach, data
+        // and cache, are the ones that must stay apart there.
+        let mut roots = vec![
             ("data", stable.data_root(), beta.data_root()),
             ("cache", stable.cache_root(), beta.cache_root()),
-        ] {
+        ];
+        if !cfg!(target_os = "linux") {
+            roots.push(("install", stable.install_root(), beta.install_root()));
+        }
+        for (name, s, b) in roots {
             let (s, b) = (s.unwrap(), b.unwrap());
             assert_ne!(s, b, "{name} root must differ");
             assert!(!b.starts_with(&s) && !s.starts_with(&b), "{name}: {} vs {}", s.display(), b.display());
