@@ -4942,7 +4942,12 @@ async fn update_apply(path: String, confirm: bool) -> Result<UpdateApplyView, St
         Ok(UpdateApplyView {
             started: true,
             installer: installer.display().to_string(),
-            note: "The installer is running. The launcher closes now and the installer opens it again when it is done.".to_string(),
+            note: if cfg!(windows) {
+                "The installer is running. The launcher closes now and the installer opens it again when it is done."
+            } else {
+                "The update is in place. The launcher closes now and opens again updated."
+            }
+            .to_string(),
         })
     })
     .await

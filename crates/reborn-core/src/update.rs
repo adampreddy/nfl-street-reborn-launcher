@@ -291,7 +291,7 @@ pub fn download(http: &dyn Http, asset: &Asset, dir: &Path) -> Result<Downloaded
 fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
     if base.is_empty() || base == "." || base == ".." {
-        "launcher-setup.exe".to_string()
+        if cfg!(windows) { "launcher-setup.exe" } else { "launcher.AppImage" }.to_string()
     } else {
         base.to_string()
     }
@@ -301,16 +301,90 @@ fn safe_file_name(name: &str) -> String {
 pub const UPDATE_THROUGH_PACKAGE: &str =
     "Update Reborn the same way you installed it.";
 
+/// Shown on Linux when the launcher cannot write where its own AppImage
+/// sits, so the update cannot be put in place.
+pub const UPDATE_APPIMAGE_FOLDER_READONLY: &str =
+    "Reborn could not replace its own file. Move the AppImage to a folder you can write to, then try again.";
+
+/// The AppImage this launcher is running from, when it is one.
+///
+/// The AppImage runtime sets `APPIMAGE` to the file the player started and
+/// `APPDIR` to the mount it unpacked into. The executable's own path is the
+/// mount, which is read only and gone at exit, so the file is the one thing
+/// an update can replace. A plain binary (a developer's `cargo run`) has no
+/// such variable and is not updated here.
+#[cfg(target_os = "linux")]
+fn running_appimage() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+}
+
+/// Put `downloaded` where `current` is, executable, in one step.
+///
+/// Copied beside the target first and renamed over it, so the player is
+/// never left with half a launcher: a rename on one filesystem either
+/// happens or does not. The copy, not a move, because the downloads folder
+/// may be on another filesystem. The running launcher keeps its mapping of
+/// the old file's contents until it exits.
+pub fn replace_appimage(downloaded: &Path, current: &Path) -> Result<()> {
+    let staged = current.with_extension("AppImage.new");
+    std::fs::copy(downloaded, &staged).map_err(|source| Error::Io { path: staged.clone(), source })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
+            .map_err(|source| Error::Io { path: staged.clone(), source })?;
+    }
+    std::fs::rename(&staged, current).map_err(|source| {
+        let _ = std::fs::remove_file(&staged);
+        Error::Io { path: current.to_path_buf(), source }
+    })
+}
+
+/// The Linux update: swap the AppImage file and start the new one. The
+/// caller exits afterwards, as on Windows.
+///
+/// `current` is the AppImage the player runs, or `None` when this is not an
+/// AppImage at all, which is refused in the player's words rather than
+/// guessed at.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn apply_appimage(platform: &crate::Platform, downloaded: &Path, current: Option<&Path>) -> Result<()> {
+    let Some(current) = current else {
+        return Err(Error::player(UPDATE_THROUGH_PACKAGE));
+    };
+    if !downloaded.is_file() {
+        return Err(Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no update at {}", downloaded.display()),
+        )));
+    }
+    if let Err(e) = replace_appimage(downloaded, current) {
+        let readonly = matches!(&e, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied);
+        return Err(if readonly { Error::player(UPDATE_APPIMAGE_FOLDER_READONLY) } else { e });
+    }
+    let env = std::collections::BTreeMap::new();
+    platform.processes.spawn(current, &[], current.parent(), &env).map(|_| ())
+}
+
 /// Start the installer. The caller exits afterwards; Inno does the rest.
 ///
 /// `/SILENT` shows progress and asks nothing; `/NORESTART` keeps the machine
 /// up. The installer's own upgrade rules apply: same AppId, program files
 /// only, the data root untouched.
 pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
-    // The installer is Inno Setup, a Windows program. Off Windows the
-    // launcher is updated the way it was installed (a Flatpak by Flatpak),
-    // and a release carries no asset for it yet, so a check never offers one.
-    // This refuses anything that gets here regardless.
+    // Linux is one AppImage file: swap it and relaunch. See `apply_appimage`.
+    #[cfg(target_os = "linux")]
+    {
+        let current = running_appimage();
+        return apply_appimage(platform, installer, current.as_deref());
+    }
+    // The installer is Inno Setup, a Windows program. On macOS the launcher
+    // is updated the way it was installed, and a release carries no asset
+    // for it yet, so a check never offers one. This refuses anything that
+    // gets here regardless.
+    #[allow(unreachable_code)]
     if !cfg!(windows) {
         return Err(Error::player(UPDATE_THROUGH_PACKAGE));
     }
@@ -419,6 +493,39 @@ mod tests {
         format!(
             r#"{{"schema":"{MANIFEST_SCHEMA}","version":"{version}","notes":"fixes","{platform}":{{"url":"https://x/setup.exe","sha256":"{sha}","bytes":5,"file_name":"Setup {version}.exe"}}}}"#
         )
+    }
+
+    /// The Linux update is a file swap: the new AppImage lands where the old
+    /// one was, executable, with nothing half written beside it.
+    #[test]
+    fn replacing_the_appimage_swaps_the_file_whole_and_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Reborn.AppImage");
+        let downloaded = dir.path().join("downloads").join("Reborn-3.2.AppImage");
+        std::fs::create_dir_all(downloaded.parent().unwrap()).unwrap();
+        std::fs::write(&current, b"old launcher").unwrap();
+        std::fs::write(&downloaded, b"new launcher").unwrap();
+        replace_appimage(&downloaded, &current).expect("replace");
+        assert_eq!(std::fs::read(&current).unwrap(), b"new launcher");
+        assert!(!current.with_extension("AppImage.new").exists(), "nothing staged is left behind");
+        assert!(downloaded.is_file(), "the download is copied, not moved: it may sit on another filesystem");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&current).unwrap().permissions().mode() & 0o111, 0o111);
+        }
+    }
+
+    /// A launcher that is not an AppImage (a developer's binary) has no file
+    /// to swap, and says so in the player's words instead of guessing.
+    #[test]
+    fn a_launcher_that_is_not_an_appimage_is_told_to_update_the_way_it_was_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloaded = dir.path().join("Reborn-3.2.AppImage");
+        std::fs::write(&downloaded, b"new").unwrap();
+        let platform = crate::Platform::detect();
+        let err = apply_appimage(&platform, &downloaded, None).expect_err("no AppImage to replace");
+        assert_eq!(err.to_string(), UPDATE_THROUGH_PACKAGE);
     }
 
     #[test]

@@ -106,6 +106,18 @@ impl RealPaths {
     }
 }
 
+impl RealPaths {
+    /// The Linux install root: the folder holding the AppImage when there is
+    /// one, otherwise the folder holding the executable.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn install_root_linux(appimage: Option<&Path>, exe: &Path) -> PathBuf {
+        appimage
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| exe.parent().map(Path::to_path_buf).unwrap_or_else(|| exe.to_path_buf()))
+    }
+}
+
 impl Paths for RealPaths {
     fn install_root(&self) -> Result<PathBuf> {
         #[cfg(windows)]
@@ -136,10 +148,12 @@ impl Paths for RealPaths {
         }
         #[cfg(target_os = "linux")]
         {
-            // An AppImage runs from wherever the user put it, so the honest
-            // answer is the directory holding the running executable.
-            let exe = std::env::current_exe()?;
-            Ok(exe.parent().map(Path::to_path_buf).unwrap_or(exe))
+            // An AppImage runs from wherever the player put it. The running
+            // executable sits in the read-only mount the AppImage runtime
+            // unpacks into, so the file the player started (`APPIMAGE`) is
+            // the honest answer; a plain binary answers with its own folder.
+            let appimage = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()).map(PathBuf::from);
+            Ok(RealPaths::install_root_linux(appimage.as_deref(), &std::env::current_exe()?))
         }
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
@@ -1405,6 +1419,16 @@ mod tests {
         // This test binary has no launcher beside it, so the channel path
         // still answers and the roots below stay apart.
         assert!(RealPaths::install_dir_holding(&std::env::current_exe().unwrap()).is_none());
+    }
+
+    /// The AppImage's own folder is where the player put the launcher; the
+    /// executable's folder is a mount that is gone at exit.
+    #[test]
+    fn the_linux_install_root_is_the_appimage_folder_when_there_is_one() {
+        let appimage = Path::new("/home/deck/Applications/Reborn.AppImage");
+        let exe = Path::new("/tmp/.mount_Reborn123/usr/bin/reborn-launcher");
+        assert_eq!(RealPaths::install_root_linux(Some(appimage), exe), PathBuf::from("/home/deck/Applications"));
+        assert_eq!(RealPaths::install_root_linux(None, exe), PathBuf::from("/tmp/.mount_Reborn123/usr/bin"));
     }
 
     #[test]
