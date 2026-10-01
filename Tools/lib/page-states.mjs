@@ -149,8 +149,10 @@ export async function settle(page) {
   await page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))), new Promise((r) => setTimeout(r, 5000))]));
 }
 
-export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null } = {}) {
+export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null, init = null } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, timezoneId: 'UTC', locale: 'en-US' });
+  // `init`: an extra script run before the page's own (a check that drives the page's timers itself, say).
+  if (init) await context.addInitScript(init);
   const png = readFileSync(path.join(ui, 'art/cover.png'));
   await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   const all = { ...answers(), ...(state.data || {}), ...(data || {}) };

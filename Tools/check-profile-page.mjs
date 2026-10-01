@@ -406,6 +406,94 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // a first page that is mostly, or entirely, private rooms (the deployed server still sends them) tops up to a full
+    // page at once, not only on a tab or "Older"; the empty words show only when no public match exists at all
+    const room = F.allMatches().find((m) => m.queue === 'private');
+    const rooms = (n) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(room), id: `p-0${i}`, match_id: `p-0${i}`, at: `2026-09-27T${String(19 - i).padStart(2, '0')}:00:00.000Z` }));
+    const pub = F.publicMatches();
+    const rowKeys = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.dataset.key));
+    for (const [what, first, total, all, want] of [
+      ['mostly private', [...rooms(8), ...pub.slice(0, 2)], 20, pub, pub.slice(0, 10).map((m) => `match-${m.id}`)],
+      ['entirely private, more pages', rooms(10), 22, pub, pub.slice(0, 10).map((m) => `match-${m.id}`)],
+      ['entirely private, nothing public', rooms(10), 15, [], []],
+    ]) {
+      const p = F.profile({ live: false });
+      Object.assign(p, { recent_matches: first, matches_total: total });
+      const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: all } });
+      await page.locator('.pf-card').waitFor();
+      await page.waitForFunction(() => !/Loading/.test(document.querySelector('#history .m-list')?.textContent || ''));
+      assert.deepEqual(await rowKeys(page), want, `${what}: the first page fills to ${want.length} public rows`);
+      if (want.length) {
+        assert.equal(await page.locator('#history .m-empty').count(), 0, `${what}: no empty words`);
+        assert.equal(await page.locator('#history .m-pager span').textContent(), 'Page 1');
+        assert.equal(await page.locator('#history [data-key="older"]').isDisabled(), false, `${what}: Older still offered`);
+      } else {
+        assert.equal(await page.locator('#history .m-empty').textContent(), NONE, `${what}: the honest empty state`);
+        assert.equal(await page.locator('#history .m-pager').count(), 0, `${what}: no Older under the empty words`);
+      }
+      await contentRules(page);
+      assert.deepEqual(errors, []);
+      await close();
+    }
+  }
+  { // the 30 s refresh redraws the header only: live -> not live drops the live card and reads "● Online now"; focus,
+    // scroll and the history page stay; it uses the first load's arguments; it skips while the window is hidden
+    const init = () => {
+      const real = window.setInterval;
+      window.__ticks = [];
+      window.setInterval = (fn, ms, ...a) => { if (ms === 30000) { window.__ticks.push(fn); return 0; } return real.call(window, fn, ms, ...a); };
+    };
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { init });
+    await page.locator('.pf-live').waitFor();
+    assert.equal(await page.evaluate(() => window.__ticks.length), 1, 'one 30 s timer');
+    await page.locator('#history [data-key="older"]').click();
+    await page.waitForFunction(() => document.querySelector('#history .m-pager span')?.textContent === 'Page 2 of 2');
+    await page.locator('[data-key="share"]').focus();
+    await page.evaluate(() => { document.getElementById('main').scrollTop = 40; });
+    const scroll = await page.evaluate(() => document.getElementById('main').scrollTop);
+    const tick = () => page.evaluate(() => Promise.all(window.__ticks.map((f) => f())));
+    const profileCalls = () => page.evaluate(() => window.__calls.filter((c) => c.cmd === 'player_profile' && !c.args.before).map((c) => JSON.stringify(c.args)));
+    const before = await profileCalls();
+    // the stub now answers "not in a match"
+    await page.evaluate(() => {
+      const inv = window.__TAURI__.core.invoke;
+      window.__TAURI__.core.invoke = (cmd, args = {}) => (cmd === 'player_profile' && !args.before
+        ? inv(cmd, args).then((p) => ({ ...p, header: { ...p.header, live: null } })) : inv(cmd, args));
+    });
+    await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
+    await tick();
+    assert.deepEqual(await profileCalls(), before, 'no refresh while the window is hidden');
+    assert.equal(await page.locator('.pf-live').count(), 1);
+    await page.evaluate(() => { delete document.visibilityState; });
+    await tick();
+    const after = await profileCalls();
+    assert.equal(after.length, before.length + 1, 'one quiet refresh');
+    assert.equal(after.at(-1), before[0], `the refresh sends the first load's arguments: ${after.at(-1)}`);
+    assert.equal(await page.locator('.pf-live').count(), 0, 'the live card is gone');
+    assert.equal(await page.locator('.pf-status').textContent(), '● Online now');
+    assert.equal(await page.locator('.pf-pic .presence-dot').count(), 1, 'still online: the presence dot stays');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'share', 'focus does not move');
+    assert.equal(await page.evaluate(() => document.getElementById('main').scrollTop), scroll, 'scroll does not move');
+    assert.equal(await page.locator('#history .m-pager span').textContent(), 'Page 2 of 2', 'the history page stays');
+    await contentRules(page);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // a refresh that ends the live card while Live feed has focus hands focus to View on web, never the page top
+    const init = () => { window.__ticks = []; const real = window.setInterval; window.setInterval = (fn, ms, ...a) => (ms === 30000 ? (window.__ticks.push(fn), 0) : real.call(window, fn, ms, ...a)); };
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { init });
+    await page.locator('[data-key="live-feed"]').focus();
+    await page.evaluate(() => {
+      const inv = window.__TAURI__.core.invoke;
+      window.__TAURI__.core.invoke = (cmd, args = {}) => (cmd === 'player_profile' && !args.before
+        ? inv(cmd, args).then((p) => ({ ...p, header: { ...p.header, live: null } })) : inv(cmd, args));
+    });
+    await page.evaluate(() => Promise.all(window.__ticks.map((f) => f())));
+    assert.equal(await page.locator('.pf-live').count(), 0);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'web');
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // a player with three matches: rows stay 56px, the card still fills to the right column
     const p = F.profile({ live: false });
     const three = F.publicMatches().slice(0, 3);

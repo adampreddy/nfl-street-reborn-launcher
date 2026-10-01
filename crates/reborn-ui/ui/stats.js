@@ -16,6 +16,8 @@ const PAGE_SIZE = 10;
 const REFRESH_MS = 30000;
 const SIGNED_OUT = 'Sign in with Discord on the Play page to see your games.';
 const EMPTY = 'No games yet. Play one and it shows up here.';
+// Only private rooms came back (dropped, P4-3): they did play, so never "No games yet".
+const NONE_SHOWN = 'No games to show yet.';
 const FILTERS = [['all', 'All'], ['online', 'Online'], ['offline', 'Offline']];
 // Which part of the profile each player opens: their role's Full stats table, or Career.
 const ROLE_HASH = { passer: 'passing', rusher: 'rushing', receiver: 'receiving', most_played: 'career', dl_lb: 'defense', ballhawk: 'defense' };
@@ -221,7 +223,7 @@ function paint(accountOpen) {
   // Stats never lists or counts a private room (rulings P4-3, P4-6, P4-22): dropped before anything is drawn.
   const matches = dropPrivate(d.matches);
   if (!matches.length) {
-    parts.push(el('p', { class: 'note', text: EMPTY }));
+    parts.push(el('p', { class: 'note', text: Array.isArray(d.matches) && d.matches.length ? NONE_SHOWN : EMPTY }));
     screen.replaceChildren(...parts, foot(q));
     return;
   }

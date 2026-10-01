@@ -171,5 +171,16 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // only private rooms played (all dropped): neutral words, never "No games yet" and never "Private"
+    const room = F.allMatches().find((m) => m.queue === 'private');
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { ...F.dashboard(), matches: [room] } } });
+    await page.getByText('No games to show yet.', { exact: true }).waitFor();
+    const body = await page.locator('#screen').innerText();
+    assert.doesNotMatch(body, /No games yet/, 'a private-only player is never told they have not played');
+    assert.doesNotMatch(body, /private/i);
+    assert.equal(await page.locator('.st-cols').count(), 0);
+    assert.deepEqual(errors, []);
+    await close();
+  }
   console.log(`check-stats-page: PASS (screens in ${out})`);
 } finally { await browser.close(); await srv.close(); }

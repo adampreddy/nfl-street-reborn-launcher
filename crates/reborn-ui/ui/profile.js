@@ -156,20 +156,25 @@ function liveBlock(raw) {
       el('button', { type: 'button', class: 'btn sm', 'data-key': 'live-feed', text: 'Live feed', onclick: () => { location.href = c.href; } })));
 }
 
+// The header's live parts (status, presence dot, live card), redrawn in place by the 30 s refresh; set by card().
+let updateHeader = null;
+
 function card(p, ownerId) {
   const h = p.header || {};
   const name = h.display_name || 'Player';
-  const status = statusLine(h);
-  const pic = el('div', { class: 'pf-pic cover-pic' }, avatar(h.avatar_url, name, 'pf-avatar'), status ? el('span', { class: 'presence-dot', 'aria-hidden': 'true' }) : null);
+  const dot = el('span', { class: 'presence-dot', 'aria-hidden': 'true' });
+  const pic = el('div', { class: 'pf-pic cover-pic' }, avatar(h.avatar_url, name, 'pf-avatar'));
   const meta = el('p', { class: 'pf-meta' });
   const bits = [];
-  if (status) bits.push(el('span', { class: 'pf-status', text: `● ${status.text}` }));
   const joined = monthYear(h.joined);
   if (joined) bits.push(el('span', { text: `Joined ${joined}` }));
   const owner = Boolean(ownerId) && String(h.player_id || '').toLowerCase() === ownerId;
   const team = owner ? playsAsPicker(p) : playsAsText(h.plays_as);
   if (team) bits.push(team);
   bits.forEach((b, i) => { if (i) meta.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); meta.append(b); });
+  // The status leads the line while there is one; it comes and goes with the refresh without touching the rest.
+  const statusEl = el('span', { class: 'pf-status' });
+  const statusSep = bits.length ? el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' }) : null;
   const facts = summaryFacts(p);
   const said = el('span', { class: 'pf-said', role: 'status' });
   let saidTimer = null;
@@ -189,7 +194,32 @@ function card(p, ownerId) {
     el('div', { class: 'pf-acts' }, share, web, said));
   // data-nav="rows" (Back and the card only): Down reads the card row by row, never straight into the match list below
   // it; data-nav-seq: Plays as, Share profile, View on web in reading order. The rest of the page keeps column moves.
-  const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), el('div', { class: 'pf-row' }, pic, id, liveBlock(h.live)));
+  const row = el('div', { class: 'pf-row' }, pic, id);
+  const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), row);
+  let liveKey = null, liveEl = null;
+  // Only the status, the presence dot and the live card change; nothing focusable is rebuilt unless the live card
+  // itself changed, and a focused Live feed keeps focus (or moves to View on web when the card leaves).
+  updateHeader = (next) => {
+    const status = statusLine(next);
+    if (status) {
+      statusEl.textContent = `● ${status.text}`;
+      if (!statusEl.isConnected) meta.prepend(...[statusEl, statusSep].filter(Boolean));
+      if (!dot.isConnected) pic.append(dot);
+    } else {
+      statusEl.remove(); statusSep?.remove(); dot.remove();
+    }
+    const key = JSON.stringify(next?.live ?? null);
+    if (key === liveKey) return;
+    liveKey = key;
+    const hadFocus = Boolean(liveEl && typeof liveEl.contains === 'function' && liveEl.contains(document.activeElement));
+    const fresh = liveBlock(next?.live);
+    if (liveEl && fresh) liveEl.replaceWith(fresh);
+    else if (liveEl) liveEl.remove();
+    else if (fresh) row.append(fresh);
+    liveEl = fresh;
+    if (hadFocus) (fresh?.querySelector('[data-key="live-feed"]') ?? web).focus({ preventScroll: true });
+  };
+  updateHeader(h);
   coverColours(box, h.avatar_url);
   if (typeof document.title === 'string') document.title = `${name} | NFL Street Reborn`;
   return box;
@@ -301,6 +331,9 @@ function historySection(p) {
     }
   };
   hist.render();
+  // A first page that was mostly private rooms (the deployed server still sends them) tops up to a full page now,
+  // not only on a tab or "Older".
+  fill();
   // data-nav="column": Down from the last row is the pager at the card's foot, never Full stats' column headings
   // further down whose middle sits nearer the row's middle.
   return el('section', { id: 'history', class: 'pf-col', 'data-nav': 'column', 'aria-labelledby': 'history-h' }, head, cardEl);
@@ -592,8 +625,26 @@ async function load() {
     screen.replaceChildren(el('p', { class: 'refusal', role: 'alert', text: `That profile could not be loaded: ${reason(profile.reason)}` }),
       el('a', { class: 'button', id: 'back', href: 'stats.html', text: 'Back to Stats' }));
   } else if (!profile.value || typeof profile.value !== 'object' || profile.value.ok === false || !profile.value.header) missing();
-  else draw(profile.value, ownerId);
+  else { draw(profile.value, ownerId); startRefresh(); }
   screen.removeAttribute?.('aria-busy');
+}
+
+// Every 30 s (as Stats), a quiet `player_profile` (the first load's arguments) redraws the header's live parts only:
+// focus, scroll, open sections and the history pages stay as they are. Skipped while the window is hidden or a
+// profile request (this one, or Match history loading more) is still out.
+const REFRESH_MS = 30000;
+let refreshing = false, refreshTimer = null;
+async function refreshHeader() {
+  if (refreshing || hist.busy || !updateHeader || document.visibilityState === 'hidden') return;
+  refreshing = true;
+  try {
+    const p = await quietCall('player_profile', { playerId });
+    if (p && typeof p === 'object' && p.ok !== false && p.header) updateHeader(p.header);
+  } catch { /* keep what shows; the next tick tries again */ }
+  refreshing = false;
+}
+function startRefresh() {
+  if (refreshTimer === null) refreshTimer = setInterval(refreshHeader, REFRESH_MS);
 }
 
 markCurrent();
