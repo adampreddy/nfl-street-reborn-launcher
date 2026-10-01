@@ -255,7 +255,7 @@ function move(direction) {
     return {n,distance,overlap,score:distance+cross*2};
   }).filter(x => x.distance > 4 && (!horizontal || x.overlap > 0));
   ranked.sort((a,b) => Number(b.overlap > 0)-Number(a.overlap > 0) || a.score-b.score);
-  // Only where a page asks for it (data-nav="rows": Settings, Mods): a control in the same column far below
+  // Only where a page asks for it (data-nav="rows": Settings, Mods, and Profile's Back button and card): a control in the same column far below
   // must not jump over nearer rows whose controls sit in another column (tabs on the left, each row's
   // switch on the right). When the column pick is more than a row farther than the nearest control wholly
   // above/below, the nearest row wins. Controls beside this one (gap < 0) never count, so it never moves

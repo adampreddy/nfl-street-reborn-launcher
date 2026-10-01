@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtInt, fmtPct, fmtRecord, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, youGrid, trendPoints, neighbours, backHref } from './stats-model.js';
+import { fmtInt, fmtPct, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, trendPoints, neighbours, backHref } from './stats-model.js';
 
 test('number formats', () => {
   assert.equal(fmtInt(1284), '1,284'); assert.equal(fmtInt(null), '—'); assert.equal(fmtInt(NaN), '—');
   assert.equal(fmtPct(0.63), '.630'); assert.equal(fmtPct(1), '1.000'); assert.equal(fmtPct(null), '—');
-  assert.equal(fmtRecord({ wins: 14, losses: 9, ties: 1 }), '14–9–1'); assert.equal(fmtRecord({ wins: 3, losses: 0, ties: 0 }), '3–0');
 });
 
 test('fmtElo: rated and unranked', () => {
@@ -55,11 +54,7 @@ test('totalLine is one plain line, empty without a total', () => {
   assert.equal(totalLine({ total: null }, 'passing'), '');
 });
 
-test('youGrid and trendPoints', () => {
-  const g = youGrid({ wins: 14, losses: 9, ties: 1, win_pct: 0.63, streak: 'W2', pts_per_game: 31.4, yds_per_game: 412 }, { abbrev: 'ATL', logo_url: '/l' });
-  assert.deepEqual(g.map((x) => x.label), ['Record', 'Win %', 'Streak', 'Pts / gm', 'Yds / gm', 'Plays as']);
-  assert.equal(g[5].value, 'ATL');
-  assert.equal(youGrid({ wins: 0, losses: 0, ties: 0, win_pct: null, streak: null, pts_per_game: null, yds_per_game: null }, null)[2].value, '—');
+test('trendPoints', () => {
   assert.equal(trendPoints([{ rating: 1000 }]), '');
   assert.equal(trendPoints([{ rating: 1000 }, { rating: 1100 }], 100, 50), '0,50 100,0');
 });
@@ -167,7 +162,7 @@ test('no Stats output counts or mentions a private match', () => {
     matchSubline(PRIV), matchSubline(PRIV, 'profile'),
     roleCards({ passer: PV, rusher: PV, receiver: PV, dl_lb: PV, ballhawk: PV, most_played: PV }),
     totalLine({ total: PT }, 'passing'), totalLine({ total: PT }, 'rushing'), totalLine({ total: PT }, 'receiving'), totalLine({ total: PT }, 'defense'),
-    fmtElo({ ...PRIV, rating: 1000, last_delta: 5, rank: 3 }), youGrid({ ...PRIV, wins: 1, losses: 0, ties: 0 }, null), youNumbers({ ...PRIV, wins: 1, losses: 0 }, null),
+    fmtElo({ ...PRIV, rating: 1000, last_delta: 5, rank: 3 }), youNumbers({ ...PRIV, wins: 1, losses: 0 }, null),
   ]);
   assert.ok(!/private/i.test(onPriv));
   assert.equal(matchSubline(PRIV), '');

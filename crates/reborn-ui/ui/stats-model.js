@@ -32,20 +32,6 @@ export function fmtPct(p) {
 }
 
 /**
- * Format record as "W–L" or "W–L–T", using en dash as separator.
- * Ties only appear when above 0.
- * @param {{wins: number, losses: number, ties: number}} record
- * @returns {string}
- */
-export function fmtRecord(record) {
-  const { wins, losses, ties } = record;
-  if (ties > 0) {
-    return `${wins}${EN_DASH}${losses}${EN_DASH}${ties}`;
-  }
-  return `${wins}${EN_DASH}${losses}`;
-}
-
-/**
  * Format Elo rating with value, change indicator, and leaderboard rank.
  * @param {{rating: number|null, last_delta: number, rank: number}|undefined} elo
  * @returns {{value: string, change: string, rank: string}}
@@ -308,36 +294,6 @@ export function totalLine(table, kind) {
   }
 
   return line;
-}
-
-/**
- * Build you grid (6 items).
- * @param {{wins, losses, ties, win_pct, streak, pts_per_game, yds_per_game}} summary
- * @param {{abbrev, logo_url}|null} playsAs
- * @returns {Array}
- */
-export function youGrid(summary, playsAs) {
-  const record = fmtRecord({ wins: summary.wins, losses: summary.losses, ties: summary.ties });
-  const winPct = summary.win_pct !== null && summary.win_pct !== undefined ? fmtPct(summary.win_pct) : EM_DASH;
-  const streak = summary.streak || EM_DASH;
-  const ptsPerGame = summary.pts_per_game !== null && summary.pts_per_game !== undefined ? summary.pts_per_game.toString() : EM_DASH;
-  const ydsPerGame = summary.yds_per_game !== null && summary.yds_per_game !== undefined ? fmtInt(summary.yds_per_game) : EM_DASH;
-  const playsAsValue = playsAs?.abbrev || EM_DASH;
-
-  const grid = [
-    { label: 'Record', value: record },
-    { label: 'Win %', value: winPct },
-    { label: 'Streak', value: streak },
-    { label: 'Pts / gm', value: ptsPerGame },
-    { label: 'Yds / gm', value: ydsPerGame },
-    { label: 'Plays as', value: playsAsValue }
-  ];
-
-  if (playsAs?.logo_url) {
-    grid[5].logo = playsAs.logo_url;
-  }
-
-  return grid;
 }
 
 /**

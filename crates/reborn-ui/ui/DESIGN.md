@@ -119,7 +119,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 
 - **Inter** (`fonts/InterVariable.woff2`) for everything. Anton and Saira are not used.
 - **Weights:** 500 UI text, 600 labels and values, 700 headline numbers and page titles. **Nothing above 700.**
-- **Sizes:** page title 30/1.1 at 700; section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
+- **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live, Online and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
 - Numbers use `font-variant-numeric: tabular-nums` (`.num`).
 - **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows.
 - **Section headers are 40px** (`.sec-head`), whatever they hold, so neighbouring cards start on one line.
@@ -229,6 +229,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 
 - The legacy sheets (`styles.css`, `launcher.css`, `product-ui.css`, `finish.css`, `shell.css`, `players.css`, `onboarding-polish.css`, `live-view.css`, and the old `play.css`, `stats.css`, `music.css`, `profile.css`) are retired and must stay gone.
 - Pages not redesigned in plan 4 (recovery, live, online, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens.
+- **The one allowed second stylesheet:** the Controllers page's pad art. `controller-preview.js` loads `art/controllers/<pad>/preview.css` at runtime (one `<link data-controller-art>` per pad folder) to place that pad's preview art. No other page or script adds a stylesheet.
 
 ## 9. Words
 
@@ -245,7 +246,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 - Server text through `innerHTML`, or an image from anywhere but `assetUrl()` and the Discord avatar prefix (`avatarSrc`).
 - Resizing, stretching or redrawing Adam's logos.
 - Content under a `position:fixed` rule inside `#main` (section 4).
-- A page that loads a retired sheet, or a second stylesheet.
+- A page that loads a retired sheet, or a second stylesheet (the only exception: the controller art `preview.css` in section 8).
 
 ## 11. Adding to the system
 
@@ -264,7 +265,7 @@ Run from the repo root with `node Tools/<name>.mjs`. The browser checks need Pla
 | `check-themed-shell` | the shell (sidebar, frame, hint bar) on a themed page and on `online.html` |
 | `check-save-lane` | the lane's own row, failure shown in the bar, pad reaches the bar, LB/RB and links blocked while changes are pending |
 | `check-menu` | menu anchored to its button, check on the current option, keys and pad, closing |
-| `check-tabs` | the sliding highlight uses transform only, at `--d2` |
+| `check-tabs` | the sliding highlight uses transform only, at `--d2`, and follows its tab when the window crosses the 900px rule |
 | `check-glass-pages` | Play and Settings in each look (glass, motion, controller mode, save bar), alignment, one logo size |
 | `check-glass-mods-music-controls` | Mods, Music and Controllers in each look, the Music save bar |
 | `check-stat-components` | the Stats and Profile components in `theme.css`: headers, rows, table grid, portrait, cover, reveal, live dot |
@@ -278,3 +279,19 @@ Run from the repo root with `node Tools/<name>.mjs`. The browser checks need Pla
 | `baseline-messages` | compares checker failure messages between two recorded runs |
 
 Also useful: `check-shell-chrome`, `check-shell-pages` (every page survives every core answer) and `audit-ui`.
+
+The page models have node unit tests. Run them all with the files as a glob (not the directory):
+
+```
+node --test crates/reborn-ui/ui/*.test.mjs Tools/lib/*.test.mjs
+```
+
+| Test | Covers |
+|---|---|
+| `profile-model.test.mjs` | Profile's model: overview columns, live card, status line, career tiles, leaderboard rows, private rooms dropped |
+| `settings-draft.test.mjs` | the Settings draft behind the save bar |
+| `stats-model.test.mjs` | Stats' model: numbers, Elo, trend, role cards, private rooms dropped |
+| `stats-rows.test.mjs` | match row models, the results-queue line and unsent counts |
+| `cover-color.test.mjs` | the cover's two colours from an avatar |
+| `outcome-words.test.mjs` | onboarding's outcome words (a bad disc or a missing patch is never reported as success) |
+| `Tools/lib/colour-tokens.test.mjs` | the colour-to-token mapping `extract-layout-css` uses |

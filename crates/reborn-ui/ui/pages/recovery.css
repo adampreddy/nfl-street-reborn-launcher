@@ -3,7 +3,6 @@
    Layout only: colours are theme tokens; shadows, glows, filters, transitions and font families are gone.
    Every selector starts with html:not(#_) so the old layout outranks theme.css's base rules: load this file on this page only.
    P4-29: the old body.shell h1 rule (28px/600) also styles the page title; kept on purpose, these pages are not redesigned (spec §9).
-   The old font of these was Anton or Saira (now Inter): html:not(#_) body.shell.page-setup #screen > h1
 */
 /* the old body text, inherited by #main and the page's dialogs (theme.css body.themed is 500 14px/1.45) */
 html:not(#_) body :where(#main,dialog:not(.menu):not(.update-dialog):not(.menu-pad-setup-dialog)){font-size:14px;font-weight:400;line-height:1.6;letter-spacing:normal;font-style:normal;text-transform:none}
@@ -56,8 +55,6 @@ html:not(#_) body.shell main{grid-row-start:main;grid-column-start:main;grid-row
 html:not(#_) .page-heading{margin-bottom:28px}
 html:not(#_) body.shell h1{font-style:normal;font-variant-caps:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-variant-east-asian:normal;font-variant-alternates:normal;font-variant-position:normal;font-weight:700;font-size:32px;line-height:1.15;letter-spacing:-0.035em;margin-top:0px;margin-right:0px;margin-bottom:12px;margin-left:0px}
 html:not(#_) body.shell .purpose{color:var(--fg-2);font-size:14px;margin-top:0px;margin-right:0px;margin-bottom:0px;margin-left:0px;max-width:640px}
-html:not(#_) .page-home .page-heading{display:none}
-html:not(#_) body.shell.page-home main{padding-top:0px;padding-right:0px;padding-bottom:24px;padding-left:0px;position:relative}
 html:not(#_) body.shell #screen{padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;min-height:0px;max-width:1100px}
 html:not(#_) body.shell:not(.page-home) #screen{display:grid;row-gap:20px;column-gap:20px}
 html:not(#_) .block{padding-top:20px;padding-right:0px;padding-bottom:20px;padding-left:0px;border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;border-top-width:1px;border-top-style:solid;border-top-color:var(--stroke);border-top-left-radius:0px;border-top-right-radius:0px;border-bottom-right-radius:0px;border-bottom-left-radius:0px;background-color:transparent;margin-top:0px;margin-right:0px;margin-bottom:20px;margin-left:0px;min-width:0px}
@@ -101,10 +98,9 @@ html:not(#_) .path-entry{display:flex;row-gap:8px;column-gap:8px}
 html:not(#_) .path-entry input{flex-grow:1;flex-shrink:1;flex-basis:0%;min-width:0px}
 html:not(#_) .block summary{cursor:pointer;font-weight:600;min-height:30px}
 html:not(#_) .block details{margin-top:20px}
-html:not(#_) .page-controls #screen,html:not(#_) .page-recovery #screen{max-width:900px}
+html:not(#_) .page-recovery #screen{max-width:900px}
 html:not(#_) details.core{margin-top:26px;font-size:11px;color:var(--fg-2)}
 html:not(#_) details.core summary{cursor:pointer;min-height:30px}
-html:not(#_) .page-home details.core{margin-top:20px;margin-right:48px;margin-bottom:0px;margin-left:48px}
 html:not(#_) details.core pre{max-height:240px;overflow-x:auto;overflow-y:auto;white-space-collapse:preserve;text-wrap:wrap;overflow-wrap:anywhere;background-color:var(--glass-1);padding-top:16px;padding-right:16px;padding-bottom:16px;padding-left:16px;border-top-width:1px;border-right-width:1px;border-bottom-width:1px;border-left-width:1px;border-top-style:solid;border-right-style:solid;border-bottom-style:solid;border-left-style:solid;border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);border-top-left-radius:6px;border-top-right-radius:6px;border-bottom-right-radius:6px;border-bottom-left-radius:6px;font-style:normal;font-variant-caps:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-variant-east-asian:normal;font-variant-alternates:normal;font-variant-position:normal;font-weight:400;font-size:11px;line-height:1.6}
 html:not(#_) .out-head{padding-top:8px;padding-right:0px;padding-bottom:8px;padding-left:0px;background-color:transparent;row-gap:16px;column-gap:16px}
 html:not(#_) .out-head button{margin-left:0px;font-size:11px}
@@ -112,12 +108,7 @@ html:not(#_) .out-head a{font-size:11px}
 html:not(#_) #steps{display:flex;flex-wrap:wrap;row-gap:6px;column-gap:6px;margin-top:0px;margin-right:0px;margin-bottom:24px;margin-left:0px}
 html:not(#_) #steps span{font-size:10px;border-top-width:1px;border-right-width:1px;border-bottom-width:1px;border-left-width:1px;border-top-style:solid;border-right-style:solid;border-bottom-style:solid;border-left-style:solid;border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);padding-top:6px;padding-right:9px;padding-bottom:6px;padding-left:9px;border-top-left-radius:4px;border-top-right-radius:4px;border-bottom-right-radius:4px;border-bottom-left-radius:4px;color:var(--fg-2)}
 html:not(#_) #steps span.now{color:var(--fg);background-color:color-mix(in srgb,var(--red) 13%,transparent);border-top-color:color-mix(in srgb,var(--red) 100%,transparent);border-right-color:color-mix(in srgb,var(--red) 100%,transparent);border-bottom-color:color-mix(in srgb,var(--red) 100%,transparent);border-left-color:color-mix(in srgb,var(--red) 100%,transparent)}
-html:not(#_) body.shell.page-setup #screen{padding-top:28px;padding-right:28px;padding-bottom:28px;padding-left:28px;background-color:var(--glass-1);border-top-width:1px;border-right-width:1px;border-bottom-width:1px;border-left-width:1px;border-top-style:solid;border-right-style:solid;border-bottom-style:solid;border-left-style:solid;border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);border-top-left-radius:10px;border-top-right-radius:10px;border-bottom-right-radius:10px;border-bottom-left-radius:10px;display:block}
-html:not(#_) .page-setup #screen h1{font-size:24px}
-html:not(#_) .page-setup #nav{margin-top:24px;max-width:1100px}
-html:not(#_) .page-setup #screen input[type="text"]{width:100%;margin-top:8px;margin-right:0px;margin-bottom:8px;margin-left:0px}
 html:not(#_) .loading{padding-top:40px;padding-right:40px;padding-bottom:40px;padding-left:40px;color:var(--fg-2)}
-html:not(#_) .page-home .loading{min-height:440px;display:grid;align-items:center;justify-items:center}
 html:not(#_) .breadcrumb{display:flex;row-gap:14px;column-gap:14px;color:var(--fg)}
 html:not(#_) .breadcrumb > span{color:var(--fg-3)}
 html:not(#_) body.shell main{padding-top:34px;padding-right:42px;padding-bottom:34px;padding-left:42px}
@@ -131,18 +122,8 @@ html:not(#_) .choice{border-top-left-radius:3px;border-top-right-radius:3px;bord
 html:not(#_) .choice.selected,html:not(#_) .choice:has(input:checked){border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-color:var(--glass-1)}
 html:not(#_) .choice .why{margin-left:29px;max-width:620px}
 html:not(#_) .facts th,html:not(#_) .facts td{padding-top:9px;padding-right:8px;padding-bottom:9px;padding-left:8px}
-html:not(#_) body.shell.page-home main{padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;position:relative;background-color:var(--glass-1)}
-html:not(#_) body.shell.page-home #screen{max-width:none;min-height:100%;position:relative;isolation:isolate;display:flex;flex-direction:column}
-html:not(#_) .page-home details.core{margin-top:0px;margin-right:0px;margin-bottom:0px;margin-left:0px;padding-top:10px;padding-right:48px;padding-bottom:10px;padding-left:48px;background-color:var(--glass-1)}
-html:not(#_) .page-home details.core:not([open]){position:absolute;right:22px;bottom:0px;padding-top:3px;padding-right:0px;padding-bottom:3px;padding-left:0px;background-color:initial;font-size:9px}
-html:not(#_) .page-home details.core:not([open]) summary{min-height:0px}
 html:not(#_) button,html:not(#_) .button{border-top-left-radius:3px;border-top-right-radius:3px;border-bottom-right-radius:3px;border-bottom-left-radius:3px}
 html:not(#_) button,html:not(#_) .button{min-height:36px;font-size:12px;padding-top:8px;padding-right:13px;padding-bottom:8px;padding-left:13px}
-html:not(#_) .page-controls .choice{padding-top:16px;padding-right:16px;padding-bottom:16px;padding-left:16px}
-html:not(#_) .page-controls .choice .what{font-size:14px}
-html:not(#_) .page-setup #steps span{border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;border-bottom-width:2px;border-bottom-style:solid;border-bottom-color:var(--stroke);border-top-left-radius:0px;border-top-right-radius:0px;border-bottom-right-radius:0px;border-bottom-left-radius:0px;padding-top:8px;padding-right:12px;padding-bottom:8px;padding-left:12px}
-html:not(#_) .page-setup #steps span.now{background-color:initial;border-top-color:color-mix(in srgb,var(--red) 100%,transparent);border-right-color:color-mix(in srgb,var(--red) 100%,transparent);border-bottom-color:color-mix(in srgb,var(--red) 100%,transparent);border-left-color:color-mix(in srgb,var(--red) 100%,transparent)}
-html:not(#_) body.shell.page-setup #screen{border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;border-top-width:1px;border-top-style:solid;border-top-color:var(--stroke);border-top-left-radius:0px;border-top-right-radius:0px;border-bottom-right-radius:0px;border-bottom-left-radius:0px;background-color:initial;padding-top:24px;padding-right:0px;padding-bottom:24px;padding-left:0px}
 @media (max-width: 1000px){html:not(#_) body.shell main{padding-top:26px;padding-right:26px;padding-bottom:26px;padding-left:26px}}
 @media (max-width: 760px){html:not(#_) .facts th{width:100px}}
 @media (max-width: 760px){html:not(#_) .path-entry{flex-wrap:wrap}}
@@ -160,78 +141,20 @@ html:not(#_) .choice.selected,html:not(#_) .choice:has(input:checked){background
 html:not(#_) .choice .what{font-weight:500}
 html:not(#_) .choice input{width:14px;height:14px}
 html:not(#_) .choice .why{font-size:11px;color:var(--fg-3)}
-html:not(#_) .page-controls .choice{padding-top:17px;padding-right:12px;padding-bottom:17px;padding-left:12px}
-html:not(#_) .page-controls .choice .what{font-size:13px}
 html:not(#_) button,html:not(#_) .button{font-weight:500;background-color:var(--glass-1);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);border-top-left-radius:1px;border-top-right-radius:1px;border-bottom-right-radius:1px;border-bottom-left-radius:1px}
-html:not(#_) .page-home details.core:not([open]){bottom:6px;right:20px;font-size:8px;color:var(--fg-3)}
 html:not(#_) .refusal,html:not(#_) .partial,html:not(#_) .said{border-top-left-radius:0px;border-top-right-radius:0px;border-bottom-right-radius:0px;border-bottom-left-radius:0px;background-color:transparent}
 html:not(#_) .said{color:var(--fg-2);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi)}
 html:not(#_) .partial{color:var(--fg-2)}
-html:not(#_) .page-setup .page-heading{display:none}
-html:not(#_) body.shell.page-setup #screen > h1{font-style:normal;font-variant-caps:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-variant-east-asian:normal;font-variant-alternates:normal;font-variant-position:normal;font-weight:400;font-size:30px;line-height:1.2;text-transform:uppercase;letter-spacing:0.02em;margin-bottom:12px}
-html:not(#_) .page-setup #nav{position:sticky;bottom:-34px;background-color:var(--glass-1);padding-top:16px;padding-right:0px;padding-bottom:16px;padding-left:0px;border-top-width:1px;border-top-style:solid;border-top-color:var(--stroke);z-index:3}
-html:not(#_) .page-setup #nav[hidden]{display:none}
 html:not(#_) body.gamepad-input .pad-focus{background-color:var(--glass-1);scroll-margin-top:18px;scroll-margin-right:18px;scroll-margin-bottom:18px;scroll-margin-left:18px}
 html:not(#_) body.gamepad-input label.choice:has(.pad-focus){background-color:var(--glass-1)}
 html:not(#_) body.gamepad-input label.choice .pad-focus{outline-style:none!important}
 html:not(#_) body.gamepad-input .pad-editing{background-color:var(--glass-2)}
 html:not(#_) body.shell main{scroll-behavior:auto;scrollbar-gutter:stable}
-html:not(#_) body.shell.page-home main{scrollbar-gutter:auto}
 html:not(#_) .choice:has(input:checked){box-shadow:inset 2px 0px var(--red)}
 html:not(#_) .refusal,html:not(#_) .said{animation-duration:180ms;animation-timing-function:cubic-bezier(0.2, 0.8, 0.2, 1);animation-delay:0s;animation-iteration-count:1;animation-direction:normal;animation-fill-mode:none;animation-play-state:running;animation-name:panel-reveal;animation-timeline:auto;animation-range-start:normal;animation-range-end:normal}
 @media (prefers-reduced-motion: reduce){html:not(#_) body.shell *,html:not(#_) body.shell ::before,html:not(#_) body.shell ::after{scroll-behavior:auto!important}}
-html:not(#_) body.shell.page-setup main{width:100%;max-width:690px;justify-self:center;padding-top:24px;padding-right:36px;padding-bottom:0px;padding-left:36px;background-color:transparent;scrollbar-gutter:stable}
-html:not(#_) .page-setup #steps{justify-content:center;row-gap:7px;column-gap:7px;margin-top:0px;margin-right:0px;margin-bottom:26px;margin-left:0px}
-html:not(#_) .page-setup #steps span{width:7px;height:7px;padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;border-top-left-radius:50%;border-top-right-radius:50%;border-bottom-right-radius:50%;border-bottom-left-radius:50%;background-color:var(--glass-3)}
-html:not(#_) .page-setup #steps span.now{background-color:var(--red);width:22px;border-top-left-radius:5px;border-top-right-radius:5px;border-bottom-right-radius:5px;border-bottom-left-radius:5px}
-html:not(#_) body.shell.page-setup #screen{padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial;min-height:0px;display:block}
-html:not(#_) body.shell.page-setup #screen > h1{font-style:normal;font-variant-caps:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-variant-east-asian:normal;font-variant-alternates:normal;font-variant-position:normal;font-weight:700;font-size:29px;line-height:1.2;text-transform:none;letter-spacing:-0.035em;text-align:center;margin-top:0px;margin-right:0px;margin-bottom:12px;margin-left:0px}
-html:not(#_) .page-setup #screen > p{font-size:13px;color:var(--fg-2);text-align:center;font-weight:400;margin-top:0px;margin-right:0px;margin-bottom:24px;margin-left:0px;line-height:1.6}
-html:not(#_) .page-setup .choice{display:grid;grid-template-columns:22px minmax(0px, 1fr);row-gap:4px;column-gap:10px;border-top-width:1px!important;border-right-width:1px!important;border-bottom-width:1px!important;border-left-width:1px!important;border-top-style:solid!important;border-right-style:solid!important;border-bottom-style:solid!important;border-left-style:solid!important;border-top-color:var(--stroke)!important;border-right-color:var(--stroke)!important;border-bottom-color:var(--stroke)!important;border-left-color:var(--stroke)!important;border-top-left-radius:7px;border-top-right-radius:7px;border-bottom-right-radius:7px;border-bottom-left-radius:7px;background-color:var(--glass-2);padding-top:16px;padding-right:18px;padding-bottom:16px;padding-left:18px;margin-top:9px;margin-right:0px;margin-bottom:9px;margin-left:0px}
-html:not(#_) .page-setup .choice input{grid-column-start:1;grid-column-end:auto;grid-row-start:1;grid-row-end:span 2;margin-top:3px;margin-right:0px;margin-bottom:0px;margin-left:0px;align-self:center}
-html:not(#_) .page-setup .choice .what{grid-column-start:2;grid-column-end:auto;font-size:14px;font-weight:600}
-html:not(#_) .page-setup .choice .why{grid-column-start:2;grid-column-end:auto;margin-top:0px;margin-right:0px;margin-bottom:0px;margin-left:0px;font-size:12px;line-height:1.5;color:var(--fg-2)}
-html:not(#_) .page-setup .choice:has(input:checked){border-top-color:color-mix(in srgb,var(--red) 100%,transparent)!important;border-right-color:color-mix(in srgb,var(--red) 100%,transparent)!important;border-bottom-color:color-mix(in srgb,var(--red) 100%,transparent)!important;border-left-color:color-mix(in srgb,var(--red) 100%,transparent)!important;background-color:var(--glass-3)}
-html:not(#_) .page-setup .choice:hover{background-color:var(--glass-3)}
-html:not(#_) .page-setup .facts th{width:120px}
-html:not(#_) .page-setup .facts th,html:not(#_) .page-setup .facts td{font-weight:400}
-html:not(#_) .page-setup .partial,html:not(#_) .page-setup .refusal{font-size:12px;font-weight:400;border-top-left-radius:4px;border-top-right-radius:4px;border-bottom-right-radius:4px;border-bottom-left-radius:4px}
-html:not(#_) .page-setup #nav{position:sticky;bottom:0px;display:grid;grid-template-columns:auto minmax(0px, 1fr) auto;align-items:center;row-gap:12px;column-gap:12px;padding-top:18px;padding-right:0px;padding-bottom:18px;padding-left:0px;margin-top:24px;margin-right:0px;margin-bottom:0px;margin-left:0px;background-color:var(--glass-1);border-top-width:0px;border-right-width:0px;border-bottom-width:0px;border-left-width:0px;border-top-style:initial;border-right-style:initial;border-bottom-style:initial;border-left-style:initial;border-top-color:initial;border-right-color:initial;border-bottom-color:initial;border-left-color:initial}
-html:not(#_) .page-setup #nav button{min-height:42px;border-top-left-radius:5px;border-top-right-radius:5px;border-bottom-right-radius:5px;border-bottom-left-radius:5px;padding-top:10px;padding-right:24px;padding-bottom:10px;padding-left:24px;font-weight:600}
-html:not(#_) .page-setup #next{min-width:142px}
-html:not(#_) .page-setup #back{background-color:initial;border-top-color:transparent;border-right-color:transparent;border-bottom-color:transparent;border-left-color:transparent;color:var(--fg-2)}
-html:not(#_) .page-setup details.core{margin-top:10px;font-size:10px;color:var(--fg-3)}
-@media (max-width: 1000px){html:not(#_) body.shell.page-setup main{padding-top:16px;padding-right:28px;padding-bottom:0px;padding-left:28px}}
-@media (max-width: 1000px){html:not(#_) .page-setup #steps{margin-bottom:20px}}
-@media (max-height: 650px){html:not(#_) body.shell.page-setup #screen > h1{font-size:25px}}
-@media (max-height: 650px){html:not(#_) .page-setup .choice{padding-top:12px;padding-right:16px;padding-bottom:12px;padding-left:16px}}
-@media (max-height: 650px){html:not(#_) .page-setup #nav{margin-top:16px;padding-top:12px;padding-right:0px;padding-bottom:12px;padding-left:0px}}
-html:not(#_) .page-setup #screen > h1[tabindex="-1"]:focus{outline-style:none!important}
-html:not(#_) .page-setup .choice .what::first-letter{text-transform:uppercase}
-html:not(#_) body.shell.page-setup main{max-width:640px;padding-top:38px}
-html:not(#_) .page-setup .page-heading{display:none!important}
-html:not(#_) .page-setup #steps{margin-bottom:32px}
-html:not(#_) .page-setup #steps span.now{background-color:var(--fg);background-image:none}
-html:not(#_) body.shell.page-setup #screen > h1{font-size:30px;font-weight:650;letter-spacing:-0.04em}
-html:not(#_) .page-setup .choice{border-top-left-radius:10px;border-top-right-radius:10px;border-bottom-right-radius:10px;border-bottom-left-radius:10px;background-color:var(--glass-2);padding-top:18px;padding-right:20px;padding-bottom:18px;padding-left:20px;margin-top:10px;margin-right:0px;margin-bottom:10px;margin-left:0px}
-html:not(#_) .page-setup .choice:has(input:checked){background-color:var(--glass-3);border-top-color:var(--stroke-hi)!important;border-right-color:var(--stroke-hi)!important;border-bottom-color:var(--stroke-hi)!important;border-left-color:var(--stroke-hi)!important}
-html:not(#_) .page-setup .choice:hover{background-color:var(--glass-3)}
-html:not(#_) .page-setup #nav{background-color:var(--glass-1)}
-html:not(#_) .page-setup #nav{margin-top:30px}
-@media (max-height: 650px){html:not(#_) body.shell.page-setup main{padding-top:12px}}
-@media (max-height: 650px){html:not(#_) .page-setup #steps{margin-bottom:18px}}
-@media (max-height: 650px){html:not(#_) .page-setup .choice{padding-top:12px;padding-right:16px;padding-bottom:12px;padding-left:16px}}
-@media (max-height: 650px){html:not(#_) .page-setup #nav{margin-top:16px}}
-html:not(#_) body.shell.page-setup main{max-width:720px;padding-top:34px}
-html:not(#_) body.shell.page-setup #screen > h1{max-width:600px;margin-top:0px;margin-right:auto;margin-bottom:14px;margin-left:auto;font-size:32px;line-height:1.22}
-html:not(#_) .page-setup #screen > p{font-size:14px;margin-bottom:30px}
-html:not(#_) .page-setup .choice{padding-top:20px;padding-right:22px;padding-bottom:20px;padding-left:22px;border-top-left-radius:12px;border-top-right-radius:12px;border-bottom-right-radius:12px;border-bottom-left-radius:12px}
-@media (max-height: 650px){html:not(#_) body.shell.page-setup main{padding-top:12px}}
-@media (max-height: 650px){html:not(#_) body.shell.page-setup #screen > h1{font-size:28px}}
-@media (max-height: 650px){html:not(#_) .page-setup .choice{padding-top:14px;padding-right:18px;padding-bottom:14px;padding-left:18px}}
 html:not(#_) .breadcrumb{letter-spacing:0.1em;color:var(--fg-3)}
 html:not(#_) body.shell:not(.page-setup) main{background-color:transparent;padding-top:32px;padding-right:36px;padding-bottom:40px;padding-left:36px}
-html:not(#_) body.shell.page-home main{padding-top:0px;padding-right:0px;padding-bottom:24px;padding-left:0px}
 html:not(#_) body.shell:not(.page-setup) .page-heading{margin-bottom:28px}
 html:not(#_) body.shell:not(.page-setup) .purpose{font-size:13px;line-height:1.65;color:var(--fg-2);max-width:640px}
 html:not(#_) body.shell:not(.page-setup) #screen{row-gap:24px;column-gap:24px}
@@ -263,9 +186,7 @@ html:not(#_) body.shell .partial{border-top-color:color-mix(in srgb,var(--warn) 
 html:not(#_) body.shell .said{border-top-color:color-mix(in srgb,var(--ok) 100%,transparent);border-right-color:color-mix(in srgb,var(--ok) 100%,transparent);border-bottom-color:color-mix(in srgb,var(--ok) 100%,transparent);border-left-color:color-mix(in srgb,var(--ok) 100%,transparent);background-color:var(--glass-3);color:var(--fg-2)}
 html:not(#_) body.shell details > summary{line-height:1.6;padding-top:8px;padding-right:0px;padding-bottom:8px;padding-left:0px;cursor:pointer;font-size:12px}
 html:not(#_) body.shell details[open] > summary{margin-bottom:12px}
-html:not(#_) .page-controls .choice .why{display:block;margin-top:6px}
 @media (max-width: 1000px){html:not(#_) body.shell:not(.page-setup) main{padding-top:24px;padding-right:24px;padding-bottom:24px;padding-left:24px}}
-@media (max-width: 1000px){html:not(#_) body.shell.page-home main{padding-top:0px;padding-right:0px;padding-bottom:20px;padding-left:0px}}
 @media (max-width: 1000px){html:not(#_) body.shell .facts th{width:112px}}
 @media (max-width: 650px){html:not(#_) body.shell.page-recovery .mod{grid-template-columns:1fr}}
 @media (max-width: 650px){html:not(#_) .path-entry{flex-wrap:wrap}}
@@ -285,15 +206,6 @@ html:not(#_) body.shell:not(.page-setup) .purpose{color:var(--fg-2);max-width:76
 html:not(#_) body.shell:not(.page-setup) input:not([type="radio"]):not([type="checkbox"]):not([type="range"]),html:not(#_) body.shell:not(.page-setup) select{border-top-width:1px;border-right-width:1px;border-bottom-width:1px;border-left-width:1px;border-top-style:solid;border-right-style:solid;border-bottom-style:solid;border-left-style:solid;border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-color:var(--glass-3);color:var(--fg);border-top-left-radius:7px;border-top-right-radius:7px;border-bottom-right-radius:7px;border-bottom-left-radius:7px;min-height:40px;padding-top:9px;padding-right:12px;padding-bottom:9px;padding-left:12px;font-style:normal;font-variant-caps:normal;font-variant-ligatures:normal;font-variant-numeric:normal;font-variant-east-asian:normal;font-variant-alternates:normal;font-variant-position:normal;font-weight:400;font-size:13px;line-height:1.4}
 html:not(#_) body.shell:not(.page-setup) button:not(.btn):not(.look-switch):not(.play):not(.mapping-key):not(.store-open),html:not(#_) body.shell:not(.page-setup) a.button{border-top-left-radius:7px;border-top-right-radius:7px;border-bottom-right-radius:7px;border-bottom-left-radius:7px;background-color:var(--glass-3);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);color:var(--fg);font-weight:500}
 html:not(#_) body.shell:not(.page-setup) button:not(.btn):not(.look-switch):hover:not(:disabled):not(.store-open){border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-color:var(--glass-3)}
-html:not(#_) body.shell.page-setup main,html:not(#_) body.shell.page-setup #nav{background-color:transparent}
-html:not(#_) body.shell.page-setup button:not(.btn):not(.look-switch){background-color:var(--glass-2);border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);color:var(--fg)}
-html:not(#_) body.shell.page-setup button:not(.btn):not(.look-switch):hover:not(:disabled){background-color:var(--glass-3);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi)}
-html:not(#_) body.shell.page-setup #next{background-color:var(--fg);color:var(--surface-solid);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-image:none}
-html:not(#_) body.shell.page-setup #next:hover:not(:disabled){background-color:var(--fg);color:var(--surface-solid);background-image:none}
-html:not(#_) body.shell.page-setup input:not([type="radio"]):not([type="checkbox"]):not([type="range"]),html:not(#_) body.shell.page-setup select{background-color:var(--glass-3);border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);color:var(--fg)}
-html:not(#_) body.shell.page-setup .choice:hover{background-color:var(--glass-3)}
-html:not(#_) body.shell.page-setup .choice .what,html:not(#_) body.shell.page-setup h1,html:not(#_) body.shell.page-setup h2{color:var(--fg)}
-html:not(#_) body.shell.page-setup .note{color:var(--fg-2)}
 html:not(#_) #menu-pad-setup[hidden]{display:none!important}
 @keyframes panel-reveal { 
   0% { opacity: 0.35; }

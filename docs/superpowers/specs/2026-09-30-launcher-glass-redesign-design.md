@@ -418,7 +418,7 @@ Adam: *"it needs to be like something that encompasses everything online gamepla
 - **`stats-model.js` / `stats-rows.js`:** change only if required, and keep their tests passing.
 - **Commands are the contract:** every value on a page comes from a command. Nothing is invented. The mockup's sample numbers are placeholders only.
 - **Existing checks** stay green or are updated on purpose:
-  - `node --test crates/reborn-ui/ui/stats-model.test.mjs crates/reborn-ui/ui/stats-rows.test.mjs crates/reborn-ui/ui/cover-color.test.mjs`
+  - `node --test crates/reborn-ui/ui/stats-model.test.mjs crates/reborn-ui/ui/stats-rows.test.mjs crates/reborn-ui/ui/cover-color.test.mjs crates/reborn-ui/ui/profile-model.test.mjs`
   - `node Tools/check-shell-pages.mjs`
   - `node Tools/check-page-call-args.mjs`
   - `node Tools/run-browser-tests.mjs`
