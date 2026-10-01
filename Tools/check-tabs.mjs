@@ -41,6 +41,11 @@ try{
  assert.ok(mid>from+1&&mid<to-1,`it slides: mid-way x ${mid} lies between ${from} and ${to}`);
  await page.waitForTimeout(900);
  assert.ok(await gap()<1.5,'it settles on Files & storage');
+ // the window crosses the 900px rule (tab padding 14 -> 10px): the highlight follows the tab's new box
+ await page.setViewportSize({width:800,height:560});await page.waitForTimeout(400);
+ assert.ok(await gap()<1.5,'800 wide: the highlight still sits under Files & storage');
+ await page.setViewportSize({width:1280,height:800});await page.waitForTimeout(400);
+ assert.ok(await gap()<1.5,'back at 1280: the highlight still sits under Files & storage');
  assert.deepEqual(await page.locator('.tab').evaluateAll(ns=>ns.map(n=>n.getAttribute('aria-pressed'))),['false','false','true']);
  assert.equal(await page.locator('.tab-ind').count(),1,'one highlight');
  // keyboard: arrows move focus between tabs (Enter/Space picks), Home/End jump

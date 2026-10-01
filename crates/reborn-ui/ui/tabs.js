@@ -45,14 +45,21 @@ function place(group, bar, ind) {
     ind.classList.remove("still");
     ind.style.transform = at(to);
   });
-  // A web font that arrives late changes every tab's width: re-measure and snap (no glide) to the new box.
-  document.fonts?.ready.then(() => {
-    if (!bar.isConnected) return;
+  // A web font that arrives late, or the window crossing the 900px rule (tab padding 14 -> 10px), changes every tab's
+  // width after this measure: re-measure and snap (no glide) to the new box.
+  let snapped = to;
+  const snap = () => {
+    if (!bar.isConnected) { observer?.disconnect(); return; }
     const now = { x: on.offsetLeft, w: on.offsetWidth };
-    if (now.x === to.x && now.w === to.w) return;
+    if (now.x === snapped.x && now.w === snapped.w) return;
+    snapped = now;
     ind.classList.add("still");
     ind.style.transform = at(now);
     last.set(group, now);
     requestAnimationFrame(() => requestAnimationFrame(() => ind.classList.remove("still")));
-  });
+  };
+  const observer = typeof ResizeObserver === "function" ? new ResizeObserver(snap) : null;
+  observer?.observe(bar);
+  observer?.observe(on);
+  document.fonts?.ready.then(snap);
 }

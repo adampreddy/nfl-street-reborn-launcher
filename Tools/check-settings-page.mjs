@@ -284,6 +284,34 @@ try{
   }
  }
  {
+  // The highlight sits exactly under the active tab (indicator box vs tab box, 1.5px) at 800x560 and 1280x800: opened
+  // on Files & storage, and after picking it from General (the strip may scroll to show it).
+  const box=page=>page.evaluate(()=>{const i=document.querySelector('.tab-ind').getBoundingClientRect(),t=document.querySelector('.tabs .tab[aria-pressed="true"]').getBoundingClientRect();
+   return {d:Math.max(Math.abs(i.left-t.left),Math.abs(i.right-t.right),Math.abs(i.top-t.top),Math.abs(i.bottom-t.bottom)),i:[i.left,i.right,i.top,i.bottom].map(Math.round),t:[t.left,t.right,t.top,t.bottom].map(Math.round),tab:document.querySelector('.tabs .tab[aria-pressed="true"]').textContent};});
+  const settled=async(page,what)=>{await page.waitForTimeout(700);const b=await box(page);assert.ok(b.d<1.5,`${what}: the highlight sits under ${b.tab} ${JSON.stringify(b)}`);};
+  for(const viewport of [{width:800,height:560},{width:1280,height:800}]){
+   const v=`${viewport.width}x${viewport.height}`;
+   let page=await open('#files',{},viewport);
+   await settled(page,`${v} opened on Files & storage`);
+   await page.context().close();
+   page=await open('',{},viewport);
+   await settled(page,`${v} General`);
+   await page.getByRole('button',{name:'Files & storage',exact:true}).click();
+   await settled(page,`${v} picked Files & storage`);
+   await page.getByRole('button',{name:'Graphics',exact:true}).click();
+   await settled(page,`${v} back to Graphics`);
+   await page.context().close();
+  }
+  // The window resized across the 900px rule (tab padding 14 -> 10px): the highlight follows the tab's new box.
+  const page=await open('#files',{},{width:1280,height:800});
+  await settled(page,'1280x800 on Files & storage');
+  await page.setViewportSize({width:800,height:560});
+  await settled(page,'resized to 800x560');
+  await page.setViewportSize({width:1280,height:800});
+  await settled(page,'resized back to 1280x800');
+  await page.context().close();
+ }
+ {
   const page=await open('',{},{width:800,height:560});
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no sideways scroll at 800x560');
   await page.screenshot({path:path.join(out,'settings-800.png')});
