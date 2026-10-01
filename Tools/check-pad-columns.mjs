@@ -8,6 +8,7 @@ import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import * as StatsF from './fixtures/stats-fixtures.mjs';
 const root=path.resolve(import.meta.dirname,'..'),ui=path.join(root,'crates/reborn-ui/ui');
 const source=readFileSync(path.join(root,'Tools/check-shell-pages.mjs'),'utf8');
 const fixture=vm.runInNewContext(source.slice(source.indexOf('const FULL ='),source.indexOf('// Every field null'))+'\nFULL');
@@ -59,8 +60,8 @@ try{
   // Stats, Profile & sync: Up from "Send results now" stays in its column; "Sign out", beside it and a
   // little higher, is not "above".
   const page=await open('stats.html');
-  await page.locator('details.stats-account').waitFor();
-  await page.locator('details.stats-account').evaluate(d=>{d.open=true;});
+  await page.locator('details.st-account').waitFor();
+  await page.locator('details.st-account').evaluate(d=>{d.open=true;});
   const send=page.getByRole('button',{name:'Send results now',exact:true});
   await send.waitFor();await send.focus();
   await press(page,12);
@@ -68,6 +69,35 @@ try{
   assert.notEqual(got,'Sign out','Up from Send results now never goes sideways to Sign out');
   assert.match(got,/^Profile & sync/,`Up from Send results now goes up its column (got "${got}")`);
   await page.context().close();
+ }
+ {
+  // Stats, Your matches (plain column moves, no data-nav opt-in): the D-pad walks the list row by row. Down from a
+  // closed best of 3 skips its (inert) games; A opens it and Down then lands on Game 1; the last row goes down to
+  // the pager inside the card; Right from a row crosses to the Your players row beside it.
+  const saved=fixture.stats_dashboard;fixture.stats_dashboard=StatsF.dashboard();
+  const page=await open('stats.html');
+  const key=()=>page.evaluate(()=>document.activeElement?.getAttribute('data-key'));
+  const m1=page.locator('[data-key="match-m-01"]');
+  await m1.waitFor();await m1.focus();
+  await press(page,13);
+  assert.equal(await key(),'match-m-02','Down from a closed best of 3 skips its games');
+  await press(page,12);
+  assert.equal(await key(),'match-m-01','Up returns to the best of 3');
+  await press(page,0);
+  assert.equal(await m1.getAttribute('aria-expanded'),'true','A opens the best of 3');
+  await page.waitForFunction(()=>document.getElementById('games-m-01').getBoundingClientRect().height>100,null,{polling:100});
+  await press(page,13);
+  assert.equal(await key(),'game-g-011','Down from an open best of 3 lands on Game 1');
+  await press(page,13);await press(page,13);await press(page,13);
+  assert.equal(await key(),'match-m-02','Down past Game 3 reaches the next match');
+  await page.locator('[data-key="match-m-15"]').focus();
+  await press(page,13);
+  assert.equal(await key(),'older','the last row goes down to the pager (Older; Newer is disabled on page 1)');
+  await page.locator('[data-key="match-m-12"]').focus();
+  await press(page,15);
+  assert.match(String(await key()),/^card-/,'Right from a match row goes to the Your players row beside it');
+  await page.context().close();
+  fixture.stats_dashboard=saved;
  }
  {
   // Mods asks for rows too (data-nav="rows"): Down from Refresh, at the right end of the toolbar, stops at
