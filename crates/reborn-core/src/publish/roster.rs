@@ -35,6 +35,8 @@ pub struct RosterRequest<'a> {
     pub key: Option<&'a Path>,
     pub release_version: Option<&'a str>,
     pub release_sequence: Option<u64>,
+    /// What changed, for the players' update card.
+    pub notes: Option<&'a str>,
     pub apply: bool,
     /// The site's bearer token, for a login-only export. Resolved by the caller.
     pub token: Option<&'a str>,
@@ -177,6 +179,7 @@ pub fn publish_roster(http: &dyn Http, req: &RosterRequest<'_>, observer: &dyn S
                 key: req.key,
                 release_version: req.release_version,
                 release_sequence: req.release_sequence,
+                notes: req.notes,
                 apply: req.apply,
             };
             return Ok(match republish_pinning(&carry, sink)? {
@@ -194,6 +197,7 @@ pub fn publish_roster(http: &dyn Http, req: &RosterRequest<'_>, observer: &dyn S
         key: req.key,
         release_version: req.release_version,
         release_sequence: req.release_sequence,
+        notes: req.notes,
         apply: req.apply,
     };
     Ok(match republish_pinning(&carry, sink)? {
@@ -356,7 +360,7 @@ mod tests {
         let spec = ComponentSpec::new(ComponentId::Runtime, "1.0.2", 1).unwrap();
         assert!(publish_component(&ComponentRequest { root: &tree, spec, origin: &origin, apply: true }, &RunToCompletion, &mut |_| {}).unwrap().is_done());
         let pins = [Pin { id: ComponentId::Runtime, version: "1.0.2".into() }];
-        assert!(release(&ReleaseRequest { origin: &origin, version: "3.0.0", sequence: 3, key: &written.publisher_path, pins: &pins, apply: true }, &mut |_| {}).unwrap().is_done());
+        assert!(release(&ReleaseRequest { origin: &origin, version: "3.0.0", sequence: 3, key: &written.publisher_path, pins: &pins, notes: None, apply: true }, &mut |_| {}).unwrap().is_done());
         (dir, origin, written.publisher_path)
     }
 
@@ -370,7 +374,7 @@ mod tests {
         let token = "s3cr3t-token-value";
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: "2026.09.06", sequence: None,
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: Some(token),
+            key: Some(&key), release_version: None, release_sequence: None, notes: None, apply: true, token: Some(token),
         };
         let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         let push = match outcome { Outcome::Done(p) => p, o => panic!("{o:?}") };
@@ -392,7 +396,7 @@ mod tests {
         let mut lines = Vec::new();
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: "2026.09.07", sequence: None,
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+            key: Some(&key), release_version: None, release_sequence: None, notes: None, apply: true, token: None,
         };
         let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         assert!(outcome.refused().is_some());
@@ -410,7 +414,7 @@ mod tests {
         let from = file.to_string_lossy().into_owned();
         let req = RosterRequest {
             from: &from, origin: &origin, version: "2026.09.06", sequence: Some(5),
-            key: None, release_version: None, release_sequence: None, apply: true, token: None,
+            key: None, release_version: None, release_sequence: None, notes: None, apply: true, token: None,
         };
         let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         let push = match outcome { Outcome::Done(p) => p, o => panic!("{o:?}") };
@@ -444,7 +448,7 @@ mod tests {
         let mut lines = Vec::new();
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: "2026.09.06", sequence: None,
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+            key: Some(&key), release_version: None, release_sequence: None, notes: None, apply: true, token: None,
         };
         let outcome = publish_roster(&Locked, &req, &RunToCompletion, &mut |e: Event| lines.push(e.line)).unwrap();
         assert!(outcome.refused().is_some());
@@ -471,7 +475,7 @@ mod tests {
         let site = FakeSite { url: "https://site.test/export".into(), body: roster_zip(), seen_bearer: Default::default() };
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: ok_version, sequence: Some(1),
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+            key: Some(&key), release_version: None, release_sequence: None, notes: None, apply: true, token: None,
         };
         let outcome = publish_roster(&site, &req, &RunToCompletion, &mut |_| {}).unwrap();
         assert!(outcome.is_done(), "{outcome:?}");
@@ -485,7 +489,7 @@ mod tests {
         let junk_site = FakeSite { url: "https://site.test/export".into(), body: b"<html>404</html>".to_vec(), seen_bearer: Default::default() };
         let req = RosterRequest {
             from: "https://site.test/export", origin: &origin, version: refused_version, sequence: Some(2),
-            key: Some(&key), release_version: None, release_sequence: None, apply: true, token: None,
+            key: Some(&key), release_version: None, release_sequence: None, notes: None, apply: true, token: None,
         };
         let outcome = publish_roster(&junk_site, &req, &RunToCompletion, &mut |_| {}).unwrap();
         assert!(outcome.refused().is_some());

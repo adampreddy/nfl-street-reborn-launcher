@@ -138,6 +138,13 @@ pub struct Release {
 
     /// Component name to its pinned manifest.
     pub components: BTreeMap<String, PinnedComponent>,
+
+    /// What changed, in the publisher's words, shown on the update card.
+    /// Signed with everything else. Optional both ways: a launcher that
+    /// predates it ignores the field, and a release without one is shown as
+    /// the list of components it carries, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 /// A component manifest pinned by hash from the signed release.

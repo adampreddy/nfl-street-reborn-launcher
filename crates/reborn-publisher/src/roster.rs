@@ -269,6 +269,7 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
             key: key.as_deref(),
             release_version: None,
             release_sequence: None,
+            notes: None,
             apply: !dry_run,
             token: None,
         };

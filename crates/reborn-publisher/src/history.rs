@@ -207,6 +207,7 @@ pub fn rollback_plan(component: String, version: String) -> Result<serde_json::V
             sequence: facts.sequence,
             key: &key,
             pins: &facts.pins,
+            notes: None,
             apply: false,
         };
         match release(&req, sink)? {
@@ -284,6 +285,7 @@ pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result
             sequence: facts.sequence,
             key: &key,
             pins: &facts.pins,
+            notes: None,
             apply: !dry_run,
         };
         let signed = match release(&req, sink)? {

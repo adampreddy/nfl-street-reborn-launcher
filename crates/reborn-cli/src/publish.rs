@@ -90,6 +90,13 @@ pub enum PublishCommand {
         /// manifest must already be in the origin from `publish component`.
         #[arg(long = "component", value_name = "NAME=VERSION")]
         components: Vec<String>,
+        /// What changed, in your words, shown to players on the update card.
+        /// Signed with the release. One line per change.
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+        /// The same, read from a text file: easier for several lines.
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
         /// Write and sign. Without this everything is checked and nothing is
         /// written.
         #[arg(long)]
@@ -120,6 +127,13 @@ pub enum PublishCommand {
         /// Defaults to one above the release already served.
         #[arg(long)]
         release_sequence: Option<u64>,
+        /// What changed, in your words, shown to players on the update card.
+        /// Signed with the release. One line per change.
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+        /// The same, read from a text file: easier for several lines.
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
         /// Write and sign. Without this everything is fetched and checked and
         /// nothing in the origin changes.
         #[arg(long)]
@@ -366,8 +380,11 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             sequence,
             key,
             components,
+            notes,
+            notes_file,
             apply,
         } => {
+            let notes = read_notes(notes, notes_file.as_deref())?;
             if components.is_empty() {
                 eprintln!("--component NAME=VERSION is required at least once. A release pinning");
                 eprintln!("nothing is refused by the builder and useless to a client.");
@@ -385,7 +402,7 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
                 };
                 pins.push(Pin { id, version: ver.to_string() });
             }
-            let req = ReleaseRequest { origin: &origin, version: &version, sequence, key: &key, pins: &pins, apply };
+            let req = ReleaseRequest { origin: &origin, version: &version, sequence, key: &key, pins: &pins, notes: notes.as_deref(), apply };
             Ok(exit_of(&release(&req, &mut sink)?))
         }
         PublishCommand::Roster {
@@ -396,9 +413,12 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             key,
             release_version,
             release_sequence,
+            notes,
+            notes_file,
             apply,
             token_file,
         } => {
+            let notes = read_notes(notes, notes_file.as_deref())?;
             // The token: a file first, then the vault. Its value is never
             // printed; only whether one was sent.
             let token: Option<String> = match token_file.as_deref() {
@@ -417,6 +437,7 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
                 key: key.as_deref(),
                 release_version: release_version.as_deref(),
                 release_sequence,
+                notes: notes.as_deref(),
                 apply,
                 token: token.as_deref(),
             };
@@ -692,4 +713,14 @@ fn store_one_line_secret(path: &Path, store: impl FnOnce(&str) -> reborn_core::R
     }
     store(value)?;
     Ok(true)
+}
+
+/// `--notes` as given, or `--notes-file` read whole. Neither is no notes.
+fn read_notes(notes: Option<String>, file: Option<&std::path::Path>) -> reborn_core::Result<Option<String>> {
+    match file {
+        Some(p) => std::fs::read_to_string(p)
+            .map(Some)
+            .map_err(|e| reborn_core::Error::Io { path: p.to_path_buf(), source: e }),
+        None => Ok(notes),
+    }
 }

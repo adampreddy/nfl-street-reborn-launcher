@@ -133,11 +133,13 @@ impl Default for CheckRequest<'_> {
     }
 }
 
-/// The signed release's own version and sequence.
+/// The signed release's own version and sequence, and its notes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseTag {
     pub version: String,
     pub sequence: u64,
+    /// The publisher's words for the update card, when the release has any.
+    pub notes: Option<String>,
 }
 
 /// What a check found for one component.
@@ -558,6 +560,7 @@ impl<'a> Updater<'a> {
             release: ReleaseTag {
                 version: release.version.clone(),
                 sequence: release.sequence,
+                notes: release.notes.clone(),
             },
             signed_bytes: fetched.bytes.len() as u64,
             carried: release.components.keys().cloned().collect(),
@@ -1124,7 +1127,7 @@ mod tests {
         let asked = [ComponentId::Runtime, ComponentId::Textures, ComponentId::Launcher];
         let check = updater.check(&quick(&asked)).unwrap();
 
-        assert_eq!(check.release, ReleaseTag { version: "3.0.0".into(), sequence: 1 });
+        assert_eq!(check.release, ReleaseTag { version: "3.0.0".into(), sequence: 1, notes: None });
         assert_eq!(check.carried, vec!["runtime".to_string()]);
         assert!(matches!(check.component(ComponentId::Runtime).unwrap().state, ComponentState::Available(_)));
         assert!(matches!(check.component(ComponentId::Textures).unwrap().state, ComponentState::NotCarried));
