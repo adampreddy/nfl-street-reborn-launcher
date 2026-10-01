@@ -1,19 +1,20 @@
 // The public profile, the online player hub (spec §8.7): one player's ONLINE games (`player_profile`), opened as
 // profile.html?player=<uuid>[#section]. Top to bottom: Back · the profile card (the cover from the avatar's colours,
 // avatar, name, status, Joined, Plays as, the summary line, Share profile / View on web, the live card while they
-// play) · the overview (Elo | Record | Last 10 games) · Match history beside Career, Leaderboard and Records.
+// play) · the overview (Elo | Record | Last 10 games) · Match history beside Career, Leaderboard and Records · Full
+// stats (one table at a time) · More stats (the old profile's other sections, kept).
 // A piece whose data the server does not send yet is left out, never drawn as a placeholder (spec §8.7). Private rooms
 // never show (the deployed server still sends them; they are dropped on the way in).
 // Everything drawn is server data: el()'s `text` (textContent) only, never markup. Images only through assetUrl() or
 // avatarSrc() (the CSP's two image prefixes). Script-set styles are the card's --c1/--c2 and a bar's width, through the
 // CSSOM, never a style attribute.
 import { bridge, call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
-import { PAGE_ORIGIN, avatarSrc } from './live-common.js';
+import { PAGE_ORIGIN, assetUrl, avatarSrc } from './live-common.js';
 import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
-import { fmtInt } from './stats-model.js';
+import { fmtInt, fmtPct, roleCards } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, storeGameList, teamLogo } from './match-rows.js';
-import { careerTiles, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, recordOverview, statusLine, summaryFacts } from './profile-model.js';
+import { FULL_STATS, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, publicQueues, recordOverview, sortValue, splitTop, statusLine, summaryFacts } from './profile-model.js';
 import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -300,7 +301,9 @@ function historySection(p) {
     }
   };
   hist.render();
-  return el('section', { id: 'history', class: 'pf-col', 'aria-labelledby': 'history-h' }, head, cardEl);
+  // data-nav="column": Down from the last row is the pager at the card's foot, never Full stats' column headings
+  // further down whose middle sits nearer the row's middle.
+  return el('section', { id: 'history', class: 'pf-col', 'data-nav': 'column', 'aria-labelledby': 'history-h' }, head, cardEl);
 }
 
 // ---- the right column: Career, Leaderboard, Records ----
@@ -311,7 +314,9 @@ function careerSection(p) {
   const grid = el('div', { class: 'pf-car' }, ...tiles.map((t) => el('div', {},
     el('span', { class: 'k-label', text: t.label }), el('b', { class: 'num', text: t.value }),
     t.rank || t.perGame ? el('span', { class: 'pf-car-s num' }, t.rank ? el('b', { text: t.rank }) : null, t.rank && t.perGame ? ' · ' : null, t.perGame) : null)));
-  return el('section', { id: 'career', 'aria-labelledby': 'career-h' }, sectionHead('career', 'Career'),
+  const hasTables = Object.keys(FULL_STATS).some((k) => list(p.career?.[k]?.rows).length);
+  return el('section', { id: 'career', 'aria-labelledby': 'career-h' },
+    sectionHead('career', 'Career', hasTables ? el('a', { class: 'sec-link', href: '#full-stats', 'data-key': 'full-stats', text: 'Full stats ›' }) : null),
     el('div', { class: 'glass pf-pad' }, grid, footnote ? el('p', { class: 'pf-note', text: footnote }) : null));
 }
 
@@ -344,11 +349,167 @@ function recordsSection(p) {
   return el('section', { id: 'records', 'aria-labelledby': 'records-h' }, head, body);
 }
 
+// ---- Full stats: one table at a time, the top five, "Show all N players", then Total (spec §8.7.5) ----
+
+const fs = { tab: 'passing', kinds: [], open: new Set(), sort: {}, render: () => {} };
+
+function who(name, team) {
+  return el('span', { class: 'who' }, teamLogo(team), el('span', { text: name || DASH }));
+}
+
+function statTable(kind, data) {
+  const def = FULL_STATS[kind];
+  const order = fs.sort[kind] || null;
+  const rows = list(data?.rows).slice();
+  if (order) rows.sort((a, z) => {
+    const x = order.key === 'name' ? String(a.name ?? '') : sortValue(def.cols[order.i], a);
+    const y = order.key === 'name' ? String(z.name ?? '') : sortValue(def.cols[order.i], z);
+    if (typeof x === 'string' || typeof y === 'string') return order.dir * String(x ?? '').localeCompare(String(y ?? ''));
+    return order.dir * ((num(x) ? x : -Infinity) - (num(y) ? y : -Infinity));
+  });
+  const { top, rest } = splitTop(rows);
+  const all = fs.open.has(kind);
+  const head = (label, title, key, i) => {
+    const th = el('th', { scope: 'col' });
+    if (order && order.key === key) th.setAttribute('aria-sort', order.dir > 0 ? 'ascending' : 'descending');
+    th.append(el('button', { type: 'button', class: 'pf-sort', 'data-key': `sort-${kind}-${key}`, text: label, title: `Sort by ${title.toLowerCase()}`,
+      onclick: () => { fs.sort[kind] = { key, i, dir: order?.key === key ? -order.dir : key === 'name' ? 1 : -1 }; fs.render(); } }));
+    return th;
+  };
+  const body = [...top, ...(all ? rest : [])].map((r) => el('tr', {},
+    el('th', { scope: 'row' }, who(r.name, { name: r.team, logo_url: r.logo_url, abbrev: r.abbrev })), ...def.cols.map((c) => el('td', { text: cellValue(c, r) }))));
+  if (rest.length && !all) body.push(el('tr', { class: 'more' }, el('td', { colspan: String(def.cols.length + 1) },
+    el('button', { type: 'button', class: 'pf-showall', 'data-key': `showall-${kind}`, onclick: () => { fs.open.add(kind); fs.render(); } },
+      el('span', { text: `Show all ${rows.length} players` }), el('span', { class: 'chev', 'aria-hidden': 'true' })))));
+  if (data?.total) body.push(el('tr', { class: 'total' }, el('th', { scope: 'row', text: 'Total' }), ...def.cols.map((c) => el('td', { text: cellValue(c, data.total) }))));
+  return el('table', { class: 'tbl' }, el('caption', { class: 'pf-sr', text: `${def.title}, every player used. Select a column heading to sort.` }),
+    el('thead', {}, el('tr', {}, head('Player', 'Player', 'name', -1), ...def.cols.map((c, i) => head(c.label, c.title, c.key, i)))),
+    el('tbody', {}, ...body));
+}
+
+function fullStatsSection(p) {
+  fs.kinds = Object.keys(FULL_STATS).filter((k) => list(p.career?.[k]?.rows).length);
+  if (!fs.kinds.length) return null;
+  if (!fs.kinds.includes(fs.tab)) fs.tab = fs.kinds[0];
+  const head = el('div', { class: 'sec-head' });
+  const body = el('div', { class: 'glass pf-tbl' });
+  fs.render = () => {
+    const tabFocus = typeof head.contains === 'function' && head.contains(document.activeElement);
+    const active = typeof body.contains === 'function' && body.contains(document.activeElement) ? document.activeElement?.getAttribute('data-key') : null;
+    head.replaceChildren(el('h2', { id: 'full-stats-h', text: 'Full stats' }),
+      tabs('profile-full', fs.kinds.map((k) => FULL_STATS[k].title), FULL_STATS[fs.tab].title,
+        (title) => { fs.tab = fs.kinds.find((k) => FULL_STATS[k].title === title); fs.render(); }, { label: 'Stat tables' }));
+    body.replaceChildren(statTable(fs.tab, p.career[fs.tab]));
+    if (tabFocus) head.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    else if (active) {
+      // "Show all" leaves once every player shows: focus moves to the table's first heading, not back to the page top.
+      const all = Array.from(body.querySelectorAll('[data-key]'));
+      (all.find((n) => n.getAttribute('data-key') === active) ?? all.find((n) => n.getAttribute('data-key') === `sort-${fs.tab}-name`))?.focus({ preventScroll: true });
+    }
+  };
+  fs.render();
+  return el('section', { id: 'full-stats', 'aria-labelledby': 'full-stats-h' }, head, body);
+}
+
+// ---- More stats: the rest of the profile's numbers, kept so nothing a player could see before is lost ----
+
+const oneOr = (n) => (num(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : DASH);
+const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}–${num(r?.losses) ? r.losses : 0}`;
+const pctOf = (p) => (num(p) ? fmtPct(p) : DASH);
+const convOf = (p) => (num(p) ? `${Math.round(p * 100)}%` : DASH);
+
+function smallTable(caption, headers, rows) {
+  return el('table', { class: 'tbl' }, el('caption', { class: 'pf-sr', text: caption }),
+    el('thead', {}, el('tr', {}, ...headers.map((h) => el('th', { scope: 'col', text: h })))),
+    el('tbody', {}, ...rows.map((cells) => el('tr', {}, ...cells.map((c, i) => {
+      const cell = i === 0 ? el('th', { scope: 'row' }) : el('td');
+      if (typeof c === 'string') cell.textContent = c; else if (c) cell.append(c);
+      return cell;
+    })))));
+}
+
+function moreCard(id, title, table, wide = false) {
+  return el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
+}
+
+/** The old profile's Best players (P4-25): the Stats page's six role rows, the portrait over the team colour, the
+ *  role's statline when the server sends one, else its one number. */
+function playersCard(best, self) {
+  const cards = roleCards(best || {});
+  if (!cards.some((c) => c.stat)) return null;
+  const rows = cards.map((c) => {
+    const face = el('span', { class: 'player-face', 'aria-hidden': 'true' });
+    if (c.primary && face.style?.setProperty) face.style.setProperty('--tc', c.primary);
+    const letter = () => el('span', { class: 'face letter', text: c.initial || '' });
+    const src = assetUrl(c.portrait);
+    if (src) { const img = el('img', { class: 'face', alt: '', src }); img.addEventListener('error', () => img.replaceWith(letter()), { once: true }); face.append(img); }
+    else face.append(letter());
+    const badge = assetUrl(c.logo);
+    if (badge) { const img = el('img', { class: 'badge', alt: '', src: badge }); img.addEventListener('error', () => img.remove(), { once: true }); face.append(img); }
+    const line = el('span', { class: 'pf-pl-line num' });
+    if (c.line.length) c.line.forEach((s, i) => { if (i) line.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); line.append(el('span', {}, el('b', { text: s.value }), ` ${s.unit}`)); });
+    else if (c.stat) line.textContent = c.stat;
+    return el('div', { class: `pf-pl${c.stat ? '' : ' none'}` }, face,
+      el('span', { class: 'pf-pl-tx' }, el('span', { class: 'pf-pl-head' }, el('span', { class: 'pf-pl-name', text: c.name }), el('span', { class: 'k-label', text: c.label })),
+        c.stat ? line : null));
+  });
+  return moreCard('more-players', self ? 'Your players' : 'Players', el('div', { class: 'pf-pls' }, ...rows));
+}
+
+function moreStats(p, self) {
+  const cards = [];
+  const h2h = list(p.head_to_head).filter(Boolean);
+  if (h2h.length) cards.push(moreCard('h2h', 'Head to head', smallTable('Record against every opponent',
+    ['Opponent', 'Record', 'PTS', 'Allowed', 'Last', 'Best win', 'Worst loss'], h2h.map((h) => {
+      const name = h.display_name || 'Player';
+      const inner = [avatar(h.avatar_url, name), el('span', { text: name })];
+      const cell = h.player_id && UUID_RE.test(String(h.player_id).toLowerCase())
+        ? el('a', { class: 'who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'who' }, ...inner);
+      const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
+      return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${day(h.last.at)}`.trim() : DASH,
+        num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `−${h.biggest_loss.margin}` : DASH];
+    })), true));
+  const players = playersCard(p.best_players, self);
+  if (players) cards.push(players);
+  const teams = list(p.by_team).filter(Boolean);
+  if (teams.length) cards.push(moreCard('by-team', 'By team', smallTable('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'],
+    teams.map((t) => [who(t.name, t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url, abbrev: t.abbrev }), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
+  const pg = p.per_game;
+  if (pg && pg.games) cards.push(moreCard('per-game', 'Per game', smallTable(`Per game, over ${int(pg.games)} games with play-by-play`, ['Stat', `Per game (${int(pg.games)} games)`], [
+    ['Total yards', oneOr(pg.yds)], ['Pass / rush', `${oneOr(pg.pass)} / ${oneOr(pg.rush)}`], ['First downs', oneOr(pg.first_downs)], ['Turnovers', oneOr(pg.turnovers)],
+    ['1-pt conversions', convOf(pg.conv1_pct)], ['2-pt conversions', convOf(pg.conv2_pct)], ['Points per drive', oneOr(pg.pts_per_drive)], ['Three-and-outs', oneOr(pg.three_outs)],
+    ['Longest drive', num(pg.longest_drive) ? `${pg.longest_drive} plays` : DASH], ['Lead changes', oneOr(pg.lead_changes)], ['Biggest lead', oneOr(pg.biggest_lead)], ['Safeties', int(pg.safeties)]])));
+  const combos = list(p.combos).filter((c) => c && c.passer && c.receiver);
+  if (combos.length) cards.push(moreCard('combos', 'Best QB → receiver', smallTable('Quarterback to receiver combinations', ['Combo', 'REC', 'YDS', 'TD'],
+    combos.map((c) => [who(`${c.passer.name} → ${c.receiver.name}`, { name: c.passer.team, logo_url: c.passer.logo_url }), int(c.rec), int(c.yds), int(c.td)]))));
+  const pt = p.pitches;
+  if (pt && (pt.pitches || pt.pitch_plays)) cards.push(moreCard('pitches', 'Laterals & pitches', smallTable('Laterals and pitches', ['Stat', 'Total'],
+    [['Pitches', int(pt.pitches)], ['Plays with a pitch', int(pt.pitch_plays)], ['Yards on those plays', int(pt.pitch_yds)]])));
+  const w = p.wins_vs_losses?.wins, l = p.wins_vs_losses?.losses;
+  if (w?.games || l?.games) cards.push(moreCard('wins-losses', 'In wins vs losses', smallTable('Per-game numbers in wins and in losses', ['Games', 'PTS', 'YDS', 'TO'],
+    [[`Wins (${int(w?.games ?? 0)})`, oneOr(w?.pts), oneOr(w?.yds), oneOr(w?.to)], [`Losses (${int(l?.games ?? 0)})`, oneOr(l?.pts), oneOr(l?.yds), oneOr(l?.to)]])));
+  // A private room is never drawn (P4-3): the deployed server may list one as a game type.
+  const types = publicQueues(p.by_game_type);
+  if (types.length) cards.push(moreCard('by-type', 'By game type', smallTable('Record by game type', ['Game type', 'Record', 'Pts / gm', 'Win %'],
+    types.map((t) => [String(t.name ?? DASH), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
+  if (!cards.length) return null;
+  return el('section', { id: 'more', 'aria-labelledby': 'more-h' }, sectionHead('more', 'More stats'), el('div', { class: 'pf-more' }, ...cards));
+}
+
 // ---- the page ----
 
+// The links from Stats land here: #passing | #rushing | #receiving | #defense open that table in Full stats; any other
+// hash (#career, #records, #history) scrolls to its section.
 function jump() {
   const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
-  if (hash) document.getElementById(hash)?.scrollIntoView?.({ block: 'start' });
+  if (!hash) return;
+  if (FULL_STATS[hash] && fs.kinds.includes(hash)) {
+    fs.tab = hash;
+    fs.render();
+    document.getElementById('full-stats')?.scrollIntoView?.({ block: 'start' });
+    return;
+  }
+  document.getElementById(hash)?.scrollIntoView?.({ block: 'start' });
 }
 
 function draw(p, ownerId) {
@@ -366,7 +527,7 @@ function draw(p, ownerId) {
   if (ov) out.push(ov);
   out.push(el('div', { class: 'pf-cols' }, historySection(p),
     el('div', { class: 'pf-side' }, ...[careerSection(p), leaderboardSection(p, self), recordsSection(p)].filter(Boolean))));
-  // More sections below the columns (plan 4 Task 7)
+  out.push(...[fullStatsSection(p), moreStats(p, self)].filter(Boolean));
   screen.replaceChildren(...out);
   jump();
 }
@@ -394,3 +555,4 @@ async function load() {
 markCurrent();
 wireCoreFold();
 load();
+if (typeof window !== 'undefined') window.addEventListener?.('hashchange', jump);

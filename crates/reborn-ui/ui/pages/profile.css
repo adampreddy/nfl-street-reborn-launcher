@@ -97,12 +97,37 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
 .pf-rec b{font-weight:600;text-align:right}
 .pf-none{margin:0;padding:16px 0;color:var(--fg-2)}
 .pf-err{margin:0;padding:8px 16px;font-size:12px;color:var(--red-ink)}
+/* Full stats and More stats: theme.css's .tbl (a shared 220px name column, so every table's columns line up) */
+.pf-tbl{overflow-x:auto;overflow-y:hidden}
+.pf-tbl .tbl{min-width:960px}
+.pf-sort{all:unset;cursor:pointer}
+.pf-sort:hover{color:var(--fg)}
+.tbl tr.more td{height:auto;padding:0}
+.pf-showall{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:38px;cursor:pointer;font:600 12.5px Inter,system-ui,sans-serif;color:var(--fg-2)}
+.pf-showall:hover{background:var(--glass-1);color:var(--fg)}
+.pf-showall .chev{margin:0}
+.pf-more{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
+.pf-more-card{overflow:hidden;padding-top:8px}
+.pf-more-card.wide{grid-column:1/-1;overflow-x:auto}
+.pf-more-card.wide .tbl{min-width:820px}
+.pf-more-card h3{margin:0;padding:8px 16px;font:600 14px Inter,system-ui,sans-serif}
+.pf-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.pf-pls{display:flex;flex-direction:column;padding:0 16px}
+.pf-pl{display:flex;align-items:center;gap:14px;min-height:56px;border-top:1px solid var(--stroke)}
+.pf-pl-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.pf-pl-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.pf-pl-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-pl-head .k-label{flex:none;font-size:10px}
+.pf-pl-line{font-size:12px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-pl-line b{font-weight:600;color:var(--fg)}
+.pf-pl.none .pf-pl-name{font-weight:500;color:var(--fg-3)}
 @media (max-width:1100px){
   .pf-cols{grid-template-columns:minmax(0,1fr)}
   .pf-ov,.pf-ov.cols-2{grid-template-columns:minmax(0,1fr)}
   .pf-ovc+.pf-ovc{border-left:0;border-top:1px solid var(--stroke)}
   .pf-row{grid-template-columns:auto minmax(0,1fr)}
   .pf-live{grid-column:1/-1;width:auto}
+  .pf-more{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:1000px){body.page-profile #main{padding:24px 24px 16px}}
 @media (max-width:720px){.pf-row{grid-template-columns:minmax(0,1fr)}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -2,13 +2,15 @@
 // View on web, the live card); the overview (three columns, big numbers on one line, visuals ending on one line); Match
 // history beside Career / Leaderboard / Records (first cards start and end on one line; 40px headers); the queue filter
 // and the pager; W/L only, never "Best of 3", "ladder" or "Private"; the deployed server's answers; the small window;
-// the model edge cases (P4-23); letter avatars coloured per player; the D-pad through the card, history and tabs.
+// the model edge cases (P4-23); letter avatars coloured per player; the D-pad through the card, history and tabs;
+// Full stats (one table at a time, top five, Show all, Total, shared column edges, sorting) and More stats; the links
+// from Stats (#passing, #rushing, #receiving, #defense, #career) landing on their table or section.
 //     node Tools/check-profile-page.mjs [outdir]      (screens in target/p4-after by default)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { serve, openState, root } from './lib/page-states.mjs';
+import { serve, openState, root, settle } from './lib/page-states.mjs';
 import * as F from './fixtures/stats-fixtures.mjs';
 
 const out = path.resolve(process.argv[2] || path.join(root, 'target/p4-after'));
@@ -129,7 +131,122 @@ try {
     await page.waitForURL(/live\.html\?match=dc5226af-d3b8-4c0b-89e8-1c53b2972a30$/);
     await close();
   }
-  // (Task 7 adds the Full stats checks here)
+  { // Full stats: one table at a time, top five, "Show all N players", a Total row; every table on one column grid
+    const { page, errors, close } = await openState(browser, srv.base, STATE);
+    await page.locator('#full-stats .tbl').waitFor();
+    assert.deepEqual(await texts(page, '#full-stats .tab'), ['Passing', 'Rushing', 'Receiving', 'Defense']);
+    assert.deepEqual(await texts(page, '#full-stats thead th'), ['Player', 'C/ATT', 'YDS', 'TD', 'INT', 'AIR', 'YAC', 'Y/A', 'RTG', 'LNG']);
+    const body = page.locator('#full-stats tbody tr:not(.more):not(.total)');
+    assert.equal(await body.count(), 5);
+    assert.equal(await page.locator('#full-stats .pf-showall').textContent(), 'Show all 7 players');
+    assert.deepEqual(await texts(page, '#full-stats tr.total > *'), ['Total', '212/371', '3,021', '40', '18', '1,900', '1,121', '8.1', '104.2', '74']);
+    const grid = async () => { await settle(page); return page.evaluate(() => { const ths = [...document.querySelectorAll('#full-stats thead th')]; return [Math.round(ths[0].getBoundingClientRect().width), Math.round(ths[1].getBoundingClientRect().left)]; }); };
+    const passing = await grid();
+    assert.equal(passing[0], 220, 'the shared 220px name column');
+    await page.locator('#full-stats .pf-showall').click();
+    assert.equal(await body.count(), 7);
+    assert.equal(await page.locator('#full-stats .pf-showall').count(), 0, 'the reveal row leaves once every player shows');
+    for (const t of ['Rushing', 'Receiving', 'Defense']) {
+      await page.getByRole('button', { name: t, exact: true }).click();
+      assert.deepEqual(await grid(), passing, `the ${t} table shares the Passing table's column edges`);
+    }
+    assert.deepEqual(await texts(page, '#full-stats thead th'), ['Player', 'TKL', 'TFL', 'SCK', 'INT', 'PBU', 'FF', 'FR', 'TD']);
+    await page.getByRole('button', { name: 'Receiving', exact: true }).click();
+    assert.deepEqual(await texts(page, '#full-stats thead th'), ['Player', 'REC', 'YDS', 'AVG', 'YAC', 'TD', 'LNG', 'DRP']);
+    await page.getByRole('button', { name: 'Rushing', exact: true }).click();
+    assert.deepEqual(await texts(page, '#full-stats thead th'), ['Player', 'CAR', 'YDS', 'AVG', 'TD', 'LNG', 'BTK', 'YCO']);
+    assert.deepEqual(await grid(), passing, 'the tables share their column edges');
+    assert.deepEqual(await texts(page, '#full-stats tr.total > *'), ['Total', '308', '1,715', '5.6', '17', '61', '45', '770']);
+    // sorting by a column still works (it did before the redesign)
+    const firstName = () => page.locator('#full-stats tbody tr').first().locator('.who > span:last-child').textContent();
+    await page.locator('[data-key="sort-rushing-yds"]').click();
+    assert.equal(await firstName(), 'S. Barkley');
+    assert.equal(await page.locator('[data-key="sort-rushing-yds"]').evaluate((n) => document.activeElement === n), true, 'focus stays on the sort button');
+    await page.locator('[data-key="sort-rushing-yds"]').click();
+    assert.equal(await firstName(), 'B. Robinson');
+    // More stats keeps every number the old profile showed, and the old profile's Best players (P4-5, P4-25)
+    assert.deepEqual(await texts(page, '#more h3'), ['Head to head', 'Your players', 'By team', 'Per game', 'Best QB → receiver', 'Laterals & pitches', 'In wins vs losses', 'By game type']);
+    assert.equal(await page.locator('#h2h a.who').getAttribute('href'), 'profile.html?player=1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', 'an opponent opens their profile');
+    assert.deepEqual(await texts(page, '#more-players .pf-pl-name'), ['M. Penix Jr.', 'S. Barkley', 'D. London', 'N. Bolton', 'A.J. Terrell', 'B. Robinson']);
+    assert.deepEqual(await texts(page, '#by-type tbody th'), ['Normal']);
+    // Career's "Full stats ›" goes there
+    await page.locator('#career .sec-link').click();
+    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
+    await contentRules(page);
+    await noSideways(page);
+    await page.getByRole('button', { name: 'Passing', exact: true }).click();
+    await settle(page);
+    await page.screenshot({ path: path.join(out, 'profile-1280-full-stats.png') });
+    for (const t of ['Rushing', 'Receiving', 'Defense']) {
+      await page.getByRole('button', { name: t, exact: true }).click();
+      await settle(page);
+      await page.screenshot({ path: path.join(out, `profile-1280-full-stats-${t.toLowerCase()}.png`) });
+    }
+    await page.evaluate(() => document.getElementById('more').scrollIntoView({ block: 'start' }));
+    await settle(page);
+    await page.screenshot({ path: path.join(out, 'profile-1280-more.png') });
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // a link from Stats (#defense) opens that table and scrolls to Full stats
+    const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#defense` });
+    await page.locator('#full-stats .tbl').waitFor();
+    assert.equal(await page.locator('#full-stats .tab[aria-pressed="true"]').textContent(), 'Defense');
+    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // every link Stats' Your players draws lands on its table (passing, rushing, receiving) or section (career)
+    for (const [hash, tab] of [['passing', 'Passing'], ['rushing', 'Rushing'], ['receiving', 'Receiving']]) {
+      const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#${hash}` });
+      await page.locator('#full-stats .tbl').waitFor();
+      assert.equal(await page.locator('#full-stats .tab[aria-pressed="true"]').textContent(), tab);
+      await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
+      assert.deepEqual(errors, []);
+      await close();
+    }
+    const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#career` });
+    await page.locator('#career').waitFor();
+    await page.waitForFunction(() => { const t = document.getElementById('career').getBoundingClientRect().top; return t >= -2 && t < 120; });
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // a private room is never drawn in More stats (P4-3): not in By game type, not as a team
+    const p = F.profile();
+    p.by_game_type.push({ key: 'private', name: 'Private room', games: 3, wins: 2, losses: 1, win_pct: 0.667, pts_per_game: 30 });
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
+    await page.locator('#more').waitFor();
+    assert.deepEqual(await texts(page, '#by-type tbody th'), ['Normal']);
+    await contentRules(page);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // the small window: Full stats and More stats in one column, no sideways page scroll, no number cut off (a wide
+    // table scrolls inside its own card)
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { viewport: { width: 800, height: 560 } });
+    const clipped = () => page.locator('#full-stats td, #full-stats thead th, #more td, #more thead th').evaluateAll((ns) =>
+      ns.filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent.trim()));
+    await page.locator('#full-stats .tbl').waitFor();
+    await page.evaluate(() => document.getElementById('full-stats').scrollIntoView({ block: 'start' }));
+    await settle(page);
+    await noSideways(page);
+    assert.deepEqual(await clipped(), [], 'Passing: no number or heading cut off');
+    await page.screenshot({ path: path.join(out, 'profile-800-full-stats.png') });
+    for (const t of ['Rushing', 'Receiving', 'Defense']) {
+      await page.getByRole('button', { name: t, exact: true }).click();
+      await settle(page);
+      await noSideways(page);
+      assert.deepEqual(await clipped(), [], `${t}: no number or heading cut off`);
+      await page.screenshot({ path: path.join(out, `profile-800-full-stats-${t.toLowerCase()}.png`) });
+    }
+    await page.evaluate(() => document.getElementById('more').scrollIntoView({ block: 'start' }));
+    await settle(page);
+    const cards = await page.locator('#more .pf-more-card').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().left)));
+    assert.ok(cards.every((x) => x === cards[0]), `More stats is one column: ${cards}`);
+    await page.screenshot({ path: path.join(out, 'profile-800-more.png') });
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // glass on: the same page over the window glass
     const { page, errors, close } = await openState(browser, srv.base, STATE, { glass: true });
     await page.locator('.pf-card').waitFor();
@@ -177,7 +294,8 @@ try {
     assert.equal(await page.locator('#leaderboard').count(), 0, 'no Leaderboard without elo.around');
     assert.deepEqual(await texts(page, '.pf-bar-row > :first-child'), ['Ranked', 'Casual']);
     assert.equal(await page.locator('[data-key="match-m-05"]').count(), 0, 'the private room is dropped');
-    // (Task 7 adds the older server's rushing table here)
+    await page.getByRole('button', { name: 'Rushing', exact: true }).click();
+    assert.equal(await page.locator('#full-stats tr.total > *').last().textContent(), '770', 'YCO from the older server\'s yac');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
@@ -260,7 +378,10 @@ try {
     await press(15);
     assert.equal(await key(), 'live-feed', 'Right from View on web is the live card');
     await press(13);
-    assert.ok(['All', 'Ranked', 'Casual'].includes(await key()), 'Down from Live feed reaches the history tabs');
+    // the live card sits over the right column: Down lands on Career's "Full stats ›" (Task 7), Left from it on the history tabs
+    assert.equal(await key(), 'full-stats', 'Down from Live feed reaches the first stop of the right column');
+    await press(14);
+    { const k = await key(); assert.ok(['All', 'Ranked', 'Casual'].includes(k), `Left from Full stats › reaches the history tabs: ${k}`); }
     await page.locator('[data-key="live-feed"]').focus();
     await press(14);
     assert.equal(await key(), 'web', 'Left from Live feed comes back to View on web');
@@ -272,6 +393,19 @@ try {
     await press(0);
     await page.waitForFunction(() => document.querySelector('#history .m-pager span')?.textContent === 'Page 2 of 2');
     assert.equal(await key(), 'newer', 'focus stays in the pager after Older (Older is now disabled)');
+    // past the pager, Down goes on into Full stats' table; the tabs sit over its right-hand columns
+    await press(13);
+    { const k = await key(); assert.match(String(k), /^sort-passing-/, `Down from the pager reaches the Passing table: ${k}`); }
+    await page.locator('[data-key="sort-passing-long"]').focus();
+    await press(12);
+    { const k = await key(); assert.ok(['Passing', 'Rushing', 'Receiving', 'Defense'].includes(k), `Up from the last heading reaches the Full stats tabs: ${k}`); }
+    await press(13);
+    { const k = await key(); assert.match(String(k), /^sort-passing-/, `Down from the tabs comes back to the table: ${k}`); }
+    for (let i = 0; i < 3 && !String(await key()).startsWith('showall-'); i++) await press(13);
+    assert.equal(await key(), 'showall-passing', 'Down through the table reaches "Show all 7 players"');
+    await press(0);
+    await page.waitForFunction(() => !document.querySelector('#full-stats .pf-showall'));
+    assert.equal(await key(), 'sort-passing-name', 'after Show all, focus moves to the table\'s first heading, not the page top');
     await press(1);
     await page.waitForURL(/stats\.html$/);
     assert.deepEqual(errors, []);

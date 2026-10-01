@@ -242,7 +242,12 @@ function move(direction) {
   // Up/Down step through the block's controls in reading order; past either end the move below applies.
   const seq = !horizontal && current.closest('[data-nav="rows"] [data-nav-seq]');
   if (seq) { const list = reachable(seq), i = list.indexOf(current); if (i >= 0 && list[i+sign]) { focus(list[i+sign]); return; } }
-  const ranked = items.filter(n => n !== current).map(n => {
+  // Only inside a data-nav="column" block (Profile's Match history): Up/Down stay in the block while it has a control
+  // that way, so the last row's Down is the pager at the card's foot, not a control in the next section whose middle
+  // sits nearer. Past either end the moves below apply.
+  const column = !horizontal && current.closest('[data-nav="column"]');
+  const inColumn = column ? reachable(column).filter(n => n !== current && ((box(n).y+box(n).height/2)-ay)*sign > 4) : [];
+  const ranked = (inColumn.length ? inColumn : items).filter(n => n !== current).map(n => {
     const b = box(n), dx = b.x+b.width/2-ax, dy = b.y+b.height/2-ay;
     const distance = (horizontal ? dx : dy)*sign;
     const overlap = horizontal ? Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top) : Math.min(a.right,b.right)-Math.max(a.left,b.left);
