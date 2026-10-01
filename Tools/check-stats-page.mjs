@@ -149,10 +149,25 @@ try {
     await close();
   }
   { // signed out: the way in and Profile & sync, never an empty two-column frame
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { signed_in: false } } });
-    await page.getByText('Sign in with Discord on the Play page to see your games.', { exact: true }).waitFor();
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { signed_in: false },
+      identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 60 } } });
+    // Big and front and centre: a 28px bold heading and the 52px red Sign in button, right on Stats.
+    await page.getByRole('heading', { name: 'Sign in to see your stats', exact: true }).waitFor();
+    const h = await page.locator('.st-signin h2').evaluate(n => { const c = getComputedStyle(n); return { size: parseFloat(c.fontSize), weight: +c.fontWeight }; });
+    assert.ok(h.size >= 28 && h.weight >= 700, `sign-in heading is big and bold (${h.size}px/${h.weight})`);
+    const go = page.locator('.st-signin-go');
+    assert.equal(await go.textContent(), 'Sign in with Discord');
+    assert.ok((await go.boundingBox()).height >= 52, 'sign-in button is the big one');
     assert.equal(await page.locator('.st-cols').count(), 0);
     assert.equal(await page.locator('.st-account').count(), 1);
+    await page.screenshot({ path: path.join(out, 'stats-signed-out.png') });
+    assert.doesNotMatch(await page.locator('.st-signin').innerText(), /null|undefined/, 'no stray empty-slot text in the sign-in card');
+    await go.click();
+    await page.getByText('Your code is ABCD-1234', { exact: true }).waitFor();
+    await page.getByText('Go to https://discord.com/activate to approve it.', { exact: true }).waitFor();
+    assert.doesNotMatch(await page.locator('.st-signin').innerText(), /null|undefined/);
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('heading', { name: 'Sign in to see your stats', exact: true }).waitFor();
     assert.deepEqual(errors, []);
     await close();
   }

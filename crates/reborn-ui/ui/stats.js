@@ -11,10 +11,11 @@ import { assetUrl } from './live-common.js';
 import { dropPrivate, eloChange, fmtElo, resultsOf, roleCards, trendPoints, youNumbers } from './stats-model.js';
 import { matchHeader, matchRows, pager, storeGameList } from './match-rows.js';
 import { tabs } from './tabs.js';
+import { createSignIn } from './sign-in.js';
 
 const PAGE_SIZE = 10;
+const signIn = createSignIn({ onChange: () => draw(), onDone: () => load() });
 const REFRESH_MS = 30000;
-const SIGNED_OUT = 'Sign in with Discord on the Play page to see your games.';
 const EMPTY = 'No games yet. Play one and it shows up here.';
 // Only private rooms came back (dropped, P4-3): they did play, so never "No games yet".
 const NONE_SHOWN = 'No games to show yet.';
@@ -174,7 +175,7 @@ function accountBlock() {
         onchange: (event) => act('Offline visibility', 'identity_set_show_offline', { show: !!event.target.checked }, () => { said = 'Profile settings saved.'; }) }),
       el('span', { text: 'Show my offline games on my profile' })),
       el('button', { type: 'button', class: 'btn sm', id: 'stats-sign-out', text: 'Sign out', disabled: busy, onclick: () => act('Sign out', 'identity_sign_out', {}, () => { said = 'Signed out.'; }) }));
-  } else profile.append(el('p', { text: 'Connect your Discord account to add these results to your profile.' }), el('a', { href: 'index.html', class: 'btn sm', text: 'Sign in on Play' }));
+  } else profile.append(el('p', { text: 'Connect your Discord account to add these results to your profile.' }), el('button', { type: 'button', class: 'btn sm', 'data-key': 'signin-foot', text: 'Sign in with Discord', disabled: signIn.state.starting || signIn.state.active, onclick: () => signIn.start() }));
   const sync = el('div', {}, el('h3', { text: 'Result sync' }));
   if (!ok(queue)) sync.append(partial('Result sync status could not be loaded.'));
   else sync.append(el('p', { text: queue.depth ? `${queue.depth} result${queue.depth === 1 ? ' is' : 's are'} waiting to sync.` : 'No results waiting to sync.' }));
@@ -187,6 +188,24 @@ function accountBlock() {
 // ---- drawing ----
 
 // Redraws replace everything (every refresh): put the focus back on the same control, by data-key (spec §10).
+// Signed out: a big sign-in card. While waiting for Discord, the code and the address to approve it.
+function signInCard() {
+  const si = signIn.state;
+  const card = el('section', { class: 'glass st-signin', 'aria-label': 'Sign in' });
+  if (si.active) {
+    card.append(...[el('h2', { text: 'Waiting for Discord' }),
+      el('p', { class: 'st-signin-code', role: 'status', text: `Your code is ${si.userCode}` }),
+      si.verifyUrl ? el('p', { text: `Go to ${si.verifyUrl} to approve it.` }) : null,
+      el('button', { type: 'button', class: 'btn', 'data-key': 'signin-cancel', text: 'Cancel', onclick: () => signIn.cancel() })].filter(Boolean));
+  } else {
+    card.append(...[el('h2', { text: 'Sign in to see your stats' }),
+      el('p', { text: 'Connect your Discord account to track every match, your Elo and your players.' }),
+      el('button', { type: 'button', class: 'btn primary st-signin-go', 'data-key': 'signin', text: si.starting ? 'Opening Discord…' : 'Sign in with Discord', disabled: si.starting, onclick: () => signIn.start() }),
+      si.message ? el('p', { class: 'refusal', role: 'alert', text: si.message }) : null].filter(Boolean));
+  }
+  return card;
+}
+
 function draw() {
   if (!screen) return;
   // Guarded: the Node page checker (Tools/check-shell-pages.mjs) draws into a minimal fake DOM without these.
@@ -213,7 +232,8 @@ function paint(accountOpen) {
   if (state.error) parts.push(el('p', { class: 'refusal', role: 'alert', text: state.error }));
   if (!state.signedIn) {
     // Signed out: no rows, only the way in (and what is waiting locally). Never answered at all: only the error.
-    if (state.answered) parts.push(el('p', { class: 'note', text: SIGNED_OUT }));
+    // The way in, front and centre: one big card with the Discord sign-in right here (same flow as Play).
+    if (state.answered) parts.push(signInCard());
     const n = unsentCount(state.queue);
     screen.replaceChildren(...parts, foot(n ? `${n} ${n === 1 ? 'game' : 'games'} will upload when you sign in.` : null));
     return;

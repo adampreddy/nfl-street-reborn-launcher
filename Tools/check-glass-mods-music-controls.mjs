@@ -116,6 +116,13 @@ try {
       assert.ok(await page.locator('.store-card').evaluateAll((ns) => ns.every((n) => n.scrollWidth <= n.clientWidth + 1)), 'the long package name wraps inside its card');
       assert.deepEqual(await page.locator('.store-card').evaluateAll((ns) => ns.map((n) => n.querySelectorAll('[role=switch]').length)), [1, 1, 1], 'one switch per card');
       assert.equal(await page.locator('.store-card.active').count(), 1);
+      { // the search: one focus ring, on the rounded field, none on the bare box inside it
+        await page.locator('.mods-search input').focus();
+        const ring = await page.evaluate(() => { const f = document.querySelector('.mods-search'), i = f.querySelector('input'); const fs = getComputedStyle(f), is = getComputedStyle(i); return { field: fs.outlineStyle + ' ' + fs.outlineWidth, box: is.outlineStyle }; });
+        assert.equal(ring.field, 'solid 2px', 'the focused search field has the white ring');
+        assert.equal(ring.box, 'none', 'the bare search box inside the field draws no ring of its own');
+        await page.locator('.mods-search input').blur();
+      }
       assert.equal(await page.locator('.store-card.active .store-check').count(), 1, 'a red check on the enabled card');
       assert.equal(await page.locator('.store-card:not(.active) .store-check').count(), 0);
       assert.equal(await page.locator('.store-art img, .store-art > svg').count(), 0, 'no drawn art in the preview');

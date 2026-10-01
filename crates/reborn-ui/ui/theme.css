@@ -295,6 +295,9 @@ body.themed input[type=search],body.themed textarea{min-width:0;padding:0 12px;b
 body.themed input[type=search]{height:38px}
 body.themed textarea{padding:8px 12px;resize:vertical}
 body.themed .field input[type=search]{flex:1;height:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+/* A field (icon + box) shows ONE focus ring, around the whole rounded field, never a square ring on the bare box inside it. */
+body.shell .field input:focus-visible,body.gamepad-input .field input.pad-focus{outline:none!important}
+body.shell .field:has(input:focus-visible),body.gamepad-input .field:has(input.pad-focus){outline:2px solid #fff!important;outline-offset:3px!important}
 
 /* controller art (controller-preview.js); art/controllers/<pad>/preview.css draws the pad itself */
 body.themed .controller-preview{margin:0 auto;width:min(100%,360px);color:var(--fg-2)}
