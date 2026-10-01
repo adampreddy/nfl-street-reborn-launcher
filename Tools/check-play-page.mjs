@@ -82,8 +82,8 @@ try {
     const status = await rect(page, '.play-status');
     assert.ok(status.y >= play.b + 8 && Math.abs(status.x - play.x) < 2, 'the status line sits alone under the button');
     const logo = await rect(page, '.play-wordmark img');
-    // Adam (10-01): the wordmark is stretched 30% taller than its natural 1100x431 shape.
-    assert.ok(logo.w <= 470.5 && Math.abs(logo.h / logo.w - 560 / 1100) < 0.01, 'wordmark is 30% taller than its own shape: ' + JSON.stringify(logo));
+    // Adam (10-01): the wordmark is stretched 15% taller than its natural 1100x431 shape.
+    assert.ok(logo.w <= 470.5 && Math.abs(logo.h / logo.w - 496 / 1100) < 0.01, 'wordmark is 15% taller than its own shape: ' + JSON.stringify(logo));
     const strip = await rect(page, '.play-strip');
     const cells = await page.locator('.play-strip .play-cell').evaluateAll((ns) => ns.map((n) => { const r = n.getBoundingClientRect(); return { x: r.x, w: r.width, h: r.height }; }));
     assert.equal(cells.length, 3);
