@@ -597,7 +597,7 @@ fn land_as_pristine(p:&Platform,data:&Path,landed:&Path,sha:&str)->Result<PathBu
 ///
 /// `game-full` is 1.36 GB that a normal install must never fetch, and one
 /// exclusion is what keeps that true, not a download stack of its own:
-/// `pipeline::UPDATABLE` does not list it, so the automatic
+/// `pipeline::updatable` does not list it, so the automatic
 /// check/fetch/promote loop never asks for it however many releases pin it.
 /// Naming it here, on a button press, is the only way it is fetched at all.
 ///

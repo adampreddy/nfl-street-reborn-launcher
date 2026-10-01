@@ -70,15 +70,37 @@ impl ReleaseSource for Origin {
 ///
 /// The launcher updates through its installer and controller-db has no
 /// artifact, so neither is here.
-pub const UPDATABLE: [ComponentId; 7] = [
-    ComponentId::Runtime,
-    ComponentId::OfflineContent,
-    ComponentId::OnlineContent,
-    ComponentId::Textures,
-    ComponentId::Mods,
-    ComponentId::GamePatch,
-    ComponentId::Roster,
-];
+///
+/// Per OS, because the runtime is: a release pins `runtime`,
+/// `runtime-linux` and `runtime-macos` and a client fetches only the one it
+/// can run ([`ComponentId::runtime_here`]). The other two are pins it never
+/// looks up, which is also what a launcher built before they existed does
+/// with them, so adding them changed nothing for a Windows player.
+pub fn updatable() -> &'static [ComponentId] {
+    const WINDOWS: [ComponentId; 7] = with_runtime(ComponentId::Runtime);
+    const LINUX: [ComponentId; 7] = with_runtime(ComponentId::RuntimeLinux);
+    const MACOS: [ComponentId; 7] = with_runtime(ComponentId::RuntimeMacos);
+    if cfg!(windows) {
+        &WINDOWS
+    } else if cfg!(target_os = "macos") {
+        &MACOS
+    } else {
+        &LINUX
+    }
+}
+
+/// The promotion order with one OS's runtime in the runtime slot.
+const fn with_runtime(runtime: ComponentId) -> [ComponentId; 7] {
+    [
+        runtime,
+        ComponentId::OfflineContent,
+        ComponentId::OnlineContent,
+        ComponentId::Textures,
+        ComponentId::Mods,
+        ComponentId::GamePatch,
+        ComponentId::Roster,
+    ]
+}
 
 /// The data directory a component's manifest must install into.
 ///
@@ -87,7 +109,9 @@ pub const UPDATABLE: [ComponentId; 7] = [
 /// for the two components the content system does not deliver.
 pub fn install_dir(id: ComponentId) -> Option<DataDir> {
     match id {
-        ComponentId::Runtime => Some(DataDir::Runtime),
+        ComponentId::Runtime | ComponentId::RuntimeLinux | ComponentId::RuntimeMacos => {
+            Some(DataDir::Runtime)
+        }
         ComponentId::OfflineContent => Some(DataDir::LibraryOffline),
         ComponentId::OnlineContent => Some(DataDir::LibraryOnline),
         ComponentId::Textures => Some(DataDir::LibraryTextures),
@@ -96,7 +120,7 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         ComponentId::GamePatch => Some(DataDir::LibraryGamePatch),
         // Matches `ComponentId::install_root`: `LibraryGameFull`, never
         // `LibraryOffline` (the BOOTED image a roster apply rewrites in
-        // place). Also not in `UPDATABLE`: recovery is resolved on demand by
+        // place). Also not in `updatable()`: recovery is resolved on demand by
         // its own call path, never by this pipeline's automatic
         // check/fetch/promote loop.
         ComponentId::GameFull => Some(DataDir::LibraryGameFull),
@@ -127,7 +151,7 @@ pub struct CheckRequest<'a> {
 impl Default for CheckRequest<'_> {
     fn default() -> Self {
         Self {
-            components: &UPDATABLE,
+            components: updatable(),
             depth: Depth::Quick,
         }
     }
@@ -661,7 +685,7 @@ impl<'a> Updater<'a> {
     }
 
     /// Swap every available component's staged set into the live tree, in
-    /// [`UPDATABLE`] order. A component whose staging is not complete is
+    /// [`updatable`] order. A component whose staging is not complete is
     /// refused, not skipped, so the caller sees it by name.
     ///
     /// Call only when the game is closed: a file the game holds open cannot
@@ -1007,6 +1031,22 @@ mod tests {
 
     const GOOD: FixedSignature = FixedSignature(b"good");
 
+    /// One fork commit built three ways. The client fetches the runtime it
+    /// can run and never looks the other two up, which is also what every
+    /// launcher built before `runtime-linux` existed does with that pin.
+    #[test]
+    fn a_release_pinning_three_runtimes_updates_only_this_oss() {
+        let here = ComponentId::runtime_here();
+        assert!(updatable().contains(&here));
+        for other in [ComponentId::Runtime, ComponentId::RuntimeLinux, ComponentId::RuntimeMacos] {
+            if other != here {
+                assert!(!updatable().contains(&other), "{other:?} is another OS's runtime");
+            }
+        }
+        assert_eq!(updatable().iter().filter(|id| id.is_runtime()).count(), 1);
+        assert_eq!(install_dir(here), Some(DataDir::Runtime));
+    }
+
     fn runtime_v1() -> Built {
         built(
             ComponentId::Runtime,
@@ -1031,7 +1071,7 @@ mod tests {
     /// player whose own copy could not be converted. It is resolved through
     /// this pipeline like every other component, and what keeps it away from
     /// everybody else is not a second code path but one exclusion, here:
-    /// `UPDATABLE` does not list it, so the automatic check/fetch/promote
+    /// `updatable()` does not list it, so the automatic check/fetch/promote
     /// loop the window runs at startup never asks for it however many
     /// releases pin it.
     ///
@@ -1045,7 +1085,7 @@ mod tests {
     #[test]
     fn game_full_is_recovery_the_automatic_loop_never_asks_for() {
         assert!(
-            !UPDATABLE.contains(&ComponentId::GameFull),
+            !updatable().contains(&ComponentId::GameFull),
             "the automatic update loop would fetch 1.36 GB of recovery on every install"
         );
 
@@ -1060,7 +1100,7 @@ mod tests {
         );
         let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
 
-        let automatic = updater.check(&quick(&UPDATABLE)).unwrap();
+        let automatic = updater.check(&quick(updatable())).unwrap();
         assert!(
             automatic.component(ComponentId::GameFull).is_none(),
             "the ordinary update loop put the recovery disc in front of a player who never asked"
@@ -1411,18 +1451,23 @@ mod tests {
     fn run_stops_after_the_check_when_there_is_nothing_to_fetch() {
         let dir = tempfile::tempdir().unwrap();
         let platform = Platform::detect();
-        let src = origin(1, vec![runtime_v1()]);
+        // The default request asks for THIS OS's runtime, so the origin
+        // publishes that one; on Windows it is `runtime` as before.
+        let src = origin(
+            1,
+            vec![built(ComponentId::runtime_here(), "1.0.0", 1, vec![("Dolphin.exe", b"dolphin one")])],
+        );
         let updater = Updater::new(&platform, dir.path(), &src, &GOOD);
         let first = updater.run(&CheckRequest::default(), &ImageHook::default()).unwrap();
         assert!(first.fetch.is_some() && first.promote.is_some());
-        assert_eq!(first.check.components.len(), UPDATABLE.len());
+        assert_eq!(first.check.components.len(), updatable().len());
 
         let second = updater.run(&CheckRequest::default(), &ImageHook::default()).unwrap();
         assert!(second.fetch.is_none() && second.promote.is_none());
         assert!(!second.check.has_updates());
         for c in &second.check.components {
             match (c.component, &c.state) {
-                (ComponentId::Runtime, ComponentState::UpToDate { .. }) => {}
+                (id, ComponentState::UpToDate { .. }) if id == ComponentId::runtime_here() => {}
                 (_, ComponentState::NotCarried) => {}
                 other => panic!("{other:?}"),
             }

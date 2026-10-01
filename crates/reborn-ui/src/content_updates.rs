@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use reborn_core::content::pipeline::{
     CheckRequest, ComponentCheck, ComponentState, ContentCheck, Depth, FetchOutcomeState, GamePatchResult,
-    ImageHook, PromoteOutcome, PromoteState, RosterResult, Updater, UPDATABLE,
+    updatable, ImageHook, PromoteOutcome, PromoteState, RosterResult, Updater,
 };
 use reborn_core::origin::{Origin, DEFAULT_ORIGIN};
 use reborn_core::signing::Ed25519Verifier;
@@ -354,7 +354,7 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
     let updater = Updater::new(&p, &data_root, &origin, &verifier);
     let mut check = updater
         .check(&CheckRequest {
-            components: &UPDATABLE,
+            components: updatable(),
             depth,
         })
         .map_err(|e| e.to_string())?;
@@ -409,7 +409,7 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
             // a byte hashed, and the pending ones are reported as before.
             check = updater
                 .check(&CheckRequest {
-                    components: &UPDATABLE,
+                    components: updatable(),
                     depth: Depth::Quick,
                 })
                 .map_err(|e| e.to_string())?;

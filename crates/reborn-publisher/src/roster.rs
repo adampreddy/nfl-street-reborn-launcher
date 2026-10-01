@@ -82,7 +82,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Value};
 
-use reborn_core::content::pipeline::{CheckRequest, ComponentState, Depth, Updater, UPDATABLE};
+use reborn_core::content::pipeline::{updatable, CheckRequest, ComponentState, Depth, Updater};
 use reborn_core::content::{ContentService, InstalledVersion, Pointer, POINTER_SCHEMA};
 use reborn_core::inventory::{CancelSignal, ComponentId, ScanObserver};
 use reborn_core::manifest::{Component, Release};
@@ -377,10 +377,10 @@ pub fn roster_verify() -> Result<Value, String> {
         // available, which is the only way to read off the (version,
         // sequence) each one is actually pinned at right now.
         let pass_one =
-            Updater::new(&platform, &scratch, &origin_source, &verifier).check(&CheckRequest { components: &UPDATABLE, depth: Depth::Quick })?;
+            Updater::new(&platform, &scratch, &origin_source, &verifier).check(&CheckRequest { components: updatable(), depth: Depth::Quick })?;
 
         let service = ContentService::new(&platform, &scratch);
-        for id in UPDATABLE {
+        for id in updatable().iter().copied() {
             if id == ComponentId::Roster {
                 continue;
             }
@@ -400,7 +400,7 @@ pub fn roster_verify() -> Result<Value, String> {
         // was seeded from, so the only thing left "available" should be
         // roster, never seeded. This is the check a player's launcher runs.
         let pass_two =
-            Updater::new(&platform, &scratch, &origin_source, &verifier).check(&CheckRequest { components: &UPDATABLE, depth: Depth::Quick })?;
+            Updater::new(&platform, &scratch, &origin_source, &verifier).check(&CheckRequest { components: updatable(), depth: Depth::Quick })?;
 
         let mut problems = Vec::new();
         let mut roster_bytes: Option<u64> = None;

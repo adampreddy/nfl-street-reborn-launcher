@@ -79,7 +79,7 @@ fn pairs(install_root: &Path, data_root: &Path, game_id: &str) -> Vec<(Component
         p
     };
     vec![
-        (ComponentId::Runtime, install_root.join("runtime"), data(DataDir::Runtime)),
+        (ComponentId::runtime_here(), install_root.join("runtime"), data(DataDir::Runtime)),
         (
             ComponentId::Textures,
             install_root.join(SHIPPED_CONTENT_DIR).join("textures").join(game_id),
@@ -264,7 +264,7 @@ mod tests {
         put(&data, "library/textures/GN7E69/mine.png", b"mine");
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods, ComponentId::GamePatch]);
+        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::runtime_here(), ComponentId::Mods, ComponentId::GamePatch]);
         assert!(!data.join("library/textures/GN7E69/a.png").exists(), "the player's tree was left alone");
         assert!(data.join("library/textures/GN7E69/mine.png").exists());
     }
@@ -276,15 +276,16 @@ mod tests {
         let install = dir.path().join("install");
         let data = dir.path().join("data");
         put(&install, "runtime/Dolphin.exe", b"dolphin");
-        // A pointer says an update installed the runtime already.
-        let pointer = crate::content::ContentLayout::new(&data).pointer_path("runtime");
+        // A pointer says an update installed the runtime already: this OS's
+        // runtime, which is the one the seeding pairs name.
+        let pointer = crate::content::ContentLayout::new(&data).pointer_path(ComponentId::runtime_here().as_str());
         std::fs::create_dir_all(pointer.parent().unwrap()).unwrap();
         std::fs::write(&pointer, b"{}").unwrap();
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
         assert!(r.seeded.is_empty(), "{r:?}");
         let reasons: Vec<(ComponentId, SkipReason)> = r.skipped.iter().map(|s| (s.component, s.reason.clone())).collect();
-        assert!(reasons.contains(&(ComponentId::Runtime, SkipReason::Delivered)));
+        assert!(reasons.contains(&(ComponentId::runtime_here(), SkipReason::Delivered)));
         assert!(reasons.contains(&(ComponentId::Textures, SkipReason::NothingShipped)));
         assert!(!data.join("runtime").exists());
     }

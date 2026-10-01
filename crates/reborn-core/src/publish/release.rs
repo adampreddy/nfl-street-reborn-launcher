@@ -284,7 +284,7 @@ pub fn republish_pinning(req: &CarryForward<'_>, sink: Sink<'_>) -> Result<Outco
             // excluded here once, to keep 1.36 GB of recovery away from a
             // normal install, and that was the wrong layer: a pin costs a
             // line of JSON, not a download, and what actually decides who
-            // fetches the full disc is `content::pipeline::UPDATABLE`, which
+            // fetches the full disc is `content::pipeline::updatable`, which
             // does not list it (see that module's
             // `game_full_is_recovery_the_automatic_loop_never_asks_for`).
             // Excluding it here bought nothing and cost the thing recovery
@@ -479,7 +479,7 @@ mod tests {
     /// It used to be excluded here, to keep the full disc away from a normal
     /// install. That was the wrong layer. Being pinned in a release costs a
     /// line of JSON; what decides who actually downloads it is
-    /// `content::pipeline::UPDATABLE`, which does not list `game-full`, so
+    /// `content::pipeline::updatable`, which does not list `game-full`, so
     /// the launcher's automatic check/fetch/promote loop never asks for it
     /// however many releases pin it. That half is asserted where it lives,
     /// by `content::pipeline::tests::

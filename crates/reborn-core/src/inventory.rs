@@ -140,7 +140,17 @@ fn resolve_under(root: &Path, relative: &str) -> Result<PathBuf> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComponentId {
     Launcher,
+    /// The Windows Reborn Dolphin runtime. Its wire name stays `runtime`,
+    /// the name every shipped Windows launcher already reads.
     Runtime,
+    /// The Linux Reborn Dolphin runtime (Steam Deck): the same fork commit
+    /// built for Linux, with its own `dolphin-emu`, `dolphin-tool`, `Sys`,
+    /// `Languages` and user template. Installs into the same `runtime/`
+    /// folder as the Windows one; a client only ever fetches its own, see
+    /// [`ComponentId::runtime_here`].
+    RuntimeLinux,
+    /// The macOS Reborn Dolphin runtime, same rule.
+    RuntimeMacos,
     OfflineContent,
     OnlineContent,
     Textures,
@@ -159,7 +169,7 @@ pub enum ComponentId {
     /// a player whose own copy cannot be converted. It is pinned and carried
     /// forward like every other component, so recovery does not expire; what
     /// keeps a normal install from ever fetching it is
-    /// [`crate::content::pipeline::UPDATABLE`], which does not list it, so
+    /// [`crate::content::pipeline::updatable`], which does not list it, so
     /// only the recovery command asks for it and only on a button press.
     GameFull,
 }
@@ -169,6 +179,8 @@ impl ComponentId {
     pub const ALL: &'static [ComponentId] = &[
         ComponentId::Launcher,
         ComponentId::Runtime,
+        ComponentId::RuntimeLinux,
+        ComponentId::RuntimeMacos,
         ComponentId::OfflineContent,
         ComponentId::OnlineContent,
         ComponentId::Textures,
@@ -184,6 +196,8 @@ impl ComponentId {
         match self {
             ComponentId::Launcher => "launcher",
             ComponentId::Runtime => "runtime",
+            ComponentId::RuntimeLinux => "runtime-linux",
+            ComponentId::RuntimeMacos => "runtime-macos",
             ComponentId::OfflineContent => "offline-content",
             ComponentId::OnlineContent => "online-content",
             ComponentId::Textures => "textures",
@@ -193,6 +207,25 @@ impl ComponentId {
             ComponentId::GamePatch => "game-patch",
             ComponentId::GameFull => "game-full",
         }
+    }
+
+    /// The runtime component this build of the launcher runs on: the
+    /// Windows, Linux or macOS Dolphin. Cross-platform play needs every OS on
+    /// one fork commit, so a release pins all three and each client reads
+    /// only its own; the other two are names it leaves alone.
+    pub fn runtime_here() -> ComponentId {
+        if cfg!(windows) {
+            ComponentId::Runtime
+        } else if cfg!(target_os = "macos") {
+            ComponentId::RuntimeMacos
+        } else {
+            ComponentId::RuntimeLinux
+        }
+    }
+
+    /// Whether this is one of the three per-OS runtimes.
+    pub fn is_runtime(self) -> bool {
+        matches!(self, ComponentId::Runtime | ComponentId::RuntimeLinux | ComponentId::RuntimeMacos)
     }
 
     /// Recognise a wire name. `None` for anything not a component.
@@ -237,7 +270,9 @@ impl ComponentId {
     /// - `controller-db` has no artifact yet, so it has no root.
     pub fn install_root(self) -> Option<&'static str> {
         match self {
-            ComponentId::Runtime => Some(DataDir::Runtime.relative()),
+            ComponentId::Runtime | ComponentId::RuntimeLinux | ComponentId::RuntimeMacos => {
+                Some(DataDir::Runtime.relative())
+            }
             ComponentId::OfflineContent => Some(DataDir::LibraryOffline.relative()),
             ComponentId::OnlineContent => Some(DataDir::LibraryOnline.relative()),
             ComponentId::Mods => Some(DataDir::ModsPackages.relative()),
@@ -1469,6 +1504,32 @@ mod tests {
         }
         assert_eq!(ComponentId::parse("news"), None, "the eighth is not one");
         assert_eq!(ComponentId::parse("Runtime"), None, "names are exact");
+    }
+
+    /// Cross-platform play means one fork commit built three ways, and a
+    /// Windows launcher that fetched the Linux build would boot nothing. Each
+    /// OS reads exactly one of the three, they share the `runtime/` folder,
+    /// and the Windows one keeps the wire name every shipped launcher reads.
+    #[test]
+    fn each_os_has_exactly_one_runtime_and_they_share_a_folder() {
+        let here = ComponentId::runtime_here();
+        assert!(here.is_runtime());
+        let expected = if cfg!(windows) {
+            ComponentId::Runtime
+        } else if cfg!(target_os = "macos") {
+            ComponentId::RuntimeMacos
+        } else {
+            ComponentId::RuntimeLinux
+        };
+        assert_eq!(here, expected);
+        assert_eq!(ComponentId::Runtime.as_str(), "runtime", "the Windows name is a contract");
+        assert_eq!(ComponentId::RuntimeLinux.as_str(), "runtime-linux");
+        assert_eq!(ComponentId::RuntimeMacos.as_str(), "runtime-macos");
+        for id in [ComponentId::Runtime, ComponentId::RuntimeLinux, ComponentId::RuntimeMacos] {
+            assert_eq!(id.install_root(), Some(DataDir::Runtime.relative()), "{id:?}");
+            assert!(!id.is_customizable(), "{id:?}: repair must replace a tampered emulator");
+        }
+        assert_eq!(ComponentId::ALL.iter().filter(|id| id.is_runtime()).count(), 3);
     }
 
     #[test]
