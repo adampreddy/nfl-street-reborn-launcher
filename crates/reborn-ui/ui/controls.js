@@ -27,18 +27,31 @@ function lock(value){
  if(value){handed=fallback=null;if(held?.disabled){(screen.querySelector('button:not(:disabled),select:not(:disabled)')||document.querySelector('.shell-nav [aria-current],.shell-nav a'))?.focus({preventScroll:true});handed=held;fallback=document.activeElement;}}
  else{if(handed?.isConnected&&!handed.disabled&&document.activeElement===fallback)handed.focus({preventScroll:true});handed=fallback=null;}
 }
+// The device scan starts the runtime and waits for it, so it takes seconds. The page draws at once from the last scan
+// (locked while the fresh one runs) and the launch check only holds the scan up when the runtime path isn't saved.
+const SNAP='reborn:controls-snapshot';
+function readSnap(){try{const v=JSON.parse(localStorage.getItem(SNAP)||'null');return v&&Array.isArray(v.slots)?v:null;}catch(_){return null;}}
+function saveSnap(){try{localStorage.setItem(SNAP,JSON.stringify({runtime:state.runtime,pads:state.pads,partial:state.partial,slots:state.slots,current:state.current,options:state.options}));}catch(_){}}
 async function refresh(){
  if(busy)return;lock(true);problem='';
  try{
-  const check=await call('launch_check',{runtime:get('runtime'),game:get('game'),userDir:get('userDir')}).catch(()=>null);
-  state.runtime=get('runtime')||check?.runtime||null;
+  const stored=get('runtime');
+  const checking=call('launch_check',{runtime:stored,game:get('game'),userDir:get('userDir')}).catch(()=>null);
+  const check=stored?null:await checking;
+  state.runtime=stored||check?.runtime||null;
   const [devices,assigned,current,options]=await Promise.allSettled([call('devices',{runtime:state.runtime}),call('controller_slots'),call('controls_current'),call('controls_options',{runtime:state.runtime})]);
   if(devices.status==='rejected')throw devices.reason;if(assigned.status==='rejected')throw assigned.reason;
   state.pads=devices.value?.pads||[];state.partial=devices.value?.complete===false;
   const slots=assigned.value?.slots;
   if(Array.isArray(slots))state.slots=slots.slice(0,4);else{const pads=[...state.pads].sort((a,b)=>Number(b.device_string===assigned.value?.primary)-Number(a.device_string===assigned.value?.primary));state.slots=Array.from({length:4},(_,i)=>pads[i]?.device_string||null);}
   state.current=current.status==='fulfilled'?current.value:null;state.options=options.status==='fulfilled'?options.value:[];
- }catch(e){problem=reason(e);}finally{busy=false;draw();}
+  saveSnap();
+ }catch(e){problem=reason(e);}finally{
+  // A player may already be on a control drawn from the last scan: keep focus on the same control after the redraw.
+  const keep=screen.contains(document.activeElement)?document.activeElement.id:'';
+  busy=false;draw();
+  if(keep)document.getElementById(keep)?.focus({preventScroll:true});
+ }
 }
 function draw(){
  workspace?.dispose?.();workspace=null;delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));
@@ -73,6 +86,6 @@ function draw(){
  if(bridge)mountNotices(noticeHost);
 }
 markCurrent();wireCoreFold();
-if(bridge)refresh();else{problem='Open Controllers from the launcher to connect your devices.';draw();}
+if(bridge){const snap=readSnap();if(snap){Object.assign(state,snap);draw();}refresh();}else{problem='Open Controllers from the launcher to connect your devices.';draw();}
 document.addEventListener('refresh-devices',()=>{if(!busy&&!document.body.dataset.controllerTesting)refresh();});
 window.addEventListener('pagehide',()=>workspace?.dispose?.());

@@ -462,7 +462,7 @@ function draw() {
   const ready = ok(state.check) && state.check.ready;
   const inSession = playing || externalSession;
   const scene = el("section", { class: "play-scene", "aria-hidden": "true" },
-    el("div", { class: "hero-art" }, el("img", { src: "art/play-background.png", alt: "" })));
+    el("div", { class: "hero-art" }, el("img", { src: "art/play-background-display.jpg", alt: "" })));
   // The artwork element itself survives every redraw, so it never flickers or moves.
   const art = screen.querySelector?.(".hero-art");
   if (art) scene.querySelector(".hero-art").replaceWith(art);
@@ -474,7 +474,7 @@ function draw() {
   actions.append(el("button", { type: "button", id: "game-details-open", class: "btn play-more", title: "Game details", "aria-label": "Game details", "aria-haspopup": "dialog", onclick: openDetails },
     icon(GLYPH_MORE, { fill: true })));
   const content = el("div", { class: "play-content" },
-    el("h1", { class: "play-wordmark" }, el("img", { src: "art/play-logo.png", alt: "NFL Street Reborn" })),
+    el("h1", { class: "play-wordmark" }, el("img", { src: "art/play-logo-display.png", alt: "NFL Street Reborn" })),
     actions, playStatus(ready, inSession, error), notes());
   const dialog = detailsDialog();
   screen.classList?.toggle("is-entering", !entered);

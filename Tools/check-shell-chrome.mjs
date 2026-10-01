@@ -23,7 +23,7 @@ try {
  await page.getByRole('button',{name:'Add songs…',exact:true}).waitFor();
  assert.equal(await page.locator('.app-header').isVisible(),false);
  assert.equal(await page.locator('.input-footer').isVisible(),false);
- assert.equal(await page.locator('.brand img').getAttribute('src'),'art/nsr-sidebar.png');
+ assert.equal(await page.locator('.brand img').getAttribute('src'),'art/nsr-sidebar-display.png');
  await page.locator('.brand img').evaluate(img=>img.decode());
  // The themed shell (theme.css, body.themed): the sidebar is 184px (160px at the minimum window), the
  // content fills the rest of the window from the top, and the closed save lane takes no room.
