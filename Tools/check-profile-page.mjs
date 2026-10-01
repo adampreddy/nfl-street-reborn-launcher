@@ -211,6 +211,70 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // More stats' long lists show five rows and "Show all N" (as the old profile capped them); H2H "Last" shows a
+    // one-game match's score, a series' date (P4-26)
+    const p = F.profile();
+    const base = p.head_to_head[0];
+    p.head_to_head = Array.from({ length: 7 }, (_, i) => ({ ...structuredClone(base), player_id: `${'0123456'[i]}b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e`, display_name: `Rival ${i + 1}` }));
+    Object.assign(p.head_to_head[0].last, { game_id: 'g:0b2c3d4e', score: [35, 14] });
+    p.by_team = Array.from({ length: 6 }, (_, i) => ({ ...structuredClone(p.by_team[0]), key: `tgid:${i}`, name: `Team ${i + 1}` }));
+    p.combos = Array.from({ length: 8 }, (_, i) => ({ ...structuredClone(p.combos[0]), rec: 60 - i }));
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
+    await page.locator('#more').waitFor();
+    for (const [id, n, what] of [['h2h', 7, 'opponents'], ['by-team', 6, 'teams'], ['combos', 8, 'combos']]) {
+      const rows = page.locator(`#${id} tbody tr:not(.more)`);
+      assert.equal(await rows.filter({ visible: true }).count(), 5, `${id}: five rows first`);
+      const b = page.locator(`#${id} .pf-showall`);
+      assert.equal(await b.textContent(), `Show all ${n} ${what}`);
+      await b.click();
+      assert.equal(await rows.filter({ visible: true }).count(), n, `${id}: every row after Show all`);
+      assert.equal(await b.textContent(), 'Show top 5');
+      assert.equal(await b.evaluate((x) => document.activeElement === x), true, `${id}: focus stays on the button`);
+    }
+    assert.equal(await page.locator('#h2h tbody tr').nth(0).locator('td').nth(3).textContent(), 'W 35–14', 'a one-game match shows its score');
+    assert.equal(await page.locator('#h2h tbody tr').nth(1).locator('td').nth(3).textContent(), 'W Sep 26', 'a series shows its date');
+    await contentRules(page);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // 800×560, a pad: Right across Full stats' headings keeps each one wholly in view, clear of the sticky Player
+    // column; Head to head fits without scrolling (P4-26)
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { viewport: { width: 800, height: 560 }, pad: true });
+    await page.locator('#full-stats .tbl').waitFor();
+    const press = async (b) => {
+      await page.evaluate((b) => { pads[0].buttons[b] = { pressed: true, value: 1 }; }, b);
+      await page.waitForTimeout(90);
+      await page.evaluate((b) => { pads[0].buttons[b] = { pressed: false, value: 0 }; }, b);
+      await page.waitForTimeout(90);
+    };
+    const key = () => page.evaluate(() => document.activeElement?.getAttribute('data-key'));
+    const inView = () => page.evaluate(() => {
+      const box = document.querySelector('#full-stats .pf-tbl').getBoundingClientRect(), r = document.activeElement.closest('th').getBoundingClientRect();
+      const name = document.querySelector('#full-stats thead th').getBoundingClientRect();
+      return r.left >= Math.max(box.left, name.right) - 1 && r.right <= box.right + 1 ? '' : `${document.activeElement.textContent} ${Math.round(r.left)}..${Math.round(r.right)} not in ${Math.round(name.right)}..${Math.round(box.right)}`;
+    });
+    await page.locator('[data-key="sort-passing-name"]').focus();
+    const seen = [];
+    for (let i = 0; i < 12 && (await key()) !== 'sort-passing-long'; i++) {
+      await press(15);
+      await settle(page);
+      seen.push(await key());
+      assert.equal(await inView(), '', `the focused heading is wholly in view: ${seen}`);
+    }
+    assert.equal(await key(), 'sort-passing-long', `Right reaches the last heading: ${seen}`);
+    assert.ok(await page.evaluate(() => document.querySelector('#full-stats .pf-tbl').scrollLeft > 0), 'the table scrolled to show it');
+    await page.screenshot({ path: path.join(out, 'profile-800-full-stats-pad-right.png') });
+    // back Left to C/ATT: it comes out from under the sticky Player column
+    for (let i = 0; i < 12 && (await key()) !== 'sort-passing-cmp'; i++) { await press(14); await settle(page); assert.equal(await inView(), '', 'Left keeps the heading in view'); }
+    assert.equal(await key(), 'sort-passing-cmp');
+    const h2h = await page.locator('#h2h').evaluate((n) => [n.scrollWidth, n.clientWidth]);
+    assert.ok(h2h[0] <= h2h[1] + 1, `Head to head does not scroll at 800: ${h2h}`);
+    assert.deepEqual(await texts(page, '#h2h thead th'), ['Opponent', 'Record', 'PTS', 'Allowed', 'Last', 'Best win', 'Worst loss']);
+    assert.deepEqual(await page.locator('#h2h thead th').evaluateAll((ns) => ns.filter((n) => n.offsetParent).map((n) => n.textContent)), ['Opponent', 'Record', 'PTS', 'Last', 'Best win']);
+    await page.screenshot({ path: path.join(out, 'profile-800-full-stats-pad.png') });
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // a private room is never drawn in More stats (P4-3): not in By game type, not as a team
     const p = F.profile();
     p.by_game_type.push({ key: 'private', name: 'Private room', games: 3, wins: 2, losses: 1, win_pct: 0.667, pts_per_game: 30 });
@@ -272,6 +336,19 @@ try {
     await page.locator('#back').click();
     await page.waitForURL(/stats\.html$/);
     await page.locator('.st-cols, #screen').first().waitFor();
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // Career's "Full stats ›" scrolls in place: one Back still leaves the page (P4-26); the href stays for a middle-click
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'stats', url: 'stats.html', scope: 'main' });
+    await page.locator(`a[href^="profile.html?player=${F.ME}"]`).first().click();
+    await page.locator('#full-stats .tbl').waitFor();
+    assert.equal(await page.locator('#career .sec-link').getAttribute('href'), '#full-stats');
+    await page.locator('#career .sec-link').click();
+    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
+    assert.equal(await page.evaluate(() => location.hash), '', 'no history entry for the in-page link');
+    await page.locator('#back').click();
+    await page.waitForURL(/stats\.html$/);
     assert.deepEqual(errors, []);
     await close();
   }

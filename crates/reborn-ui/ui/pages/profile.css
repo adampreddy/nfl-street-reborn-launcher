@@ -129,5 +129,16 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
   .pf-live{grid-column:1/-1;width:auto}
   .pf-more{grid-template-columns:minmax(0,1fr)}
 }
-@media (max-width:1000px){body.page-profile #main{padding:24px 24px 16px}}
+/* Below 1280 a wide table can scroll sideways in its card: the Player column stays put on a solid surface and the
+   numbers scroll under it (profile.js followFocus keeps a pad's focused heading in view). */
+@media (max-width:1279px){
+  .pf-tbl .tbl tr>:first-child:not([colspan]),.pf-more-card.wide .tbl tr>:first-child:not([colspan]){position:sticky;left:0;z-index:1}
+  .pf-tbl.scrolled .tbl tr>:first-child:not([colspan]),.pf-more-card.wide.scrolled .tbl tr>:first-child:not([colspan]){background:var(--surface-solid)}
+}
+@media (max-width:1000px){
+  body.page-profile #main{padding:24px 24px 16px}
+  /* Head to head fits without scrolling: Allowed and Worst loss leave (the record and points still read) */
+  #h2h .tbl{min-width:0}
+  #h2h .tbl tr>:nth-child(4),#h2h .tbl tr>:nth-child(7){display:none}
+}
 @media (max-width:720px){.pf-row{grid-template-columns:minmax(0,1fr)}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}}

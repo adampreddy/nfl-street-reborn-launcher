@@ -316,7 +316,10 @@ function careerSection(p) {
     t.rank || t.perGame ? el('span', { class: 'pf-car-s num' }, t.rank ? el('b', { text: t.rank }) : null, t.rank && t.perGame ? ' · ' : null, t.perGame) : null)));
   const hasTables = Object.keys(FULL_STATS).some((k) => list(p.career?.[k]?.rows).length);
   return el('section', { id: 'career', 'aria-labelledby': 'career-h' },
-    sectionHead('career', 'Career', hasTables ? el('a', { class: 'sec-link', href: '#full-stats', 'data-key': 'full-stats', text: 'Full stats ›' }) : null),
+    sectionHead('career', 'Career', hasTables ? el('a', { class: 'sec-link', href: '#full-stats', 'data-key': 'full-stats', text: 'Full stats ›',
+      // Scroll in place: following the #full-stats link would add a history entry, and Back would then stay on this page.
+      // The href stays for a middle-click.
+      onclick: (e) => { e.preventDefault(); document.getElementById('full-stats')?.scrollIntoView?.({ block: 'start' }); } }) : null),
     el('div', { class: 'glass pf-pad' }, grid, footnote ? el('p', { class: 'pf-note', text: footnote }) : null));
 }
 
@@ -392,7 +395,7 @@ function fullStatsSection(p) {
   if (!fs.kinds.length) return null;
   if (!fs.kinds.includes(fs.tab)) fs.tab = fs.kinds[0];
   const head = el('div', { class: 'sec-head' });
-  const body = el('div', { class: 'glass pf-tbl' });
+  const body = followFocus(el('div', { class: 'glass pf-tbl' }));
   fs.render = () => {
     const tabFocus = typeof head.contains === 'function' && head.contains(document.activeElement);
     const active = typeof body.contains === 'function' && body.contains(document.activeElement) ? document.activeElement?.getAttribute('data-key') : null;
@@ -418,18 +421,59 @@ const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}–${num(r?.losses) ? r.los
 const pctOf = (p) => (num(p) ? fmtPct(p) : DASH);
 const convOf = (p) => (num(p) ? `${Math.round(p * 100)}%` : DASH);
 
-function smallTable(caption, headers, rows) {
+/** A More stats table. With `cap` ({ id, what }), a long list shows five rows and a "Show all N <what>" row below
+ *  them; the same button then reads "Show top 5" (it stays, so focus never falls back to the page top). */
+function smallTable(caption, headers, rows, cap = null) {
+  const trs = rows.map((cells) => el('tr', {}, ...cells.map((c, i) => {
+    const cell = i === 0 ? el('th', { scope: 'row' }) : el('td');
+    if (typeof c === 'string') cell.textContent = c; else if (c) cell.append(c);
+    return cell;
+  })));
+  const body = el('tbody', {}, ...trs);
+  if (cap && trs.length > SHOWN) {
+    const label = el('span');
+    const b = el('button', { type: 'button', class: 'pf-showall', 'data-key': `showall-${cap.id}`, 'aria-expanded': 'false' }, label, el('span', { class: 'chev', 'aria-hidden': 'true' }));
+    const set = (open) => {
+      trs.slice(SHOWN).forEach((r) => { r.hidden = !open; });
+      b.setAttribute('aria-expanded', String(open));
+      label.textContent = open ? `Show top ${SHOWN}` : `Show all ${trs.length} ${cap.what}`;
+    };
+    b.addEventListener('click', () => set(b.getAttribute('aria-expanded') !== 'true'));
+    set(false);
+    body.append(el('tr', { class: 'more' }, el('td', { colspan: String(headers.length) }, b)));
+  }
   return el('table', { class: 'tbl' }, el('caption', { class: 'pf-sr', text: caption }),
-    el('thead', {}, el('tr', {}, ...headers.map((h) => el('th', { scope: 'col', text: h })))),
-    el('tbody', {}, ...rows.map((cells) => el('tr', {}, ...cells.map((c, i) => {
-      const cell = i === 0 ? el('th', { scope: 'row' }) : el('td');
-      if (typeof c === 'string') cell.textContent = c; else if (c) cell.append(c);
-      return cell;
-    })))));
+    el('thead', {}, el('tr', {}, ...headers.map((h) => el('th', { scope: 'col', text: h })))), body);
+}
+
+/** A table wider than its card scrolls sideways inside it (the small window): keep the focused control (a pad user's
+ *  heading or link) wholly in view, clear of the sticky Player column. */
+function followFocus(box) {
+  box.addEventListener('focusin', (e) => {
+    if (!(e.target instanceof Element) || box.scrollWidth <= box.clientWidth) return;
+    // the whole cell, not just its button: a column's numbers sit under its heading's full width
+    const t = e.target.closest('th, td') || e.target;
+    const view = box.getBoundingClientRect(), r = t.getBoundingClientRect();
+    const sticky = t.closest('th:first-child, td:first-child') ? 0 : (box.querySelector('thead th:first-child')?.getBoundingClientRect().width ?? 0);
+    if (r.right > view.right) box.scrollLeft += r.right - view.right + 8;
+    else if (r.left < view.left + sticky) box.scrollLeft -= view.left + sticky - r.left + 8;
+  });
+  // The sticky Player column takes its solid surface only while numbers scroll under it.
+  box.addEventListener('scroll', () => box.classList.toggle('scrolled', box.scrollLeft > 0), { passive: true });
+  return box;
 }
 
 function moreCard(id, title, table, wide = false) {
-  return el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
+  const card = el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
+  return wide ? followFocus(card) : card;
+}
+
+// Head to head's "Last": a one-game match ("g:<game id>") shows its score; a series' summed points would read like a
+// single score, so it shows its date (as the old profile did).
+function lastOf(last) {
+  const single = typeof last?.game_id === 'string' && last.game_id.startsWith('g:');
+  const s = last?.score;
+  return single && Array.isArray(s) && num(s[0]) && num(s[1]) ? `${s[0]}–${s[1]}` : day(last?.at);
 }
 
 /** The old profile's Best players (P4-25): the Stats page's six role rows, the portrait over the team colour, the
@@ -466,14 +510,14 @@ function moreStats(p, self) {
       const cell = h.player_id && UUID_RE.test(String(h.player_id).toLowerCase())
         ? el('a', { class: 'who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'who' }, ...inner);
       const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
-      return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${day(h.last.at)}`.trim() : DASH,
+      return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH,
         num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `−${h.biggest_loss.margin}` : DASH];
-    })), true));
+    }), { id: 'h2h', what: 'opponents' }), true));
   const players = playersCard(p.best_players, self);
   if (players) cards.push(players);
   const teams = list(p.by_team).filter(Boolean);
   if (teams.length) cards.push(moreCard('by-team', 'By team', smallTable('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'],
-    teams.map((t) => [who(t.name, t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url, abbrev: t.abbrev }), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
+    teams.map((t) => [who(t.name, t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url, abbrev: t.abbrev }), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]), { id: 'by-team', what: 'teams' })));
   const pg = p.per_game;
   if (pg && pg.games) cards.push(moreCard('per-game', 'Per game', smallTable(`Per game, over ${int(pg.games)} games with play-by-play`, ['Stat', `Per game (${int(pg.games)} games)`], [
     ['Total yards', oneOr(pg.yds)], ['Pass / rush', `${oneOr(pg.pass)} / ${oneOr(pg.rush)}`], ['First downs', oneOr(pg.first_downs)], ['Turnovers', oneOr(pg.turnovers)],
@@ -481,7 +525,7 @@ function moreStats(p, self) {
     ['Longest drive', num(pg.longest_drive) ? `${pg.longest_drive} plays` : DASH], ['Lead changes', oneOr(pg.lead_changes)], ['Biggest lead', oneOr(pg.biggest_lead)], ['Safeties', int(pg.safeties)]])));
   const combos = list(p.combos).filter((c) => c && c.passer && c.receiver);
   if (combos.length) cards.push(moreCard('combos', 'Best QB → receiver', smallTable('Quarterback to receiver combinations', ['Combo', 'REC', 'YDS', 'TD'],
-    combos.map((c) => [who(`${c.passer.name} → ${c.receiver.name}`, { name: c.passer.team, logo_url: c.passer.logo_url }), int(c.rec), int(c.yds), int(c.td)]))));
+    combos.map((c) => [who(`${c.passer.name} → ${c.receiver.name}`, { name: c.passer.team, logo_url: c.passer.logo_url }), int(c.rec), int(c.yds), int(c.td)]), { id: 'combos', what: 'combos' })));
   const pt = p.pitches;
   if (pt && (pt.pitches || pt.pitch_plays)) cards.push(moreCard('pitches', 'Laterals & pitches', smallTable('Laterals and pitches', ['Stat', 'Total'],
     [['Pitches', int(pt.pitches)], ['Plays with a pitch', int(pt.pitch_plays)], ['Yards on those plays', int(pt.pitch_yds)]])));
