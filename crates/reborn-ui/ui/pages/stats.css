@@ -1,0 +1,52 @@
+/* Stats (spec §8.6): matches first, the full content width, two columns whose first cards start and end on one line.
+   Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs). The match rows are theme.css's .m-*. */
+body.page-stats #main{padding:36px 36px 32px}
+.page-stats .page-heading{margin-bottom:24px}
+.page-stats #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
+.page-stats #screen>.refusal,.page-stats #screen>.note{margin:0}
+.st-cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:24px;align-items:stretch}
+.st-col{display:flex;flex-direction:column;min-width:0}
+.st-col>.st-list{flex:1}
+.st-side{display:flex;flex-direction:column;gap:24px;min-width:0}
+.st-side>section{display:flex;flex-direction:column}
+.st-side>section:last-child{flex:1}
+/* You */
+.st-you{padding:16px}
+.st-you-top{display:flex;align-items:flex-end;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--stroke)}
+.st-elo-big{margin-top:4px;font:700 32px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.st-elo-big.unranked{font-size:22px;color:var(--fg-2)}
+.st-chg{margin-top:4px;font-size:12px;color:var(--fg-2)}
+.st-chg .up{font-weight:600;color:var(--ok)}
+.st-chg .down{font-weight:600;color:var(--red-ink)}
+.st-spark{flex:1;min-width:0;height:54px;color:var(--red)}
+.st-nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;padding-top:16px}
+.st-nums b{display:block;margin-top:4px;font:600 17px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.st-nums b.up{color:var(--ok)}
+/* Your players: one list that stretches so its bottom meets Your matches */
+.st-plist{flex:1;display:flex;flex-direction:column;padding:0 16px}
+.st-player{flex:1;display:flex;align-items:center;gap:16px;min-height:64px;color:inherit;text-decoration:none}
+.st-player+.st-player{border-top:1px solid var(--stroke)}
+a.st-player:hover .st-pname{text-decoration:underline}
+.st-ptx{flex:1;min-width:0}
+.st-phead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.st-pname{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-phead .k-label{flex:none;font-size:10px}
+.st-player.none .st-pname{font-weight:500;color:var(--fg-3)}
+.st-line{margin-top:4px;font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-line b{font-weight:600;color:var(--fg)}
+.st-line .sep{margin:0 6px;color:var(--fg-3)}
+/* the footer line: the queue note on the left, Profile & sync on the right */
+.st-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 24px;font-size:12px;color:var(--fg-3)}
+.st-account{margin-left:auto}
+.st-account[open]{flex-basis:100%}
+.st-account>summary{list-style:none;cursor:pointer;text-align:right;font-weight:600;color:var(--fg-2)}
+.st-account>summary::-webkit-details-marker{display:none}
+.st-account>summary:hover{color:var(--fg)}
+.st-account-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px;padding:16px}
+.st-account-body h3{margin:0 0 8px;font:600 14px Inter,system-ui,sans-serif;color:var(--fg)}
+.st-account-body p{margin:0 0 8px;font-size:12.5px;color:var(--fg-2)}
+.st-account-body label{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--fg-2)}
+.st-account-body>.said{grid-column:1/-1;margin:0}
+@media (max-width:1100px){.st-cols{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:1000px){body.page-stats #main{padding:24px 24px 16px}}
+@media (max-width:720px){.st-nums{grid-template-columns:repeat(2,minmax(0,1fr))}.st-account-body{grid-template-columns:minmax(0,1fr)}}
