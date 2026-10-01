@@ -76,10 +76,24 @@ impl ReleaseSource for Origin {
 /// can run ([`ComponentId::runtime_here`]). The other two are pins it never
 /// looks up, which is also what a launcher built before they existed does
 /// with them, so adding them changed nothing for a Windows player.
+///
+/// `game-import` is in the Linux and macOS lists only: those launchers are
+/// one file and fetch the bundle as content. The Windows installer carries
+/// it beside the launcher, where the import has always read it, and a
+/// Windows list that named it would make every existing install download
+/// 184 MB it already has.
 pub fn updatable() -> &'static [ComponentId] {
-    const WINDOWS: [ComponentId; 7] = with_runtime(ComponentId::Runtime);
-    const LINUX: [ComponentId; 7] = with_runtime(ComponentId::RuntimeLinux);
-    const MACOS: [ComponentId; 7] = with_runtime(ComponentId::RuntimeMacos);
+    const WINDOWS: [ComponentId; 7] = [
+        ComponentId::Runtime,
+        ComponentId::OfflineContent,
+        ComponentId::OnlineContent,
+        ComponentId::Textures,
+        ComponentId::Mods,
+        ComponentId::GamePatch,
+        ComponentId::Roster,
+    ];
+    const LINUX: [ComponentId; 8] = with_runtime_and_bundle(ComponentId::RuntimeLinux);
+    const MACOS: [ComponentId; 8] = with_runtime_and_bundle(ComponentId::RuntimeMacos);
     if cfg!(windows) {
         &WINDOWS
     } else if cfg!(target_os = "macos") {
@@ -89,14 +103,17 @@ pub fn updatable() -> &'static [ComponentId] {
     }
 }
 
-/// The promotion order with one OS's runtime in the runtime slot.
-const fn with_runtime(runtime: ComponentId) -> [ComponentId; 7] {
+/// The promotion order for a launcher that is one file: its OS's runtime in
+/// the runtime slot, and the game-import bundle before the patch chain that
+/// builds on what it produces.
+const fn with_runtime_and_bundle(runtime: ComponentId) -> [ComponentId; 8] {
     [
         runtime,
         ComponentId::OfflineContent,
         ComponentId::OnlineContent,
         ComponentId::Textures,
         ComponentId::Mods,
+        ComponentId::GameImport,
         ComponentId::GamePatch,
         ComponentId::Roster,
     ]
@@ -124,6 +141,7 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         // its own call path, never by this pipeline's automatic
         // check/fetch/promote loop.
         ComponentId::GameFull => Some(DataDir::LibraryGameFull),
+        ComponentId::GameImport => Some(DataDir::LibraryGameImport),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }
@@ -1045,6 +1063,10 @@ mod tests {
         }
         assert_eq!(updatable().iter().filter(|id| id.is_runtime()).count(), 1);
         assert_eq!(install_dir(here), Some(DataDir::Runtime));
+        // The bundle: fetched by a one-file launcher, carried by the Windows
+        // installer, so a Windows list never asks the origin for it.
+        assert_eq!(updatable().contains(&ComponentId::GameImport), !cfg!(windows));
+        assert_eq!(install_dir(ComponentId::GameImport), Some(DataDir::LibraryGameImport));
     }
 
     fn runtime_v1() -> Built {

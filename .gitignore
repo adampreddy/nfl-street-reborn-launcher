@@ -51,3 +51,6 @@ Thumbs.db
 
 # Signing keys from rebornctl publish keygen. Never in the repository.
 *.key
+
+# Linux AppImage external binaries (DolphinTool, xdelta3), placed by CI
+crates/reborn-ui/binaries/

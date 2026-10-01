@@ -172,6 +172,13 @@ pub enum ComponentId {
     /// [`crate::content::pipeline::updatable`], which does not list it, so
     /// only the recovery command asks for it and only on a button press.
     GameFull,
+    /// The game-import bundle: the patch manifest and `reborn.xdelta` that
+    /// turn a player's own NFL Street 2 disc into the Reborn disc. The
+    /// Windows installer carries it beside the launcher and the seeder
+    /// adopts that copy; a Linux or macOS launcher is one file and fetches
+    /// it as content instead. The tools that apply it (DolphinTool,
+    /// xdelta3) are not in it: they ship with the launcher on every OS.
+    GameImport,
 }
 
 impl ComponentId {
@@ -189,6 +196,7 @@ impl ComponentId {
         ComponentId::Roster,
         ComponentId::GamePatch,
         ComponentId::GameFull,
+        ComponentId::GameImport,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -206,6 +214,7 @@ impl ComponentId {
             ComponentId::Roster => "roster",
             ComponentId::GamePatch => "game-patch",
             ComponentId::GameFull => "game-full",
+            ComponentId::GameImport => "game-import",
         }
     }
 
@@ -289,6 +298,7 @@ impl ComponentId {
             // a landed download into a pristine image is a separate, later
             // step, not this component's install root.
             ComponentId::GameFull => Some(DataDir::LibraryGameFull.relative()),
+            ComponentId::GameImport => Some(DataDir::LibraryGameImport.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -1530,6 +1540,17 @@ mod tests {
             assert!(!id.is_customizable(), "{id:?}: repair must replace a tampered emulator");
         }
         assert_eq!(ComponentId::ALL.iter().filter(|id| id.is_runtime()).count(), 3);
+    }
+
+    /// The bundle a Deck fetches and a PC gets from its installer: one
+    /// component, one folder, never customizable (a tampered patch must be
+    /// replaced, not kept).
+    #[test]
+    fn the_game_import_bundle_is_a_component_with_its_own_folder() {
+        assert_eq!(ComponentId::GameImport.as_str(), "game-import");
+        assert_eq!(ComponentId::parse("game-import"), Some(ComponentId::GameImport));
+        assert_eq!(ComponentId::GameImport.install_root(), Some("library/game-import"));
+        assert!(!ComponentId::GameImport.is_customizable());
     }
 
     #[test]

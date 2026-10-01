@@ -159,12 +159,18 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let _guard=LaunchGuard::acquire()?;
         let p=Platform::detect();
         let data=p.paths.data_root().map_err(|e|e.to_string())?;
-        let bundle=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import");
+        // The bundle (manifest + reborn.xdelta) is the content component once
+        // it has arrived, else the installer's folder beside the launcher. The
+        // tools come from wherever this launcher carries them: the AppImage's
+        // usr/bin on Linux, the same game-import folder on Windows.
+        let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
+        let bundle=reborn_core::game_patch::bundle_dir(&p,&data);
+        let tools=reborn_core::game_patch::find_import_tools(&p,&[exe_dir.join(reborn_core::game_patch::BUNDLE_DIR)]).unwrap_or_else(||bundle.clone());
         let source=reborn_core::session::user_path(&image);
         // Game ID is the sole content acceptance gate. Patch compatibility is
         // separate: preserve an existing/modified image if it cannot use this delta.
         check_reborn_id(&source)?;
-        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
+        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_tools(&bundle,&tools,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
             Ok(output)=>(output,true,None),
             Err(reason) => {
                 let _=app.emit("game-import-progress",serde_json::json!({"stage":"Importing your game file...","percent":null}));

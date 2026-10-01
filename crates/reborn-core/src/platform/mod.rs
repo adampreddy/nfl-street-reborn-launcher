@@ -623,6 +623,9 @@ pub enum DataDir {
     /// is neither of those until something promotes it, so its landing spot
     /// must collide with neither.
     LibraryGameFull,
+    /// The game-import bundle (patch manifest + reborn.xdelta) as content:
+    /// what the setup wizard patches a player's own disc with.
+    LibraryGameImport,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -655,6 +658,7 @@ impl DataDir {
             DataDir::LibraryRoster => "library/roster",
             DataDir::LibraryGamePatch => "library/game-patch",
             DataDir::LibraryGameFull => "library/game-full",
+            DataDir::LibraryGameImport => "library/game-import",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -684,6 +688,7 @@ impl DataDir {
         DataDir::LibraryRoster,
         DataDir::LibraryGamePatch,
         DataDir::LibraryGameFull,
+        DataDir::LibraryGameImport,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,

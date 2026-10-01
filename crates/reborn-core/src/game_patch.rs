@@ -289,16 +289,65 @@ impl Patcher for Xdelta3<'_> {
     }
 }
 
-/// Where the delta tool is looked for: the import bundle beside the
+/// Where the import tools (DolphinTool, xdelta3) are looked for, in order:
+/// inside the AppImage when this is one, the import bundle beside the
 /// launcher, the install root, then whatever the caller adds.
-pub fn xdelta_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
+///
+/// `APPDIR` is set by the AppImage runtime to the folder it unpacked into;
+/// the Linux build carries both tools under `usr/bin` there, because an
+/// AppImage is read only and nothing can be put beside it.
+pub fn tool_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
+    let appdir = std::env::var_os("APPDIR").filter(|v| !v.is_empty()).map(PathBuf::from);
+    tool_dirs_for(platform.paths.install_root().ok().as_deref(), appdir.as_deref(), extra)
+}
+
+/// [`tool_dirs`] with its two inputs in hand, so the order is testable.
+pub fn tool_dirs_for(install: Option<&Path>, appdir: Option<&Path>, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(install) = platform.paths.install_root() {
+    if let Some(appdir) = appdir {
+        dirs.push(appdir.join("usr").join("bin"));
+    }
+    if let Some(install) = install {
         dirs.push(install.join(BUNDLE_DIR));
-        dirs.push(install);
+        dirs.push(install.to_path_buf());
     }
     dirs.extend(extra.iter().cloned());
     dirs
+}
+
+/// Where the delta tool is looked for. The same places as every import tool.
+pub fn xdelta_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
+    tool_dirs(platform, extra)
+}
+
+/// The folder that holds both import tools, or `None` when no folder has
+/// both: a bundle with the patcher and no disc reader cannot import.
+pub fn find_import_tools(platform: &Platform, extra: &[PathBuf]) -> Option<PathBuf> {
+    let suffix = platform.paths.exe_suffix();
+    let reader = format!("DolphinTool{suffix}");
+    let delta = format!("{XDELTA_NAME}{suffix}");
+    tool_dirs(platform, extra)
+        .into_iter()
+        .find(|d| d.join(&reader).is_file() && d.join(&delta).is_file())
+}
+
+/// The game-import bundle (patch manifest + `reborn.xdelta`): the content
+/// component in the data root once it has arrived, else the folder the
+/// Windows installer put beside the launcher.
+pub fn bundle_dir(platform: &Platform, data_root: &Path) -> PathBuf {
+    bundle_dir_for(data_root, platform.paths.install_root().ok().as_deref())
+}
+
+/// [`bundle_dir`] with its inputs in hand. The data root wins only when the
+/// bundle is actually there: a content folder that is still empty must not
+/// hide the installer's copy.
+pub fn bundle_dir_for(data_root: &Path, install: Option<&Path>) -> PathBuf {
+    let mut content = data_root.to_path_buf();
+    content.extend(crate::platform::DataDir::LibraryGameImport.relative().split('/'));
+    if content.join("manifest.json").is_file() {
+        return content;
+    }
+    install.map(|i| i.join(BUNDLE_DIR)).unwrap_or(content)
 }
 
 pub fn find_xdelta(platform: &Platform, dirs: &[PathBuf]) -> Option<PathBuf> {
@@ -565,6 +614,44 @@ pub fn sha256_of(path: &Path) -> Result<Sha256Hex> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// An AppImage carries its tools under usr/bin and nothing can sit
+    /// beside it, so that folder is asked first; a Windows launcher has no
+    /// APPDIR and keeps the order it always had.
+    #[test]
+    fn the_appimage_tools_come_first_and_the_installer_bundle_next() {
+        let install = Path::new("/home/deck/Applications");
+        let appdir = Path::new("/tmp/.mount_Reborn");
+        let extra = vec![PathBuf::from("/opt/extra")];
+        assert_eq!(
+            tool_dirs_for(Some(install), Some(appdir), &extra),
+            vec![
+                PathBuf::from("/tmp/.mount_Reborn/usr/bin"),
+                PathBuf::from("/home/deck/Applications/game-import"),
+                PathBuf::from("/home/deck/Applications"),
+                PathBuf::from("/opt/extra"),
+            ]
+        );
+        assert_eq!(
+            tool_dirs_for(Some(install), None, &[]),
+            vec![PathBuf::from("/home/deck/Applications/game-import"), PathBuf::from("/home/deck/Applications")]
+        );
+    }
+
+    /// The content copy of the bundle wins only once it is actually there;
+    /// an empty content folder must not hide the installer's copy.
+    #[test]
+    fn the_bundle_is_the_content_copy_once_it_has_arrived() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let install = dir.path().join("install");
+        let content = data.join("library").join("game-import");
+        std::fs::create_dir_all(&content).unwrap();
+        assert_eq!(bundle_dir_for(&data, Some(&install)), install.join(BUNDLE_DIR), "empty content folder: the installer's copy");
+        std::fs::write(content.join("manifest.json"), b"{}").unwrap();
+        assert_eq!(bundle_dir_for(&data, Some(&install)), content, "the component has arrived");
+        assert_eq!(bundle_dir_for(&data, None), content, "a one-file launcher has no install copy at all");
+    }
 
     fn sha(bytes: &[u8]) -> String {
         Sha256Hex::from_bytes(bytes).as_str().to_string()
