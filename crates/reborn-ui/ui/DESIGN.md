@@ -154,7 +154,7 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 
 | Class | What | File |
 |---|---|---|
-| `.glass` | card: `--glass-1`, `--stroke`, 14px radius, `--sheen` and `--shadow`, blur 24px saturate 1.3 | |
+| `.glass` | card: `--glass-1`, `--stroke`, 14px radius, `--sheen` and `--shadow`; blur 24px saturate 1.3 on Play only (over the hero art) | Elsewhere the page fade-in made the blur snap on after a second; there is nothing behind a card to blur there |
 | `.btn`, `.btn.primary`, `.btn.quiet`, `.btn.sm` | 38px glass button; red gradient primary; transparent; 32px | |
 | `.look-switch` | 40 by 22 switch, `aria-checked`, thumb slides, on = `--red` | `settings.js` |
 | `.field` | recessed 38px box for a value, with an optional `.auto` tag (green) | |

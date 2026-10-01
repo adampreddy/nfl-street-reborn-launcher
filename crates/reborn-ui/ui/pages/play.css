@@ -18,7 +18,7 @@ body.page-home #screen{position:relative;display:flex;flex-direction:column;min-
 .page-home .play-account-text{display:flex;flex-direction:column;min-width:0}
 .page-home .play-account-text .nm{font-size:13px;font-weight:600;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .page-home .play-account-text .pt{font-size:11.5px;color:var(--fg-2)}
-.page-home .play-account-note{font-size:12px;color:var(--fg-2);text-align:right;overflow-wrap:anywhere}
+.page-home .play-account-note{max-width:210px;font-size:11px;line-height:1.4;color:var(--fg-2);text-align:right;overflow-wrap:anywhere}
 .page-home .play-account-card{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere}
 .page-home .play-account-card p:first-child{color:var(--fg)}
 

@@ -181,6 +181,13 @@ try {
     await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).waitFor(); await settled(page);
     const acct = await rect(page, '.play-account'), main = await rect(page, '#main');
     assert.ok(main.r - acct.r <= 26, 'top right');
+    { // the note under the button: small, two short lines, not one long line across the art
+      const note = page.locator('.play-account-note');
+      const n = await note.evaluate(el => ({ size: parseFloat(getComputedStyle(el).fontSize), lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) }));
+      assert.ok(n.size <= 11.5, `sign-in note is small (${n.size}px)`);
+      assert.equal(n.lines, 2, 'sign-in note wraps to two lines');
+    }
+    await page.screenshot({ path: 'target/p4-after/play-signed-out.png' });
     await page.context().close();
   }
   { // Review Focus 5: the minimum window with a controller-setup note.
