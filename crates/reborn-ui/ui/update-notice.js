@@ -75,9 +75,18 @@ function render(){
    phase==='staged'?'Installs when your game and other changes are finished.':
    phase==='installed'&&content.notes?content.notes+'\n\n'+(content.installed?.note||''):content.installed?.note||content.note||'New Reborn content is available.';
   card('content',title,message,progress,['fetching','installing'].includes(phase)?null:phase==='installed'?'Got it':'View update',
-   ()=>{if(phase==='installed'){invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else location.assign('settings.html#updates');});
+   ()=>{if(phase==='installed'){notesSeen(content.release);invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else location.assign('settings.html#updates');});
  }else removeCard('content');
+ // What's new: a release's notes once, even when its content arrived before
+ // this launcher could show them (an older launcher installed it, or the card
+ // was missed). Never over an update in progress, which shows its own notes.
+ if(content?.notes&&content.release&&['idle','checking','up_to_date'].includes(content.phase)&&seenNotes()!==content.release){
+  const release=content.release;
+  card('whatsnew',"What's new",content.notes,undefined,'Got it',()=>{notesSeen(release);removeCard('whatsnew');});
+ }else if(content&&!['idle','checking','up_to_date'].includes(content.phase))removeCard('whatsnew');
 }
+function seenNotes(){try{return localStorage.getItem('updates:notes-seen');}catch(_){return null;}}
+function notesSeen(release){try{if(release)localStorage.setItem('updates:notes-seen',release);}catch(_){}}
 async function canInstall(){
  if(document.querySelector('dialog[open]')||document.getElementById('screen')?.getAttribute('aria-busy')==='true'||await invoke('session_active'))return false;
  const music=await invoke('music_status').catch(()=>null);
