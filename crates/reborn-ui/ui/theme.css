@@ -63,13 +63,22 @@ body.shell .shell-nav{position:relative}
 .nav-marker{position:absolute;left:0;top:0;width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--red);transition:transform var(--d3) var(--ease);pointer-events:none}
 .nav-marker.still{transition:none}
 
-/* page enter: content fades up 6px; the sidebar never moves */
+/* page change (every sidebar click loads a page): a cross-document view transition. The old page stays on screen
+   until the new one has drawn (no blank flash), the sidebar swaps in place (it never moves or flickers), and only the
+   content rises in (Play: fades, no rise). #main itself no longer animates, so it is never a containing block. */
 @keyframes look-enter{from{opacity:0;transform:translateY(6px)}}
-/* backwards, not both: a finished transform animation would keep #main a containing block for position:fixed descendants */
-body.shell #main{animation:look-enter var(--d3) var(--ease) backwards}
-/* Play fades only: a transform on #main would re-anchor any position:fixed descendant of Play's hero */
 @keyframes look-enter-fade{from{opacity:0}}
-body.shell.page-home #main{animation-name:look-enter-fade}
+@keyframes look-leave{to{opacity:0}}
+@view-transition{navigation:auto}
+body.shell .shell-nav{view-transition-name:nav}
+body.shell #main{view-transition-name:page}
+::view-transition-group(*){animation:none}
+::view-transition-old(root),::view-transition-old(nav){display:none}
+::view-transition-new(root),::view-transition-new(nav){animation:none}
+::view-transition-old(page){animation:look-leave var(--d1) var(--ease) both}
+::view-transition-new(page){animation:look-enter var(--d3) var(--ease) both}
+html:has(body.page-home)::view-transition-new(page){animation-name:look-enter-fade}
+@media (prefers-reduced-motion:reduce){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}}
 
 /* buttons. The element rule sits in :where() (specificity 0,0,1), so any component class (.btn, .m-row,
    .player-card, .store-open) sets its own radius and font without a page-class prefix. */

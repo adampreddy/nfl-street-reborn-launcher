@@ -136,7 +136,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 - `html[data-motion="slow"]` and `[data-motion="quick"]` set `--d1`, `--d2`, `--d3` **directly**. There is no multiplier variable: a custom property resolves where it is declared, so a multiplier would not reach the tokens.
 - **Reduced motion** (`prefers-reduced-motion: reduce`) sets all three to 0ms, and every animation to `none` and every transition to 0s. The OS setting always wins over `data-motion`.
 - Hover and press only move (`transform`). Colours change instantly.
-- The page enter is `look-enter` on `#main`: fade up 6px over `--d3`, with `animation-fill-mode: backwards` (not `both`). Play uses `look-enter-fade` (opacity only). The sidebar never moves.
+- A page change is a cross-document view transition (`@view-transition{navigation:auto}`): the old page holds until the new one draws, the sidebar (`view-transition-name: nav`) swaps in place, and only `#main` (`page`) animates: the old fades out over `--d1`, the new rises in with `look-enter` over `--d3` (Play: `look-enter-fade`, opacity only). `#main` has no animation of its own, so it is never a containing block for `position:fixed` UI. Reduced motion: instant.
 - **Containing block:** a transform on `#main` makes it the containing block for `position:fixed` children. So `position:fixed` UI (menus, dialogs, the update dock) is attached to `<body>`, never inside `#main`. `menu.js` appends its `<dialog>` to `<body>` for this reason.
 - No bounce, count-up numbers, parallax or looping motion. The one loop is `.live-dot`.
 

@@ -73,7 +73,6 @@ async function load() {
     graphicsOptions: call("setup_graphics_options"),
     dolphin: call("dolphin_preferences", { runtime: get("runtime") }),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
-    devices: call("devices", { runtime: get("runtime") }),
     mods: call("mod_packages"),
     controls: call("controls_current"),
     home: call("home_state", { runtime: get("runtime"), legacyRoot: get("legacyRoot") }),
@@ -81,12 +80,21 @@ async function load() {
     paths: call("paths"),
     identity: call("identity_status"),
   };
+  // The device scan starts the runtime and takes about 1.5 s (everything else answers in milliseconds), so Play
+  // never waits for it: it draws with the last scan (or "Checking…") and redraws when the fresh one arrives.
+  if (state.devices === undefined) state.devices = cachedDevices();
+  const scan = call("devices", { runtime: get("runtime") });
+  scan.then((v) => { state.devices = v; cacheDevices(v); draw(); }, (e) => { state.devices = { error: reason(e) }; draw(); });
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
   keys.forEach((k, i) => {
     state[k] = settled[i].status === "fulfilled" ? settled[i].value : { error: reason(settled[i].reason) };
   });
 }
+
+const DEVICES_KEY = "reborn:devices";
+function cachedDevices() { try { const v = JSON.parse(localStorage.getItem(DEVICES_KEY) || "null"); return v && Array.isArray(v.pads) ? v : undefined; } catch (_) { return undefined; } }
+function cacheDevices(v) { try { if (v && Array.isArray(v.pads)) localStorage.setItem(DEVICES_KEY, JSON.stringify(v)); } catch (_) {} }
 
 async function play() {
   if (busy || externalSession) return;
@@ -237,6 +245,7 @@ function when(ms) {
 
 function padsLine() {
   const d = state.devices;
+  if (d === undefined) return { text: "Checking…", note: null };
   if (!ok(d)) return { text: null, note: d && d.error };
   const pads = Array.isArray(d.pads) ? d.pads : [];
   if (pads.length === 0) {
