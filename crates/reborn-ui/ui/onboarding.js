@@ -559,13 +559,13 @@ const SCREENS = {
   system_check: () => {
     const recommended=pending.hardware?.recommended;
     const presets=el('div','graphics-presets');
-    const options=[{value:'performance',what:'Performance',why:'ReShade disabled. The lightest option.'},{value:'balanced',what:'Balanced',why:'ReShade enabled with lighter effects.'},{value:'quality',what:'All-Out',why:'ReShade enabled with high-end effects.'}];
+    const options=[{value:'performance',what:'Performance',why:'The lightest option. Best for older PCs.'},{value:'balanced',what:'Balanced',why:'The middle setting. Suits most PCs.'},{value:'quality',what:'All-Out',why:'The fullest setting, for high-end PCs.'}];
     if(pending.graphicsOptions?.previous)options.push({value:'previous',what:'Previous settings',why:'Keep the graphics settings imported from your old installation.'});
     if(pending.graphicsMode==='previous')pending.preset='previous';
     const choices=radios('preset',options);
     for(const choice of choices){if(choice.querySelector('input')?.value===recommended){choice.classList.add('recommended');choice.append(el('span','recommendation-badge','Recommended'));}choice.addEventListener('change',()=>{pending.graphicsMode=pending.preset==='previous'?'previous':'preset';});}
     presets.append(...choices);
-    return {nodes:[el('p',null,'Choose your ReShade effects. Required game settings are applied automatically.'),presets,el('p','hardware-note',pending.hardware?.description?`Your Specs: ${pending.hardware.description}`:'')],ready:()=>!!pending.preset,
+    return {nodes:[el('p',null,'Pick what suits your PC. Required game settings are applied automatically.'),presets,el('p','hardware-note',pending.hardware?.description?`Your Specs: ${pending.hardware.description}`:'')],ready:()=>!!pending.preset,
       answer:async()=>{const preset=pending.preset==='previous'?'balanced':pending.preset;const result=await call('onboarding_choose_graphics',{preset});if(result.outcome==='refused')return result;await call('setup_save_graphics_options',{mode:pending.preset==='previous'?'previous':'preset',resolution:3,msaa:1,ssaa:false});try{localStorage.setItem('h:preset',preset);}catch(_){}return result;}};
   },
 
