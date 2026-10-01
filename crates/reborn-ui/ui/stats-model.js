@@ -9,12 +9,13 @@ const EN_DASH = '–'; // U+2013 for score/record separators
 const MINUS = '−'; // U+2212 for Elo changes
 
 /**
- * Format integer with thousands separator, or em dash for null/NaN.
+ * Format integer with thousands separator, or em dash for anything that is not a number.
  * @param {number|null} n
  * @returns {string}
  */
 export function fmtInt(n) {
-  if (n === null || Number.isNaN(n)) return EM_DASH;
+  // Anything that is not a number (null, undefined, a string, NaN) is a dash: a missing server field never throws.
+  if (typeof n !== 'number' || Number.isNaN(n)) return EM_DASH;
   return n.toLocaleString('en-US');
 }
 

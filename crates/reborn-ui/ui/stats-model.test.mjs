@@ -179,3 +179,8 @@ test('ties and unknown results count for nothing', () => {
   assert.ok(!resultsOf([{ result: 'tie' }, { result: 'T' }]).includes('T'));
   assert.deepEqual(eloChange('16'), { text: '', kind: '' });
 });
+
+test('fmtInt: a missing number (undefined, a string) is a dash, never a throw', () => {
+  assert.equal(fmtInt(undefined), '—'); assert.equal(fmtInt('12'), '—');
+  assert.equal(roleCards({ passer: { name: 'A. Passer', yds: 10, unit: 'pass_yds' } })[0].stat, '— pass yds');
+});
