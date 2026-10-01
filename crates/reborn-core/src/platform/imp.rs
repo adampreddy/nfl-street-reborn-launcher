@@ -475,6 +475,10 @@ fn classify_exit(status: &std::process::ExitStatus) -> ExitKind {
 /// one: the same code covers a null dereference in the emulator, a driver
 /// fault and a half-written save. The offset is the part that names a site,
 /// because it resolves back to a function in the build that produced it.
+///
+/// Windows only, with the two readers below: the record comes from the
+/// Windows event log, and nothing else writes one in this shape.
+#[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FaultSite {
     module: String,
@@ -487,6 +491,7 @@ struct FaultSite {
 /// because the attribute quoting is the emitter's choice, not a guarantee, and
 /// getting it wrong here fails silently -- which is the one outcome this whole
 /// path exists to stop.
+#[cfg(windows)]
 fn event_field<'a>(event: &'a str, name: &str) -> Option<&'a str> {
     for open in [format!("<Data Name='{name}'>"), format!("<Data Name=\"{name}\">")] {
         let Some(at) = event.find(&open) else { continue };
@@ -508,6 +513,7 @@ fn event_field<'a>(event: &'a str, name: &str) -> Option<&'a str> {
 ///
 /// Scanned as text rather than parsed as XML: the shape is fixed, this runs
 /// once after a crash, and the input is output this code asked for.
+#[cfg(windows)]
 fn fault_site_in(xml: &str, pid: u32) -> Option<FaultSite> {
     for event in xml.split("<Event ").skip(1) {
         let Some(recorded) = event_field(event, "ProcessId") else { continue };
@@ -1492,6 +1498,7 @@ mod tests {
     /// verbatim rather than hand written: the first version of this parser read
     /// unnamed `<Data>` elements, which this payload does not have, and it would
     /// have found nothing forever without ever saying so.
+    #[cfg(windows)]
     const CRASH_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>
 <Provider Name='Application Error' Guid='{a0e9b465-b939-57d7-b27d-95d8e925ff57}'/>
@@ -1514,6 +1521,7 @@ mod tests {
 </EventData></Event>"#;
 
     #[test]
+    #[cfg(windows)]
     fn a_crash_record_gives_up_the_module_and_the_offset() {
         // 0x541c is the id Windows recorded for the process that died.
         let site = fault_site_in(CRASH_XML, 0x541c).expect("the record is for this process");
@@ -1528,16 +1536,19 @@ mod tests {
     /// crashed. Reading that one would attach a stranger's fault site to every
     /// crash, and it would look entirely plausible in the log.
     #[test]
+    #[cfg(windows)]
     fn the_reporting_service_is_not_mistaken_for_the_crashed_process() {
         assert_eq!(fault_site_in(CRASH_XML, 22676), None);
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_record_belonging_to_another_process_is_never_borrowed() {
         assert_eq!(fault_site_in(CRASH_XML, 0x1234), None);
     }
 
     #[test]
+    #[cfg(windows)]
     fn double_quoted_attributes_read_the_same_as_single_quoted() {
         let doubled = CRASH_XML.replace('\'', "\"");
         let site = fault_site_in(&doubled, 0x541c).expect("quoting is the emitter's choice");
@@ -1545,6 +1556,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn nothing_to_read_is_not_an_answer() {
         assert_eq!(fault_site_in("", 0x541c), None);
         assert_eq!(fault_site_in("<Event ><EventData></EventData></Event>", 0x541c), None);
