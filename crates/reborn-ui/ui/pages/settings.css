@@ -26,9 +26,18 @@ body.page-settings .save-bar{margin:10px 36px 18px}
 .pref-value{min-width:0;font-size:13px;color:var(--fg-2);overflow-wrap:anywhere}
 .pref-control{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .pref-help{grid-column:2/4;margin-top:-6px;font-size:12px;color:var(--fg-3)}
+/* Every row except a path field: the name, then any detail and help stacked under it on the left; an On/Off state
+   and the control on the right. Path rows (.path-entry) keep label | field | Change, as in the mockup. */
+.pref-row:not(.path-entry){grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"label state control" "value state control" "help state control";row-gap:0}
+.pref-row:not(.path-entry)>.pref-label{grid-area:label}
+.pref-row:not(.path-entry)>.pref-value{grid-area:value;margin-top:4px}
+.pref-row:not(.path-entry)>.pref-value:empty{display:none}
+.pref-row:not(.path-entry)>.pref-value:has(>.pref-state:only-child){grid-area:state;align-self:center;margin-top:0}
+.pref-row:not(.path-entry)>.pref-control{grid-area:control;align-self:center}
+.pref-row:not(.path-entry)>.pref-help{grid-area:help;margin-top:4px;max-width:64ch}
 .pref-state{font-size:13px;color:var(--fg-2)}
 .pref-row select{width:220px}
-.pref-row input[type=range]{width:100%}
+.pref-row input[type=range]{width:220px}
 .pref-list{margin:0 22px 14px;padding-left:18px;font-size:12.5px;color:var(--fg-2)}
 .pref-section .settings-progress{display:block;width:calc(100% - 44px);height:8px;margin:0 22px 14px}
 .look-section .look-error{padding:0 22px 14px}
@@ -43,6 +52,7 @@ body.page-settings .save-bar{margin:10px 36px 18px}
   body.page-settings #main{padding:24px 24px 16px}
   body.page-settings .save-bar{margin:8px 24px 16px}
   .pref-row{grid-template-columns:120px minmax(0,1fr) auto;padding:14px 16px}
+  .pref-row:not(.path-entry){grid-template-columns:minmax(0,1fr) auto auto}
   .pref-row select{width:180px}
 }
 .dolphin-text .dolphin-said:empty{display:none}
