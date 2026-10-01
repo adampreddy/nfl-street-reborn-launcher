@@ -238,6 +238,10 @@ function move(direction) {
   }
   const horizontal = direction === 'left' || direction === 'right';
   const sign = direction === 'left' || direction === 'up' ? -1 : 1;
+  // Only inside a data-nav="rows" page and a [data-nav-seq] block (Profile's name, Plays as, Share, View on web):
+  // Up/Down step through the block's controls in reading order; past either end the move below applies.
+  const seq = !horizontal && current.closest('[data-nav="rows"] [data-nav-seq]');
+  if (seq) { const list = reachable(seq), i = list.indexOf(current); if (i >= 0 && list[i+sign]) { focus(list[i+sign]); return; } }
   const ranked = items.filter(n => n !== current).map(n => {
     const b = box(n), dx = b.x+b.width/2-ax, dy = b.y+b.height/2-ay;
     const distance = (horizontal ? dx : dy)*sign;

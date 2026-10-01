@@ -24,11 +24,16 @@ const contentRules = async (page) => {
   assert.doesNotMatch(body, /best of 3/i, 'never "Best of 3"');
   assert.doesNotMatch(body, /ladder/i, '"Leaderboard", never "ladder"');
   assert.doesNotMatch(body, /private/i, 'no "Private" on Profile');
-  assert.ok((await texts(page, '.m-res b')).every((t) => t === 'W' || t === 'L' || t === ''), 'results are W or L');
+  const results = await texts(page, '.m-res b');
+  if (await page.locator('#history .m-list > .m-row:not(.m-hd)').count()) assert.ok(results.length > 0, 'match rows show their result letters');
+  assert.ok(results.every((t) => t === 'W' || t === 'L' || t === ''), 'results are W or L');
   // no ties: no record anywhere reads W–L–T
   assert.doesNotMatch(body, /\b\d+–\d+–\d+\b/, 'records are W–L only, never a tie');
 };
 const NONE = 'No online matches to show yet.';
+// History rows keep their natural height (56px; a best of 3's games 40px): the card fills, never the rows (P4-24).
+const rowHeights = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height));
+const rowsNatural = async (page, what) => { const hs = await rowHeights(page); assert.ok(hs.length && hs.every((h) => h <= 56.5), `${what}: every history row is at most 56px: ${hs}`); };
 try {
   { // 1280×800, the redesign's full answers, the owner looking at their own profile
     const { page, errors, close } = await openState(browser, srv.base, STATE);
@@ -74,6 +79,9 @@ try {
     assert.ok(Math.abs(hl.top - first.top) < 1, `first cards start together: ${hl.top} vs ${first.top}`);
     assert.ok(Math.abs(hl.bottom - last.bottom) < 1, `the columns end together: ${hl.bottom} vs ${last.bottom}`);
     assert.deepEqual([...new Set(await page.locator('.sec-head').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [40]);
+    await rowsNatural(page, 'ten rows');
+    const recH = await page.locator('#records .pf-rec:not([hidden])').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().height)));
+    assert.deepEqual([...new Set(recH)], [38], `Records rows keep their natural height: ${recH}`);
     // letter avatars (no Discord picture) are coloured per player, the same player always the same colour (mockup)
     const letters = await page.locator('span.avatar').evaluateAll((ns) => ns.map((n) => ({ who: n.textContent, bg: getComputedStyle(n).backgroundImage })));
     const byWho = new Map();
@@ -94,6 +102,11 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('#history .m-list > .m-row:not(.m-hd)').length === 2);
     assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.key)), ['match-m-01', 'match-m-04']);
     assert.equal(await page.locator('#history .m-pager').count(), 0, 'one page: no pager');
+    await rowsNatural(page, 'the Ranked filter');
+    const hl2 = await rect(page, '#history .m-list'), last2 = await rect(page, '.pf-side > section:last-child > .glass');
+    assert.ok(Math.abs(hl2.bottom - last2.bottom) < 1, `the card still meets the right column: ${hl2.bottom} vs ${last2.bottom}`);
+    await page.evaluate(() => document.getElementById('history').scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(out, 'profile-1280-ranked.png') });
     await page.getByRole('button', { name: 'All', exact: true }).click();
     // Career: nine spelled-out tiles, rank among the player base, per game
     assert.deepEqual(await texts(page, '#career .k-label'), ['Passing Yards', 'Passing TD', 'Passer Rating', 'Rushing Yards', 'Receiving Yards', 'Total TD', 'Tackles', 'Sacks', 'Interceptions']);
@@ -198,6 +211,19 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // a player with three matches: rows stay 56px, the card still fills to the right column
+    const p = F.profile({ live: false });
+    const three = F.publicMatches().slice(0, 3);
+    Object.assign(p, { recent_matches: three, matches_total: 3 });
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: three } });
+    await page.locator('.pf-card').waitFor();
+    await rowsNatural(page, 'three matches');
+    const hl = await rect(page, '#history .m-list'), last = await rect(page, '.pf-side > section:last-child > .glass');
+    assert.ok(Math.abs(hl.bottom - last.bottom) < 1, `the card meets the right column: ${hl.bottom} vs ${last.bottom}`);
+    await contentRules(page);
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // a brand-new player: no matches at all
     const p = F.profile({ live: false });
     Object.assign(p, { recent_matches: [], matches_total: 0, summary: { games: 0, wins: 0, losses: 0, win_pct: null } });
@@ -222,14 +248,20 @@ try {
     const seen = [await key()];
     for (let i = 0; i < 8 && !String(seen.at(-1)).startsWith('match-'); i++) { await press(13); seen.push(await key()); }
     console.log(`pad walk: ${seen.join(' > ')}`);
-    assert.ok(seen.includes('share') || seen.includes('plays-as'), `Down from Back reaches the card's controls: ${seen}`);
-    assert.ok(seen.some((k) => ['All', 'Ranked', 'Casual'].includes(k)), `Down reaches the history tabs: ${seen}`);
+    // the card reads in order: Back, Plays as, Share profile, View on web (share before the live card), then the tabs
+    assert.deepEqual(seen.slice(0, 4), ['back', 'plays-as', 'share', 'web'], `Down reads the card in order: ${seen}`);
+    assert.ok(!seen.includes('live-feed') || seen.indexOf('share') < seen.indexOf('live-feed'), `Share comes before Live feed: ${seen}`);
+    assert.ok(['All', 'Ranked', 'Casual'].includes(seen[4]), `Down from View on web reaches the history tabs: ${seen}`);
     assert.equal(seen.at(-1), 'match-m-01', `Down then reaches the first match: ${seen}`);
-    await page.locator('[data-key="share"]').focus();
+    await press(12); await press(12); await press(12);
+    assert.equal(await key(), 'share', 'Up walks back through the card in order');
     await press(15);
     assert.equal(await key(), 'web', 'Right from Share profile is View on web');
     await press(15);
     assert.equal(await key(), 'live-feed', 'Right from View on web is the live card');
+    await press(13);
+    assert.ok(['All', 'Ranked', 'Casual'].includes(await key()), 'Down from Live feed reaches the history tabs');
+    await page.locator('[data-key="live-feed"]').focus();
     await press(14);
     assert.equal(await key(), 'web', 'Left from Live feed comes back to View on web');
     await page.locator('[data-key="match-m-18"]').scrollIntoViewIfNeeded().catch(() => {});

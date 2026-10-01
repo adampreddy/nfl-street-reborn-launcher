@@ -72,7 +72,7 @@ function expandable(id, head, rows, what) {
 // Back returns to the launcher page this one was opened from (Stats, a game, the live view, another profile); opened
 // any other way, it goes to Stats.
 function backButton() {
-  const b = el('button', { type: 'button', class: 'pf-back', id: 'back', 'data-key': 'back' }, el('span', { class: 'chev', 'aria-hidden': 'true' }), el('span', { text: 'Back' }));
+  const b = el('button', { type: 'button', class: 'pf-back', id: 'back', 'data-key': 'back', 'data-nav': 'rows' }, el('span', { class: 'chev', 'aria-hidden': 'true' }), el('span', { text: 'Back' }));
   b.addEventListener('click', () => {
     let fromLauncher = false;
     try { fromLauncher = Boolean(document.referrer) && new URL(document.referrer).origin === location.origin; } catch { /* no referrer */ }
@@ -183,10 +183,12 @@ function card(p, ownerId) {
   web.addEventListener('click', async () => {
     try { await call('open_website', { url: webUrl() }); } catch (e) { said.textContent = reason(e); }
   });
-  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta,
+  const id = el('div', { class: 'pf-id', 'data-nav-seq': '' }, el('h2', { class: 'pf-name', text: name }), meta,
     facts.length ? el('p', { class: 'pf-sum' }, ...facts.map((f) => el('span', {}, el('b', { class: 'num', text: f.strong }), ` ${f.text}`))) : null,
     el('div', { class: 'pf-acts' }, share, web, said));
-  const box = el('div', { class: 'glass pf-card' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), el('div', { class: 'pf-row' }, pic, id, liveBlock(h.live)));
+  // data-nav="rows" (Back and the card only): Down reads the card row by row, never straight into the match list below
+  // it; data-nav-seq: Plays as, Share profile, View on web in reading order. The rest of the page keeps column moves.
+  const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), el('div', { class: 'pf-row' }, pic, id, liveBlock(h.live)));
   coverColours(box, h.avatar_url);
   if (typeof document.title === 'string') document.title = `${name} | NFL Street Reborn`;
   return box;
