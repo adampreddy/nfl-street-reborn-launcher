@@ -171,7 +171,7 @@ const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";")
   check("live.html has the shared shell (app-shell.js, the nav, #screen)",
     LIVE_HTML.includes('src="app-shell.js"') && LIVE_HTML.includes('class="shell-nav"') && LIVE_HTML.includes('id="screen"'));
   check("live.html marks Online as the current nav page", /<a class="current" href="online\.html"/.test(LIVE_HTML));
-  check("live.html loads live-view.css", LIVE_HTML.includes('href="live-view.css"'));
+  check("live.html loads pages/live.css", LIVE_HTML.includes('href="pages/live.css"'));
   check("live.js never uses innerHTML or insertAdjacentHTML", !/innerHTML|outerHTML|insertAdjacentHTML/.test(LIVE_SRC));
 }
 
