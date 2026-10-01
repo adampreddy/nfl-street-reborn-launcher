@@ -82,7 +82,7 @@ try {
     const status = await rect(page, '.play-status');
     assert.ok(status.y >= play.b + 8 && Math.abs(status.x - play.x) < 2, 'the status line sits alone under the button');
     const logo = await rect(page, '.play-wordmark img');
-    assert.ok(logo.w <= 470.5 && Math.abs(logo.h / logo.w - 1110 / 2834) < 0.01, 'wordmark keeps its own shape: ' + JSON.stringify(logo));
+    assert.ok(logo.w <= 470.5 && Math.abs(logo.h / logo.w - 685 / 1476) < 0.01, 'wordmark keeps its own shape: ' + JSON.stringify(logo));
     const strip = await rect(page, '.play-strip');
     const cells = await page.locator('.play-strip .play-cell').evaluateAll((ns) => ns.map((n) => { const r = n.getBoundingClientRect(); return { x: r.x, w: r.width, h: r.height }; }));
     assert.equal(cells.length, 3);
