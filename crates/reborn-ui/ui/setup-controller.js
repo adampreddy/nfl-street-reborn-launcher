@@ -2,7 +2,7 @@
 (() => {
  const make=(tag,cls,text)=>{const e=document.createElement(tag);e.className=cls||'';if(text)e.textContent=text;return e;};
  window.createSetupController=({device,runtime,onBusy,layout="setup",singleDevice=true})=>{
-  const root=make('section',layout==='players'?'setup-controller player-workspace':'setup-controller');let saving=false;let disposed=false,frame=0,mode='test',capture=null,chord=false,rows=[],group='Buttons',preview=null,previewId='',liveIndex=null;
+  const root=make('section',layout==='players'?'setup-controller player-workspace':'setup-controller');let saving=false;let disposed=false,frame=0,mode='test',capture=null,chord=false,holdB=0,rows=[],group='Buttons',preview=null,previewId='',liveIndex=null;
   const invoke=(cmd,args={})=>window.__TAURI__.core.invoke(cmd,{device,runtime,...args});
   // A press is read by the RUNTIME, never by this window.
   //
@@ -49,7 +49,7 @@
   const buttons=make('div','mapping-buttons');buttons.append(swap,reset);
   if(layout==='players'){right.append(title,needs,message,tabs,grid,editor,buttons);}
   else{custom.append(customSummary,tabs,grid,editor,buttons);right.append(title,needs,message,mappingNote,custom);}
-  const setMode=value=>{mode=value;if(value==='test')document.body.dataset.controllerTesting='setup';else delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));root.dataset.testing=String(value==='test');toggle.textContent=value==='test'?(layout==='players'?'Finish test':'Use controller to navigate'):'Test controller';toggle.setAttribute('aria-pressed',String(value==='test'));hint.textContent=layout==='players'?(value==='test'?'Navigation is paused. Finish test with Esc or View + Menu.':'Select a control to change its binding.'):value==='test'?'Live test is on. Esc or View + Menu switches to navigation.':'Controller navigation is on. Use the D-pad or left stick to move, A / Cross to select, and B / Circle to go back.';};
+  const setMode=value=>{mode=value;if(value==='test')document.body.dataset.controllerTesting='setup';else delete document.body.dataset.controllerTesting;document.dispatchEvent(new Event('controller-test-state'));root.dataset.testing=String(value==='test');toggle.textContent=value==='test'?(layout==='players'?'Finish test':'Use controller to navigate'):'Test controller';toggle.setAttribute('aria-pressed',String(value==='test'));hint.textContent=layout==='players'?(value==='test'?'Navigation is paused. Hold B / Circle (or press Esc) to finish the test.':'Select a control to change its binding.'):value==='test'?'Live test is on. Hold B / Circle (or press Esc) to switch to navigation.':'Controller navigation is on. Use the D-pad or left stick to move, A / Cross to select, and B / Circle to go back.';};
   toggle.onclick=()=>{if(saving)return;cancelCapture();setMode(mode==='test'?'navigate':'test');};
   const finishCapture=()=>{capture=null;editor.hidden=true;onBusy(false);setMode(mode);renderRows();};
   const cancelCapture=()=>{if(!capture)return;finishCapture();message.textContent='Assignment cancelled. Your mapping is unchanged.';};
@@ -141,13 +141,17 @@
    const pads=[...(navigator.getGamepads?.()||[])].filter(p=>p?.connected);
    const signature=pads.map(p=>`${p.index}:${p.id}`).join('|');
    if(signature!==inventory){inventory=signature;select.replaceChildren(...pads.map(p=>{const o=make('option',null,p.id);o.value=p.index;if(layout==='players')o.textContent=`Input ${p.index+1} · ${p.id}`;return o;}));select.hidden=pads.length<2&&(layout!=='players'||singleDevice);if(!pads.some(p=>p.index===liveIndex))liveIndex=pads.length===1&&(layout!=='players'||singleDevice)?pads[0].index:null;if(liveIndex===null&&pads.length>0){const o=make('option',null,'Choose a controller to test');o.value='';select.prepend(o);select.value='';}else select.value=liveIndex;}
+   // Leaving the test never depends on which pad is picked: View + Menu, or holding B / Circle for a second, on any pad.
+   const anyChord=pads.some(p=>p.buttons[8]?.pressed&&p.buttons[9]?.pressed),bDown=pads.some(p=>p.buttons[1]?.pressed);
+   holdB=bDown?(holdB||performance.now()):0;
+   if(mode==='test'&&!capture&&!saving&&((anyChord&&!chord)||(holdB&&holdB>0&&performance.now()-holdB>=1000))){holdB=bDown?-1:0;chord=anyChord;setMode('navigate');toggle.focus({preventScroll:true});return;}
+   if(holdB<0&&!bDown)holdB=0;
+   chord=anyChord;
    const pad=pads.find(p=>p.index===liveIndex);
    if(!pad){if(capture)capture.neutral=false;live.textContent=pads.length>1?'Choose the controller you want to test.':'Press any button to wake your controller.';preview?.update(null);return;}
    showArt(pad.id);preview?.update(pad);
    const active=pad.buttons.map((b,i)=>b.pressed?i:null).filter(i=>i!==null);
    const activity=active.length?'Button input received':pad.axes.some(a=>Math.abs(a)>.2)?'Stick input received':'Connected · live input ready';if(live.textContent!==activity)live.textContent=activity;
-   const nowChord=pad.buttons[8]?.pressed&&pad.buttons[9]?.pressed;
-   if(nowChord&&!chord&&!capture&&!saving){setMode('navigate');toggle.focus({preventScroll:true});}chord=nowChord;
    // Nothing here reads a press for an assignment any more: see `listen`.
    // This loop only draws the live preview.
   }

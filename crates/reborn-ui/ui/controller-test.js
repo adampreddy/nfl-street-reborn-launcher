@@ -37,7 +37,7 @@ function mount(host) {
   const seen = node('p', '', 'note');
   body.append(status, silhouette, label, note, controls, axes, seen);
   host.append(start, body);
-  let frame = 0, signature = '', layout = '', tested = new Set(), lastDevice = '', exitChord = null;
+  let frame = 0, signature = '', layout = '', tested = new Set(), lastDevice = '', exitChord = null, holdB = 0;
   let buttons = [], axisViews = [];
   const tester = {stop() {
     cancelAnimationFrame(frame); body.hidden = true; start.textContent = 'Start controller test';
@@ -76,6 +76,9 @@ function mount(host) {
     const chord = pad.mapping === 'standard' && pad.buttons[8]?.pressed && pad.buttons[9]?.pressed;
     if (exitChord === false && chord) { stop(); return; }
     exitChord = !!chord;
+    // Holding B / Circle for a second also finishes the test; a short press is still tested.
+    holdB = pad.buttons[1]?.pressed ? (holdB || performance.now()) : 0;
+    if (holdB && performance.now() - holdB >= 1000) { holdB = 0; stop(); return; }
     message(pad.mapping === 'standard' ? 'Live input connected' : 'Live input connected. This device uses numbered inputs; labels vary by adapter.');
     const nextLayout = `${device}:${pad.mapping}:${pad.buttons.length}:${pad.axes.length}`;
     if (layout !== nextLayout) {

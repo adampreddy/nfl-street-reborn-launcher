@@ -130,7 +130,7 @@ function renderHints() {
   // cannot read yet still says how to set it up, or it could never be set up.
   if (!controllerMode && !testing && !needsSetup) { hints.replaceChildren(); delete hints.dataset.layout; return; }
   const items = needsSetup && !testing ? [['Setup','Set up launcher controls']] : testing
-    ? [[document.body.classList.contains('page-controls') ? 'Esc' : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
+    ? [[document.body.classList.contains('page-controls') ? (ps ? 'Hold Circle / Esc' : 'Hold B / Esc') : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
     : selectEdit ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
     : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],...(document.body.classList.contains('page-setup') ? [] : [[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']])];
   const key = JSON.stringify(items);

@@ -72,6 +72,19 @@ try {
  await page.evaluate(()=>{pad.buttons[8]={pressed:true,value:1};pad.buttons[9]={pressed:true,value:1};});
  await page.waitForFunction(()=>!document.body.dataset.controllerTesting);
  await page.evaluate(()=>{pad.buttons[8]={pressed:false,value:0};pad.buttons[9]={pressed:false,value:0};});
+ // A pad user who never picks "Controller to test" can still leave the test: hold B, or View + Menu, on any pad.
+ const testOn=()=>page.evaluate(()=>!!document.body.dataset.controllerTesting);
+ const pickNone=()=>page.getByRole('combobox',{name:'Controller to test'}).evaluate(s=>{s.value='';s.dispatchEvent(new Event('change',{bubbles:true}));});
+ await page.getByRole('button',{name:'Test controller',exact:true}).click();await pickNone();assert.equal(await testOn(),true);
+ await page.evaluate(()=>pad.buttons[1]={pressed:true,value:1});await page.waitForTimeout(300);
+ assert.equal(await testOn(),true,'a short B press is still tested, not an exit');
+ await page.waitForFunction(()=>!document.body.dataset.controllerTesting,null,{timeout:3000});
+ await page.evaluate(()=>pad.buttons[1]={pressed:false,value:0});await page.waitForTimeout(150);
+ assert.equal(await page.evaluate(()=>location.pathname.endsWith('controls.html')),true,'holding B ends the test without leaving the page');
+ await page.getByRole('button',{name:'Test controller',exact:true}).click();await pickNone();assert.equal(await testOn(),true);
+ await page.evaluate(()=>{pad.buttons[8]={pressed:true,value:1};pad.buttons[9]={pressed:true,value:1};});
+ await page.waitForFunction(()=>!document.body.dataset.controllerTesting,null,{timeout:3000});
+ await page.evaluate(()=>{pad.buttons[8]={pressed:false,value:0};pad.buttons[9]={pressed:false,value:0};});
  await page.screenshot({path:path.join(out,'polish-controllers.png')});
  await page.goto(base+'/settings.html#audio');await page.getByRole('slider',{name:'Game volume',exact:true}).waitFor();
  assert.equal(await page.getByRole('slider',{name:'Game volume',exact:true}).isEnabled(),true);
