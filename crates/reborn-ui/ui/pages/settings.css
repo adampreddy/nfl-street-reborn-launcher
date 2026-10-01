@@ -17,9 +17,10 @@ body.page-settings .save-bar{margin:10px 36px 18px}
 
 .page-settings .tabs{align-self:flex-start;margin-top:24px}
 
-.pref-section{margin-top:24px;padding:6px 0}
-.pref-section>h2{padding:16px 22px 2px;font-size:15px;font-weight:600}
-.pref-lead{padding:0 22px 10px;font-size:12.5px;color:var(--fg-2)}
+.pref-section{margin-top:16px;padding:0}
+.pref-section>h2{padding:14px 22px 12px;font-size:15px;font-weight:600;line-height:1.3}
+.pref-section>h2+.pref-lead{margin-top:-10px}
+.pref-lead{padding:0 22px 12px;font-size:12.5px;color:var(--fg-2)}
 .pref-section>.partial,.pref-section>.refusal{margin:8px 22px 14px}
 .pref-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;align-items:center;gap:8px 18px;padding:14px 22px;border-top:1px solid var(--stroke)}
 .pref-label{font-size:13px;font-weight:600}
