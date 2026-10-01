@@ -1,6 +1,7 @@
 /* Reborn Publisher: plain, dark, readable at 1280 and at 900 wide.
  *
- * The tokens below come from the launcher's shell.css and product-ui.css:
+ * The tokens below came from the launcher's shell.css and product-ui.css
+ * (retired since; the launcher now uses theme.css):
  * the same background, panel and accent colors, the same facts table, the
  * same refusal/partial/said boxes. The shape (nav plus a content column,
  * seven pages) and the operation panel are this app's own; nothing here

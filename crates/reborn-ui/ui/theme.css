@@ -26,11 +26,13 @@
   /* plan 3: the neutral mod preview (spec §8.3, no drawn art), and an opaque surface for popovers over content */
   --thumb-bg:linear-gradient(160deg,rgba(255,255,255,.05),rgba(0,0,0,.18));
   --surface-solid:#1b1e24;
-  /* the old stylesheets' variables, pointed at the new tokens (retired in the Cleanup plan) */
-  --bg:transparent;--panel:var(--glass-1);--line:var(--stroke);--muted:var(--fg-2);--accent:var(--red);
-  --accent-border:var(--stroke-hi);--control-bg:var(--glass-2);--control-border:var(--stroke);
-  --panel-border:var(--stroke);--selected-bg:var(--glass-3);--focus:#fff;--teal:var(--ok);
-  --motion-ease:var(--ease);--motion-fast:var(--d1);--motion-normal:var(--d2);
+  /* Stats and Profile components (plan 4 Task 2 values): portrait ring and logo badge, the presence dot's ring (the
+     card colour it sits on), the fallbacks while a team or cover colour is unknown, the cover fade, a best-of-3 game row */
+  --face-ring:0 0 0 2px rgba(255,255,255,.12);--badge-bg:#16171c;--dot-ring:#1a1b21;
+  --team-fallback:#2a2d34;--cover-c2:#15161a;--cover-pic-c1:#3a3d45;--cover-pic-c2:#1b1c21;
+  --cover-pic-shadow:0 0 0 4px rgba(255,255,255,.08),0 10px 28px rgba(0,0,0,.45);
+  --cover-mask:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%);
+  --mix-light:#fff;--mix-dark:#000;--game-row-bg:rgba(0,0,0,.14);
 }
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}
@@ -46,8 +48,7 @@ html[data-glass="on"]{background:var(--mica-tint)}
 body,body.shell{background:transparent!important}
 body.shell{color:var(--fg);font-family:Inter,system-ui,sans-serif}
 body.shell .backdrop{display:none}
-/* shell surfaces carry no opaque fill of their own, so the material shows through.
-   Originals: launcher.css:4/6/7/23/29, product-ui.css:3/4/5/12/49, finish.css:14/15/26/60/61, play.css:2, onboarding-polish.css:2 */
+/* shell surfaces carry no opaque fill of their own, so the material shows through */
 body.shell .app-header,body.shell .shell-nav,body.shell .input-footer,
 body.shell #main,body.shell main,body.shell.page-home main,body.shell.page-setup main,
 body.shell.page-home details.core,body.shell.page-home #screen{background:transparent!important}
@@ -66,14 +67,15 @@ body.shell .shell-nav{position:relative}
 @keyframes look-enter{from{opacity:0;transform:translateY(6px)}}
 /* backwards, not both: a finished transform animation would keep #main a containing block for position:fixed descendants */
 body.shell #main{animation:look-enter var(--d3) var(--ease) backwards}
-/* Play's hero is position:fixed inside #main (launcher.css:83); a transform on #main would re-anchor it, so Play fades only */
+/* Play fades only: a transform on #main would re-anchor any position:fixed descendant of Play's hero */
 @keyframes look-enter-fade{from{opacity:0}}
 body.shell.page-home #main{animation-name:look-enter-fade}
 
-/* buttons */
-body.shell button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:transform var(--d1) var(--ease)}
+/* buttons. The element rule sits in :where() (specificity 0,0,1), so any component class (.btn, .m-row,
+   .player-card, .store-open) sets its own radius and font without a page-class prefix. */
+:where(body.shell) button,body.shell .button{font-family:inherit;border-radius:var(--r-md);transition:transform var(--d1) var(--ease)}
 body.shell button:active:where(:not(:disabled)){transform:scale(.98)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 16px;border-radius:var(--r-md);font:600 13px Inter,system-ui,sans-serif;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);box-shadow:var(--sheen);cursor:pointer}
 .btn:hover:where(:not(:disabled)){background:var(--glass-3);border-color:var(--stroke-hi)}
 .btn.primary{background:linear-gradient(180deg,#ec3a41,#c91f26);border-color:rgba(255,255,255,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 6px 16px -8px rgba(0,0,0,.6)}
 .btn.primary:hover:where(:not(:disabled)){background:linear-gradient(180deg,#f4545a,#d6262d)}
@@ -82,11 +84,11 @@ body.shell button:active:where(:not(:disabled)){transform:scale(.98)}
 
 /* focus: one white 2px ring, 3px offset, for keyboard and controller alike */
 body.shell :focus-visible,body.gamepad-input :focus-visible,body.gamepad-input .pad-focus{outline:2px solid #fff!important;outline-offset:3px!important;box-shadow:none!important}
-/* pads focus programmatically (.pad-focus), which may not match :focus-visible; launcher.css:64-66 drew a cream ring */
+/* pads focus programmatically (.pad-focus), which may not match :focus-visible */
 body.gamepad-input label.choice:has(.pad-focus){outline:2px solid #fff;outline-offset:3px}
 
 /* switch */
-.look-switch{position:relative;width:40px;height:22px;border-radius:999px;border:0;padding:0;cursor:pointer;background:var(--red)}
+.look-switch{position:relative;width:40px;height:22px;min-height:22px;border-radius:999px;border:0;padding:0;cursor:pointer;background:var(--red)}
 .look-switch::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transform:translateX(18px);transition:transform var(--d2) var(--ease)}
 .look-switch[aria-checked="false"]{background:rgba(255,255,255,.14)}
 .look-switch[aria-checked="false"]::after{transform:none;background:#cfd3da}
@@ -113,14 +115,13 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 body.shell.page-setup #nav{background:#0d0e11!important}
 html[data-glass="on"] body.shell.page-setup #nav{background:rgba(24,25,30,.78)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
 
-/* inset fills that the --bg:transparent alias would otherwise erase (onboarding-polish.css:51/58/109/113/152).
-   Scoped to .page-setup: equal specificity to finish.css:73, so source order (theme last) wins without !important.
+/* onboarding (.page-setup): inset fills on its tabs, override fields and selects.
    The controls page draws its own opaque .binding-editor popover (pages/controls.css, --surface-solid). */
-body.shell.page-setup .mapping-tabs,body.shell.page-setup .graphics-tabs,body.shell.page-setup .import-override-fields,
-body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{background:var(--glass-1)}
-/* the setup binding editor is an absolutely positioned overlay on the mapping grid (onboarding-polish.css:76): it needs a solid surface */
+body.shell.page-setup .mapping-tabs,body.shell.page-setup .import-override-fields,
+body.shell.page-setup .import-game-actions select{background:var(--glass-1)}
+/* the setup binding editor is an absolutely positioned overlay on the mapping grid: it needs a solid surface */
 body.shell.page-setup .binding-editor{background:var(--surface-solid)}
-body.shell.page-setup .advanced-row select,body.shell.page-setup .import-game-actions select{color-scheme:dark}
+body.shell.page-setup .import-game-actions select{color-scheme:dark}
 
 /* save lane (savebar.js): any page with body.has-save-lane gets its own grid row under #main, in the same
    column, so the bar never covers content (spec §6.2, §7). Settings and Music use it.
@@ -134,21 +135,16 @@ html body.shell.has-save-lane #save-lane{grid-area:save;min-width:0}
 /* a refused leave points at Save (app-shell.js toSaveBar): a plain outline, no glow, not animated */
 .save-bar.called .btn.primary{outline:2px solid #fff;outline-offset:3px}
 
-/* older page stylesheets restyle every button and h2; the switch and section heading keep the glass look */
-body.shell button.look-switch{width:40px;height:22px;min-height:22px;padding:0;border:0;border-radius:999px;background-color:var(--red);color:inherit}
-body.shell button.look-switch[aria-checked="false"]{background-color:rgba(255,255,255,.14)}
 .look-error{color:#ffb5b8}
 
-/* floating surfaces: content moves behind them, so --panel (a 4.5% white wash) is not enough.
-   Same selectors as the originals (finish.css:112/115, play.css:34, music.css:47/39); theme is last, so equal specificity wins. */
+/* floating surfaces: content moves behind them, so --glass-1 (a 4.5% white wash) is not enough */
 .update-card,body.shell .update-dialog,.page-home .play-dialog,body.shell.page-music dialog.music-dialog,dialog{background:rgba(24,25,30,.92);backdrop-filter:blur(24px) saturate(1.3);-webkit-backdrop-filter:blur(24px) saturate(1.3)}
 
-/* hover/press only move (transform); colours change instantly. The legacy rule (launcher.css:77, 0,2,1) animated colour and shadow at 480-720 ms. */
-html body.shell button,html body.shell .button,html body.shell .choice,html body.shell .shell-nav a,html body.shell .quick-link{transition:transform var(--d1) var(--ease)}
+/* hover/press only move (transform); colours change instantly */
+html body.shell button,html body.shell .button,html body.shell .choice,html body.shell .shell-nav a{transition:transform var(--d1) var(--ease)}
 
 /* ================= Shell, every page (spec §6) =================
-   Written with an html prefix so it outranks the legacy sheets (launcher/product-ui/finish.css):
-   the sidebar and frame are identical on themed and legacy pages. */
+   Written with an html prefix so it outranks page stylesheets: the sidebar and frame are identical on every page. */
 *,*::before,*::after{box-sizing:border-box}
 html body.shell{--rail:184px;margin:0}
 @media (max-width:1000px){html body.shell{--rail:160px}}
@@ -176,7 +172,7 @@ html body.shell:not(.page-setup) .shell-nav .nav-bottom{margin-top:auto;padding-
   html body.shell:not(.page-setup) .shell-nav a:not(.brand){height:36px;min-height:36px}
   html body.shell:not(.page-setup) .shell-nav .nav-bottom{gap:2px;padding-top:8px}
 }
-/* hint bar: exists only while there is a prompt to show (spec §6.3). :has(#id) outranks every legacy rule. */
+/* hint bar: exists only while there is a prompt to show (spec §6.3). :has(#id) outranks every page rule. */
 html body.shell:has(#input-hints:empty){--hint-height:0px}
 html body.shell:has(#input-hints:not(:empty)){--hint-height:34px}
 html body.shell:has(#input-hints:empty) .input-footer{display:none}
@@ -300,7 +296,7 @@ body.themed input[type=search]{height:38px}
 body.themed textarea{padding:8px 12px;resize:vertical}
 body.themed .field input[type=search]{flex:1;height:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
 
-/* controller art (controller-preview.js) on themed pages. The onboarding page keeps launcher.css's copy until plan 4. */
+/* controller art (controller-preview.js); art/controllers/<pad>/preview.css draws the pad itself */
 body.themed .controller-preview{margin:0 auto;width:min(100%,360px);color:var(--fg-2)}
 body.themed .controller-preview svg{display:block;width:100%;height:auto;overflow:visible}
 body.themed .controller-preview figcaption{margin-top:2px;text-align:center;font-size:11px;letter-spacing:.03em;color:var(--fg-3)}
@@ -332,15 +328,15 @@ body.themed .vendor-dualsense .controller{position:relative}
 img.avatar{object-fit:cover}
 /* portrait: round, on the team's primary (--tc, set per face from the server), team logo badge at the bottom right */
 .player-face{position:relative;display:block;flex:none;width:36px;height:36px}
-.player-face>.face{display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;object-position:50% 20%;box-shadow:0 0 0 2px rgba(255,255,255,.12);
-  background:radial-gradient(circle at 50% 30%,color-mix(in srgb,var(--tc,#2a2d34) 70%,#fff 8%),color-mix(in srgb,var(--tc,#2a2d34) 55%,#000))}
+.player-face>.face{display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;object-position:50% 20%;box-shadow:var(--face-ring);
+  background:radial-gradient(circle at 50% 30%,color-mix(in srgb,var(--tc,var(--team-fallback)) 70%,var(--mix-light) 8%),color-mix(in srgb,var(--tc,var(--team-fallback)) 55%,var(--mix-dark)))}
 .player-face>.face.letter{display:grid;place-items:center;color:var(--fg);font:700 14px Inter,system-ui,sans-serif}
-.player-face>.badge{position:absolute;right:-4px;bottom:-3px;width:17px;height:17px;padding:2px;border-radius:50%;background:#16171c;box-shadow:0 0 0 1px var(--stroke-hi);object-fit:contain}
+.player-face>.badge{position:absolute;right:-4px;bottom:-3px;width:17px;height:17px;padding:2px;border-radius:50%;background:var(--badge-bg);box-shadow:0 0 0 1px var(--stroke-hi);object-fit:contain}
 /* profile cover: the avatar's two colours (--c1/--c2 from cover-color.js) behind the whole card, fading out to the right */
-.cover-wash{position:absolute;inset:0;pointer-events:none;opacity:.55;background:linear-gradient(115deg,var(--c1,#2a2d34),var(--c2,#15161a));
-  -webkit-mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%);mask-image:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%)}
-.cover-pic{background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c1,#3a3d45) 85%,#fff),var(--c1,#3a3d45) 45%,var(--c2,#1b1c21));box-shadow:0 0 0 4px rgba(255,255,255,.08),0 10px 28px rgba(0,0,0,.45)}
-.presence-dot{position:absolute;right:6px;bottom:6px;width:18px;height:18px;border-radius:50%;background:var(--ok);border:3px solid #1a1b21}
+.cover-wash{position:absolute;inset:0;pointer-events:none;opacity:.55;background:linear-gradient(115deg,var(--c1,var(--team-fallback)),var(--c2,var(--cover-c2)));
+  -webkit-mask-image:var(--cover-mask);mask-image:var(--cover-mask)}
+.cover-pic{background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c1,var(--cover-pic-c1)) 85%,var(--mix-light)),var(--c1,var(--cover-pic-c1)) 45%,var(--c2,var(--cover-pic-c2)));box-shadow:var(--cover-pic-shadow)}
+.presence-dot{position:absolute;right:6px;bottom:6px;width:18px;height:18px;border-radius:50%;background:var(--ok);border:3px solid var(--dot-ring)}
 .live-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--red);animation:live-pulse 1.6s ease-in-out infinite}
 /* table: uppercase header, rows split by --stroke, a normal Total row, one fixed 220px name column shared by every table */
 .tbl{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12.5px;font-variant-numeric:tabular-nums}
@@ -364,13 +360,15 @@ img.avatar{object-fit:cover}
 /* match list (match-rows.js): Stats "Your matches" and Profile "Match history" (spec §8.6, §8.7) */
 .m-list{display:flex;flex-direction:column;overflow:hidden}
 .m-row{all:unset;box-sizing:border-box;display:grid;grid-template-columns:84px 92px minmax(0,1fr) 44px 56px 14px;align-items:center;gap:16px;width:100%;height:56px;padding:0 16px;cursor:pointer}
+/* the clickable rows keep the button radius they have always drawn with (hover fill and focus ring corners) */
+.m-row:where(button){border-radius:var(--r-md)}
 .m-row:hover{background:var(--glass-1)}
 .m-list>*+.m-row{border-top:1px solid var(--stroke)}
 .m-row.m-hd{height:36px;cursor:default;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
 .m-row.m-hd>:nth-child(4),.m-row.m-hd>:nth-child(5){text-align:right}
 .m-row.m-hd:hover,.m-row.m-static:hover{background:none}
 .m-row.m-static{cursor:default}
-.m-row.m-game{height:40px;border-top:1px solid var(--stroke);background:rgba(0,0,0,.14)}
+.m-row.m-game{height:40px;border-top:1px solid var(--stroke);background:var(--game-row-bg)}
 .m-row.m-game:hover{background:var(--glass-1)}
 .m-res{display:flex;align-items:baseline;gap:8px;font:600 15px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--fg)}
 .m-res b{width:12px;font-weight:700;font-size:13px}

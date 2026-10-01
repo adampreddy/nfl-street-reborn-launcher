@@ -44,8 +44,8 @@ screen?.parentNode?.insertBefore(section, screen);
 // While matchmaking has the player queued, in a lobby or in a match, the private-room section below
 // is hidden: a player cannot be in two sessions, and offering "Join a game" under "vs Jock" invites a
 // click that the launch guard would only refuse. Done with a page attribute and one scoped rule so
-// online.js - and the checker pinned to it - is never touched. !important because launcher.css:8
-// shows #screen with `body.shell:not(.page-home) #screen{display:grid}`, which outranks this rule's
+// online.js - and the checker pinned to it - is never touched. !important because pages/online.css:57
+// shows #screen with `html:not(#_) body.shell:not(.page-home) #screen{display:grid}`, which outranks this rule's
 // selector; without it the attribute was set and the section stayed on screen.
 document.head.append(el('style', { text: 'body[data-mm-busy="true"] #screen{display:none!important}' }));
 function markBusy(busy) {

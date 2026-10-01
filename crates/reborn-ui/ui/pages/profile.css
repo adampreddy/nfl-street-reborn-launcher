@@ -5,7 +5,7 @@ body.page-profile #main{padding:36px 36px 32px}
 .page-profile .page-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .page-profile #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
 .page-profile #screen>.refusal,.page-profile .lv-empty{margin:0;color:var(--fg-2)}
-.pf-back{all:unset;align-self:flex-start;display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);cursor:pointer}
+.pf-back{all:unset;border-radius:var(--r-md);align-self:flex-start;display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);cursor:pointer}
 .pf-back:hover{color:var(--fg)}
 .pf-back .chev{margin:0;transform:rotate(135deg)}
 /* the profile card: the cover wash behind the whole card, the avatar centred on the identity block, the live card right */
@@ -100,10 +100,10 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
 /* Full stats and More stats: theme.css's .tbl (a shared 220px name column, so every table's columns line up) */
 .pf-tbl{overflow-x:auto;overflow-y:hidden}
 .pf-tbl .tbl{min-width:960px}
-.pf-sort{all:unset;cursor:pointer}
+.pf-sort{all:unset;border-radius:var(--r-md);cursor:pointer}
 .pf-sort:hover{color:var(--fg)}
 .tbl tr.more td{height:auto;padding:0}
-.pf-showall{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:38px;cursor:pointer;font:600 12.5px Inter,system-ui,sans-serif;color:var(--fg-2)}
+.pf-showall{all:unset;border-radius:var(--r-md);box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:38px;cursor:pointer;font:600 12.5px Inter,system-ui,sans-serif;color:var(--fg-2)}
 .pf-showall:hover{background:var(--glass-1);color:var(--fg)}
 .pf-showall .chev{margin:0}
 .pf-more{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
