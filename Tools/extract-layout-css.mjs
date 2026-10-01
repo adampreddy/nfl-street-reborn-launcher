@@ -78,6 +78,9 @@ const DROP = /^(text-shadow|outline(-[\w-]+)?|filter|backdrop-filter|-webkit-bac
 const BASE_UNDO = [
   ['theme.css gives classless buttons and a.button a fixed 38px height; the old ones grew with their text (min-height)',
     'html:not(#_) body :where(button:not([class]),button.primary:not(.btn),a.button){height:revert}'],
+  // Found on Online's matchmaking states (Task 10, P4-14): its plain h3, p, ul and ol kept the browser's 1em margins.
+  ['theme.css zeroes the margins of h1-h3, p, figure, ul and ol; the old sheets left the browser\'s where they set none (the page heading stays the theme\'s)',
+    'html:not(#_) body :where(#main) :where(h1,h2,h3,p,figure,ul,ol):where(:not(.page-heading *)){margin:revert}'],
 ];
 
 // Restores theme.css's body.themed base takes away and the old sheets never declared (plan Task 9 Step 3, "hand-kept").
@@ -101,6 +104,12 @@ const HAND_KEPT = {
     + 'html:not(#_) body.shell #screen .lv-picker button[aria-pressed="true"]{border-color:var(--fg-3)}'],
   ['a disputed play keeps its light left edge (legacy live-view.css:110 border-left-color:var(--muted))',
     'html:not(#_) .lv-play.disputed{border-left-color:var(--fg-2)}']],
+  // Online (Task 10, P4-27): the private room's "Personal saves protected" was a sage green (#b2c4a0, finish.css:98)
+  // that maps to the grey --fg-2; it says something is safe, so it keeps the theme's one green.
+  online: [['the room\'s "Personal saves protected" stays green (legacy finish.css .netplay-safe #b2c4a0)',
+    'html:not(#_) .netplay-safe{color:var(--ok)}'],
+  ['a disabled light primary ("Game in progress") keeps 3:1 text: the old 0.45 dimming left 2.6:1 (P4-27)',
+    'html:not(#_) body.shell:not(.page-setup) button.primary:not(.btn):not(.look-switch):disabled{opacity:.6}']],
 };
 
 // ---- the pages' own sources: their HTML and every script they load, followed through imports ----
@@ -122,6 +131,11 @@ const tokensKnown = (sel) => {
   const names = [...sel.replace(NOT, '').replace(DYN, '').replace(/\[[^\]]*\]/g, '').matchAll(/[.#](-?[_a-zA-Z][\w-]*)/g)].map((m) => m[1]);
   return names.length > 0 && names.every(named);
 };
+// `primary` is named by app-shell.js (`.matches('.primary')`) on every page, so the old primary-button rules passed the
+// named-in-source test on pages that never make one (Recovery, game, live). A selector part that needs a non-.btn
+// `.primary` is kept only when it matched in a state or the page's sources create such a class (Task 10 carry).
+const createsPrimary = /\bclass(?:Name)?\s*[:=]\s*(["'`])(?![^"'`]*\bbtn\b)[^"'`]*\bprimary\b[^"'`]*\1|\bel\(\s*["']\w+["']\s*,\s*["'][^"']*\bprimary\b/.test(SRC);
+const needsPrimary = (sel) => /\.primary\b/.test(sel.replace(NOT, ''));
 const prefix = (sel) => (/^html\b/.test(sel) ? sel.replace(/^html/, 'html:not(#_)') : /^:root\b/.test(sel) ? sel.replace(/^:root/, ':root:not(#_)') : `html:not(#_) ${sel}`);
 
 // ---- each retired sheet's style rules as WRITTEN, in the order the CSSOM walk below visits them ----
@@ -290,8 +304,12 @@ const rewriteUrls = (v) => v.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/g, (m, q, 
   if (/^(data:|https?:|\/|#)/.test(local)) return m;
   return `url("${path.relative(path.dirname(out), path.join(ui, local)).split(path.sep).join('/')}")`;
 });
+// Dark text only ever sat on a light fill (the old white primary button: #252722 on #eceee4). The nearest text token is
+// --fg-3, about 3.6:1 on the --fg fill it maps to; the theme's dark surface keeps it dark (about 15:1). Task 10 carry.
+const INK_DARK = ([r, g, b, a]) => a >= 0.6 && (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.25;
 function colourValue(d) {
   if (!d.rgba) return KEYWORD.test(d.value.trim()) ? d.value.trim().toLowerCase() : null;
+  if (TEXTISH.test(d.prop) && INK_DARK(d.rgba)) return 'var(--surface-solid)';
   if (TEXTISH.test(d.prop)) return textToken(d.rgba);
   if (d.prop === 'background-color') return fillToken(d.rgba);
   return lineToken(d.rgba);
@@ -359,7 +377,7 @@ if (scope === 'main' && rootText) {
 // sheets never set, put back to the browser's own (`revert`): a copied rule that sets the property still wins.
 for (const [why, rule] of BASE_UNDO) lines.push(`/* ${why} */`, rule);
 for (const r of merged.values()) {
-  const sels = r.parts.filter((p) => !owned(p.sel) && (scope === 'page' || !subjectIsRoot(p.sel)) && (p.hit || tokensKnown(p.sel))).map((p) => prefix(p.sel));
+  const sels = r.parts.filter((p) => !owned(p.sel) && (scope === 'page' || !subjectIsRoot(p.sel)) && (p.hit || (tokensKnown(p.sel) && (createsPrimary || !needsPrimary(p.sel))))).map((p) => prefix(p.sel));
   if (!sels.length) { left++; continue; }
   const imageFromShorthand = r.decls.some((d) => d.group === 'background' && d.prop === 'background-image' && /url\(/.test(d.value) && !/gradient/.test(d.value));
   const names = (r.decls.find((d) => d.prop === 'animation-name')?.value || 'none').split(',').map((s) => s.trim()).filter((n) => n && n !== 'none');
@@ -372,6 +390,9 @@ for (const r of merged.values()) {
     body.push(`${d.prop}:${v}${d.important ? '!important' : ''}`);
   }
   if (!body.length) { left++; continue; }
+  // A light (--fg) fill came from an old `background:` shorthand, which also cleared any image. theme.css paints its
+  // primary button with a gradient image, so without this the old white primary showed red with dark ink (Task 10).
+  if (body.some((x) => /^background-color:var\(--fg\)/.test(x)) && !body.some((x) => x.startsWith('background-image:'))) body.push('background-image:none');
   if (animOk) names.forEach((n) => used.add(n));
   kept++;
   let text = `${sels.join(',')}{${body.join(';')}}`;
@@ -388,6 +409,7 @@ const head = [
   '   made by Tools/extract-layout-css.mjs and checked with Tools/compare-page-layout.mjs.',
   '   Layout only: colours are theme tokens; shadows, glows, filters, transitions and font families are gone.',
   `   Every selector starts with html:not(#_) so the old layout outranks theme.css's base rules: load this file on ${these} only.`,
+  ...(scope === 'main' ? ['   P4-29: the old body.shell h1 rule (28px/600) also styles the page title; kept on purpose, these pages are not redesigned (spec §9).'] : []),
   ...(oldFonts.size ? [`   The old font of these was Anton or Saira (now Inter): ${[...oldFonts].join(', ')}`] : []),
   '*/',
 ].join('\n');

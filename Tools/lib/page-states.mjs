@@ -39,7 +39,7 @@ export const STATES = {
     { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
   ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
-  online: [{ name: 'online', url: 'online.html', scope: 'main' }],
+  online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
   onboarding: [
     ...STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),
     { name: 'onboarding-preparation-tasks', url: 'onboarding.html?stage=preparation', scope: 'page', progress: PREP },
@@ -47,6 +47,41 @@ export const STATES = {
     { name: 'onboarding-controller-twopads', url: 'onboarding.html?stage=controller_setup', scope: 'page', data: { devices: PADS(2) } },
   ],
 };
+
+/** Online's matchmaking panel (online-mm.js reads `mm_state` and `mm_rooms`) and its private room (online.js polls
+ *  `netplay_status`; an active snapshot shows the `.netplay-lobby` section), ruling P4-14. The answers have the shapes
+ *  Tools/check-online-mm.mjs (captured from the real backend) and Tools/check-online-restored.mjs give them. The frozen
+ *  clock keeps the queue timer still. */
+function onlineStates() {
+  const online = { count: 3, players: [{ name: 'Adam', activity: 'idle' }, { name: 'Jock', activity: 'queued' }, { name: 'Tuna', activity: 'idle' }] };
+  const empty = { player: { name: 'Adam', region: 'na-east' }, ticket: null, room: null, match: null, chat: [], queue_depth: { ranked: 0, casual: 1 }, online };
+  const mm = (snapshot, extra = {}) => ({ link: 'connected', error: null, presence_on: true, relay_error: null, snapshot, ...extra });
+  const match = (m) => ({ id: 'm1', mode: 'casual', status: 'pairing', relay_state: 'pairing', relay_deadline: null, best_of: 1, you_host: true, opponent: 'Jock',
+    field: null, your_field_pick: 'the_pit', your_accepted: false, your_ready: false, series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0, ...m });
+  const rooms = [{ code: 'K7QP2M', mode: 'casual', best_of: 1, host: 'Jock' }, { code: 'R4NK3D', mode: 'ranked', best_of: 3, host: 'Tuna' }];
+  const players = [{ id: 1, name: 'Adam', status: 'OK', ping: '0 ms' }, { id: 2, name: 'Jock', status: 'OK', ping: '38 ms' }];
+  const room = (r) => ({ netplay_status: { phase: 'lobby', active: true, host: true, connection: 'traversal', port: 2626, code: 'ABC12345', can_start: true, players, ports: [1, 2, 0, 0], ...r } });
+  const S = (name, data) => ({ name, url: 'online.html', scope: 'main', data });
+  return [
+    S('online-mm-idle', { mm_state: mm(empty), mm_rooms: rooms }),
+    S('online-mm-queued', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }),
+    S('online-mm-lobby', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open',
+      members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
+      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) }),
+    S('online-mm-pairing', { mm_state: mm({ ...empty, match: match({}) }) }),
+    S('online-mm-match', { mm_state: mm({ ...empty, match: match({ id: 'm2', mode: 'ranked', status: 'running', relay_state: 'running', best_of: 3, you_host: false,
+      your_accepted: true, your_ready: true, series: [0, 1], wins_needed: 2, seat: 1 }), chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
+    S('online-mm-relay-error', { mm_state: mm({ ...empty, match: match({ id: 'm4', relay_state: 'go', your_accepted: true, your_ready: true }) },
+      { relay_error: 'This Dolphin build does not support launcher Netplay.' }) }),
+    S('online-mm-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true,
+      your_ready: true, series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }), mm_rooms: [] }),
+    S('online-mm-signed-out', { mm_state: mm(null, { link: 'signed_out' }) }),
+    S('online-room-host', room({})),
+    S('online-room-direct', room({ connection: 'direct', code: '', port: 2626 })),
+    S('online-room-guest', room({ host: false, can_start: false })),
+    S('online-room-running', room({ phase: 'running', can_start: false })),
+  ];
+}
 
 /** stats_game for a VERIFIED game (plays_status 'verified'), so game.js draws the tabs: plays, box score, drives. */
 function verifiedGame() {

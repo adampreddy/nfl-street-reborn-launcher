@@ -10,7 +10,8 @@
 //       matches is downgraded to WARN (size, position and style alike). Judge every WARN in the screenshots.
 //       --loose-prop <regex> <property> is the narrow one (ruling P4-28): only a change of that ONE computed style on an
 //       element whose chain matches is a WARN; any other style change, move or resize of it still FAILs.
-//       The page heading, the diagnostic fold and the shell are not compared.
+//       The page heading, the diagnostic fold and the shell are not compared. The heading's own height change is taken out of
+//       the y of #main's later children (reported as one WARN per screen), so a theme heading 2px shorter moves nothing.
 // Baseline comparisons elsewhere (checkers failing at the start of plan 4) must key failures on the normalised failure
 // MESSAGE (strip file:line, paths, timings), never file:line: later tasks edit those checkers and shift their lines.
 // Scrollbars are hidden in every capture (ruling P4-10): the themed thin scrollbar is 10px narrower than the default
@@ -71,6 +72,10 @@ async function capture(dir) {
         return rows;
       }, { scope: state.scope, ignore: IGNORE });
       if (errors.length) out[key].__errors = errors;
+      // The page heading is the theme's and is not compared, but its height moves every later child of #main. Its outer
+      // height (unrounded) lets the diff take that move out of those children's y (Task 10).
+      out[key].__heading = await p.evaluate(() => { const h = document.querySelector('#main > .page-heading'); if (!h) return null;
+        const cs = getComputedStyle(h); return h.getBoundingClientRect().height + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom); });
       const file = key.replace('@', '-');
       await p.screenshot({ path: path.join(dir, `${file}.png`) });
       await p.evaluate((scope) => { const m = scope === 'page' ? document.scrollingElement : document.getElementById('main'); if (m) m.scrollTop = m.scrollHeight; }, state.scope);
@@ -91,6 +96,10 @@ function diff(beforeDir, afterDir, loose, looseProps = []) {
     const x0 = A[screen], y0 = B[screen];
     if (!y0) { fails.push(`${screen}: not captured after`); continue; }
     if (y0.__errors) fails.push(`${screen}: page errors after: ${y0.__errors.join(' | ')}`);
+    // A direct child of #main below the (ignored) page heading moves with the heading's height; that move is the theme's.
+    const hd = typeof x0.__heading === 'number' && typeof y0.__heading === 'number' ? y0.__heading - x0.__heading : 0;
+    const headingMove = (k, x) => (hd && /^main#main\/[^/]+$/.test(k) && x.dy > 0 ? hd : 0);
+    if (Math.abs(hd) > 0.01) warns.push(`${screen} .page-heading (theme's, not compared): outer height ${x0.__heading.toFixed(2)} → ${y0.__heading.toFixed(2)}; #main's children below it are compared without that move`);
     for (const k of Object.keys(x0)) {
       if (k.startsWith('__')) continue;
       const x = x0[k], y = y0[k];
@@ -98,7 +107,7 @@ function diff(beforeDir, afterDir, loose, looseProps = []) {
       if (x.shown !== y.shown) { fails.push(`${screen} ${x.chain}: ${x.shown ? 'hidden' : 'shown'} after`); continue; }
       if (!x.shown) continue;
       const side = Math.abs(x.dx - y.dx) > 2 || Math.abs(x.w - y.w) > 2;
-      const vert = Math.abs(x.dy - y.dy) > 2 || Math.abs(x.h - y.h) > 2;
+      const vert = Math.abs(x.dy - (y.dy - headingMove(k, x))) > 2 || Math.abs(x.h - y.h) > 2;
       const line = `${screen} ${x.chain}: x ${x.dx}→${y.dx} w ${x.w}→${y.w} y ${x.dy}→${y.dy} h ${x.h}→${y.h}`;
       const isLoose = loose.some((re) => re.test(x.chain));
       if (side || vert) (isLoose ? warns : fails).push(line);
