@@ -7,7 +7,7 @@ const PAGES = ["index","controls","game","live","mods","music","onboarding","onl
 // Pages moved onto the design system load exactly theme.css + their own page file (spec §11) and say so
 // with body.themed. Later tasks add pages here as they move.
 const THEMED = { index: "pages/play.css", settings: "pages/settings.css", mods: "pages/mods.css", music: "pages/music.css", controls: "pages/controls.css", stats: "pages/stats.css", profile: "pages/profile.css",
-  recovery: "pages/recovery.css", game: "pages/live.css", live: "pages/live.css",
+  recovery: "pages/recovery.css", game: "pages/live.css", live: "pages/live.css", online: "pages/online.css",
 };
 for (const p of PAGES) {
   const html = readFileSync(ui + p + ".html", "utf8");
