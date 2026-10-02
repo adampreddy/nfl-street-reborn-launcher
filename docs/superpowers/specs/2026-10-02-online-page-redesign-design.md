@@ -95,7 +95,7 @@ uses today (`online-mm.js` 335–359): live match → room → ticket → idle. 
 ### 3.7 Your private lobby (room)
 - Two glass cards side by side:
   - **Your room** (`Casual`/`Ranked` at right): ROOM CODE label, the code at 44px, **Copy code**
-    (the mockup's **Copy invite link** is NOT built: lobby codes have no invite link today), PLAYERS: each member row = avatar, name (`you`), Ready (green) / Not ready.
+    **Copy invite link** (§3.10), PLAYERS: each member row = avatar, name (`you`), Ready (green) / Not ready.
   - **Chat**: messages (`name` bold + text), "Say something…" field (Enter sends, = `mm_room_action chat`).
 - Action row: **Start** (primary, host only, enabled when everyone is ready), **I'm ready / I'm not ready**
   (toggle, = `ready`), **Leave room**. Note under it: "Start works once you're both ready. The host starts the game."
@@ -113,6 +113,25 @@ uses today (`online-mm.js` 335–359): live match → room → ticket → idle. 
   and no button.
 - **Disabled:** today the matchmaking section empties and only private rooms remain. New: only the Private
   room tile is shown (full width of the mode area), with its action row. Behaviour unchanged.
+
+### 3.10 Invite links for lobbies (Adam, 10-02: "I want actual invite links")
+Built on the existing direct-connection invite plumbing (`nflstreetreborn://join/<code>`, `join.php?c=`,
+`remember_pending_join`, `netplay_pending_join`), with a separate path so a lobby code is never mistaken
+for a Netplay host code:
+- **Link copied:** `https://nflstreetreborn.com/join.php?r=<CODE>` (a web page, so it pastes as a clickable
+  link in Discord). The page opens `nflstreetreborn://room/<CODE>`; when the launcher is not installed it
+  shows the download button and the code to type in by hand.
+- **Launcher:** `join_code_from` learns `nflstreetreborn://room/<code>` (same sanitising, own kind). The
+  pending invite file stores `{kind:"room"|"netplay", code}`; `netplay_pending_join` keeps returning only
+  `netplay` invites (unchanged), a new `mm_pending_room` / `mm_pending_room_clear` returns `room` invites.
+  A second launcher start forwards the link to the running one, as `join/` does today.
+- **Online page:** on load and on window focus, a pending room invite picks the Private room tile, fills the
+  code field, and shows one line above the tiles: "**Jock** invited you to a room · K7QP2M" with
+  **Join** (primary, = `mm_room_join {code}`) and Dismiss. Never joins on its own. Signed out: the sign-in
+  panel says "Sign in to join K7QP2M" and the invite survives the sign-in.
+- The inviter's name comes from `mm_room_join`'s answer or, if the room lookup offers it, a new
+  `GET /v1/rooms/<code>` → `{host_name, mode}`; without it the line reads "You were invited to a room · K7QP2M".
+- Discord rich presence "Join" (presence_discord.rs) for someone in a lobby produces the same `room/` link.
 
 ## 4. Leaderboard card
 - Header "Leaderboard" + "{n} ranked" muted. Column labels `#`, `PLAYER`, `ELO` (11px uppercase, fg-3).
@@ -170,7 +189,9 @@ off (today), ranks/Elo/changes are hidden and the leaderboard card shows "Rankin
 - `online.html` (structure), `pages/online.css` (new, theme tokens only), `online-mm.js` (render functions
   rewritten, state logic and commands untouched), `online.js` (form moves into a dialog; logic untouched),
   `live-now.js` (row markup + classes; logic untouched), new `leaderboard.js` (card + poll every 60 s),
-  `main.rs` (`leaderboard` command), backend (§7). Art: display copies under `art/online/`.
+  `main.rs` (`leaderboard` command; `room/` invite links: `join_code_from`, pending-invite kind,
+`mm_pending_room(_clear)`), `presence_discord.rs` (room join secret), backend (§7 + optional
+`GET /v1/rooms/<code>`), website `join.php` (`?r=` → `nflstreetreborn://room/`; SiteGround). Art: display copies under `art/online/`.
 
 ## 10. Out of scope
 - New matchmaking behaviour, new modes, region picking, party queue.
