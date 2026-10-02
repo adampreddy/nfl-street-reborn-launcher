@@ -373,6 +373,13 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
     if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
         return None;
     }
+    // One download at a time: the background start below and any command that
+    // needs the emulator meanwhile share it, the command waiting for it to end
+    // rather than starting a second copy of the same 119 MB.
+    let _one = RUNTIME_DOWNLOAD.lock().unwrap_or_else(|e| e.into_inner());
+    if reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return None;
+    }
     let fail = |why: String| {
         // WARN reaches launcher.log; a Deck tester's report is that file.
         tracing::warn!("downloading the emulator failed: {why}");
@@ -399,6 +406,24 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
             }
         }
     }
+}
+
+static RUNTIME_DOWNLOAD: Mutex<()> = Mutex::new(());
+
+/// Start the emulator download as the launcher opens, off every page's path.
+///
+/// Run from inside a page's command, the 119 MB download held that page on
+/// "Loading…" for its whole length (57 s here; minutes on a Deck's Wi-Fi), and
+/// a Deck tester reported the launcher "stuck all the time" (2026-10-02). Here
+/// it runs on its own thread from the moment the window opens; a command that
+/// truly needs the emulator waits on the same download in ensure_runtime.
+pub(crate) fn start_runtime_download() {
+    if cfg!(windows) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let _ = ensure_runtime(&Platform::detect());
+    });
 }
 
 pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {

@@ -589,7 +589,8 @@ fn runtime_for(platform: &Platform, hint: Option<&str>) -> Option<PathBuf> {
     let cleaned = hint.map(reborn_core::session::user_path);
     let live = cleaned.as_deref().filter(|p| p.is_file());
     let legacy = default_legacy_root(platform);
-    let _ = content_updates::ensure_runtime(platform);
+    // Tolerant lookups (which user folder the mods link, and so on) never wait
+    // for the emulator download: the background start fetches it.
     reborn_core::session::resolve_runtime(platform, live, legacy.as_deref())
         .ok()
         .map(|r| r.path().to_path_buf())
@@ -6133,6 +6134,9 @@ fn main() {
 
     tauri::Builder::default()
         .setup(move |app| {
+            // A one-file Linux launcher fetches its emulator now, in the
+            // background, so no page waits for it.
+            content_updates::start_runtime_download();
             if game_mode {
                 if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
                     let _ = w.set_fullscreen(true);
