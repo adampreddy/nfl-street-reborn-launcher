@@ -202,6 +202,11 @@ mod tests {
         assert_eq!(seed_kind_or_default(Some("regular")),"regular");
         assert_eq!(seed_kind_or_default(Some(" pickup ")),"pickup");
         assert_eq!(seed_kind_or_default(Some("../evil")),"regular");
+        assert_eq!(match_seed_kind(None,Some("ranked")),"ranked");
+        assert_eq!(match_seed_kind(Some("regular"),Some(" ranked ")),"ranked");
+        assert_eq!(match_seed_kind(Some("pickup"),Some("ranked")),"pickup","a ranked pickup room keeps its pickup game");
+        assert_eq!(match_seed_kind(Some("regular"),Some("casual")),"regular");
+        assert_eq!(match_seed_kind(Some("ranked"),Some("casual")),"regular","the server can never name ranked itself");
     }
 
     /// A room keeps Dolphin's own log, session-only: the 09-26 real match left nothing to read.
@@ -303,9 +308,22 @@ pub(crate) fn seed_kind_or_default(kind:Option<&str>)->&'static str{
  match kind.map(str::trim) { Some("pickup")=>"pickup", _=>"regular" }
 }
 
+/// The seed a matchmade game boots from: a ranked match's regular game takes `ranked` (Adam 10-02: Ranked plays on the
+/// settings of his Reborn 2.1 S01 - Difficulty Hard, GameBreakers Off; ranked.s01 is regular.s01 with those two
+/// values), anything else is the server's kind. Never reaches the server: rooms and snapshots keep pickup|regular.
+pub(crate) fn match_seed_kind(kind:Option<&str>,mode:Option<&str>)->&'static str{
+ match (seed_kind_or_default(kind),mode.map(str::trim)) { ("regular",Some("ranked"))=>"ranked", (k,_)=>k }
+}
+
+/// A content install that predates ranked.s01 boots ranked from regular.s01; the server's seed comparison still holds
+/// a match whose two peers would boot different files.
 fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
- let seed=p.paths.data_root().ok()?.join(format!("library/online/seed/{}.s01",seed_kind_or_default(seed_kind)));
- seed.is_file().then_some(seed)
+ let dir=p.paths.data_root().ok()?.join("library/online/seed");
+ let name=match seed_kind.map(str::trim) { Some("ranked")=>"ranked", other=>seed_kind_or_default(other) };
+ let seed=dir.join(format!("{name}.s01"));
+ if seed.is_file() { return Some(seed); }
+ let fallback=dir.join("regular.s01");
+ (name=="ranked" && fallback.is_file()).then_some(fallback)
 }
 
 /// What matchmaking's `ready` sends: this PC's answers, measured, never assumed. `seed_sha256` is
