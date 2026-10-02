@@ -66,6 +66,12 @@ static LAUNCH: Mutex<(Option<String>, Option<String>, String)> = Mutex::new((Non
 
 static PRESENCE: Mutex<Option<Box<dyn Presence + Send>>> = Mutex::new(None);
 static POLLER: AtomicBool = AtomicBool::new(false);
+/// This launcher's own tally for the match it is streaming: (match id, [seat0, seat1] wins). The live loop writes it,
+/// the relay loop reads it for the ranked close.
+static LOCAL_WINS: Mutex<Option<(String, [u32; 2])>> = Mutex::new(None);
+/// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
+/// leave (Task 19 reads this).
+pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
 
 /// One line to `<data root>/logs/matchmaking.log`. The launcher is a windowed app, so stderr goes
 /// nowhere; the first real test left no trace of what either launcher saw (2026-09-23). Never
@@ -243,6 +249,9 @@ fn live_plays_loop(platform: Platform) {
             }
             let (Ok(Some(token)), Ok(origin)) = (reborn_core::identity::token(&platform), reborn_core::identity::origin(&platform)) else { return };
             let r = poster.tick(&http, &origin, &token, now);
+            if let Some((id, poster)) = current.as_ref() {
+                *lock(&LOCAL_WINS) = Some((id.clone(), poster.tally().wins()));
+            }
             let notable = r.posted + r.dropped > 0 || r.stopped.is_some();
             let skips_due = r.skipped > 0 && last_skip_log.is_none_or(|t| now.saturating_sub(t) >= LIVE_SKIP_LOG_MS);
             if notable || skips_due {
@@ -279,6 +288,7 @@ fn live_plays_loop(platform: Platform) {
 fn drive() {
     let mut mem = relay_driver::Memory::default();
     let mut last_room: Option<String> = None;
+    let mut close: (String, reborn_core::series::RankedClose) = (String::new(), Default::default());
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let (connected, matched) = {
@@ -344,6 +354,23 @@ fn drive() {
                     }
                     break;
                 }
+            }
+        }
+        // The ranked close (series spec §3.2; ruling R11): at 2 wins, wait for the deciding capture (30 s at most),
+        // then close the room ~3 s later. Each launcher does this on its own.
+        if let Some(m) = matched.as_ref().filter(|m| m.mode == "ranked") {
+            if close.0 != m.id { close = (m.id.clone(), Default::default()); }
+            let local = lock(&LOCAL_WINS).as_ref().filter(|(id, _)| id == &m.id).map(|(_, w)| *w).unwrap_or([0, 0]);
+            let over = reborn_core::series::series_over(local, reborn_core::series::wins_needed(m), m.outcome.as_ref().map(|o| o.kind.as_str()));
+            if over && room.active {
+                let newest = crate::dolphin_settings::netplay_user_dir().and_then(|u| reborn_core::series::newest_capture_ms(&u));
+                let id = m.id.clone();
+                let mut stop = || {
+                    *lock(&SERIES_CLOSING) = Some(id.clone());
+                    mm_log(&format!("series over ({}-{} by this launcher's tally): closing Dolphin", local[0], local[1]));
+                    crate::dolphin_settings::netplay_action("leave".into(), None)
+                };
+                reborn_core::series::run_ranked_close(&mut close.1, now_ms(), over, newest, &mut stop);
             }
         }
     }

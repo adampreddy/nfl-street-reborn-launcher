@@ -99,6 +99,67 @@ pub fn wins_needed(m: &crate::matchmaking::MatchView) -> u32 {
     (best as u32).div_ceil(2)
 }
 
+/// How long the close waits for the deciding game's capture file (spec §3.2: "at most 30 s").
+pub const CLOSE_WAIT_MS: u64 = 30_000;
+/// Then Dolphin is stopped about this much later (spec §3.2: "about 3 s later").
+pub const STOP_DELAY_MS: u64 = 3_000;
+/// A capture counts as the decider's if Dolphin wrote it no earlier than this before the decision was seen (the
+/// file lands with the game's last play, and the tally can lag a poll or two behind it).
+pub const CAPTURE_SLACK_MS: u64 = 120_000;
+
+/// Is a ranked series over: this launcher's own tally reached `need`, or the server already closed it?
+pub fn series_over(local: [u32; 2], need: u32, server_kind: Option<&str>) -> bool {
+    local.iter().any(|w| need > 0 && *w >= need) || server_kind.is_some_and(|k| k != "open")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseStep { Nothing, Waiting, Stop }
+
+/// The ranked close's clock (spec §3.2; ruling R11). Each launcher runs its own.
+#[derive(Debug, Default, Clone)]
+pub struct RankedClose {
+    decided_at_ms: Option<u64>,
+    capture_seen_ms: Option<u64>,
+    stopped: bool,
+}
+
+impl RankedClose {
+    pub fn step(&mut self, now_ms: u64, over: bool, newest_capture_ms: Option<u64>) -> CloseStep {
+        if self.stopped || !over { return CloseStep::Nothing; }
+        let at = *self.decided_at_ms.get_or_insert(now_ms);
+        if self.capture_seen_ms.is_none() && newest_capture_ms.is_some_and(|t| t + CAPTURE_SLACK_MS >= at) {
+            self.capture_seen_ms = Some(now_ms);
+        }
+        let ready_at = self.capture_seen_ms.unwrap_or(u64::MAX).min(at + CLOSE_WAIT_MS);
+        if now_ms >= ready_at + STOP_DELAY_MS {
+            self.stopped = true;
+            return CloseStep::Stop;
+        }
+        CloseStep::Waiting
+    }
+}
+
+/// One tick of the close; `stop` is called at most once. True on the tick that stopped Dolphin.
+pub fn run_ranked_close(close: &mut RankedClose, now_ms: u64, over: bool, newest: Option<u64>, stop: &mut dyn FnMut() -> Result<(), String>) -> bool {
+    match close.step(now_ms, over, newest) {
+        CloseStep::Stop => { if let Err(e) = stop() { tracing::warn!("closing Dolphin after the series failed: {e}"); } true }
+        _ => false,
+    }
+}
+
+/// The newest capture file Dolphin wrote under `user_dir` (ms since the epoch), or None.
+pub fn newest_capture_ms(user_dir: &std::path::Path) -> Option<u64> {
+    crate::stats::dolphin_capture_dirs(user_dir).into_iter()
+        .filter_map(|(dir, _)| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +219,55 @@ mod tests {
         assert_eq!(wins_needed(&m), 2);
         m.rules = Some(crate::matchmaking::SeriesRules { ranked_best_of: 5, ..Default::default() });
         assert_eq!(wins_needed(&m), 3);
+    }
+
+    #[test]
+    fn the_series_is_over_at_need_wins_or_when_the_server_says_so() {
+        assert!(!series_over([1, 0], 2, Some("open")));
+        assert!(series_over([2, 0], 2, Some("open")));
+        assert!(series_over([1, 0], 2, Some("win")), "the server's close also closes the room");
+        assert!(!series_over([1, 1], 2, None));
+    }
+
+    #[test]
+    fn the_ranked_close_waits_for_the_capture_then_stops_three_seconds_later_once() {
+        let mut c = RankedClose::default();
+        assert_eq!(c.step(1_000, false, None), CloseStep::Nothing);
+        assert_eq!(c.step(10_000, true, None), CloseStep::Waiting, "decided at 10 s, no capture yet");
+        assert_eq!(c.step(14_000, true, Some(13_500)), CloseStep::Waiting, "capture seen at 14 s");
+        assert_eq!(c.step(16_999, true, Some(13_500)), CloseStep::Waiting);
+        assert_eq!(c.step(17_000, true, Some(13_500)), CloseStep::Stop, "3 s after the capture");
+        assert_eq!(c.step(18_000, true, Some(13_500)), CloseStep::Nothing, "never twice");
+    }
+
+    #[test]
+    fn the_ranked_close_gives_up_waiting_after_30_seconds() {
+        // An old capture (game 1's, written long before the decision) is not the decider's.
+        let mut c = RankedClose::default();
+        assert_eq!(c.step(1_000_000, true, Some(1)), CloseStep::Waiting);
+        assert_eq!(c.step(1_010_000, true, Some(1)), CloseStep::Waiting);
+        assert_eq!(c.step(1_032_999, true, Some(1)), CloseStep::Waiting);
+        assert_eq!(c.step(1_033_000, true, Some(1)), CloseStep::Stop, "30 s wait + 3 s");
+    }
+
+    #[test]
+    fn run_ranked_close_calls_the_mocked_stop_exactly_once() {
+        let mut c = RankedClose::default();
+        let mut calls = 0;
+        let mut stop = || { calls += 1; Ok(()) };
+        assert!(!run_ranked_close(&mut c, 0, true, Some(0), &mut stop));
+        assert!(run_ranked_close(&mut c, 3_000, true, Some(0), &mut stop));
+        assert!(!run_ranked_close(&mut c, 9_000, true, Some(0), &mut stop));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn newest_capture_ms_reads_the_capture_folders() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(newest_capture_ms(d.path()), None);
+        let (dir, _) = crate::stats::dolphin_capture_dirs(d.path()).into_iter().next().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("g.json"), b"{}").unwrap();
+        assert!(newest_capture_ms(d.path()).is_some());
     }
 }
