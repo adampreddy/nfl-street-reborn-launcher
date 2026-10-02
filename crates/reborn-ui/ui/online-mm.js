@@ -279,6 +279,8 @@ function lockPanel(title, text, withButton) {
       el('p', { text }),
       withButton ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'signin', 'data-primary': 'true',
         text: si.starting ? 'Opening Discord…' : 'Sign in with Discord', disabled: si.starting, onclick: () => signIn.start() }) : null,
+      // A waiting invite can be put away without signing in (it is cleared, as Dismiss does).
+      withButton && invite ? el('button', { type: 'button', class: 'btn quiet', 'data-key': 'invite-notnow', text: 'Not now', onclick: () => forgetInvite() }) : null,
       withButton && si.message ? el('p', { class: 'refusal', role: 'alert', text: si.message }) : null];
   return el('div', { class: 'on-locked' }, tiles(null, { locked: true }),
     el('div', { class: 'on-lock', role: 'region', 'aria-label': title }, ...parts.filter(Boolean)));
@@ -342,36 +344,51 @@ lobbiesLink?.addEventListener('click', () => openPanel(lobbiesLink, { label: 'Pu
 
 // ---- a room invite (spec §3.10) ----
 // A `nflstreetreborn://room/<code>` link left its code behind (mm_pending_room). On load and on window focus the page
-// picks Private room, fills the code and offers one line with Join; it never joins on its own. Join or Dismiss clears
-// it; anything else (signed out, busy) leaves it waiting. The banner is drawn only while idle, so a queued, matched or
-// roomed player never sees it and the invite waits.
-const INVITE_CODE = /^[A-Za-z0-9-]{1,64}$/; // what the launcher keeps (main.rs invite_from); anything else is no invite
-let invite = null; // { code, host }
+// picks Private room, fills the code and offers one line with Join; it never joins on its own. Join, Dismiss or (signed
+// out) Not now clears it; anything else (signed out, busy) leaves it waiting. The banner is drawn only while idle, so a
+// queued, matched or roomed player never sees it and the invite waits.
+// A lobby code fits the room-code field (maxlength 12); anything else is no invite (the launcher keeps up to 64).
+const INVITE_CODE = /^[A-Za-z0-9-]{1,12}$/;
+let invite = null; // { code, key, host }
+// Invites put away this session (`code|at`), kept even when clearing the file failed, so a focus re-read cannot bring
+// one back; and codes the server already said it knows no host for, so focus does not ask again.
+const session = {
+  has(k) { try { return JSON.parse(sessionStorage.getItem('mm:invites-done') || '[]').includes(k); } catch { return memo.has(k); } },
+  add(k) { memo.add(k); try { const v = JSON.parse(sessionStorage.getItem('mm:invites-done') || '[]'); if (!v.includes(k)) sessionStorage.setItem('mm:invites-done', JSON.stringify([...v, k].slice(-20))); } catch { /* memo holds it */ } },
+};
+const memo = new Set();
+const noHost = new Set();
 async function takeRoomInvite() {
   if (!bridge) return;
   try {
     const p = await call('mm_pending_room');
     if (!p || typeof p.code !== 'string' || !INVITE_CODE.test(p.code)) return;
-    if (invite?.code !== p.code) {
-      invite = { code: p.code, host: null };
+    const key = `${p.code}|${typeof p.at === 'string' ? p.at : ''}`;
+    if (memo.has(key) || session.has(key)) return;
+    if (invite?.key !== key) {
+      invite = { code: p.code, key, host: null };
       privatePicked = true;
       roomCode = p.code;
       lastDrawn = '';
       draw();
     }
     // Asked again on focus until it answers: a signed-out player's lookup fails, and the name comes after sign-in.
-    if (invite.host) return;
-    const found = await call('mm_room_lookup', { code: p.code }).catch(() => null);
-    if (found && typeof found.host_name === 'string' && found.host_name && invite?.code === p.code) {
-      invite.host = found.host_name;
+    // A clear "no host" (none or a 404) is asked once per code.
+    if (invite.host || noHost.has(p.code)) return;
+    const found = await call('mm_room_lookup', { code: p.code }).then((v) => ({ v }), () => null);
+    if (!found || invite?.key !== key) return;
+    if (found.v && typeof found.v.host_name === 'string' && found.v.host_name) {
+      invite.host = found.v.host_name;
       lastDrawn = '';
       draw();
-    }
+    } else noHost.add(p.code);
   } catch { /* an invite that cannot be read is no invite */ }
 }
-function forgetInvite() {
+async function forgetInvite() {
+  if (!invite) return;
+  session.add(invite.key);
   invite = null;
-  call('mm_pending_room_clear').catch(() => {});
+  await call('mm_pending_room_clear').catch(() => {});
   // Ruling P13: the banner goes at once, not on the next change the server reports.
   lastDrawn = '';
   draw();
@@ -383,7 +400,7 @@ function inviteBanner() {
   return el('div', { class: 'glass on-invite', role: 'status' },
     el('p', {}, line.who ? el('b', { text: line.who }) : null, line.rest),
     el('button', { type: 'button', class: 'btn primary sm', 'data-key': 'invite-join', text: 'Join',
-      onclick: async () => { if (await act('mm_room_join', { code })) forgetInvite(); } }),
+      onclick: async () => { if (await act('mm_room_join', { code })) await forgetInvite(); } }),
     el('button', { type: 'button', class: 'btn quiet sm', 'data-key': 'invite-dismiss', text: 'Dismiss', onclick: () => forgetInvite() }));
 }
 takeRoomInvite();

@@ -6011,7 +6011,12 @@ fn invite_from(arg: &str) -> Option<Invite> {
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    (!code.is_empty() && code.len() <= 64).then_some(Invite { kind, code })
+    valid_invite_code(&code).then_some(Invite { kind, code })
+}
+
+/// What an invite's code may be: 1 to 64 letters, digits and dashes.
+fn valid_invite_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= 64 && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// The Netplay host code inside `nflstreetreborn://join/<code>`.
@@ -6048,8 +6053,9 @@ fn write_pending(path: &std::path::Path, invite: &Invite) -> Result<(), String> 
     std::fs::write(path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
-/// The waiting invite if it is of `kind`. A file written before kinds existed has none and is a Netplay invite.
-fn read_pending(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde_json::Value>, String> {
+/// The waiting file's contents if it is of `kind`, whatever its code. A file written before kinds existed has none
+/// and is a Netplay invite.
+fn read_pending_file(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde_json::Value>, String> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
@@ -6059,9 +6065,16 @@ fn read_pending(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde
     }
 }
 
-/// Forget the waiting invite, only if it is of `kind`: clearing one kind never drops the other.
+/// The waiting invite if it is of `kind` and its code is a code. The file sits in the data root where anything could
+/// have written it, so a code `invite_from` would never have kept is no invite.
+fn read_pending(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde_json::Value>, String> {
+    Ok(read_pending_file(path, kind)?.filter(|v| v.get("code").and_then(|c| c.as_str()).is_some_and(valid_invite_code)))
+}
+
+/// Forget the waiting invite, only if it is of `kind`: clearing one kind never drops the other. A file of that kind
+/// with a bad code goes too.
 fn clear_pending(path: &std::path::Path, kind: InviteKind) -> Result<(), String> {
-    if read_pending(path, kind)?.is_none() {
+    if read_pending_file(path, kind)?.is_none() {
         return Ok(());
     }
     match std::fs::remove_file(path) {
@@ -8093,6 +8106,16 @@ struct StatsSubmitView {"),
         let none = dir.path().join("none.json");
         assert_eq!(read_pending(&none, InviteKind::Room).unwrap(), None);
         clear_pending(&none, InviteKind::Room).unwrap();
+        // A code no link could have left is no invite, for either reader, and clearing its kind removes it.
+        for bad in [r#"{"kind":"room","code":"../x","at":"x"}"#, r#"{"kind":"room","code":""}"#, r#"{"kind":"room","code":7}"#, r#"{"kind":"room"}"#] {
+            std::fs::write(&path, bad).unwrap();
+            assert_eq!(read_pending(&path, InviteKind::Room).unwrap(), None, "{bad}");
+            clear_pending(&path, InviteKind::Room).unwrap();
+            assert!(!path.exists(), "{bad} is cleared");
+        }
+        std::fs::write(&path, br#"{"code":"AB/12"}"#).unwrap();
+        assert_eq!(read_pending(&path, InviteKind::Netplay).unwrap(), None, "the Netplay reader too");
+        assert!(!valid_invite_code(&"A".repeat(65)) && valid_invite_code(&"A".repeat(64)) && valid_invite_code("k7-qp"));
     }
 
     #[test]

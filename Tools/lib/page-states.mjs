@@ -161,6 +161,8 @@ function onlineStates() {
     N('online-invite', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
     N('online-invite-nohost', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: null }),
     N('online-invite-signed-out', { mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-not-now', { mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-long', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M9X12345', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
     N('online-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
       mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
     // A Netplay invite while queued (carried from Task 2): the Direct connection dialog stays shut.

@@ -224,6 +224,17 @@ try {
     await page.screenshot({ path: path.join(out, 'play-setup-note-800-strip-focused.png') });
     await page.context().close();
   }
+  { // A room invite (Task 12) hands Play off to Online once. It waits until Join or Dismiss, so back on Play, and on
+    // window focus, the player stays on Play.
+    const page = await open({ mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } });
+    await page.waitForURL(/\/online\.html$/, { timeout: 5000 });
+    await page.goto(base + '/index.html');
+    await page.getByRole('button', { name: 'Play now', exact: true }).waitFor();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(800);
+    assert.ok(page.url().endsWith('/index.html'), 'Play stays put after the first hand-off: ' + page.url());
+    await page.context().close();
+  }
   { // 780x540 (about the inside of the minimum 800x560 window): the sidebar fits without a scrollbar.
     const page = await open({}, { width: 780, height: 540 });
     await page.getByRole('button', { name: 'Play now', exact: true }).waitFor(); await settled(page);

@@ -523,6 +523,10 @@ const EXPECT = {
     text: ['You were invited to a room · K7QP2M'],
     check: async (page) => {
       const p = [];
+      // No host is an answer: focus does not ask again for the same code.
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await page.waitForTimeout(300);
+      if ((await calls(page, 'mm_room_lookup')).length !== 1) p.push(`the lookup was asked ${(await calls(page, 'mm_room_lookup')).length} times`);
       await page.locator('[data-key="invite-dismiss"]').click();
       await page.waitForTimeout(300);
       if (!(await calls(page, 'mm_pending_room_clear')).length) p.push('Dismiss did not clear the invite');
@@ -531,8 +535,29 @@ const EXPECT = {
     },
   },
   'online-invite-signed-out': {
-    text: ['Sign in to join K7QP2M', 'Sign in with Discord'],
+    text: ['Sign in to join K7QP2M', 'Sign in with Discord', 'Not now'],
     check: async (page) => ((await calls(page, 'mm_pending_room_clear')).length || (await calls(page, 'mm_room_join')).length ? ['a signed-out invite was used up'] : []),
+  },
+  'online-invite-not-now': {
+    text: ['Sign in to join K7QP2M'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('[data-key="invite-notnow"]').click();
+      await page.waitForTimeout(300);
+      if (JSON.stringify(await calls(page, 'mm_pending_room_clear')) !== '[{}]') p.push('Not now did not clear the invite');
+      if (await page.getByText('Sign in to join K7QP2M').count()) p.push('the lock still names the invite');
+      if (!(await page.getByText('Sign in to play online').count())) p.push('the lock did not go back to its own title');
+      if ((await calls(page, 'mm_room_join')).length) p.push('Not now joined');
+      // The file is still answered by the stub: a focus re-read must not bring it back.
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await page.waitForTimeout(300);
+      if (await page.getByText('Sign in to join K7QP2M').count()) p.push('a focus re-read brought the dismissed invite back');
+      return p;
+    },
+  },
+  'online-invite-long': {
+    absent: ['invited you', 'You were invited'],
+    check: async (page) => ((await calls(page, 'mm_room_lookup')).length ? ['a 13-character code was taken as an invite'] : []),
   },
   'online-invite-busy': {
     absent: ['invited you', 'You were invited'],
