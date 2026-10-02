@@ -821,6 +821,7 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         // The bundled runtime by whichever name this build gave the emulator.
         // 3.1.0 renamed Dolphin.exe to NFL Street Reborn Dolphin.exe, and a
         // fixed file name here refused every import against that runtime.
+        crate::content_updates::ensure_runtime(&p);
         let runtime=match reborn_core::session::resolve_runtime(&p,None,None){Ok(reborn_core::session::Runtime::Bundled(path))=>path,_=>return Err("The new launcher runtime is missing. Reinstall the complete package.".into())};
         let source=reborn_core::session::user_path(&image);check_reborn_id(&source)?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;

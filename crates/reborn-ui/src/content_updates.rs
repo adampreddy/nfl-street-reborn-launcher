@@ -359,6 +359,31 @@ pub(crate) fn ensure_patch_chain(p: &Platform) -> Result<(), String> {
     if chain.is_file() { Ok(()) } else { Err(IMPORT_BUNDLE_UNAVAILABLE.to_string()) }
 }
 
+/// A one-file launcher (Linux AppImage) has no emulator until it downloads
+/// one: fetch this OS's runtime component when none can be found.
+///
+/// The Windows installer lays Dolphin beside the launcher and seeding mirrors
+/// it into the data root, so on Windows this returns at once and changes
+/// nothing. On a Deck, first-run setup asked for the emulator before any
+/// content check had run and stopped with "No Reborn emulator was found"
+/// (the tester's third screen, 2026-10-02). Called before every place the
+/// launcher looks for the emulator. A failure is logged, not returned: the
+/// search that follows then reports where it looked, as it always has.
+pub(crate) fn ensure_runtime(p: &Platform) {
+    if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return;
+    }
+    let (Ok(data_root), Ok(settings), Ok(verifier)) = (p.paths.data_root(), load_settings(p), verifier()) else {
+        return;
+    };
+    let origin = Origin::new(&origin_url(&settings));
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::runtime_here()], depth: Depth::Quick };
+    if let Err(e) = updater.run(&request, &ImageHook::default()) {
+        eprintln!("downloading the emulator failed: {e}");
+    }
+}
+
 pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
     let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
     reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
