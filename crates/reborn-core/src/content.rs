@@ -1112,6 +1112,31 @@ pub struct ContentService<'a> {
     layout: ContentLayout,
 }
 
+
+/// Unix only: a downloaded program must be executable to run.
+///
+/// Blobs carry bytes, not permission bits (the component manifest was
+/// designed on Windows, which has none to carry), so a Linux runtime's
+/// `dolphin-emu` would go live as a plain file and the Deck could not start
+/// it. A file that begins with the ELF signature, every Linux program and
+/// library, is made 0755 as it goes live; everything else keeps the default.
+/// Nothing on Windows changes.
+fn mark_if_program(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let mut magic = [0u8; 4];
+        let elf = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"ELF";
+        if elf {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 impl<'a> ContentService<'a> {
     pub fn new(platform: &'a Platform, data_root: &Path) -> Self {
         Self {
@@ -1570,7 +1595,9 @@ impl<'a> ContentService<'a> {
                 }
                 moved_aside = Some(prior);
             }
-            if let Err(e) = ensure_parent(&live)
+            if let Err(e) = mark_if_program(&staged)
+                .map_err(|source| crate::platform::Error::Io { path: staged.clone(), source })
+                .and_then(|()| ensure_parent(&live))
                 .and_then(|()| self.platform.files.atomic_replace(&staged, &live))
             {
                 // Record the aside even though the replacement never landed, or
@@ -2031,6 +2058,27 @@ fn relative_files(root: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Linux program arrives as bytes and must go live executable; data
+    /// files are left as they are. On Windows nothing is touched.
+    #[test]
+    fn a_downloaded_program_goes_live_executable_and_data_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("dolphin-emu");
+        let data = dir.path().join("Dolphin.ini");
+        std::fs::write(&program, b"ELFrest of the program").unwrap();
+        std::fs::write(&data, b"[Core]
+").unwrap();
+        mark_if_program(&program).unwrap();
+        mark_if_program(&data).unwrap();
+        mark_if_program(&dir.path().join("short")).unwrap_or(());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&program).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(std::fs::metadata(&data).unwrap().permissions().mode() & 0o111, 0, "data stays non-executable");
+        }
+    }
     use crate::manifest::COMPONENT_SCHEMA;
     use crate::platform::{FileOps, LockGuard};
     use std::sync::Mutex;
