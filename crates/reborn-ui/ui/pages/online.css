@@ -245,3 +245,14 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-invite{display:flex;align-items:center;gap:12px;padding:8px 14px}
 .on-invite p{flex:1;min-width:0;margin:0;font-size:13px;color:var(--fg-2)}
 .on-invite b{font-weight:600;color:var(--fg)}
+
+/* Direct connection dialog: one heading (the dialog title), the intro sentence under it, quiet status line.
+   The old form's tabs are class-less buttons, which theme.css paints as glass buttons; reset them to the segmented look. */
+.on-direct .netplay-intro h2{display:none}
+.on-direct .on-direct-head{margin-bottom:4px}
+.on-direct .netplay-intro p{margin:0}
+.on-direct .netplay-form{gap:20px}
+body.themed .section-tabs button{height:32px;padding:0 14px;border:0;border-radius:calc(var(--r-lg) - 4px);background:transparent;box-shadow:none;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif}
+body.themed .section-tabs button:hover:not([aria-pressed="true"]){background:var(--glass-1);color:var(--fg)}
+body.themed .section-tabs button[aria-pressed="true"]{background:var(--glass-3);color:var(--fg);box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
+.on-direct .settings-status{margin:0;font-size:13px;font-weight:400;color:var(--fg-2)}
