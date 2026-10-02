@@ -87,7 +87,24 @@ const EXPECT = {
       return p;
     },
   },
-  // (states are added above this line)
+  // A direct room open on load opens its dialog once; Close keeps it closed across online.js's 750 ms polls (it
+  // re-sets `hidden` each time) and the page behind it, the nav included, works again (fix round 1, Task 2).
+  'online-room-host': {
+    check: async (page) => {
+      const p = [];
+      const isOpen = () => page.locator('#direct-dialog').evaluate((d) => d.open);
+      if (!(await isOpen())) p.push('an open direct room did not open its dialog');
+      await page.locator('#direct-close').click();
+      await page.waitForTimeout(1600);
+      if (await isOpen()) p.push('the dialog reopened itself after Close while the room stayed open');
+      const stats = page.locator('.shell-nav a[href="stats.html"]');
+      if (await stats.evaluate((a) => !!a.closest('[inert]') || document.querySelector('dialog:modal') !== null)) p.push('the page is still inert behind a modal');
+      else await stats.click({ trial: true, timeout: 2000 }).catch(() => p.push('the Stats link in the nav is not clickable'));
+      await page.locator('#direct-open').click();
+      if (!(await isOpen())) p.push('Direct connection did not reopen the room');
+      return p;
+    },
+  },
 };
 
 const byName = Object.fromEntries((STATES.online || []).map((s) => [s.name, s]));
