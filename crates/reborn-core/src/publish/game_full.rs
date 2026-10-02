@@ -193,6 +193,7 @@ pub fn stage(req: &GameFullRequest<'_>, observer: &dyn ScanObserver, sink: Sink<
             let carry = CarryForward {
                 origin, id: ComponentId::GameFull, version,
                 key: req.key, release_version: req.release_version, release_sequence: req.release_sequence,
+                notes: None,
                 apply: true,
             };
             return Ok(match republish_pinning(&carry, sink)? {
@@ -206,6 +207,7 @@ pub fn stage(req: &GameFullRequest<'_>, observer: &dyn ScanObserver, sink: Sink<
     let carry = CarryForward {
         origin, id: ComponentId::GameFull, version,
         key: req.key, release_version: req.release_version, release_sequence: req.release_sequence,
+        notes: None,
         apply: true,
     };
     Ok(match republish_pinning(&carry, sink)? {
@@ -349,7 +351,7 @@ mod tests {
         assert!(publish_component(&ComponentRequest { root: &root, spec, origin: &origin, apply: true }, &RunToCompletion, &mut |_| {}).unwrap().is_done());
         let sign_req = ReleaseRequest {
             origin: &origin, version: "3.0.0", sequence: 1, key: &written.publisher_path,
-            pins: &[Pin { id: ComponentId::Roster, version: "2026.09.13".to_string() }], apply: true,
+            pins: &[Pin { id: ComponentId::Roster, version: "2026.09.13".to_string() }], notes: None, apply: true,
         };
         assert!(release(&sign_req, &mut |_| {}).unwrap().is_done());
 

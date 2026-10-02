@@ -220,6 +220,7 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
                 key: req.key,
                 release_version: req.release_version,
                 release_sequence: req.release_sequence,
+                notes: None,
                 apply: true,
             };
             return Ok(match republish_pinning(&carry, sink)? {
@@ -237,6 +238,7 @@ pub fn publish_game_patch(platform: &Platform, req: &GamePatchRequest<'_>, obser
         key: req.key,
         release_version: req.release_version,
         release_sequence: req.release_sequence,
+        notes: None,
         apply: true,
     };
     Ok(match republish_pinning(&carry, sink)? {

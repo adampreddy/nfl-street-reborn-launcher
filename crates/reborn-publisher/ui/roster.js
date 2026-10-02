@@ -71,6 +71,21 @@ const sourceBlock = block(
   el("p", { class: "hint", text: "Today's date, unless you want a different label." })
 );
 
+// -- Update notes ---------------------------------------------------------------
+
+const NEWLINE = String.fromCharCode(10);
+const notesInput = el("textarea", {
+  rows: 5,
+  placeholder: ["Roster Update:", "Added Joey Porter Jr. to the Cowboys", "Removed DeMarvion Overshown from the Cowboys"].join(NEWLINE),
+  style: "width:100%;max-width:560px;font:inherit",
+});
+const notesBlock = block(
+  "Update notes",
+  notesInput,
+  el("p", { class: "hint", text: "Players see this on the update card and once as What's new. One change per line; a line ending in a colon is a heading. Leave it empty for none. Notes never carry over to the next release." })
+);
+const currentNotes = () => notesInput.value.trim() || null;
+
 // -- Remembering the last inputs ---------------------------------------------
 
 async function loadRemembered() {
@@ -109,7 +124,7 @@ const theJob = job(jobHost, {
   },
   run: (dryRun) => {
     saveRemembered();
-    return call("roster_run", { source: currentSource(), version: versionInput.value.trim(), dry_run: dryRun });
+    return call("roster_run", { source: currentSource(), version: versionInput.value.trim(), notes: currentNotes(), dry_run: dryRun });
   },
   verify: () => call("roster_verify"),
   describePlan: (plan) => {
@@ -118,6 +133,10 @@ const theJob = job(jobHost, {
       `${plan.players} players, ${plan.teams} teams, ${plan.portraits} portraits, exported from ${plan.base_label || "an unknown base"} (${fmtBytes(plan.file_bytes)}).`,
       `Players will be offered it as an update of ${fmtBytes(plan.file_bytes)}, published as roster ${plan.version || versionInput.value.trim()}.`,
     ];
+    const notes = currentNotes();
+    lines.push(notes
+      ? "Update notes players will see: " + notes.split(NEWLINE).map((l) => l.trim()).filter(Boolean).join(" / ")
+      : "No update notes: players see just the roster version.");
     if (plan.release_bootstrap_needed) {
       lines.push("Warning: this computer has not signed a release yet, so nothing else can be carried forward from here. Sign one from the command line first, with everything.");
     } else if (!plan.release_will_be_signed) {
@@ -135,6 +154,8 @@ const theJob = job(jobHost, {
 
 versionInput.addEventListener("input", () => theJob.refresh());
 
-screen.replaceChildren(sourceBlock, block("Publish", jobHost));
+notesInput.addEventListener("input", () => theJob.refresh());
+
+screen.replaceChildren(sourceBlock, notesBlock, block("Publish", jobHost));
 
 loadRemembered();

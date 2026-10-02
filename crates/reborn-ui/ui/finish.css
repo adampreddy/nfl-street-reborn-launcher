@@ -110,11 +110,11 @@ body.shell.page-setup .shell-nav .brand{margin-top:26px}
 .update-center{position:fixed;right:24px;bottom:24px;z-index:50;display:grid;gap:12px;width:min(360px,calc(100vw - 48px));max-height:65vh;overflow:auto}
 .gamepad-input .update-center{bottom:64px}
 .update-card{padding:20px;border:1px solid var(--control-border);border-radius:12px;background:var(--panel);box-shadow:0 12px 40px #0005;display:grid;gap:12px;color:var(--fg)}
-.update-card .notice-headline{font-size:15px;line-height:1.4}.update-card .update-message{margin:0;font-size:12px;line-height:1.65;color:var(--muted);overflow-wrap:anywhere}
+.update-card .notice-headline{font-size:15px;line-height:1.4}.update-card .update-message{margin:0;font-size:12px;line-height:1.65;color:var(--muted);overflow-wrap:anywhere;white-space:pre-line}
 .update-card button{justify-self:end;margin:0}.update-card progress{width:100%;height:8px;accent-color:var(--accent)}
 body.shell .update-dialog{width:min(540px,calc(100vw - 48px));max-height:80vh;overflow:auto;padding:28px;border:1px solid var(--control-border);border-radius:14px;background:var(--panel);color:var(--fg);box-shadow:0 24px 80px #0008}
 .update-dialog::backdrop{background:#0009}.update-dialog h2{margin:0 0 10px;font-size:24px;letter-spacing:-.02em}.update-version{margin:0 0 20px;color:var(--muted);font-size:13px}
-.update-changes{max-height:34vh;overflow:auto;border-block:1px solid var(--line);padding:16px 0}.update-changes ul{padding-left:20px;margin:0}.update-changes li{padding:4px 0;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.update-countdown{font-size:12px;line-height:1.6;color:var(--muted);margin:18px 0}.update-dialog-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}.update-dialog-actions button{margin:0}
+.update-changes{max-height:34vh;overflow:auto;border-block:1px solid var(--line);padding:16px 0}.update-changes-heading{margin:0 0 4px;font-size:13px;font-weight:600}.update-changes ul+.update-changes-heading{margin-top:12px}.update-changes ul{padding-left:20px;margin:0}.update-changes li{padding:4px 0;font-size:13px;line-height:1.7;overflow-wrap:anywhere}.update-countdown{font-size:12px;line-height:1.6;color:var(--muted);margin:18px 0}.update-dialog-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}.update-dialog-actions button{margin:0}
 
 /* Preserve wizard visibility inside the dialog action flex layout. */
 #menu-pad-setup[hidden],.menu-pad-setup-dialog [hidden]{display:none!important}
