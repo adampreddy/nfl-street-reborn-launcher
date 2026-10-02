@@ -99,7 +99,7 @@ async function focusKeep(page, label, key, what) {
 // ---- every state ----
 const EXPECT = {
   'online-layout': {
-    text: ['Online', 'Ranked, casual, or private. Pick your game.'],
+    text: ['Online', 'Ranked, casual, or your crew. Pick your game.'],
     check: async (page) => {
       const p = [];
       const lb = await page.locator('#leaderboard-slot').boundingBox();
@@ -156,8 +156,8 @@ const EXPECT = {
     },
   },
   'online-ranked': {
-    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private Room', 'Host a room or join with a code.',
-      'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
+    text: ['Ranked', 'First to two wins. Climb the board.', 'Casual', 'One game. No Elo, no pressure.', 'Private Room', 'Your crew, your code.',
+      'Find a ranked game', 'Matched to your level', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
     absent: ['Quick Match', 'Direct connection', 'best of'],
     check: async (page) => {
       const p = [];
@@ -333,10 +333,10 @@ const EXPECT = {
       return p;
     },
   },
-  'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
-  // Ruling P9: intermission is still "Playing", with the series line.
-  'online-intermission': { text: ['Playing', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
-  'online-playing-casual': { text: ['Playing', 'Casual · one game'], absent: ['Series', 'Game on'] },
+  'online-playing': { text: ['In play', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
+  // Ruling P9: intermission is still "In play", with the series line.
+  'online-intermission': { text: ['In play', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
+  'online-playing-casual': { text: ['In play', 'Casual · one game'], absent: ['Series', 'Game on'] },
   'online-match-bare': {
     text: ['Opponent'], absent: ['undefined', 'NaN', 'null', ' to accept', ' · Elo'],
     check: async (page) => {
@@ -351,7 +351,7 @@ const EXPECT = {
   // The matchup card at the minimum window: one column, the faces clear of Leave match (generic check below).
   'online-match-small': { text: ['Game on', 'Jock', '0:14 to accept'] },
   'online-room': {
-    text: ['Your Room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Your crew', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
+    text: ['Your room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Your crew', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
       'Both ready, then the host kicks it off.'],
     absent: ['Lobby code', 'Leave lobby', 'Room code', 'Pickup'],
     check: async (page) => {
@@ -387,7 +387,7 @@ const EXPECT = {
       return p;
     },
   },
-  'online-room-pickup': { text: ['Your Room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
+  'online-room-pickup': { text: ['Your room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
   'online-held': {
     text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
     absent: ['Leave match', 'Accept'],

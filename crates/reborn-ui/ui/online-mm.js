@@ -207,9 +207,9 @@ function chatBox(messages, send) {
 // No pictures yet (Adam, 2026-10-02): each tile's `.on-art` layer is a plain colour (pages/online.css). Real art goes
 // into that same layer later (a background image, or an <img> inside it) without moving anything else.
 const MODES = [
-  { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.' },
-  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.' },
-  { key: 'private', name: 'Private Room', line: 'Host a room or join with a code.' },
+  { key: 'ranked', name: 'Ranked', line: 'First to two wins. Climb the board.' },
+  { key: 'casual', name: 'Casual', line: 'One game. No Elo, no pressure.' },
+  { key: 'private', name: 'Private Room', line: 'Your crew, your code.' },
 ];
 
 function tileClick(key) {
@@ -256,7 +256,7 @@ function tiles(snap, { searching = null, locked = false, only = null } = {}) {
 function findRow(p) {
   return el('div', { class: 'on-row' },
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p} game`, onclick: () => queueWhenCurrent() }),
-    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched by Elo' : "Anyone's game" }));
+    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched to your level' : "Anyone's game" }));
 }
 
 // The code field's text survives the redraws (the field itself is rebuilt).
@@ -484,7 +484,7 @@ function drawRoom(r, chat) {
   // The game the host picked (the snapshot's seed_kind; an older server sends none: Quick game).
   const kindName = KIND_NAME[r.seed_kind] ?? KIND_NAME.regular;
   const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: `Your Room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
     el('div', { class: 'on-coderow' },
       el('strong', { class: 'on-codebig', text: r.code }),
       el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
@@ -516,11 +516,11 @@ function drawMatch(m, chat, relayError, snap) {
   const words = RELAY[m.relay_state] ?? 'Starting the game';
   const opp = m.opponent || 'your opponent';
   const pairing = m.relay_state === 'pairing';
-  // Ruling P9: between games of a series is still "Playing", with the series line.
+  // Ruling P9: between games of a series is still "In play", with the series line.
   const playing = m.relay_state === 'running' || m.relay_state === 'intermission';
   const series = playing ? seriesLine(m) : null;
   const mid = el('div', { class: 'on-mid' },
-    el('span', { class: 'k-label on-found', text: playing ? 'Playing' : 'Game on' }),
+    el('span', { class: 'k-label on-found', text: playing ? 'In play' : 'Game on' }),
     el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
     series ? el('span', { class: 'on-ser num', text: series }) : null,
     el('span', { class: 'on-mode-line', text: modeLine(m.mode) }));

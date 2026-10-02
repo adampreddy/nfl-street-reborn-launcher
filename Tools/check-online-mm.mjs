@@ -63,9 +63,9 @@ const EXPECT = {
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
   idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game'] },
   // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
-  lobby: { text: ['Your Room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
+  lobby: { text: ['Your room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
   pairing: { text: ['Jock', 'Game on', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
-  running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
+  running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
 };
