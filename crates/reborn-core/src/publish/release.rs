@@ -29,6 +29,8 @@ pub struct ReleaseRequest<'a> {
     /// The publisher.key file.
     pub key: &'a Path,
     pub pins: &'a [Pin],
+    /// What changed, for the players' update card. Signed with the release.
+    pub notes: Option<&'a str>,
     /// Write and sign. Without it everything is checked and nothing written.
     pub apply: bool,
 }
@@ -60,6 +62,9 @@ pub struct CarryForward<'a> {
     pub release_version: Option<&'a str>,
     /// Defaults to one above the release already served.
     pub release_sequence: Option<u64>,
+    /// What changed, for the players' update card. Never carried forward:
+    /// the last release's notes describe the last release.
+    pub notes: Option<&'a str>,
     pub apply: bool,
 }
 
@@ -112,9 +117,17 @@ pub fn release(req: &ReleaseRequest<'_>, sink: Sink<'_>) -> Result<Outcome<Signe
     out!(sink, "Origin        {}", origin.display());
     out!(sink, "Release       {version}, sequence {sequence}");
     out!(sink, "Signing key   {} (public {})", key.display(), public_hex);
+    match req.notes.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(notes) => {
+            for (i, line) in notes.lines().enumerate() {
+                out!(sink, "{}{line}", if i == 0 { "Notes         " } else { "              " });
+            }
+        }
+        None => out!(sink, "Notes         none: players see the list of components"),
+    }
     out!(sink);
 
-    let mut builder = UnsignedReleaseBuilder::new(version, sequence)?;
+    let mut builder = UnsignedReleaseBuilder::new(version, sequence)?.notes(req.notes);
     let mut total_files = 0u64;
     let mut total_bytes = 0u64;
     for pin in req.pins {
@@ -344,7 +357,7 @@ pub fn republish_pinning(req: &CarryForward<'_>, sink: Sink<'_>) -> Result<Outco
 
     out!(sink);
     out!(sink, "Release       {rv}, sequence {rs}, pinning {}", pin_labels.join(", "));
-    let inner = ReleaseRequest { origin, version: &rv, sequence: rs, key, pins: &pins, apply };
+    let inner = ReleaseRequest { origin, version: &rv, sequence: rs, key, pins: &pins, notes: req.notes, apply };
     release(&inner, sink)
 }
 
@@ -384,7 +397,7 @@ mod tests {
 
     fn sign(w: &World, version: &str, sequence: u64, pins: &[Pin], apply: bool) -> (Outcome<Signed>, Vec<String>) {
         let mut lines = Vec::new();
-        let req = ReleaseRequest { origin: &w.origin, version, sequence, key: &w.key, pins, apply };
+        let req = ReleaseRequest { origin: &w.origin, version, sequence, key: &w.key, pins, notes: None, apply };
         (release(&req, &mut |e: Event| lines.push(e.line)).unwrap(), lines)
     }
 
@@ -465,12 +478,40 @@ mod tests {
         let mut lines = Vec::new();
         let req = CarryForward {
             origin: &w.origin, id: ComponentId::Roster, version: "2026.09.06",
-            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+            key: Some(&w.key), release_version: None, release_sequence: None, notes: None, apply: true,
         };
         let outcome = republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap();
         let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
         assert_eq!((s.version.as_str(), s.sequence), ("3.0.0", 4));
         assert!(lines.iter().any(|l| l.contains("pinning roster=2026.09.06, runtime=1.0.2")), "{lines:?}");
+    }
+
+    /// The roster push's notes land in the signed release and are printed;
+    /// the next push without notes does not inherit them.
+    #[test]
+    fn carry_forward_signs_its_own_notes_and_never_the_last_ones() {
+        let w = world();
+        publish(&w, ComponentId::Runtime, "1.0.2", 1, &[("a.txt", b"alpha
+")]);
+        publish(&w, ComponentId::Roster, "2026.09.06", 1, &[("roster.rebornroster", b"PK")]);
+        publish(&w, ComponentId::Roster, "2026.09.07", 2, &[("roster.rebornroster", b"PK2")]);
+        assert!(sign(&w, "3.0.0", 3, &[pin(ComponentId::Runtime, "1.0.2")], true).0.is_done());
+        let notes = "Roster update:\nAdded Joey Porter Jr. to the Cowboys";
+        let mut lines = Vec::new();
+        let req = CarryForward {
+            origin: &w.origin, id: ComponentId::Roster, version: "2026.09.06",
+            key: Some(&w.key), release_version: None, release_sequence: None, notes: Some(notes), apply: true,
+        };
+        assert!(republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap().is_done());
+        let served = Release::parse(&std::fs::read(w.origin.join(RELEASE_FILE)).unwrap()).unwrap();
+        assert_eq!(served.notes.as_deref(), Some(notes));
+        assert!(lines.iter().any(|l| l == "Notes         Roster update:"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "              Added Joey Porter Jr. to the Cowboys"), "{lines:?}");
+
+        let next = CarryForward { version: "2026.09.07", notes: None, ..req };
+        assert!(republish_pinning(&next, &mut |_| {}).unwrap().is_done());
+        let served = Release::parse(&std::fs::read(w.origin.join(RELEASE_FILE)).unwrap()).unwrap();
+        assert_eq!((served.sequence, served.notes), (5, None));
     }
 
     /// The 1.36 GB recovery disc carries forward like every other pinned
@@ -512,7 +553,7 @@ mod tests {
         let mut lines = Vec::new();
         let req = CarryForward {
             origin: &w.origin, id: ComponentId::Runtime, version: "1.0.3",
-            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+            key: Some(&w.key), release_version: None, release_sequence: None, notes: None, apply: true,
         };
         let outcome = republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap();
         let s = match outcome { Outcome::Done(s) => s, o => panic!("{o:?}") };
@@ -528,7 +569,7 @@ mod tests {
         let mut lines = Vec::new();
         let req = CarryForward {
             origin: &w.origin, id: ComponentId::Mods, version: "1.1.0",
-            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+            key: Some(&w.key), release_version: None, release_sequence: None, notes: None, apply: true,
         };
         assert!(republish_pinning(&req, &mut |e: Event| lines.push(e.line)).unwrap().is_done());
         assert!(
@@ -544,7 +585,7 @@ mod tests {
         let mut lines = Vec::new();
         let no_release = CarryForward {
             origin: &w.origin, id: ComponentId::Roster, version: "2026.09.06",
-            key: Some(&w.key), release_version: None, release_sequence: None, apply: true,
+            key: Some(&w.key), release_version: None, release_sequence: None, notes: None, apply: true,
         };
         assert!(matches!(republish_pinning(&no_release, &mut |e: Event| lines.push(e.line)).unwrap(), Outcome::Described));
         assert!(lines.iter().any(|l| l.contains("serves no release yet")), "{lines:?}");

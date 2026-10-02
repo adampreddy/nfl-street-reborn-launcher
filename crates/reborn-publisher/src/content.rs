@@ -431,6 +431,7 @@ pub fn content_run(
             key: Some(key),
             release_version,
             release_sequence,
+            notes: None,
             apply: true,
         };
         let signed = match republish_pinning(&carry, &mut relay)? {

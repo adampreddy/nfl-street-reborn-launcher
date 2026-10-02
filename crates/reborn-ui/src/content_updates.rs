@@ -90,6 +90,9 @@ pub struct ContentStatusView {
     pub phase: &'static str,
     pub origin: String,
     pub release: Option<String>,
+    /// The publisher's words for this release, from the signed manifest.
+    /// None when the release carries none: the page lists components then.
+    pub notes: Option<String>,
     pub components: Vec<ComponentView>,
     pub download_bytes: u64,
     /// Bytes on disk in staging while a fetch runs, so the page can show a
@@ -127,6 +130,7 @@ fn staged_bytes(cap: u64) -> u64 {
 #[derive(Debug, Clone, Default)]
 struct Snapshot {
     release: Option<String>,
+    notes: Option<String>,
     components: Vec<ComponentView>,
     download_bytes: u64,
     download_files: u64,
@@ -152,6 +156,7 @@ static HELD: Mutex<Held> = Mutex::new(Held {
     origin: String::new(),
     snapshot: Snapshot {
         release: None,
+        notes: None,
         components: Vec::new(),
         download_bytes: 0,
         download_files: 0,
@@ -219,6 +224,7 @@ fn view(h: &Held) -> ContentStatusView {
         phase: h.phase.name(),
         origin: h.origin.clone(),
         release: s.release.clone(),
+        notes: s.notes.clone(),
         components: s.components.clone(),
         download_bytes: s.download_bytes,
         fetched_bytes,
@@ -266,6 +272,7 @@ fn snapshot_of(check: &ContentCheck) -> Snapshot {
         .collect();
     Snapshot {
         release: Some(format!("{} sequence {}", check.release.version, check.release.sequence)),
+        notes: check.release.notes.clone(),
         components,
         download_bytes: check.download_bytes(),
         download_files: check.download_files(),

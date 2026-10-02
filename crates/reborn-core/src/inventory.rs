@@ -1169,12 +1169,27 @@ impl UnsignedRelease {
     }
 }
 
+/// Line endings to `\n`, trailing space off every line, blank lines at either
+/// end dropped. A notes file written on Windows signs the same as one typed.
+fn normalize_notes(notes: &str) -> String {
+    notes
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_matches('\n')
+        .to_string()
+}
+
 /// Collects pinned component manifests into a release.
 #[derive(Debug, Clone)]
 pub struct UnsignedReleaseBuilder {
     version: String,
     sequence: u64,
     components: BTreeMap<String, PinnedComponent>,
+    notes: Option<String>,
 }
 
 impl UnsignedReleaseBuilder {
@@ -1185,7 +1200,15 @@ impl UnsignedReleaseBuilder {
             version: version.to_string(),
             sequence,
             components: BTreeMap::new(),
+            notes: None,
         })
+    }
+
+    /// The players' words for this release. Blank is the same as none:
+    /// an empty card line says less than the component list it replaces.
+    pub fn notes(mut self, notes: Option<&str>) -> Self {
+        self.notes = notes.map(normalize_notes).filter(|n| !n.is_empty());
+        self
     }
 
     /// Pin one component manifest at the URL it will be served from.
@@ -1243,6 +1266,7 @@ impl UnsignedReleaseBuilder {
             version: self.version,
             sequence: self.sequence,
             components: self.components,
+            notes: self.notes,
         };
 
         let bytes = serde_json::to_vec_pretty(&release)
@@ -2143,6 +2167,33 @@ mod tests {
     /// bytes that were hashed have to be the bytes that get published. Hashing
     /// one serialization and publishing another makes every client refuse the
     /// component with what looks like a tampering error.
+    /// Notes ride in the signed bytes, normalized; a release without them
+    /// serializes exactly as before, so its bytes (and every old launcher's
+    /// reading of them) do not change.
+    #[test]
+    fn release_notes_are_signed_normalized_and_absent_when_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "NSR.iso", b"the game");
+        let scan = scan_to_completion(dir.path(), &offline_spec());
+        let serialized = SerializedComponent::new(scan.component).unwrap();
+        let build = |notes: Option<&str>| {
+            UnsignedReleaseBuilder::new("2.4.0", 12).unwrap()
+                .pin("https://example/offline.json", &serialized).unwrap()
+                .notes(notes).build().unwrap()
+        };
+
+        let with = build(Some("Roster update:\r\nAdded a player  \r\n\r\n"));
+        let parsed = Release::parse(with.bytes_to_sign()).unwrap();
+        assert_eq!(parsed.notes.as_deref(), Some("Roster update:\nAdded a player"));
+
+        for blank in [None, Some(""), Some(" \r\n ")] {
+            let without = build(blank);
+            let text = String::from_utf8(without.bytes_to_sign().to_vec()).unwrap();
+            assert!(!text.contains("notes"), "{blank:?} wrote a notes field: {text}");
+            assert_eq!(Release::parse(without.bytes_to_sign()).unwrap().notes, None);
+        }
+    }
+
     #[test]
     fn a_release_pins_the_exact_bytes_the_component_serialized_to() {
         let dir = tempfile::tempdir().unwrap();

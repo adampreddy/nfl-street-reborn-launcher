@@ -33,9 +33,10 @@ function showDialog(kind){
  const heading=node('h2','',name);heading.id='update-dialog-title';
  const intro=node('p','update-version',kind==='launcher'?'Reborn '+current.latest:'Release '+(current.release||'update'));
  const changes=node('div','update-changes');
- const notes=kind==='launcher'?current.notes:current.components?.filter(c=>['available','repair'].includes(c.state)||c.repair).map(c=>c.component+(c.offered?' '+c.offered:'')+(c.message?': '+c.message:'')).join('\n');
+ const notes=kind==='launcher'?current.notes:current.notes||current.components?.filter(c=>['available','repair'].includes(c.state)||c.repair).map(c=>c.component+(c.offered?' '+c.offered:'')+(c.message?': '+c.message:'')).join('\n');
  const lines=String(notes||current.note||'A verified update is available.').split(/\r?\n/).map(t=>t.replace(/^\s*[-*#]+\s*/, '').trim()).filter(Boolean);
- const list=node('ul');for(const line of lines)list.append(node('li','',line));changes.append(list);
+ // A line ending in a colon ("Roster update:") heads the lines under it.
+ let list=null;for(const line of lines){if(/:$/.test(line)){changes.append(node('p','update-changes-heading',line));list=null;continue;}if(!list){list=node('ul');changes.append(list);}list.append(node('li','',line));}
  const countdown=node('p','update-countdown');countdown.setAttribute('role','status');
  const actions=node('div','update-dialog-actions'),skip=node('button','','Remind me later'),go=node('button','primary','Update now');
  skip.type=go.type='button';
@@ -80,11 +81,21 @@ function render(){
   if(phase==='installing')progress=null;
   const title={available:'Game update available',fetching:'Downloading game content',staged:'Game update ready',installing:'Installing game content',installed:'Game updated',problem:'Update needs attention'}[phase];
   const message=phase==='fetching'?size(content.fetched_bytes)+' of '+size(content.download_bytes)+(progress===null?'':' · '+progress+'%'):
-   phase==='staged'?'Installs when your game and other changes are finished.':content.installed?.note||content.note||'New Reborn content is available.';
+   phase==='staged'?'Installs when your game and other changes are finished.':
+   phase==='installed'&&content.notes?content.notes+'\n\n'+(content.installed?.note||''):content.installed?.note||content.note||'New Reborn content is available.';
   card('content',title,message,progress,['fetching','installing'].includes(phase)?null:phase==='installed'?'Got it':'View update',
-   ()=>{if(phase==='installed'){invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else openUpdates();});
+   ()=>{if(phase==='installed'){notesSeen(content.release);invoke('content_dismiss').then(()=>{content=null;removeCard('content');});}else if(phase==='available')showDialog('content');else openUpdates();});
  }else removeCard('content');
+ // What's new: a release's notes once, even when its content arrived before
+ // this launcher could show them (an older launcher installed it, or the card
+ // was missed). Never over an update in progress, which shows its own notes.
+ if(content?.notes&&content.release&&['idle','checking','up_to_date'].includes(content.phase)&&seenNotes()!==content.release){
+  const release=content.release;
+  card('whatsnew',"What's new",content.notes,undefined,'Got it',()=>{notesSeen(release);removeCard('whatsnew');});
+ }else if(content&&!['idle','checking','up_to_date'].includes(content.phase))removeCard('whatsnew');
 }
+function seenNotes(){try{return localStorage.getItem('updates:notes-seen');}catch(_){return null;}}
+function notesSeen(release){try{if(release)localStorage.setItem('updates:notes-seen',release);}catch(_){}}
 async function canInstall(){
  if(document.querySelector('dialog[open]')||document.getElementById('screen')?.getAttribute('aria-busy')==='true'||await invoke('session_active'))return false;
  const music=await invoke('music_status').catch(()=>null);

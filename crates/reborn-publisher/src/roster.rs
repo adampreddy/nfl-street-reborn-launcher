@@ -220,7 +220,7 @@ pub fn roster_plan(source: Value, version: String) -> Result<Value, String> {
 /// `dry_run` still fetches and checks (there is no way to publish a file
 /// that was never read), but writes nothing and sends nothing.
 #[tauri::command(rename_all = "snake_case")]
-pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value, String> {
+pub fn roster_run(source: Value, version: String, notes: Option<String>, dry_run: bool) -> Result<Value, String> {
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
     let version = version.trim().to_string();
@@ -235,7 +235,10 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
     // what the bucket actually serves with no way to catch up from here.
     let bucket = if dry_run { None } else { Some(bucket_from(&platform, &settings)?) };
 
-    let inputs = json!({"kind": "roster-run", "source": source.clone(), "version": version, "dry_run": dry_run});
+    // What players read on the update card, signed into the release. Blank
+    // is none; the core normalizes line endings and trims.
+    let notes = notes.filter(|n| !n.trim().is_empty());
+    let inputs = json!({"kind": "roster-run", "source": source.clone(), "version": version, "notes": notes, "dry_run": dry_run});
 
     ops::run_operation("roster:run", dry_run, inputs, move |sink: Sink<'_>| -> reborn_core::Result<Outcome<Value>> {
         let cancel = CancelSignal::new();
@@ -269,6 +272,7 @@ pub fn roster_run(source: Value, version: String, dry_run: bool) -> Result<Value
             key: key.as_deref(),
             release_version: None,
             release_sequence: None,
+            notes: notes.as_deref(),
             apply: !dry_run,
             token: None,
         };
