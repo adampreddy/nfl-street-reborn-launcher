@@ -129,6 +129,12 @@ pub struct RoomMember {
 pub struct Opponent {
     pub id: String,
     pub display_name: String,
+    /// Elo, rank on the leaderboard, plays-as team and Discord picture: display only (the Online page's matchup card,
+    /// spec 2026-10-02 §3.3). Each is absent while the server does not send it (Elo off: no rating, no rank).
+    pub rating: Option<i64>,
+    pub rank: Option<u32>,
+    pub team: Option<serde_json::Value>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -733,5 +739,23 @@ mod tests {
         assert_eq!(field_title("city_limits"), "City Limits");
         assert_eq!(field_title("the_pit"), "The Pit");
         assert_eq!(field_title("ea_field"), "Ea Field");
+    }
+
+    #[test]
+    fn the_opponents_standing_is_read_when_sent_and_absent_when_not() {
+        let mut v: serde_json::Value = serde_json::from_str(MATCHED).unwrap();
+        v["match"]["opponent"]["rating"] = serde_json::json!(1162);
+        v["match"]["opponent"]["rank"] = serde_json::json!(9);
+        v["match"]["opponent"]["team"] = serde_json::json!({ "name": "Falcons", "logo_url": "/live-assets/teams/14-128.png" });
+        v["match"]["opponent"]["avatar_url"] = serde_json::json!("https://cdn.discordapp.com/avatars/1/a.png");
+        let o = serde_json::from_value::<Snapshot>(v).unwrap().matched.unwrap().opponent;
+        assert_eq!(o.rating, Some(1162));
+        assert_eq!(o.rank, Some(9));
+        assert_eq!(o.team.as_ref().and_then(|t| t["name"].as_str()), Some("Falcons"));
+        assert_eq!(o.avatar_url.as_deref(), Some("https://cdn.discordapp.com/avatars/1/a.png"));
+
+        // Today's server: `rating: null` and nothing else. Every field is simply absent.
+        let o = snap(MATCHED).matched.unwrap().opponent;
+        assert_eq!((o.rating, o.rank, o.team, o.avatar_url), (None, None, None, None));
     }
 }

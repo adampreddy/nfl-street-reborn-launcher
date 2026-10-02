@@ -6,7 +6,8 @@
 // the network) and one request per action. Which state the mode area shows is decided exactly as before: a live match,
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason } from './shell.js';
-import { clock, eloBits, seekLine } from './online-model.js';
+import { avatar, teamLogo } from './match-rows.js';
+import { acceptWithin, clock, eloBits, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { tabs } from './tabs.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
@@ -83,6 +84,16 @@ function pick(value) {
 // the server sends none (Elo off): every spot that needs it is then hidden (spec §7).
 let rankInfo = null;
 document.addEventListener('online-rank', (e) => { rankInfo = e.detail ?? null; lastDrawn = ''; draw(); });
+
+// Who you are, for your own picture on the matchup card: Play caches the Discord picture under `reborn:avatar`
+// (home.js) keyed by player id; any other id or no cache draws your letter.
+let me = null;
+if (bridge) call('identity_status').then((v) => { if (v?.signed_in) { me = { id: v.player_id, name: v.display_name }; lastDrawn = ''; } }).catch(() => {});
+function myAvatarUrl() {
+  try { const v = JSON.parse(localStorage.getItem('reborn:avatar') || 'null'); return v && me && v.id === me.id ? v.url : null; } catch { return null; }
+}
+// The relay is moving (accepted … running): one red line along the bottom of the card (spec §3.5).
+const MOVING = new Set(['accepted', 'field', 'ready', 'go', 'host_launching', 'code_ready', 'joining', 'room_formed', 'running', 'intermission']);
 
 async function act(cmd, args) {
   if (busy) return false;
@@ -165,8 +176,8 @@ new MutationObserver(() => {
 function chatBox(messages, send) {
   const log = el('ol', { class: 'mm-chat', 'aria-label': 'Chat', 'aria-live': 'polite' });
   for (const m of messages.slice(-30)) log.append(el('li', {}, el('strong', { text: `${m.name}: ` }), m.body));
-  const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something', 'aria-label': 'Chat message' });
-  const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', text: 'Send' }));
+  const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something…', 'aria-label': 'Chat message', 'data-key': 'chat' });
+  const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', class: 'btn quiet sm', text: 'Send' }));
   form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { send(t); input.value = ''; } });
   return el('div', {}, log, form);
 }
@@ -318,45 +329,53 @@ function drawRoom(r, chat) {
   ];
 }
 
-function drawMatch(m, chat, relayError) {
+function face({ url, name, sub, team, tick = false }) {
+  return el('div', { class: 'on-p' },
+    el('span', { class: 'on-avw' }, avatar(url, name, 'on-av'), tick ? el('span', { class: 'on-ok', role: 'img', 'aria-label': 'Accepted', text: '✓' }) : null),
+    el('span', { class: 'on-pname', text: name }),
+    sub ? el('span', { class: 'on-psub num', text: sub }) : null,
+    team ? teamLogo(team, 'on-plogo') : null);
+}
+
+// The matchup card (spec §3.3–§3.6). Only called for a match that is not over (complete, void, abandoned, held).
+function drawMatch(m, chat, relayError, snap) {
   const words = RELAY[m.relay_state] ?? 'Starting the game';
-  const parts = [
-    el('h2', { text: `vs ${m.opponent || 'your opponent'}` }),
-    el('p', { class: 'mm-state', text: words }),
-    el('p', { class: 'note', text: `${m.mode === 'ranked' ? `Ranked · best of ${m.best_of}` : 'Casual · one game'}` }),
-  ];
-  if (m.best_of > 1 && Array.isArray(m.series)) {
-    const mine = m.series[m.seat] ?? 0, theirs = m.series[1 - m.seat] ?? 0;
-    parts.push(el('p', { class: 'mm-series', text: `Series: you ${mine} – ${theirs} ${m.opponent}` }));
-  }
-  if (m.relay_state === 'pairing' && !m.your_accepted) {
-    parts.push(el('div', { class: 'mm-actions' },
-      el('button', { type: 'button', class: 'primary', text: 'Accept', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: true }) }),
-      el('button', { type: 'button', text: 'Decline', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: false }) })));
-  } else if (m.relay_state === 'pairing') {
-    parts.push(el('p', { class: 'note', text: `Accepted. Waiting for ${m.opponent} to accept.` }));
+  const opp = m.opponent || 'your opponent';
+  const pairing = m.relay_state === 'pairing';
+  // Ruling P9: between games of a series is still "Playing", with the series line.
+  const playing = m.relay_state === 'running' || m.relay_state === 'intermission';
+  const series = playing ? seriesLine(m) : null;
+  const mid = el('div', { class: 'on-mid' },
+    el('span', { class: 'k-label on-found', text: playing ? 'Playing' : 'Match found' }),
+    el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
+    series ? el('span', { class: 'on-ser num', text: series }) : null,
+    el('span', { class: 'on-mode-line', text: modeLine(m.mode) }));
+  if (pairing && !m.your_accepted) {
+    mid.append(el('div', { class: 'on-acts' },
+      el('button', { type: 'button', class: 'btn primary', 'data-key': 'accept', 'data-primary': 'true', text: 'Accept', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: true }) }),
+      // Ruling P8: Decline is the quiet button (spec §3.3).
+      el('button', { type: 'button', class: 'btn quiet', 'data-key': 'decline', text: 'Decline', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: false }) })));
+    const left = acceptWithin(m.relay_deadline, Date.now());
+    if (left) mid.append(el('span', { class: 'on-tm num', text: left }));
+  } else if (pairing) {
+    mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `Accepted. Waiting for ${opp}…`));
+  } else if (m.relay_state !== 'running') {
+    mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), words), el('span', { class: 'on-tm', text: 'Your game opens on its own' }));
   }
   // The relay's own failure (the room would not open, the code would not send) in its own words.
-  if (relayError && !['complete', 'void', 'abandoned', 'held'].includes(m.relay_state)) {
-    parts.push(el('p', { class: 'refusal', text: relayError }));
-  }
-  if (m.relay_state === 'held' && m.hold_reason === 'seed-mismatch') {
-    parts.push(el('p', { class: 'note', text: 'Your games would not have started from the same point, so neither started. Update the launcher and try again.' }));
-  }
-  if (m.relay_state === 'held' && m.hold_reason === 'content-stale') {
-    parts.push(el('p', { class: 'note', text: 'A game update never reached one of your game discs, so the game was not started. Both of you: Settings → Repair game files (the one that is current is told so), then find a game again.' }));
-  }
-  if (m.relay_state === 'held' && m.hold_reason === 'content-mismatch') {
-    parts.push(el('p', { class: 'note', text: `Your game files differ from ${m.opponent ?? 'your opponent'}'s, so the game was not started. Both of you: Settings → Check game content, install what it offers, then try again.` }));
-  }
-  if (m.relay_state === 'held' && m.hold_reason) {
-    parts.push(el('p', { class: 'note', text: 'Nothing has changed on the ladder. A person will look at this match.' }));
-  }
-  if (!['complete', 'void', 'abandoned', 'held'].includes(m.relay_state)) {
-    parts.push(el('button', { type: 'button', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }));
-  }
-  parts.push(chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t })));
-  return parts;
+  if (relayError) mid.append(el('p', { class: 'refusal', text: relayError }));
+  const mine = eloBits(rankInfo?.elo);
+  const card = el('section', { class: 'on-vs', 'aria-label': `${modeLine(m.mode)} against ${opp}` },
+    el('img', { class: 'on-art', src: 'art/online/matchup.jpg', alt: '' }),
+    el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
+    el('div', { class: 'on-vs-in' },
+      face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
+        team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
+      mid,
+      face({ url: m.opponent_avatar_url ?? null, name: opp, sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null })),
+    MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
+  // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).
+  return [card, chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];
 }
 
 function drawOnline(snap) {
@@ -411,7 +430,7 @@ async function draw() {
   } else if (!snap) {
     body = [el('p', { class: 'loading', text: 'Connecting…' })];
   } else if (snap.match && !['complete', 'void', 'abandoned', 'held'].includes(snap.match.relay_state)) {
-    body = drawMatch(snap.match, snap.chat ?? [], state.relay_error);
+    body = drawMatch(snap.match, snap.chat ?? [], state.relay_error, snap);
   } else if (snap.room) {
     body = drawRoom(snap.room, snap.chat ?? []);
   } else if (snap.ticket) {

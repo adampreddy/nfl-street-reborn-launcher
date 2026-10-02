@@ -101,6 +101,16 @@ function onlineStates() {
     N('online-casual', { mm_state: mm(empty), content_repair_image: { current: true } }, { init: PICK('casual') }),
     N('online-private', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
     N('online-searching', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-match-found', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
+      opponent_elo: 1162, opponent_rank: 9, opponent_team: LB_TEAM, opponent_avatar_url: null }) }) }, { init: PICK('ranked') }),
+    N('online-accepted', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, your_accepted: true, opponent_elo: 1162, opponent_rank: 9 }) }) }),
+    N('online-starting', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'starting', relay_state: 'room_formed', your_accepted: true, your_ready: true }) }) }),
+    N('online-playing', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'running', your_accepted: true, your_ready: true, series: [1, 0] }),
+      chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
+    // Ruling P9: between games of a series the card still says Playing, with the series line.
+    N('online-intermission', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'intermission', your_accepted: true, your_ready: true, series: [1, 0] }) }) }),
+    N('online-playing-casual', { mm_state: mm({ ...empty, match: match({ id: 'm6', status: 'running', relay_state: 'running', your_accepted: true, your_ready: true }) }) }),
+    N('online-match-bare', { mm_state: mm({ ...empty, match: match({ id: 'm7', opponent: null, best_of: null, series: null, relay_deadline: 'not a date', opponent_elo: null, opponent_rank: 0, opponent_team: null }) }) }),
     // (redesign states are added above this line)
   ];
 }

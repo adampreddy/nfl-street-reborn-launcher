@@ -568,6 +568,9 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "id": m.id, "mode": m.mode, "status": m.status, "relay_state": m.relay_state,
             "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
             "opponent": m.opponent.display_name, "field": m.field.as_deref().map(reborn_core::matchmaking::field_title),
+            // Display only (spec 2026-10-02 §3.3): null until the server sends them, and the page then hides each spot.
+            "opponent_elo": m.opponent.rating, "opponent_rank": m.opponent.rank,
+            "opponent_team": m.opponent.team, "opponent_avatar_url": m.opponent.avatar_url,
             "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
             "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
             "hold_reason": m.hold_reason, "seat": m.seat,
@@ -708,5 +711,25 @@ mod tests {
         assert!(!lock(&STATE).presence_on);
         presence_set_enabled(true);
         assert!(lock(&STATE).presence_on);
+    }
+
+    #[test]
+    fn the_match_view_carries_the_opponents_standing_only_when_the_server_sends_it() {
+        let with: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "relay_state": "pairing",
+            "opponent": { "id": "o", "display_name": "Jock", "rating": 1162, "rank": 9,
+                "team": { "name": "Falcons", "logo_url": "/live-assets/teams/14-128.png" }, "avatar_url": "https://cdn.discordapp.com/avatars/1/a.png" } } }))
+            .unwrap();
+        let v = snapshot_json(&with);
+        assert_eq!(v["match"]["opponent"], "Jock", "the name keeps its old key");
+        assert_eq!(v["match"]["opponent_elo"], 1162);
+        assert_eq!(v["match"]["opponent_rank"], 9);
+        assert_eq!(v["match"]["opponent_team"]["name"], "Falcons");
+        assert_eq!(v["match"]["opponent_avatar_url"], "https://cdn.discordapp.com/avatars/1/a.png");
+
+        let without: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock", "rating": null } } })).unwrap();
+        let v = snapshot_json(&without);
+        for k in ["opponent_elo", "opponent_rank", "opponent_team", "opponent_avatar_url"] {
+            assert!(v["match"][k].is_null(), "{k} must be null when the server sends nothing");
+        }
     }
 }

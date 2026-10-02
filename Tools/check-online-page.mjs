@@ -190,6 +190,49 @@ const EXPECT = {
       return p;
     },
   },
+  'online-match-found': {
+    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#9 · 1,162 Elo', 'Adam'],
+    absent: ['best of', 'Not on our servers?'],
+    check: async (page) => {
+      const p = [];
+      for (const b of ['Accept', 'Decline', 'Leave match']) if (!(await page.getByRole('button', { name: b, exact: true }).count())) p.push(`no ${b} button`);
+      // Ruling P8: Decline is the quiet button (spec §3.3).
+      if (!(await page.locator('[data-key="decline"].btn.quiet').count())) p.push('Decline is not a quiet button');
+      if (await page.locator('.on-vs .sweep').count()) p.push('the line sweeps before anyone accepted');
+      if ((await page.locator('.on-vs img.team-logo, .on-vs .team-logo').count()) < 1) p.push("the opponent's team logo is missing");
+      await page.getByRole('button', { name: 'Accept', exact: true }).click();
+      await page.waitForTimeout(300);
+      const a = await calls(page, 'mm_match_action');
+      if (JSON.stringify(a[0]) !== '{"matchId":"m5","action":"accept","value":true}') p.push(`Accept sent ${JSON.stringify(a[0])}`);
+      return p;
+    },
+  },
+  'online-accepted': {
+    text: ['Accepted. Waiting for Jock…'],
+    check: async (page) => {
+      const p = [];
+      if (!(await page.locator('.on-ok').isVisible())) p.push('no green tick on your side');
+      if (await page.getByRole('button', { name: 'Accept', exact: true }).count()) p.push('Accept is still offered');
+      return p;
+    },
+  },
+  'online-starting': {
+    text: ['Connecting you both', 'Your game opens on its own'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-vs .sweep').count()) !== 1) p.push('no sweeping line while the relay moves');
+      await page.getByRole('button', { name: 'Leave match', exact: true }).click();
+      await page.waitForTimeout(300);
+      const a = await calls(page, 'mm_match_action');
+      if (JSON.stringify(a[0]) !== '{"matchId":"m5","action":"leave","value":null}') p.push(`Leave match sent ${JSON.stringify(a[0])}`);
+      return p;
+    },
+  },
+  'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: ['Accept within', 'Your game opens', 'Match found'] },
+  // Ruling P9: intermission is still "Playing", with the series line.
+  'online-intermission': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Match found', 'Accept within'] },
+  'online-playing-casual': { text: ['Playing', 'Casual · one game'], absent: ['Series', 'Match found'] },
+  'online-match-bare': { text: ['your opponent'], absent: ['undefined', 'NaN', 'null', 'Accept within', ' · Elo'] },
   // (states are added above this line)
 };
 

@@ -63,9 +63,9 @@ const EXPECT = {
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
   idle_private: { text: ['Lobbies', 'Jock · Casual', 'Host a room'], buttons: ['Join', 'Join by code', 'Open a public lobby', 'Host a room'], absent: ['Find a casual game'] },
   lobby: { text: ['Casual lobby', 'K7QP2M', 'Adam (you)', 'Jock — ready', 'ready when you are'], buttons: ['Ready', 'Start', 'Leave lobby', 'Send'], absent: ['field pick'] },
-  pairing: { text: ['vs Jock', 'Match found. Accept to play.'], buttons: ['Accept', 'Decline', 'Leave match'] },
-  running_bo3: { text: ['vs Jock', 'Playing', 'Ranked · best of 3', 'Series: you 1 – 0 Jock'], buttons: ['Leave match'], absent: ['Accept', 'City Limits'] },
-  relay_failed: { text: ['vs Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
+  pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
+  running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
+  relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Held for review', 'Nothing has changed on the ladder'], absent: ['Leave match', 'Accept'] },
 };
 
