@@ -163,6 +163,11 @@ impl SessionEnd {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionIntent {
     pub league_match: bool,
+    /// The matchmade match this session plays, when the matchmaking relay opened its Dolphin (series spec
+    /// 2026-10-02 §3.1): every result from the session names it, so the server can link the games into the
+    /// series. Absent for Play, private rooms and every record an older build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_id: Option<String>,
 }
 
 /// One play session, as it is written to disk.
@@ -829,7 +834,7 @@ mod tests {
             panic!("expected to own the lock");
         };
         let rec = sup
-            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: true }))
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: true, match_id: None }))
             .unwrap();
         assert!(rec.intent.as_ref().unwrap().league_match);
         let done = sup.finish(rec, &ExitKind::Normal).unwrap();

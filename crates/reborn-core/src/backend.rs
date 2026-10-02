@@ -22,6 +22,8 @@ pub struct SessionFacts {
     /// "clean" | "error" | "crashed" | "terminated" | "interrupted" | "unknown"
     pub exit: String,
     pub exit_code: Option<i32>,
+    /// The matchmade match the session played, from its intent. None for everything else.
+    pub match_id: Option<String>,
 }
 
 pub fn session_facts(history: &[SessionRecord]) -> Vec<SessionFacts> {
@@ -41,6 +43,7 @@ pub fn session_facts(history: &[SessionRecord]) -> Vec<SessionFacts> {
                 league_match: r.intent.as_ref().is_some_and(|i| i.league_match),
                 exit: exit.to_string(),
                 exit_code: code,
+                match_id: r.intent.as_ref().and_then(|i| i.match_id.clone()),
             }
         })
         .collect()
@@ -63,7 +66,7 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
         .capture_folder
         .clone()
         .unwrap_or_else(|| crate::stats::UNKNOWN_MODE.to_string());
-    Some(serde_json::json!({
+    let mut env = serde_json::json!({
         "schema": "nsr.submission.v1",
         "capture": capture,
         "capture_hash": hash,
@@ -78,7 +81,13 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
         "intent": { "league": facts.is_some_and(|f| f.league_match) },
         "flags": entry.summary.as_ref().map(|s| s.flags.clone()).unwrap_or_default(),
         "submitted_at": now,
-    }))
+    });
+    // Series spec §3.1 (MATCHMAKING_SPEC T12): a result from a matchmade session names its match at the top level, so
+    // results.js links it into the series. Only a canonical uuid goes out; nothing else in the envelope changes.
+    if let Some(id) = facts.and_then(|f| f.match_id.as_deref()).filter(|id| crate::live_view::is_canonical_uuid(id)) {
+        env["match_id"] = serde_json::Value::String(id.to_string());
+    }
+    Some(env)
 }
 
 /// One sentence a player can read, for every answer that is not a refusal the
@@ -367,9 +376,40 @@ mod tests {
     }
     const CAP: &[u8] = br#"{"schema":"nsr.game.v1","source":"dolphin","captured_at":"2026-09-08T00:00:00Z","teams":[{"name":"A","score":36},{"name":"B","score":24}],"style":[1,2],"players":[],"reborn_match":{"schema":"nsr.reborn_match.v1","netplay_running":false,"runtime_version":"1.1.0","local_pads":[]}}"#;
 
+    const MATCH: &str = "644488b4-16f1-4b76-b207-20403fbaea90";
+
+    #[test]
+    fn a_matchmade_session_names_its_match_in_the_envelope_and_nothing_else_does() {
+        let facts = |match_id: Option<&str>| SessionFacts {
+            session_id: "s1".into(), league_match: false, exit: "clean".into(), exit_code: Some(0),
+            match_id: match_id.map(str::to_string),
+        };
+        let env = envelope(&entry("s1", Some("online")), CAP, Some(&facts(Some(MATCH))), "3.1.0", "t").unwrap();
+        assert_eq!(env["match_id"], MATCH, "series spec §3.1: the envelope's top-level match_id");
+        let plain = envelope(&entry("s1", Some("online")), CAP, Some(&facts(None)), "3.1.0", "t").unwrap();
+        assert!(plain.get("match_id").is_none(), "a game that was not matchmade says nothing about a match");
+        let junk = envelope(&entry("s1", Some("online")), CAP, Some(&facts(Some("../../admin"))), "3.1.0", "t").unwrap();
+        assert!(junk.get("match_id").is_none(), "only a canonical uuid ever leaves the launcher");
+        assert!(envelope(&entry("s1", None), CAP, None, "3.1.0", "t").unwrap().get("match_id").is_none());
+    }
+
+    #[test]
+    fn session_facts_carry_the_match_from_the_session_intent() {
+        use crate::supervisor::{RecordedBuild, SessionEnd, SessionIntent, SessionRecord};
+        let rec = SessionRecord {
+            id: "1-online".into(), build: RecordedBuild::Online, started_ms: 1, ended_ms: Some(2),
+            end: Some(SessionEnd::Exited { code: Some(0) }),
+            intent: Some(SessionIntent { league_match: false, match_id: Some(MATCH.into()) }),
+        };
+        assert_eq!(session_facts(&[rec])[0].match_id.as_deref(), Some(MATCH));
+        // A record an older build wrote has no match_id and still reads.
+        let old: SessionIntent = serde_json::from_str(r#"{"league_match":true}"#).unwrap();
+        assert_eq!(old.match_id, None);
+    }
+
     #[test]
     fn the_envelope_carries_the_capture_the_hash_the_folder_the_session_and_the_intent() {
-        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0) };
+        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None };
         let env = envelope(&entry("s1", Some("offline")), CAP, Some(&facts), "3.1.0", "2026-09-08T21:00:00Z").unwrap();
         assert_eq!(env["schema"], "nsr.submission.v1");
         assert_eq!(env["capture_hash"], crate::stats::wire_hash_of(CAP).unwrap());

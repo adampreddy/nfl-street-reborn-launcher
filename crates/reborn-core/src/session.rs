@@ -1284,7 +1284,7 @@ impl Session {
 
         let record = supervisor.begin_with_intent(
             req.build,
-            Some(crate::supervisor::SessionIntent { league_match: req.league_match }),
+            Some(crate::supervisor::SessionIntent { league_match: req.league_match, match_id: None }),
         )?;
         let handle = Launcher::launch(platform, &req.runtime_exe, &config)?;
         let exit = platform.processes.wait(handle)?;
