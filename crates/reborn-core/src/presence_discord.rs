@@ -130,8 +130,9 @@ impl Presence for DiscordPresence {
                 activity = activity.party(Party::new().size([cur as i32, max as i32]));
             }
             if let Some(s) = secret.as_deref() {
-                // A join secret is a ROOM CODE. Discord hands it back to the launcher, which turns
-                // it into the same nflstreetreborn://join/<code> deep link a pasted invite makes.
+                // A join secret is a LOBBY CODE. It stands for presence::join_link(code), the same
+                // nflstreetreborn://room/<code> link a copied invite opens (never join/, which is a
+                // Netplay host code).
                 activity = activity.secrets(Secrets::new().join(s));
             }
             activity = activity.buttons(vec![Button::new("Get NFL Street Reborn", "https://nflstreetreborn.com")]);

@@ -54,17 +54,6 @@ function findAll(node, pred, out = []) {
 }
 const byClass = (root, cls) => findAll(root, (n) => String(n.className || "").split(/\s+/).includes(cls));
 const imgsOf = (root) => findAll(root, (n) => n.tagName === "img");
-const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";").filter(Boolean).map((d) => d.split(":").map((s) => s.trim())));
-
-// WCAG relative luminance / contrast, to hold the team-colour abbreviation chip to 4.5:1 -- the
-// same maths as live-color.js, kept separate here so the check verifies the real output, not its
-// own assumptions about how live-color.js works.
-function lum(hex) {
-  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-}
-const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-
 // shell.js and live-color.js are inlined the same way check-shell-pages.mjs inlines shell.js: a
 // data: URL module cannot resolve a relative import, so each shared module's exports become plain
 // declarations.
@@ -86,7 +75,13 @@ async function loadLive(invoke) {
   parent.children = [screenEl];
   screenEl.parentNode = parent;
   const outEl = fakeEl("pre#out");
-  const byId = { screen: screenEl, out: outEl };
+  // online.html's heading count: "<span id=on-live-count hidden><i class=live-dot></i><span></span></span>".
+  const countEl = fakeEl("span#on-live-count");
+  const countWords = fakeEl("span");
+  countEl.hidden = true;
+  countEl.children = [countWords];
+  countEl.querySelector = (sel) => (sel === "span" ? countWords : null);
+  const byId = { screen: screenEl, out: outEl, "on-live-count": countEl };
   const docListeners = {};
   doc = {
     activeElement: null,
@@ -119,6 +114,8 @@ async function loadLive(invoke) {
     calls,
     doc,
     out: outEl,
+    count: countEl,
+    countWords,
     section: () => parent.children.find((c) => c !== screenEl),
     fireVisibility(state) {
       doc.visibilityState = state;
@@ -158,7 +155,7 @@ function check(what, ok, detail = "") {
   const t = text(section);
   check("shows the heading", t.includes("Live now"));
   check("shows both fixture teams", t.includes("Giants") && t.includes("Colts"), t.slice(0, 400));
-  check("shows the game numbering for both matches", t.includes("Game 1 of 3") && t.includes("Game 1 of 1"), t.slice(0, 400));
+  check("shows the mode line for both matches (spec 2026-10-02 §5)", t.includes("Ranked · Game 1") && t.includes("Casual"), t.slice(0, 400));
   check("shows both modes", t.includes("Ranked") && t.includes("Casual"));
   check("shows all four seat names", ["Adam", "Jock", "Tuna", "Riley"].every((n) => t.includes(n)), t.slice(0, 400));
   const rows = byClass(section, "live-row");
@@ -168,16 +165,11 @@ function check(what, ok, detail = "") {
   check("Watch opens live.html?match=<id>",
     watch.every((w) => FIXTURE.matches.some((m) => w.attrs.href === `live.html?match=${encodeURIComponent(m.id)}`)),
     watch.map((w) => w.attrs.href).join(", "));
-  const abbrevs = byClass(section, "live-abbrev");
-  const wantBg = FIXTURE.matches[0].teams[0].primary;
-  check("a team's abbreviation sits in a chip whose background is its own primary colour",
-    abbrevs.length > 0 && abbrevs.every((a) => styleOf(a).background === wantBg), abbrevs.map((a) => a.attrs.style).join(", "));
-  check("that dark navy chip (#122852) gets white text for contrast",
-    abbrevs.every((a) => styleOf(a).color === "#ffffff"), abbrevs.map((a) => a.attrs.style).join(", "));
-  check("the abbreviation chips clear 4.5:1 contrast",
-    abbrevs.every((a) => contrast(styleOf(a).color, styleOf(a).background) >= 4.5), abbrevs.map((a) => a.attrs.style).join(", "));
+  const sides = byClass(section, "live-side");
+  check("each side's fade is its own team's validated primary colour (--tc)",
+    sides.length === 2 * FIXTURE.matches.length && sides.every((s) => /^--tc:#[0-9a-fA-F]{6}$/.test(s.attrs.style || "")), sides.map((s) => s.attrs.style).join(", "));
   const allImgs = imgsOf(section);
-  check("the fixture's logos and avatars rendered as <img>", allImgs.length > 0);
+  check("the fixture's logos rendered as <img>", allImgs.length > 0);
   check("only allowed image prefixes are ever set as src",
     allImgs.every((i) => i.attrs.src?.startsWith("https://api.nflstreetreborn.com/live-assets/") || i.attrs.src?.startsWith("https://cdn.discordapp.com/avatars/")),
     allImgs.map((i) => i.attrs.src).join(", "));
@@ -192,6 +184,24 @@ function check(what, ok, detail = "") {
   const t = text(section);
   check("the empty state says so", t.includes("No live games right now."), t);
   check("the empty state has no rows", byClass(section, "live-row").length === 0);
+  page.done();
+}
+
+// ---- 2b: the heading's live-games count shows only while games are live; it hides again when the list drops to 0 ----
+{
+  const answers = [FIXTURE.matches, []];
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? answers.shift() ?? [] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  check("a list of two shows \"2 live games\" in the heading",
+    page.count.hidden === false && page.countWords.textContent === "2 live games", `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
+  await page.fireTimers();
+  check("the list dropping to 0 hides the count (never \"0 live games\")", page.count.hidden === true, `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
+  page.done();
+}
+{
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  check("an empty first answer leaves the count hidden and unwritten", page.count.hidden === true && page.countWords.textContent === "", `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
   page.done();
 }
 
@@ -248,7 +258,7 @@ function check(what, ok, detail = "") {
   const section = page.section();
   check("an off-catalog logo and a non-Discord (or prefix-confused) avatar never become <img> src",
     imgsOf(section).length === 0, `found: ${imgsOf(section).map((i) => i.attrs.src).join(", ")}`);
-  check("badges are drawn instead", byClass(section, "live-badge").length === 2 && byClass(section, "live-avatar-badge").length === 2);
+  check("badges are drawn instead (the card draws no avatars)", byClass(section, "live-badge").length === 2 && byClass(section, "live-avatar").length === 0);
   page.done();
 }
 
@@ -288,31 +298,23 @@ function check(what, ok, detail = "") {
   page.done();
 }
 
-// ---- 8: the abbreviation chip's background is the team's own primary; its text is chosen by luminance ----
+// ---- 8: a team's primary becomes its side's fade (--tc) only when it is a valid #rrggbb ----
 {
   const match = {
     id: "33333333-3333-4333-8333-333333333333", mode: "ranked", best_of: 1, series: [0, 0], started_at: "2026-09-24T00:00:00Z",
     seats: [{ display_name: "A", avatar_url: null }, { display_name: "B", avatar_url: null }],
-    game_seq: 1, score: [0, 0], sides: [{ seat: 0 }, { seat: 1 }],
+    game_seq: 1, score: [7, 3], sides: [{ seat: 0 }, { seat: 1 }],
     teams: [
       { side: 0, tgid: 1, name: "Navy", abbrev: "NVY", city: null, primary: "#0E172E", secondary: "#000000", logo_url: null, wordmark_url: null },
-      { side: 1, tgid: 2, name: "Light", abbrev: "LGT", city: null, primary: "#F5D033", secondary: "#000000", logo_url: null, wordmark_url: null },
+      { side: 1, tgid: 2, name: "Odd", abbrev: "ODD", city: null, primary: "red;background:url(x)", secondary: "#000000", logo_url: null, wordmark_url: null },
     ],
   };
   const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [match] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
   const page = await loadLive(invoke);
-  const abbrevs = byClass(page.section(), "live-abbrev");
-  check("two abbreviation chips are drawn", abbrevs.length === 2, `${abbrevs.length}`);
-  const navy = abbrevs.find((a) => a.textContent === "NVY");
-  const light = abbrevs.find((a) => a.textContent === "LGT");
-  check("each chip's background is that team's own primary colour",
-    !!navy && !!light && styleOf(navy).background === "#0E172E" && styleOf(light).background === "#F5D033",
-    [navy, light].map((a) => a && a.attrs.style).join(" | "));
-  check("a dark navy chip (#0E172E) gets white text", !!navy && styleOf(navy).color === "#ffffff", navy && navy.attrs.style);
-  check("a light chip (#F5D033) gets black text", !!light && styleOf(light).color === "#000000", light && light.attrs.style);
-  check("both chips clear 4.5:1 contrast",
-    [navy, light].every((a) => a && contrast(styleOf(a).color, styleOf(a).background) >= 4.5),
-    [navy, light].map((a) => a && a.attrs.style).join(" | "));
+  const [navy, odd] = byClass(page.section(), "live-side");
+  check("a valid primary becomes the side's --tc", !!navy && navy.attrs.style === "--tc:#0E172E", navy && navy.attrs.style);
+  check("anything else sets no style at all", !!odd && odd.attrs.style === undefined, odd && odd.attrs.style);
+  check("the losing side is dimmed", !!odd && String(odd.className).split(/\s+/).includes("lose") && !String(navy.className).split(/\s+/).includes("lose"));
   page.done();
 }
 
@@ -499,6 +501,6 @@ function check(what, ok, detail = "") {
 }
 
 console.log(fails === 0
-  ? "\nPASS: Live now renders the fixture's two rows, the empty and error states, escapes untrusted text, gates image origins to the two allowed prefixes, keeps row identity across a refresh, stops/resumes polling with page visibility, and gives each team's abbreviation a readable chip (its own colour as background, black or white text by luminance)."
+  ? "\nPASS: Live now renders the fixture's two rows, the empty and error states, escapes untrusted text, gates image origins to the two allowed prefixes, keeps row identity across a refresh, stops/resumes polling with page visibility, and fades each side in its own validated team colour."
   : `\nFAIL: ${fails}`);
 process.exit(fails ? 1 : 0);

@@ -27,8 +27,10 @@ const STATES = {
   offline: { ...base, link: 'offline', snapshot: null },
   disabled: { ...base, link: 'disabled', snapshot: null },
   idle: { ...base, snapshot: empty },
+  // The same idle answer with the Private room tile picked (a page-state pick, clicked after load: CLICK below).
+  idle_private: { ...base, snapshot: empty },
   queued: { ...base, snapshot: { ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-22T20:34:50.379Z' } } },
-  lobby: { ...base, snapshot: { ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open',
+  lobby: { ...base, snapshot: { ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
     members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
     chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-22T20:40:00Z' }] } },
   pairing: { ...base, snapshot: { ...empty, match: { id: 'f772e15e-28e4-40ab-b667-70483f736542', mode: 'casual', status: 'pairing', relay_state: 'pairing',
@@ -45,19 +47,27 @@ const STATES = {
     series: [1, 1], wins_needed: 2, winner_seat: null, hold_reason: 'series-too-fast', seat: 0 } } },
 };
 
+// A control clicked after the first draw, to reach a state the answer alone does not pick.
+const CLICK = { idle_private: '[data-key="mode-private"]' };
+
 // What each state must show. A control that is missing, or one that must NOT be offered, fails.
 const EXPECT = {
   signed_out: { text: ['Sign in with Discord'], absent: ['Find a casual game'] },
   offline: { text: ["Can't reach the Reborn servers"], absent: ['Find a casual game'] },
   // Matchmaking switched off: the section is empty and the private-room page is untouched.
   disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
-  idle: { text: ['Quick Match', 'Find a casual game', 'Lobbies', 'Jock · Casual', '1 waiting', '3 online'], buttons: ['Find a casual game', 'Join', 'Open a public lobby', 'Join by code'], absent: ['field pick'] },
-  queued: { text: ['Looking for a casual game', 'Waiting 0:4'], buttons: ['Stop looking'], absent: ['Find a casual game', 'field'] },
-  lobby: { text: ['Casual lobby', 'K7QP2M', 'Adam (you)', 'Jock — ready', 'ready when you are'], buttons: ['Ready', 'Start', 'Leave lobby', 'Send'], absent: ['field pick'] },
-  pairing: { text: ['vs Jock', 'Match found. Accept to play.'], buttons: ['Accept', 'Decline', 'Leave match'] },
-  running_bo3: { text: ['vs Jock', 'Playing', 'Ranked · best of 3', 'Series: you 1 – 0 Jock'], buttons: ['Leave match'], absent: ['Accept', 'City Limits'] },
-  relay_failed: { text: ['vs Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
-  held: { text: ['Held for review', 'Nothing has changed on the ladder'], absent: ['Leave match', 'Accept'] },
+  // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default; the lobby list and
+  // the code field are under Private room (their assertions live in check-online-page's online-private/online-lobbies).
+  idle: { text: ['Ranked', 'Casual', 'Private room', 'Find a casual game', 'Matched with anyone', '1 searching', '3 players online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
+  queued: { text: ['Looking for a casual game', 'Searching… 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
+  // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
+  idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game'] },
+  // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
+  lobby: { text: ['Your room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
+  pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
+  running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
+  relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
+  held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
 };
 
 const types = { '.svg': 'image/svg+xml', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
@@ -97,18 +107,24 @@ try {
     await page.goto(`${url}/online.html`);
     await page.locator('section.mm').waitFor({ state: 'attached' });
     await page.waitForTimeout(1300); // one draw tick, plus the lobby list load
+    if (CLICK[name]) { await page.locator(CLICK[name]).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(1300); }
 
     // Compared case-insensitively on purpose. innerText is the RENDERED text, and the page's CSS
     // uppercases headings, so "Casual lobby" arrives as "CASUAL LOBBY". An earlier version of this
     // checker compared exactly and failed five correct states - a check that fails on right output
     // is as useless as one that passes on wrong output.
-    const text = (await page.locator('section.mm').innerText()).toLowerCase();
+    // The whole page body (#main): the online count sits in the heading since the redesign (spec 2026-10-02 §2).
+    const text = (await page.locator('#main').innerText()).toLowerCase();
     const has = (t) => text.includes(t.toLowerCase());
     const exp = EXPECT[name];
     const problems = [];
     for (const t of exp.text ?? []) if (!has(t)) problems.push(`missing text "${t}"`);
     for (const b of exp.buttons ?? []) {
-      if (!(await page.locator('section.mm').getByRole('button', { name: b, exact: true }).count())) problems.push(`missing button "${b}"`);
+      if (!(await page.locator('#main').getByRole('button', { name: b, exact: true }).count())) problems.push(`missing button "${b}"`);
+    }
+    for (const [sel, n] of Object.entries(exp.counts ?? {})) {
+      const got = await page.locator(sel).count();
+      if (got !== n) problems.push(`${sel}: ${got} found, want ${n}`);
     }
     for (const t of exp.absent ?? []) if (has(t)) problems.push(`should NOT offer "${t}"`);
     if (errors.length) problems.push(`page errors: ${errors.join(' | ')}`);
@@ -128,6 +144,19 @@ try {
     const shown = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).display !== 'none');
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');
+
+    // Under Private room, "Open lobbies (n) ›" opens the list in a panel: the lobby, Join, and one click to open a public
+    // lobby (mm_room_create; arguments are check-online-page's job).
+    if (name === 'idle_private') {
+      await page.locator('#lobbies-open').click().catch(() => {});
+      const panel = page.locator('dialog.menu.panel[open]');
+      const pt = await panel.innerText().catch(() => '');
+      if (!pt.includes('Jock · Casual')) problems.push('the lobby panel lacks "Jock · Casual"');
+      if (!(await panel.getByRole('button', { name: 'Join', exact: true }).count())) problems.push('the lobby panel lacks a Join button');
+      await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click().catch(() => {});
+      await page.waitForTimeout(300);
+      if (!(await page.evaluate(() => window.__calls.includes('mm_room_create')))) problems.push('Open a public lobby did not send mm_room_create');
+    }
 
     // The relay opens Dolphin by itself, so it must be told what Play would launch with.
     if (!(await page.evaluate(() => window.__calls.includes('mm_launch_prefs')))) problems.push('the page never reported its launch preferences to the relay');

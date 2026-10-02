@@ -65,6 +65,15 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--av-0` to `--av-7`, `--av-cpu` | 135deg gradients | letter avatars, one colour per player name (`match-rows.js`) |
 | `--thumb-bg` | 160deg `rgba(255,255,255,.05)` to `rgba(0,0,0,.18)` | the neutral mod preview. No drawn art |
 | `--surface-solid` | `#1b1e24` | an opaque popover over content (the controller binding editor) |
+| `--tile-scrim` | 0deg `rgba(6,7,9,.9)` to transparent | the Online mode tiles' picture scrim |
+| `--vs-scrim` | 0deg `rgba(6,7,9,.95)` to `.55` | the Online matchup card's picture scrim |
+| `--tile-ranked` | 150deg `#8a161c` to `#0c0c0e` | the Ranked card (no picture yet) |
+| `--tile-casual` | 150deg `#17408a` to `#0b0c0f` | the Casual card (no picture yet) |
+| `--tile-private` | 150deg `#15703f` to `#0b0d0c` | the Private room card (no picture yet) |
+| `--vs-bg` | 150deg `#34373e` to `#0f1013` | the matchup card (no picture yet) |
+| `--pill-bg` | `rgba(10,11,14,.6)` | a pill on art (Online "searching" counts, the relay step) |
+| `--lock-bg` | `rgba(13,14,17,.72)` | the Online sign-in panel over the tiles |
+| `--red-wash` | `rgba(224,39,46,.12)` | your own row on the Online leaderboard |
 
 ### Stats and Profile components
 
@@ -119,7 +128,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 
 - **Inter** (`fonts/InterVariable.woff2`) for everything. Anton and Saira are not used.
 - **Weights:** 500 UI text, 600 labels and values, 700 headline numbers and page titles. **Nothing above 700.**
-- **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live, Online and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
+- **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
 - Numbers use `font-variant-numeric: tabular-nums` (`.num`).
 - **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows.
 - **Section headers are 40px** (`.sec-head`), whatever they hold, so neighbouring cards start on one line.
@@ -138,7 +147,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 - Hover and press only move (`transform`). Colours change instantly.
 - A page change is a cross-document view transition (`@view-transition{navigation:auto}`): the old page holds until the new one draws, the sidebar (`view-transition-name: nav`) swaps in place, and only `#main` (`page`) animates: the old fades out over `--d1`, the new rises in with `look-enter` over `--d3` (Play: `look-enter-fade`, opacity only). `#main` has no animation of its own, so it is never a containing block for `position:fixed` UI. Reduced motion: instant.
 - **Containing block:** a transform on `#main` makes it the containing block for `position:fixed` children. So `position:fixed` UI (menus, dialogs, the update dock) is attached to `<body>`, never inside `#main`. `menu.js` appends its `<dialog>` to `<body>` for this reason.
-- No bounce, count-up numbers, parallax or looping motion. The one loop is `.live-dot`.
+- No bounce, count-up numbers, parallax or looping motion. The two loops are `.live-dot` and `.sweep` (a red line along the bottom of a surface while something is moving; Online, spec 2026-10-02).
 
 ## 5. Shell
 
@@ -160,7 +169,7 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 | `.look-switch` | 40 by 22 switch, `aria-checked`, thumb slides, on = `--red` | `settings.js` |
 | `.field` | recessed 38px box for a value, with an optional `.auto` tag (green) | |
 | `.tabs`, `.tab`, `.tab-ind` | segmented control, one highlight that slides with `translateX` and `scaleX` | `tabs.js` |
-| `dialog.menu` | anchored glass list in the top layer, check on the current option, D-pad inside it, B closes | `menu.js` |
+| `dialog.menu` | anchored glass list in the top layer, check on the current option, D-pad inside it, B closes; `dialog.menu.panel` (280px, `openPanel()`) holds any content the same way (Online's players and lobbies) | `menu.js` |
 | `.save-lane`, `.save-bar` | the save bar in its own lane | `savebar.js`, `settings-draft.js` |
 | `.sec-head`, `.sec-link`, `.sec-links`, `.k-label` | 40px section header, its links, an uppercase label | |
 | `.m-list`, `.m-row`, `.m-hd`, `.m-game`, `.m-pager` | the match list of Stats and Profile (grid columns 84, 92, flexible, 44, 56, 14) | `match-rows.js` |
@@ -170,6 +179,7 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 | `.player-face` (`.face`, `.badge`) | round portrait on the team colour (`--tc`), team logo badge bottom right | |
 | `.team-logo` | the backend's full-colour logo, or the abbreviation (`.text`) | |
 | `.cover-wash`, `.cover-pic`, `.presence-dot`, `.live-dot` | profile cover from the avatar colours, its avatar, the online dot, the pulsing live dot | `cover-color.js` |
+| `.sweep` | a 2px red line sweeping along the bottom of its positioned parent; transform only | Online |
 | `.refusal`, `.partial`, `.said` | messages: red, amber, green | |
 | `.facts` | label and value table | |
 | `.update-card`, `.update-dialog`, `.update-center` | update notice, fixed to the bottom right | `update-notice.js` |
@@ -211,6 +221,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `data-nav="rows"` | Settings and Mods `#screen`; Profile's Back button and its card | Up and Down prefer the nearest row, so a far control in the same column does not skip nearer rows |
 | `[data-nav-seq]` | Profile name block (Plays as, Share profile, View on web) | inside a `data-nav="rows"` area, Up and Down step through the block in reading order |
 | `data-nav="column"` | Profile's Match history | Up and Down stay in the block while it has a control that way, so the last row's Down is the pager |
+| `pad-back` event | dispatched on `document` by B / Esc, cancelable | a page that calls `preventDefault()` answers B itself (Online: Cancel while searching, Decline on Match found); otherwise B goes to the sidebar as always |
 
 ## 8. Page files and CSS architecture
 
@@ -229,13 +240,13 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `harness.html` | `harness.css` (the developer page only; its own plain look) |
 
 - The legacy sheets (`styles.css`, `launcher.css`, `product-ui.css`, `finish.css`, `shell.css`, `players.css`, `onboarding-polish.css`, `live-view.css`, and the old `play.css`, `stats.css`, `music.css`, `profile.css`) are retired and must stay gone.
-- Pages not redesigned in plan 4 (recovery, live, online, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens.
+- Pages not redesigned in plan 4 (recovery, live, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens. Online was redesigned on 2026-10-02 (`docs/superpowers/specs/2026-10-02-online-page-redesign-design.md`); `pages/online.css` is written by hand.
 - **The one allowed second stylesheet:** the Controllers page's pad art. `controller-preview.js` loads `art/controllers/<pad>/preview.css` at runtime (one `<link data-controller-art>` per pad folder) to place that pad's preview art. No other page or script adds a stylesheet.
 
 ## 9. Words
 
 - "Leaderboard", never "ladder". "Live feed", not "Watch live". "Last 10 games", not "Form".
-- A row never says "Best of 3" (every ranked match is one). The live card says "Game 2 of 3". There are no halves.
+- A row never says "Best of 3" (every ranked match is one). The match view (live.html) says "Game 2 of 3"; Online's Live now card says "Ranked · Game 2" or "Casual" (spec 2026-10-02 §5). There are no halves.
 - Stat units are uppercase in tables (YDS, TD, RTG, C/ATT, CAR, YCO, DRP) and spelled out in headline tiles (Passing Yards, Passing TD, Passer Rating).
 - Records are W-L. Private rooms never show on a profile and never count.
 
@@ -293,6 +304,7 @@ node --test crates/reborn-ui/ui/*.test.mjs Tools/lib/*.test.mjs
 | `settings-draft.test.mjs` | the Settings draft behind the save bar |
 | `stats-model.test.mjs` | Stats' model: numbers, Elo, trend, role cards, private rooms dropped |
 | `stats-rows.test.mjs` | match row models, the results-queue line and unsent counts |
+| `online-model.test.mjs` | Online's words and numbers: mode and series lines, accept countdown, Elo bits (hidden with Elo off), held notice, invite link, leaderboard rows |
 | `cover-color.test.mjs` | the cover's two colours from an avatar |
 | `outcome-words.test.mjs` | onboarding's outcome words (a bad disc or a missing patch is never reported as success) |
 | `Tools/lib/colour-tokens.test.mjs` | the colour-to-token mapping `extract-layout-css` uses |

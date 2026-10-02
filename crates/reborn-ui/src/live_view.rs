@@ -138,6 +138,21 @@ pub async fn stats_dashboard() -> Result<serde_json::Value, LiveCommandError> {
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
 }
 
+/// The Online page's Leaderboard card (spec 2026-10-02 §4): the top ten, with the player's token when signed in so the
+/// server can add their own row. `None` while the server has no leaderboard. Signed out is simply anonymous.
+#[tauri::command]
+pub async fn leaderboard() -> Result<Option<serde_json::Value>, LiveCommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let signed_in = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?.is_some();
+        let token = if signed_in { identity::token(&p).unwrap_or(None) } else { None };
+        let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
+        reborn_core::live_view::leaderboard(&crate::http_client(), &origin, token.as_deref(), 10).map_err(LiveCommandError::from)
+    })
+    .await
+    .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
+}
+
 /// A player's public profile: `GET /v1/players/{id}/profile`, or with `before` one more page of
 /// their match log. No token -- the profile is the same for every viewer, signed in or not -- and
 /// `None` once the id does not exist.

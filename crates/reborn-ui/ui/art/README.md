@@ -20,6 +20,7 @@ change.
 | `cover.png` | 512 x 512 | PNG, transparent | The mark, composited into the scene |
 | `fields/<slug>.jpg` | 720 x 960 (3:4) | JPEG, quality 85 | Field tiles |
 | `teams/<slug>.png` | 256 x 256 | PNG, transparent | Team marks |
+| `online/ranked.jpg`, `casual.jpg`, `private.jpg`, `matchup.jpg` | at most 1100 wide | JPEG, quality 90 | Placeholders cut from the hero shots for the Online cards; not loaded since 2026-10-02 (the cards are plain colours until Adam picks the final art) |
 
 2560 wide rather than 1500, because the window resizes and a backdrop that
 starts at window size goes soft the moment anyone maximises it.

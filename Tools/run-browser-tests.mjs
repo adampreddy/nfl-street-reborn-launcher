@@ -340,6 +340,7 @@ await import('./review-players.mjs');
 
 // Above review-finish: it fails at baseline and aborts the runner, so nothing after it runs.
 await import('./check-themed-shell.mjs');
+await import('./check-online-page.mjs');
 await import('./check-save-lane.mjs');
 
 await import('./check-menu.mjs');

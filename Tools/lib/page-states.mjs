@@ -14,6 +14,26 @@ export const GAME_ID = 'aaaaaaaa-1111-4222-8333-444444444444';
 const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_profile', 'system_check', 'updates', 'preparation', 'completion'];
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
+// The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
+// Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
+// adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
+// record from elo.around), so tile, card and matchup card agree in every screenshot. The Online page reads your rank
+// from this board's row (leaderboard.js), not from stats_dashboard.
+export const LB_TEAM = { tgid: 14, name: 'Falcons', abbrev: 'ATL', logo_url: '/live-assets/teams/14-128.png', primary: '#A71930' };
+export const DASH = (() => { const d = F.dashboard(); d.you.elo.week_delta = 16; return d; })();
+const LB_NAMES = ['Jock', 'Playz', 'Tuna', 'Mikel', 'Riley', 'Sauce', 'adamknowsball', 'Bones', 'Vick7', 'Kaz'];
+const LB_ELO = [1320, 1302, 1284, 1266, 1248, 1230, 1184, 1170, 1152, 1134];
+const ME_ROW = (() => {
+  const e = DASH.you.elo, a = e.around.find((r) => r.is_player);
+  return { rank: e.rank, player_id: DASH.you.player_id, display_name: DASH.you.display_name, avatar_url: a.avatar_url, team: LB_TEAM,
+    wins: a.wins, losses: a.losses, elo: e.rating, delta_week: e.week_delta, you: true };
+})();
+const lbRow = (name, i) => name === ME_ROW.display_name ? { ...ME_ROW } : ({ rank: i + 1, player_id: `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`, display_name: name,
+  avatar_url: i % 3 ? null : `https://cdn.discordapp.com/avatars/12345678901234567${i}/0123456789abcdef0123456789abcdef.png?size=64`,
+  team: i % 2 ? null : LB_TEAM, wins: 20 - i, losses: 3 + i, elo: LB_ELO[i], delta_week: i % 4 === 0 ? 16 : i % 4 === 1 ? -9 : 0, you: false });
+// A signed-out request carries no identity: the same board with no `you` flag and no pinned row (spec §4).
+export const LEADERBOARD_ANON = (lb) => ({ ...lb, you: null, rows: lb.rows.map((r) => ({ ...r, you: false })) });
+export const LEADERBOARD = { ok: true, enabled: true, total: 38, rows: LB_NAMES.map(lbRow), you: null };
 
 const SESSION = (id, ended, needs) => ({ id, build: 'offline', minutes: 3.2, ended, needs_recovery: needs });
 const PADS = (n) => ({ pads: Array.from({ length: n }, (_, i) => ({ device_string: `XInput/${i}/Gamepad`, family: 'xbox', port: i + 1, set_aside: null })), other: [], complete: true, unsearched: [], source: 'builtin' });
@@ -62,6 +82,11 @@ function onlineStates() {
   const players = [{ id: 1, name: 'Adam', status: 'OK', ping: '0 ms' }, { id: 2, name: 'Jock', status: 'OK', ping: '38 ms' }];
   const room = (r) => ({ netplay_status: { phase: 'lobby', active: true, host: true, connection: 'traversal', port: 2626, code: 'ABC12345', can_start: true, players, ports: [1, 2, 0, 0], ...r } });
   const S = (name, data) => ({ name, url: 'online.html', scope: 'main', data });
+  // The redesign's states (spec 2026-10-02; Tools/check-online-page.mjs). PICK sets the stored mode before load.
+  const PICK = (m) => `try{localStorage.setItem('mm:mode','${m}')}catch{}`;
+  const MATCH_FOUND = { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
+    opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM, opponent_avatar_url: null }) }) };
+  const N = (name, data, extra = {}) => ({ name, url: 'online.html', scope: 'main', data: { leaderboard: LEADERBOARD, mm_rooms: [], ...data }, ...extra });
   return [
     S('online-mm-idle', { mm_state: mm(empty), mm_rooms: rooms }),
     S('online-mm-queued', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }),
@@ -80,6 +105,86 @@ function onlineStates() {
     S('online-room-direct', room({ connection: 'direct', code: '', port: 2626 })),
     S('online-room-guest', room({ host: false, can_start: false })),
     S('online-room-running', room({ phase: 'running', can_start: false })),
+    N('online-layout', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-small', { mm_state: mm(empty) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
+    // An invite link left a room code behind (online.js's takePendingInvite, answered at once): the Direct connection
+    // dialog opens with the code filled (ruling P10: online-direct.js listens before online.js can fire).
+    N('online-netplay-invite', { mm_state: mm(empty), netplay_pending_join: { code: 'K7QP2M9X' } }, { init: PICK('ranked') }),
+    N('online-ranked', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-casual', { mm_state: mm(empty), content_repair_image: { current: true } }, { init: PICK('casual') }),
+    N('online-private', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
+    N('online-searching', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-match-found', MATCH_FOUND, { init: PICK('ranked') }),
+    // The same, with the check moving the page's clock: "Accept within" counts down every second and hides at the deadline.
+    N('online-match-found-tick', MATCH_FOUND, { init: PICK('ranked') }),
+    N('online-accepted', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, your_accepted: true, opponent_elo: 1320, opponent_rank: 1 }) }) }),
+    N('online-starting', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'starting', relay_state: 'room_formed', your_accepted: true, your_ready: true }) }) }),
+    N('online-playing', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'running', your_accepted: true, your_ready: true, series: [1, 0] }),
+      chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
+    // Ruling P9: between games of a series the card still says Playing, with the series line.
+    N('online-intermission', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'intermission', your_accepted: true, your_ready: true, series: [1, 0] }) }) }),
+    N('online-playing-casual', { mm_state: mm({ ...empty, match: match({ id: 'm6', status: 'running', relay_state: 'running', your_accepted: true, your_ready: true }) }) }),
+    N('online-match-bare', { mm_state: mm({ ...empty, match: match({ id: 'm7', opponent: null, best_of: null, series: null, relay_deadline: 'not a date', opponent_elo: null, opponent_rank: 0, opponent_team: null }) }) }),
+    N('online-match-small', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
+      opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM }) }) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
+    N('online-room', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
+      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) },
+      { init: "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(t)=>{window.__copied=t;}}})" }),
+    // The host picked Pickup (the snapshot's seed_kind).
+    N('online-room-pickup', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true, seed_kind: 'pickup',
+      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false }] }, chat: [] }) }),
+    N('online-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true, your_ready: true,
+      series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
+    N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),
+    N('online-signed-out', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }),
+      identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 5 } }, { init: PICK('ranked') }),
+    N('online-connecting', { mm_state: mm(null) }),
+    N('online-no-online-list', { mm_state: mm({ ...empty, online: undefined }) }, { init: PICK('ranked') }),
+    N('online-offline', { mm_state: mm(null, { link: 'offline' }) }),
+    N('online-disabled', { mm_state: mm(null, { link: 'disabled' }) }),
+    N('online-presence', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-lobbies', { mm_state: mm(empty), mm_rooms: rooms }, { click: '[data-key="mode-private"]' }),
+    N('online-lobbies-none', { mm_state: mm(empty), mm_rooms: [] }, { click: '[data-key="mode-private"]' }),
+    N('online-live', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-live-many', { mm_state: mm(empty), live_matches: [0, 1, 2, 3, 4].map((i) => ({ ...LIST.matches[i % 2], id: `b41cf41a-43c4-4d1b-aaa8-05e4e72c73${String(i).padStart(2, '0')}` })) }, { init: PICK('ranked') }),
+    N('online-live-none', { mm_state: mm(empty), live_matches: [] }, { init: PICK('ranked') }),
+    N('online-leaderboard', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    // Further down the board: #14 at 1,104 on both the card and the Ranked tile; someone else (Dime) holds #7.
+    N('online-leaderboard-far', { mm_state: mm(empty), leaderboard: { ...LEADERBOARD,
+      rows: LEADERBOARD.rows.map((r) => (r.you ? { ...r, player_id: '00000000-0000-4000-8000-000000000006', display_name: 'Dime', avatar_url: null, wins: 12, losses: 6, delta_week: 0, you: false } : r)),
+      you: { ...ME_ROW, rank: 14, elo: 1104 } } }, { init: PICK('ranked') }),
+    // A leaderboard read that fails after a good one (a network blip): the check re-polls with the read rejected.
+    N('online-rank-blip', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    // Elo off: no row of yours, so the plays-as team comes from one player_profile read (F.profile(): Falcons).
+    N('online-elo-off', { mm_state: mm(empty), leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null } }, { init: PICK('ranked') }),
+    N('online-lb-missing', { mm_state: mm(empty), leaderboard: null }, { init: PICK('ranked') }),
+    N('online-lb-hostile', { mm_state: mm(empty), leaderboard: { ok: true, enabled: true, total: 2, you: null, rows: [
+      { rank: 1, player_id: 'h1', display_name: '<img src=x onerror=alert(1)>', avatar_url: 'https://evil.example/a.png', team: { name: 'X', abbrev: 'X', logo_url: 'https://evil.example/x.png' }, wins: 3, losses: 1, elo: 1200, delta_week: 0, you: false },
+      { rank: 2, player_id: 'h2', display_name: 'Averyveryveryveryveryverylongdisplayname1234567890', avatar_url: null, team: null, wins: null, losses: null, elo: null, delta_week: null, you: false },
+    ] } }, { init: PICK('ranked') }),
+    // A room invite link (spec §3.10, Task 12): the page offers Join, never joins on its own, and keeps the invite while
+    // signed out or queued (no banner while busy).
+    N('online-invite', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
+    N('online-invite-nohost', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: null }),
+    N('online-invite-signed-out', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-not-now', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-long', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M9X12345', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
+    N('online-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
+      mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    // A Netplay invite while queued (carried from Task 2): the Direct connection dialog stays shut.
+    N('online-netplay-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
+      netplay_pending_join: { code: 'K7QP2M9X' } }),
+    N('online-pad', { mm_state: mm(empty) }, { init: PICK('ranked'), pad: true }),
+    N('online-searching-esc', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-searching-panel-esc', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-match-found-esc', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2 }) }) }),
+    N('online-focus-keep', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
+    // The chat field keeps its text and focus across redraws too (ruling P16): a room with chat.
+    N('online-focus-keep-chat', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
+      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) }),
+    // (redesign states are added above this line)
   ];
 }
 

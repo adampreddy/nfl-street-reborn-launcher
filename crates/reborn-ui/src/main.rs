@@ -5947,6 +5947,8 @@ enum Mode {
     /// An invite link a friend sent (`nflstreetreborn://join/<code>`): remember
     /// the room code, then open the window on the Online page.
     Join(String),
+    /// A lobby invite (`nflstreetreborn://room/<code>`): remember the code, then open the window; Online offers Join.
+    Room(String),
 }
 
 fn mode_from(args: impl Iterator<Item = String>) -> Mode {
@@ -5958,26 +5960,73 @@ fn mode_from(args: impl Iterator<Item = String>) -> Mode {
                 if let Some(code) = join_code_from(other) {
                     return Mode::Join(code);
                 }
+                if let Some(code) = room_code_from(other) {
+                    return Mode::Room(code);
+                }
             }
         }
     }
     Mode::Window
 }
 
-/// The room code inside an invite link, `nflstreetreborn://join/<code>`,
-/// as Windows hands it to the launcher when a friend's link is opened. The
-/// scheme is matched without regard to case; the code keeps its own. Only
-/// letters, digits and dashes count, so a link cannot smuggle anything else
-/// onto the Online page.
-fn join_code_from(arg: &str) -> Option<String> {
+/// What an invite link is for (spec 2026-10-02 §3.10): a Netplay host code (`nflstreetreborn://join/<code>`, the
+/// direct connection) or a matchmaking lobby code (`nflstreetreborn://room/<code>`). Two kinds, so a lobby code is
+/// never typed into the Netplay form and a host code is never sent to `mm_room_join`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InviteKind {
+    Netplay,
+    Room,
+}
+
+impl InviteKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Netplay => "netplay",
+            Self::Room => "room",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Invite {
+    kind: InviteKind,
+    code: String,
+}
+
+/// The invite inside a link, as Windows hands it to the launcher when a friend's link is opened. The scheme and the
+/// kind are matched without regard to case; the code keeps its own. Only letters, digits and dashes count, so a link
+/// cannot smuggle anything else onto the Online page.
+fn invite_from(arg: &str) -> Option<Invite> {
     let arg = arg.trim().trim_matches('"');
     let lower = arg.to_ascii_lowercase();
-    let rest = lower.strip_prefix("nflstreetreborn://join/")?;
+    let (kind, rest) = if let Some(rest) = lower.strip_prefix("nflstreetreborn://join/") {
+        (InviteKind::Netplay, rest)
+    } else if let Some(rest) = lower.strip_prefix("nflstreetreborn://room/") {
+        (InviteKind::Room, rest)
+    } else {
+        return None;
+    };
+    // ASCII lowercasing moves no byte, so the tail of `arg` is the same bytes as `rest` (a char boundary too).
     let code: String = arg[arg.len() - rest.len()..]
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    (!code.is_empty() && code.len() <= 64).then_some(code)
+    valid_invite_code(&code).then_some(Invite { kind, code })
+}
+
+/// What an invite's code may be: 1 to 64 letters, digits and dashes.
+fn valid_invite_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= 64 && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The Netplay host code inside `nflstreetreborn://join/<code>`.
+fn join_code_from(arg: &str) -> Option<String> {
+    invite_from(arg).filter(|i| i.kind == InviteKind::Netplay).map(|i| i.code)
+}
+
+/// The lobby code inside `nflstreetreborn://room/<code>`.
+fn room_code_from(arg: &str) -> Option<String> {
+    invite_from(arg).filter(|i| i.kind == InviteKind::Room).map(|i| i.code)
 }
 
 /// Where an invite's room code waits for the Online page: a small file in
@@ -5992,36 +6041,72 @@ fn pending_join_path(platform: &Platform) -> Result<PathBuf, String> {
         .join("pending-join.json"))
 }
 
-fn remember_pending_join(platform: &Platform, code: &str) -> Result<(), String> {
-    let path = pending_join_path(platform)?;
+fn remember_pending_invite(platform: &Platform, invite: &Invite) -> Result<(), String> {
+    write_pending(&pending_join_path(platform)?, invite)
+}
+
+fn write_pending(path: &std::path::Path, invite: &Invite) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let body = serde_json::json!({"code": code, "at": reborn_core::utc_now_iso()});
-    std::fs::write(&path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    let body = serde_json::json!({"kind": invite.kind.as_str(), "code": invite.code, "at": reborn_core::utc_now_iso()});
+    std::fs::write(path, serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
-/// The room code an invite link left behind, if any. Not cleared here: the
-/// Online page clears it once it has filled the form, so a page that only
-/// glanced (Play, deciding whether to redirect) does not lose it.
-#[tauri::command]
-async fn netplay_pending_join() -> Result<Option<serde_json::Value>, String> {
-    let path = pending_join_path(&Platform::detect())?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+/// The waiting file's contents if it is of `kind`, whatever its code. A file written before kinds existed has none
+/// and is a Netplay invite.
+fn read_pending_file(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde_json::Value>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .filter(|v| v.get("kind").and_then(|k| k.as_str()).unwrap_or("netplay") == kind.as_str())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
 
-#[tauri::command]
-async fn netplay_pending_join_clear() -> Result<(), String> {
-    let path = pending_join_path(&Platform::detect())?;
-    match std::fs::remove_file(&path) {
+/// The waiting invite if it is of `kind` and its code is a code. The file sits in the data root where anything could
+/// have written it, so a code `invite_from` would never have kept is no invite.
+fn read_pending(path: &std::path::Path, kind: InviteKind) -> Result<Option<serde_json::Value>, String> {
+    Ok(read_pending_file(path, kind)?.filter(|v| v.get("code").and_then(|c| c.as_str()).is_some_and(valid_invite_code)))
+}
+
+/// Forget the waiting invite, only if it is of `kind`: clearing one kind never drops the other. A file of that kind
+/// with a bad code goes too.
+fn clear_pending(path: &std::path::Path, kind: InviteKind) -> Result<(), String> {
+    if read_pending_file(path, kind)?.is_none() {
+        return Ok(());
+    }
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// The room code a Netplay invite link left behind, if any. Not cleared here: the
+/// Online page clears it once it has filled the form, so a page that only
+/// glanced (Play, deciding whether to redirect) does not lose it.
+#[tauri::command]
+async fn netplay_pending_join() -> Result<Option<serde_json::Value>, String> {
+    read_pending(&pending_join_path(&Platform::detect())?, InviteKind::Netplay)
+}
+
+#[tauri::command]
+async fn netplay_pending_join_clear() -> Result<(), String> {
+    clear_pending(&pending_join_path(&Platform::detect())?, InviteKind::Netplay)
+}
+
+/// A lobby invite (`nflstreetreborn://room/<code>`) left behind, if any: `{ kind: "room", code, at }`. Not cleared
+/// here: the Online page clears it after Join or Dismiss (spec 2026-10-02 §3.10), so it survives a sign-in.
+#[tauri::command]
+async fn mm_pending_room() -> Result<Option<serde_json::Value>, String> {
+    read_pending(&pending_join_path(&Platform::detect())?, InviteKind::Room)
+}
+
+#[tauri::command]
+async fn mm_pending_room_clear() -> Result<(), String> {
+    clear_pending(&pending_join_path(&Platform::detect())?, InviteKind::Room)
 }
 
 /// The launch a Play shortcut makes.
@@ -6229,7 +6314,14 @@ fn main() {
             // Remembered, then the window opens as usual; Play sends the
             // player straight on to Online, which fills in the room.
             let p = Platform::detect();
-            if let Err(why) = remember_pending_join(&p, &code) {
+            if let Err(why) = remember_pending_invite(&p, &Invite { kind: InviteKind::Netplay, code }) {
+                eprintln!("Could not keep the invite's room code: {why}");
+            }
+        }
+        Mode::Room(code) => {
+            // The same for a lobby: Online offers Join (it never joins on its own).
+            let p = Platform::detect();
+            if let Err(why) = remember_pending_invite(&p, &Invite { kind: InviteKind::Room, code }) {
                 eprintln!("Could not keep the invite's room code: {why}");
             }
         }
@@ -6291,8 +6383,8 @@ fn main() {
         // exits: the room code is kept and this window comes forward, and
         // Play and Online read the code when the window gets focus.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(code) = args.iter().find_map(|a| join_code_from(a)) {
-                if let Err(why) = remember_pending_join(&Platform::detect(), &code) {
+            if let Some(invite) = args.iter().find_map(|a| invite_from(a)) {
+                if let Err(why) = remember_pending_invite(&Platform::detect(), &invite) {
                     eprintln!("Could not keep the invite's room code: {why}");
                 }
             }
@@ -6321,6 +6413,7 @@ fn main() {
             online_mm::mm_rooms,
             online_mm::mm_room_create,
             online_mm::mm_room_join,
+            online_mm::mm_room_lookup,
             online_mm::mm_room_action,
             online_mm::mm_match_action,
             online_mm::presence_page,
@@ -6333,6 +6426,7 @@ fn main() {
             live_view::stats_dashboard,
             live_view::player_profile,
             live_view::set_plays_as,
+            live_view::leaderboard,
             dolphin_settings::netplay_open,
             dolphin_settings::netplay_status,
             dolphin_settings::netplay_action,
@@ -6349,6 +6443,8 @@ fn main() {
             shell_tools::notice_dismiss,
             netplay_pending_join,
             netplay_pending_join_clear,
+            mm_pending_room,
+            mm_pending_room_clear,
             setup_tools::setup_import_existing_game,
             setup_tools::setup_migrate_install,
             setup_tools::setup_graphics_options,
@@ -7974,6 +8070,52 @@ struct StatsSubmitView {"),
         assert_eq!(join_code_from("--play"), None);
         assert!(matches!(mode_from(["x.exe".to_string(), "nflstreetreborn://join/Q1".to_string()].into_iter()), Mode::Join(c) if c == "Q1"));
         assert!(matches!(mode_from(["x.exe".to_string()].into_iter()), Mode::Window));
+    }
+
+    #[test]
+    fn a_room_link_is_its_own_kind_of_invite() {
+        let room = |c: &str| Some(Invite { kind: InviteKind::Room, code: c.into() });
+        assert_eq!(invite_from("nflstreetreborn://room/K7QP2M"), room("K7QP2M"));
+        assert_eq!(invite_from("\"NFLSTREETREBORN://ROOM/k7-qp\""), room("k7-qp"), "quoted, any case; the code keeps its own");
+        assert_eq!(invite_from("nflstreetreborn://room/K7QP2M/../x?y"), room("K7QP2M"), "only the code survives");
+        assert_eq!(invite_from("nflstreetreborn://join/AB12CD"), Some(Invite { kind: InviteKind::Netplay, code: "AB12CD".into() }));
+        assert_eq!(invite_from("nflstreetreborn://room/"), None);
+        assert_eq!(join_code_from("nflstreetreborn://room/K7QP2M"), None, "a lobby code is never a Netplay host code");
+        assert_eq!(room_code_from("nflstreetreborn://join/AB12CD"), None, "and a host code is never a lobby code");
+        assert!(matches!(mode_from(["x.exe".to_string(), "nflstreetreborn://room/Q1".to_string()].into_iter()), Mode::Room(c) if c == "Q1"));
+        assert_eq!(invite_from(&reborn_core::presence::join_link("K7QP2M")), room("K7QP2M"), "Discord's Join secret is the same room link");
+    }
+
+    #[test]
+    fn the_pending_invite_file_keeps_its_kind_and_each_reader_sees_only_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("pending-join.json");
+        write_pending(&path, &Invite { kind: InviteKind::Room, code: "K7QP2M".into() }).unwrap();
+        assert_eq!(read_pending(&path, InviteKind::Room).unwrap().unwrap()["code"], "K7QP2M");
+        assert_eq!(read_pending(&path, InviteKind::Netplay).unwrap(), None, "netplay_pending_join never sees a room invite");
+        clear_pending(&path, InviteKind::Netplay).unwrap();
+        assert!(path.exists(), "clearing the other kind leaves a room invite alone");
+        clear_pending(&path, InviteKind::Room).unwrap();
+        assert!(!path.exists());
+        // A file written before kinds existed is a Netplay invite.
+        std::fs::write(&path, br#"{"code":"AB12CD","at":"2026-09-11T00:00:00Z"}"#).unwrap();
+        assert_eq!(read_pending(&path, InviteKind::Netplay).unwrap().unwrap()["code"], "AB12CD");
+        assert_eq!(read_pending(&path, InviteKind::Room).unwrap(), None);
+        clear_pending(&path, InviteKind::Room).unwrap();
+        assert!(path.exists());
+        let none = dir.path().join("none.json");
+        assert_eq!(read_pending(&none, InviteKind::Room).unwrap(), None);
+        clear_pending(&none, InviteKind::Room).unwrap();
+        // A code no link could have left is no invite, for either reader, and clearing its kind removes it.
+        for bad in [r#"{"kind":"room","code":"../x","at":"x"}"#, r#"{"kind":"room","code":""}"#, r#"{"kind":"room","code":7}"#, r#"{"kind":"room"}"#] {
+            std::fs::write(&path, bad).unwrap();
+            assert_eq!(read_pending(&path, InviteKind::Room).unwrap(), None, "{bad}");
+            clear_pending(&path, InviteKind::Room).unwrap();
+            assert!(!path.exists(), "{bad} is cleared");
+        }
+        std::fs::write(&path, br#"{"code":"AB/12"}"#).unwrap();
+        assert_eq!(read_pending(&path, InviteKind::Netplay).unwrap(), None, "the Netplay reader too");
+        assert!(!valid_invite_code(&"A".repeat(65)) && valid_invite_code(&"A".repeat(64)) && valid_invite_code("k7-qp"));
     }
 
     #[test]

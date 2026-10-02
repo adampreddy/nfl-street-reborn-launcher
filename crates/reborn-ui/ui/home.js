@@ -5,17 +5,32 @@ import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason,
 import { openMenu } from "./menu.js";
 import { avatarSrc } from "./live-common.js";
 
-// Opened from a friend's invite link: straight on to Online, which fills in
-// the room. Play is the window's first page, so this is where the hand-off
-// lives; the code stays put until Online has used it.
+// Opened from a friend's invite link (a Netplay `join/` or a lobby `room/`):
+// straight on to Online, which fills in the room or offers Join. Play is the
+// window's first page, so this is where the hand-off lives; the code stays
+// put until Online has used it.
+//
+// Once per invite: a room invite waits until Join or Dismiss, so a player who
+// is signed out or queued, and comes back to Play, must be able to stay here.
+// The invite (`code|at`) is remembered for this window's session when Play
+// hands it off; without session storage it is not handed off at all.
 async function handOffInvite() {
   try {
     const pending = await call("netplay_pending_join");
-    if (!pending || !pending.code) return;
+    const room = pending && pending.code ? null : await call("mm_pending_room").catch(() => null);
+    const invite = pending && typeof pending.code === "string" && pending.code ? pending
+      : room && typeof room.code === "string" && /^[A-Za-z0-9-]{1,12}$/.test(room.code) ? room : null;
+    if (!invite) return;
+    const key = `${room === invite ? "room" : "join"}:${invite.code}|${typeof invite.at === "string" ? invite.at : ""}`;
     // Not before setup: Online needs a game to join with. The code stays
     // put, and this runs again once Play comes back after setup.
     const progress = await call("onboarding_progress", { legacyRoot: null });
-    if (progress && progress.complete) location.replace("online.html");
+    if (!(progress && progress.complete)) return;
+    try {
+      if (sessionStorage.getItem("play:invite-handed-off") === key) return;
+      sessionStorage.setItem("play:invite-handed-off", key);
+    } catch (_) { return; }
+    location.replace("online.html");
   } catch (_) { /* Online is one click away either way */ }
 }
 if (bridge) {

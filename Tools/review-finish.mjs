@@ -17,6 +17,10 @@ Object.assign(fixture, {
  settings_paths: {runtime:null,game:null,userDir:null,legacyRoot:null},
  update_policy: {automatic:false,source:'settings'},
  onboarding_progress: {complete:true,next:{kind:'already_complete'},plan:[],set_aside:[],summary:{graphics:'balanced'}},
+ // What the redesigned Online page and its Join game gate ask for (same answers as run-browser-tests.mjs; empty online data).
+ content_status: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
+ content_check: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
+ mm_state: null, mm_rooms: [], mm_pending_room: null, leaderboard: null, live_matches: [], stats_dashboard: null,
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'soundtrack-classic',version:'1.0',name:'Classic soundtrack',active:false,files:12,bytes:18000000},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
 fixture.controls_options=[{slug:'xbox',label:'Xbox',suggested:true,describes:'A, B, X and Y prompts.',pack:'Xbox Controls'},{slug:'playstation',label:'PlayStation',suggested:false,describes:'Cross, circle, square and triangle prompts.',pack:'PS Controls'},{slug:'gamecube',label:'GameCube',describes:'Original game prompts.',pack:null}];
@@ -167,7 +171,7 @@ try{
  await page.getByRole('button',{name:'Open Dolphin',exact:true}).click();assert.ok(await page.evaluate(()=>window.__calls.some(c=>c.cmd==='open_runtime')));assert.equal(await page.locator('#graphics-preset').isDisabled(),true);
  // The Online page: join, the lobby, leave, host, and a refused open that
  // keeps what was typed. The full flow lives in check-online-restored.mjs.
- await page.goto(url+'/online.html');await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
+ await page.goto(url+'/online.html');await page.getByRole('button',{name:/^Direct connection/}).click();await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
  await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
  let args=await page.evaluate(()=>window.__calls.find(c=>c.cmd==='netplay_open').args);assert.equal(args.mode,'join');assert.equal(args.connection,'traversal');assert.equal(args.address,'ABC12345');
  await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-online.png')});

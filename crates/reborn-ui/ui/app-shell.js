@@ -298,6 +298,9 @@ function activate() {
 function back() {
   if (selectEdit) { endSelect(false); return; }
   const modal=document.querySelector('dialog[open]');if(modal){if(modal.dispatchEvent(new Event('cancel',{cancelable:true})))modal.close();return;}
+  // A page may answer B / Esc itself (Online: Cancel while searching, Decline on Match found; spec 2026-10-02 §6) by
+  // calling preventDefault() on this event. Otherwise B goes on as always (folds, wizard Back, the sidebar).
+  if (!document.dispatchEvent(new CustomEvent('pad-back', { cancelable: true }))) return;
   const current = document.activeElement;
   const fold = current?.closest('details[open]') || document.querySelector('#game-options[open]');
   if (fold) {

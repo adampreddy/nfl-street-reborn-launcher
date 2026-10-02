@@ -30,11 +30,17 @@ const SITE: &str = "https://nflstreetreborn.com/";
 /// exactly 36 canonical-UUID characters -- `../admin`, a `?query`, a `#fragment`, a trailing
 /// slash, more path -- fails [`reborn_core::live_view::is_canonical_uuid`]'s length check and is
 /// refused, without this function having to name any of those shapes itself.
+/// Also exactly two fixed pages on the page origin, `/live` and `/leaderboard` (the Online page's links).
 fn allowed(url: &str) -> bool {
     if url.starts_with(SITE) {
         return true;
     }
     use reborn_core::identity::{DEFAULT_ORIGIN, PAGE_ORIGIN};
+    // Two fixed pages on the page origin, exactly (spec 2026-10-02 §4, §5): the live index ("See all") and the
+    // leaderboard ("Full leaderboard"). Nothing after them: no slash, query or fragment.
+    if [format!("{PAGE_ORIGIN}/live"), format!("{PAGE_ORIGIN}/leaderboard")].iter().any(|u| url == u) {
+        return true;
+    }
     [DEFAULT_ORIGIN, PAGE_ORIGIN].iter().any(|origin| {
         ["live", "games", "u"].iter().any(|kind| {
             url.strip_prefix(&format!("{origin}/{kind}/"))
@@ -171,6 +177,17 @@ mod tests {
             assert!(!allowed(&format!("{origin}/u/Adam")), "only an id, never a name, from the launcher");
         }
         assert!(!allowed(&format!("https://online.nflstreetreborn.com.evil.example/u/{LIVE_ID}")));
+    }
+
+    #[test]
+    fn the_live_index_and_the_leaderboard_open_exactly() {
+        let o = reborn_core::identity::PAGE_ORIGIN;
+        assert!(allowed(&format!("{o}/live")), "Live now's See all");
+        assert!(allowed(&format!("{o}/leaderboard")), "Full leaderboard");
+        for bad in [format!("{o}/live/"), format!("{o}/live?x=1"), format!("{o}/leaderboard#a"), format!("{o}/leaderboards"),
+            format!("{o}/leaderboard/../admin"), format!("{}/leaderboard", reborn_core::identity::DEFAULT_ORIGIN)] {
+            assert!(!allowed(&bad), "{bad}");
+        }
     }
 
     /// The CSP's `img-src` is the one directive this feature widens, and only to let a live

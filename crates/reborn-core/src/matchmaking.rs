@@ -113,6 +113,10 @@ pub struct Room {
     pub best_of: u8,
     pub status: String,
     pub members: Vec<RoomMember>,
+    /// The signed-in player hosts this room (the server's `you_host`): only the host is offered Start.
+    pub you_host: bool,
+    /// The game the host picked: `regular` (Quick game) or `pickup`. Absent from an older server.
+    pub seed_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -129,6 +133,12 @@ pub struct RoomMember {
 pub struct Opponent {
     pub id: String,
     pub display_name: String,
+    /// Elo, rank on the leaderboard, plays-as team and Discord picture: display only (the Online page's matchup card,
+    /// spec 2026-10-02 §3.3). Each is absent while the server does not send it (Elo off: no rating, no rank).
+    pub rating: Option<i64>,
+    pub rank: Option<u32>,
+    pub team: Option<serde_json::Value>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -221,8 +231,27 @@ pub struct RoomSummary {
     pub code: String,
     pub mode: String,
     pub best_of: u8,
+    #[serde(deserialize_with = "host_name")]
     pub host: Option<String>,
     pub created_at: String,
+}
+
+/// The lobby browser's `host`: the server sends `{ id, display_name }` (rooms.js), an older one a plain name. Either
+/// reads as the name; anything else as no name.
+fn host_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Object(o)) => o.get("display_name").and_then(|n| n.as_str()).map(str::to_string),
+        _ => None,
+    })
+}
+
+/// `GET /v1/rooms/<code>`: who hosts a room and its mode, for the invite line on the Online page.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoomLookup {
+    pub host_name: Option<String>,
+    pub mode: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -326,17 +355,36 @@ impl<'a> Client<'a> {
         Ok(self.get::<Rooms>("/v1/mm/rooms")?.rooms)
     }
 
-    pub fn create_room(&self, mode: Mode, public: bool) -> Result<serde_json::Value, MmError> {
+    /// `seed_kind` is the host's game: `pickup`, or anything else is a `regular` (Quick game) one. A server without
+    /// the field ignores it and plays a regular game.
+    pub fn create_room(&self, mode: Mode, public: bool, seed_kind: &str) -> Result<serde_json::Value, MmError> {
         let mode = if mode == Mode::Ranked { "ranked" } else { "casual" };
         let best_of = if mode == "ranked" { 3 } else { 1 };
+        let seed_kind = if seed_kind.trim() == "pickup" { "pickup" } else { "regular" };
         self.post(
             "/v1/mm/rooms",
-            serde_json::json!({ "mode": mode, "visibility": if public { "public" } else { "code" }, "best_of": best_of }),
+            serde_json::json!({ "mode": mode, "visibility": if public { "public" } else { "code" }, "best_of": best_of, "seed_kind": seed_kind }),
         )
     }
 
     pub fn join_room(&self, code: &str) -> Result<serde_json::Value, MmError> {
         self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), serde_json::json!({}))
+    }
+
+    /// Who invited the player (launcher spec 2026-10-02 §3.10). `None` on a 404: no such open room, or a server
+    /// without the route, so the page simply leaves the name out. The code reaches the path as letters, digits and
+    /// dashes only; a code with nothing left of it asks nothing.
+    pub fn room_lookup(&self, code: &str) -> Result<Option<RoomLookup>, MmError> {
+        let code = url_path(code);
+        if code.is_empty() {
+            return Ok(None);
+        }
+        let url = self.url(&format!("/v1/rooms/{code}"));
+        let r = self.http.get_text_as(&url, Some(&self.token)).map_err(|e| MmError::Offline(e.to_string()))?;
+        if r.status == 404 {
+            return Ok(None);
+        }
+        Self::decode(r.status, r.body.as_bytes()).map(Some)
     }
 
     pub fn room_action(&self, room_id: &str, action: RoomAction) -> Result<serde_json::Value, MmError> {
@@ -508,8 +556,72 @@ pub fn iso_to_unix(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_lobby_hosts_name_reads_from_either_shape() {
+        // rooms.js sends `host: { id, display_name }`; a plain name, null or nothing must read too. Before this, one
+        // public lobby made the whole list fail to decode, so the lobby list showed a protocol error.
+        let rooms: Rooms = serde_json::from_value(serde_json::json!({ "rooms": [
+            { "code": "K7QP2M", "mode": "casual", "host": { "id": "h1", "display_name": "Jock" } },
+            { "code": "R4NK3D", "mode": "casual", "host": "Tuna" },
+            { "code": "X1", "mode": "casual", "host": null },
+            { "code": "X2", "mode": "casual" } ] })).unwrap();
+        let hosts: Vec<Option<&str>> = rooms.rooms.iter().map(|r| r.host.as_deref()).collect();
+        assert_eq!(hosts, vec![Some("Jock"), Some("Tuna"), None, None]);
+    }
+
+    #[test]
+    fn a_room_says_whether_you_host_it() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "you_host": true, "members": [] } })).unwrap();
+        assert!(s.room.unwrap().you_host);
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "members": [] } })).unwrap();
+        assert!(!s.room.unwrap().you_host, "an older server says nothing: not the host");
+    }
+
     use super::*;
     use crate::net::fake::FakeHttp;
+
+    #[test]
+    fn a_room_lookup_names_the_host_and_a_404_is_no_answer() {
+        let url = "https://api.test/v1/rooms/K7QP2M";
+        let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"host_name":"Jock","mode":"casual"}"#);
+        let c = Client::new(&http, ORIGIN, "tok");
+        assert_eq!(c.room_lookup("K7QP2M").unwrap(), Some(RoomLookup { host_name: Some("Jock".into()), mode: Some("casual".into()) }));
+        assert_eq!(http.last_bearer().as_deref(), Some("tok"));
+        let gone = FakeHttp::default().reply(url, 404, r#"{"ok":false,"error":"No such lobby."}"#);
+        assert_eq!(Client::new(&gone, ORIGIN, "tok").room_lookup("K7QP2M").unwrap(), None, "no such room, or a server without the route");
+        assert!(Client::new(&http, ORIGIN, "tok").room_lookup("K7/../QP2M?x").is_err(), "only letters, digits and dashes reach the path");
+        let asked = http.gets.lock().unwrap().last().map(|(u, _)| u.clone());
+        assert_eq!(asked.as_deref(), Some("https://api.test/v1/rooms/K7QP2Mx"), "the slashes, dots and query never reach the URL");
+        let none = FakeHttp::default();
+        assert_eq!(Client::new(&none, ORIGIN, "tok").room_lookup("/../?#").unwrap(), None, "nothing left of the code: no request");
+        assert!(none.gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_room_sends_the_hosts_game_kind_and_anything_unknown_is_a_regular_game() {
+        let url = "https://api.test/v1/mm/rooms";
+        let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"room":{"id":"r","code":"K7QP2M"}}"#);
+        let c = Client::new(&http, ORIGIN, "tok");
+        let body = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
+        c.create_room(Mode::Casual, false, "pickup").unwrap();
+        let b = body(&http);
+        assert_eq!(b["seed_kind"], "pickup");
+        assert_eq!(b["mode"], "casual");
+        assert_eq!(b["visibility"], "code");
+        assert_eq!(b["best_of"], 1);
+        c.create_room(Mode::Casual, false, "regular").unwrap();
+        assert_eq!(body(&http)["seed_kind"], "regular");
+        c.create_room(Mode::Ranked, true, "../evil").unwrap();
+        assert_eq!(body(&http)["seed_kind"], "regular", "only the two known kinds reach the server");
+    }
+
+    #[test]
+    fn a_room_carries_its_game_kind_when_the_server_sends_one() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "seed_kind": "pickup", "members": [] } })).unwrap();
+        assert_eq!(s.room.unwrap().seed_kind.as_deref(), Some("pickup"));
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "members": [] } })).unwrap();
+        assert_eq!(s.room.unwrap().seed_kind, None, "an older server says nothing");
+    }
 
     const ORIGIN: &str = "https://api.test";
     const IDLE: &str = include_str!("../tests/fixtures/mm/live_idle.json");
@@ -733,5 +845,23 @@ mod tests {
         assert_eq!(field_title("city_limits"), "City Limits");
         assert_eq!(field_title("the_pit"), "The Pit");
         assert_eq!(field_title("ea_field"), "Ea Field");
+    }
+
+    #[test]
+    fn the_opponents_standing_is_read_when_sent_and_absent_when_not() {
+        let mut v: serde_json::Value = serde_json::from_str(MATCHED).unwrap();
+        v["match"]["opponent"]["rating"] = serde_json::json!(1162);
+        v["match"]["opponent"]["rank"] = serde_json::json!(9);
+        v["match"]["opponent"]["team"] = serde_json::json!({ "name": "Falcons", "logo_url": "/live-assets/teams/14-128.png" });
+        v["match"]["opponent"]["avatar_url"] = serde_json::json!("https://cdn.discordapp.com/avatars/1/a.png");
+        let o = serde_json::from_value::<Snapshot>(v).unwrap().matched.unwrap().opponent;
+        assert_eq!(o.rating, Some(1162));
+        assert_eq!(o.rank, Some(9));
+        assert_eq!(o.team.as_ref().and_then(|t| t["name"].as_str()), Some("Falcons"));
+        assert_eq!(o.avatar_url.as_deref(), Some("https://cdn.discordapp.com/avatars/1/a.png"));
+
+        // Today's server: `rating: null` and nothing else. Every field is simply absent.
+        let o = snap(MATCHED).matched.unwrap().opponent;
+        assert_eq!((o.rating, o.rank, o.team, o.avatar_url), (None, None, None, None));
     }
 }

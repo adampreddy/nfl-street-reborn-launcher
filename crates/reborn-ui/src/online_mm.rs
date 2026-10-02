@@ -556,7 +556,8 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "mode": t.mode, "field": t.field_pick, "waited_ms": t.waited_ms, "enqueued_at": t.enqueued_at,
         })),
         "room": s.room.as_ref().map(|r| serde_json::json!({
-            "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status,
+            "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
+            "seed_kind": crate::dolphin_settings::seed_kind_or_default(r.seed_kind.as_deref()),
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
             "members": r.members.iter().map(|m| serde_json::json!({
@@ -568,9 +569,13 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "id": m.id, "mode": m.mode, "status": m.status, "relay_state": m.relay_state,
             "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
             "opponent": m.opponent.display_name, "field": m.field.as_deref().map(reborn_core::matchmaking::field_title),
+            // Display only (spec 2026-10-02 §3.3): null until the server sends them, and the page then hides each spot.
+            "opponent_elo": m.opponent.rating, "opponent_rank": m.opponent.rank,
+            "opponent_team": m.opponent.team, "opponent_avatar_url": m.opponent.avatar_url,
             "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
             "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
             "hold_reason": m.hold_reason, "seat": m.seat,
+            "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
         })),
         "chat": s.chat.messages.iter().map(|c| serde_json::json!({
             "seq": c.seq, "name": c.display_name, "body": c.body, "at": c.at,
@@ -612,10 +617,12 @@ pub async fn mm_rooms() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub async fn mm_room_create(mode: String, public: bool) -> Result<serde_json::Value, String> {
+pub async fn mm_room_create(mode: String, public: bool, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mode = parse_mode(&mode)?;
-        with_client(|c| c.create_room(mode, public))
+        // Quick game (`regular`) or Pickup, the host's pick on the Private row; a public lobby sends none.
+        let seed_kind = crate::dolphin_settings::seed_kind_or_default(seed_kind.as_deref());
+        with_client(|c| c.create_room(mode, public, seed_kind))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -624,6 +631,18 @@ pub async fn mm_room_create(mode: String, public: bool) -> Result<serde_json::Va
 #[tauri::command]
 pub async fn mm_room_join(code: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || with_client(|c| c.join_room(code.trim()))).await.map_err(|e| e.to_string())?
+}
+
+/// Who invited the player to a room (spec 2026-10-02 §3.10): `{ host_name, mode }`, or null when the server does not
+/// say. Display only; joining is still `mm_room_join`.
+#[tauri::command]
+pub async fn mm_room_lookup(code: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = with_client(|c| c.room_lookup(code.trim()))?;
+        Ok(found.map(|r| serde_json::json!({ "host_name": r.host_name, "mode": r.mode })).unwrap_or(serde_json::Value::Null))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -683,7 +702,29 @@ pub(crate) fn use_no_presence() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_room_view_says_whether_you_host_it() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "mode": "casual", "you_host": true, "members": [] } })).unwrap();
+        assert_eq!(snapshot_json(&s)["room"]["you_host"], true);
+    }
+
     use super::*;
+
+    #[test]
+    fn the_room_and_match_views_name_their_game_kind_and_default_to_a_regular_game() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "code": "K7QP2M", "seed_kind": "pickup", "members": [] },
+            "match": { "id": "m", "seed_kind": "pickup", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
+        let v = snapshot_json(&s);
+        assert_eq!(v["room"]["seed_kind"], "pickup");
+        assert_eq!(v["match"]["seed_kind"], "pickup");
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "code": "K7QP2M", "members": [] },
+            "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
+        let v = snapshot_json(&s);
+        assert_eq!(v["room"]["seed_kind"], "regular", "an older server sends none: a regular game");
+        assert_eq!(v["match"]["seed_kind"], "regular");
+    }
 
     #[test]
     fn page_names_are_the_known_set_and_anything_else_is_home() {
@@ -708,5 +749,25 @@ mod tests {
         assert!(!lock(&STATE).presence_on);
         presence_set_enabled(true);
         assert!(lock(&STATE).presence_on);
+    }
+
+    #[test]
+    fn the_match_view_carries_the_opponents_standing_only_when_the_server_sends_it() {
+        let with: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "relay_state": "pairing",
+            "opponent": { "id": "o", "display_name": "Jock", "rating": 1162, "rank": 9,
+                "team": { "name": "Falcons", "logo_url": "/live-assets/teams/14-128.png" }, "avatar_url": "https://cdn.discordapp.com/avatars/1/a.png" } } }))
+            .unwrap();
+        let v = snapshot_json(&with);
+        assert_eq!(v["match"]["opponent"], "Jock", "the name keeps its old key");
+        assert_eq!(v["match"]["opponent_elo"], 1162);
+        assert_eq!(v["match"]["opponent_rank"], 9);
+        assert_eq!(v["match"]["opponent_team"]["name"], "Falcons");
+        assert_eq!(v["match"]["opponent_avatar_url"], "https://cdn.discordapp.com/avatars/1/a.png");
+
+        let without: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock", "rating": null } } })).unwrap();
+        let v = snapshot_json(&without);
+        for k in ["opponent_elo", "opponent_rank", "opponent_team", "opponent_avatar_url"] {
+            assert!(v["match"][k].is_null(), "{k} must be null when the server sends nothing");
+        }
     }
 }
