@@ -438,8 +438,10 @@ function drawMatch(m, chat, relayError, snap) {
 }
 
 function drawOnline(snap) {
-  const online = snap?.online ?? { count: 0, players: [] };
-  const names = online.players.slice(0, 12).map((p) => p.name).join(', ');
+  // A value the server does not send hides its spot (spec §7): no snapshot online list, no line.
+  const online = snap?.online;
+  if (!online || typeof online !== 'object') return null;
+  const names = (online.players ?? []).slice(0, 12).map((p) => p.name).join(', ');
   return el('p', { class: 'note mm-online', text: `${online.count} online${names ? `: ${names}` : ''}` });
 }
 
@@ -465,7 +467,7 @@ async function draw() {
   // direct connection (spec §3.9). Drawn once, not every second.
   if (state.link === 'disabled') {
     markBusy(false);
-    setLinks(true);
+    setLinks(false); // the row's primary is Direct connection already
     if (lastDrawn === 'disabled') return;
     lastDrawn = 'disabled';
     section.replaceChildren(tiles(null, { only: 'private' }), directRow());
@@ -507,7 +509,8 @@ async function draw() {
     if (snap.match?.relay_state === 'held' && dismissedHold !== snap.match.id) body.unshift(heldBox(snap.match));
   }
   setLinks(showLinks);
-  section.replaceChildren(...body, status, drawOnline(snap), presenceToggle(state.presence_on));
+  const lockedOut = state.link === 'signed_out' || (state.link === 'offline' && !snap);
+  section.replaceChildren(...body, status, ...(lockedOut ? [] : [drawOnline(snap)]), presenceToggle(state.presence_on));
 }
 
 draw();

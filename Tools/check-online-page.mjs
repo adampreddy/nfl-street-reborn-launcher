@@ -300,20 +300,22 @@ const EXPECT = {
   'online-held-other': { text: ['Nothing changed on the leaderboard. Someone will look at it. You can play again now.'], absent: ['ladder'] },
   'online-signed-out': {
     text: ['Sign in to play online', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
-    absent: ['Find a', 'searching', '1,184 Elo', '#7'],
+    absent: ['Find a', 'searching', '1,184 Elo', '#7', '0 online'],
     check: async (page) => {
       const p = [];
       if (!(await page.locator('.on-modes[inert]').count())) p.push('the tiles behind the panel can still be reached');
       await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).click();
       await page.getByText('Your code is ABCD-1234', { exact: true }).waitFor({ timeout: 3000 }).catch(() => p.push('the device code is not shown'));
       if (!(await calls(page, 'identity_sign_in_start')).length) p.push('Sign in did not start the device-code flow');
+      await page.locator('[data-key="signin-cancel"]').click();
+      await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).waitFor({ timeout: 3000 }).catch(() => p.push('Cancel did not return to the Sign in button'));
       return p;
     },
   },
-  'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.'], absent: ['Sign in with Discord', 'Find a'] },
+  'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.'], absent: ['Sign in with Discord', 'Find a', '0 online'] },
   'online-disabled': {
     text: ['Private room', 'Direct connection'],
-    absent: ['Find a', "Can't reach", 'Sign in'],
+    absent: ['Find a', "Can't reach", 'Sign in', 'Not on our servers', '0 online'],
     check: async (page) => {
       const p = [];
       if ((await page.locator('.on-tile').count()) !== 1) p.push(`${await page.locator('.on-tile').count()} tiles with matchmaking off`);

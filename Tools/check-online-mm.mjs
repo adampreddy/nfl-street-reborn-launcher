@@ -67,7 +67,7 @@ const EXPECT = {
   pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
   running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
-held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
+  held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
 };
 
 const types = { '.svg': 'image/svg+xml', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
