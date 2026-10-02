@@ -230,9 +230,21 @@ const EXPECT = {
   },
   'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: ['Accept within', 'Your game opens', 'Match found'] },
   // Ruling P9: intermission is still "Playing", with the series line.
-  'online-intermission': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Match found', 'Accept within'] },
+  'online-intermission': { text: ['Playing', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Match found', 'Accept within'] },
   'online-playing-casual': { text: ['Playing', 'Casual · one game'], absent: ['Series', 'Match found'] },
-  'online-match-bare': { text: ['your opponent'], absent: ['undefined', 'NaN', 'null', 'Accept within', ' · Elo'] },
+  'online-match-bare': {
+    text: ['Opponent'], absent: ['undefined', 'NaN', 'null', 'Accept within', ' · Elo'],
+    check: async (page) => {
+      const p = [];
+      const names = await page.locator('.on-vs .on-pname').allInnerTexts();
+      if (names[1] !== 'Opponent') p.push(`the nameless opponent is drawn as ${JSON.stringify(names[1])}, not "Opponent"`);
+      const letter = (await page.locator('.on-vs .on-av').nth(1).innerText()).trim();
+      if (letter !== 'O') p.push(`the nameless opponent's letter is ${JSON.stringify(letter)}, not "O"`);
+      return p;
+    },
+  },
+  // The matchup card at the minimum window: one column, the faces clear of Leave match (generic check below).
+  'online-match-small': { text: ['Match found', 'Jock', 'Accept within 0:14'] },
   // (states are added above this line)
 };
 
@@ -251,6 +263,14 @@ if (Object.keys(EXPECT).length) {
         for (const t of exp.text ?? []) if (!text.includes(t.toLowerCase())) problems.push(`missing text "${t}"`);
         for (const t of exp.absent ?? []) if (text.includes(t.toLowerCase())) problems.push(`should not show "${t}"`);
         if (exp.check) problems.push(...(await exp.check(page)));
+        if (await page.locator('.on-vs .on-leave').count()) {
+          const leave = await page.locator('.on-vs .on-leave').boundingBox();
+          const avs = await page.locator('.on-vs .on-av').evaluateAll((xs) => xs.map((x) => { const r = x.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; }));
+          if (avs.length !== 2) problems.push(`the matchup card has ${avs.length} avatars, not 2`);
+          for (const a of avs) {
+            if (leave && leave.x < a.x + a.width && a.x < leave.x + leave.width && leave.y < a.y + a.height && a.y < leave.y + leave.height) problems.push('Leave match overlaps a face');
+          }
+        }
         if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) problems.push('the page scrolls sideways');
         await page.screenshot({ path: path.join(out, `${name}.png`) });
       } catch (e) {

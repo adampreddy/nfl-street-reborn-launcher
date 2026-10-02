@@ -97,10 +97,10 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .mm-room-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .mm-actions{display:flex;flex-wrap:wrap;gap:8px}
 /* the matchup card (spec §3.3–§3.6): you | MATCH FOUND, VS, the mode line | the opponent */
-.on-vs{position:relative;overflow:hidden;flex:1;min-height:300px;border-radius:var(--r-lg);border:1px solid var(--stroke);box-shadow:var(--shadow);isolation:isolate}
+.on-vs{position:relative;overflow:hidden;flex:1;min-height:340px;border-radius:var(--r-lg);border:1px solid var(--stroke);box-shadow:var(--shadow);isolation:isolate}
 .on-vs>.on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}
 .on-vs::after{content:"";position:absolute;inset:0;background:var(--vs-scrim);z-index:-1}
-.on-vs-in{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:0 48px}
+.on-vs-in{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:56px 48px 24px}
 .on-p{display:flex;flex-direction:column;align-items:center;gap:10px;min-width:0;text-align:center}
 .on-avw{position:relative}
 .avatar.on-av{width:104px;height:104px;font-size:42px;box-shadow:var(--face-ring)}

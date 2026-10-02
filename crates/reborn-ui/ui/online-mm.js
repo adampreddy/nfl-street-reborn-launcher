@@ -372,7 +372,8 @@ function drawMatch(m, chat, relayError, snap) {
       face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
         team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
       mid,
-      face({ url: m.opponent_avatar_url ?? null, name: opp, sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null })),
+      // On the card itself a nameless opponent is "Opponent" (letter O); sentences keep "your opponent".
+      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null })),
     MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
   // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).
   return [card, chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];

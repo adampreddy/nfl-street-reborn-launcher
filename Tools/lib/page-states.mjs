@@ -111,6 +111,8 @@ function onlineStates() {
     N('online-intermission', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'intermission', your_accepted: true, your_ready: true, series: [1, 0] }) }) }),
     N('online-playing-casual', { mm_state: mm({ ...empty, match: match({ id: 'm6', status: 'running', relay_state: 'running', your_accepted: true, your_ready: true }) }) }),
     N('online-match-bare', { mm_state: mm({ ...empty, match: match({ id: 'm7', opponent: null, best_of: null, series: null, relay_deadline: 'not a date', opponent_elo: null, opponent_rank: 0, opponent_team: null }) }) }),
+    N('online-match-small', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
+      opponent_elo: 1162, opponent_rank: 9, opponent_team: LB_TEAM }) }) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
     // (redesign states are added above this line)
   ];
 }
