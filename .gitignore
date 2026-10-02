@@ -54,3 +54,4 @@ Thumbs.db
 
 # Linux AppImage external binaries (DolphinTool, xdelta3), placed by CI
 crates/reborn-ui/binaries/
+/target-jammy/

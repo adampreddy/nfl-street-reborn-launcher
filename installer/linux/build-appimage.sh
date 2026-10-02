@@ -38,4 +38,4 @@ NO_STRIP=true cargo tauri build --bundles appimage --config '{
     "linux": { "appimage": { "bundleMediaFramework": false } }
   }
 }'
-ls -la ../../target/release/bundle/appimage/*.AppImage
+ls -la "${CARGO_TARGET_DIR:-../../target}"/release/bundle/appimage/*.AppImage
