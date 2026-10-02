@@ -194,18 +194,55 @@ pub fn decided_for_exit(mode: &str, local: [u32; 2], need: u32, server_kind: Opt
 /// match is `running` or between games (`intermission`) and our own Dolphin still runs: a room the fork reports
 /// `closed` or `error`, or fewer than two players anywhere but a pre-start lobby that is still filling.
 pub fn room_lost_peer(relay_state: &str, phase: &str, players: usize, active: bool, played_together: bool) -> bool {
-    if !active || !matches!(relay_state, "running" | "intermission") { return false; }
-    if matches!(phase, "closed" | "error") { return true; }
-    players < 2 && (phase == "running" || relay_state == "intermission" || played_together)
+    matches!(peer_reading(relay_state, phase, players, active, played_together), PeerReading::Alone | PeerReading::Blank)
 }
 
-/// A peer loss first seen less than this before our own Dolphin exited is not counted: our own shutdown can blank
-/// the room for a moment first, and counting that would turn a player's own close into a lost room.
-pub const PEER_LOST_MIN_MS: u64 = 2_000;
+/// One reading of this PC's room during a series (final fix L-I1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerReading {
+    /// Both players are in the running room or lobby: any earlier sighting is cleared.
+    Present,
+    /// Only our own player is left in a running room or lobby (our Dolphin still runs, so the one left is us): the
+    /// peer is gone. Counted at once, whenever our Dolphin exits.
+    Alone,
+    /// The room reads closed, error or empty. Our own shutdown can look like this, so it counts only when seen at
+    /// least PEER_LOST_MIN_MS before our exit.
+    Blank,
+    /// Nothing to conclude (not mid-series, our Dolphin gone, a pre-start lobby still filling).
+    Unknown,
+}
 
-/// Was the peer already lost (first seen at `since_ms`) well before our Dolphin exited at `exited_ms`?
-pub fn peer_lost_before_exit(since_ms: Option<u64>, exited_ms: u64) -> bool {
-    since_ms.is_some_and(|t| t.saturating_add(PEER_LOST_MIN_MS) <= exited_ms)
+/// Classify one room reading; see [`PeerReading`]. Only while the match is `running` or between games
+/// (`intermission`) and our own Dolphin still runs.
+pub fn peer_reading(relay_state: &str, phase: &str, players: usize, active: bool, played_together: bool) -> PeerReading {
+    if !active || !matches!(relay_state, "running" | "intermission") { return PeerReading::Unknown; }
+    if matches!(phase, "closed" | "error") { return PeerReading::Blank; }
+    let open_room = matches!(phase, "running" | "lobby");
+    if open_room && players >= 2 { return PeerReading::Present; }
+    if !(phase == "running" || relay_state == "intermission" || played_together) { return PeerReading::Unknown; }
+    if players == 1 && open_room { PeerReading::Alone } else if players < 2 { PeerReading::Blank } else { PeerReading::Unknown }
+}
+
+/// A blank-room sighting first seen less than this before our own Dolphin exited is not counted: our own shutdown
+/// blanks the room first, and counting that would turn a player's own close into a lost room (a forfeit-dodge).
+pub const PEER_LOST_MIN_MS: u64 = 10_000;
+
+/// The first sighting of a lost peer in one match: when, and whether it was the room left with only us.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerSighting { pub since_ms: u64, pub alone: bool }
+
+/// Was the peer already lost before our Dolphin exited at `exited_ms`? A room left with only us counts at once; a
+/// blank room only when first seen PEER_LOST_MIN_MS or more before the exit.
+pub fn peer_lost_before_exit(sighting: Option<PeerSighting>, exited_ms: u64) -> bool {
+    sighting.is_some_and(|s| s.alone || s.since_ms.saturating_add(PEER_LOST_MIN_MS) <= exited_ms)
+}
+
+/// Should this exit be reported for snapshot match `m` (final fix L-I2/L-I3)? Only for the match this Dolphin
+/// session started with (`session_match`, fixed at launch), never whatever match is current now, and only when the
+/// server publishes the series `outcome`: an older backend holds every running leave, so a report there would hold
+/// every matchmade match and refuse its captures.
+pub fn exit_report_applies(m: &crate::matchmaking::MatchView, session_match: Option<&str>) -> bool {
+    session_match == Some(m.id.as_str()) && m.outcome.is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,13 +304,44 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_loss_counts_only_when_seen_well_before_our_own_exit() {
-        // Our own Dolphin shutting down can blank its room for a moment before the process ends: a sighting that
-        // close to the exit is that shutdown, not the peer (a forfeit-dodge otherwise).
-        assert!(peer_lost_before_exit(Some(10_000), 10_000 + PEER_LOST_MIN_MS));
-        assert!(peer_lost_before_exit(Some(10_000), 60_000));
-        assert!(!peer_lost_before_exit(Some(10_000), 10_000 + PEER_LOST_MIN_MS - 1));
+    fn a_blank_room_counts_only_when_seen_well_before_our_own_exit_but_a_room_left_with_only_us_counts_at_once() {
+        // Our own Dolphin shutting down can blank its room (closed, error, nobody) before the process ends: a blank
+        // sighting that close to the exit is that shutdown, not the peer (a forfeit-dodge otherwise).
+        let blank = |t| Some(PeerSighting { since_ms: t, alone: false });
+        assert!(peer_lost_before_exit(blank(10_000), 10_000 + PEER_LOST_MIN_MS));
+        assert!(peer_lost_before_exit(blank(10_000), 60_000));
+        assert!(!peer_lost_before_exit(blank(10_000), 10_000 + PEER_LOST_MIN_MS - 1));
         assert!(!peer_lost_before_exit(None, 60_000));
+        // Final fix L-I1: our own player left alone in a running room or lobby is the peer gone, whenever we exit
+        // (the fork shutting the joiner's Dolphin right after a host drop must not forfeit the honest player).
+        let alone = |t| Some(PeerSighting { since_ms: t, alone: true });
+        assert!(peer_lost_before_exit(alone(10_000), 10_000));
+        assert!(peer_lost_before_exit(alone(10_000), 10_500));
+    }
+
+    #[test]
+    fn a_room_reading_is_present_alone_blank_or_unknown() {
+        // (relay_state, phase, players, our Dolphin active, played together in this match)
+        assert_eq!(peer_reading("running", "running", 2, true, true), PeerReading::Present);
+        assert_eq!(peer_reading("intermission", "lobby", 2, true, true), PeerReading::Present, "both back in the lobby");
+        assert_eq!(peer_reading("running", "running", 1, true, true), PeerReading::Alone, "only our own player left");
+        assert_eq!(peer_reading("intermission", "lobby", 1, true, false), PeerReading::Alone);
+        assert_eq!(peer_reading("running", "closed", 2, true, true), PeerReading::Blank);
+        assert_eq!(peer_reading("intermission", "error", 2, true, false), PeerReading::Blank);
+        assert_eq!(peer_reading("running", "running", 0, true, true), PeerReading::Blank, "an empty room is guarded");
+        assert_eq!(peer_reading("running", "lobby", 1, true, false), PeerReading::Unknown, "a pre-start lobby still filling");
+        assert_eq!(peer_reading("running", "running", 1, false, true), PeerReading::Unknown, "our own Dolphin is gone");
+        assert_eq!(peer_reading("joining", "closed", 1, true, false), PeerReading::Unknown);
+    }
+
+    #[test]
+    fn the_exit_is_reported_only_for_the_sessions_own_match_on_a_backend_that_knows_series() {
+        let mut m = crate::matchmaking::MatchView { id: "m1".into(), mode: "ranked".into(), best_of: 3, ..Default::default() };
+        assert!(!exit_report_applies(&m, Some("m1")), "an old backend (no outcome): its leave would hold every match");
+        m.outcome = Some(crate::matchmaking::Outcome { kind: "open".into(), ..Default::default() });
+        assert!(exit_report_applies(&m, Some("m1")));
+        assert!(!exit_report_applies(&m, Some("m2")), "the match pointer moved on: not this session's match");
+        assert!(!exit_report_applies(&m, None), "Play and private rooms carry no match id");
     }
 
     #[test]

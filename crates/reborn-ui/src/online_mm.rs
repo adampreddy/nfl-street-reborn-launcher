@@ -73,9 +73,9 @@ static LOCAL_WINS: Mutex<Option<(String, [u32; 2], u64)>> = Mutex::new(None);
 /// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
 /// leave (Task 19 reads this).
 pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
-/// The room lost its other player while this PC's Dolphin was still running: (match id, ms first seen). Set by the
-/// relay loop, read when Dolphin exits (ruling R1).
-static PEER_LOST: Mutex<Option<(String, u64)>> = Mutex::new(None);
+/// The room lost its other player while this PC's Dolphin was still running: (match id, first sighting). Set by the
+/// relay loop, cleared when the room shows both players again (final fix L-I1), read when Dolphin exits (ruling R1).
+static PEER_LOST: Mutex<Option<(String, reborn_core::series::PeerSighting)>> = Mutex::new(None);
 /// How long the exit report waits for the live loop to read the plays Dolphin wrote before it exited (review I1).
 const EXIT_GRACE_MS: u64 = 5_000;
 const EXIT_POLL_MS: u64 = 250;
@@ -85,22 +85,33 @@ fn local_wins(match_id: &str) -> ([u32; 2], u64) {
     lock(&LOCAL_WINS).as_ref().filter(|(id, _, _)| id == match_id).map(|(_, w, at)| (*w, *at)).unwrap_or(([0, 0], 0))
 }
 
-/// The room of `match_id` was seen without its peer at `now`. The first sighting is kept.
-fn note_peer_lost(match_id: &str, now: u64) {
+/// The room of `match_id` was seen without its peer at `now`; `alone`: only our own player was left in it. The first
+/// sighting's time is kept, and an "alone" reading upgrades a blank one (never the other way: our own teardown blanks
+/// the room after the peer left).
+fn note_peer_lost(match_id: &str, now: u64, alone: bool) {
     let mut g = lock(&PEER_LOST);
-    if g.as_ref().is_none_or(|(id, _)| id != match_id) { *g = Some((match_id.to_string(), now)); }
+    match g.as_mut() {
+        Some((id, s)) if id == match_id => { s.alone |= alone; }
+        _ => { *g = Some((match_id.to_string(), reborn_core::series::PeerSighting { since_ms: now, alone })); }
+    }
+}
+
+/// The room of `match_id` shows both players again: an earlier sighting was a glitch, not a lost peer.
+fn clear_peer_lost(match_id: &str) {
+    let mut g = lock(&PEER_LOST);
+    if g.as_ref().is_some_and(|(id, _)| id == match_id) { *g = None; }
 }
 
 /// Take SERIES_CLOSING and PEER_LOST if (and only if) they name `match_id`: (closing, peer lost first seen at). A
 /// flag naming another match is left for [`forget_other_matches`].
-fn spend_exit_flags(match_id: &str) -> (bool, Option<u64>) {
+fn spend_exit_flags(match_id: &str) -> (bool, Option<reborn_core::series::PeerSighting>) {
     let closing = {
         let mut g = lock(&SERIES_CLOSING);
         if g.as_deref() == Some(match_id) { g.take(); true } else { false }
     };
     let peer = {
         let mut g = lock(&PEER_LOST);
-        if g.as_ref().is_some_and(|(id, _)| id == match_id) { g.take().map(|(_, at)| at) } else { None }
+        if g.as_ref().is_some_and(|(id, _)| id == match_id) { g.take().map(|(_, s)| s) } else { None }
     };
     (closing, peer)
 }
@@ -133,13 +144,20 @@ fn series_running(m: &MatchView) -> bool {
 /// The NetPlay Dolphin exited (dolphin_settings' exit thread, on a thread of its own so filing the captures never
 /// waits on this request, R-P9). Mid-series, tell the server why (spec §3.4, R13). Nothing is reported while the
 /// launcher closes a decided ranked series, nor when it is already decided but the close had not fired yet (I1).
-pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>) {
+/// `session_match` is the match id this Dolphin session started with (its SessionIntent): the report is about that
+/// match only, never whichever match is current now (final fix L-I3), and never to a backend without series (L-I2).
+pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>, session_match: Option<String>) {
     let exited_at = now_ms();
     let matched = || lock(&STATE).snapshot.as_ref().and_then(|s| s.matched.clone());
     let Some(first) = matched() else { return };
-    let (closing, peer_since) = spend_exit_flags(&first.id);
-    let peer_lost = reborn_core::series::peer_lost_before_exit(peer_since, exited_at);
+    let (closing, sighting) = spend_exit_flags(&first.id);
+    let peer_lost = reborn_core::series::peer_lost_before_exit(sighting, exited_at);
     if !series_running(&first) { return; }
+    if !reborn_core::series::exit_report_applies(&first, session_match.as_deref()) {
+        mm_log(&format!("dolphin exited ({exit:?}): not reported (session match {session_match:?}, current {}, outcome {})",
+            first.id, if first.outcome.is_some() { "published" } else { "absent: older backend" }));
+        return;
+    }
     if closing {
         mm_log(&format!("dolphin exited while the launcher closed the decided series ({exit:?}): not reported"));
         return;
@@ -409,8 +427,13 @@ fn drive() {
             forget_other_matches(&m.id);
             if played_together.0 != m.id { played_together = (m.id.clone(), false); }
             if room.phase == "running" && room.players.len() >= 2 { played_together.1 = true; }
-            if reborn_core::series::room_lost_peer(&m.relay_state, &room.phase, room.players.len(), room.active, played_together.1) {
-                note_peer_lost(&m.id, now_ms());
+            // Final fix L-I1: both players back clears an earlier sighting; only us left counts at once; a blank room
+            // (closed, error, empty) only when seen well before our own exit (peer_lost_before_exit).
+            match reborn_core::series::peer_reading(&m.relay_state, &room.phase, room.players.len(), room.active, played_together.1) {
+                reborn_core::series::PeerReading::Present => clear_peer_lost(&m.id),
+                reborn_core::series::PeerReading::Alone => note_peer_lost(&m.id, now_ms(), true),
+                reborn_core::series::PeerReading::Blank => note_peer_lost(&m.id, now_ms(), false),
+                reborn_core::series::PeerReading::Unknown => {}
             }
         }
         // The room as the fork reports it, logged when it changes. The 09-26 real match could
@@ -869,28 +892,43 @@ mod tests {
     #[test]
     fn exit_flags_are_spent_only_by_their_own_match_and_a_new_match_forgets_old_ones() {
         // One test owns both statics (tests run in parallel).
+        let blank = |t| Some(reborn_core::series::PeerSighting { since_ms: t, alone: false });
+        let alone = |t| Some(reborn_core::series::PeerSighting { since_ms: t, alone: true });
         *lock(&SERIES_CLOSING) = Some("m-old".into());
-        note_peer_lost("m-old", 1_000);
-        note_peer_lost("m-old", 2_000);
-        assert_eq!(*lock(&PEER_LOST), Some(("m-old".to_string(), 1_000)), "the first sighting is kept");
+        note_peer_lost("m-old", 1_000, false);
+        note_peer_lost("m-old", 2_000, false);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-old".to_string(), blank(1_000).unwrap())), "the first sighting is kept");
         assert_eq!(spend_exit_flags("m-new"), (false, None), "another match's flags never apply");
         assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "and are not spent by it");
-        assert_eq!(spend_exit_flags("m-old"), (true, Some(1_000)));
+        assert_eq!(spend_exit_flags("m-old"), (true, blank(1_000)));
         assert_eq!(*lock(&SERIES_CLOSING), None);
         assert_eq!(*lock(&PEER_LOST), None);
         assert_eq!(spend_exit_flags("m-old"), (false, None), "spent once");
 
         // A rematch (new match id) clears a flag a failed close left behind.
         *lock(&SERIES_CLOSING) = Some("m-old".into());
-        note_peer_lost("m-old", 1_000);
+        note_peer_lost("m-old", 1_000, false);
         forget_other_matches("m-old");
         assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "the current match keeps its flags");
         assert!(lock(&PEER_LOST).is_some());
-        note_peer_lost("m-rematch", 5_000);
-        assert_eq!(*lock(&PEER_LOST), Some(("m-rematch".to_string(), 5_000)), "a new match's sighting replaces an old one");
+        note_peer_lost("m-rematch", 5_000, false);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-rematch".to_string(), blank(5_000).unwrap())), "a new match's sighting replaces an old one");
         forget_other_matches("m-next");
         assert_eq!(*lock(&SERIES_CLOSING), None);
         assert_eq!(*lock(&PEER_LOST), None);
+
+        // Final fix L-I1: a blank sighting upgrades to "only us left" (keeping when it was first seen), and a room
+        // that shows both players again clears the flag, so one bad reading never turns every later close into a hold.
+        note_peer_lost("m-a", 7_000, false);
+        note_peer_lost("m-a", 8_000, true);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-a".to_string(), alone(7_000).unwrap())));
+        note_peer_lost("m-a", 9_000, false);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-a".to_string(), alone(7_000).unwrap())), "our own teardown never downgrades it");
+        clear_peer_lost("m-other");
+        assert!(lock(&PEER_LOST).is_some(), "another match's room never clears it");
+        clear_peer_lost("m-a");
+        assert_eq!(*lock(&PEER_LOST), None);
+        assert_eq!(spend_exit_flags("m-a"), (false, None));
     }
 
     #[test]

@@ -429,7 +429,8 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let user_dir=user.to_path_buf();
   // Written before the emulator, so the id every capture from this session is
   // filed under exists before there is anything to file.
-  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:crate::online_mm::current_match_id()})).map_err(player)?;
+  let session_match=crate::online_mm::current_match_id();
+  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:session_match.clone()})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
   std::thread::spawn(move||{
@@ -453,9 +454,10 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
     if let Ok(mut state)=NETPLAY.lock(){if let Some(session)=state.as_mut(){session.active=false;}}
     // Why this launcher left a running series (R13), on its own thread: the report is an HTTP call, and filing this
     // session's captures below must neither wait on it nor be skipped by it (R-P9). Returns at once for Play and
-    // private rooms (no matched match).
+    // offline games (no match id). A private room is a casual match and reports like any other. Only the match this
+    // session started with is reported (final fix L-I3).
     let exit_for_report=exit.clone();
-    std::thread::spawn(move||crate::online_mm::dolphin_exited(exit_for_report.as_ref()));
+    std::thread::spawn(move||crate::online_mm::dolphin_exited(exit_for_report.as_ref(),session_match));
     let collected=reborn_core::session::finish_and_collect(&p,&supervisor,record,exit.as_ref(),&user_dir);
     // Both given back before the network work. A send is one request per queued
     // game with the client's full timeout each, so against a slow or unreachable
