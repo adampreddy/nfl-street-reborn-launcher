@@ -400,6 +400,14 @@ impl Launcher {
     /// never included, in any form.
     pub fn env(config: &LaunchConfig) -> BTreeMap<String, OsString> {
         let mut env = BTreeMap::new();
+        // Linux: Reborn Dolphin draws through X11. Started from a Wayland
+        // session (Steam Deck Game Mode is gamescope, which is Wayland with
+        // XWayland beside it) Qt would otherwise pick Wayland, where this
+        // Dolphin's renderer has no surface to draw into. A value the player
+        // set themselves is left alone.
+        if cfg!(target_os = "linux") && std::env::var_os("QT_QPA_PLATFORM").is_none() {
+            env.insert("QT_QPA_PLATFORM".to_string(), OsString::from("xcb"));
+        }
         if let Some(context) = &config.match_context {
             env.insert(
                 "NSR_MATCH_CONTEXT".to_string(),
@@ -775,6 +783,19 @@ mod tests {
                 "a {} launch left Dolphin's own window behind the game: {args:?}",
                 if fullscreen { "fullscreen" } else { "windowed" }
             );
+        }
+    }
+
+    /// Linux Dolphin is started on X11 even from a Wayland session such as
+    /// Game Mode; Windows and macOS are untouched.
+    #[test]
+    fn linux_dolphin_is_started_on_x11() {
+        let env = Launcher::env(&config());
+        let qpa = env.get("QT_QPA_PLATFORM").map(|v| v.to_string_lossy().into_owned());
+        if cfg!(target_os = "linux") && std::env::var_os("QT_QPA_PLATFORM").is_none() {
+            assert_eq!(qpa.as_deref(), Some("xcb"));
+        } else if !cfg!(target_os = "linux") {
+            assert_eq!(qpa, None);
         }
     }
 

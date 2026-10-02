@@ -1065,6 +1065,7 @@ fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<reborn_core::g
 /// thread drawing the window.
 #[tauri::command]
 async fn launch(
+    app: tauri::AppHandle,
     runtime: Option<String>,
     game: Option<String>,
     preset: String,
@@ -1105,7 +1106,18 @@ async fn launch(
             textures: standing,
         };
 
-        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
+        // Game Mode shows one window at a time. The launcher steps aside so
+        // the game is the window gamescope shows, and comes back when it ends.
+        let step_aside = reborn_core::platform::in_game_mode();
+        let window = tauri::Manager::get_webview_window(&app, "main");
+        if step_aside {
+            if let Some(w) = &window { let _ = w.hide(); }
+        }
+        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string());
+        if step_aside {
+            if let Some(w) = &window { let _ = w.show(); let _ = w.set_focus(); }
+        }
+        let launched = launched?;
 
         // The guard, back, before anything reaches the network. `Session::run`
         // has already given the single-instance lock back; this is the other
@@ -6100,7 +6112,25 @@ fn main() {
         Mode::Window => {}
     }
 
+    // Steam Deck Game Mode (gamescope). WebKitGTK's DMA-BUF renderer draws a
+    // blank window there, a known WebKitGTK/gamescope issue; this flag is the
+    // usual remedy and is set only in Game Mode, because under a software
+    // renderer it crashed WebKit in testing. The window is fullscreen there:
+    // gamescope has no title bar or desktop to fit a window into.
+    let game_mode = reborn_core::platform::in_game_mode();
+    if game_mode && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
+        .setup(move |app| {
+            if game_mode {
+                if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                    let _ = w.set_fullscreen(true);
+                }
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. }=event {
                 let content=content_updates::close_state();
