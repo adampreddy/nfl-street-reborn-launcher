@@ -156,6 +156,16 @@ function onlineStates() {
       { rank: 1, player_id: 'h1', display_name: '<img src=x onerror=alert(1)>', avatar_url: 'https://evil.example/a.png', team: { name: 'X', abbrev: 'X', logo_url: 'https://evil.example/x.png' }, wins: 3, losses: 1, elo: 1200, delta_week: 0, you: false },
       { rank: 2, player_id: 'h2', display_name: 'Averyveryveryveryveryverylongdisplayname1234567890', avatar_url: null, team: null, wins: null, losses: null, elo: null, delta_week: null, you: false },
     ] } }, { init: PICK('ranked') }),
+    // A room invite link (spec §3.10, Task 12): the page offers Join, never joins on its own, and keeps the invite while
+    // signed out or queued (no banner while busy).
+    N('online-invite', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
+    N('online-invite-nohost', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: null }),
+    N('online-invite-signed-out', { mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
+      mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    // A Netplay invite while queued (carried from Task 2): the Direct connection dialog stays shut.
+    N('online-netplay-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
+      netplay_pending_join: { code: 'K7QP2M9X' } }),
     // (redesign states are added above this line)
   ];
 }

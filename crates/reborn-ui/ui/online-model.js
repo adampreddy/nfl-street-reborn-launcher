@@ -73,12 +73,15 @@ export function everyoneReady(room) {
 
 /** The link "Copy invite link" copies (spec §3.10): a web page, so it pastes as a clickable link. */
 export function inviteLink(code) {
-  return `https://nflstreetreborn.com/join.php?r=${encodeURIComponent(code)}`;
+  return typeof code === 'string' && code ? `https://nflstreetreborn.com/join.php?r=${encodeURIComponent(code)}` : null;
 }
 
-/** The invite line above the tiles; `who` is drawn bold. */
+/** The invite line above the tiles; `who` is drawn bold. No code, no line. */
 export function inviteLine(host, code) {
-  return host ? { who: host, rest: ` invited you to a room · ${code}` } : { who: null, rest: `You were invited to a room · ${code}` };
+  if (typeof code !== 'string' || !code) return null;
+  return typeof host === 'string' && host
+    ? { who: host, rest: ` invited you to a room · ${code}` }
+    : { who: null, rest: `You were invited to a room · ${code}` };
 }
 
 function change(d) {

@@ -504,6 +504,43 @@ const EXPECT = {
       return p;
     },
   },
+  'online-invite': {
+    text: ['Jock invited you to a room · K7QP2M', 'Host a room'],
+    check: async (page) => {
+      const p = [];
+      if ((await calls(page, 'mm_room_join')).length) p.push('the invite joined on its own');
+      if (await page.locator('[data-key="mode-private"]').getAttribute('aria-pressed') !== 'true') p.push('Private room is not picked');
+      if (await page.getByLabel('Room code', { exact: true }).inputValue() !== 'K7QP2M') p.push('the code field is not filled');
+      await page.locator('[data-key="invite-join"]').click();
+      await page.waitForTimeout(400);
+      const j = await calls(page, 'mm_room_join');
+      if (JSON.stringify(j[0]) !== '{"code":"K7QP2M"}') p.push(`Join sent ${JSON.stringify(j[0])}`);
+      if (!(await calls(page, 'mm_pending_room_clear')).length) p.push('a joined invite was not cleared');
+      return p;
+    },
+  },
+  'online-invite-nohost': {
+    text: ['You were invited to a room · K7QP2M'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('[data-key="invite-dismiss"]').click();
+      await page.waitForTimeout(300);
+      if (!(await calls(page, 'mm_pending_room_clear')).length) p.push('Dismiss did not clear the invite');
+      if (await page.locator('.on-invite').count()) p.push('the invite line is still there');
+      return p;
+    },
+  },
+  'online-invite-signed-out': {
+    text: ['Sign in to join K7QP2M', 'Sign in with Discord'],
+    check: async (page) => ((await calls(page, 'mm_pending_room_clear')).length || (await calls(page, 'mm_room_join')).length ? ['a signed-out invite was used up'] : []),
+  },
+  'online-invite-busy': {
+    absent: ['invited you', 'You were invited'],
+    check: async (page) => ((await calls(page, 'mm_pending_room_clear')).length ? ['the invite was dropped while queued'] : []),
+  },
+  'online-netplay-invite-busy': {
+    check: async (page) => ((await page.locator('#direct-dialog[open]').count()) ? ['the Direct connection dialog opened while queued'] : []),
+  },
   // (states are added above this line)
 };
 

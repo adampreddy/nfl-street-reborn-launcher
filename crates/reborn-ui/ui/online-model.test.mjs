@@ -79,6 +79,11 @@ test('invite link and line', () => {
   assert.equal(inviteLink('a b&c'), 'https://nflstreetreborn.com/join.php?r=a%20b%26c');
   assert.deepEqual(inviteLine('Jock', 'K7QP2M'), { who: 'Jock', rest: ' invited you to a room · K7QP2M' });
   assert.deepEqual(inviteLine(null, 'K7QP2M'), { who: null, rest: 'You were invited to a room · K7QP2M' });
+  for (const bad of [null, undefined, '', 42]) {
+    assert.equal(inviteLink(bad), null, `no link for ${bad}`);
+    assert.equal(inviteLine('Jock', bad), null, `no line for ${bad}`);
+  }
+  assert.deepEqual(inviteLine('', 'K7QP2M'), { who: null, rest: 'You were invited to a room · K7QP2M' });
 });
 
 test('the leaderboard model', () => {

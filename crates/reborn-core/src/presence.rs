@@ -120,6 +120,12 @@ pub const LOGO: &str = "logo";
 /// image's hover text, which costs nothing. Flip this to true once the per-field art exists.
 pub const USE_FIELD_ART: bool = false;
 
+/// What a lobby's join secret stands for (launcher spec 2026-10-02 §3.10): the same `nflstreetreborn://room/<code>`
+/// link a copied invite opens, so Discord's Join and a pasted link land in the same place on the Online page.
+pub fn join_link(secret: &str) -> String {
+    format!("nflstreetreborn://room/{}", secret.trim())
+}
+
 /// The image and its hover text for an activity that knows which field is being played.
 ///
 /// Returns `(asset key, hover text)`. The hover text names the field whether or not its art exists,
@@ -241,6 +247,12 @@ impl Presence for NoPresence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_join_secret_stands_for_the_room_link() {
+        assert_eq!(join_link("K7QP2M"), "nflstreetreborn://room/K7QP2M");
+        assert_eq!(join_link(" K7QP2M "), "nflstreetreborn://room/K7QP2M");
+    }
 
     fn p(a: Activity) -> Payload {
         payload(&a)

@@ -244,6 +244,14 @@ fn host_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D
     })
 }
 
+/// `GET /v1/rooms/<code>`: who hosts a room and its mode, for the invite line on the Online page.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoomLookup {
+    pub host_name: Option<String>,
+    pub mode: Option<String>,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Rooms {
@@ -356,6 +364,22 @@ impl<'a> Client<'a> {
 
     pub fn join_room(&self, code: &str) -> Result<serde_json::Value, MmError> {
         self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), serde_json::json!({}))
+    }
+
+    /// Who invited the player (launcher spec 2026-10-02 §3.10). `None` on a 404: no such open room, or a server
+    /// without the route, so the page simply leaves the name out. The code reaches the path as letters, digits and
+    /// dashes only; a code with nothing left of it asks nothing.
+    pub fn room_lookup(&self, code: &str) -> Result<Option<RoomLookup>, MmError> {
+        let code = url_path(code);
+        if code.is_empty() {
+            return Ok(None);
+        }
+        let url = self.url(&format!("/v1/rooms/{code}"));
+        let r = self.http.get_text_as(&url, Some(&self.token)).map_err(|e| MmError::Offline(e.to_string()))?;
+        if r.status == 404 {
+            return Ok(None);
+        }
+        Self::decode(r.status, r.body.as_bytes()).map(Some)
     }
 
     pub fn room_action(&self, room_id: &str, action: RoomAction) -> Result<serde_json::Value, MmError> {
@@ -550,6 +574,23 @@ mod tests {
 
     use super::*;
     use crate::net::fake::FakeHttp;
+
+    #[test]
+    fn a_room_lookup_names_the_host_and_a_404_is_no_answer() {
+        let url = "https://api.test/v1/rooms/K7QP2M";
+        let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"host_name":"Jock","mode":"casual"}"#);
+        let c = Client::new(&http, ORIGIN, "tok");
+        assert_eq!(c.room_lookup("K7QP2M").unwrap(), Some(RoomLookup { host_name: Some("Jock".into()), mode: Some("casual".into()) }));
+        assert_eq!(http.last_bearer().as_deref(), Some("tok"));
+        let gone = FakeHttp::default().reply(url, 404, r#"{"ok":false,"error":"No such lobby."}"#);
+        assert_eq!(Client::new(&gone, ORIGIN, "tok").room_lookup("K7QP2M").unwrap(), None, "no such room, or a server without the route");
+        assert!(Client::new(&http, ORIGIN, "tok").room_lookup("K7/../QP2M?x").is_err(), "only letters, digits and dashes reach the path");
+        let asked = http.gets.lock().unwrap().last().map(|(u, _)| u.clone());
+        assert_eq!(asked.as_deref(), Some("https://api.test/v1/rooms/K7QP2Mx"), "the slashes, dots and query never reach the URL");
+        let none = FakeHttp::default();
+        assert_eq!(Client::new(&none, ORIGIN, "tok").room_lookup("/../?#").unwrap(), None, "nothing left of the code: no request");
+        assert!(none.gets.lock().unwrap().is_empty());
+    }
 
     const ORIGIN: &str = "https://api.test";
     const IDLE: &str = include_str!("../tests/fixtures/mm/live_idle.json");

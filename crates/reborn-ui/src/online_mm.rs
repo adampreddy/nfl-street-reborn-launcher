@@ -629,6 +629,18 @@ pub async fn mm_room_join(code: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || with_client(|c| c.join_room(code.trim()))).await.map_err(|e| e.to_string())?
 }
 
+/// Who invited the player to a room (spec 2026-10-02 §3.10): `{ host_name, mode }`, or null when the server does not
+/// say. Display only; joining is still `mm_room_join`.
+#[tauri::command]
+pub async fn mm_room_lookup(code: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = with_client(|c| c.room_lookup(code.trim()))?;
+        Ok(found.map(|r| serde_json::json!({ "host_name": r.host_name, "mode": r.mode })).unwrap_or(serde_json::Value::Null))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn mm_room_action(room_id: String, action: String, value: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {

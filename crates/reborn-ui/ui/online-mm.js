@@ -7,7 +7,7 @@
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
+import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
@@ -340,6 +340,55 @@ function lobbyPanel() {
 }
 lobbiesLink?.addEventListener('click', () => openPanel(lobbiesLink, { label: 'Public lobbies', build: lobbyPanel }));
 
+// ---- a room invite (spec §3.10) ----
+// A `nflstreetreborn://room/<code>` link left its code behind (mm_pending_room). On load and on window focus the page
+// picks Private room, fills the code and offers one line with Join; it never joins on its own. Join or Dismiss clears
+// it; anything else (signed out, busy) leaves it waiting. The banner is drawn only while idle, so a queued, matched or
+// roomed player never sees it and the invite waits.
+const INVITE_CODE = /^[A-Za-z0-9-]{1,64}$/; // what the launcher keeps (main.rs invite_from); anything else is no invite
+let invite = null; // { code, host }
+async function takeRoomInvite() {
+  if (!bridge) return;
+  try {
+    const p = await call('mm_pending_room');
+    if (!p || typeof p.code !== 'string' || !INVITE_CODE.test(p.code)) return;
+    if (invite?.code !== p.code) {
+      invite = { code: p.code, host: null };
+      privatePicked = true;
+      roomCode = p.code;
+      lastDrawn = '';
+      draw();
+    }
+    // Asked again on focus until it answers: a signed-out player's lookup fails, and the name comes after sign-in.
+    if (invite.host) return;
+    const found = await call('mm_room_lookup', { code: p.code }).catch(() => null);
+    if (found && typeof found.host_name === 'string' && found.host_name && invite?.code === p.code) {
+      invite.host = found.host_name;
+      lastDrawn = '';
+      draw();
+    }
+  } catch { /* an invite that cannot be read is no invite */ }
+}
+function forgetInvite() {
+  invite = null;
+  call('mm_pending_room_clear').catch(() => {});
+  // Ruling P13: the banner goes at once, not on the next change the server reports.
+  lastDrawn = '';
+  draw();
+}
+function inviteBanner() {
+  const line = inviteLine(invite?.host, invite?.code);
+  if (!line) return null;
+  const code = invite.code;
+  return el('div', { class: 'glass on-invite', role: 'status' },
+    el('p', {}, line.who ? el('b', { text: line.who }) : null, line.rest),
+    el('button', { type: 'button', class: 'btn primary sm', 'data-key': 'invite-join', text: 'Join',
+      onclick: async () => { if (await act('mm_room_join', { code })) forgetInvite(); } }),
+    el('button', { type: 'button', class: 'btn quiet sm', 'data-key': 'invite-dismiss', text: 'Dismiss', onclick: () => forgetInvite() }));
+}
+takeRoomInvite();
+window.addEventListener('focus', () => takeRoomInvite());
+
 // The queue timer counts on this page, every second. The snapshot's `waited_ms` only changes when
 // the server has something new to say (a long poll can sit for 25 s), so drawing it as-is froze the
 // timer (Adam, 2026-09-23: "The timer doesn't move"). It is anchored once per ticket, on the
@@ -386,7 +435,7 @@ function drawRoom(r, chat) {
     el('div', { class: 'on-card-h' }, el('h2', { text: 'Your room' }), el('span', { text: r.mode === 'ranked' ? 'Ranked' : 'Casual' })),
     el('span', { class: 'k-label', text: 'Room code' }),
     el('strong', { class: 'on-codebig', text: r.code }),
-    el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), copyButton('copy-invite', 'Copy invite link', inviteLink(r.code))),
+    el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null),
     el('span', { class: 'k-label', text: 'Players' }),
     members);
   const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
@@ -549,7 +598,7 @@ async function draw() {
   let body;
   let showLinks = true;
   if (state.link === 'signed_out') {
-    body = [lockPanel('Sign in to play online', 'Connect your Discord account to play online and track your stats!', true)];
+    body = [lockPanel(invite ? `Sign in to join ${invite.code}` : 'Sign in to play online', 'Connect your Discord account to play online and track your stats!', true)];
   } else if (state.link === 'offline' && !snap) {
     body = [lockPanel("Can't reach the Reborn servers right now.", 'Trying again.', false)];
   } else if (!snap) {
@@ -564,6 +613,8 @@ async function draw() {
     body = drawIdle(snap);
     showLinks = picked() === 'private';
     if (snap.match?.relay_state === 'held' && dismissedHold !== snap.match.id) body.unshift(heldBox(snap.match));
+    const banner = invite ? inviteBanner() : null;
+    if (banner) body.unshift(banner);
   }
   setLinks(showLinks);
   showOnline(snap, state.presence_on);

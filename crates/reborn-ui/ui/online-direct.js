@@ -20,7 +20,8 @@ const lobbyShown = () => {
 
 opener?.addEventListener('click', open);
 closer?.addEventListener('click', () => dialog?.close());
-document.addEventListener('netplay-invite', open);
+// Not while matchmaking has the player: the filled form waits behind "Direct connection ›".
+document.addEventListener('netplay-invite', () => { if (document.body.dataset.mmBusy !== 'true') open(); });
 dialog?.addEventListener('close', () => { if (opener && !opener.closest('[hidden]')) opener.focus({ preventScroll: true }); });
 if (dialog && typeof MutationObserver === 'function') {
   let wasShown = lobbyShown();

@@ -5,13 +5,15 @@ import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason,
 import { openMenu } from "./menu.js";
 import { avatarSrc } from "./live-common.js";
 
-// Opened from a friend's invite link: straight on to Online, which fills in
-// the room. Play is the window's first page, so this is where the hand-off
-// lives; the code stays put until Online has used it.
+// Opened from a friend's invite link (a Netplay `join/` or a lobby `room/`):
+// straight on to Online, which fills in the room or offers Join. Play is the
+// window's first page, so this is where the hand-off lives; the code stays
+// put until Online has used it.
 async function handOffInvite() {
   try {
     const pending = await call("netplay_pending_join");
-    if (!pending || !pending.code) return;
+    const room = pending && pending.code ? null : await call("mm_pending_room").catch(() => null);
+    if (!(pending && pending.code) && !(room && room.code)) return;
     // Not before setup: Online needs a game to join with. The code stays
     // put, and this runs again once Play comes back after setup.
     const progress = await call("onboarding_progress", { legacyRoot: null });
