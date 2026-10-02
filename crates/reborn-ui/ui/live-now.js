@@ -96,7 +96,7 @@ function rowContent(match) {
     sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a),
     el('div', { class: 'live-foot' },
       el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
-      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Casual' }),
+      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Pickup' }),
       watchLink(match)),
   ];
 }
@@ -170,7 +170,7 @@ if (bridge) {
     if (matches.length) { drawRows(matches.slice(0, 3)); return; }
     rows.clear();
     watchLinks.clear();
-    content.replaceChildren(el('p', { class: 'live-empty', text: 'No live games right now.' }));
+    content.replaceChildren(el('p', { class: 'live-empty', text: 'Streets are quiet right now.' }));
   }
 
   /** A failed poll: its one line above the last good rows, which stay. The same words twice

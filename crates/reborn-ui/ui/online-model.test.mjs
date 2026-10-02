@@ -11,8 +11,8 @@ test('numbers and the clock', () => {
 
 test('the mode line never says best of', () => {
   assert.equal(modeLine('ranked'), 'Ranked · first to two wins');
-  assert.equal(modeLine('casual'), 'Casual · one game');
-  assert.equal(modeLine(undefined), 'Casual · one game');
+  assert.equal(modeLine('casual'), 'Pickup · one game');
+  assert.equal(modeLine(undefined), 'Pickup · one game');
 });
 
 test('the series line is from this seat, only in a series', () => {
@@ -26,8 +26,8 @@ test('the series line is from this seat, only in a series', () => {
 
 test('accept within counts down to the deadline and hides when there is none', () => {
   const now = Date.UTC(2026, 8, 30, 20, 0, 0);
-  assert.equal(acceptWithin('2026-09-30T20:00:14.000Z', now), 'Accept within 0:14');
-  assert.equal(acceptWithin('2026-09-30T20:00:00.500Z', now), 'Accept within 0:00');
+  assert.equal(acceptWithin('2026-09-30T20:00:14.000Z', now), '0:14 to accept');
+  assert.equal(acceptWithin('2026-09-30T20:00:00.500Z', now), '0:00 to accept');
   assert.equal(acceptWithin('2026-09-30T20:00:00.000Z', now), null, 'the deadline has come: hidden');
   assert.equal(acceptWithin('2026-09-30T19:59:00.000Z', now), null, 'the deadline has passed: hidden');
   assert.equal(acceptWithin(null, now), null);
@@ -54,10 +54,10 @@ test('standing joins only what exists', () => {
 });
 
 test('the searching pill', () => {
-  assert.equal(seekLine('ranked', { rating: 1184 }), 'Looking for players near 1,184 Elo');
+  assert.equal(seekLine('ranked', { rating: 1184 }), 'Finding players near 1,184 Elo');
   assert.equal(seekLine('ranked', { rating: null }), 'Looking for a ranked game');
   assert.equal(seekLine('ranked', null), 'Looking for a ranked game');
-  assert.equal(seekLine('casual', { rating: 1184 }), 'Looking for a casual game');
+  assert.equal(seekLine('casual', { rating: 1184 }), 'Finding a pickup game');
 });
 
 test('the held notice keeps each reason\'s words', () => {
@@ -83,13 +83,13 @@ test('everyone ready needs two players, all ready', () => {
 test('invite link and line', () => {
   assert.equal(inviteLink('K7QP2M'), 'https://nflstreetreborn.com/join.php?r=K7QP2M');
   assert.equal(inviteLink('a b&c'), 'https://nflstreetreborn.com/join.php?r=a%20b%26c');
-  assert.deepEqual(inviteLine('Jock', 'K7QP2M'), { who: 'Jock', rest: ' invited you to a room · K7QP2M' });
-  assert.deepEqual(inviteLine(null, 'K7QP2M'), { who: null, rest: 'You were invited to a room · K7QP2M' });
+  assert.deepEqual(inviteLine('Jock', 'K7QP2M'), { who: 'Jock', rest: ' wants you in the room · K7QP2M' });
+  assert.deepEqual(inviteLine(null, 'K7QP2M'), { who: null, rest: "You've got a room invite · K7QP2M" });
   for (const bad of [null, undefined, '', 42]) {
     assert.equal(inviteLink(bad), null, `no link for ${bad}`);
     assert.equal(inviteLine('Jock', bad), null, `no line for ${bad}`);
   }
-  assert.deepEqual(inviteLine('', 'K7QP2M'), { who: null, rest: 'You were invited to a room · K7QP2M' });
+  assert.deepEqual(inviteLine('', 'K7QP2M'), { who: null, rest: "You've got a room invite · K7QP2M" });
 });
 
 test('the leaderboard model', () => {

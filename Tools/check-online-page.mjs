@@ -99,7 +99,7 @@ async function focusKeep(page, label, key, what) {
 // ---- every state ----
 const EXPECT = {
   'online-layout': {
-    text: ['Online', 'Ranked, casual, or a private game with a friend.'],
+    text: ['Online', 'Ranked, pickup, or private. Pick your game.'],
     check: async (page) => {
       const p = [];
       const lb = await page.locator('#leaderboard-slot').boundingBox();
@@ -156,7 +156,7 @@ const EXPECT = {
     },
   },
   'online-ranked': {
-    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private room', 'Host a room or join with a code.',
+    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Pickup Game', 'One game. Elo stays put.', 'Private Room', 'Host a room or join with a code.',
       'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
     absent: ['Quick Match', 'Direct connection', 'best of'],
     check: async (page) => {
@@ -183,7 +183,7 @@ const EXPECT = {
       if ((await calls(page, 'player_profile')).length) p.push('the page read player_profile although the board carries your team');
       await page.locator('[data-key="mode-casual"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
-      if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
+      if (!(await page.getByRole('button', { name: 'Find a pickup game', exact: true }).isVisible())) p.push('the row did not follow the pick');
       if ((await looks()).join() !== before.join()) p.push('picking Casual changed how the cards look');
       if ((await boxes()) !== boxesBefore) p.push(`picking Casual moved or resized the cards: ${boxesBefore} -> ${await boxes()}`);
       if (await page.locator('[data-key="mode-casual"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '2px') p.push('the picked Casual card has no outline');
@@ -202,14 +202,14 @@ const EXPECT = {
     },
   },
   'online-casual': {
-    text: ['Find a casual game', 'Matched with anyone'],
+    text: ['Find a pickup game', "Anyone's game"],
     check: async (page) => {
       const p = [];
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
       if (pressed.join() !== 'mode-casual') p.push(`picked tiles: ${pressed}`);
       // Only the calls from the click on: update-notice.js reads content_status/content_check by itself on load.
       const from = await page.evaluate(() => window.__calls.length);
-      await page.getByRole('button', { name: 'Find a casual game', exact: true }).click();
+      await page.getByRole('button', { name: 'Find a pickup game', exact: true }).click();
       await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'mm_queue'), null, { timeout: 4000 }).catch(() => {});
       const order = await page.evaluate((n) => window.__calls.slice(n).map((c) => c.cmd).filter((c) => /^content_|^mm_queue$/.test(c)), from);
       if (order.join() !== 'content_check,content_repair_image,mm_queue') p.push(`Find ran ${order.join(' → ')}`);
@@ -261,7 +261,7 @@ const EXPECT = {
     },
   },
   'online-searching': {
-    text: ['Looking for players near 1,184 Elo', 'Searching… 0:42', 'Cancel'],
+    text: ['Finding players near 1,184 Elo', 'Searching 0:42', 'Cancel'],
     absent: ['Find a ranked game', 'Not on our servers?'],
     check: async (page) => {
       const p = [];
@@ -275,7 +275,7 @@ const EXPECT = {
     },
   },
   'online-match-found': {
-    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#1 · 1,320 Elo', 'Adam', '#7 · 1,184 Elo'],
+    text: ['Game on', 'VS', 'Ranked · first to two wins', '0:14 to accept', 'Jock', '#1 · 1,320 Elo', 'Adam', '#7 · 1,184 Elo'],
     absent: ['best of', 'Not on our servers?'],
     check: async (page) => {
       const p = [];
@@ -284,7 +284,7 @@ const EXPECT = {
       if (!(await page.locator('[data-key="decline"].btn.quiet').count())) p.push('Decline is not a quiet button');
       if (await page.locator('.on-vs .sweep').count()) p.push('the line sweeps before anyone accepted');
       if ((await page.locator('.on-vs .team-logo').count()) !== 2) p.push('both plays-as team logos should show');
-      if (!(await page.locator('.on-tm[data-deadline]').count())) p.push('Accept within carries no deadline for the ticker');
+      if (!(await page.locator('.on-tm[data-deadline]').count())) p.push('the accept timer carries no deadline for the ticker');
       await page.getByRole('button', { name: 'Accept', exact: true }).click();
       await page.waitForTimeout(300);
       const a = await calls(page, 'mm_match_action');
@@ -293,7 +293,7 @@ const EXPECT = {
     },
   },
   'online-match-found-tick': {
-    text: ['Accept within 0:14'],
+    text: ['0:14 to accept'],
     check: async (page) => {
       const p = [];
       const tm = page.locator('.on-tm[data-deadline]');
@@ -302,18 +302,18 @@ const EXPECT = {
       const before = await tm.innerText();
       await page.waitForTimeout(2200);
       const after = await tm.innerText();
-      if (before === after) p.push(`Accept within did not count down: "${before}" stayed "${after}"`);
-      if (!/^Accept within 0:1[12]$/.test(after.trim())) p.push(`after 2.2 s it reads "${after}"`);
+      if (before === after) p.push(`the accept timer did not count down: "${before}" stayed "${after}"`);
+      if (!/^0:1[12] to accept$/.test(after.trim())) p.push(`after 2.2 s it reads "${after}"`);
       // Past the deadline (20:00:14): the line hides.
       await page.evaluate(() => { Date.now = () => Date.UTC(2026, 8, 30, 20, 0, 15); });
       await page.waitForTimeout(1200);
-      if (await tm.isVisible()) p.push(`Accept within still shows past the deadline ("${await tm.innerText()}")`);
+      if (await tm.isVisible()) p.push(`the accept timer still shows past the deadline ("${await tm.innerText()}")`);
       if (!(await page.getByRole('button', { name: 'Accept', exact: true }).isVisible())) p.push('Accept went away with the timer');
       return p;
     },
   },
   'online-accepted': {
-    text: ['Accepted. Waiting for Jock…'],
+    text: ["You're in. Waiting on Jock…"],
     check: async (page) => {
       const p = [];
       if (!(await page.locator('.on-ok').isVisible())) p.push('no green tick on your side');
@@ -333,12 +333,12 @@ const EXPECT = {
       return p;
     },
   },
-  'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: ['Accept within', 'Your game opens', 'Match found'] },
+  'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
   // Ruling P9: intermission is still "Playing", with the series line.
-  'online-intermission': { text: ['Playing', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Match found', 'Accept within'] },
-  'online-playing-casual': { text: ['Playing', 'Casual · one game'], absent: ['Series', 'Match found'] },
+  'online-intermission': { text: ['Playing', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
+  'online-playing-casual': { text: ['Playing', 'Pickup · one game'], absent: ['Series', 'Game on'] },
   'online-match-bare': {
-    text: ['Opponent'], absent: ['undefined', 'NaN', 'null', 'Accept within', ' · Elo'],
+    text: ['Opponent'], absent: ['undefined', 'NaN', 'null', ' to accept', ' · Elo'],
     check: async (page) => {
       const p = [];
       const names = await page.locator('.on-vs .on-pname').allInnerTexts();
@@ -349,11 +349,11 @@ const EXPECT = {
     },
   },
   // The matchup card at the minimum window: one column, the faces clear of Leave match (generic check below).
-  'online-match-small': { text: ['Match found', 'Jock', 'Accept within 0:14'] },
+  'online-match-small': { text: ['Game on', 'Jock', '0:14 to accept'] },
   'online-room': {
-    text: ['Your room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Players', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
-      "Start works once you're both ready. The host starts the game."],
-    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Pickup'],
+    text: ['Your Room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Your crew', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
+      'Both ready, then the host kicks it off.'],
+    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Room · Pickup'],
     check: async (page) => {
       const p = await codeLine(page);
       // Ruling P14: count the markers, not loose text ("you"/"Ready" appear in unrelated words).
@@ -376,7 +376,7 @@ const EXPECT = {
       await page.getByRole('button', { name: 'Copy code', exact: true }).click();
       await page.waitForTimeout(200);
       if (await page.evaluate(() => window.__copied) !== 'K7QP2M') p.push('Copy code did not copy the code');
-      await page.getByRole('button', { name: "I'm not ready", exact: true }).click();
+      await page.getByRole('button', { name: 'Hold up', exact: true }).click();
       await page.waitForTimeout(300);
       const r = await calls(page, 'mm_room_action');
       if (JSON.stringify(r[0]) !== '{"roomId":"r1","action":"ready","value":false}') p.push(`ready sent ${JSON.stringify(r[0])}`);
@@ -387,9 +387,9 @@ const EXPECT = {
       return p;
     },
   },
-  'online-room-pickup': { text: ['Your room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
+  'online-room-pickup': { text: ['Your Room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
   'online-held': {
-    text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
+    text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a pickup game'],
     absent: ['Leave match', 'Accept'],
     check: async (page) => {
       const p = [];
@@ -405,7 +405,7 @@ const EXPECT = {
   },
   'online-held-other': { text: ['Nothing changed on the leaderboard. Someone will look at it. You can play again now.'], absent: ['ladder'] },
   'online-signed-out': {
-    text: ['Sign in to play online', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
+    text: ['Sign in to hit the street', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
     absent: ['Find a', 'searching', '1,184 Elo', '#7', '0 online'],
     check: async (page) => {
       const p = [...(await noYouRow(page)), ...(await discordStatus(page))];
@@ -463,7 +463,7 @@ const EXPECT = {
       await page.locator('#lobbies-open').click();
       const panel = page.locator('dialog.menu.panel[open]');
       const t = await panel.innerText().catch(() => '');
-      for (const w of ['Jock · Casual', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
+      for (const w of ['Jock · Pickup', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
       if (/best of/i.test(t)) p.push('a lobby is labelled best of');
       await page.screenshot({ path: path.join(out, 'online-lobbies-panel.png') });
       await panel.getByRole('button', { name: 'Join', exact: true }).first().click();
@@ -489,7 +489,7 @@ const EXPECT = {
     },
   },
   'online-live': {
-    text: ['Live now', 'See all', 'Ranked · Game 1', 'Casual', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
+    text: ['Live now', 'See all', 'Ranked · Game 1', 'Pickup', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
     absent: ['Game 1 of 3'],
     check: async (page) => {
       const p = [];
@@ -511,7 +511,7 @@ const EXPECT = {
     check: async (page) => ((await page.locator('.live-row').count()) === 3 ? [] : [`${await page.locator('.live-row').count()} cards, not 3`]),
   },
   'online-live-none': {
-    text: ['Live now', 'No live games right now.'],
+    text: ['Live now', 'Streets are quiet right now.'],
     absent: ['0 live game'],
     check: async (page) => {
       const p = [];
@@ -571,7 +571,7 @@ const EXPECT = {
     },
   },
   'online-elo-off': {
-    text: ['Leaderboard', 'Rankings start soon.', 'Find a ranked game'],
+    text: ['Leaderboard', 'Rankings drop soon.', 'Find a ranked game'],
     absent: ['Full leaderboard', '38 ranked', '1,184 Elo', '#7', 'this week', 'Looking for players near'],
     check: async (page) => {
       const p = [];
@@ -586,7 +586,7 @@ const EXPECT = {
       return p;
     },
   },
-  'online-lb-missing': { text: ['Rankings start soon.'], absent: ['Full leaderboard'] },
+  'online-lb-missing': { text: ['Rankings drop soon.'], absent: ['Full leaderboard'] },
   'online-lb-hostile': {
     text: ['<img src=x onerror=alert(1)>', 'Averyveryvery'],
     absent: ['undefined', 'NaN', 'null'],
@@ -601,7 +601,7 @@ const EXPECT = {
     },
   },
   'online-invite': {
-    text: ['Jock invited you to a room · K7QP2M', 'Host a room'],
+    text: ['Jock wants you in the room · K7QP2M', 'Host a room'],
     check: async (page) => {
       const p = [];
       if ((await calls(page, 'mm_room_join')).length) p.push('the invite joined on its own');
@@ -616,7 +616,7 @@ const EXPECT = {
     },
   },
   'online-invite-nohost': {
-    text: ['You were invited to a room · K7QP2M'],
+    text: ["You've got a room invite · K7QP2M"],
     check: async (page) => {
       const p = [];
       // No host is an answer: focus does not ask again for the same code.
@@ -642,7 +642,7 @@ const EXPECT = {
       await page.waitForTimeout(300);
       if (JSON.stringify(await calls(page, 'mm_pending_room_clear')) !== '[{}]') p.push('Not now did not clear the invite');
       if (await page.getByText('Sign in to join K7QP2M').count()) p.push('the lock still names the invite');
-      if (!(await page.getByText('Sign in to play online').count())) p.push('the lock did not go back to its own title');
+      if (!(await page.getByText('Sign in to hit the street').count())) p.push('the lock did not go back to its own title');
       if ((await calls(page, 'mm_room_join')).length) p.push('Not now joined');
       // The file is still answered by the stub: a focus re-read must not bring it back.
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));

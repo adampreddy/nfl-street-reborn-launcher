@@ -208,8 +208,8 @@ function chatBox(messages, send) {
 // into that same layer later (a background image, or an <img> inside it) without moving anything else.
 const MODES = [
   { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.' },
-  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.' },
-  { key: 'private', name: 'Private room', line: 'Host a room or join with a code.' },
+  { key: 'casual', name: 'Pickup Game', line: 'One game. Elo stays put.' },
+  { key: 'private', name: 'Private Room', line: 'Host a room or join with a code.' },
 ];
 
 function tileClick(key) {
@@ -255,8 +255,8 @@ function tiles(snap, { searching = null, locked = false, only = null } = {}) {
 
 function findRow(p) {
   return el('div', { class: 'on-row' },
-    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p} game`, onclick: () => queueWhenCurrent() }),
-    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched by Elo' : 'Matched with anyone' }));
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p === 'casual' ? 'pickup' : p} game`, onclick: () => queueWhenCurrent() }),
+    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched by Elo' : "Anyone's game" }));
 }
 
 // The code field's text survives the redraws (the field itself is rebuilt).
@@ -316,7 +316,7 @@ function directRow() {
   return el('div', { class: 'on-row' },
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'direct', 'data-primary': 'true', text: 'Direct connection',
       onclick: () => document.getElementById('direct-open')?.click() }),
-    el('p', { class: 'on-note', text: 'Send the code to a friend' }));
+    el('p', { class: 'on-note', text: 'Send the code to your crew' }));
 }
 
 // A held match is over for the player the moment it is held (seats released), but the server keeps showing it for a
@@ -356,7 +356,7 @@ function lobbyPanel() {
   else if (!lobbies.length) list.append(el('li', { class: 'note', text: 'No open lobbies. Open one and someone can join you.' }));
   for (const r of lobbies) {
     list.append(el('li', {},
-      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Casual'}` }),
+      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Pickup'}` }),
       el('button', { type: 'button', class: 'btn sm', text: 'Join', onclick: () => { closePanel(); act('mm_room_join', { code: r.code }); } })));
   }
   return el('div', { class: 'on-panel' },
@@ -441,7 +441,7 @@ const queuedMs = () => queueClock.base + (Date.now() - queueClock.at);
 // happens only when the snapshot changes) and hides it once the deadline has come.
 setInterval(() => {
   const timer = section.querySelector('.mm-timer');
-  if (timer && queueClock.key) timer.textContent = `Searching… ${clock(queuedMs())}`;
+  if (timer && queueClock.key) timer.textContent = `Searching ${clock(queuedMs())}`;
   const accept = section.querySelector('.on-tm[data-deadline]');
   if (accept) {
     const left = acceptWithin(accept.dataset.deadline, Date.now());
@@ -457,8 +457,8 @@ function drawQueued(t) {
     tiles(null, { searching: ranked ? 'ranked' : 'casual' }),
     el('div', { class: 'on-row' },
       el('div', { class: 'on-search' },
-        el('span', { class: 'mm-timer on-timer num', text: `Searching… ${clock(queuedMs())}` }),
-        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Casual' }),
+        el('span', { class: 'mm-timer on-timer num', text: `Searching ${clock(queuedMs())}` }),
+        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Pickup' }),
         el('span', { class: 'sweep', 'aria-hidden': 'true' })),
       el('button', { type: 'button', class: 'btn on-cancel', 'data-key': 'cancel', text: 'Cancel', onclick: () => act('mm_leave_queue') })),
   ];
@@ -484,11 +484,11 @@ function drawRoom(r, chat) {
   // The game the host picked (the snapshot's seed_kind; an older server sends none: Quick game).
   const kindName = KIND_NAME[r.seed_kind] ?? KIND_NAME.regular;
   const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    el('div', { class: 'on-card-h' }, el('h2', { text: `Your Room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
     el('div', { class: 'on-coderow' },
       el('strong', { class: 'on-codebig', text: r.code }),
       el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
-    el('span', { class: 'k-label', text: 'Players' }),
+    el('span', { class: 'k-label', text: 'Your crew' }),
     members);
   const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
     el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
@@ -496,11 +496,11 @@ function drawRoom(r, chat) {
   const row = el('div', { class: 'on-row on-roomrow' },
     r.you_host === true ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'room-start', 'data-primary': 'true', text: 'Start',
       disabled: !everyoneReady(r), onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }) : null,
-    el('button', { type: 'button', class: 'btn', 'data-key': 'room-ready', text: ready ? "I'm not ready" : "I'm ready",
+    el('button', { type: 'button', class: 'btn', 'data-key': 'room-ready', text: ready ? 'Hold up' : "I'm ready",
       onclick: () => act('mm_room_action', { roomId: r.id, action: 'ready', value: !ready }) }),
     el('button', { type: 'button', class: 'btn quiet', 'data-key': 'room-leave', text: 'Leave room',
       onclick: () => act('mm_room_action', { roomId: r.id, action: 'leave', value: null }) }));
-  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: "Start works once you're both ready. The host starts the game." })];
+  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: 'Both ready, then the host kicks it off.' })];
 }
 
 function face({ url, name, sub, team, tick = false }) {
@@ -520,7 +520,7 @@ function drawMatch(m, chat, relayError, snap) {
   const playing = m.relay_state === 'running' || m.relay_state === 'intermission';
   const series = playing ? seriesLine(m) : null;
   const mid = el('div', { class: 'on-mid' },
-    el('span', { class: 'k-label on-found', text: playing ? 'Playing' : 'Match found' }),
+    el('span', { class: 'k-label on-found', text: playing ? 'Playing' : 'Game on' }),
     el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
     series ? el('span', { class: 'on-ser num', text: series }) : null,
     el('span', { class: 'on-mode-line', text: modeLine(m.mode) }));
@@ -532,7 +532,7 @@ function drawMatch(m, chat, relayError, snap) {
     const left = acceptWithin(m.relay_deadline, Date.now());
     if (left) mid.append(el('span', { class: 'on-tm num', 'data-deadline': m.relay_deadline, text: left }));
   } else if (pairing) {
-    mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `Accepted. Waiting for ${opp}…`));
+    mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `You're in. Waiting on ${opp}…`));
   } else if (m.relay_state !== 'running') {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), words), el('span', { class: 'on-tm', text: 'Your game opens on its own' }));
   }
@@ -651,7 +651,7 @@ async function draw() {
   let showLinks = true;
   let reserveLinks = false;
   if (state.link === 'signed_out') {
-    body = [lockPanel(invite ? `Sign in to join ${invite.code}` : 'Sign in to play online', 'Connect your Discord account to play online and track your stats!', true)];
+    body = [lockPanel(invite ? `Sign in to join ${invite.code}` : 'Sign in to hit the street', 'Connect your Discord account to play online and track your stats!', true)];
   } else if (state.link === 'offline' && !snap) {
     body = [lockPanel("Can't reach the Reborn servers right now.", 'Trying again.', false)];
   } else if (!snap) {

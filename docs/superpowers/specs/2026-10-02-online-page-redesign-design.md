@@ -184,6 +184,7 @@ off (today), ranks/Elo/changes are hidden and the leaderboard card shows "Rankin
   "Leave lobby" → "Leave room". "Player name / Host code / Join game / Create room" (direct connection dialog) unchanged.
 - `check-online-mm` assertions are updated to these strings; every behavioural assertion (commands, args,
   `#screen` hidden while busy, timer moves, presence_page sent, no page errors) stays.
+- NFL Street voice, 10-03 (display words only; stored `mm:mode` stays casual/ranked, commands and args unchanged): purpose line "Ranked, pickup, or private. Pick your game."; tiles Pickup Game / Private Room; button "Find a pickup game", notes "Anyone's game" and "Send the code to your crew"; searching "Finding a pickup game" / "Finding players near N Elo" / "Searching 0:42"; "GAME ON" label, "0:14 to accept", "You're in. Waiting on <name>…"; Pickup replaces Casual in the mode line, live-card footer and lobby list; "Your Room", "Your crew", "Hold up" (ready toggle when ready), "Both ready, then the host kicks it off."; signed-out "Sign in to hit the street"; invite "<host> wants you in the room" / "You've got a room invite"; "Streets are quiet right now."; "Rankings drop soon.". Ranked, buttons, and the signed-out body stay as they were.
 
 ## 9. Files
 - `online.html` (structure), `pages/online.css` (new, theme tokens only), `online-mm.js` (render functions

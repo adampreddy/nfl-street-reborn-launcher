@@ -32,7 +32,7 @@ function draw(answer) {
   if (json === lastJson) return;
   lastJson = json;
   const v = leaderboardView(answer);
-  if (v.soon) { card.replaceChildren(head(), el('p', { class: 'on-lb-soon', text: 'Rankings start soon.' })); return; }
+  if (v.soon) { card.replaceChildren(head(), el('p', { class: 'on-lb-soon', text: 'Rankings drop soon.' })); return; }
   const h = head();
   if (v.total !== null) h.append(el('span', { class: 'on-lb-total', text: `${v.total} ranked` }));
   const list = el('ol', { class: 'on-lb-rows' }, ...v.rows.map(row));
