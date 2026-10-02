@@ -299,6 +299,7 @@ node --test crates/reborn-ui/ui/*.test.mjs Tools/lib/*.test.mjs
 | `settings-draft.test.mjs` | the Settings draft behind the save bar |
 | `stats-model.test.mjs` | Stats' model: numbers, Elo, trend, role cards, private rooms dropped |
 | `stats-rows.test.mjs` | match row models, the results-queue line and unsent counts |
+| `online-model.test.mjs` | Online's words and numbers: mode and series lines, accept countdown, Elo bits (hidden with Elo off), held notice, invite link, leaderboard rows |
 | `cover-color.test.mjs` | the cover's two colours from an avatar |
 | `outcome-words.test.mjs` | onboarding's outcome words (a bad disc or a missing patch is never reported as success) |
 | `Tools/lib/colour-tokens.test.mjs` | the colour-to-token mapping `extract-layout-css` uses |
