@@ -420,6 +420,16 @@ const EXPECT = {
     text: ['5 live games'],
     check: async (page) => ((await page.locator('.live-row').count()) === 3 ? [] : [`${await page.locator('.live-row').count()} cards, not 3`]),
   },
+  'online-live-none': {
+    text: ['Live now', 'No live games right now.'],
+    absent: ['0 live game'],
+    check: async (page) => {
+      const p = [];
+      if (await page.locator('#on-live-count').isVisible()) p.push('the heading shows a live-games count with no live games');
+      if (await page.locator('.live-row').count()) p.push('live cards are drawn');
+      return p;
+    },
+  },
   // (states are added above this line)
 };
 

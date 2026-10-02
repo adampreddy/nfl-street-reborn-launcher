@@ -131,6 +131,7 @@ function onlineStates() {
     N('online-lobbies-none', { mm_state: mm(empty), mm_rooms: [] }, { click: '[data-key="mode-private"]' }),
     N('online-live', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-live-many', { mm_state: mm(empty), live_matches: [0, 1, 2, 3, 4].map((i) => ({ ...LIST.matches[i % 2], id: `b41cf41a-43c4-4d1b-aaa8-05e4e72c73${String(i).padStart(2, '0')}` })) }, { init: PICK('ranked') }),
+    N('online-live-none', { mm_state: mm(empty), live_matches: [] }, { init: PICK('ranked') }),
     // (redesign states are added above this line)
   ];
 }

@@ -135,13 +135,14 @@ if (bridge) {
   section.append(el('div', { class: 'sec-head live-now-heading' }, el('h2', { text: 'Live now' }),
     el('button', { type: 'button', class: 'sec-link', 'data-key': 'live-all', text: 'See all ›',
       onclick: () => call('open_website', { url: `${PAGE_ORIGIN}/live` }).catch(() => {}) })), body);
-  // The heading's "● {n} live games" (spec §2); hidden until the first good answer.
+  // The heading's "● {n} live games" (spec §2); hidden until the first good answer, and hidden again whenever the
+  // list is empty (no "0 live games").
   const countBox = document.getElementById('on-live-count');
   function setCount(n) {
     const words = countBox?.querySelector('span');
     if (!words) return;
-    words.textContent = `${n} live ${n === 1 ? 'game' : 'games'}`;
-    countBox.hidden = false;
+    if (n > 0) words.textContent = `${n} live ${n === 1 ? 'game' : 'games'}`;
+    countBox.hidden = n === 0;
   }
   const list = el('ul', { class: 'live-rows' });
 

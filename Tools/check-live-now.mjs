@@ -75,7 +75,13 @@ async function loadLive(invoke) {
   parent.children = [screenEl];
   screenEl.parentNode = parent;
   const outEl = fakeEl("pre#out");
-  const byId = { screen: screenEl, out: outEl };
+  // online.html's heading count: "<span id=on-live-count hidden><i class=live-dot></i><span></span></span>".
+  const countEl = fakeEl("span#on-live-count");
+  const countWords = fakeEl("span");
+  countEl.hidden = true;
+  countEl.children = [countWords];
+  countEl.querySelector = (sel) => (sel === "span" ? countWords : null);
+  const byId = { screen: screenEl, out: outEl, "on-live-count": countEl };
   const docListeners = {};
   doc = {
     activeElement: null,
@@ -108,6 +114,8 @@ async function loadLive(invoke) {
     calls,
     doc,
     out: outEl,
+    count: countEl,
+    countWords,
     section: () => parent.children.find((c) => c !== screenEl),
     fireVisibility(state) {
       doc.visibilityState = state;
@@ -161,7 +169,7 @@ function check(what, ok, detail = "") {
   check("each side's fade is its own team's validated primary colour (--tc)",
     sides.length === 2 * FIXTURE.matches.length && sides.every((s) => /^--tc:#[0-9a-fA-F]{6}$/.test(s.attrs.style || "")), sides.map((s) => s.attrs.style).join(", "));
   const allImgs = imgsOf(section);
-  check("the fixture's logos and avatars rendered as <img>", allImgs.length > 0);
+  check("the fixture's logos rendered as <img>", allImgs.length > 0);
   check("only allowed image prefixes are ever set as src",
     allImgs.every((i) => i.attrs.src?.startsWith("https://api.nflstreetreborn.com/live-assets/") || i.attrs.src?.startsWith("https://cdn.discordapp.com/avatars/")),
     allImgs.map((i) => i.attrs.src).join(", "));
@@ -176,6 +184,24 @@ function check(what, ok, detail = "") {
   const t = text(section);
   check("the empty state says so", t.includes("No live games right now."), t);
   check("the empty state has no rows", byClass(section, "live-row").length === 0);
+  page.done();
+}
+
+// ---- 2b: the heading's live-games count shows only while games are live; it hides again when the list drops to 0 ----
+{
+  const answers = [FIXTURE.matches, []];
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? answers.shift() ?? [] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  check("a list of two shows \"2 live games\" in the heading",
+    page.count.hidden === false && page.countWords.textContent === "2 live games", `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
+  await page.fireTimers();
+  check("the list dropping to 0 hides the count (never \"0 live games\")", page.count.hidden === true, `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
+  page.done();
+}
+{
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  check("an empty first answer leaves the count hidden and unwritten", page.count.hidden === true && page.countWords.textContent === "", `hidden=${page.count.hidden} "${page.countWords.textContent}"`);
   page.done();
 }
 
@@ -232,7 +258,7 @@ function check(what, ok, detail = "") {
   const section = page.section();
   check("an off-catalog logo and a non-Discord (or prefix-confused) avatar never become <img> src",
     imgsOf(section).length === 0, `found: ${imgsOf(section).map((i) => i.attrs.src).join(", ")}`);
-  check("badges are drawn instead (the card draws no avatars)", byClass(section, "live-badge").length === 2 && imgsOf(section).length === 0);
+  check("badges are drawn instead (the card draws no avatars)", byClass(section, "live-badge").length === 2 && byClass(section, "live-avatar").length === 0);
   page.done();
 }
 
