@@ -660,6 +660,8 @@ if (Object.keys(EXPECT).length) {
         if (await page.locator('.on-vs .on-leave').count()) {
           const leave = await page.locator('.on-vs .on-leave').boundingBox();
           const avs = await page.locator('.on-vs .on-av').evaluateAll((xs) => xs.map((x) => { const r = x.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; }));
+          const tops = await page.locator('.on-vs .on-avw').evaluateAll((xs) => xs.map((x) => x.getBoundingClientRect().top));
+          if (tops.length === 2 && Math.abs(tops[0] - tops[1]) > 1) problems.push(`the two faces are not level (${tops[0]} vs ${tops[1]})`);
           if (avs.length !== 2) problems.push(`the matchup card has ${avs.length} avatars, not 2`);
           for (const a of avs) {
             if (leave && leave.x < a.x + a.width && a.x < leave.x + leave.width && leave.y < a.y + a.height && a.y < leave.y + leave.height) problems.push('Leave match overlaps a face');

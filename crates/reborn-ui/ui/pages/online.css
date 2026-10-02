@@ -100,7 +100,13 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-vs>.on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}
 .on-vs::after{content:"";position:absolute;inset:0;background:var(--vs-scrim);z-index:-1}
 .on-vs-in{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:56px 48px 24px}
-.on-p{display:flex;flex-direction:column;align-items:center;gap:10px;min-width:0;text-align:center}
+/* a fixed row for each part (face, name, standing, team logo): both people always have the same height, so the two
+   faces sit on one line even when one side has no standing or logo; the column is centred as a block */
+.on-p{display:grid;grid-template-rows:104px 28px 18px 44px;justify-items:center;row-gap:10px;min-width:0;text-align:center}
+.on-p>.on-avw{grid-row:1}
+.on-p>.on-pname{grid-row:2}
+.on-p>.on-psub{grid-row:3}
+.on-p>.on-plogo{grid-row:4}
 .on-avw{position:relative}
 .avatar.on-av{width:104px;height:104px;font-size:42px;box-shadow:var(--face-ring)}
 .on-ok{position:absolute;right:-2px;bottom:-2px;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--ok);color:var(--badge-bg);font:700 14px Inter,system-ui,sans-serif}
