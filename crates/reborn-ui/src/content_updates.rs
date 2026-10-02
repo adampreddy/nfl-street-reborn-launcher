@@ -336,6 +336,29 @@ pub(crate) fn ensure_import_bundle(p: &Platform) -> Result<PathBuf, String> {
     }
 }
 
+/// Make sure the game-patch chain is on disk, downloading the `game-patch`
+/// component when it is not. The chain is how a disc is recognised as a
+/// Reborn build at all: with none, `game_identity` answers "not Reborn" even
+/// for Reborn's own downloaded game (the Deck tester's second screen,
+/// 2026-10-02: "The downloaded game is not a Reborn build"). The Windows
+/// installer ships it; a one-file Linux launcher gets it here.
+pub(crate) fn ensure_patch_chain(p: &Platform) -> Result<(), String> {
+    let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+    let chain = reborn_core::game_patch::component_root(&data_root).join(reborn_core::game_patch::CHAIN_FILE);
+    if chain.is_file() {
+        return Ok(());
+    }
+    let settings = load_settings(p)?;
+    let origin = Origin::new(&origin_url(&settings));
+    let verifier = verifier()?;
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::GamePatch], depth: Depth::Quick };
+    if let Err(e) = updater.run(&request, &ImageHook::default()) {
+        eprintln!("downloading the game-patch chain failed: {e}");
+    }
+    if chain.is_file() { Ok(()) } else { Err(IMPORT_BUNDLE_UNAVAILABLE.to_string()) }
+}
+
 pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
     let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
     reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())

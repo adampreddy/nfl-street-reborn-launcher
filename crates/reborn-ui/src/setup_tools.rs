@@ -654,6 +654,8 @@ fn download_reborn_game(app:&tauri::AppHandle)->Result<PathBuf,String>{
     // chain to consult, which would condemn the very build this command
     // downloads. Same reason `setup_import_game` seeds it.
     seed_game_patch(&p)?;
+    // A one-file launcher (Linux AppImage) ships no chain: download it.
+    crate::content_updates::ensure_patch_chain(&p)?;
 
     say("Looking for the Reborn game…",Some(0));
     let settings_file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
