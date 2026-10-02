@@ -141,4 +141,9 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-rd{font-size:12px;font-weight:600;color:var(--ok)}
 .on-nr{font-size:12px;color:var(--fg-3)}
 .on-chat{flex:1;display:flex;flex-direction:column;min-height:0}
+.on-chat .mm-chat-form{margin-top:auto;padding-top:8px}
+.on-roomrow{flex-wrap:nowrap;align-items:stretch}
+.on-roomrow .btn{white-space:nowrap}
+.on-roomrow .btn.on-go{flex:1;min-width:0}
+@media (max-width:1000px){.on-roomrow{flex-wrap:wrap}}
 @media (max-width:1000px){.on-room{grid-template-columns:1fr}}

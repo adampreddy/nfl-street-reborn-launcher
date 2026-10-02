@@ -316,7 +316,7 @@ function drawRoom(r, chat) {
   const ready = !!me?.ready;
   const copyButton = (key, label, text) => {
     const b = el('button', { type: 'button', class: 'btn sm', 'data-key': key, text: label });
-    b.addEventListener('click', () => navigator.clipboard?.writeText(text).then(() => { b.textContent = 'Copied'; }, () => {}));
+    b.addEventListener('click', () => navigator.clipboard?.writeText(text).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = label; }, 1500); }, () => {}));
     return b;
   };
   const members = el('ul', { class: 'on-members' });
@@ -336,7 +336,7 @@ function drawRoom(r, chat) {
   const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
     el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
     chatBox(chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
-  const row = el('div', { class: 'on-row' },
+  const row = el('div', { class: 'on-row on-roomrow' },
     r.you_host === true ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'room-start', 'data-primary': 'true', text: 'Start',
       disabled: !everyoneReady(r), onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }) : null,
     el('button', { type: 'button', class: 'btn', 'data-key': 'room-ready', text: ready ? "I'm not ready" : "I'm ready",
