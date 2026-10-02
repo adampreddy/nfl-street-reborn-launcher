@@ -131,6 +131,9 @@ function onlineStates() {
       members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
       chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) },
       { init: "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(t)=>{window.__copied=t;}}})" }),
+    // The host picked Pickup (the snapshot's seed_kind).
+    N('online-room-pickup', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true, seed_kind: 'pickup',
+      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false }] }, chat: [] }) }),
     N('online-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true, your_ready: true,
       series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
     N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),

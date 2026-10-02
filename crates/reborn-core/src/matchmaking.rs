@@ -115,6 +115,8 @@ pub struct Room {
     pub members: Vec<RoomMember>,
     /// The signed-in player hosts this room (the server's `you_host`): only the host is offered Start.
     pub you_host: bool,
+    /// The game the host picked: `regular` (Quick game) or `pickup`. Absent from an older server.
+    pub seed_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -353,12 +355,15 @@ impl<'a> Client<'a> {
         Ok(self.get::<Rooms>("/v1/mm/rooms")?.rooms)
     }
 
-    pub fn create_room(&self, mode: Mode, public: bool) -> Result<serde_json::Value, MmError> {
+    /// `seed_kind` is the host's game: `pickup`, or anything else is a `regular` (Quick game) one. A server without
+    /// the field ignores it and plays a regular game.
+    pub fn create_room(&self, mode: Mode, public: bool, seed_kind: &str) -> Result<serde_json::Value, MmError> {
         let mode = if mode == Mode::Ranked { "ranked" } else { "casual" };
         let best_of = if mode == "ranked" { 3 } else { 1 };
+        let seed_kind = if seed_kind.trim() == "pickup" { "pickup" } else { "regular" };
         self.post(
             "/v1/mm/rooms",
-            serde_json::json!({ "mode": mode, "visibility": if public { "public" } else { "code" }, "best_of": best_of }),
+            serde_json::json!({ "mode": mode, "visibility": if public { "public" } else { "code" }, "best_of": best_of, "seed_kind": seed_kind }),
         )
     }
 
@@ -590,6 +595,32 @@ mod tests {
         let none = FakeHttp::default();
         assert_eq!(Client::new(&none, ORIGIN, "tok").room_lookup("/../?#").unwrap(), None, "nothing left of the code: no request");
         assert!(none.gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_room_sends_the_hosts_game_kind_and_anything_unknown_is_a_regular_game() {
+        let url = "https://api.test/v1/mm/rooms";
+        let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"room":{"id":"r","code":"K7QP2M"}}"#);
+        let c = Client::new(&http, ORIGIN, "tok");
+        let body = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
+        c.create_room(Mode::Casual, false, "pickup").unwrap();
+        let b = body(&http);
+        assert_eq!(b["seed_kind"], "pickup");
+        assert_eq!(b["mode"], "casual");
+        assert_eq!(b["visibility"], "code");
+        assert_eq!(b["best_of"], 1);
+        c.create_room(Mode::Casual, false, "regular").unwrap();
+        assert_eq!(body(&http)["seed_kind"], "regular");
+        c.create_room(Mode::Ranked, true, "../evil").unwrap();
+        assert_eq!(body(&http)["seed_kind"], "regular", "only the two known kinds reach the server");
+    }
+
+    #[test]
+    fn a_room_carries_its_game_kind_when_the_server_sends_one() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "seed_kind": "pickup", "members": [] } })).unwrap();
+        assert_eq!(s.room.unwrap().seed_kind.as_deref(), Some("pickup"));
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "members": [] } })).unwrap();
+        assert_eq!(s.room.unwrap().seed_kind, None, "an older server says nothing");
     }
 
     const ORIGIN: &str = "https://api.test";

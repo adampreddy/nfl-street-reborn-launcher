@@ -29,6 +29,19 @@ async function discordStatus(page) {
   await page.waitForTimeout(200);
   return p;
 }
+// Your room's code (Adam, 2026-10-02): plain letters, normal spacing, with Copy code and Copy invite link beside it.
+async function codeLine(page) {
+  const p = [];
+  const code = page.locator('.on-codebig');
+  const look = await code.evaluate((n) => { const c = getComputedStyle(n); return { ls: c.letterSpacing, tt: c.textTransform, size: parseFloat(c.fontSize) }; });
+  if (look.ls !== 'normal') p.push(`the room code is letter-spaced (${look.ls})`);
+  if (look.tt !== 'none') p.push(`the room code is transformed (${look.tt})`);
+  if (look.size < 20 || look.size > 32) p.push(`the room code is ${look.size}px`);
+  if (await page.locator('section[aria-label="Your room"] .k-label', { hasText: 'Room code' }).count()) p.push('the Room code label is still there');
+  const c = await code.boundingBox(), b = await page.locator('[data-key="copy-code"]').boundingBox();
+  if (!c || !b || b.x < c.x + c.width || Math.abs((b.y + b.height / 2) - (c.y + c.height / 2)) > 8) p.push('Copy code is not beside the code');
+  return p;
+}
 // Signed out: the leaderboard is the anonymous answer, so no row is "you" (spec §4).
 const noYouRow = async (page) => ((await page.locator('.on-lb-row.you').count()) ? ['a signed-out page highlights a "you" row'] : []);
 // Hiding and showing the page re-polls the 60 s leaderboard beat at once (live-common.js makePoller).
@@ -61,7 +74,7 @@ async function focusKeep(page, label, key, what) {
   return p;
 }
 
-// ---- static: tokens, the sweep, the art ----
+// ---- static: tokens, the sweep, the cards' colours ----
 {
   const theme = readFileSync(path.join(ui, 'theme.css'), 'utf8');
   const design = readFileSync(path.join(ui, 'DESIGN.md'), 'utf8');
@@ -72,22 +85,13 @@ async function focusKeep(page, label, key, what) {
   }
   if (!/\.sweep::after\{[^}]*animation:sweep /.test(theme)) problems.push('theme.css has no .sweep loop');
   if (!design.includes('`.sweep`')) problems.push('DESIGN.md does not name .sweep');
-  // A JPEG's width from its first SOFn marker (no image library in Tools).
-  const jpegWidth = (buf) => {
-    let i = 2;
-    while (i + 9 < buf.length && buf[i] === 0xff) {
-      const m = buf[i + 1], len = buf.readUInt16BE(i + 2);
-      if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return buf.readUInt16BE(i + 7);
-      i += 2 + len;
-    }
-    return null;
-  };
-  for (const f of ['ranked', 'casual', 'private', 'matchup']) {
-    const p = path.join(ui, `art/online/${f}.jpg`);
-    if (!existsSync(p)) { problems.push(`art/online/${f}.jpg is missing`); continue; }
-    const w = jpegWidth(readFileSync(p));
-    if (!w || w > 1100) problems.push(`art/online/${f}.jpg is ${w}px wide (a display copy is at most 1100)`);
+  // No pictures yet (Adam, 2026-10-02): each card is a plain colour from a token, and the page loads no image for them.
+  for (const t of ['--tile-ranked', '--tile-casual', '--tile-private', '--vs-bg']) {
+    if (!new RegExp(`${t}\\s*:\\s*linear-gradient`).test(theme)) problems.push(`theme.css does not define ${t} as a gradient`);
+    if (!design.includes(`\`${t}\``)) problems.push(`DESIGN.md does not name ${t}`);
   }
+  const mmJs = readFileSync(path.join(ui, 'online-mm.js'), 'utf8');
+  if (/art\/online\//.test(mmJs) || /el\('img', \{ class: 'on-art'/.test(mmJs)) problems.push('online-mm.js still loads a card picture');
   if (!/dialog\.menu\.panel\{/.test(theme)) problems.push('theme.css has no dialog.menu.panel');
   if (problems.length) fail('static', problems.join('; ')); else ok('static');
 }
@@ -159,8 +163,13 @@ const EXPECT = {
       const p = [];
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
       if (pressed.join() !== 'mode-ranked') p.push(`picked tiles: ${pressed}`);
-      const art = await page.locator('[data-key="mode-casual"] .on-art').evaluate((n) => getComputedStyle(n).filter);
-      if (!/saturate/.test(art)) p.push(`an unpicked tile's picture is in full colour (${art})`);
+      // Picking changes only the edge (Adam, 2026-10-02): every card's colour layer looks the same picked or not.
+      const looks = () => page.locator('.on-tile .on-art').evaluateAll((n) => n.map((x) => { const c = getComputedStyle(x); return `${c.filter}|${c.opacity}|${c.backgroundImage}`; }));
+      const before = await looks();
+      if (before.length !== 3) p.push(`${before.length} card colour layers, not 3`);
+      if (before.some((x) => !x.startsWith('none|1|') || !x.includes('linear-gradient'))) p.push(`a card is filtered or has no colour: ${before.join(' / ')}`);
+      if (new Set(before.map((x) => x.split('|')[2])).size !== 3) p.push('the three cards do not each have their own colour');
+      if (await page.locator('img.on-art').count()) p.push('a card still loads a picture');
       const on = await page.locator('[data-key="mode-ranked"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth);
       if (on !== '2px') p.push(`the picked tile's border is ${on}, not 2px`);
       const r = await page.locator('[data-key="mode-ranked"]').boundingBox(), c = await page.locator('[data-key="mode-casual"]').boundingBox();
@@ -171,6 +180,11 @@ const EXPECT = {
       await page.locator('[data-key="mode-casual"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
       if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
+      if ((await looks()).join() !== before.join()) p.push('picking Casual changed how the cards look');
+      if (await page.locator('[data-key="mode-casual"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '2px') p.push('the picked Casual card has no outline');
+      if (await page.locator('[data-key="mode-ranked"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '1px') p.push('the unpicked Ranked card kept the outline');
+      await page.locator('[data-key="mode-private"]').click();
+      if ((await looks()).join() !== before.join()) p.push('picking Private room changed how the cards look');
       // Back to Ranked, so the screenshot (taken after this check) shows the state's name.
       await page.locator('[data-key="mode-ranked"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'ranked') p.push('picking Ranked again did not store mm:mode=ranked');
@@ -195,7 +209,7 @@ const EXPECT = {
     },
   },
   'online-private': {
-    text: ['Host a room', 'Send the code to a friend', 'Not on our servers?', 'Direct connection'],
+    text: ['Quick game', 'Pickup', 'Host a room', 'Join', 'Send the code to a friend', 'Not on our servers?', 'Direct connection'],
     absent: ['Find a'],
     check: async (page) => {
       const p = [];
@@ -204,7 +218,13 @@ const EXPECT = {
       const join = page.getByRole('button', { name: 'Join by code', exact: true });
       if (!(await join.evaluate((n) => n.classList.contains('quiet')))) p.push('Join is not quiet while the code field is empty');
       if ((await join.innerText()).trim() !== 'Join') p.push('the Join button does not read "Join"');
-      await page.getByLabel('Room code', { exact: true }).fill('k7qp2m');
+      // A plain field (Adam, 2026-10-02): its placeholder says what it is, and what is typed shows as typed.
+      const field = page.getByLabel('Join with a code', { exact: true });
+      if (await field.getAttribute('placeholder') !== 'Join with a code') p.push(`the code field's placeholder is ${JSON.stringify(await field.getAttribute('placeholder'))}`);
+      const look = await field.evaluate((n) => { const c = getComputedStyle(n); return `${c.textTransform}|${c.letterSpacing}`; });
+      if (look !== 'none|normal') p.push(`the code field is styled ${look} (want no transform, normal spacing)`);
+      if (await page.getByRole('group', { name: 'Casual or ranked', exact: true }).count()) p.push('the Casual/Ranked room tabs are still there');
+      await field.fill('k7qp2m');
       if (await join.evaluate((n) => n.classList.contains('quiet'))) p.push('Join stays quiet with a code typed');
       await join.click();
       await page.waitForTimeout(300);
@@ -213,19 +233,20 @@ const EXPECT = {
       await page.getByRole('button', { name: 'Host a room', exact: true }).click();
       await page.waitForTimeout(300);
       const h = await calls(page, 'mm_room_create');
-      if (JSON.stringify(h[0]) !== '{"mode":"casual","public":false}') p.push(`Host a room sent ${JSON.stringify(h[0])}`);
-      // Ruling P20: the room's mode is picked here (the old Quick Match tabs' job), stored in mm:mode, and Host sends it.
-      const hostMode = page.getByRole('group', { name: 'Casual or ranked', exact: true });
-      const was = await hostMode.locator('.tab[aria-pressed="true"]').innerText().catch(() => null);
-      if (was?.trim() !== 'Casual') p.push(`the room mode tabs start on ${JSON.stringify(was)}, not Casual`);
-      await hostMode.getByRole('button', { name: 'Ranked', exact: true }).click();
-      if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'ranked') p.push('picking Ranked for the room did not store mm:mode=ranked');
+      if (JSON.stringify(h[0]) !== '{"mode":"casual","public":false,"seedKind":"regular"}') p.push(`Host a room sent ${JSON.stringify(h[0])}`);
+      // Quick game | Pickup (Adam, 2026-10-02): Quick game to start with; Host sends the pick as seedKind.
+      const kind = page.getByRole('group', { name: 'Quick game or Pickup', exact: true });
+      const was = await kind.locator('.tab[aria-pressed="true"]').innerText().catch(() => null);
+      if (was?.trim() !== 'Quick game') p.push(`the game choice starts on ${JSON.stringify(was)}, not Quick game`);
+      await kind.getByRole('button', { name: 'Pickup', exact: true }).click();
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
-      if (pressed.join() !== 'mode-private') p.push(`picking the room mode moved the tile pick to ${pressed}`);
+      if (pressed.join() !== 'mode-private') p.push(`picking Pickup moved the tile pick to ${pressed}`);
       await page.getByRole('button', { name: 'Host a room', exact: true }).click();
       await page.waitForTimeout(300);
       const h2 = await calls(page, 'mm_room_create');
-      if (JSON.stringify(h2[1]) !== '{"mode":"ranked","public":false}') p.push(`Host a room after picking Ranked sent ${JSON.stringify(h2[1])}`);
+      if (JSON.stringify(h2[1]) !== '{"mode":"casual","public":false,"seedKind":"pickup"}') p.push(`Host a room after picking Pickup sent ${JSON.stringify(h2[1])}`);
+      // Back to Quick game, so the screenshot shows the default.
+      await kind.getByRole('button', { name: 'Quick game', exact: true }).click();
       return p;
     },
   },
@@ -320,11 +341,11 @@ const EXPECT = {
   // The matchup card at the minimum window: one column, the faces clear of Leave match (generic check below).
   'online-match-small': { text: ['Match found', 'Jock', 'Accept within 0:14'] },
   'online-room': {
-    text: ['Your room', 'Casual', 'Room code', 'K7QP2M', 'Players', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
+    text: ['Your room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Players', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
       "Start works once you're both ready. The host starts the game."],
-    absent: ['Lobby code', 'Leave lobby'],
+    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Pickup'],
     check: async (page) => {
-      const p = [];
+      const p = await codeLine(page);
       // Ruling P14: count the markers, not loose text ("you"/"Ready" appear in unrelated words).
       const rd = await page.locator('.on-rd').count(), nr = await page.locator('.on-nr').count();
       if (rd !== 1 || nr !== 1) p.push(`ready markers: ${rd} ready, ${nr} not ready (want 1 and 1)`);
@@ -356,6 +377,7 @@ const EXPECT = {
       return p;
     },
   },
+  'online-room-pickup': { text: ['Your room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
   'online-held': {
     text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
     absent: ['Leave match', 'Accept'],
@@ -574,7 +596,7 @@ const EXPECT = {
       const p = [];
       if ((await calls(page, 'mm_room_join')).length) p.push('the invite joined on its own');
       if (await page.locator('[data-key="mode-private"]').getAttribute('aria-pressed') !== 'true') p.push('Private room is not picked');
-      if (await page.getByLabel('Room code', { exact: true }).inputValue() !== 'K7QP2M') p.push('the code field is not filled');
+      if (await page.getByLabel('Join with a code', { exact: true }).inputValue() !== 'K7QP2M') p.push('the code field is not filled');
       await page.locator('[data-key="invite-join"]').click();
       await page.waitForTimeout(400);
       const j = await calls(page, 'mm_room_join');
@@ -675,7 +697,7 @@ const EXPECT = {
     },
   },
   'online-focus-keep': {
-    check: async (page) => focusKeep(page, 'Room code', 'room-code', 'code field'),
+    check: async (page) => focusKeep(page, 'Join with a code', 'room-code', 'code field'),
   },
   'online-focus-keep-chat': {
     check: async (page) => focusKeep(page, 'Chat message', 'chat', 'chat field'),

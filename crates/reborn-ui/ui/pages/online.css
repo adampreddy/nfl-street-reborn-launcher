@@ -54,15 +54,18 @@ body[data-mm-busy="true"] .on-links{display:none}
 .netplay-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px}
 .netplay-slots label{display:grid;gap:4px;font-size:12px;color:var(--fg-3)}
 .netplay-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
-/* the three mode tiles (spec §3.1): Ranked spans two rows. Picked = a 2px red edge and the picture in colour; not
-   picked = the 1px stroke and the picture desaturated; searching = the others dark (§3.2). */
+/* the three mode tiles (spec §3.1): Ranked spans two rows. Each tile's .on-art layer is a plain colour until real art
+   goes into it (Adam, 2026-10-02). Picking changes nothing but the edge: picked = a 2px red edge, the others the 1px
+   stroke, all three the same colour strength; searching = the others dark (§3.2). */
 .on-modes{flex:1;min-height:260px;display:grid;grid-template-columns:1.75fr 1fr;grid-template-rows:1fr 1fr;gap:10px}
 .on-modes.solo{grid-template-columns:1fr;grid-template-rows:1fr}
 .on-tile{all:unset;box-sizing:border-box;position:relative;overflow:hidden;display:block;min-height:0;border-radius:var(--r-lg);background:var(--team-fallback);box-shadow:var(--shadow);cursor:pointer;isolation:isolate}
 .on-tile-ranked{grid-row:1/3}
 .on-modes.solo .on-tile{grid-row:auto}
-.on-tile .on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:saturate(.25) brightness(.62);z-index:-2}
-.on-tile.on .on-art{filter:none}
+.on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background-size:cover;background-position:center;z-index:-2}
+.on-tile-ranked .on-art{background-color:var(--team-fallback);background-image:var(--tile-ranked)}
+.on-tile-casual .on-art{background-color:var(--team-fallback);background-image:var(--tile-casual)}
+.on-tile-private .on-art{background-color:var(--team-fallback);background-image:var(--tile-private)}
 .on-tile.dim .on-art{filter:saturate(0) brightness(.35)}
 .on-tile::after{content:"";position:absolute;inset:0;background:var(--tile-scrim);z-index:-1}
 .on-tile::before{content:"";position:absolute;inset:0;border-radius:inherit;border:1px solid var(--stroke);pointer-events:none;z-index:1}
@@ -89,7 +92,10 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .btn.on-go{height:52px;min-width:min(100%,280px);flex:0 1 calc(63.6% - 4px);font-size:16px}
 .on-note{margin:0;font-size:12.5px;line-height:1.5;color:var(--fg-3)}
 .on-codeform{display:flex;gap:8px}
-.on-codeform .on-code{width:150px;height:52px;font-weight:600;letter-spacing:.3em;text-transform:uppercase}
+.on-codeform .on-code{width:190px;height:52px}
+.on-private .tabs{flex:none}
+.on-private .btn.on-go{flex:1 1 280px}
+.on-private .tabs .tab{height:42px}
 .btn.on-join,.btn.on-cancel{height:52px}
 .on-search{position:relative;overflow:hidden;flex:0 1 calc(63.6% - 4px);display:flex;align-items:center;justify-content:space-between;gap:16px;height:52px;padding:0 22px;border-radius:var(--r-md);background:var(--glass-1);border:1px solid var(--stroke);box-shadow:var(--sheen)}
 .on-timer{font:700 18px Inter,system-ui,sans-serif;letter-spacing:-.01em}
@@ -97,7 +103,7 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-status:empty{display:none}
 /* the matchup card (spec §3.3–§3.6): you | MATCH FOUND, VS, the mode line | the opponent */
 .on-vs{position:relative;overflow:hidden;flex:1;min-height:340px;border-radius:var(--r-lg);border:1px solid var(--stroke);box-shadow:var(--shadow);isolation:isolate}
-.on-vs>.on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}
+.on-vs>.on-art{background-color:var(--team-fallback);background-image:var(--vs-bg)}
 .on-vs::after{content:"";position:absolute;inset:0;background:var(--vs-scrim);z-index:-1}
 .on-vs-in{position:absolute;inset:0;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:56px 48px 24px}
 /* a fixed row for each part (face, name, standing, team logo): both people always have the same height, so the two
@@ -132,13 +138,14 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .mm-chat-form input{flex:1;height:40px}
 
 /* your room (spec §3.7) */
-.on-room{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.on-room{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:14px}
 .on-card{display:flex;flex-direction:column;min-height:0;padding:18px 20px}
 .on-card-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:12px}
 .on-card-h h2{margin:0;font:600 16px/1.2 Inter,system-ui,sans-serif}
 .on-card-h span{font-size:12px;color:var(--fg-3)}
-.on-codebig{margin:4px 0 6px;font:700 44px/1 Inter,system-ui,sans-serif;letter-spacing:.12em}
-.on-bt{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
+.on-coderow{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;margin:0 0 16px}
+.on-codebig{font:700 26px/1.1 Inter,system-ui,sans-serif}
+.on-bt{display:flex;flex-wrap:wrap;gap:8px}
 .on-members{list-style:none;margin:0;padding:0}
 .on-members li{display:flex;align-items:center;gap:12px;height:52px;border-top:1px solid var(--stroke)}
 .on-members b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600}
@@ -169,7 +176,6 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-notice .btn{flex:none;margin-left:auto}
 /* locked tiles do not look picked: the red border would blur into a halo */
 .on-locked .on-tile.on::before{border:1px solid var(--stroke)}
-.on-locked .on-tile.on .on-art{filter:saturate(.25) brightness(.62)}
 
 /* the players and lobbies panels (menu.js openPanel) */
 .on-panel{display:flex;flex-direction:column;gap:10px}

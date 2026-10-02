@@ -67,6 +67,10 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--surface-solid` | `#1b1e24` | an opaque popover over content (the controller binding editor) |
 | `--tile-scrim` | 0deg `rgba(6,7,9,.9)` to transparent | the Online mode tiles' picture scrim |
 | `--vs-scrim` | 0deg `rgba(6,7,9,.95)` to `.55` | the Online matchup card's picture scrim |
+| `--tile-ranked` | 150deg `#8a161c` to `#0c0c0e` | the Ranked card (no picture yet) |
+| `--tile-casual` | 150deg `#17408a` to `#0b0c0f` | the Casual card (no picture yet) |
+| `--tile-private` | 150deg `#15703f` to `#0b0d0c` | the Private room card (no picture yet) |
+| `--vs-bg` | 150deg `#34373e` to `#0f1013` | the matchup card (no picture yet) |
 | `--pill-bg` | `rgba(10,11,14,.6)` | a pill on art (Online "searching" counts, the relay step) |
 | `--lock-bg` | `rgba(13,14,17,.72)` | the Online sign-in panel over the tiles |
 | `--red-wash` | `rgba(224,39,46,.12)` | your own row on the Online leaderboard |

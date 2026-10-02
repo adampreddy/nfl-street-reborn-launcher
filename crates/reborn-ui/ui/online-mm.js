@@ -198,10 +198,12 @@ function chatBox(messages, send) {
 }
 
 // ---- the mode area (spec §3.1) ----
+// No pictures yet (Adam, 2026-10-02): each tile's `.on-art` layer is a plain colour (pages/online.css). Real art goes
+// into that same layer later (a background image, or an <img> inside it) without moving anything else.
 const MODES = [
-  { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.', art: 'art/online/ranked.jpg' },
-  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.', art: 'art/online/casual.jpg' },
-  { key: 'private', name: 'Private room', line: 'Host a room or join with a code.', art: 'art/online/private.jpg' },
+  { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.' },
+  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.' },
+  { key: 'private', name: 'Private room', line: 'Host a room or join with a code.' },
 ];
 
 function tileClick(key) {
@@ -236,7 +238,7 @@ function tiles(snap, { searching = null, locked = false, only = null } = {}) {
       'data-key': `mode-${m.key}`, 'aria-pressed': String(isOn), disabled: searching !== null ? true : null,
       onclick: () => tileClick(m.key),
     },
-    el('img', { class: 'on-art', src: m.art, alt: '' }),
+    el('span', { class: 'on-art', 'aria-hidden': 'true' }),
     pill,
     el('span', { class: 'on-lab' },
       el('span', { class: 'on-tx' }, el('span', { class: 'on-name', text: m.name }), el('span', { class: 'on-line', text: m.line })),
@@ -253,19 +255,24 @@ function findRow(p) {
 
 // The code field's text survives the redraws (the field itself is rebuilt).
 let roomCode = '';
+// The game the host's room plays (Adam, 2026-10-02): Quick game (the `regular` seed) unless Pickup is picked. Page state
+// only, so every visit starts on Quick game. Sent with Host a room as `seedKind`.
+const ROOM_KINDS = { 'Quick game': 'regular', Pickup: 'pickup' };
+const KIND_NAME = { regular: 'Quick game', pickup: 'Pickup' };
+let roomKind = 'regular';
 function privateRow() {
-  const code = el('input', { type: 'text', class: 'on-code', maxlength: 12, placeholder: 'Room code', 'aria-label': 'Room code', spellcheck: 'false', autocomplete: 'off', 'data-key': 'room-code', value: roomCode });
+  const code = el('input', { type: 'text', class: 'on-code', maxlength: 12, placeholder: 'Join with a code', 'aria-label': 'Join with a code', spellcheck: 'false', autocomplete: 'off', 'data-key': 'room-code', value: roomCode });
   const join = el('button', { type: 'submit', class: `btn on-join${roomCode.trim() ? '' : ' quiet'}`, 'data-key': 'join', 'aria-label': 'Join by code', text: 'Join' });
   code.addEventListener('input', () => { roomCode = code.value; join.classList.toggle('quiet', !code.value.trim()); });
   const form = el('form', { class: 'on-codeform' }, code, join);
   form.addEventListener('submit', (e) => { e.preventDefault(); const c = code.value.trim(); if (c) act('mm_room_join', { code: c }); });
-  // Ruling P20: the room's mode, the choice the old Quick Match tabs made. Stored in `mm:mode` as before; it does not
-  // move the tile pick off Private room.
-  const roomMode = tabs('mm-room-mode', ['Casual', 'Ranked'], mode() === 'ranked' ? 'Ranked' : 'Casual',
-    (name) => { store.set('mm:mode', name.toLowerCase()); lastDrawn = ''; draw(); }, { label: 'Casual or ranked' });
-  return el('div', { class: 'on-row' },
-    roomMode,
-    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'host', 'data-primary': 'true', text: 'Host a room', onclick: () => act('mm_room_create', { mode: mode(), public: false }) }),
+  // A private room is a casual game (the Casual/Ranked tabs went, Adam 2026-10-02); the host picks which game it plays.
+  const kind = tabs('mm-room-kind', Object.keys(ROOM_KINDS), KIND_NAME[roomKind],
+    (name) => { roomKind = ROOM_KINDS[name]; lastDrawn = ''; draw(); }, { label: 'Quick game or Pickup' });
+  return el('div', { class: 'on-row on-private' },
+    kind,
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'host', 'data-primary': 'true', text: 'Host a room',
+      onclick: () => act('mm_room_create', { mode: 'casual', public: false, seedKind: roomKind }) }),
     form,
     el('p', { class: 'on-note', text: 'Send the code to a friend' }));
 }
@@ -469,11 +476,13 @@ function drawRoom(r, chat) {
       el('b', {}, m.name, m.you ? el('small', { text: 'you' }) : null),
       el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
   }
+  // The game the host picked (the snapshot's seed_kind; an older server sends none: Quick game).
+  const kindName = KIND_NAME[r.seed_kind] ?? KIND_NAME.regular;
   const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: 'Your room' }), el('span', { text: r.mode === 'ranked' ? 'Ranked' : 'Casual' })),
-    el('span', { class: 'k-label', text: 'Room code' }),
-    el('strong', { class: 'on-codebig', text: r.code }),
-    el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null),
+    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    el('div', { class: 'on-coderow' },
+      el('strong', { class: 'on-codebig', text: r.code }),
+      el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
     el('span', { class: 'k-label', text: 'Players' }),
     members);
   const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
@@ -526,7 +535,7 @@ function drawMatch(m, chat, relayError, snap) {
   if (relayError) mid.append(el('p', { class: 'refusal', text: relayError }));
   const mine = eloBits(rankInfo?.elo);
   const card = el('section', { class: 'on-vs', 'aria-label': `${modeLine(m.mode)} against ${opp}` },
-    el('img', { class: 'on-art', src: 'art/online/matchup.jpg', alt: '' }),
+    el('span', { class: 'on-art', 'aria-hidden': 'true' }),
     el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
     el('div', { class: 'on-vs-in' },
       face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),

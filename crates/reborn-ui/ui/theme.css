@@ -40,6 +40,11 @@
   --pill-bg:rgba(10,11,14,.6);
   --lock-bg:rgba(13,14,17,.72);
   --red-wash:rgba(224,39,46,.12);
+  /* the Online cards with no picture yet (Adam, 2026-10-02): one colour fading to near-black each, the matchup card grey */
+  --tile-ranked:linear-gradient(150deg,#8a161c 0%,#3a0c0f 52%,#0c0c0e 100%);
+  --tile-casual:linear-gradient(150deg,#17408a 0%,#0d1b3a 52%,#0b0c0f 100%);
+  --tile-private:linear-gradient(150deg,#15703f 0%,#0b2f1c 52%,#0b0d0c 100%);
+  --vs-bg:linear-gradient(150deg,#34373e 0%,#1d1f24 55%,#0f1013 100%);
 }
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}

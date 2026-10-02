@@ -557,6 +557,7 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
         })),
         "room": s.room.as_ref().map(|r| serde_json::json!({
             "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
+            "seed_kind": crate::dolphin_settings::seed_kind_or_default(r.seed_kind.as_deref()),
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
             "members": r.members.iter().map(|m| serde_json::json!({
@@ -574,6 +575,7 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
             "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
             "hold_reason": m.hold_reason, "seat": m.seat,
+            "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
         })),
         "chat": s.chat.messages.iter().map(|c| serde_json::json!({
             "seq": c.seq, "name": c.display_name, "body": c.body, "at": c.at,
@@ -615,10 +617,12 @@ pub async fn mm_rooms() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub async fn mm_room_create(mode: String, public: bool) -> Result<serde_json::Value, String> {
+pub async fn mm_room_create(mode: String, public: bool, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mode = parse_mode(&mode)?;
-        with_client(|c| c.create_room(mode, public))
+        // Quick game (`regular`) or Pickup, the host's pick on the Private row; a public lobby sends none.
+        let seed_kind = crate::dolphin_settings::seed_kind_or_default(seed_kind.as_deref());
+        with_client(|c| c.create_room(mode, public, seed_kind))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -705,6 +709,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_room_and_match_views_name_their_game_kind_and_default_to_a_regular_game() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "code": "K7QP2M", "seed_kind": "pickup", "members": [] },
+            "match": { "id": "m", "seed_kind": "pickup", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
+        let v = snapshot_json(&s);
+        assert_eq!(v["room"]["seed_kind"], "pickup");
+        assert_eq!(v["match"]["seed_kind"], "pickup");
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "code": "K7QP2M", "members": [] },
+            "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
+        let v = snapshot_json(&s);
+        assert_eq!(v["room"]["seed_kind"], "regular", "an older server sends none: a regular game");
+        assert_eq!(v["match"]["seed_kind"], "regular");
+    }
 
     #[test]
     fn page_names_are_the_known_set_and_anything_else_is_home() {
