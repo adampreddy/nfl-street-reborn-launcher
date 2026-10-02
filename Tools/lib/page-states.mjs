@@ -14,6 +14,15 @@ export const GAME_ID = 'aaaaaaaa-1111-4222-8333-444444444444';
 const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_profile', 'system_check', 'updates', 'preparation', 'completion'];
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
+// The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
+// Stats fixture's elo(); week_delta is the backend's Task 15 field.
+export const LB_TEAM = { tgid: 14, name: 'Falcons', abbrev: 'ATL', logo_url: '/live-assets/teams/14-128.png', primary: '#A71930' };
+const LB_NAMES = ['Jock', 'Playz', 'Tuna', 'Mikel', 'Riley', 'Sauce', 'adamknowsball', 'Bones', 'Vick7', 'Kaz'];
+const lbRow = (name, i) => ({ rank: i + 1, player_id: `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`, display_name: name,
+  avatar_url: i % 3 ? null : `https://cdn.discordapp.com/avatars/12345678901234567${i}/0123456789abcdef0123456789abcdef.png?size=64`,
+  team: i % 2 ? null : LB_TEAM, wins: 20 - i, losses: 3 + i, elo: 1320 - i * 18, delta_week: i % 4 === 0 ? 16 : i % 4 === 1 ? -9 : 0, you: name === 'adamknowsball' });
+export const LEADERBOARD = { ok: true, enabled: true, total: 38, rows: LB_NAMES.map(lbRow), you: null };
+export const DASH = (() => { const d = F.dashboard(); d.you.elo.week_delta = 16; return d; })();
 
 const SESSION = (id, ended, needs) => ({ id, build: 'offline', minutes: 3.2, ended, needs_recovery: needs });
 const PADS = (n) => ({ pads: Array.from({ length: n }, (_, i) => ({ device_string: `XInput/${i}/Gamepad`, family: 'xbox', port: i + 1, set_aside: null })), other: [], complete: true, unsearched: [], source: 'builtin' });
@@ -62,6 +71,9 @@ function onlineStates() {
   const players = [{ id: 1, name: 'Adam', status: 'OK', ping: '0 ms' }, { id: 2, name: 'Jock', status: 'OK', ping: '38 ms' }];
   const room = (r) => ({ netplay_status: { phase: 'lobby', active: true, host: true, connection: 'traversal', port: 2626, code: 'ABC12345', can_start: true, players, ports: [1, 2, 0, 0], ...r } });
   const S = (name, data) => ({ name, url: 'online.html', scope: 'main', data });
+  // The redesign's states (spec 2026-10-02; Tools/check-online-page.mjs). PICK sets the stored mode before load.
+  const PICK = (m) => `try{localStorage.setItem('mm:mode','${m}')}catch{}`;
+  const N = (name, data, extra = {}) => ({ name, url: 'online.html', scope: 'main', data: { leaderboard: LEADERBOARD, stats_dashboard: DASH, mm_rooms: [], ...data }, ...extra });
   return [
     S('online-mm-idle', { mm_state: mm(empty), mm_rooms: rooms }),
     S('online-mm-queued', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }),
@@ -80,6 +92,12 @@ function onlineStates() {
     S('online-room-direct', room({ connection: 'direct', code: '', port: 2626 })),
     S('online-room-guest', room({ host: false, can_start: false })),
     S('online-room-running', room({ phase: 'running', can_start: false })),
+    N('online-layout', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-small', { mm_state: mm(empty) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
+    // An invite link left a room code behind (online.js's takePendingInvite, answered at once): the Direct connection
+    // dialog opens with the code filled (ruling P10: online-direct.js listens before online.js can fire).
+    N('online-netplay-invite', { mm_state: mm(empty), netplay_pending_join: { code: 'K7QP2M9X' } }, { init: PICK('ranked') }),
+    // (redesign states are added above this line)
   ];
 }
 

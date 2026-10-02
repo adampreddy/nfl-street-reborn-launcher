@@ -103,7 +103,9 @@ await context.addInitScript(data=>{
 
 const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
 try{
- await page.goto(url+'/online.html');
+ // The form lives in the Direct connection dialog (spec 2026-10-02 §3.1): open it first.
+ const openDirect=()=>page.getByRole('button',{name:/^Direct connection/}).click();
+ await page.goto(url+'/online.html');await openDirect();
  await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
  await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
  let args=await page.evaluate(()=>window.__calls.find(c=>c.cmd==='netplay_open').args);assert.equal(args.mode,'join');assert.equal(args.connection,'traversal');assert.equal(args.address,'ABC12345');
@@ -121,7 +123,7 @@ try{
  // A runtime the player has not installed yet refuses the room on the other
  // side, so it is installed before the room opens. Textures alone never wait.
  const openFresh=async(pending)=>{
-  await page.goto(url+'/online.html');
+  await page.goto(url+'/online.html');await openDirect();
   await page.evaluate(p=>{window.__calls=[];window.__fixture.content_check={phase:'available',download_bytes:18538496,components:p.map(c=>({component:c,state:'available'}))};},pending);
   await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
   await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();

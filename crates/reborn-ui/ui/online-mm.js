@@ -39,7 +39,9 @@ const RELAY = {
 
 const screen = document.getElementById('screen');
 const section = el('section', { class: 'mm', 'aria-label': 'Matchmaking' });
-screen?.parentNode?.insertBefore(section, screen);
+// The mode area's slot (online.html, spec 2026-10-02 §2); a page without one still gets the panel above #screen.
+const slot = document.getElementById('mode-slot');
+if (slot) slot.append(section); else screen?.parentNode?.insertBefore(section, screen);
 
 // While matchmaking has the player queued, in a lobby or in a match, the private-room section below
 // is hidden: a player cannot be in two sessions, and offering "Join a game" under "vs Jock" invites a

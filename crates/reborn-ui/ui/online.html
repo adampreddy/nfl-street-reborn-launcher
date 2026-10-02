@@ -19,12 +19,28 @@
     <div class="nav-bottom"><a href="settings.html"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-6 0v6"/></svg><span>Settings</span></a><a href="recovery.html"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3h.01"/></svg><span>Help</span></a></div>
   </nav>
   <main id="main" tabindex="-1">
-    <div class="page-heading"><span class="eyebrow">NFL STREET REBORN</span><h1>Online</h1><p class="purpose">Play NFL Street Reborn with friends.</p></div>
-    <section id="screen"><p class="loading">Loading…</p></section>
+    <div class="page-heading on-head">
+      <div><span class="eyebrow">NFL STREET REBORN</span><h1>Online</h1><p class="purpose">Ranked, casual, or a private game with a friend.</p></div>
+      <div class="on-meta">
+        <button type="button" id="on-players" class="on-pop" data-key="players" aria-haspopup="dialog" aria-expanded="false" hidden><i class="on-dot" aria-hidden="true"></i><span>Players online</span></button>
+        <span id="on-live-count" class="on-live-count" hidden><i class="live-dot" aria-hidden="true"></i><span></span></span>
+      </div>
+    </div>
+    <div class="on-grid">
+      <div class="on-left">
+        <div id="mode-slot"></div>
+        <p id="on-links" class="on-links"><span>Not on our servers?</span> <button type="button" id="direct-open" class="sec-link" data-key="direct-open">Direct connection ›</button> <button type="button" id="lobbies-open" class="sec-link" data-key="lobbies-open" hidden>Open lobbies ›</button></p>
+        <div id="live-slot"></div>
+      </div>
+      <aside id="leaderboard-slot" aria-label="Leaderboard"></aside>
+    </div>
     <details class="core"><summary>Diagnostic details</summary><div class="out-head"><button id="clear" type="button">Clear log</button><a href="harness.html">Developer tools</a></div><pre id="out"></pre></details>
   </main>
+  <dialog id="direct-dialog" class="on-direct" aria-labelledby="direct-title">
+    <div class="on-direct-head"><h2 id="direct-title">Direct connection</h2><button type="button" id="direct-close" class="btn quiet sm">Close</button></div>
+    <section id="screen"><p class="loading">Loading…</p></section>
+  </dialog>
   <footer class="input-footer"><span id="input-hints"></span><span>NFL STREET REBORN</span></footer>
-  <script type="module" src="app-shell.js"></script><script type="module" src="online.js"></script><script type="module" src="online-mm.js"></script><script type="module" src="live-now.js"></script>
+  <script type="module" src="app-shell.js"></script><script type="module" src="online-direct.js"></script><script type="module" src="online.js"></script><script type="module" src="online-mm.js"></script><script type="module" src="live-now.js"></script>
 </body>
 </html>
-

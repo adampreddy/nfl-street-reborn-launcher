@@ -98,6 +98,7 @@ async function takePendingInvite(){
   connection.value='traversal';connection.dispatchEvent(new Event('change'));
   address.value=pending.code;
   status.textContent=`Invite received: room ${pending.code}. Enter your player name and press Join game.`;
+  document.dispatchEvent(new CustomEvent('netplay-invite'));
   await call('netplay_pending_join_clear').catch(()=>{});
   updateAvailability();(nickname.value?submit:nickname).focus({preventScroll:true});
  }catch(_){}

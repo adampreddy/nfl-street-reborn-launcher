@@ -48,6 +48,45 @@ const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x
 
 // ---- every state ----
 const EXPECT = {
+  'online-layout': {
+    text: ['Online', 'Ranked, casual, or a private game with a friend.'],
+    check: async (page) => {
+      const p = [];
+      const lb = await page.locator('#leaderboard-slot').boundingBox();
+      if (!lb || Math.round(lb.width) !== 316) p.push(`the leaderboard column is ${lb?.width}px wide, not 316`);
+      const mode = await page.locator('#mode-slot').boundingBox(), live = await page.locator('#live-slot').boundingBox();
+      if (!mode || !live || mode.y + mode.height > live.y) p.push('the mode area does not sit above Live now');
+      if (await page.locator('#direct-dialog').evaluate((d) => d.open)) p.push('the direct connection dialog is open on load');
+      // From Task 4 on, the links line shows under Private room only (ruling 6): pick it when the link is hidden.
+      if (!(await page.locator('#direct-open').isVisible())) await page.locator('[data-key="mode-private"]').click();
+      await page.locator('#direct-open').click();
+      if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('Direct connection did not open its dialog');
+      if (!(await page.getByRole('button', { name: 'Join game', exact: true }).isVisible())) p.push("the dialog does not hold online.js's form");
+      await page.locator('#direct-close').click();
+      if (await page.locator('#direct-dialog').evaluate((d) => d.open)) p.push('Close did not close the dialog');
+      return p;
+    },
+  },
+  'online-small': {
+    check: async (page) => {
+      const p = [];
+      const mode = await page.locator('#mode-slot').boundingBox(), lb = await page.locator('#leaderboard-slot').boundingBox();
+      if (!mode || mode.width < 300) p.push(`the mode area is ${mode?.width}px wide at 800x560`);
+      if (!lb || !mode || lb.y < mode.y + mode.height) p.push('the leaderboard does not drop below the mode area at 800x560');
+      return p;
+    },
+  },
+  'online-netplay-invite': {
+    text: ['Invite received: room K7QP2M9X.'],
+    check: async (page) => {
+      const p = [];
+      if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('the invite did not open the Direct connection dialog');
+      const code = await page.getByLabel('Host code', { exact: true }).inputValue().catch(() => null);
+      if (code !== 'K7QP2M9X') p.push(`the dialog's host code is ${JSON.stringify(code)}, not the invite's K7QP2M9X`);
+      if (!(await page.getByRole('button', { name: 'Join game', exact: true }).isVisible())) p.push('Join game is not on screen');
+      return p;
+    },
+  },
   // (states are added above this line)
 };
 

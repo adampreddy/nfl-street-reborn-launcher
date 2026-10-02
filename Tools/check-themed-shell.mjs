@@ -53,14 +53,14 @@ try{
  const shellOf=async(pg,w)=>{
   await pg.goto(base+'/online.html');await pg.locator('.shell-nav a').first().waitFor();await settle(pg);
   assert.ok(await pg.evaluate(()=>document.body.classList.contains('themed')),'online.html is themed');
-  const nav=await box(pg,'.shell-nav'),m=await box(pg,'#main'),h=await box(pg,'.page-heading h1'),sc=await box(pg,'#screen');
+  const nav=await box(pg,'.shell-nav'),m=await box(pg,'#main'),h=await box(pg,'.page-heading h1'),sc=await box(pg,'.on-grid');
   return {nav,m,h,sc,footer:await pg.locator('.input-footer').evaluate(n=>getComputedStyle(n).display),w};
  };
  const s1=await shellOf(real,1280);
  assert.deepEqual([s1.nav.x,s1.nav.y,s1.nav.w,s1.nav.h],[0,0,184,800],'themed page: sidebar 184px, full height');
  assert.deepEqual(await navBoxes(real),themedNav,'themed page: the same sidebar items as the shell fixture');
  assert.deepEqual([s1.m.x,s1.m.y,s1.m.w,s1.m.h],[184,0,1096,800],'themed page: main column fills the rest');
- // The page's own padding places the heading (Online keeps its legacy 36px/32px); the shell's part is that it sits in
+ // The page's own padding places the heading (Online: 36px/32px, spec 2026-10-02); the shell's part is that it sits in
  // the main column, at the top, aligned with the content under it.
  const headingAt=(s)=>{assert.ok(s.h.w>0&&s.h.h>0,'themed page: heading shown');assert.equal(Math.round(s.h.x),Math.round(s.sc.x),'themed page: heading aligned with the content');
   assert.ok(s.h.x>=s.m.x+16&&s.h.y>=16&&s.h.y<=48&&s.h.y+s.h.h<=s.sc.y,`themed page: heading at the top of the main column (${JSON.stringify(s.h)})`);};

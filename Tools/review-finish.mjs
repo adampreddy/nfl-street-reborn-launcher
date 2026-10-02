@@ -167,7 +167,7 @@ try{
  await page.getByRole('button',{name:'Open Dolphin',exact:true}).click();assert.ok(await page.evaluate(()=>window.__calls.some(c=>c.cmd==='open_runtime')));assert.equal(await page.locator('#graphics-preset').isDisabled(),true);
  // The Online page: join, the lobby, leave, host, and a refused open that
  // keeps what was typed. The full flow lives in check-online-restored.mjs.
- await page.goto(url+'/online.html');await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
+ await page.goto(url+'/online.html');await page.getByRole('button',{name:/^Direct connection/}).click();await page.getByLabel('Player name',{exact:true}).fill('Player One');await page.getByLabel('Host code',{exact:true}).fill('ABC12345');
  await page.getByRole('button',{name:'Join game',exact:true}).click();await page.getByRole('heading',{name:'You’re in.',exact:true}).waitFor();
  let args=await page.evaluate(()=>window.__calls.find(c=>c.cmd==='netplay_open').args);assert.equal(args.mode,'join');assert.equal(args.connection,'traversal');assert.equal(args.address,'ABC12345');
  await page.evaluate(()=>document.getElementById('main').scrollTop=0);await page.screenshot({path:path.join(out,'finish-online.png')});

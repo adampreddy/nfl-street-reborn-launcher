@@ -143,7 +143,10 @@ function rowFor(match) {
 
 const screen = document.getElementById('screen');
 const section = el('section', { class: 'live-now', 'aria-label': 'Live now' });
-screen?.parentNode?.insertBefore(section, screen);
+// Live now's slot under the mode area (online.html, spec 2026-10-02 §2); without one (Tools/check-live-now.mjs's
+// stand-in DOM) it sits right before #screen as it always did.
+const liveSlot = document.getElementById('live-slot');
+if (liveSlot) liveSlot.append(section); else screen?.parentNode?.insertBefore(section, screen);
 
 // No Tauri core attached (a bare preview, or a launcher build with no live views): nothing to
 // poll, and the section stays empty, the same way online-mm.js stays out of the way without one.

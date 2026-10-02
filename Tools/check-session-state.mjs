@@ -68,7 +68,7 @@ try{
   await page.getByRole('button',{name:'Play now',exact:true}).waitFor();
   assert.ok(await page.getByRole('button',{name:'Play now',exact:true}).isEnabled(),'A slow initial page load cannot restore stale active state');
 
-  await page.goto(base+'/online.html');await page.getByRole('button',{name:'Join game',exact:true}).waitFor();
+  await page.goto(base+'/online.html');await page.getByRole('button',{name:/^Direct connection/}).click();await page.getByRole('button',{name:'Join game',exact:true}).waitFor();
   await page.evaluate(()=>live=true);await page.getByRole('button',{name:'Game session in progress',exact:true}).waitFor();
   await page.evaluate(()=>live=false);await page.getByRole('button',{name:'Join game',exact:true}).waitFor();
   assert.ok(await page.getByRole('button',{name:'Join game',exact:true}).isEnabled(),'Online unlocks when the session ends');

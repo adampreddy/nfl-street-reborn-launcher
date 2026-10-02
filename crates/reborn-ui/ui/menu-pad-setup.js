@@ -20,14 +20,18 @@ export function mountMenuPadSetup() {
   if (!main) return;
   const button=document.createElement('button');
   button.type='button'; button.id='menu-pad-setup'; button.textContent='Set up launcher controls';
-  button.hidden=true; main.insertBefore(button,document.getElementById('screen'));
+  // Right under the heading, before the page's content: #screen where it is a child of #main; on Online (spec
+  // 2026-10-02) #screen lives in the Direct connection dialog, so the heading's next sibling stands in for it.
+  const screen=document.getElementById('screen');
+  const before=screen?.parentNode===main?screen:(main.querySelector(':scope > .page-heading')?.nextElementSibling??null);
+  button.hidden=true; main.insertBefore(button,before);
   // Controllers page (spec §8.5): the button is never greyed out. Pressed with no controller connected, it says
   // so in a plain line instead of doing nothing; the line clears once a controller is there. Elsewhere the button
   // only shows while a controller needs setup, so the line lives on Controllers alone.
   let note=null;
   if (document.body.classList.contains('page-controls')) {
     note=document.createElement('p');note.className='menu-pad-note';note.setAttribute('role','status');
-    main.insertBefore(note,document.getElementById('screen'));
+    main.insertBefore(note,before);
   }
   let pads=[];
   const refresh=()=>{
