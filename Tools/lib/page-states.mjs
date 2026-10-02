@@ -97,6 +97,10 @@ function onlineStates() {
     // An invite link left a room code behind (online.js's takePendingInvite, answered at once): the Direct connection
     // dialog opens with the code filled (ruling P10: online-direct.js listens before online.js can fire).
     N('online-netplay-invite', { mm_state: mm(empty), netplay_pending_join: { code: 'K7QP2M9X' } }, { init: PICK('ranked') }),
+    N('online-ranked', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-casual', { mm_state: mm(empty), content_repair_image: { current: true } }, { init: PICK('casual') }),
+    N('online-private', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
+    N('online-searching', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
     // (redesign states are added above this line)
   ];
 }

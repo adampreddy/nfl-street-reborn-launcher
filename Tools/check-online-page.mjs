@@ -105,6 +105,92 @@ const EXPECT = {
       return p;
     },
   },
+  'online-ranked': {
+    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private room', 'Host a room or join with a code.',
+      'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching'],
+    absent: ['Quick Match', 'Direct connection', 'best of'],
+    check: async (page) => {
+      const p = [];
+      const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
+      if (pressed.join() !== 'mode-ranked') p.push(`picked tiles: ${pressed}`);
+      const art = await page.locator('[data-key="mode-casual"] .on-art').evaluate((n) => getComputedStyle(n).filter);
+      if (!/saturate/.test(art)) p.push(`an unpicked tile's picture is in full colour (${art})`);
+      const on = await page.locator('[data-key="mode-ranked"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth);
+      if (on !== '2px') p.push(`the picked tile's border is ${on}, not 2px`);
+      const r = await page.locator('[data-key="mode-ranked"]').boundingBox(), c = await page.locator('[data-key="mode-casual"]').boundingBox();
+      if (!r || !c || r.height < c.height * 1.8) p.push('Ranked does not span two rows');
+      await page.locator('[data-key="mode-casual"]').click();
+      if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
+      if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
+      return p;
+    },
+  },
+  'online-casual': {
+    text: ['Find a casual game', 'Matched with anyone'],
+    check: async (page) => {
+      const p = [];
+      const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
+      if (pressed.join() !== 'mode-casual') p.push(`picked tiles: ${pressed}`);
+      // Only the calls from the click on: update-notice.js reads content_status/content_check by itself on load.
+      const from = await page.evaluate(() => window.__calls.length);
+      await page.getByRole('button', { name: 'Find a casual game', exact: true }).click();
+      await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'mm_queue'), null, { timeout: 4000 }).catch(() => {});
+      const order = await page.evaluate((n) => window.__calls.slice(n).map((c) => c.cmd).filter((c) => /^content_|^mm_queue$/.test(c)), from);
+      if (order.join() !== 'content_check,content_repair_image,mm_queue') p.push(`Find ran ${order.join(' → ')}`);
+      const q = await calls(page, 'mm_queue');
+      if (JSON.stringify(q[0]) !== '{"mode":"casual"}') p.push(`mm_queue got ${JSON.stringify(q[0])}`);
+      return p;
+    },
+  },
+  'online-private': {
+    text: ['Host a room', 'Send the code to a friend', 'Not on our servers?', 'Direct connection'],
+    absent: ['Find a'],
+    check: async (page) => {
+      const p = [];
+      if (await page.evaluate(() => localStorage.getItem('mm:mode')) === 'private') p.push('Private room was stored in mm:mode');
+      const join = page.getByRole('button', { name: 'Join by code', exact: true });
+      if (!(await join.evaluate((n) => n.classList.contains('quiet')))) p.push('Join is not quiet while the code field is empty');
+      if ((await join.innerText()).trim() !== 'Join') p.push('the Join button does not read "Join"');
+      await page.getByLabel('Room code', { exact: true }).fill('k7qp2m');
+      if (await join.evaluate((n) => n.classList.contains('quiet'))) p.push('Join stays quiet with a code typed');
+      await join.click();
+      await page.waitForTimeout(300);
+      const j = await calls(page, 'mm_room_join');
+      if (JSON.stringify(j[0]) !== '{"code":"k7qp2m"}') p.push(`mm_room_join got ${JSON.stringify(j[0])}`);
+      await page.getByRole('button', { name: 'Host a room', exact: true }).click();
+      await page.waitForTimeout(300);
+      const h = await calls(page, 'mm_room_create');
+      if (JSON.stringify(h[0]) !== '{"mode":"casual","public":false}') p.push(`Host a room sent ${JSON.stringify(h[0])}`);
+      // Ruling P20: the room's mode is picked here (the old Quick Match tabs' job), stored in mm:mode, and Host sends it.
+      const hostMode = page.getByRole('group', { name: 'Casual or ranked', exact: true });
+      const was = await hostMode.locator('.tab[aria-pressed="true"]').innerText().catch(() => null);
+      if (was?.trim() !== 'Casual') p.push(`the room mode tabs start on ${JSON.stringify(was)}, not Casual`);
+      await hostMode.getByRole('button', { name: 'Ranked', exact: true }).click();
+      if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'ranked') p.push('picking Ranked for the room did not store mm:mode=ranked');
+      const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
+      if (pressed.join() !== 'mode-private') p.push(`picking the room mode moved the tile pick to ${pressed}`);
+      await page.getByRole('button', { name: 'Host a room', exact: true }).click();
+      await page.waitForTimeout(300);
+      const h2 = await calls(page, 'mm_room_create');
+      if (JSON.stringify(h2[1]) !== '{"mode":"ranked","public":false}') p.push(`Host a room after picking Ranked sent ${JSON.stringify(h2[1])}`);
+      return p;
+    },
+  },
+  'online-searching': {
+    text: ['Looking for a ranked game', 'Searching… 0:42', 'Cancel'],
+    absent: ['Find a ranked game', 'Not on our servers?'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-tile.dim').count()) !== 2) p.push('the other two tiles are not dark');
+      if ((await page.locator('.on-search .sweep').count()) !== 1) p.push('no sweeping line on the search bar');
+      if ((await page.locator('.on-search').innerText()).toLowerCase().indexOf('ranked') < 0) p.push('the bar does not say Ranked');
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.waitForTimeout(300);
+      if (!(await calls(page, 'mm_leave_queue')).length) p.push('Cancel did not send mm_leave_queue');
+      return p;
+    },
+  },
+  // (states are added above this line)
 };
 
 const byName = Object.fromEntries((STATES.online || []).map((s) => [s.name, s]));

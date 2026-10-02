@@ -1,14 +1,13 @@
-// Matchmaking on the Online page: Quick Match, lobbies, and the match in progress.
+// Matchmaking on the Online page: the mode tiles, the action row, the match in progress and your room
+// (spec docs/superpowers/specs/2026-10-02-online-page-redesign-design.md).
 //
-// Plain on purpose. The designed interface comes later on top of these same commands; this page's
-// job is to make every command reachable and every state readable. It sits ABOVE the private-room
-// section (online.js) and never touches it, so the existing host/join flow and its checkers are
-// unchanged.
-//
-// Reads come from `mm_state`, which returns what the launcher's background long-poll already holds
-// in memory - so polling it every second costs nothing and never touches the network. Only actions
-// (queue, join, ready, chat) make a request.
+// Only the look changed in the redesign. Every command, argument, order and poll below is the one this page always
+// sent: `mm_state` every second (a read of what the launcher's long-poll already holds in memory, so it never touches
+// the network) and one request per action. Which state the mode area shows is decided exactly as before: a live match,
+// then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason } from './shell.js';
+import { clock, eloBits, seekLine } from './online-model.js';
+import { tabs } from './tabs.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
 // graphics preset the page's own Play and private rooms use. Those live in page storage, so they are
@@ -62,28 +61,38 @@ const store = {
 
 let busy = false;
 let lastDrawn = '';
-const status = el('p', { class: 'settings-status', role: 'status' });
+const status = el('p', { class: 'settings-status on-status', role: 'status' });
 
 function mode() { return store.get('mm:mode', 'casual'); }
 
-function modeTabs() {
-  const tabs = el('div', { class: 'section-tabs', 'aria-label': 'Casual or ranked' });
-  for (const [value, label] of [['casual', 'Casual'], ['ranked', 'Ranked']]) {
-    tabs.append(el('button', {
-      type: 'button', text: label, 'aria-pressed': String(value === mode()),
-      onclick: () => { store.set('mm:mode', value); lastDrawn = ''; draw(); },
-    }));
-  }
-  return tabs;
+const links = document.getElementById('on-links');
+function setLinks(show) { if (links) links.hidden = !show; }
+
+// Private room is the third pick, held in page state only: `mm:mode` keeps ranked|casual, so the queue and the room
+// commands get exactly the mode they always got (spec §3.1).
+let privatePicked = false;
+const picked = () => (privatePicked ? 'private' : mode());
+function pick(value) {
+  if (value === 'private') privatePicked = true;
+  else { privatePicked = false; store.set('mm:mode', value); }
+  lastDrawn = '';
+  draw();
 }
 
+// Your rank, Elo and plays-as team (stats_dashboard's `you`), from leaderboard.js. Null until it answers and whenever
+// the server sends none (Elo off): every spot that needs it is then hidden (spec §7).
+let rankInfo = null;
+document.addEventListener('online-rank', (e) => { rankInfo = e.detail ?? null; lastDrawn = ''; draw(); });
+
 async function act(cmd, args) {
-  if (busy) return;
+  if (busy) return false;
   busy = true;
   status.textContent = '';
   section.setAttribute('aria-busy', 'true');
+  let ok = false;
   try {
     await call(cmd, args);
+    ok = true;
   } catch (e) {
     // The server's own sentence, verbatim, is always the most useful thing to show.
     status.textContent = reason(e);
@@ -93,6 +102,7 @@ async function act(cmd, args) {
     lastDrawn = '';
     await draw();
   }
+  return ok;
 }
 
 // The components online play needs to be current, the same list as the manual Online tab's.
@@ -146,10 +156,11 @@ async function queueWhenCurrent() {
   }
 }
 
-function clock(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
+// While queueWhenCurrent works, the Find button says what it is doing: the status lines it already writes (spec §3.1).
+new MutationObserver(() => {
+  const find = section.querySelector('[data-key="find"]');
+  if (find && busy && status.textContent) find.textContent = status.textContent;
+}).observe(status, { childList: true, characterData: true, subtree: true });
 
 function chatBox(messages, send) {
   const log = el('ol', { class: 'mm-chat', 'aria-label': 'Chat', 'aria-live': 'polite' });
@@ -160,34 +171,87 @@ function chatBox(messages, send) {
   return el('div', {}, log, form);
 }
 
+// ---- the mode area (spec §3.1) ----
+const MODES = [
+  { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.', art: 'art/online/ranked.jpg' },
+  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.', art: 'art/online/casual.jpg' },
+  { key: 'private', name: 'Private room', line: 'Host a room or join with a code.', art: 'art/online/private.jpg' },
+];
+
+function tileClick(key) {
+  if (picked() !== key) { pick(key); return; }
+  // A on the picked tile (a controller drives): the action row's primary (spec §6). A mouse click on it does nothing.
+  if (document.body.classList.contains('gamepad-input')) section.querySelector('.on-row [data-primary]')?.click();
+}
+
+/** The tiles. `searching`: the ticket's mode keeps colour and its pill, the others go dark and cannot be picked.
+ *  `locked`: behind the sign-in panel (no counts, no rank, not reachable). `only`: just that tile (matchmaking off). */
+function tiles(snap, { searching = null, locked = false, only = null } = {}) {
+  const depth = snap?.queue_depth ?? null;
+  const on = only ?? searching ?? picked();
+  const bits = eloBits(rankInfo?.elo);
+  const box = el('div', { class: `on-modes${only ? ' solo' : ''}`, 'data-nav': 'column', role: 'group', 'aria-label': 'Game modes' });
+  if (locked) box.setAttribute('inert', '');
+  for (const m of only ? MODES.filter((x) => x.key === only) : MODES) {
+    const isOn = m.key === on;
+    let pill = null;
+    if (searching !== null && isOn) pill = el('span', { class: 'on-pill seek' }, el('i', { 'aria-hidden': 'true' }), seekLine(m.key, rankInfo?.elo));
+    else if (searching === null && !locked && m.key !== 'private' && typeof depth?.[m.key] === 'number') {
+      pill = el('span', { class: 'on-pill' }, el('i', { 'aria-hidden': 'true' }), `${depth[m.key]} searching`);
+    }
+    const rank = m.key === 'ranked' && !locked && (bits.rank || bits.elo)
+      ? el('span', { class: 'on-rank' },
+        bits.rank ? el('b', { class: 'num', text: bits.rank }) : null,
+        bits.elo ? el('span', { class: 'num', text: bits.elo }) : null,
+        bits.week ? el('span', { class: `on-week ${bits.week.dir}`, text: bits.week.text }) : null)
+      : null;
+    box.append(el('button', {
+      type: 'button', class: `on-tile on-tile-${m.key}${isOn ? ' on' : ''}${searching !== null && !isOn ? ' dim' : ''}`,
+      'data-key': `mode-${m.key}`, 'aria-pressed': String(isOn), disabled: searching !== null ? true : null,
+      onclick: () => tileClick(m.key),
+    },
+    el('img', { class: 'on-art', src: m.art, alt: '' }),
+    pill,
+    el('span', { class: 'on-lab' },
+      el('span', { class: 'on-tx' }, el('span', { class: 'on-name', text: m.name }), el('span', { class: 'on-line', text: m.line })),
+      rank)));
+  }
+  return box;
+}
+
+function findRow(p) {
+  return el('div', { class: 'on-row' },
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p} game`, onclick: () => queueWhenCurrent() }),
+    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched by Elo' : 'Matched with anyone' }));
+}
+
+// The code field's text survives the redraws (the field itself is rebuilt).
+let roomCode = '';
+function privateRow() {
+  const code = el('input', { type: 'text', class: 'on-code', maxlength: 12, placeholder: 'Room code', 'aria-label': 'Room code', spellcheck: 'false', autocomplete: 'off', 'data-key': 'room-code', value: roomCode });
+  const join = el('button', { type: 'submit', class: `btn on-join${roomCode.trim() ? '' : ' quiet'}`, 'data-key': 'join', 'aria-label': 'Join by code', text: 'Join' });
+  code.addEventListener('input', () => { roomCode = code.value; join.classList.toggle('quiet', !code.value.trim()); });
+  const form = el('form', { class: 'on-codeform' }, code, join);
+  form.addEventListener('submit', (e) => { e.preventDefault(); const c = code.value.trim(); if (c) act('mm_room_join', { code: c }); });
+  // Ruling P20: the room's mode, the choice the old Quick Match tabs made. Stored in `mm:mode` as before; it does not
+  // move the tile pick off Private room.
+  const roomMode = tabs('mm-room-mode', ['Casual', 'Ranked'], mode() === 'ranked' ? 'Ranked' : 'Casual',
+    (name) => { store.set('mm:mode', name.toLowerCase()); lastDrawn = ''; draw(); }, { label: 'Casual or ranked' });
+  return el('div', { class: 'on-row' },
+    roomMode,
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'host', 'data-primary': 'true', text: 'Host a room', onclick: () => act('mm_room_create', { mode: mode(), public: false }) }),
+    form,
+    el('p', { class: 'on-note', text: 'Send the code to a friend' }));
+}
+
 function drawIdle(snap) {
-  const depth = snap?.queue_depth ?? { casual: 0, ranked: 0 };
-  const find = el('button', {
-    type: 'button', class: 'primary', text: `Find a ${mode()} game`,
-    onclick: () => queueWhenCurrent(),
-  });
+  const p = picked();
+  // The same `mm_rooms` read on every idle draw as before the redesign; the list shows under Private room.
   const lobbies = el('div', { class: 'mm-lobbies' }, el('h3', { text: 'Lobbies' }), el('p', { class: 'loading', text: 'Loading lobbies…' }));
   loadLobbies(lobbies);
-
-  const code = el('input', { type: 'text', maxlength: 12, placeholder: 'Lobby code', 'aria-label': 'Lobby code', spellcheck: 'false' });
-  const join = el('form', { class: 'mm-join' }, code, el('button', { type: 'submit', text: 'Join by code' }));
-  join.addEventListener('submit', (e) => { e.preventDefault(); const c = code.value.trim(); if (c) act('mm_room_join', { code: c }); });
-
-  const open = el('button', { type: 'button', text: 'Open a public lobby', onclick: () => act('mm_room_create', { mode: mode(), public: true }) });
-  const priv = el('button', { type: 'button', text: 'Private lobby for a friend', onclick: () => act('mm_room_create', { mode: mode(), public: false }) });
-
-  return [
-    el('h2', { text: 'Quick Match' }),
-    modeTabs(),
-    el('p', { class: 'note', text: mode() === 'ranked'
-      ? 'Ranked is best of three and moves your rating.'
-      : 'Casual is one game and never touches your rating.' }),
-    find,
-    el('p', { class: 'note', text: `${depth[mode()] ?? 0} waiting for a ${mode()} game right now.` }),
-    lobbies,
-    el('div', { class: 'mm-actions' }, open, priv),
-    join,
-  ];
+  if (p !== 'private') return [tiles(snap), findRow(p)];
+  const open = el('button', { type: 'button', class: 'btn sm', text: 'Open a public lobby', onclick: () => act('mm_room_create', { mode: mode(), public: true }) });
+  return [tiles(snap), privateRow(), lobbies, el('div', { class: 'mm-actions' }, open)];
 }
 
 async function loadLobbies(box) {
@@ -217,15 +281,20 @@ let queueClock = { key: null, base: 0, at: 0 };
 const queuedMs = () => queueClock.base + (Date.now() - queueClock.at);
 setInterval(() => {
   const timer = section.querySelector('.mm-timer');
-  if (timer && queueClock.key) timer.textContent = `Waiting ${clock(queuedMs())}`;
+  if (timer && queueClock.key) timer.textContent = `Searching… ${clock(queuedMs())}`;
 }, 1000);
 
 function drawQueued(t) {
   if (queueClock.key !== t.enqueued_at) queueClock = { key: t.enqueued_at, base: t.waited_ms || 0, at: Date.now() };
+  const ranked = t.mode === 'ranked';
   return [
-    el('h2', { text: `Looking for a ${t.mode} game` }),
-    el('p', { class: 'mm-timer', text: `Waiting ${clock(queuedMs())}` }),
-    el('button', { type: 'button', text: 'Stop looking', onclick: () => act('mm_leave_queue') }),
+    tiles(null, { searching: ranked ? 'ranked' : 'casual' }),
+    el('div', { class: 'on-row' },
+      el('div', { class: 'on-search' },
+        el('span', { class: 'mm-timer on-timer num', text: `Searching… ${clock(queuedMs())}` }),
+        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Casual' }),
+        el('span', { class: 'sweep', 'aria-hidden': 'true' })),
+      el('button', { type: 'button', class: 'btn on-cancel', 'data-key': 'cancel', text: 'Cancel', onclick: () => act('mm_leave_queue') })),
   ];
 }
 
@@ -305,17 +374,18 @@ function presenceToggle(on) {
 
 async function draw() {
   if (!bridge) {
+    setLinks(true);
     section.replaceChildren(el('p', { class: 'note', text: 'Matchmaking needs the Reborn launcher.' }));
     return;
   }
   let state;
-  try { state = await call('mm_state'); } catch (e) { section.replaceChildren(el('p', { class: 'note', text: reason(e) })); return; }
+  try { state = await call('mm_state'); } catch (e) { setLinks(true); section.replaceChildren(el('p', { class: 'note', text: reason(e) })); return; }
   // A launcher build without matchmaking, or a test bridge that does not know this command, answers
   // null. That is not an error the player can act on, so the panel simply stays out of the way.
-  if (!state || typeof state !== 'object') { section.replaceChildren(); return; }
+  if (!state || typeof state !== 'object') { setLinks(true); section.replaceChildren(); return; }
   // The kill switch: the server has matchmaking off (or predates it). Nothing to offer, nothing to
   // explain - the page is exactly the private-room page it was before matchmaking existed.
-  if (state.link === 'disabled') { lastDrawn = ''; markBusy(false); section.replaceChildren(); return; }
+  if (state.link === 'disabled') { lastDrawn = ''; markBusy(false); setLinks(true); section.replaceChildren(); return; }
 
   // Only redraw when something the player can see changed, so typing in chat is never interrupted.
   const signature = JSON.stringify({ l: state.link, s: state.snapshot, r: state.relay_error, p: state.presence_on, m: mode() });
@@ -333,7 +403,7 @@ async function draw() {
   // is free to play again. The hold notice still shows; the rest of the page stays usable.
   const liveMatch = snap?.match && !['complete', 'void', 'abandoned', 'held'].includes(snap.match.relay_state);
   markBusy(!!(liveMatch || snap?.room || snap?.ticket));
-  let body;
+  let body; let showLinks = true;
   if (state.link === 'signed_out') {
     body = [el('h2', { text: 'Online play' }), el('p', { text: 'Sign in with Discord on the Play page to find games, join lobbies and play ranked.' })];
   } else if (state.link === 'offline' && !snap) {
@@ -347,7 +417,7 @@ async function draw() {
   } else if (snap.ticket) {
     body = drawQueued(snap.ticket);
   } else {
-    body = drawIdle(snap);
+    body = drawIdle(snap); showLinks = picked() === 'private';
     // A held match is over for the player the moment it is held (seats released), but the server
     // keeps showing it for a few minutes. It is a notice on the normal page, never the page itself:
     // 09-26 both players sat on "Held for review" with no Find a game button for five minutes.
@@ -359,6 +429,7 @@ async function draw() {
       body.unshift(el('p', { class: 'note', text: `Your last match${snap.match.opponent ? ` against ${snap.match.opponent}` : ''} was held for review: nothing changed on the ladder, and a person will look at it. You can play again now.` }));
     }
   }
+  setLinks(showLinks);
   section.replaceChildren(...body, status, drawOnline(snap), presenceToggle(state.presence_on));
 }
 
