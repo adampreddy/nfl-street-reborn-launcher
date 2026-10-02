@@ -202,6 +202,11 @@ mod tests {
         assert_eq!(seed_kind_or_default(Some("regular")),"regular");
         assert_eq!(seed_kind_or_default(Some(" pickup ")),"pickup");
         assert_eq!(seed_kind_or_default(Some("../evil")),"regular");
+        assert_eq!(match_seed_kind(None,Some("ranked")),"ranked");
+        assert_eq!(match_seed_kind(Some("regular"),Some(" ranked ")),"ranked");
+        assert_eq!(match_seed_kind(Some("pickup"),Some("ranked")),"pickup","a ranked pickup room keeps its pickup game");
+        assert_eq!(match_seed_kind(Some("regular"),Some("casual")),"regular");
+        assert_eq!(match_seed_kind(Some("ranked"),Some("casual")),"regular","the server can never name ranked itself");
     }
 
     /// A room keeps Dolphin's own log, session-only: the 09-26 real match left nothing to read.
@@ -303,9 +308,22 @@ pub(crate) fn seed_kind_or_default(kind:Option<&str>)->&'static str{
  match kind.map(str::trim) { Some("pickup")=>"pickup", _=>"regular" }
 }
 
+/// The seed a matchmade game boots from: a ranked match's regular game takes `ranked` (Adam 10-02: Ranked plays on the
+/// settings of his Reborn 2.1 S01 - Difficulty Hard, GameBreakers Off; ranked.s01 is regular.s01 with those two
+/// values), anything else is the server's kind. Never reaches the server: rooms and snapshots keep pickup|regular.
+pub(crate) fn match_seed_kind(kind:Option<&str>,mode:Option<&str>)->&'static str{
+ match (seed_kind_or_default(kind),mode.map(str::trim)) { ("regular",Some("ranked"))=>"ranked", (k,_)=>k }
+}
+
+/// A content install that predates ranked.s01 boots ranked from regular.s01; the server's seed comparison still holds
+/// a match whose two peers would boot different files.
 fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
- let seed=p.paths.data_root().ok()?.join(format!("library/online/seed/{}.s01",seed_kind_or_default(seed_kind)));
- seed.is_file().then_some(seed)
+ let dir=p.paths.data_root().ok()?.join("library/online/seed");
+ let name=match seed_kind.map(str::trim) { Some("ranked")=>"ranked", other=>seed_kind_or_default(other) };
+ let seed=dir.join(format!("{name}.s01"));
+ if seed.is_file() { return Some(seed); }
+ let fallback=dir.join("regular.s01");
+ (name=="ranked" && fallback.is_file()).then_some(fallback)
 }
 
 /// What matchmaking's `ready` sends: this PC's answers, measured, never assumed. `seed_sha256` is
@@ -431,7 +449,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // filed under exists before there is anything to file.
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
-  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
+  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now(),matchmade:rng_seed.is_some()});
   std::thread::spawn(move||{
     // The lock and the guard are held across the wait AND across the
     // collection: the queue and the session log are shared state, and
@@ -469,7 +487,9 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
 }
 
 
-struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
+/// `matchmade`: opened by matchmaking (the only caller that hands Dolphin an RNG seed), so the page keeps the
+/// Direct connection dialog shut for it (10-02: the dialog popped up mid-match).
+struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant, matchmade:bool }
 static NETPLAY:std::sync::Mutex<Option<NetplaySession>>=std::sync::Mutex::new(None);
 
 /// The Dolphin user folder of the NetPlay game running right now, so the live feed can read its play lines.
@@ -531,7 +551,7 @@ pub fn netplay_status()->Result<serde_json::Value,String>{
  if !session.active && status["phase"]!="error" {status["phase"]="closed".into();}
  if session.active && status["phase"]=="connecting" && session.started.elapsed().as_secs()>45 {status["phase"]="error".into();status["error"]="Dolphin did not open the room. Check that your Reborn Dolphin runtime supports launcher Netplay.".into();}
  if let Some(e)=status["error"].as_str().and_then(netplay_error_for_player) {status["error"]=e.into();}
- status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();Ok(status)
+ status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();status["matchmade"]=session.matchmade.into();Ok(status)
 }
 
 #[tauri::command]
