@@ -17,7 +17,7 @@
 //! The fixtures under `tests/fixtures/mm/` are REAL responses captured from the running backend,
 //! not hand-written, so the tests below decode what the server actually sends.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::net::Http;
 use crate::presence::{Activity, Mode, Series};
@@ -165,11 +165,36 @@ pub struct MatchView {
     pub host_code: Option<String>,
     /// `[seat0 wins, seat1 wins]`.
     pub series: Vec<u8>,
+    /// `[seat0, seat1]` games the live feed decided (unofficial). Empty from a server before the series build.
+    pub series_live: Vec<u8>,
+    pub outcome: Option<Outcome>,
+    pub rules: Option<SeriesRules>,
     pub wins_needed: u8,
     pub winner_seat: Option<u8>,
     pub hold_reason: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
+}
+
+/// The series outcome the server publishes (series spec §1). `kind`: open | win | forfeit | split | held | abandoned.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Outcome {
+    pub kind: String,
+    pub winner_seat: Option<u8>,
+    pub official: bool,
+    pub left_seat: Option<u8>,
+}
+
+/// The rules a match started under (series spec §2).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct SeriesRules {
+    pub ranked_best_of: u8,
+    pub casual_max_games: u8,
+    pub ranked_leave_forfeits: bool,
+    pub ranked_rematch_cooldown_hours: f64,
+    pub casual_rematch_unlimited: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -791,5 +816,20 @@ mod tests {
         // Today's server: `rating: null` and nothing else. Every field is simply absent.
         let o = snap(MATCHED).matched.unwrap().opponent;
         assert_eq!((o.rating, o.rank, o.team, o.avatar_url), (None, None, None, None));
+    }
+
+    #[test]
+    fn a_match_view_reads_the_series_fields_and_an_older_server_without_them() {
+        let m: MatchView = serde_json::from_value(serde_json::json!({
+            "id": "m", "mode": "casual", "status": "complete", "best_of": 1, "series": [0, 0], "series_live": [2, 0],
+            "outcome": { "kind": "win", "winner_seat": 0, "official": false, "left_seat": null },
+            "rules": { "ranked_best_of": 3, "casual_max_games": 20, "ranked_leave_forfeits": true,
+                       "ranked_rematch_cooldown_hours": 3, "casual_rematch_unlimited": true },
+        })).unwrap();
+        assert_eq!(m.series_live, vec![2, 0]);
+        assert_eq!(m.outcome.as_ref().unwrap().kind, "win");
+        assert_eq!(m.rules.as_ref().unwrap().casual_max_games, 20);
+        let old: MatchView = serde_json::from_value(serde_json::json!({ "id": "m", "best_of": 1, "series": [0, 0] })).unwrap();
+        assert!(old.outcome.is_none() && old.series_live.is_empty());
     }
 }

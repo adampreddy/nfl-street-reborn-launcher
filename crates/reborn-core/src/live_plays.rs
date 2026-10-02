@@ -438,6 +438,7 @@ pub struct LivePoster {
     /// latched, or it was just begun and never saved. A tick writes the cursor only then, so a second
     /// with nothing new (backing off during an outage, or caught up) never touches the disk.
     dirty: bool,
+    tally: crate::series::LocalTally,
 }
 
 /// One tick sends at most this many plays, so a long backlog never holds the loop.
@@ -453,7 +454,12 @@ impl LivePoster {
         let now = SystemTime::now();
         prune_live(user_dir, state_dir, Some(&ctx.match_id));
         prune_state_dir(state_dir, &cursor_path, now);
-        LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None, dirty }
+        LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None, dirty, tally: Default::default() }
+    }
+
+    /// Every play this poster decided to send for the match, by game (the ranked close reads it).
+    pub fn tally(&self) -> &crate::series::LocalTally {
+        &self.tally
     }
 
     pub fn set_games_before(&mut self, games_before: u32) {
@@ -523,7 +529,11 @@ impl LivePoster {
                         self.dirty = true;
                         continue;
                     }
-                    Decision::Post { body, .. } => body,
+                    Decision::Post { body, game_seq } => {
+                        // Our own copy counts whatever the server answers: the launcher's tally is its own (R12).
+                        self.tally.add(game_seq, &play.raw);
+                        body
+                    }
                 };
                 match classify(&http.post_json(&url, &body, Some(token))) {
                     Sent::Done => {
@@ -1199,5 +1209,16 @@ mod tests {
             other => panic!("expected a skip, got {other:?}"),
         }
         assert_eq!(play(c.next(d.path())).seq, 9);
+    }
+
+    #[test]
+    fn the_poster_keeps_a_tally_of_what_it_posts() {
+        let (user, state) = setup();
+        let mut poster = LivePoster::start(ctx(3, 0), user.path(), state.path());
+        let td = |seq: u32| format!("{{\"schema\":\"nsr.play.v1\",\"session\":\"s\",\"game_no\":1,\"attempt\":1,\"seq\":{seq},\"human_sides\":3,\"offense_side\":0,\"ports\":[0,1],\"summary\":{{\"points\":6}}}}\n");
+        live_append(user.path(), "20260923-100000-1.plays.jsonl", &(1..=6).map(td).collect::<String>());
+        let http = Script::new(vec![]);   // every POST answered 200 "live"
+        assert_eq!(poster.tick(&http, "https://api.test", "tok", 0).posted, 6);
+        assert_eq!(poster.tally().wins(), [1, 0], "seat 0 (pad 0, side 0) reached 36");
     }
 }

@@ -1,0 +1,4528 @@
+{
+ "source": "GET https://online.nflstreetreborn.com/v1/live/796c0bb4-5080-4d06-99e9-c7c4cfcc7ed8 (public snapshot, fetched 2026-10-02T09:00:01.355Z)",
+ "match": {
+  "id": "796c0bb4-5080-4d06-99e9-c7c4cfcc7ed8",
+  "mode": "casual",
+  "status": "held",
+  "best_of": 1
+ },
+ "seats": [
+  "Playz",
+  "adamknowsball"
+ ],
+ "plays": [
+  {
+   "game_seq": 1,
+   "seq": 1,
+   "status": "confirmed",
+   "body": {
+    "seq": 1,
+    "down": 1,
+    "snap": {
+     "x": 0,
+     "z": -33
+    },
+    "t_ms": 25700,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 0,
+      "z": -33,
+      "sub": 0,
+      "code": 3,
+      "actor": 50,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": -0.0601105,
+      "z": -33.7966,
+      "sub": 0,
+      "code": 4,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -0.917491,
+      "z": -36.9456,
+      "sub": 0,
+      "code": 8,
+      "actor": 38,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -4.09292,
+      "z": -34.9435,
+      "sub": 0,
+      "code": 32,
+      "actor": 38,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": -10.1362,
+      "z": -32.5585,
+      "sub": 0,
+      "code": 24,
+      "actor": 38,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -15.0639,
+      "z": -25.2999,
+      "sub": 1,
+      "code": 38,
+      "actor": 38,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -16.3233,
+      "z": -23.1315,
+      "sub": 0,
+      "code": 7,
+      "actor": 38,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": -17.9937,
+      "z": -24.0411,
+      "sub": 0,
+      "code": 8,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -12.8524,
+      "z": 25.9551,
+      "sub": 0,
+      "code": 28,
+      "actor": 46,
+      "other": 14
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": -20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002534-1",
+    "summary": {
+     "kind": "run",
+     "text": "Saquon Barkley run, pitch to Jalen Hurts, for 58 yds, tackled by Zay Flowers. 1st down.",
+     "yards": 58,
+     "forcer": -1,
+     "passer": -1,
+     "points": 0,
+     "rusher": 46,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [
+      {
+       "to": 46,
+       "from": 38
+      }
+     ],
+     "laterals": [
+      46
+     ],
+     "receiver": -1,
+     "tacklers": [
+      14
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 1,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 1,
+    "stat_changes": [
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "nsst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 1,
+      "field": "tbug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "tust",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "taug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "arst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 58,
+      "field": "ayug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 58,
+      "field": "Nlug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 58,
+      "field": "rost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 58,
+      "field": "yost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 58,
+      "field": "yTst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "y2ug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 4,
+      "field": "hyug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "l1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "r1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 58,
+      "field": "y1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "d1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "frst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "zbst",
+      "before": 0,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 2,
+   "status": "confirmed",
+   "body": {
+    "seq": 2,
+    "down": 1,
+    "snap": {
+     "x": -1,
+     "z": 25.9551
+    },
+    "t_ms": 40033,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": -1,
+      "z": 25.9551,
+      "sub": 0,
+      "code": 3,
+      "actor": 50,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": -1.91822,
+      "z": 22.0112,
+      "sub": 0,
+      "code": 4,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 3.11843,
+      "z": 15.5566,
+      "sub": 0,
+      "code": 32,
+      "actor": 46,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": 5.27804,
+      "z": 16.3532,
+      "sub": 95,
+      "code": 5,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 8.02654,
+      "z": 26.5543,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 13.459,
+      "z": 41.8194,
+      "sub": 0,
+      "code": 6,
+      "actor": 38,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": 13.558,
+      "z": 41.7468,
+      "sub": 0,
+      "code": 22,
+      "actor": 38,
+      "other": 38
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 40,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Jalen Hurts pass complete to Saquon Barkley for 14 yds. TOUCHDOWN.",
+     "yards": 14,
+     "forcer": -1,
+     "passer": 46,
+     "points": 6,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 38,
+     "tacklers": [],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": true,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 1,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 1,
+    "stat_changes": [
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "nsst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "taag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "apst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "mcag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "cpst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 14,
+      "field": "ayag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 14,
+      "field": "Nlag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 1,
+      "field": "accg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 14,
+      "field": "aycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 14,
+      "field": "Lrcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 14,
+      "field": "post",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 72,
+      "field": "yost",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 72,
+      "field": "yTst",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "dtag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 1,
+      "field": "dtcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "tPst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "ccag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "l1st",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "p1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 72,
+      "field": "y1st",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "zbst",
+      "before": 1,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 3,
+   "status": "confirmed",
+   "body": {
+    "seq": 3,
+    "down": 0,
+    "snap": {
+     "x": 0,
+     "z": 30
+    },
+    "t_ms": 52416,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 0,
+      "z": 30,
+      "sub": 0,
+      "code": 3,
+      "actor": 50,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": 0.00916263,
+      "z": 29.2017,
+      "sub": 0,
+      "code": 4,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.900248,
+      "z": 26.4237,
+      "sub": 0,
+      "code": 8,
+      "actor": 38,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 4.10161,
+      "z": 25.5768,
+      "sub": 0,
+      "code": 32,
+      "actor": 38,
+      "other": 17
+     },
+     {
+      "t": 900,
+      "x": 8.04941,
+      "z": 27.7473,
+      "sub": 0,
+      "code": 7,
+      "actor": 38,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": 13.4866,
+      "z": 27.078,
+      "sub": 0,
+      "code": 8,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 16.6974,
+      "z": 30.326,
+      "sub": 0,
+      "code": 24,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 16.96,
+      "z": 30.1051,
+      "sub": 1,
+      "code": 38,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 20.5648,
+      "z": 34.0454,
+      "sub": 1,
+      "code": 38,
+      "actor": 46,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 22.5713,
+      "z": 35.6694,
+      "sub": 0,
+      "code": 22,
+      "actor": 46,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": 22.4963,
+      "z": 35.6694,
+      "sub": 0,
+      "code": 28,
+      "actor": 46,
+      "other": 14
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 40,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002534-1",
+    "summary": {
+     "kind": "conversion",
+     "text": "2-point try: Saquon Barkley run, pitch to Jalen Hurts, tackled by Zay Flowers. No good.",
+     "yards": 5,
+     "forcer": -1,
+     "passer": -1,
+     "points": 0,
+     "rusher": 46,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [
+      {
+       "to": 46,
+       "from": 38
+      }
+     ],
+     "laterals": [
+      46
+     ],
+     "receiver": -1,
+     "tacklers": [
+      14
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 1,
+    "line_step": 20,
+    "conversion": true,
+    "human_sides": 3,
+    "offense_side": 1,
+    "stat_changes": [
+     {
+      "who": 1,
+      "team": true,
+      "after": 3,
+      "field": "nsst",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 2,
+      "field": "tbug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 2,
+      "field": "atdg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 2,
+      "field": "taug",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "arst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 63,
+      "field": "ayug",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 58,
+      "field": "Nlug",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 63,
+      "field": "rost",
+      "before": 58,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 77,
+      "field": "yost",
+      "before": 72,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 77,
+      "field": "yTst",
+      "before": 72,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 8,
+      "field": "hyug",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "a2st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "zbst",
+      "before": 2,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 4,
+   "status": "confirmed",
+   "body": {
+    "seq": 4,
+    "down": 1,
+    "snap": {
+     "x": 0,
+     "z": -33
+    },
+    "t_ms": 77066,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 0,
+      "z": -33,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -0.0409314,
+      "z": -33.78,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -4.1142,
+      "z": -40.1342,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -15.0213,
+      "z": -36.2346,
+      "sub": 120,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -0.587122,
+      "z": -32.6322,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 17.3453,
+      "z": -25.5224,
+      "sub": 0,
+      "code": 6,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 16.15,
+      "z": -5.5914,
+      "sub": 0,
+      "code": 59,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 22.5044,
+      "z": -4.72256,
+      "sub": 1,
+      "code": 28,
+      "actor": 16,
+      "other": 40
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": -20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Derrick Henry for 28 yds (20 after catch), tackled by Riq Woolen. 1st down.",
+     "yards": 28,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 16,
+     "tacklers": [
+      40
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "nsst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "taag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "apst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "mcag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "cpst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "hdst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 40,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "tust",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "pdst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "ayag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 1,
+      "field": "accg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 28,
+      "field": "aycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 28,
+      "field": "Lrcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 20,
+      "field": "cycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 28,
+      "field": "post",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 28,
+      "field": "yost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 28,
+      "field": "yTst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "ccag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "l1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "p1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 28,
+      "field": "y1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "d1st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "zbst",
+      "before": 0,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 5,
+   "status": "confirmed",
+   "body": {
+    "seq": 5,
+    "down": 1,
+    "snap": {
+     "x": 1,
+     "z": -4.72256
+    },
+    "t_ms": 98033,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": -4.72256,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.958159,
+      "z": -5.51025,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.06452,
+      "z": -11.7893,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -15.9076,
+      "z": -8.08348,
+      "sub": 127,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -7.47124,
+      "z": -7.88992,
+      "sub": 0,
+      "code": 6,
+      "actor": 13,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 5.07412,
+      "z": -13.314,
+      "sub": 0,
+      "code": 32,
+      "actor": 13,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 1.18597,
+      "z": -26.3605,
+      "sub": 0,
+      "code": 28,
+      "actor": 13,
+      "other": 42
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 0,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Nate Wiggins for loss of 21 yds, tackled by Jalen Carter.",
+     "yards": -21,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 13,
+     "tacklers": [
+      42
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "nsst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "taag",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "apst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "mcag",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "cpst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 42,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 42,
+      "team": false,
+      "after": 1,
+      "field": "ltdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 7,
+      "field": "ayag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": 1,
+      "field": "accg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": -21,
+      "field": "aycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": 0,
+      "field": "Lrcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": -18,
+      "field": "cycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "post",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "yost",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "yTst",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "ccag",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "l1st",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "p1st",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "y1st",
+      "before": 28,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 6,
+   "status": "confirmed",
+   "body": {
+    "seq": 6,
+    "down": 2,
+    "snap": {
+     "x": 1,
+     "z": -26.3605
+    },
+    "t_ms": 122950,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": -26.3605,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.939443,
+      "z": -27.1472,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.1386,
+      "z": -34.9928,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -18.9596,
+      "z": -31.4212,
+      "sub": 159,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -16.8996,
+      "z": -25.9135,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -4.61187,
+      "z": 12.1354,
+      "sub": 0,
+      "code": 21,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 0,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002534-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass incomplete.",
+     "yards": 0,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": -1,
+     "tacklers": [],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": false,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "nsst",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 3,
+      "field": "taag",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "apst",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "p2st",
+      "before": 0,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 7,
+   "status": "confirmed",
+   "body": {
+    "seq": 7,
+    "down": 3,
+    "snap": {
+     "x": 1,
+     "z": -26.3605
+    },
+    "t_ms": 140200,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": -26.3605,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 2.01668,
+      "z": -30.2386,
+      "sub": 0,
+      "code": 4,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.09432,
+      "z": -31.4386,
+      "sub": 0,
+      "code": 32,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -15.2691,
+      "z": -25.9877,
+      "sub": 0,
+      "code": 24,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -6.61461,
+      "z": -28.6806,
+      "sub": 1,
+      "code": 38,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -2.34227,
+      "z": -28.5829,
+      "sub": 0,
+      "code": 7,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -2.75583,
+      "z": -29.9034,
+      "sub": 0,
+      "code": 8,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -19.7838,
+      "z": -18.774,
+      "sub": 0,
+      "code": 28,
+      "actor": 19,
+      "other": 40
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 0,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002534-1",
+    "summary": {
+     "kind": "run",
+     "text": "Derrick Henry pitch to Lamar Jackson for 7 yds, tackled by Riq Woolen.",
+     "yards": 7,
+     "forcer": -1,
+     "passer": -1,
+     "points": 0,
+     "rusher": 19,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [
+      {
+       "to": 19,
+       "from": 16
+      }
+     ],
+     "laterals": [
+      19
+     ],
+     "receiver": -1,
+     "tacklers": [
+      40
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "nsst",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 1,
+      "field": "tbug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 40,
+      "team": false,
+      "after": 2,
+      "field": "atdg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "tust",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "taug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "arst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 7,
+      "field": "ayug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 7,
+      "field": "Nlug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "rost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 14,
+      "field": "yost",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 14,
+      "field": "yTst",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "hyug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "d3st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "y13t",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "r3st",
+      "before": 0,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 8,
+   "status": "confirmed",
+   "body": {
+    "seq": 8,
+    "down": 4,
+    "snap": {
+     "x": -1,
+     "z": -18.774
+    },
+    "t_ms": 153950,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": -1,
+      "z": -18.774,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -1.90211,
+      "z": -22.6988,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 3.07832,
+      "z": -27.5598,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 18.6366,
+      "z": -24.5558,
+      "sub": 139,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 15.7669,
+      "z": -18.029,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 2.69561,
+      "z": 7.08446,
+      "sub": 0,
+      "code": 6,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 3.30204,
+      "z": 7.99162,
+      "sub": 0,
+      "code": 28,
+      "actor": 16,
+      "other": 44
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 0,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Derrick Henry for 26 yds, tackled by Cooper DeJean. 1st down.",
+     "yards": 26,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 16,
+     "tacklers": [
+      44
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "nsst",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 4,
+      "field": "taag",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "apst",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 3,
+      "field": "mcag",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "cpst",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 44,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 33,
+      "field": "ayag",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 2,
+      "field": "accg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 54,
+      "field": "aycg",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 28,
+      "field": "Lrcg",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 20,
+      "field": "cycg",
+      "before": 20,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 33,
+      "field": "post",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 40,
+      "field": "yost",
+      "before": 14,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 40,
+      "field": "yTst",
+      "before": 14,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "ccag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "d4st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "p4st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "c4st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "d1st",
+      "before": 1,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 9,
+   "status": "confirmed",
+   "body": {
+    "seq": 9,
+    "down": 1,
+    "snap": {
+     "x": 1,
+     "z": 7.99162
+    },
+    "t_ms": 175150,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 7.99162,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.975629,
+      "z": 7.20361,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.03043,
+      "z": 0.690193,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -11.3748,
+      "z": 2.74461,
+      "sub": 153,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -0.566954,
+      "z": 8.42321,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 18.4342,
+      "z": 16.5901,
+      "sub": 1,
+      "code": 38,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 15.5979,
+      "z": 18.7375,
+      "sub": 0,
+      "code": 6,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 11.5979,
+      "z": 32.1094,
+      "sub": 0,
+      "code": 28,
+      "actor": 16,
+      "other": 44
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Derrick Henry for 24 yds (13 after catch), tackled by Cooper DeJean. 1st down.",
+     "yards": 24,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 16,
+     "tacklers": [
+      44
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "nsst",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 5,
+      "field": "taag",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "apst",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 2,
+      "field": "tbug",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 4,
+      "field": "mcag",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "cpst",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 44,
+      "team": false,
+      "after": 2,
+      "field": "atdg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 3,
+      "field": "tust",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 57,
+      "field": "ayag",
+      "before": 33,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 3,
+      "field": "accg",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 78,
+      "field": "aycg",
+      "before": 54,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 28,
+      "field": "Lrcg",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 33,
+      "field": "cycg",
+      "before": 20,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 57,
+      "field": "post",
+      "before": 33,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 64,
+      "field": "yost",
+      "before": 40,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 64,
+      "field": "yTst",
+      "before": 40,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "ccag",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "l1st",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "p1st",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 31,
+      "field": "y1st",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "d1st",
+      "before": 2,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 10,
+   "status": "confirmed",
+   "body": {
+    "seq": 10,
+    "down": 1,
+    "snap": {
+     "x": 1,
+     "z": 32.1094
+    },
+    "t_ms": 195166,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 32.1094,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.942169,
+      "z": 31.3224,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.315241,
+      "z": 19.166,
+      "sub": 89,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.07734,
+      "z": 26.0633,
+      "sub": 0,
+      "code": 32,
+      "actor": -1,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -6.75812,
+      "z": 32.4161,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -10.6609,
+      "z": 39.7932,
+      "sub": 0,
+      "code": 20,
+      "actor": 44,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 30,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 15.3873,
+      "z": 13.6685,
+      "sub": 0,
+      "code": 7,
+      "actor": 44,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": 17.1575,
+      "z": 9.49578,
+      "sub": 0,
+      "code": 8,
+      "actor": 21,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 30,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -17.1575,
+      "z": -9.49578,
+      "sub": 0,
+      "code": 8,
+      "actor": 21,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -16.0799,
+      "z": -9.93711,
+      "sub": 0,
+      "code": 28,
+      "actor": 21,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 40,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "interception",
+     "text": "Lamar Jackson pass INTERCEPTED by Cooper DeJean, pitch to Jalen Hurts. FUMBLE by Cooper DeJean, recovered by Nnamdi Madubuike, tackled by Jalen Hurts. 1st down.",
+     "yards": 0,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": 44,
+     "pitches": [
+      {
+       "to": 46,
+       "from": 44
+      }
+     ],
+     "laterals": [
+      46
+     ],
+     "receiver": -1,
+     "tacklers": [
+      46
+     ],
+     "turnover": true,
+     "recoverer": 21,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": 44,
+     "yards_known": false,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "nsst",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "zost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "rdst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 6,
+      "field": "taag",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "apst",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "niag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "agst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "ipst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 44,
+      "team": false,
+      "after": 1,
+      "field": "nisg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "atst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "iDst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 44,
+      "team": false,
+      "after": 1,
+      "field": "ufug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "ufst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "lfst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "agst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 21,
+      "team": false,
+      "after": 1,
+      "field": "rflg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "rfst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "atst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 4,
+      "field": "tust",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "l1st",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "p1st",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": -11,
+      "field": "y1st",
+      "before": 31,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 4,
+      "field": "d1st",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "frst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "zbst",
+      "before": 1,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 11,
+   "status": "confirmed",
+   "body": {
+    "seq": 11,
+    "down": 1,
+    "snap": {
+     "x": -1,
+     "z": -9.93711
+    },
+    "t_ms": 215600,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": -1,
+      "z": -9.93711,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -1.94724,
+      "z": -13.8393,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 3.22681,
+      "z": -19.5195,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -5.09335,
+      "z": -18.2098,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -19.9378,
+      "z": -14.7291,
+      "sub": 159,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -4.59195,
+      "z": -9.58782,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 21.0864,
+      "z": 1.06058,
+      "sub": 0,
+      "code": 6,
+      "actor": 16,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 20.3265,
+      "z": 5.47232,
+      "sub": 0,
+      "code": 57,
+      "actor": 16,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 21.6163,
+      "z": 8.17321,
+      "sub": 0,
+      "code": 28,
+      "actor": 16,
+      "other": 38
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 0,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Derrick Henry for 18 yds (7 after catch), tackled by Saquon Barkley. 1st down.",
+     "yards": 18,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 16,
+     "tacklers": [
+      38
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 8,
+      "field": "nsst",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 7,
+      "field": "taag",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "apst",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 5,
+      "field": "mcag",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "cpst",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "jsst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "jwst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 1,
+      "field": "atdg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 5,
+      "field": "tust",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 75,
+      "field": "ayag",
+      "before": 57,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 4,
+      "field": "accg",
+      "before": 3,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 96,
+      "field": "aycg",
+      "before": 78,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 28,
+      "field": "Lrcg",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 16,
+      "team": false,
+      "after": 40,
+      "field": "cycg",
+      "before": 33,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 75,
+      "field": "post",
+      "before": 57,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 82,
+      "field": "yost",
+      "before": 64,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 82,
+      "field": "yTst",
+      "before": 64,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "ccag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "l1st",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "p1st",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "y1st",
+      "before": -11,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 5,
+      "field": "d1st",
+      "before": 4,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 3,
+      "field": "zbst",
+      "before": 2,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 12,
+   "status": "confirmed",
+   "body": {
+    "seq": 12,
+    "down": 1,
+    "snap": {
+     "x": 1,
+     "z": 8.17321
+    },
+    "t_ms": 232016,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 8.17321,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.959075,
+      "z": 7.39368,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 5.13921,
+      "z": 1.43856,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 18.6257,
+      "z": 0.552714,
+      "sub": 93,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 13.7799,
+      "z": 8.776,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 8.94329,
+      "z": 15.1096,
+      "sub": 0,
+      "code": 21,
+      "actor": 40,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass incomplete.",
+     "yards": 0,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": -1,
+     "tacklers": [],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": false,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 9,
+      "field": "nsst",
+      "before": 8,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 8,
+      "field": "taag",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 8,
+      "field": "apst",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "l1st",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "p1st",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "y1st",
+      "before": 7,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 13,
+   "status": "confirmed",
+   "body": {
+    "seq": 13,
+    "down": 2,
+    "snap": {
+     "x": 1,
+     "z": 8.17321
+    },
+    "t_ms": 246000,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 8.17321,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 1.02126,
+      "z": 7.38592,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.00243,
+      "z": 1.74259,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -15.4305,
+      "z": 4.43852,
+      "sub": 0,
+      "code": 61,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -13.7185,
+      "z": 3.02068,
+      "sub": 67,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -13.7328,
+      "z": 8.47586,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -16.4775,
+      "z": 49.5513,
+      "sub": 0,
+      "code": 21,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass incomplete.",
+     "yards": 0,
+     "forcer": -1,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": -1,
+     "tacklers": [],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": false,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 10,
+      "field": "nsst",
+      "before": 9,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 9,
+      "field": "taag",
+      "before": 8,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 9,
+      "field": "apst",
+      "before": 8,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "p2st",
+      "before": 1,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 14,
+   "status": "confirmed",
+   "body": {
+    "seq": 14,
+    "down": 3,
+    "snap": {
+     "x": 1,
+     "z": 8.17321
+    },
+    "t_ms": 256566,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 8.17321,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0.954221,
+      "z": 7.39374,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.0632,
+      "z": 6.38442,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -9.5227,
+      "z": 8.49912,
+      "sub": 0,
+      "code": 24,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -21.9243,
+      "z": 24.1332,
+      "sub": 1,
+      "code": 28,
+      "actor": 19,
+      "other": 46
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 20,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "run",
+     "text": "Lamar Jackson run for 15 yds, tackled by Jalen Hurts. 1st down.",
+     "yards": 15,
+     "forcer": -1,
+     "passer": -1,
+     "points": 0,
+     "rusher": 19,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": -1,
+     "tacklers": [
+      46
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": true,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 11,
+      "field": "nsst",
+      "before": 10,
+      "before_known": true
+     },
+     {
+      "who": 46,
+      "team": false,
+      "after": 2,
+      "field": "atdg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 6,
+      "field": "tust",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "pdst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "taug",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "arst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 22,
+      "field": "ayug",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 15,
+      "field": "Nlug",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 22,
+      "field": "rost",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 97,
+      "field": "yost",
+      "before": 82,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 97,
+      "field": "yTst",
+      "before": 82,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "d3st",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "y13t",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "r3st",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "c3st",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "c13t",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "d1st",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "frst",
+      "before": 1,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 15,
+   "status": "live",
+   "body": {
+    "seq": 15,
+    "down": 1,
+    "snap": {
+     "x": -1,
+     "z": 24.1332
+    },
+    "t_ms": 276233,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": -1,
+      "z": 24.1332,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -1.04063,
+      "z": 23.3534,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -5.03254,
+      "z": 16.1028,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 3.0206,
+      "z": 12.373,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 5.51458,
+      "z": 12.761,
+      "sub": 142,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 12.9906,
+      "z": 24.73,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 19.2722,
+      "z": 31.9321,
+      "sub": 0,
+      "code": 6,
+      "actor": 14,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 19.7631,
+      "z": 31.6654,
+      "sub": 1,
+      "code": 28,
+      "actor": 14,
+      "other": 38
+     },
+     {
+      "t": 900,
+      "x": 20.26,
+      "z": 31.6654,
+      "sub": 0,
+      "code": 18,
+      "actor": 38,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": 22.5792,
+      "z": 31.9676,
+      "sub": 0,
+      "code": 22,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 40,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Zay Flowers for 7 yds. FUMBLE by Zay Flowers, forced by Saquon Barkley, tackled by Saquon Barkley.",
+     "yards": 7,
+     "forcer": 38,
+     "passer": 19,
+     "points": 0,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": 14,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 14,
+     "tacklers": [
+      38
+     ],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": false,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 12,
+      "field": "nsst",
+      "before": 11,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 10,
+      "field": "taag",
+      "before": 9,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 10,
+      "field": "apst",
+      "before": 9,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 6,
+      "field": "mcag",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 6,
+      "field": "cpst",
+      "before": 5,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 2,
+      "field": "atdg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 7,
+      "field": "tust",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 3,
+      "field": "pdst",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 82,
+      "field": "ayag",
+      "before": 75,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 1,
+      "field": "accg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 7,
+      "field": "aycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 7,
+      "field": "Lrcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 0,
+      "field": "cycg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 82,
+      "field": "post",
+      "before": 75,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 104,
+      "field": "yost",
+      "before": 97,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 104,
+      "field": "yTst",
+      "before": 97,
+      "before_known": true
+     },
+     {
+      "who": 14,
+      "team": false,
+      "after": 1,
+      "field": "ufug",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "ufst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 38,
+      "team": false,
+      "after": 1,
+      "field": "fflg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "ffst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "ccag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "l1st",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "p1st",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 14,
+      "field": "y1st",
+      "before": 7,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 4,
+      "field": "zbst",
+      "before": 3,
+      "before_known": true
+     }
+    ]
+   }
+  },
+  {
+   "game_seq": 1,
+   "seq": 16,
+   "status": "live",
+   "body": {
+    "seq": 16,
+    "down": 2,
+    "snap": {
+     "x": 1,
+     "z": 31.9676
+    },
+    "t_ms": 290200,
+    "ports": [
+     1,
+     0
+    ],
+    "events": [
+     {
+      "t": 900,
+      "x": 1,
+      "z": 31.9676,
+      "sub": 0,
+      "code": 3,
+      "actor": 15,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": 1.03047,
+      "z": 31.1844,
+      "sub": 0,
+      "code": 4,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -3.136,
+      "z": 22.3289,
+      "sub": 0,
+      "code": 32,
+      "actor": 19,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -16.8075,
+      "z": 27.4197,
+      "sub": 82,
+      "code": 5,
+      "actor": 19,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -17.1557,
+      "z": 32.5283,
+      "sub": 0,
+      "code": 24,
+      "actor": -1,
+      "other": -1
+     },
+     {
+      "t": 900,
+      "x": -19.6238,
+      "z": 43.5612,
+      "sub": 0,
+      "code": 6,
+      "actor": 13,
+      "other": 19
+     },
+     {
+      "t": 900,
+      "x": -19.6912,
+      "z": 43.5923,
+      "sub": 0,
+      "code": 22,
+      "actor": 13,
+      "other": 13
+     },
+     {
+      "t": 900,
+      "x": 0,
+      "z": 0,
+      "sub": 0,
+      "code": 2,
+      "actor": -1,
+      "other": -1
+     }
+    ],
+    "goal_z": 40,
+    "line_z": 40,
+    "schema": "nsr.play.v1",
+    "attempt": 1,
+    "game_no": 1,
+    "session": "20261002-002535-1",
+    "summary": {
+     "kind": "pass",
+     "text": "Lamar Jackson pass complete to Nate Wiggins for 8 yds. TOUCHDOWN.",
+     "yards": 8,
+     "forcer": -1,
+     "passer": 19,
+     "points": 6,
+     "rusher": -1,
+     "safety": false,
+     "fumbler": -1,
+     "pitches": [],
+     "laterals": [],
+     "receiver": 13,
+     "tacklers": [],
+     "turnover": false,
+     "recoverer": -1,
+     "touchdown": true,
+     "first_down": false,
+     "interceptor": -1,
+     "yards_known": true,
+     "conversion_good": false,
+     "decoder_version": 1
+    },
+    "end_side": 0,
+    "line_step": 20,
+    "conversion": false,
+    "human_sides": 3,
+    "offense_side": 0,
+    "stat_changes": [
+     {
+      "who": 0,
+      "team": true,
+      "after": 13,
+      "field": "nsst",
+      "before": 12,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 2,
+      "field": "zost",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 2,
+      "field": "rdst",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 11,
+      "field": "taag",
+      "before": 10,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 11,
+      "field": "apst",
+      "before": 10,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 7,
+      "field": "mcag",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 7,
+      "field": "cpst",
+      "before": 6,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 90,
+      "field": "ayag",
+      "before": 82,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 28,
+      "field": "Nlag",
+      "before": 28,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": 2,
+      "field": "accg",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": -13,
+      "field": "aycg",
+      "before": -21,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": 8,
+      "field": "Lrcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 90,
+      "field": "post",
+      "before": 82,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 112,
+      "field": "yost",
+      "before": 104,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 112,
+      "field": "yTst",
+      "before": 104,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 1,
+      "field": "dtag",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 13,
+      "team": false,
+      "after": 1,
+      "field": "dtcg",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "tPst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 1,
+      "field": "tost",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 1,
+      "field": "tdst",
+      "before": 0,
+      "before_known": true
+     },
+     {
+      "who": 19,
+      "team": false,
+      "after": 2,
+      "field": "ccag",
+      "before": 1,
+      "before_known": true
+     },
+     {
+      "who": 0,
+      "team": true,
+      "after": 3,
+      "field": "p2st",
+      "before": 2,
+      "before_known": true
+     },
+     {
+      "who": 1,
+      "team": true,
+      "after": 5,
+      "field": "zbst",
+      "before": 4,
+      "before_known": true
+     }
+    ]
+   }
+  }
+ ]
+}
