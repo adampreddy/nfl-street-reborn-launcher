@@ -4,7 +4,11 @@
 # run on this account (billing), and is what CI should run when it can.
 #
 # Usage (as root inside the WSL distro, after setup-builder.sh):
-#   build-release.sh <windows-runtime-folder>
+#   REBORN_BUILD_VERSION=3.0.30 build-release.sh <windows-runtime-folder>
+#
+# REBORN_BUILD_VERSION is the version players see and self-update compares
+# against latest.json. Required: without it the launcher reports the crate's
+# own version and would never see an update (the 09-10 beta bug).
 #
 # Inputs:
 #   /home/reborn/src/dolphin    the fork, checked out at the runtime commit
@@ -23,7 +27,8 @@
 #   runtime-linux/                         publishable as `runtime-linux`
 #   BUILD-INFO.txt                         commits, glibc floor, sizes
 set -euo pipefail
-WIN_RUNTIME=${1:?usage: build-release.sh <windows-runtime-folder>}
+WIN_RUNTIME=${1:?usage: REBORN_BUILD_VERSION=<v> build-release.sh <windows-runtime-folder>}
+BUILD_VERSION=${REBORN_BUILD_VERSION:?set REBORN_BUILD_VERSION to the version being published}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=/home/reborn/src
 J=/srv/jammy
@@ -44,7 +49,7 @@ done
 FORK_COMMIT=$(g -C "$SRC/dolphin" rev-parse HEAD)
 LAUNCHER_COMMIT=$(g -C "$SRC/launcher" rev-parse HEAD)
 UPSTREAM_COMMIT=$(g -C "$SRC/dolphin-upstream" rev-parse HEAD 2>/dev/null || echo unknown)
-VERSION=$(grep -m1 '^version' "$SRC/launcher/Cargo.toml" | cut -d'"' -f2)
+VERSION=$BUILD_VERSION
 OUT=/home/reborn/release/$VERSION
 rm -rf "$OUT"; mkdir -p "$OUT"
 echo "fork $FORK_COMMIT  launcher $LAUNCHER_COMMIT  version $VERSION"
@@ -102,11 +107,11 @@ cp /usr/bin/xdelta3 /src/launcher/crates/reborn-ui/binaries/xdelta3-x86_64-unkno
 '
 
 # --- 3. The launcher AppImage -------------------------------------------------
-"$HERE/in-builder.sh" bash -euxc '
+"$HERE/in-builder.sh" env REBORN_BUILD_VERSION="$BUILD_VERSION" bash -euxc '
 export CARGO_TARGET_DIR=/src/launcher/target-jammy
 bash /src/launcher/installer/linux/build-appimage.sh
 '
-cp "$SRC/launcher/target-jammy/release/bundle/appimage/"*.AppImage "$OUT/"
+cp "$SRC/launcher/target-jammy/release/bundle/appimage/"*.AppImage "$OUT/NFL Street Reborn $BUILD_VERSION.AppImage"
 
 # --- 4. What was built ---------------------------------------------------------
 glibc_floor() { find "$@" -type f \( -perm -u+x -o -name '*.so*' \) -exec objdump -T {} + 2>/dev/null \
