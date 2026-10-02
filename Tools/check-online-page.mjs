@@ -282,6 +282,46 @@ const EXPECT = {
       return p;
     },
   },
+  'online-held': {
+    text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
+    absent: ['Leave match', 'Accept'],
+    check: async (page) => {
+      const p = [];
+      const notice = page.locator('.on-notice');
+      if (!(await notice.isVisible())) return ['no held notice'];
+      const n = await notice.boundingBox(), t = await page.locator('.on-modes').boundingBox();
+      if (!t || n.y > t.y) p.push('the notice is not above the tiles');
+      await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
+      await page.waitForTimeout(300);
+      if (await page.locator('.on-notice').count()) p.push('Dismiss did not hide the notice');
+      return p;
+    },
+  },
+  'online-held-other': { text: ['Nothing changed on the leaderboard. Someone will look at it. You can play again now.'], absent: ['ladder'] },
+  'online-signed-out': {
+    text: ['Sign in to play online', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
+    absent: ['Find a', 'searching', '1,184 Elo', '#7'],
+    check: async (page) => {
+      const p = [];
+      if (!(await page.locator('.on-modes[inert]').count())) p.push('the tiles behind the panel can still be reached');
+      await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).click();
+      await page.getByText('Your code is ABCD-1234', { exact: true }).waitFor({ timeout: 3000 }).catch(() => p.push('the device code is not shown'));
+      if (!(await calls(page, 'identity_sign_in_start')).length) p.push('Sign in did not start the device-code flow');
+      return p;
+    },
+  },
+  'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.'], absent: ['Sign in with Discord', 'Find a'] },
+  'online-disabled': {
+    text: ['Private room', 'Direct connection'],
+    absent: ['Find a', "Can't reach", 'Sign in'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-tile').count()) !== 1) p.push(`${await page.locator('.on-tile').count()} tiles with matchmaking off`);
+      await page.locator('.on-row [data-key="direct"]').click();
+      if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('the Direct connection button did not open the dialog');
+      return p;
+    },
+  },
   // (states are added above this line)
 };
 

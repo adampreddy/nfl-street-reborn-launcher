@@ -147,3 +147,15 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-roomrow .btn.on-go{flex:1;min-width:0}
 @media (max-width:1000px){.on-roomrow{flex-wrap:wrap}}
 @media (max-width:1000px){.on-room{grid-template-columns:1fr}}
+/* signed out / offline (spec §3.9): one panel over the blurred tiles */
+.on-locked{position:relative;flex:1;display:flex;flex-direction:column;min-height:0}
+.on-locked .on-modes{filter:blur(6px)}
+.on-lock{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;border-radius:var(--r-lg);background:var(--lock-bg);text-align:center}
+.on-lock b{font:700 26px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;color:var(--fg)}
+.on-lock p{margin:0;max-width:360px;font-size:14px;color:var(--fg-2)}
+.on-lock .btn.on-go{flex:none;min-width:280px}
+/* a held match (spec §3.8): .partial is theme.css's amber message */
+.on-notice{display:flex;align-items:flex-start;gap:16px}
+.on-notice b{display:block;margin-bottom:4px;font-weight:600}
+.on-notice span{color:var(--fg-2)}
+.on-notice .btn{flex:none;margin-left:auto}

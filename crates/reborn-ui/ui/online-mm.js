@@ -7,8 +7,9 @@
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { acceptWithin, clock, eloBits, everyoneReady, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
+import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { tabs } from './tabs.js';
+import { createSignIn } from './sign-in.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
 // graphics preset the page's own Play and private rooms use. Those live in page storage, so they are
@@ -265,6 +266,46 @@ function drawIdle(snap) {
   return [tiles(snap), privateRow(), lobbies, el('div', { class: 'mm-actions' }, open)];
 }
 
+// ---- signed out, offline, matchmaking off, a held match (spec §3.8, §3.9) ----
+// The same Discord device-code flow as Stats (sign-in.js). Once it is done the launcher's own poll sees the account.
+const signIn = createSignIn({ onChange: () => { lastDrawn = ''; draw(); }, onDone: () => { lastDrawn = ''; draw(); } });
+
+/** One panel over the blurred, unreachable tiles. `withButton`: Sign in with Discord (and, while it waits, the code). */
+function lockPanel(title, text, withButton) {
+  const si = signIn.state;
+  const parts = withButton && si.active
+    ? [el('b', { text: 'Waiting for Discord' }),
+      el('p', { role: 'status', text: `Your code is ${si.userCode}` }),
+      si.verifyUrl ? el('p', { text: `Go to ${si.verifyUrl} to approve it.` }) : null,
+      el('button', { type: 'button', class: 'btn', 'data-key': 'signin-cancel', text: 'Cancel', onclick: () => signIn.cancel() })]
+    : [el('b', { text: title }),
+      el('p', { text }),
+      withButton ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'signin', 'data-primary': 'true',
+        text: si.starting ? 'Opening Discord…' : 'Sign in with Discord', disabled: si.starting, onclick: () => signIn.start() }) : null,
+      withButton && si.message ? el('p', { class: 'refusal', role: 'alert', text: si.message }) : null];
+  return el('div', { class: 'on-locked' }, tiles(null, { locked: true }),
+    el('div', { class: 'on-lock', role: 'region', 'aria-label': title }, ...parts.filter(Boolean)));
+}
+
+/** Matchmaking off: the private play that works without it is the direct connection (ruling 7). */
+function directRow() {
+  return el('div', { class: 'on-row' },
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'direct', 'data-primary': 'true', text: 'Direct connection',
+      onclick: () => document.getElementById('direct-open')?.click() }),
+    el('p', { class: 'on-note', text: 'Send the code to a friend' }));
+}
+
+// A held match is over for the player the moment it is held (seats released), but the server keeps showing it for a
+// few minutes: one notice above the normal page, never the page itself (09-26). Dismiss hides it for this match.
+let dismissedHold = null;
+function heldBox(m) {
+  const n = heldNotice(m);
+  return el('div', { class: 'partial on-notice', role: 'status' },
+    el('div', {}, el('b', { text: n.title }), el('span', { text: n.text })),
+    el('button', { type: 'button', class: 'btn quiet sm', 'data-key': 'held-dismiss', text: 'Dismiss',
+      onclick: () => { dismissedHold = m.id; lastDrawn = ''; draw(); } }));
+}
+
 async function loadLobbies(box) {
   try {
     const rooms = await call('mm_rooms');
@@ -417,54 +458,53 @@ async function draw() {
   }
   let state;
   try { state = await call('mm_state'); } catch (e) { setLinks(true); section.replaceChildren(el('p', { class: 'note', text: reason(e) })); return; }
-  // A launcher build without matchmaking, or a test bridge that does not know this command, answers
-  // null. That is not an error the player can act on, so the panel simply stays out of the way.
+  // A launcher build without matchmaking, or a test bridge that does not know this command, answers null. That is not
+  // an error the player can act on, so the panel simply stays out of the way.
   if (!state || typeof state !== 'object') { setLinks(true); section.replaceChildren(); return; }
-  // The kill switch: the server has matchmaking off (or predates it). Nothing to offer, nothing to
-  // explain - the page is exactly the private-room page it was before matchmaking existed.
-  if (state.link === 'disabled') { lastDrawn = ''; markBusy(false); setLinks(true); section.replaceChildren(); return; }
+  // The kill switch: the server has matchmaking off (or predates it). Only the Private room tile, whose row opens the
+  // direct connection (spec §3.9). Drawn once, not every second.
+  if (state.link === 'disabled') {
+    markBusy(false);
+    setLinks(true);
+    if (lastDrawn === 'disabled') return;
+    lastDrawn = 'disabled';
+    section.replaceChildren(tiles(null, { only: 'private' }), directRow());
+    return;
+  }
 
   // Only redraw when something the player can see changed, so typing in chat is never interrupted.
   const signature = JSON.stringify({ l: state.link, s: state.snapshot, r: state.relay_error, p: state.presence_on, m: mode() });
   if (signature === lastDrawn || busy) return;
-  // Only a text field being typed in (the chat, the lobby code) holds a redraw. The presence
-  // checkbox is an <input> too, and focus left on it froze the page on "Waiting m:ss" for a whole
-  // game while the launcher underneath ran the match (09-26).
+  // Only a text field being typed in (the chat, the room code) holds a redraw. The presence switch is a button, and
+  // focus left on a control must never freeze the page (09-26).
   const active = document.activeElement;
   const focused = section.contains(active) && active.tagName === 'INPUT' && ['text', 'search', 'url', 'email'].includes(active.type) && active.value !== '';
   if (focused) return;
   lastDrawn = signature;
 
   const snap = state.snapshot;
-  // A HELD match is not busy: the server releases a held match's seats straight away, so the player
-  // is free to play again. The hold notice still shows; the rest of the page stays usable.
+  // A HELD match is not busy: the server releases a held match's seats straight away, so the player is free to play
+  // again. The hold notice still shows; the rest of the page stays usable.
   const liveMatch = snap?.match && !['complete', 'void', 'abandoned', 'held'].includes(snap.match.relay_state);
   markBusy(!!(liveMatch || snap?.room || snap?.ticket));
-  let body; let showLinks = true;
+  let body;
+  let showLinks = true;
   if (state.link === 'signed_out') {
-    body = [el('h2', { text: 'Online play' }), el('p', { text: 'Sign in with Discord on the Play page to find games, join lobbies and play ranked.' })];
+    body = [lockPanel('Sign in to play online', 'Connect your Discord account to play online and track your stats!', true)];
   } else if (state.link === 'offline' && !snap) {
-    body = [el('h2', { text: 'Online play' }), el('p', { text: 'Can\'t reach the Reborn servers right now. Trying again.' })];
+    body = [lockPanel("Can't reach the Reborn servers right now.", 'Trying again.', false)];
   } else if (!snap) {
     body = [el('p', { class: 'loading', text: 'Connecting…' })];
-  } else if (snap.match && !['complete', 'void', 'abandoned', 'held'].includes(snap.match.relay_state)) {
+  } else if (liveMatch) {
     body = drawMatch(snap.match, snap.chat ?? [], state.relay_error, snap);
   } else if (snap.room) {
     body = drawRoom(snap.room, snap.chat ?? []);
   } else if (snap.ticket) {
     body = drawQueued(snap.ticket);
   } else {
-    body = drawIdle(snap); showLinks = picked() === 'private';
-    // A held match is over for the player the moment it is held (seats released), but the server
-    // keeps showing it for a few minutes. It is a notice on the normal page, never the page itself:
-    // 09-26 both players sat on "Held for review" with no Find a game button for five minutes.
-    if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-stale') {
-      body.unshift(el('p', { class: 'note', text: 'A game update never reached one of your game discs, so that game was not started. Both of you: Settings → Repair game files (the one that is current is told so), then find a game again. Finding a game now also repairs it first.' }));
-    } else if (snap.match?.relay_state === 'held' && snap.match.hold_reason === 'content-mismatch') {
-      body.unshift(el('p', { class: 'note', text: `Your game files differ from ${snap.match.opponent ?? 'your opponent'}'s, so that game was not started. Both of you: Settings → Check game content, install what it offers, then find a game again.` }));
-    } else if (snap.match?.relay_state === 'held') {
-      body.unshift(el('p', { class: 'note', text: `Your last match${snap.match.opponent ? ` against ${snap.match.opponent}` : ''} was held for review: nothing changed on the ladder, and a person will look at it. You can play again now.` }));
-    }
+    body = drawIdle(snap);
+    showLinks = picked() === 'private';
+    if (snap.match?.relay_state === 'held' && dismissedHold !== snap.match.id) body.unshift(heldBox(snap.match));
   }
   setLinks(showLinks);
   section.replaceChildren(...body, status, drawOnline(snap), presenceToggle(state.presence_on));

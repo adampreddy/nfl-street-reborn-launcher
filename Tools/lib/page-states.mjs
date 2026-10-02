@@ -117,6 +117,13 @@ function onlineStates() {
       members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
       chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) },
       { init: "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(t)=>{window.__copied=t;}}})" }),
+    N('online-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true, your_ready: true,
+      series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
+    N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),
+    N('online-signed-out', { mm_state: mm(null, { link: 'signed_out' }),
+      identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 5 } }, { init: PICK('ranked') }),
+    N('online-offline', { mm_state: mm(null, { link: 'offline' }) }),
+    N('online-disabled', { mm_state: mm(null, { link: 'disabled' }) }),
     // (redesign states are added above this line)
   ];
 }
