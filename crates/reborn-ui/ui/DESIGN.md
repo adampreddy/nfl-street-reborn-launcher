@@ -65,6 +65,11 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--av-0` to `--av-7`, `--av-cpu` | 135deg gradients | letter avatars, one colour per player name (`match-rows.js`) |
 | `--thumb-bg` | 160deg `rgba(255,255,255,.05)` to `rgba(0,0,0,.18)` | the neutral mod preview. No drawn art |
 | `--surface-solid` | `#1b1e24` | an opaque popover over content (the controller binding editor) |
+| `--tile-scrim` | 0deg `rgba(6,7,9,.9)` to transparent | the Online mode tiles' picture scrim |
+| `--vs-scrim` | 0deg `rgba(6,7,9,.95)` to `.55` | the Online matchup card's picture scrim |
+| `--pill-bg` | `rgba(10,11,14,.6)` | a pill on art (Online "searching" counts, the relay step) |
+| `--lock-bg` | `rgba(13,14,17,.72)` | the Online sign-in panel over the tiles |
+| `--red-wash` | `rgba(224,39,46,.12)` | your own row on the Online leaderboard |
 
 ### Stats and Profile components
 
@@ -119,7 +124,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 
 - **Inter** (`fonts/InterVariable.woff2`) for everything. Anton and Saira are not used.
 - **Weights:** 500 UI text, 600 labels and values, 700 headline numbers and page titles. **Nothing above 700.**
-- **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live, Online and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
+- **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
 - Numbers use `font-variant-numeric: tabular-nums` (`.num`).
 - **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows.
 - **Section headers are 40px** (`.sec-head`), whatever they hold, so neighbouring cards start on one line.
@@ -138,7 +143,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 - Hover and press only move (`transform`). Colours change instantly.
 - A page change is a cross-document view transition (`@view-transition{navigation:auto}`): the old page holds until the new one draws, the sidebar (`view-transition-name: nav`) swaps in place, and only `#main` (`page`) animates: the old fades out over `--d1`, the new rises in with `look-enter` over `--d3` (Play: `look-enter-fade`, opacity only). `#main` has no animation of its own, so it is never a containing block for `position:fixed` UI. Reduced motion: instant.
 - **Containing block:** a transform on `#main` makes it the containing block for `position:fixed` children. So `position:fixed` UI (menus, dialogs, the update dock) is attached to `<body>`, never inside `#main`. `menu.js` appends its `<dialog>` to `<body>` for this reason.
-- No bounce, count-up numbers, parallax or looping motion. The one loop is `.live-dot`.
+- No bounce, count-up numbers, parallax or looping motion. The two loops are `.live-dot` and `.sweep` (a red line along the bottom of a surface while something is moving; Online, spec 2026-10-02).
 
 ## 5. Shell
 
@@ -170,6 +175,7 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 | `.player-face` (`.face`, `.badge`) | round portrait on the team colour (`--tc`), team logo badge bottom right | |
 | `.team-logo` | the backend's full-colour logo, or the abbreviation (`.text`) | |
 | `.cover-wash`, `.cover-pic`, `.presence-dot`, `.live-dot` | profile cover from the avatar colours, its avatar, the online dot, the pulsing live dot | `cover-color.js` |
+| `.sweep` | a 2px red line sweeping along the bottom of its positioned parent; transform only | Online |
 | `.refusal`, `.partial`, `.said` | messages: red, amber, green | |
 | `.facts` | label and value table | |
 | `.update-card`, `.update-dialog`, `.update-center` | update notice, fixed to the bottom right | `update-notice.js` |
@@ -229,7 +235,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `harness.html` | `harness.css` (the developer page only; its own plain look) |
 
 - The legacy sheets (`styles.css`, `launcher.css`, `product-ui.css`, `finish.css`, `shell.css`, `players.css`, `onboarding-polish.css`, `live-view.css`, and the old `play.css`, `stats.css`, `music.css`, `profile.css`) are retired and must stay gone.
-- Pages not redesigned in plan 4 (recovery, live, online, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens.
+- Pages not redesigned in plan 4 (recovery, live, onboarding) carry the layout their old sheets gave them (made once by `Tools/extract-layout-css.mjs`), on theme tokens. Online was redesigned on 2026-10-02 (`docs/superpowers/specs/2026-10-02-online-page-redesign-design.md`); `pages/online.css` is written by hand.
 - **The one allowed second stylesheet:** the Controllers page's pad art. `controller-preview.js` loads `art/controllers/<pad>/preview.css` at runtime (one `<link data-controller-art>` per pad folder) to place that pad's preview art. No other page or script adds a stylesheet.
 
 ## 9. Words

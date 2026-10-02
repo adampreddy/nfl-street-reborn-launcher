@@ -33,6 +33,13 @@
   --cover-pic-shadow:0 0 0 4px rgba(255,255,255,.08),0 10px 28px rgba(0,0,0,.45);
   --cover-mask:linear-gradient(100deg,#000 0%,rgba(0,0,0,.35) 55%,transparent 85%);
   --mix-light:#fff;--mix-dark:#000;--game-row-bg:rgba(0,0,0,.14);
+  /* Online (spec 2026-10-02): the scrim over a mode tile's picture and over the matchup card, a pill on art, the
+     sign-in panel over the tiles, your own leaderboard row */
+  --tile-scrim:linear-gradient(0deg,rgba(6,7,9,.9) 0,rgba(6,7,9,.2) 50%,rgba(6,7,9,0) 75%);
+  --vs-scrim:linear-gradient(0deg,rgba(6,7,9,.95),rgba(6,7,9,.55));
+  --pill-bg:rgba(10,11,14,.6);
+  --lock-bg:rgba(13,14,17,.72);
+  --red-wash:rgba(224,39,46,.12);
 }
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}
@@ -354,6 +361,12 @@ img.avatar{object-fit:cover}
 .cover-pic{background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c1,var(--cover-pic-c1)) 85%,var(--mix-light)),var(--c1,var(--cover-pic-c1)) 45%,var(--c2,var(--cover-pic-c2)));box-shadow:var(--cover-pic-shadow)}
 .presence-dot{position:absolute;right:6px;bottom:6px;width:18px;height:18px;border-radius:50%;background:var(--ok);border:3px solid var(--dot-ring)}
 .live-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--red);animation:live-pulse 1.6s ease-in-out infinite}
+/* a red line sweeping along the bottom of a surface while something is moving (Online: searching, a match starting;
+   spec 2026-10-02 §3.2, §3.5). The second and last loop besides .live-dot: transform only, and reduced motion stops it
+   (the prefers-reduced-motion rule at the top sets every animation to none). Its parent must be positioned. */
+.sweep{position:absolute;left:0;right:0;bottom:0;height:2px;overflow:hidden;pointer-events:none}
+.sweep::after{content:"";position:absolute;top:0;bottom:0;left:0;width:38%;border-radius:2px;background:var(--red);animation:sweep 1.6s var(--ease) infinite}
+@keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(265%)}}
 /* table: uppercase header, rows split by --stroke, a normal Total row, one fixed 220px name column shared by every table */
 .tbl{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12.5px;font-variant-numeric:tabular-nums}
 .tbl th,.tbl td{height:40px;padding:0 12px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
