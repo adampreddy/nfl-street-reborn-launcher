@@ -30,6 +30,8 @@ const ME_ROW = (() => {
 const lbRow = (name, i) => name === ME_ROW.display_name ? { ...ME_ROW } : ({ rank: i + 1, player_id: `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`, display_name: name,
   avatar_url: i % 3 ? null : `https://cdn.discordapp.com/avatars/12345678901234567${i}/0123456789abcdef0123456789abcdef.png?size=64`,
   team: i % 2 ? null : LB_TEAM, wins: 20 - i, losses: 3 + i, elo: LB_ELO[i], delta_week: i % 4 === 0 ? 16 : i % 4 === 1 ? -9 : 0, you: false });
+// A signed-out request carries no identity: the same board with no `you` flag and no pinned row (spec §4).
+export const LEADERBOARD_ANON = (lb) => ({ ...lb, you: null, rows: lb.rows.map((r) => ({ ...r, you: false })) });
 export const LEADERBOARD = { ok: true, enabled: true, total: 38, rows: LB_NAMES.map(lbRow), you: null };
 // Further down the board: #14 at 1,104 on both the card and the Ranked tile; someone else (Dime) holds #7.
 const DASH_FAR = (() => { const d = JSON.parse(JSON.stringify(DASH)); d.you.elo.rank = 14; d.you.elo.rating = 1104; return d; })();
@@ -130,7 +132,7 @@ function onlineStates() {
     N('online-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true, your_ready: true,
       series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
     N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),
-    N('online-signed-out', { mm_state: mm(null, { link: 'signed_out' }),
+    N('online-signed-out', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }),
       identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 5 } }, { init: PICK('ranked') }),
     N('online-connecting', { mm_state: mm(null) }),
     N('online-no-online-list', { mm_state: mm({ ...empty, online: undefined }) }, { init: PICK('ranked') }),
@@ -160,8 +162,8 @@ function onlineStates() {
     // signed out or queued (no banner while busy).
     N('online-invite', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
     N('online-invite-nohost', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: null }),
-    N('online-invite-signed-out', { mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
-    N('online-invite-not-now', { mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-signed-out', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
+    N('online-invite-not-now', { leaderboard: LEADERBOARD_ANON(LEADERBOARD), mm_state: mm(null, { link: 'signed_out' }), mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
     N('online-invite-long', { mm_state: mm(empty), mm_pending_room: { kind: 'room', code: 'K7QP2M9X12345', at: '2026-09-30T19:59:00Z' }, mm_room_lookup: { host_name: 'Jock', mode: 'casual' } }),
     N('online-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
       mm_pending_room: { kind: 'room', code: 'K7QP2M', at: '2026-09-30T19:59:00Z' } }),
@@ -170,6 +172,7 @@ function onlineStates() {
       netplay_pending_join: { code: 'K7QP2M9X' } }),
     N('online-pad', { mm_state: mm(empty) }, { init: PICK('ranked'), pad: true }),
     N('online-searching-esc', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-searching-panel-esc', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
     N('online-match-found-esc', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2 }) }) }),
     N('online-focus-keep', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
     // The chat field keeps its text and focus across redraws too (ruling P16): a room with chat.

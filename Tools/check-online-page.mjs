@@ -29,6 +29,8 @@ async function discordStatus(page) {
   await page.waitForTimeout(200);
   return p;
 }
+// Signed out: the leaderboard is the anonymous answer, so no row is "you" (spec §4).
+const noYouRow = async (page) => ((await page.locator('.on-lb-row.you').count()) ? ['a signed-out page highlights a "you" row'] : []);
 const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x.cmd === c).map((x) => x.args), cmd);
 // Review Focus 1 (ruling P16): a text field keeps its focus empty and its text and focus typed in, across at least two
 // redraws each (two forced by `online-rank`, then two of the page's own 1 s ticks).
@@ -186,6 +188,7 @@ const EXPECT = {
     absent: ['Find a'],
     check: async (page) => {
       const p = [];
+      if (await page.evaluate(() => { const m = document.getElementById('main'); return m.scrollHeight > m.clientHeight; })) p.push('#main scrolls vertically at 1280x800');
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) === 'private') p.push('Private room was stored in mm:mode');
       const join = page.getByRole('button', { name: 'Join by code', exact: true });
       if (!(await join.evaluate((n) => n.classList.contains('quiet')))) p.push('Join is not quiet while the code field is empty');
@@ -341,7 +344,7 @@ const EXPECT = {
     text: ['Sign in to play online', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
     absent: ['Find a', 'searching', '1,184 Elo', '#7', '0 online'],
     check: async (page) => {
-      const p = await discordStatus(page);
+      const p = [...(await noYouRow(page)), ...(await discordStatus(page))];
       if (!(await page.locator('.on-modes[inert]').count())) p.push('the tiles behind the panel can still be reached');
       await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).click();
       await page.getByText('Your code is ABCD-1234', { exact: true }).waitFor({ timeout: 3000 }).catch(() => p.push('the device code is not shown'));
@@ -556,12 +559,12 @@ const EXPECT = {
   },
   'online-invite-signed-out': {
     text: ['Sign in to join K7QP2M', 'Sign in with Discord', 'Not now'],
-    check: async (page) => ((await calls(page, 'mm_pending_room_clear')).length || (await calls(page, 'mm_room_join')).length ? ['a signed-out invite was used up'] : []),
+    check: async (page) => [...(await noYouRow(page)), ...((await calls(page, 'mm_pending_room_clear')).length || (await calls(page, 'mm_room_join')).length ? ['a signed-out invite was used up'] : [])],
   },
   'online-invite-not-now': {
     text: ['Sign in to join K7QP2M'],
     check: async (page) => {
-      const p = [];
+      const p = await noYouRow(page);
       await page.locator('[data-key="invite-notnow"]').click();
       await page.waitForTimeout(300);
       if (JSON.stringify(await calls(page, 'mm_pending_room_clear')) !== '[{}]') p.push('Not now did not clear the invite');
@@ -607,6 +610,19 @@ const EXPECT = {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(300);
       return (await calls(page, 'mm_leave_queue')).length ? [] : ['Esc while searching did not Cancel'];
+    },
+  },
+  // The Discord status panel open while Searching: Esc closes the panel only; it is not the Cancel button.
+  'online-searching-panel-esc': {
+    check: async (page) => {
+      const p = [];
+      await page.locator('#on-players').click();
+      if (!(await page.locator('dialog.menu.panel[open]').count())) p.push('the Discord status panel did not open');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+      if (await page.locator('dialog.menu.panel[open]').count()) p.push('Esc did not close the panel');
+      if ((await calls(page, 'mm_leave_queue')).length) p.push('Esc in the panel also cancelled the search');
+      return p;
     },
   },
   'online-match-found-esc': {

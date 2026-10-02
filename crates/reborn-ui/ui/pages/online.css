@@ -141,6 +141,9 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-nr{font-size:12px;color:var(--fg-3)}
 .on-chat{flex:1;display:flex;flex-direction:column;min-height:0}
 .on-chat .mm-chat-form{margin-top:auto;padding-top:8px}
+/* under the matchup card the chat takes only its own height (the card keeps the room), long logs scroll */
+.on-vs+.on-chat{flex:0 0 auto}
+.on-vs+.on-chat .mm-chat{max-height:96px}
 .on-roomrow{flex-wrap:nowrap;align-items:stretch}
 .on-roomrow .btn{white-space:nowrap;height:52px}
 .on-roomrow .btn.on-go{flex:1;min-width:0}
