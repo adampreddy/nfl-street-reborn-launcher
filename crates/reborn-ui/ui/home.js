@@ -3,6 +3,7 @@
 
 import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason, set, wireCoreFold } from "./shell.js";
 import { openMenu } from "./menu.js";
+import { avatarSrc } from "./live-common.js";
 
 // Opened from a friend's invite link: straight on to Online, which fills in
 // the room. Play is the window's first page, so this is where the hand-off
@@ -90,6 +91,28 @@ async function load() {
   keys.forEach((k, i) => {
     state[k] = settled[i].status === "fulfilled" ? settled[i].value : { error: reason(settled[i].reason) };
   });
+  loadAvatar();
+}
+
+// The Discord picture for the account chip: identity_status has none, the player's profile does. Drawn from the
+// last answer at once, refreshed in the background; any failure keeps the letter.
+const AVATAR_KEY = "reborn:avatar";
+function cachedAvatar(playerId) { try { const v = JSON.parse(localStorage.getItem(AVATAR_KEY) || "null"); return v && v.id === playerId ? avatarSrc({ avatar_url: v.url }) : null; } catch (_) { return null; } }
+function avatarPic(name) {
+  if (!state.avatar) return el("span", { class: "avatar", "aria-hidden": "true", text: name.slice(0, 1).toUpperCase() });
+  const img = el("img", { class: "avatar", src: state.avatar, alt: "", "aria-hidden": "true" });
+  img.addEventListener?.("error", () => { state.avatar = null; draw(); });
+  return img;
+}
+function loadAvatar() {
+  const id = state.identity;
+  if (!ok(id) || !id.signed_in || !id.player_id) { state.avatar = null; return; }
+  state.avatar = cachedAvatar(id.player_id);
+  call("player_profile", { playerId: id.player_id }).then((p) => {
+    const url = avatarSrc({ avatar_url: p?.header?.avatar_url });
+    try { localStorage.setItem(AVATAR_KEY, JSON.stringify({ id: id.player_id, url })); } catch (_) {}
+    if (url !== state.avatar) { state.avatar = url; draw(); }
+  }, () => {});
 }
 
 const DEVICES_KEY = "reborn:devices";
@@ -190,8 +213,8 @@ function stopSignIn(message) {
   signIn.message = message || null;
 }
 
-// Top right (spec §8.1): avatar, name and playtime, in place of "Signed in as …". identity_status has no
-// avatar picture, so the avatar is the name's first letter on the avatar colours (spec §3.4).
+// Top right (spec §8.1): avatar, name and playtime, in place of "Signed in as …". The avatar is the Discord
+// picture (loadAvatar) or, until it arrives or when there is none, the name's first letter (spec §3.4).
 function accountBlock() {
   const id = state.identity;
   const box = el("div", { class: "play-account", role: "group", "aria-label": "Account" });
@@ -206,7 +229,7 @@ function accountBlock() {
     const name = id.display_name || "Player";
     const played = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "No games played yet";
     box.append(el("a", { class: "play-account-chip", href: "stats.html", "aria-label": `Signed in as ${name}` },
-      el("span", { class: "avatar", "aria-hidden": "true", text: name.slice(0, 1).toUpperCase() }),
+      avatarPic(name),
       el("span", { class: "play-account-text" }, el("span", { class: "nm", text: name }), el("span", { class: "pt", text: played }))));
   } else {
     box.append(el("button", { type: "button", class: "btn sm", text: "Sign in with Discord", disabled: busy, onclick: startSignIn }));
