@@ -168,6 +168,14 @@ function onlineStates() {
     // A Netplay invite while queued (carried from Task 2): the Direct connection dialog stays shut.
     N('online-netplay-invite-busy', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, waited_ms: 5000, enqueued_at: '2026-09-30T19:59:55.000Z' } }),
       netplay_pending_join: { code: 'K7QP2M9X' } }),
+    N('online-pad', { mm_state: mm(empty) }, { init: PICK('ranked'), pad: true }),
+    N('online-searching-esc', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    N('online-match-found-esc', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2 }) }) }),
+    N('online-focus-keep', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
+    // The chat field keeps its text and focus across redraws too (ruling P16): a room with chat.
+    N('online-focus-keep-chat', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
+      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) }),
     // (redesign states are added above this line)
   ];
 }

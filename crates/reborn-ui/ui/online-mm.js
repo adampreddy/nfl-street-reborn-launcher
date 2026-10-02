@@ -86,6 +86,18 @@ function pick(value) {
 // the server sends none (Elo off): every spot that needs it is then hidden (spec §7).
 let rankInfo = null;
 document.addEventListener('online-rank', (e) => { rankInfo = e.detail ?? null; lastDrawn = ''; draw(); });
+// A controller drives (spec §6): the pick follows focus across the tiles, so the D-pad onto Casual picks Casual.
+section.addEventListener('focusin', (e) => {
+  if (!document.body.classList.contains('gamepad-input')) return;
+  const tile = e.target.closest?.('.on-tile');
+  const key = tile?.dataset.key?.replace(/^mode-/, '');
+  if (key && !tile.disabled && key !== picked()) pick(key);
+});
+// B / Esc: Cancel while searching, Decline on Match found; anywhere else B goes on to the sidebar as always.
+document.addEventListener('pad-back', (e) => {
+  const target = section.querySelector('[data-key="cancel"], [data-key="decline"]');
+  if (target && !target.disabled && !busy) { e.preventDefault(); target.click(); }
+});
 
 // Who you are, for your own picture on the matchup card: Play caches the Discord picture under `reborn:avatar`
 // (home.js) keyed by player id; any other id or no cache draws your letter.
@@ -635,7 +647,12 @@ async function draw() {
   }
   setLinks(showLinks);
   showOnline(snap, state.presence_on);
+  // Keep the control the player is on across the redraw, by data-key (spec §6): the page used to drop focus on every
+  // state change, which left a controller nowhere.
+  const had = document.activeElement;
+  const focusKey = had && section.contains(had) ? had.getAttribute('data-key') : null;
   section.replaceChildren(...body, status);
+  if (focusKey) section.querySelector(`[data-key="${focusKey}"]`)?.focus({ preventScroll: true });
 }
 
 draw();

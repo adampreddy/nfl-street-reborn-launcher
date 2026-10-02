@@ -30,6 +30,26 @@ async function discordStatus(page) {
   return p;
 }
 const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x.cmd === c).map((x) => x.args), cmd);
+// Review Focus 1 (ruling P16): a text field keeps its focus empty and its text and focus typed in, across at least two
+// redraws each (two forced by `online-rank`, then two of the page's own 1 s ticks).
+async function focusKeep(page, label, key, what) {
+  const p = [];
+  const redraws = async () => {
+    for (let i = 0; i < 2; i++) {
+      await page.evaluate(() => document.dispatchEvent(new CustomEvent('online-rank', { detail: null }))); // forces a redraw
+      await page.waitForTimeout(300);
+    }
+    await page.waitForTimeout(2100);
+  };
+  await page.getByLabel(label, { exact: true }).focus();
+  await redraws();
+  if (await page.evaluate(() => document.activeElement?.dataset.key) !== key) p.push(`an empty ${what} lost focus on a redraw`);
+  await page.keyboard.type('AB');
+  await redraws();
+  if (await page.getByLabel(label, { exact: true }).inputValue() !== 'AB') p.push(`typed text in the ${what} was lost on a redraw`);
+  if (await page.evaluate(() => document.activeElement?.dataset.key) !== key) p.push(`a typed ${what} lost focus`);
+  return p;
+}
 
 // ---- static: tokens, the sweep, the art ----
 {
@@ -565,6 +585,43 @@ const EXPECT = {
   },
   'online-netplay-invite-busy': {
     check: async (page) => ((await page.locator('#direct-dialog[open]').count()) ? ['the Direct connection dialog opened while queued'] : []),
+  },
+  'online-pad': {
+    check: async (page) => {
+      const p = [];
+      // A controller drives: the shell puts gamepad-input on <body> and focuses with .pad-focus.
+      await page.evaluate(() => { document.body.classList.add('gamepad-input'); document.querySelector('[data-key="mode-casual"]').focus(); });
+      await page.waitForTimeout(500);
+      if (await page.locator('[data-key="mode-casual"]').getAttribute('aria-pressed') !== 'true') p.push('the pick did not follow focus to Casual');
+      if (await page.evaluate(() => document.activeElement?.dataset.key) !== 'mode-casual') p.push('focus left the tile after the redraw');
+      const offset = await page.evaluate(() => getComputedStyle(document.activeElement).outlineOffset);
+      if (offset !== '4px') p.push(`the tile's focus ring sits ${offset} out, not 4px`);
+      await page.screenshot({ path: path.join(out, 'online-pad-focus.png') });
+      await page.evaluate(() => document.activeElement.click()); // A
+      await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'content_check'), null, { timeout: 3000 }).catch(() => p.push('A on the picked tile did not start Find a game'));
+      return p;
+    },
+  },
+  'online-searching-esc': {
+    check: async (page) => {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      return (await calls(page, 'mm_leave_queue')).length ? [] : ['Esc while searching did not Cancel'];
+    },
+  },
+  'online-match-found-esc': {
+    check: async (page) => {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      const a = await calls(page, 'mm_match_action');
+      return JSON.stringify(a[0]) === '{"matchId":"m5","action":"accept","value":false}' ? [] : [`Esc on Match found sent ${JSON.stringify(a[0])}`];
+    },
+  },
+  'online-focus-keep': {
+    check: async (page) => focusKeep(page, 'Room code', 'room-code', 'code field'),
+  },
+  'online-focus-keep-chat': {
+    check: async (page) => focusKeep(page, 'Chat message', 'chat', 'chat field'),
   },
   // (states are added above this line)
 };

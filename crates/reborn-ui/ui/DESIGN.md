@@ -217,6 +217,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `data-nav="rows"` | Settings and Mods `#screen`; Profile's Back button and its card | Up and Down prefer the nearest row, so a far control in the same column does not skip nearer rows |
 | `[data-nav-seq]` | Profile name block (Plays as, Share profile, View on web) | inside a `data-nav="rows"` area, Up and Down step through the block in reading order |
 | `data-nav="column"` | Profile's Match history | Up and Down stay in the block while it has a control that way, so the last row's Down is the pager |
+| `pad-back` event | dispatched on `document` by B / Esc, cancelable | a page that calls `preventDefault()` answers B itself (Online: Cancel while searching, Decline on Match found); otherwise B goes to the sidebar as always |
 
 ## 8. Page files and CSS architecture
 
