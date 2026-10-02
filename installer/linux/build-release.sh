@@ -33,12 +33,17 @@ free_gb=$(df -BG --output=avail /mnt/c | tail -1 | tr -dc 0-9)
 for d in "$SRC/dolphin" "$SRC/dolphin-upstream" "$SRC/launcher" "$WIN_RUNTIME/Sys" "$WIN_RUNTIME/Languages" "$WIN_RUNTIME/User"; do
   [ -e "$d" ] || { echo "missing input: $d"; exit 1; }
 done
-[ -z "$(git -C "$SRC/dolphin" status --porcelain --untracked-files=no)" ] || { echo "the fork has uncommitted changes"; exit 1; }
-[ -z "$(git -C "$SRC/launcher" status --porcelain --untracked-files=no)" ] || { echo "the launcher has uncommitted changes"; exit 1; }
+# Root reads repositories the build user owns; say they are trusted rather
+# than let git refuse and leave an empty answer that reads as "clean".
+g() { git -c safe.directory='*' "$@"; }
+for repo in dolphin launcher; do
+  changes=$(g -C "$SRC/$repo" status --porcelain --untracked-files=no) || { echo "git could not read $SRC/$repo"; exit 1; }
+  [ -z "$changes" ] || { echo "$SRC/$repo has uncommitted changes"; exit 1; }
+done
 
-FORK_COMMIT=$(git -C "$SRC/dolphin" rev-parse HEAD)
-LAUNCHER_COMMIT=$(git -C "$SRC/launcher" rev-parse HEAD)
-UPSTREAM_COMMIT=$(git -C "$SRC/dolphin-upstream" rev-parse HEAD 2>/dev/null || echo unknown)
+FORK_COMMIT=$(g -C "$SRC/dolphin" rev-parse HEAD)
+LAUNCHER_COMMIT=$(g -C "$SRC/launcher" rev-parse HEAD)
+UPSTREAM_COMMIT=$(g -C "$SRC/dolphin-upstream" rev-parse HEAD 2>/dev/null || echo unknown)
 VERSION=$(grep -m1 '^version' "$SRC/launcher/Cargo.toml" | cut -d'"' -f2)
 OUT=/home/reborn/release/$VERSION
 rm -rf "$OUT"; mkdir -p "$OUT"
