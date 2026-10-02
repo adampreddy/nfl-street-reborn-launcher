@@ -99,7 +99,11 @@ function lbRow(r) {
  *  is ranked; otherwise the top 10 and, when you are further down, your own row. */
 export function leaderboardView(answer) {
   if (!answer || answer.enabled === false || !Array.isArray(answer.rows) || !answer.rows.length) return { soon: true };
+  const youRank = int(answer.you?.rank);
   const rows = answer.rows.slice(0, 10).map(lbRow);
-  const you = answer.you && !rows.some((r) => r.you) && int(answer.you.rank) !== null ? { ...lbRow(answer.you), you: true } : null;
+  // Your own row goes after a gap only when you are not on the card already: by the server's `you` flag, or (a server
+  // that leaves the flag off) by your rank being one of the ranks shown.
+  const shown = rows.some((r) => r.you) || (youRank !== null && rows.some((r) => r.rank === youRank));
+  const you = answer.you && youRank !== null && !shown ? { ...lbRow(answer.you), you: true } : null;
   return { soon: false, total: int(answer.total), rows, you };
 }

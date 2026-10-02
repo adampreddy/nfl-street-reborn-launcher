@@ -222,6 +222,15 @@ pub fn dashboard(http: &dyn Http, origin: &str, token: &str) -> Result<Value, Li
     get_json(http, &format!("{}/v1/me/dashboard", origin.trim_end_matches('/')), Some(token))
 }
 
+/// `GET {origin}/v1/leaderboard?limit={limit}`: the ranked leaderboard's top rows (the Online page's card, launcher
+/// spec 2026-10-02 §4) and, with a token, the viewer's own row. `limit` is clamped to `1..=50`. A `404` is `Ok(None)`:
+/// a backend without the route (or with matchmaking off) has no leaderboard to show, which the card reads as
+/// "Rankings start soon."
+pub fn leaderboard(http: &dyn Http, origin: &str, token: Option<&str>, limit: u32) -> Result<Option<Value>, LiveError> {
+    let url = format!("{}/v1/leaderboard?limit={}", origin.trim_end_matches('/'), limit.clamp(1, 50));
+    get_json_opt(http, &url, token)
+}
+
 /// `GET {origin}/v1/players/{id}/profile`: a player's public, online-only profile, or with `games_before` one more
 /// page of their match log. No token: the profile is the same for everyone.
 pub fn player_profile(http: &dyn Http, origin: &str, player_id: &str, games_before: Option<&str>) -> Result<Option<Value>, LiveError> {
@@ -445,6 +454,22 @@ mod tests {
         let v = dashboard(&http, ORIGIN, "tok").unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(http.last_bearer().as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn leaderboard_reads_the_board_sends_the_token_when_there_is_one_and_404_is_none() {
+        let url = "https://api.test/v1/leaderboard?limit=10";
+        let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"enabled":true,"total":2,"rows":[{"rank":1}],"you":null}"#);
+        let got = leaderboard(&http, ORIGIN, Some("tok"), 10).unwrap().unwrap();
+        assert_eq!(got["total"], 2);
+        assert_eq!(http.last_bearer().as_deref(), Some("tok"));
+        // No such route yet (an older backend, matchmaking off): nothing to show, not an error.
+        let none = FakeHttp::default().reply(url, 404, "");
+        assert_eq!(leaderboard(&none, ORIGIN, None, 10).unwrap(), None);
+        let clamped = FakeHttp::default().reply("https://api.test/v1/leaderboard?limit=50", 200, "{}");
+        assert!(leaderboard(&clamped, ORIGIN, None, 500).unwrap().is_some(), "a silly limit is clamped, not refused");
+        let broken = FakeHttp::default().reply(url, 500, "");
+        assert_eq!(leaderboard(&broken, ORIGIN, None, 10).unwrap_err(), LiveError::Server(500));
     }
 
     #[test]

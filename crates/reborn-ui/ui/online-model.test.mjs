@@ -94,6 +94,8 @@ test('the leaderboard model', () => {
   assert.equal(v.you.rank, 14); assert.equal(v.you.you, true);
   const inTop = leaderboardView({ enabled: true, total: 3, rows: [{ ...rows[0], you: true }], you: { rank: 1, display_name: 'P0' } });
   assert.equal(inTop.you, null, 'you are already on the card');
+  const unflagged = leaderboardView({ enabled: true, total: 12, rows, you: { rank: 7, display_name: 'P6', elo: 1294 } });
+  assert.equal(unflagged.you, null, 'your rank is on the card even without the you flag: you are not drawn twice');
   const bare = leaderboardView({ enabled: true, rows: [{ rank: null, display_name: null, wins: null, losses: 2, elo: null, delta_week: null }] });
   assert.deepEqual(bare.rows[0], { rank: null, name: '', avatar: null, team: null, record: null, elo: null, change: null, you: false });
 });

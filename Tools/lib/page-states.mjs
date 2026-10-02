@@ -132,6 +132,17 @@ function onlineStates() {
     N('online-live', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-live-many', { mm_state: mm(empty), live_matches: [0, 1, 2, 3, 4].map((i) => ({ ...LIST.matches[i % 2], id: `b41cf41a-43c4-4d1b-aaa8-05e4e72c73${String(i).padStart(2, '0')}` })) }, { init: PICK('ranked') }),
     N('online-live-none', { mm_state: mm(empty), live_matches: [] }, { init: PICK('ranked') }),
+    N('online-leaderboard', { mm_state: mm(empty) }, { init: PICK('ranked') }),
+    N('online-leaderboard-far', { mm_state: mm(empty), leaderboard: { ...LEADERBOARD, rows: LEADERBOARD.rows.map((r) => ({ ...r, you: false })),
+      you: { ...LEADERBOARD.rows[6], rank: 14, elo: 1104, you: true } } }, { init: PICK('ranked') }),
+    N('online-elo-off', { mm_state: mm(empty), leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null },
+      stats_dashboard: (() => { const d = F.dashboard(); d.you.elo = { rating: null, rank: null, total: 0, games: 0, last_delta: null, peak: null, peak_at: null, history: [], around: [], week_delta: null }; return d; })() },
+      { init: PICK('ranked') }),
+    N('online-lb-missing', { mm_state: mm(empty), leaderboard: null }, { init: PICK('ranked') }),
+    N('online-lb-hostile', { mm_state: mm(empty), leaderboard: { ok: true, enabled: true, total: 2, you: null, rows: [
+      { rank: 1, player_id: 'h1', display_name: '<img src=x onerror=alert(1)>', avatar_url: 'https://evil.example/a.png', team: { name: 'X', abbrev: 'X', logo_url: 'https://evil.example/x.png' }, wins: 3, losses: 1, elo: 1200, delta_week: 0, you: false },
+      { rank: 2, player_id: 'h2', display_name: 'Averyveryveryveryveryverylongdisplayname1234567890', avatar_url: null, team: null, wins: null, losses: null, elo: null, delta_week: null, you: false },
+    ] } }, { init: PICK('ranked') }),
     // (redesign states are added above this line)
   ];
 }

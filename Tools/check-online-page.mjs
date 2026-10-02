@@ -123,7 +123,7 @@ const EXPECT = {
   },
   'online-ranked': {
     text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private room', 'Host a room or join with a code.',
-      'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching'],
+      'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
     absent: ['Quick Match', 'Direct connection', 'best of'],
     check: async (page) => {
       const p = [];
@@ -193,7 +193,7 @@ const EXPECT = {
     },
   },
   'online-searching': {
-    text: ['Looking for a ranked game', 'Searching… 0:42', 'Cancel'],
+    text: ['Looking for players near 1,184 Elo', 'Searching… 0:42', 'Cancel'],
     absent: ['Find a ranked game', 'Not on our servers?'],
     check: async (page) => {
       const p = [];
@@ -207,7 +207,7 @@ const EXPECT = {
     },
   },
   'online-match-found': {
-    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#9 · 1,162 Elo', 'Adam'],
+    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#9 · 1,162 Elo', 'Adam', '#7 · 1,184 Elo'],
     absent: ['best of', 'Not on our servers?'],
     check: async (page) => {
       const p = [];
@@ -215,7 +215,7 @@ const EXPECT = {
       // Ruling P8: Decline is the quiet button (spec §3.3).
       if (!(await page.locator('[data-key="decline"].btn.quiet').count())) p.push('Decline is not a quiet button');
       if (await page.locator('.on-vs .sweep').count()) p.push('the line sweeps before anyone accepted');
-      if ((await page.locator('.on-vs img.team-logo, .on-vs .team-logo').count()) < 1) p.push("the opponent's team logo is missing");
+      if ((await page.locator('.on-vs .team-logo').count()) !== 2) p.push('both plays-as team logos should show');
       await page.getByRole('button', { name: 'Accept', exact: true }).click();
       await page.waitForTimeout(300);
       const a = await calls(page, 'mm_match_action');
@@ -427,6 +427,55 @@ const EXPECT = {
       const p = [];
       if (await page.locator('#on-live-count').isVisible()) p.push('the heading shows a live-games count with no live games');
       if (await page.locator('.live-row').count()) p.push('live cards are drawn');
+      return p;
+    },
+  },
+  'online-leaderboard': {
+    text: ['Leaderboard', '38 ranked', 'Player', 'Elo', 'Jock', '20–3', '1,320', '▲ 16', '▼ 9', 'Full leaderboard ›'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-lb-row').count()) !== 10) p.push(`${await page.locator('.on-lb-row').count()} rows, not 10`);
+      if ((await page.locator('.on-lb-row.top').count()) !== 3) p.push('the top three are not marked');
+      const you = page.locator('.on-lb-row.you');
+      if ((await you.count()) !== 1 || (await you.locator('.on-lb-rank').innerText()).trim() !== '7') p.push('your row (#7) is not marked');
+      if (await page.locator('.on-lb-gap').count()) p.push('a gap row while you are in the top 10');
+      const srcs = await page.locator('#leaderboard-slot img').evaluateAll((n) => n.map((x) => x.getAttribute('src')));
+      for (const s of srcs) if (!/^https:\/\/(api\.nflstreetreborn\.com\/live-assets\/|cdn\.discordapp\.com\/avatars\/)/.test(s)) p.push(`image from ${s}`);
+      const card = await page.locator('#leaderboard-slot').boundingBox(), main = await page.locator('#main').boundingBox();
+      if (!card || card.y + card.height > main.y + main.height + 1) p.push('the leaderboard card runs off the window');
+      await page.getByRole('button', { name: 'Full leaderboard ›', exact: true }).click();
+      await page.waitForTimeout(200);
+      const o = await calls(page, 'open_website');
+      if (JSON.stringify(o.at(-1)) !== '{"url":"https://online.nflstreetreborn.com/leaderboard"}') p.push(`Full leaderboard opened ${JSON.stringify(o.at(-1))}`);
+      return p;
+    },
+  },
+  'online-leaderboard-far': {
+    text: ['1,104'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-lb-gap').count()) !== 1) p.push('no gap before your row');
+      const last = page.locator('.on-lb-row').last();
+      if (!(await last.evaluate((n) => n.classList.contains('you')))) p.push('the last row is not yours');
+      if ((await last.locator('.on-lb-rank').innerText()).trim() !== '14') p.push('your row does not say 14');
+      return p;
+    },
+  },
+  'online-elo-off': {
+    text: ['Leaderboard', 'Rankings start soon.', 'Find a ranked game'],
+    absent: ['Full leaderboard', '38 ranked', '1,184 Elo', '#7', 'this week', 'Looking for players near'],
+  },
+  'online-lb-missing': { text: ['Rankings start soon.'], absent: ['Full leaderboard'] },
+  'online-lb-hostile': {
+    text: ['<img src=x onerror=alert(1)>', 'Averyveryvery'],
+    absent: ['undefined', 'NaN', 'null'],
+    check: async (page) => {
+      const p = [];
+      if (await page.locator('#leaderboard-slot img[src="x"]').count()) p.push('a hostile name became an element');
+      if (await page.locator('#leaderboard-slot img[src^="https://evil"]').count()) p.push('an image from outside the two allowed prefixes');
+      // Ruling P5: the long name is cut with an ellipsis; the no-sideways-scroll check below runs for every state.
+      const long = page.locator('.on-lb-name').nth(1);
+      if (!(await long.evaluate((n) => n.scrollWidth > n.clientWidth))) p.push('the long name is not cut with an ellipsis');
       return p;
     },
   },

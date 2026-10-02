@@ -6333,6 +6333,7 @@ fn main() {
             live_view::stats_dashboard,
             live_view::player_profile,
             live_view::set_plays_as,
+            live_view::leaderboard,
             dolphin_settings::netplay_open,
             dolphin_settings::netplay_status,
             dolphin_settings::netplay_action,
