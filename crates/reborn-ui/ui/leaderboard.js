@@ -1,14 +1,16 @@
 // The Leaderboard card on the Online page (spec docs/superpowers/specs/2026-10-02-online-page-redesign-design.md §4, §7):
 // the ranked top 10 and, when you are further down, your own row after a gap. `leaderboard` answers null while the
 // server has no leaderboard (an older backend, matchmaking off) and `enabled: false` while Elo is off: the card then
-// says "Rankings start soon." and nothing else. On the same 60 s beat it reads `stats_dashboard` and hands your rank,
-// Elo and plays-as team to the mode area (online-mm.js) as an `online-rank` event, only when that changed.
+// says "Rankings start soon." and nothing else. The same answer carries your row (rank, Elo, week's change, plays-as
+// team): with `identity_status` (local, no network) it is handed to the mode area (online-mm.js) as an `online-rank`
+// event, only when that changed. A row with no team (not ranked, Elo off, a "most played" team) takes the plays-as
+// team from one `player_profile` read per page load, as Play reads it (home.js).
 // Server text only through el()'s `text`; images only through match-rows.js's avatar() and teamLogo() (the CSP's two
 // image prefixes). Polling stops while the page is hidden or a game runs, like Live now.
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
 import { PAGE_ORIGIN, makePoller } from './live-common.js';
-import { leaderboardView } from './online-model.js';
+import { boardStanding, leaderboardView } from './online-model.js';
 
 const POLL_MS = 60000;
 const slot = document.getElementById('leaderboard-slot');
@@ -57,17 +59,43 @@ function tellRank(detail) {
   document.dispatchEvent(new CustomEvent('online-rank', { detail }));
 }
 
-async function poll() {
-  const [board, dash] = await Promise.allSettled([quietCall('leaderboard'), quietCall('stats_dashboard')]);
-  // A failed read (a network blip) tells nothing: the last rank stays. Only a real answer (signed out, ok:false, or
-  // your figures) changes it.
-  if (dash.status === 'fulfilled') {
-    const d = dash.value;
-    const you = d && d.signed_in && d.ok !== false ? d.you : null;
-    tellRank(you ? { elo: you.elo ?? null, playsAs: you.plays_as ?? null } : null);
+// Your plays-as team from your public profile: read once per page load (per signed-in player). A failed read is tried
+// again on the next beat and keeps the team already shown (undefined).
+let profileRead = { id: null, team: null };
+async function profileTeam(playerId) {
+  if (profileRead.id === playerId) return profileRead.team;
+  try {
+    const p = await quietCall('player_profile', { playerId });
+    const t = p?.header?.plays_as;
+    profileRead = { id: playerId, team: t && typeof t === 'object' ? t : null };
+    return profileRead.team;
+  } catch {
+    return undefined;
   }
+}
+
+let lastDetail = null;
+async function rankDetail(answer, who) {
+  if (!who?.signed_in) return null;
+  const mine = boardStanding(answer);
+  let playsAs = mine?.team ?? null;
+  if (!playsAs && typeof who.player_id === 'string' && who.player_id) {
+    const t = await profileTeam(who.player_id);
+    playsAs = t === undefined ? lastDetail?.playsAs ?? null : t;
+  }
+  return { elo: mine?.elo ?? null, playsAs };
+}
+
+async function poll() {
+  const [board, who] = await Promise.allSettled([quietCall('leaderboard'), quietCall('identity_status')]);
+  // A failed read (a network blip) tells nothing: the last rank stays. Only a real answer (signed out, Elo off, not
+  // ranked, or your row) changes it.
   if (board.status === 'rejected') { showError(reason(board.reason)); throw board.reason; }
   draw(board.value);
+  if (who.status === 'fulfilled') {
+    lastDetail = await rankDetail(board.value, who.value);
+    tellRank(lastDetail);
+  }
 }
 
 card.replaceChildren(head());

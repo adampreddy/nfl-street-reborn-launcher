@@ -1,7 +1,7 @@
 // node --test crates/reborn-ui/ui/online-model.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { int, fmtInt, clock, modeLine, seriesLine, acceptWithin, eloBits, standing, seekLine, heldNotice, everyoneReady, inviteLink, inviteLine, leaderboardView } from './online-model.js';
+import { int, fmtInt, clock, modeLine, seriesLine, acceptWithin, eloBits, standing, seekLine, heldNotice, everyoneReady, inviteLink, inviteLine, leaderboardView, boardStanding } from './online-model.js';
 
 test('numbers and the clock', () => {
   assert.equal(int(3), 3); assert.equal(int('3'), null); assert.equal(int(NaN), null); assert.equal(int(null), null);
@@ -27,7 +27,9 @@ test('the series line is from this seat, only in a series', () => {
 test('accept within counts down to the deadline and hides when there is none', () => {
   const now = Date.UTC(2026, 8, 30, 20, 0, 0);
   assert.equal(acceptWithin('2026-09-30T20:00:14.000Z', now), 'Accept within 0:14');
-  assert.equal(acceptWithin('2026-09-30T19:59:00.000Z', now), 'Accept within 0:00');
+  assert.equal(acceptWithin('2026-09-30T20:00:00.500Z', now), 'Accept within 0:00');
+  assert.equal(acceptWithin('2026-09-30T20:00:00.000Z', now), null, 'the deadline has come: hidden');
+  assert.equal(acceptWithin('2026-09-30T19:59:00.000Z', now), null, 'the deadline has passed: hidden');
   assert.equal(acceptWithin(null, now), null);
   assert.equal(acceptWithin('not a date', now), null);
 });
@@ -65,6 +67,10 @@ test('the held notice keeps each reason\'s words', () => {
   assert.equal(heldNotice({ hold_reason: 'content-mismatch', opponent: 'Jock' }).text,
     "Your game files differ from Jock's, so that game was not started. Both of you: Settings → Check game content, install what it offers, then find a game again.");
   assert.match(heldNotice({ hold_reason: 'content-mismatch', opponent: null }).text, /your opponent's/);
+  for (const opponent of ['', undefined, 42]) {
+    const t = heldNotice({ hold_reason: 'content-mismatch', opponent }).text;
+    assert.match(t, /^Your game files differ from your opponent's,/, `opponent ${JSON.stringify(opponent)}`);
+  }
 });
 
 test('everyone ready needs two players, all ready', () => {
@@ -103,4 +109,18 @@ test('the leaderboard model', () => {
   assert.equal(unflagged.you, null, 'your rank is on the card even without the you flag: you are not drawn twice');
   const bare = leaderboardView({ enabled: true, rows: [{ rank: null, display_name: null, wins: null, losses: 2, elo: null, delta_week: null }] });
   assert.deepEqual(bare.rows[0], { rank: null, name: '', avatar: null, team: null, record: null, elo: null, change: null, you: false });
+});
+
+test('your standing comes from the leaderboard answer, in the shape eloBits reads', () => {
+  const team = { tgid: 14, name: 'Falcons', abbrev: 'ATL', logo_url: '/live-assets/teams/14-128.png' };
+  const rows = [{ rank: 1, elo: 1320, delta_week: 16, team: null, you: false }, { rank: 2, elo: 1302, delta_week: -9, team, you: true }];
+  assert.deepEqual(boardStanding({ enabled: true, rows, you: null }), { elo: { rating: 1302, rank: 2, week_delta: -9 }, team }, 'your flagged row on the card');
+  assert.deepEqual(boardStanding({ enabled: true, rows: rows.map((r) => ({ ...r, you: false })), you: { rank: 14, elo: 1104, delta_week: 0, team: null } }),
+    { elo: { rating: 1104, rank: 14, week_delta: 0 }, team: null }, 'your pinned row further down');
+  assert.deepEqual(eloBits(boardStanding({ enabled: true, rows, you: null }).elo), { rank: '#2', elo: '1,302 Elo', week: { dir: 'down', text: '▼ 9 this week' } });
+  assert.deepEqual(boardStanding({ enabled: true, rows: [{ rank: 3, elo: 'x', delta_week: null, team: 'ATL', you: true }] }),
+    { elo: { rating: null, rank: 3, week_delta: null }, team: null }, 'what does not read is null');
+  for (const none of [null, undefined, { enabled: false, total: 0, rows: [], you: null }, { enabled: true, rows: rows.map((r) => ({ ...r, you: false })), you: null }, { enabled: true }]) {
+    assert.equal(boardStanding(none), null, `no standing in ${JSON.stringify(none)}`);
+  }
 });

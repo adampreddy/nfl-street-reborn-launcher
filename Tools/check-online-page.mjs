@@ -31,6 +31,14 @@ async function discordStatus(page) {
 }
 // Signed out: the leaderboard is the anonymous answer, so no row is "you" (spec §4).
 const noYouRow = async (page) => ((await page.locator('.on-lb-row.you').count()) ? ['a signed-out page highlights a "you" row'] : []);
+// Hiding and showing the page re-polls the 60 s leaderboard beat at once (live-common.js makePoller).
+const repoll = (page) => page.evaluate(() => {
+  let state = 'hidden';
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+  document.dispatchEvent(new Event('visibilitychange'));
+  state = 'visible';
+  document.dispatchEvent(new Event('visibilitychange'));
+});
 const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x.cmd === c).map((x) => x.args), cmd);
 // Review Focus 1 (ruling P16): a text field keeps its focus empty and its text and focus typed in, across at least two
 // redraws each (two forced by `online-rank`, then two of the page's own 1 s ticks).
@@ -157,6 +165,9 @@ const EXPECT = {
       if (on !== '2px') p.push(`the picked tile's border is ${on}, not 2px`);
       const r = await page.locator('[data-key="mode-ranked"]').boundingBox(), c = await page.locator('[data-key="mode-casual"]').boundingBox();
       if (!r || !c || r.height < c.height * 1.8) p.push('Ranked does not span two rows');
+      // Your rank comes from the leaderboard's row (it carries your team too): the expensive dashboard is never read.
+      if ((await calls(page, 'stats_dashboard')).length) p.push('the page read stats_dashboard');
+      if ((await calls(page, 'player_profile')).length) p.push('the page read player_profile although the board carries your team');
       await page.locator('[data-key="mode-casual"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
       if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
@@ -242,10 +253,31 @@ const EXPECT = {
       if (!(await page.locator('[data-key="decline"].btn.quiet').count())) p.push('Decline is not a quiet button');
       if (await page.locator('.on-vs .sweep').count()) p.push('the line sweeps before anyone accepted');
       if ((await page.locator('.on-vs .team-logo').count()) !== 2) p.push('both plays-as team logos should show');
+      if (!(await page.locator('.on-tm[data-deadline]').count())) p.push('Accept within carries no deadline for the ticker');
       await page.getByRole('button', { name: 'Accept', exact: true }).click();
       await page.waitForTimeout(300);
       const a = await calls(page, 'mm_match_action');
       if (JSON.stringify(a[0]) !== '{"matchId":"m5","action":"accept","value":true}') p.push(`Accept sent ${JSON.stringify(a[0])}`);
+      return p;
+    },
+  },
+  'online-match-found-tick': {
+    text: ['Accept within 0:14'],
+    check: async (page) => {
+      const p = [];
+      const tm = page.locator('.on-tm[data-deadline]');
+      // The page's clock is frozen at 20:00:00; from here it runs, so the 1 s ticker has something to count.
+      await page.evaluate(() => { const base = Date.now(), t0 = performance.now(); Date.now = () => base + (performance.now() - t0); });
+      const before = await tm.innerText();
+      await page.waitForTimeout(2200);
+      const after = await tm.innerText();
+      if (before === after) p.push(`Accept within did not count down: "${before}" stayed "${after}"`);
+      if (!/^Accept within 0:1[12]$/.test(after.trim())) p.push(`after 2.2 s it reads "${after}"`);
+      // Past the deadline (20:00:14): the line hides.
+      await page.evaluate(() => { Date.now = () => Date.UTC(2026, 8, 30, 20, 0, 15); });
+      await page.waitForTimeout(1200);
+      if (await tm.isVisible()) p.push(`Accept within still shows past the deadline ("${await tm.innerText()}")`);
+      if (!(await page.getByRole('button', { name: 'Accept', exact: true }).isVisible())) p.push('Accept went away with the timer');
       return p;
     },
   },
@@ -491,27 +523,36 @@ const EXPECT = {
     text: ['#7', '1,184 Elo'],
     check: async (page) => {
       const p = [];
-      const before = (await calls(page, 'stats_dashboard')).length;
-      // The next stats_dashboard read fails; hiding and showing the page re-polls at once (live-common.js makePoller).
+      const before = (await calls(page, 'leaderboard')).length;
+      // The next leaderboard read fails; hiding and showing the page re-polls at once (live-common.js makePoller).
       await page.evaluate(() => {
         const core = window.__TAURI__.core, real = core.invoke;
-        core.invoke = (cmd, args) => (cmd === 'stats_dashboard' ? (window.__calls.push({ cmd, args }), Promise.reject({ kind: 'unavailable', message: 'Live games couldn\'t be loaded right now.' })) : real(cmd, args));
-        let state = 'hidden';
-        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
-        document.dispatchEvent(new Event('visibilitychange'));
-        state = 'visible';
-        document.dispatchEvent(new Event('visibilitychange'));
+        core.invoke = (cmd, args) => (cmd === 'leaderboard' ? (window.__calls.push({ cmd, args }), Promise.reject({ kind: 'unavailable', message: 'Live games couldn\'t be loaded right now.' })) : real(cmd, args));
       });
+      await repoll(page);
       await page.waitForTimeout(400);
-      if ((await calls(page, 'stats_dashboard')).length <= before) p.push('the page did not read stats_dashboard again');
+      if ((await calls(page, 'leaderboard')).length <= before) p.push('the page did not read leaderboard again');
       const tile = await page.locator('[data-key="mode-ranked"]').innerText();
-      if (!tile.includes('#7') || !tile.includes('1,184 Elo')) p.push(`a failed dashboard read blanked the Ranked tile's rank (${tile.replace(/\s+/g, ' ')})`);
+      if (!tile.includes('#7') || !tile.includes('1,184 Elo')) p.push(`a failed leaderboard read blanked the Ranked tile's rank (${tile.replace(/\s+/g, ' ')})`);
+      if (!(await page.locator('.on-lb-row.you').count())) p.push('a failed leaderboard read blanked the card');
       return p;
     },
   },
   'online-elo-off': {
     text: ['Leaderboard', 'Rankings start soon.', 'Find a ranked game'],
     absent: ['Full leaderboard', '38 ranked', '1,184 Elo', '#7', 'this week', 'Looking for players near'],
+    check: async (page) => {
+      const p = [];
+      // No row of yours: the plays-as team comes from ONE player_profile read per page load, even across beats.
+      await repoll(page);
+      await page.waitForTimeout(400);
+      const prof = await calls(page, 'player_profile');
+      if (prof.length !== 1) p.push(`player_profile was read ${prof.length} times, not once`);
+      else if (typeof prof[0].playerId !== 'string' || !prof[0].playerId) p.push(`player_profile got ${JSON.stringify(prof[0])}`);
+      if ((await calls(page, 'stats_dashboard')).length) p.push('the page read stats_dashboard');
+      if (await page.locator('[data-key="mode-ranked"] .on-rank').count()) p.push('the Ranked tile shows a rank with Elo off');
+      return p;
+    },
   },
   'online-lb-missing': { text: ['Rankings start soon.'], absent: ['Full leaderboard'] },
   'online-lb-hostile': {

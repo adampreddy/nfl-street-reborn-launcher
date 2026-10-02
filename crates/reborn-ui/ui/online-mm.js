@@ -82,8 +82,9 @@ function pick(value) {
   draw();
 }
 
-// Your rank, Elo and plays-as team (stats_dashboard's `you`), from leaderboard.js. Null until it answers and whenever
-// the server sends none (Elo off): every spot that needs it is then hidden (spec §7).
+// Your rank, Elo and plays-as team (the leaderboard's row of yours, else the profile's plays-as), from leaderboard.js.
+// Null until it answers; `elo` is null whenever the server sends none (Elo off): every spot that needs it is then
+// hidden (spec §7).
 let rankInfo = null;
 document.addEventListener('online-rank', (e) => { rankInfo = e.detail ?? null; lastDrawn = ''; draw(); });
 // A controller drives (spec §6): the pick follows focus across the tiles, so the D-pad onto Casual picks Casual.
@@ -424,9 +425,17 @@ window.addEventListener('focus', () => takeRoomInvite());
 // server's figure, and then advanced by this page's own clock.
 let queueClock = { key: null, base: 0, at: 0 };
 const queuedMs = () => queueClock.base + (Date.now() - queueClock.at);
+// The same tick counts Match found's "Accept within" down to the server's relay_deadline (kept on the element: a redraw
+// happens only when the snapshot changes) and hides it once the deadline has come.
 setInterval(() => {
   const timer = section.querySelector('.mm-timer');
   if (timer && queueClock.key) timer.textContent = `Searching… ${clock(queuedMs())}`;
+  const accept = section.querySelector('.on-tm[data-deadline]');
+  if (accept) {
+    const left = acceptWithin(accept.dataset.deadline, Date.now());
+    accept.hidden = !left;
+    if (left) accept.textContent = left;
+  }
 }, 1000);
 
 function drawQueued(t) {
@@ -507,7 +516,7 @@ function drawMatch(m, chat, relayError, snap) {
       // Ruling P8: Decline is the quiet button (spec §3.3).
       el('button', { type: 'button', class: 'btn quiet', 'data-key': 'decline', text: 'Decline', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: false }) })));
     const left = acceptWithin(m.relay_deadline, Date.now());
-    if (left) mid.append(el('span', { class: 'on-tm num', text: left }));
+    if (left) mid.append(el('span', { class: 'on-tm num', 'data-deadline': m.relay_deadline, text: left }));
   } else if (pairing) {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `Accepted. Waiting for ${opp}…`));
   } else if (m.relay_state !== 'running') {

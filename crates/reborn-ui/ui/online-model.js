@@ -24,13 +24,14 @@ export function seriesLine(m) {
   return `Game ${mine + theirs + 1} · Series ${mine}–${theirs}`;
 }
 
-/** "Accept within 0:14" from the server's relay_deadline; null when there is none or it does not read as a time. */
+/** "Accept within 0:14" from the server's relay_deadline; null when there is none, it does not read as a time or it
+ *  has come (the spot hides; online-mm.js's 1 s ticker counts it down). */
 export function acceptWithin(deadline, nowMs) {
   const t = typeof deadline === 'string' ? Date.parse(deadline) : NaN;
-  return Number.isFinite(t) ? `Accept within ${clock(t - nowMs)}` : null;
+  return Number.isFinite(t) && t > nowMs ? `Accept within ${clock(t - nowMs)}` : null;
 }
 
-/** The Ranked tile's numbers, from stats_dashboard's `you.elo`. With no rating (Elo off) nothing shows at all. */
+/** The Ranked tile's numbers, from boardStanding()'s `elo`. With no rating (Elo off) nothing shows at all. */
 export function eloBits(elo) {
   const rating = int(elo?.rating), rank = int(elo?.rank), week = int(elo?.week_delta);
   if (rating === null) return { rank: null, elo: null, week: null };
@@ -56,7 +57,7 @@ export function seekLine(mode, elo) {
 
 /** The held notice (spec §3.8): today's text per hold_reason; the generic one is §8's new sentence. */
 export function heldNotice(m) {
-  const opp = m?.opponent ?? 'your opponent';
+  const opp = typeof m?.opponent === 'string' && m.opponent ? m.opponent : 'your opponent';
   const text = m?.hold_reason === 'content-stale'
     ? 'A game update never reached one of your game discs, so that game was not started. Both of you: Settings → Repair game files (the one that is current is told so), then find a game again. Finding a game now also repairs it first.'
     : m?.hold_reason === 'content-mismatch'
@@ -109,4 +110,14 @@ export function leaderboardView(answer) {
   const shown = rows.some((r) => r.you) || (youRank !== null && rows.some((r) => r.rank === youRank));
   const you = answer.you && youRank !== null && !shown ? { ...lbRow(answer.you), you: true } : null;
   return { soon: false, total: int(answer.total), rows, you };
+}
+
+/** Your standing from the leaderboard answer (spec §4, §7): your flagged row on the card, or the `you` row the server
+ *  pins after it, as `elo` in the shape eloBits() and seekLine() read ({rating, rank, week_delta}) plus that row's
+ *  plays-as `team`. Null when the answer has no row of yours: no leaderboard, Elo off, signed out or not ranked. */
+export function boardStanding(answer) {
+  if (!answer || answer.enabled === false || !Array.isArray(answer.rows)) return null;
+  const r = answer.rows.find((x) => x?.you === true) ?? (answer.you && typeof answer.you === 'object' ? answer.you : null);
+  if (!r) return null;
+  return { elo: { rating: int(r.elo), rank: int(r.rank), week_delta: int(r.delta_week) }, team: r.team && typeof r.team === 'object' ? r.team : null };
 }
