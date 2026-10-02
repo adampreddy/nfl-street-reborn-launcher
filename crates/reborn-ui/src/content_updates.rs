@@ -369,18 +369,35 @@ pub(crate) fn ensure_patch_chain(p: &Platform) -> Result<(), String> {
 /// (the tester's third screen, 2026-10-02). Called before every place the
 /// launcher looks for the emulator. A failure is logged, not returned: the
 /// search that follows then reports where it looked, as it always has.
-pub(crate) fn ensure_runtime(p: &Platform) {
+pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
     if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
-        return;
+        return None;
     }
-    let (Ok(data_root), Ok(settings), Ok(verifier)) = (p.paths.data_root(), load_settings(p), verifier()) else {
-        return;
+    let fail = |why: String| {
+        // WARN reaches launcher.log; a Deck tester's report is that file.
+        tracing::warn!("downloading the emulator failed: {why}");
+        Some(why)
     };
+    let data_root = match p.paths.data_root() { Ok(d) => d, Err(e) => return fail(e.to_string()) };
+    let settings = match load_settings(p) { Ok(s) => s, Err(e) => return fail(e) };
+    let verifier = match verifier() { Ok(v) => v, Err(e) => return fail(e) };
     let origin = Origin::new(&origin_url(&settings));
     let updater = Updater::new(p, &data_root, &origin, &verifier);
     let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::runtime_here()], depth: Depth::Quick };
-    if let Err(e) = updater.run(&request, &ImageHook::default()) {
-        eprintln!("downloading the emulator failed: {e}");
+    tracing::warn!("no emulator on disk: downloading {}", reborn_core::inventory::ComponentId::runtime_here().as_str());
+    match updater.run(&request, &ImageHook::default()) {
+        Err(e) => fail(e.to_string()),
+        Ok(out) => {
+            // A run can return without error and still not have installed it
+            // (a refused plan, a problem the check reported): say what it said.
+            if reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+                tracing::warn!("emulator downloaded");
+                None
+            } else {
+                let problems = out.check.problems();
+                fail(if problems.is_empty() { "the download finished but no emulator was installed".to_string() } else { problems.join("; ") })
+            }
+        }
     }
 }
 

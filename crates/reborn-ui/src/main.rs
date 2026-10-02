@@ -545,9 +545,14 @@ fn find_runtime_and_game_for(
     let live_hint = cleaned_runtime.as_deref().filter(|path| path.is_file());
 
     // A Linux launcher fetches its emulator as content; see ensure_runtime.
-    content_updates::ensure_runtime(platform);
-    let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root)
-        .map_err(|looked| reborn_core::session::no_runtime_message(&looked))?;
+    let download_failed = content_updates::ensure_runtime(platform);
+    let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root).map_err(|looked| {
+        let message = reborn_core::session::no_runtime_message(&looked);
+        match &download_failed {
+            Some(why) => format!("Reborn could not download its emulator: {why}. {message}"),
+            None => message,
+        }
+    })?;
 
     let game = match game_hint
         .map(reborn_core::session::user_path)
@@ -584,7 +589,7 @@ fn runtime_for(platform: &Platform, hint: Option<&str>) -> Option<PathBuf> {
     let cleaned = hint.map(reborn_core::session::user_path);
     let live = cleaned.as_deref().filter(|p| p.is_file());
     let legacy = default_legacy_root(platform);
-    content_updates::ensure_runtime(platform);
+    let _ = content_updates::ensure_runtime(platform);
     reborn_core::session::resolve_runtime(platform, live, legacy.as_deref())
         .ok()
         .map(|r| r.path().to_path_buf())
@@ -5949,7 +5954,7 @@ fn open_game_folder(platform: &Platform) -> Result<PathBuf, String> {
     let saved = saved_paths(platform)?;
     let legacy = default_legacy_root(platform);
     let hint = saved.runtime_exe.as_deref().filter(|p| p.is_file());
-    content_updates::ensure_runtime(platform);
+    let _ = content_updates::ensure_runtime(platform);
     let exe = reborn_core::session::resolve_runtime(platform, hint, legacy.as_deref())
         .ok()
         .map(|r| r.path().to_path_buf());
