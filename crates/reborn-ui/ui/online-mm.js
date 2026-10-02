@@ -69,7 +69,13 @@ const status = el('p', { class: 'settings-status on-status', role: 'status' });
 function mode() { return store.get('mm:mode', 'casual'); }
 
 const links = document.getElementById('on-links');
-function setLinks(show) { if (links) links.hidden = !show; }
+// `reserve`: hidden but keeping its line, so the idle cards are the same size whichever card is picked (Adam, 2026-10-02:
+// picking Private room must not change the cards).
+function setLinks(show, reserve = false) {
+  if (!links) return;
+  links.hidden = !show && !reserve;
+  links.classList.toggle('reserve', !show && reserve);
+}
 
 // Private room is the third pick, held in page state only: `mm:mode` keeps ranked|casual, so the queue and the room
 // commands get exactly the mode they always got (spec §3.1).
@@ -273,8 +279,7 @@ function privateRow() {
     kind,
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'host', 'data-primary': 'true', text: 'Host a room',
       onclick: () => act('mm_room_create', { mode: 'casual', public: false, seedKind: roomKind }) }),
-    form,
-    el('p', { class: 'on-note', text: 'Send the code to a friend' }));
+    form);
 }
 
 function drawIdle(snap) {
@@ -644,6 +649,7 @@ async function draw() {
   markBusy(!!(liveMatch || snap?.room || snap?.ticket));
   let body;
   let showLinks = true;
+  let reserveLinks = false;
   if (state.link === 'signed_out') {
     body = [lockPanel(invite ? `Sign in to join ${invite.code}` : 'Sign in to play online', 'Connect your Discord account to play online and track your stats!', true)];
   } else if (state.link === 'offline' && !snap) {
@@ -659,11 +665,12 @@ async function draw() {
   } else {
     body = drawIdle(snap);
     showLinks = picked() === 'private';
+    reserveLinks = true;
     if (snap.match?.relay_state === 'held' && dismissedHold !== snap.match.id) body.unshift(heldBox(snap.match));
     const banner = invite ? inviteBanner() : null;
     if (banner) body.unshift(banner);
   }
-  setLinks(showLinks);
+  setLinks(showLinks, reserveLinks);
   showOnline(snap, state.presence_on);
   // Keep the control the player is on across the redraw, by data-key (spec §6): the page used to drop focus on every
   // state change, which left a controller nowhere.

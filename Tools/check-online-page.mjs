@@ -170,6 +170,10 @@ const EXPECT = {
       if (before.some((x) => !x.startsWith('none|1|') || !x.includes('linear-gradient'))) p.push(`a card is filtered or has no colour: ${before.join(' / ')}`);
       if (new Set(before.map((x) => x.split('|')[2])).size !== 3) p.push('the three cards do not each have their own colour');
       if (await page.locator('img.on-art').count()) p.push('a card still loads a picture');
+      // ...and the cards keep their exact size and place whichever is picked (the row under them never takes height).
+      const boxes = () => page.locator('.on-tile').evaluateAll((n) => n.map((x) => { const r = x.getBoundingClientRect(); return `${x.dataset.key}:${r.x},${r.y},${r.width}x${r.height}`; }).join(' '));
+      const boxesBefore = await boxes();
+      console.log(`     tiles, Ranked picked:  ${boxesBefore}`);
       const on = await page.locator('[data-key="mode-ranked"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth);
       if (on !== '2px') p.push(`the picked tile's border is ${on}, not 2px`);
       const r = await page.locator('[data-key="mode-ranked"]').boundingBox(), c = await page.locator('[data-key="mode-casual"]').boundingBox();
@@ -181,10 +185,16 @@ const EXPECT = {
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
       if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
       if ((await looks()).join() !== before.join()) p.push('picking Casual changed how the cards look');
+      if ((await boxes()) !== boxesBefore) p.push(`picking Casual moved or resized the cards: ${boxesBefore} -> ${await boxes()}`);
       if (await page.locator('[data-key="mode-casual"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '2px') p.push('the picked Casual card has no outline');
       if (await page.locator('[data-key="mode-ranked"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '1px') p.push('the unpicked Ranked card kept the outline');
       await page.locator('[data-key="mode-private"]').click();
       if ((await looks()).join() !== before.join()) p.push('picking Private room changed how the cards look');
+      const privBoxes = await boxes();
+      console.log(`     tiles, Private picked: ${privBoxes}`);
+      if (privBoxes !== boxesBefore) p.push(`picking Private room moved or resized the cards: ${boxesBefore} -> ${privBoxes}`);
+      const row = await page.locator('.on-private').boundingBox();
+      if (!row || row.height > 53) p.push(`the Private row is ${row?.height}px tall, not one 52px line`);
       // Back to Ranked, so the screenshot (taken after this check) shows the state's name.
       await page.locator('[data-key="mode-ranked"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'ranked') p.push('picking Ranked again did not store mm:mode=ranked');
@@ -209,7 +219,7 @@ const EXPECT = {
     },
   },
   'online-private': {
-    text: ['Quick game', 'Pickup', 'Host a room', 'Join', 'Send the code to a friend', 'Not on our servers?', 'Direct connection'],
+    text: ['Quick game', 'Pickup', 'Host a room', 'Join', 'Not on our servers?', 'Direct connection'],
     absent: ['Find a'],
     check: async (page) => {
       const p = [];

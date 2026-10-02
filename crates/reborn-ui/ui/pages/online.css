@@ -17,6 +17,7 @@ body.page-online #main{display:flex;flex-direction:column;padding:32px 36px 24px
 .page-online section.mm{flex:1;display:flex;flex-direction:column;gap:16px;min-height:0}
 .on-links{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0;font-size:12.5px;color:var(--fg-2)}
 body[data-mm-busy="true"] .on-links{display:none}
+.on-links.reserve{visibility:hidden}
 #leaderboard-slot{display:flex;flex-direction:column;min-width:0;min-height:0}
 @media (max-width:1000px){
   .on-grid{grid-template-columns:minmax(0,1fr)}
@@ -93,9 +94,15 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-note{margin:0;font-size:12.5px;line-height:1.5;color:var(--fg-3)}
 .on-codeform{display:flex;gap:8px}
 .on-codeform .on-code{width:190px;height:52px}
+/* the Private row is one line, as tall as the Find row, so picking Private never resizes the cards (Adam, 2026-10-02):
+   [Quick game | Pickup] [Host a room] [code][Join]; it wraps only in the one-column layout */
+.on-private{flex-wrap:nowrap;gap:12px}
 .on-private .tabs{flex:none}
-.on-private .btn.on-go{flex:1 1 280px}
 .on-private .tabs .tab{height:42px}
+.on-private .btn.on-go{flex:1 1 auto;min-width:0}
+.on-private .on-codeform{flex:none}
+.on-private .on-codeform .on-code{width:160px}
+@media (max-width:1000px){.on-private{flex-wrap:wrap}.on-private .btn.on-go{flex-basis:240px}}
 .btn.on-join,.btn.on-cancel{height:52px}
 .on-search{position:relative;overflow:hidden;flex:0 1 calc(63.6% - 4px);display:flex;align-items:center;justify-content:space-between;gap:16px;height:52px;padding:0 22px;border-radius:var(--r-md);background:var(--glass-1);border:1px solid var(--stroke);box-shadow:var(--sheen)}
 .on-timer{font:700 18px Inter,system-ui,sans-serif;letter-spacing:-.01em}
