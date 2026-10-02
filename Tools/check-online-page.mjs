@@ -366,6 +366,38 @@ const EXPECT = {
       return p;
     },
   },
+  'online-lobbies': {
+    text: ['Open lobbies (2) ›'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('#lobbies-open').click();
+      const panel = page.locator('dialog.menu.panel[open]');
+      const t = await panel.innerText().catch(() => '');
+      for (const w of ['Jock · Casual', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
+      if (/best of/i.test(t)) p.push('a lobby is labelled best of');
+      await page.screenshot({ path: path.join(out, 'online-lobbies-panel.png') });
+      await panel.getByRole('button', { name: 'Join', exact: true }).first().click();
+      await page.waitForTimeout(300);
+      const j = await calls(page, 'mm_room_join');
+      if (JSON.stringify(j[0]) !== '{"code":"K7QP2M"}') p.push(`Join sent ${JSON.stringify(j[0])}`);
+      return p;
+    },
+  },
+  'online-lobbies-none': {
+    text: ['Open a public lobby ›'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('#lobbies-open').click();
+      const panel = page.locator('dialog.menu.panel[open]');
+      if (!(await panel.innerText().catch(() => '')).includes('No open lobbies. Open one and someone can join you.')) p.push('no "No open lobbies" line');
+      await page.screenshot({ path: path.join(out, 'online-lobbies-none-panel.png') });
+      await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click();
+      await page.waitForTimeout(300);
+      const c = await calls(page, 'mm_room_create');
+      if (JSON.stringify(c[0]) !== '{"mode":"casual","public":true}') p.push(`Open a public lobby sent ${JSON.stringify(c[0])}`);
+      return p;
+    },
+  },
   // (states are added above this line)
 };
 

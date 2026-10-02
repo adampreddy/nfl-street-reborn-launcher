@@ -259,12 +259,8 @@ function privateRow() {
 
 function drawIdle(snap) {
   const p = picked();
-  // The same `mm_rooms` read on every idle draw as before the redesign; the list shows under Private room.
-  const lobbies = el('div', { class: 'mm-lobbies' }, el('h3', { text: 'Lobbies' }), el('p', { class: 'loading', text: 'Loading lobbies…' }));
-  loadLobbies(lobbies);
-  if (p !== 'private') return [tiles(snap), findRow(p)];
-  const open = el('button', { type: 'button', class: 'btn sm', text: 'Open a public lobby', onclick: () => act('mm_room_create', { mode: mode(), public: true }) });
-  return [tiles(snap), privateRow(), lobbies, el('div', { class: 'mm-actions' }, open)];
+  loadLobbies(); // the same `mm_rooms` read on every idle draw as before the redesign
+  return [tiles(snap), p === 'private' ? privateRow() : findRow(p)];
 }
 
 // ---- signed out, offline, matchmaking off, a held match (spec §3.8, §3.9) ----
@@ -307,24 +303,42 @@ function heldBox(m) {
       onclick: () => { dismissedHold = m.id; lastDrawn = ''; draw(); } }));
 }
 
-async function loadLobbies(box) {
+// Public lobbies (spec §3.1): read on every idle draw, as always. Under the Private room row, "Open lobbies (n) ›"
+// opens them in a panel with "Open a public lobby"; with none it reads "Open a public lobby ›" (ruling 8).
+let lobbies = [];
+let lobbyError = null;
+const lobbiesLink = document.getElementById('lobbies-open');
+const closePanel = () => document.querySelector('dialog.menu.panel[open]')?.close();
+async function loadLobbies() {
   try {
     const rooms = await call('mm_rooms');
-    const list = el('ul', { class: 'mm-room-list' });
-    if (!rooms?.length) {
-      box.replaceChildren(el('h3', { text: 'Lobbies' }), el('p', { class: 'note', text: 'No open lobbies. Open one and someone can join you.' }));
-      return;
-    }
-    for (const r of rooms) {
-      list.append(el('li', {},
-        `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked, best of 3' : 'Casual'} `,
-        el('button', { type: 'button', text: 'Join', onclick: () => act('mm_room_join', { code: r.code }) })));
-    }
-    box.replaceChildren(el('h3', { text: 'Lobbies' }), list);
+    lobbies = Array.isArray(rooms) ? rooms : [];
+    lobbyError = null;
   } catch (e) {
-    box.replaceChildren(el('h3', { text: 'Lobbies' }), el('p', { class: 'note', text: reason(e) }));
+    lobbies = [];
+    lobbyError = reason(e);
+  }
+  if (lobbiesLink) {
+    lobbiesLink.textContent = lobbies.length ? `Open lobbies (${lobbies.length}) ›` : 'Open a public lobby ›';
+    lobbiesLink.hidden = false;
   }
 }
+function lobbyPanel() {
+  const list = el('ul', { class: 'on-lobbies' });
+  if (lobbyError) list.append(el('li', { class: 'note', text: lobbyError }));
+  else if (!lobbies.length) list.append(el('li', { class: 'note', text: 'No open lobbies. Open one and someone can join you.' }));
+  for (const r of lobbies) {
+    list.append(el('li', {},
+      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Casual'}` }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Join', onclick: () => { closePanel(); act('mm_room_join', { code: r.code }); } })));
+  }
+  return el('div', { class: 'on-panel' },
+    el('span', { class: 'k-label', text: 'Public lobbies' }),
+    list,
+    el('button', { type: 'button', class: 'btn sm', 'data-key': 'open-public', text: 'Open a public lobby',
+      onclick: () => { closePanel(); act('mm_room_create', { mode: mode(), public: true }); } }));
+}
+lobbiesLink?.addEventListener('click', () => openPanel(lobbiesLink, { label: 'Public lobbies', build: lobbyPanel }));
 
 // The queue timer counts on this page, every second. The snapshot's `waited_ms` only changes when
 // the server has something new to say (a long poll can sit for 25 s), so drawing it as-is froze the

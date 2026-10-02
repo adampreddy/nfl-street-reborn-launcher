@@ -229,8 +229,19 @@ pub struct RoomSummary {
     pub code: String,
     pub mode: String,
     pub best_of: u8,
+    #[serde(deserialize_with = "host_name")]
     pub host: Option<String>,
     pub created_at: String,
+}
+
+/// The lobby browser's `host`: the server sends `{ id, display_name }` (rooms.js), an older one a plain name. Either
+/// reads as the name; anything else as no name.
+fn host_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Object(o)) => o.get("display_name").and_then(|n| n.as_str()).map(str::to_string),
+        _ => None,
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -516,6 +527,19 @@ pub fn iso_to_unix(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_lobby_hosts_name_reads_from_either_shape() {
+        // rooms.js sends `host: { id, display_name }`; a plain name, null or nothing must read too. Before this, one
+        // public lobby made the whole list fail to decode, so the lobby list showed a protocol error.
+        let rooms: Rooms = serde_json::from_value(serde_json::json!({ "rooms": [
+            { "code": "K7QP2M", "mode": "casual", "host": { "id": "h1", "display_name": "Jock" } },
+            { "code": "R4NK3D", "mode": "casual", "host": "Tuna" },
+            { "code": "X1", "mode": "casual", "host": null },
+            { "code": "X2", "mode": "casual" } ] })).unwrap();
+        let hosts: Vec<Option<&str>> = rooms.rooms.iter().map(|r| r.host.as_deref()).collect();
+        assert_eq!(hosts, vec![Some("Jock"), Some("Tuna"), None, None]);
+    }
+
     #[test]
     fn a_room_says_whether_you_host_it() {
         let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "you_host": true, "members": [] } })).unwrap();

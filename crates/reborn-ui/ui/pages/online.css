@@ -93,9 +93,6 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-timer{font:700 18px Inter,system-ui,sans-serif;letter-spacing:-.01em}
 .on-search-mode{font-size:13px;color:var(--fg-2)}
 .on-status:empty{display:none}
-.mm-lobbies h3{margin:0 0 8px;font:600 11px/1.3 Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
-.mm-room-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
-.mm-actions{display:flex;flex-wrap:wrap;gap:8px}
 /* the matchup card (spec §3.3–§3.6): you | MATCH FOUND, VS, the mode line | the opponent */
 .on-vs{position:relative;overflow:hidden;flex:1;min-height:340px;border-radius:var(--r-lg);border:1px solid var(--stroke);box-shadow:var(--shadow);isolation:isolate}
 .on-vs>.on-art{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}

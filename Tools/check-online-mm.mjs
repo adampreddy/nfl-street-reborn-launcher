@@ -61,7 +61,7 @@ const EXPECT = {
   idle: { text: ['Ranked', 'Casual', 'Private room', 'Find a casual game', 'Matched with anyone', '1 searching', '3 players online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
   queued: { text: ['Looking for a casual game', 'Searching… 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
-  idle_private: { text: ['Lobbies', 'Jock · Casual', 'Host a room'], buttons: ['Join', 'Join by code', 'Open a public lobby', 'Host a room'], absent: ['Find a casual game'] },
+  idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game'] },
   // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
   lobby: { text: ['Your room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
   pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
@@ -145,9 +145,15 @@ try {
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');
 
-    // Under Private room the public lobby opens with one click (mm_room_create; arguments are check-online-page's job).
+    // Under Private room, "Open lobbies (n) ›" opens the list in a panel: the lobby, Join, and one click to open a public
+    // lobby (mm_room_create; arguments are check-online-page's job).
     if (name === 'idle_private') {
-      await page.locator('#main').getByRole('button', { name: 'Open a public lobby', exact: true }).click().catch(() => {});
+      await page.locator('#lobbies-open').click().catch(() => {});
+      const panel = page.locator('dialog.menu.panel[open]');
+      const pt = await panel.innerText().catch(() => '');
+      if (!pt.includes('Jock · Casual')) problems.push('the lobby panel lacks "Jock · Casual"');
+      if (!(await panel.getByRole('button', { name: 'Join', exact: true }).count())) problems.push('the lobby panel lacks a Join button');
+      await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click().catch(() => {});
       await page.waitForTimeout(300);
       if (!(await page.evaluate(() => window.__calls.includes('mm_room_create')))) problems.push('Open a public lobby did not send mm_room_create');
     }
