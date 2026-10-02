@@ -255,8 +255,13 @@ const EXPECT = {
       const rd = await page.locator('.on-rd').count(), nr = await page.locator('.on-nr').count();
       if (rd !== 1 || nr !== 1) p.push(`ready markers: ${rd} ready, ${nr} not ready (want 1 and 1)`);
       // Layout (1280x800): Start, the ready toggle and Leave room share one row; the chat field sits at the bottom of its card.
-      const tops = await page.evaluate(() => ['room-start', 'room-ready', 'room-leave'].map((k) => document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect().top));
-      if (tops.some((t) => t == null) || Math.max(...tops) - Math.min(...tops) > 2) p.push(`room buttons are not on one row: tops ${tops}`);
+      const boxes = await page.evaluate(() => ['room-start', 'room-ready', 'room-leave'].map((k) => { const r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect(); return r ? [r.top, r.height] : null; }));
+      if (boxes.some((x) => !x)) p.push('a room button is missing');
+      else {
+        const tops = boxes.map((x) => x[0]), hs = boxes.map((x) => x[1]);
+        if (Math.max(...tops) - Math.min(...tops) > 2) p.push(`room buttons are not on one row: tops ${tops}`);
+        if (Math.max(...hs) - Math.min(...hs) > 2) p.push(`room buttons differ in height: ${hs}`);
+      }
       const gap = await page.evaluate(() => { const i = document.querySelector('[data-key="chat"]').getBoundingClientRect().bottom, c = document.querySelector('section[aria-label="Chat"]').getBoundingClientRect().bottom; return c - i; });
       if (gap > 24) p.push(`chat input is ${gap}px above the bottom of the Chat card`);
       if (!(await page.getByRole('button', { name: 'Start', exact: true }).isDisabled())) p.push('Start is enabled while Jock is not ready');
