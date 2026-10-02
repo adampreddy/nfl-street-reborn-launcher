@@ -241,7 +241,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 ## 9. Words
 
 - "Leaderboard", never "ladder". "Live feed", not "Watch live". "Last 10 games", not "Form".
-- A row never says "Best of 3" (every ranked match is one). The live card says "Game 2 of 3". There are no halves.
+- A row never says "Best of 3" (every ranked match is one). The match view (live.html) says "Game 2 of 3"; Online's Live now card says "Ranked · Game 2" or "Casual" (spec 2026-10-02 §5). There are no halves.
 - Stat units are uppercase in tables (YDS, TD, RTG, C/ATT, CAR, YCO, DRP) and spelled out in headline tiles (Passing Yards, Passing TD, Passer Rating).
 - Records are W-L. Private rooms never show on a profile and never count.
 

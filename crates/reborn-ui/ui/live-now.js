@@ -5,23 +5,17 @@
 // Everything the backend returns is untrusted player-typed data (a display name, a team name) and
 // is drawn with `el()`'s `text` (textContent), never innerHTML -- see shell.js. An image `src` is
 // set only from a URL under our own live-assets catalog or Discord's avatar CDN (the CSP `img-src`
-// this launcher ships only ever allows those two prefixes); anything else draws its badge/initial
+// this launcher ships only ever allows those two prefixes); anything else draws its badge
 // instead of an <img>, which is also what a custom `backend_origin` (Settings) falls back to,
 // since that setting can never widen a static CSP -- see docs/superpowers/sdd's constraints for
 // this feature.
-import { bridge, el, quietCall, reason } from './shell.js';
-import { inkFor } from './live-color.js';
-import { assetUrl, avatarSrc, makePoller } from './live-common.js';
+import { bridge, call, el, quietCall, reason } from './shell.js';
+import { PAGE_ORIGIN, assetUrl, makePoller } from './live-common.js';
 
 // The list changes slowly (a match starts or a score moves); 10 s keeps a LAN party of launchers
 // behind one address well inside the backend's rate limit.
 const POLL_MS = 10000;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
-
-function initialOf(name) {
-  const s = String(name ?? '');
-  return s ? Array.from(s)[0].toUpperCase() : '?';
-}
 
 /** Shows `img`; swaps to `badge` if the image never loads (wrong origin, 404, offline). */
 function withImageFallback(img, badge) {
@@ -43,37 +37,22 @@ function teamLogo(team) {
   return withImageFallback(img, badge);
 }
 
-/** The team's abbreviation as a chip: the catalog's own primary colour as its background (validated,
-    never trusted as is), with black or white text picked by luminance for 4.5:1 contrast or better --
-    the same treatment live.js's header gives a team's name, via the shared live-color.js. */
-function teamAbbrev(team) {
-  const attrs = { class: 'live-abbrev', text: team && team.abbrev ? String(team.abbrev) : '?' };
-  if (team && HEX_RE.test(team.primary)) attrs.style = `background:${team.primary};color:${inkFor(team.primary)}`;
-  return el('span', attrs);
-}
-
-function teamBlock(team, score, side) {
-  return el('div', { class: `live-team live-team-${side}` },
-    teamLogo(team),
-    el('div', { class: 'live-team-id' },
-      teamAbbrev(team),
-      el('span', { class: 'live-team-name', text: team && team.name ? String(team.name) : 'Team TBD' })),
-    el('span', { class: 'live-score-num', text: String(Number.isFinite(score) ? score : 0) }));
-}
-
-/** A seat's avatar, or its display name's initial when there is none (or it fails to load). */
-function playerAvatar(seat) {
-  const badge = el('span', { class: 'live-avatar-badge', text: initialOf(seat && seat.display_name) });
-  const url = avatarSrc(seat);
-  if (!url) return badge;
-  const img = el('img', { class: 'live-avatar', src: url, width: 24, height: 24, alt: '' });
-  return withImageFallback(img, badge);
-}
-
+/** The player under a team, muted beside its name; a side with no controller is the CPU. */
 function playerLine(seat, cpu) {
-  if (cpu) return el('span', { class: 'live-player live-cpu' }, el('span', { class: 'live-player-name', text: 'CPU' }));
+  if (cpu) return el('em', { class: 'live-player-name live-cpu', text: 'CPU' });
   const name = seat && typeof seat.display_name === 'string' && seat.display_name ? seat.display_name : 'Unknown player';
-  return el('span', { class: 'live-player' }, playerAvatar(seat), el('span', { class: 'live-player-name', text: name }));
+  return el('em', { class: 'live-player-name', text: name });
+}
+
+/** One team row of a card (spec 2026-10-02 §5): crest (or its badge), team name with the player muted, score, on a faint
+    fade of the team's own primary (validated, never trusted as is). The losing side is dimmed. */
+function sideRow(team, score, seat, cpu, losing) {
+  const attrs = { class: `live-side${losing ? ' lose' : ''}` };
+  if (team && HEX_RE.test(team.primary)) attrs.style = `--tc:${team.primary}`;
+  return el('div', attrs,
+    teamLogo(team),
+    el('span', { class: 'live-team-name' }, team && team.name ? String(team.name) : 'Team TBD', ' ', playerLine(seat, cpu)),
+    el('b', { class: 'live-score-num', text: String(Number.isFinite(score) ? score : 0) }));
 }
 
 /**
@@ -93,35 +72,32 @@ function watchLink(match) {
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const label = (t) => (t && t.name ? t.name : 'a team');
   const link = el('a', {
-    class: 'button live-watch', href: `live.html?match=${encodeURIComponent(id)}`, 'data-key': `watch-${id}`,
+    class: 'btn sm live-watch', href: `live.html?match=${encodeURIComponent(id)}`, 'data-key': `watch-${id}`,
     'aria-label': `Watch ${label(teams[0])} vs ${label(teams[1])}`, text: 'Watch',
   });
   watchLinks.set(`watch-${id}`, link);
   return link;
 }
 
-/** The row's whole content, rebuilt fresh every poll; only the <li> that holds it is reused. */
+/** The card's whole content, rebuilt fresh every poll; only the <li> that holds it is reused. */
 function rowContent(match) {
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const score = Array.isArray(match.score) ? match.score : [0, 0];
   const seats = Array.isArray(match.seats) ? match.seats : [null, null];
-  // Each player sits under the team they have (side 0 first, then side 1), so the names line up
-  // with the scoreboard above them; a side with no seat shows CPU rather than the other side's.
+  // Each player sits under the team they have (side 0 first, then side 1); a side with no seat shows CPU rather than
+  // the other side's player.
   const sides = Array.isArray(match.sides) && match.sides.length ? match.sides : null;
   const s0 = seatOfSide(seats, sides, 0);
   const s1 = seatOfSide(seats, sides, 1);
+  const a = Number.isFinite(score[0]) ? score[0] : 0, b = Number.isFinite(score[1]) ? score[1] : 0;
   const gameNo = Number.isInteger(match.game_seq) ? match.game_seq : 1;
-  const bestOf = Number.isInteger(match.best_of) ? match.best_of : 1;
   return [
-    el('div', { class: 'live-scoreboard' },
-      teamBlock(teams[0], score[0], 0),
-      el('span', { class: 'live-score-sep', 'aria-hidden': 'true', text: '–' }),
-      teamBlock(teams[1], score[1], 1)),
-    el('div', { class: 'live-meta' },
-      el('span', { class: 'live-game-no', text: `Game ${gameNo} of ${bestOf}` }),
-      el('span', { class: 'live-mode', text: match.mode === 'ranked' ? 'Ranked' : 'Casual' })),
-    el('div', { class: 'live-players' }, playerLine(s0.seat, s0.cpu), playerLine(s1.seat, s1.cpu)),
-    watchLink(match),
+    sideRow(teams[0], score[0], s0.seat, s0.cpu, a < b),
+    sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a),
+    el('div', { class: 'live-foot' },
+      el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
+      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Casual' }),
+      watchLink(match)),
   ];
 }
 
@@ -134,7 +110,7 @@ function rowFor(match) {
   const id = String(match.id);
   let li = rows.get(id);
   if (!li) {
-    li = el('li', { class: 'live-row', 'data-match-id': id });
+    li = el('li', { class: 'live-row glass', 'data-match-id': id });
     rows.set(id, li);
   }
   li.replaceChildren(...rowContent(match));
@@ -156,7 +132,17 @@ if (bridge) {
   const note = el('div', { class: 'live-now-note' });
   const content = el('div', { class: 'live-now-rows' });
   const body = el('div', { class: 'live-now-body' }, note, content);
-  section.append(el('div', { class: 'live-now-heading' }, el('h2', { text: 'Live now' })), body);
+  section.append(el('div', { class: 'sec-head live-now-heading' }, el('h2', { text: 'Live now' }),
+    el('button', { type: 'button', class: 'sec-link', 'data-key': 'live-all', text: 'See all ›',
+      onclick: () => call('open_website', { url: `${PAGE_ORIGIN}/live` }).catch(() => {}) })), body);
+  // The heading's "● {n} live games" (spec §2); hidden until the first good answer.
+  const countBox = document.getElementById('on-live-count');
+  function setCount(n) {
+    const words = countBox?.querySelector('span');
+    if (!words) return;
+    words.textContent = `${n} live ${n === 1 ? 'game' : 'games'}`;
+    countBox.hidden = false;
+  }
   const list = el('ul', { class: 'live-rows' });
 
   let lastJson = null; // the list last drawn, so an unchanged poll touches nothing
@@ -178,7 +164,9 @@ if (bridge) {
     const json = JSON.stringify(matches);
     if (json === lastJson) return;
     lastJson = json;
-    if (matches.length) { drawRows(matches); return; }
+    setCount(matches.length);
+    // Up to three cards (spec §5); "See all ›" opens the rest on the web.
+    if (matches.length) { drawRows(matches.slice(0, 3)); return; }
     rows.clear();
     watchLinks.clear();
     content.replaceChildren(el('p', { class: 'live-empty', text: 'No live games right now.' }));

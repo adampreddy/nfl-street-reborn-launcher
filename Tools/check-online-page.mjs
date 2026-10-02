@@ -398,6 +398,28 @@ const EXPECT = {
       return p;
     },
   },
+  'online-live': {
+    text: ['Live now', 'See all', 'Ranked · Game 1', 'Casual', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
+    absent: ['Game 1 of 3'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.live-row').count()) !== 2) p.push(`${await page.locator('.live-row').count()} live cards`);
+      if ((await page.locator('.live-row').first().locator('.live-side').count()) !== 2) p.push('a card does not have two team rows');
+      const href = await page.locator('.live-watch').first().getAttribute('href');
+      if (!/^live\.html\?match=/.test(href || '')) p.push(`Watch goes to ${href}`);
+      const live = await page.locator('#live-slot').boundingBox(), mode = await page.locator('#mode-slot').boundingBox();
+      if (!live || !mode || live.y < mode.y + mode.height) p.push('Live now is not under the mode area');
+      await page.getByRole('button', { name: 'See all ›', exact: true }).click();
+      await page.waitForTimeout(200);
+      const o = await calls(page, 'open_website');
+      if (JSON.stringify(o[0]) !== '{"url":"https://online.nflstreetreborn.com/live"}') p.push(`See all opened ${JSON.stringify(o[0])}`);
+      return p;
+    },
+  },
+  'online-live-many': {
+    text: ['5 live games'],
+    check: async (page) => ((await page.locator('.live-row').count()) === 3 ? [] : [`${await page.locator('.live-row').count()} cards, not 3`]),
+  },
   // (states are added above this line)
 };
 
