@@ -28,8 +28,12 @@ test('a split and a forfeit', () => {
   assert.equal(s.headline, 'Split 1-1');
   assert.equal(s.unofficial, false);
   const f = seriesOverModel(match({ kind: 'forfeit', winner_seat: 1, official: false, left_seat: 0 }, 1, { series_live: [1, 0] }), live);
-  assert.equal(f.headline, 'You won 0-1', 'my wins first');
+  assert.equal(f.headline, 'You won by forfeit', 'a forfeit says so, with no game score in the headline');
   assert.equal(f.note, 'Playz left the series');
+  assert.deepEqual(f.games, [{ n: 1, mine: 8, theirs: 36 }, { n: 2, mine: 6, theirs: 36 }], 'the per-game lines stay');
+  const g = seriesOverModel(match({ kind: 'forfeit', winner_seat: 0, official: false, left_seat: 1 }, 1, { series_live: [0, 1] }), live);
+  assert.equal(g.headline, 'Playz won by forfeit');
+  assert.equal(g.note, 'You left the series');
 });
 
 test('no screen while the series is open, held or abandoned', () => {

@@ -19,8 +19,10 @@ collision. Please carry these into the rewrite:
    (no imports), and `series-over.test.mjs` pins it.
 5. **Classes `drawSeriesOver` relies on** (all existing, zero CSS added): `mm-state` (headline), `note` (Unofficial tag,
    forfeit note, each game's score), `mm-series` (the "you vs them" line), `mm-actions` (the button row), `primary`
-   (Find another game), inside the existing `section.mm`. Please keep these classes, or tell the series session so
-   `drawSeriesOver` can take a class map instead.
+   (Find another game), inside the existing `section.mm`. Plainly: `mm-state`, `mm-series` and `mm-actions` are class
+   names the screen sets, but they have NO dedicated CSS today - the screen is styled only by the generic cascade
+   (`section.mm` headings, `p`, `.note`, `button`, `.primary`). The redesign is free to style them.
+   Please keep these classes, or tell the series session so `drawSeriesOver` can take a class map instead.
 6. The snapshot's `match` now also carries `outcome` (`{ kind, winner_seat, official, left_seat }`; kind is
    open | win | forfeit | split | held | abandoned) and `rules` (the series rules the match started under). Both are null
    from an older server.

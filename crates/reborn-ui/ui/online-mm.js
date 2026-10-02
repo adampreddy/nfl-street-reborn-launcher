@@ -7,7 +7,6 @@
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason, quietCall } from './shell.js';
 import { seriesOverModel, drawSeriesOver } from './series-over.js';
-import { PAGE_ORIGIN } from './live-common.js';
 import { avatar, teamLogo } from './match-rows.js';
 import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { openPanel } from './menu.js';
@@ -573,9 +572,10 @@ async function draw() {
     // The series-over screen (series spec 2026-10-02 §3.3). After the room and the queue, so a new search wins.
     const m = snap.match;
     loadOverLive(m.id);
-    body = drawSeriesOver(seriesOverModel(m, overLive.id === m.id ? overLive.snap : null), {
+    const model = seriesOverModel(m, overLive.id === m.id ? overLive.snap : null);
+    body = drawSeriesOver(model, {
       el,
-      onFull: () => call('open_website', { url: `${PAGE_ORIGIN}/live/${m.id}` }).catch((e) => { status.textContent = reason(e); }),
+      onFull: () => call('open_website', { url: model.fullUrl }).catch((e) => { status.textContent = reason(e); }),
       onFind: () => queueWhenCurrent(),
       onRematch: () => act('mm_match_action', { matchId: m.id, action: 'rematch', value: null }),
     });

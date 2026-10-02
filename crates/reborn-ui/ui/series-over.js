@@ -19,6 +19,7 @@ export function seriesOverModel(match, live) {
   const mine = wins[me] ?? 0, theirs = wins[1 - me] ?? 0;
   const winner = o.winner_seat === 0 || o.winner_seat === 1 ? o.winner_seat : null;
   const headline = o.kind === 'split' ? `Split ${mine}-${theirs}`
+    : o.kind === 'forfeit' ? (winner === me ? 'You won by forfeit' : `${them} won by forfeit`)
     : winner === me ? `You won ${mine}-${theirs}` : `${them} won ${theirs}-${mine}`;
   const note = o.kind === 'forfeit' ? (o.left_seat === me ? 'You left the series' : `${them} left the series`) : null;
   const games = (live?.games ?? []).filter((g) => g.decided).map((g) => {
