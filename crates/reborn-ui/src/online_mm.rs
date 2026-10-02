@@ -73,6 +73,9 @@ static LOCAL_WINS: Mutex<Option<(String, [u32; 2], u64)>> = Mutex::new(None);
 /// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
 /// leave (Task 19 reads this).
 pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
+/// The game being played right now, by seat: (match id, [seat0, seat1]). The live loop writes it from the plays it
+/// has read; Discord presence shows it as "you-them" (Adam 10-02).
+static LIVE_SCORE: Mutex<Option<(String, [i64; 2])>> = Mutex::new(None);
 /// The room lost its other player while this PC's Dolphin was still running: (match id, first sighting). Set by the
 /// relay loop, cleared when the room shows both players again (final fix L-I1), read when Dolphin exits (ruling R1).
 static PEER_LOST: Mutex<Option<(String, reborn_core::series::PeerSighting)>> = Mutex::new(None);
@@ -224,7 +227,19 @@ fn page_label(page: &str) -> &'static str {
 pub fn refresh_presence() {
     let (activity, on) = {
         let s = lock(&STATE);
-        let from_mm = s.snapshot.as_ref().and_then(|snap| activity_for(snap, now_unix()));
+        let from_mm = s.snapshot.as_ref().and_then(|snap| activity_for(snap, now_unix())).map(|a| match a {
+            // The live score, from this launcher's own copy of the plays, for the match being played.
+            Activity::InMatch { mode, opponent, field, series, score: None, start_unix } => {
+                let m = s.snapshot.as_ref().and_then(|snap| snap.matched.as_ref());
+                let score = m.and_then(|m| {
+                    let seat = (m.seat as usize).min(1);
+                    lock(&LIVE_SCORE).as_ref().filter(|(id, _)| id == &m.id)
+                        .map(|(_, by)| (by[seat].max(0) as u32, by[1 - seat].max(0) as u32))
+                });
+                Activity::InMatch { mode, opponent, field, series, score, start_unix }
+            }
+            other => other,
+        });
         let activity = from_mm.unwrap_or(match s.page {
             "Home" => Activity::Launcher,
             other => Activity::Browsing { page: other },
@@ -353,6 +368,13 @@ fn live_plays_loop(platform: Platform) {
             // Every second, unsent plays included (review I1): the ranked close and the exit report read it.
             let read_at = now_ms();
             *lock(&LOCAL_WINS) = Some((id.clone(), poster.projected_wins(), read_at));
+            if let Some(by) = poster.tally().current_score_by_seat() {
+                let changed = lock(&LIVE_SCORE).as_ref().is_none_or(|(i, b)| i != id || *b != by);
+                if changed {
+                    *lock(&LIVE_SCORE) = Some((id.clone(), by));
+                    refresh_presence();
+                }
+            }
             if halted {
                 return;
             }

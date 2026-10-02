@@ -37,12 +37,22 @@ fn safety_of(p: &Value) -> Option<(usize, f64)> {
     None
 }
 
-/// The score by side after a game's plays (backend pbp/livegame.js scoreAfter), in seq order.
+/// The game's own score by side after a play, `[side0, side1]`, as Dolphin read it from RAM (runtime 1.2.11+), or
+/// None for an older runtime's play or anything but two whole numbers 0..=999 (backend pbp/livegame.js gameScoreOf).
+pub fn game_score_of(p: &Value) -> Option<[i64; 2]> {
+    let a = p["score"].as_array().filter(|a| a.len() == 2)?;
+    let v = |x: &Value| x.as_i64().filter(|n| (0..=999).contains(n));
+    Some([v(&a[0])?, v(&a[1])?])
+}
+
+/// The score by side after a game's plays (backend pbp/livegame.js scoreAfter), in seq order. A play carrying the
+/// game's own score sets it outright: the decoder's points missed conversion returns (4 to the defense, 10-02).
 pub fn score_of(plays: &[Value]) -> [i64; 2] {
     let mut sorted: Vec<&Value> = plays.iter().filter(|p| p["seq"].as_i64().is_some()).collect();
     sorted.sort_by_key(|p| p["seq"].as_i64().unwrap_or(0));
     let mut s = [0f64; 2];
     for p in sorted {
+        if let Some(g) = game_score_of(p) { s = [g[0] as f64, g[1] as f64]; continue; }
         if let Some((side, pts)) = safety_of(p) { s[side] += pts; continue; }
         let pts = p["summary"]["points"].as_f64().unwrap_or(0.0);
         if let (Some(side), true) = (bit(&p["offense_side"]), pts.is_finite() && pts > 0.0) {
@@ -90,6 +100,22 @@ impl LocalTally {
 
     pub fn decided(&self) -> u32 {
         self.winners().count() as u32
+    }
+
+    /// The newest game's score by SEAT, `[seat0, seat1]` (Discord presence shows it), or None before a play with
+    /// `ports` says which seat holds which side.
+    pub fn current_score_by_seat(&self) -> Option<[i64; 2]> {
+        let plays: Vec<Value> = self.games.values().next_back()?.values().cloned().collect();
+        let s = score_of(&plays);
+        let newest = plays.iter()
+            .filter(|p| p["ports"].as_array().is_some_and(|a| a.len() == 2))
+            .max_by_key(|p| p["seq"].as_i64().unwrap_or(0))?;
+        let (a, b) = (bit(&newest["ports"][0])?, bit(&newest["ports"][1])?);
+        if a == b { return None; }
+        let mut out = [0i64; 2];
+        out[a] = s[0];
+        out[b] = s[1];
+        Some(out)
     }
 }
 
@@ -400,6 +426,33 @@ mod tests {
         assert_eq!(game_winner_seat(&won), Some(1));
         let no_ports: Vec<Value> = (1..=6).map(|s| json!({ "seq": s, "offense_side": 0, "summary": { "points": 6 } })).collect();
         assert_eq!(game_winner_seat(&no_ports), None, "R6: no known seat counts for nobody");
+    }
+
+    #[test]
+    fn the_games_own_score_wins_over_the_decoder_a_returned_conversion_counts_4() {
+        let td = json!({ "seq": 1, "offense_side": 0, "ports": [0, 1], "summary": { "points": 6 }, "score": [6, 0] });
+        // The decoder calls a returned try a 0-point turnover; the game gave the defense 4 (10-02, Chargers-Falcons).
+        let ret = json!({ "seq": 2, "offense_side": 0, "ports": [0, 1], "summary": { "points": 0, "turnover": true }, "score": [6, 4] });
+        assert_eq!(score_of(&[td.clone(), ret]), [6, 4]);
+        let old = json!({ "seq": 3, "offense_side": 1, "ports": [0, 1], "summary": { "points": 6 } });
+        assert_eq!(score_of(&[td.clone(), old]), [6, 6], "an older runtime's play still adds its points");
+        let junk = json!({ "seq": 2, "offense_side": 1, "ports": [0, 1], "summary": { "points": 6 }, "score": [-1, 6] });
+        assert_eq!(score_of(&[td, junk]), [6, 6], "a junk score is ignored, the decoder's points count");
+        let won = json!({ "seq": 9, "offense_side": 1, "ports": [0, 1], "summary": { "points": 0 }, "score": [30, 36] });
+        assert_eq!(game_winner_seat(&[won]), Some(1));
+    }
+
+    #[test]
+    fn the_current_score_is_the_newest_games_by_seat() {
+        let mut t = LocalTally::default();
+        assert_eq!(t.current_score_by_seat(), None);
+        t.add(1, &json!({ "seq": 1, "offense_side": 0, "ports": [0, 1], "summary": { "points": 6 }, "score": [36, 0] }));
+        // Game 2: seat 0 now plays side 1.
+        t.add(2, &json!({ "seq": 1, "offense_side": 1, "ports": [1, 0], "summary": { "points": 6 }, "score": [3, 14] }));
+        assert_eq!(t.current_score_by_seat(), Some([14, 3]));
+        let mut u = LocalTally::default();
+        u.add(1, &json!({ "seq": 1, "offense_side": 0, "summary": { "points": 6 } }));
+        assert_eq!(u.current_score_by_seat(), None, "no ports yet: no seat is known");
     }
 
     #[test]
