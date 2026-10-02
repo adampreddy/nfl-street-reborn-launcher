@@ -444,7 +444,11 @@ let lastOnline = { count: null, players: [] };
 let presenceOn = false;
 const ACTIVITY = { idle: 'Online', queued: 'Looking for a game', in_lobby: 'In a room', in_match: 'In a match' };
 
-/** The heading button: "{n} players online". A value the server does not send hides its spot (spec §7): no online list, no button. */
+let panelEl = null;
+let panelSig = '';
+
+/** The heading button: "{n} players online" when the server counted, "Discord status" otherwise (the switch is still there,
+ *  but nothing is invented, spec §7). Present wherever the presence switch was; hidden only by hideOnline(). */
 function showOnline(snap, on) {
   presenceOn = !!on;
   const online = snap?.online;
@@ -452,8 +456,22 @@ function showOnline(snap, on) {
   lastOnline = { count: has && typeof online.count === 'number' ? online.count : null, players: has && Array.isArray(online.players) ? online.players : [] };
   if (!playersBtn) return;
   const n = lastOnline.count;
-  playersBtn.querySelector('span').textContent = n === null ? 'Players online' : `${n} ${n === 1 ? 'player' : 'players'} online`;
-  playersBtn.hidden = !has;
+  playersBtn.querySelector('span').textContent = n === null ? 'Discord status' : `${n} ${n === 1 ? 'player' : 'players'} online`;
+  playersBtn.hidden = false;
+  // An open panel follows the data (the 1 s poll), keeping focus on the control that had it.
+  const sig = JSON.stringify([lastOnline, presenceOn]);
+  if (panelEl?.isConnected && sig !== panelSig) {
+    const hadSwitch = document.activeElement?.id === 'mm-presence';
+    panelEl.replaceChildren(presencePanel());
+    if (hadSwitch) panelEl.querySelector('#mm-presence')?.focus();
+  }
+  panelSig = sig;
+}
+
+/** Matchmaking off or the state unreadable: no switch to offer, so no button, and no stale panel. */
+function hideOnline() {
+  if (panelEl?.isConnected) panelEl.close();
+  if (playersBtn) playersBtn.hidden = true;
 }
 
 // Who is online (the first 12, as before) and the switch that sat at the bottom of the page, unchanged: it sends
@@ -470,25 +488,27 @@ function presencePanel() {
   });
   return el('div', { class: 'on-panel' },
     lastOnline.count !== null ? el('span', { class: 'k-label', text: `${lastOnline.count} online` }) : null,
-    list,
+    lastOnline.count !== null ? list : null,
     el('div', { class: 'on-switch-row' }, el('span', { id: 'mm-presence-label', text: "Show what I'm doing on Discord" }), sw));
 }
-playersBtn?.addEventListener('click', () => openPanel(playersBtn, { label: 'Players online', build: presencePanel }));
+playersBtn?.addEventListener('click', () => { panelSig = JSON.stringify([lastOnline, presenceOn]); panelEl = openPanel(playersBtn, { label: 'Players online', build: presencePanel }); });
 
 async function draw() {
   if (!bridge) {
+    hideOnline();
     setLinks(true);
     section.replaceChildren(el('p', { class: 'note', text: 'Matchmaking needs the Reborn launcher.' }));
     return;
   }
   let state;
-  try { state = await call('mm_state'); } catch (e) { setLinks(true); section.replaceChildren(el('p', { class: 'note', text: reason(e) })); return; }
+  try { state = await call('mm_state'); } catch (e) { hideOnline(); setLinks(true); section.replaceChildren(el('p', { class: 'note', text: reason(e) })); return; }
   // A launcher build without matchmaking, or a test bridge that does not know this command, answers null. That is not
   // an error the player can act on, so the panel simply stays out of the way.
-  if (!state || typeof state !== 'object') { setLinks(true); section.replaceChildren(); return; }
+  if (!state || typeof state !== 'object') { hideOnline(); setLinks(true); section.replaceChildren(); return; }
   // The kill switch: the server has matchmaking off (or predates it). Only the Private room tile, whose row opens the
   // direct connection (spec §3.9). Drawn once, not every second.
   if (state.link === 'disabled') {
+    hideOnline();
     markBusy(false);
     setLinks(false); // the row's primary is Direct connection already
     if (lastDrawn === 'disabled') return;

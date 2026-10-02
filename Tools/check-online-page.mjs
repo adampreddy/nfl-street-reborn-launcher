@@ -14,6 +14,21 @@ mkdirSync(out, { recursive: true });
 let failures = 0;
 const fail = (name, msg) => { failures++; console.log(`FAIL ${name}: ${msg}`); };
 const ok = (name) => console.log(`ok   ${name}`);
+// A state with no online list still offers the presence switch, under "Discord status", and invents no count.
+async function discordStatus(page) {
+  const btn = page.locator('#on-players');
+  if (!(await btn.isVisible())) return ['the Discord status button is not shown'];
+  const p = [];
+  if ((await btn.innerText()).trim() !== 'Discord status') p.push(`the button reads "${await btn.innerText()}"`);
+  await btn.click();
+  const panel = page.locator('dialog.menu.panel[open]');
+  if (!(await panel.locator('#mm-presence').count())) p.push('the panel has no presence switch');
+  const t = await panel.innerText();
+  for (const w of ['0 online', 'null', 'undefined']) if (t.includes(w)) p.push(`the panel shows "${w}"`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  return p;
+}
 const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x.cmd === c).map((x) => x.args), cmd);
 
 // ---- static: tokens, the sweep, the art ----
@@ -303,7 +318,7 @@ const EXPECT = {
     text: ['Sign in to play online', 'Connect your Discord account to play online and track your stats!', 'Sign in with Discord', 'Live now', 'Direct connection'],
     absent: ['Find a', 'searching', '1,184 Elo', '#7', '0 online'],
     check: async (page) => {
-      const p = [];
+      const p = await discordStatus(page);
       if (!(await page.locator('.on-modes[inert]').count())) p.push('the tiles behind the panel can still be reached');
       await page.getByRole('button', { name: 'Sign in with Discord', exact: true }).click();
       await page.getByText('Your code is ABCD-1234', { exact: true }).waitFor({ timeout: 3000 }).catch(() => p.push('the device code is not shown'));
@@ -313,14 +328,15 @@ const EXPECT = {
       return p;
     },
   },
-  'online-connecting': { text: ['Connecting…'], absent: ['null', 'undefined', '0 online'] },
-  'online-no-online-list': { text: ['Find a ranked game'], absent: ['null', 'undefined', ' online'] },
-  'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.'], absent: ['Sign in with Discord', 'Find a', '0 online'] },
+  'online-connecting': { text: ['Connecting…', 'Discord status'], absent: ['null', 'undefined', '0 online'], check: discordStatus },
+  'online-no-online-list': { text: ['Find a ranked game', 'Discord status'], absent: ['null', 'undefined', ' online'], check: discordStatus },
+  'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.', 'Discord status'], absent: ['Sign in with Discord', 'Find a', '0 online'], check: discordStatus },
   'online-disabled': {
     text: ['Private room', 'Direct connection'],
     absent: ['Find a', "Can't reach", 'Sign in', 'Not on our servers', '0 online'],
     check: async (page) => {
       const p = [];
+      if (await page.locator('#on-players').isVisible()) p.push('the Discord status button shows with matchmaking off');
       if ((await page.locator('.on-tile').count()) !== 1) p.push(`${await page.locator('.on-tile').count()} tiles with matchmaking off`);
       await page.locator('.on-row [data-key="direct"]').click();
       if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('the Direct connection button did not open the dialog');
@@ -334,6 +350,7 @@ const EXPECT = {
       await page.locator('#on-players').click();
       const panel = page.locator('dialog.menu.panel[open]');
       if (!(await panel.isVisible())) return ['the players button opened nothing'];
+      await page.screenshot({ path: path.join(out, 'online-presence-open.png') });
       const t = await panel.innerText();
       for (const w of ['Adam', 'Jock', 'Tuna', 'Looking for a game', "Show what I'm doing on Discord"]) if (!t.includes(w)) p.push(`the panel lacks "${w}"`);
       const sw = panel.locator('#mm-presence');
