@@ -6,11 +6,14 @@ ROOT=/srv/jammy
 SRC=${REBORN_SRC:-/home/reborn/src}
 mkdir -p "$ROOT/src"
 mounts=(proc sys dev dev/pts src)
+# WSL mounts /dev and /sys SHARED. A plain rbind joins their peer group, and
+# unmounting it on the way out then unmounts the host's own /dev/pts too:
+# WSL can no longer start a process ("Catastrophic failure", observed twice
+# on 2026-10-02). rslave lets mounts flow in and never back out.
 mount -t proc proc "$ROOT/proc"
-mount --rbind /sys "$ROOT/sys"
-mount --rbind /dev "$ROOT/dev"
-mountpoint -q "$ROOT/dev/pts" || mount -t devpts devpts "$ROOT/dev/pts"
-mount --bind "$SRC" "$ROOT/src"
+mount --rbind /sys "$ROOT/sys"; mount --make-rslave "$ROOT/sys"
+mount --rbind /dev "$ROOT/dev"; mount --make-rslave "$ROOT/dev"
+mount --bind "$SRC" "$ROOT/src"; mount --make-private "$ROOT/src"
 cleanup() {
   for m in src dev/pts dev sys proc; do umount -lf "$ROOT/$m" 2>/dev/null || true; done
 }

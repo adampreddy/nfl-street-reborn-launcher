@@ -18,7 +18,11 @@ echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > "$A/etc/pacman.
 cp /etc/resolv.conf "$A/etc/resolv.conf"
 mount --bind "$A" "$A"
 trap 'umount -lf "$A/proc" "$A/dev" "$A/sys" "$A" 2>/dev/null || true' EXIT
-mount -t proc proc "$A/proc"; mount --rbind /dev "$A/dev"; mount --rbind /sys "$A/sys"
+# rslave: see in-builder.sh. A shared rbind's unmount takes the host's
+# /dev/pts with it and WSL stops starting processes.
+mount -t proc proc "$A/proc"
+mount --rbind /dev "$A/dev"; mount --make-rslave "$A/dev"
+mount --rbind /sys "$A/sys"; mount --make-rslave "$A/sys"
 chroot "$A" /usr/bin/bash -euxc '
 sed -i "s/^CheckSpace/#CheckSpace/" /etc/pacman.conf
 pacman-key --init > /dev/null; pacman-key --populate archlinux > /dev/null
