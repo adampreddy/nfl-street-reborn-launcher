@@ -67,6 +67,8 @@ cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER_LAUNCHER=nowerror -DCMAKE_CXX_COMPILER_LAUNCHER=nowerror
 cmake --build build-release --parallel 10 --target dolphin-emu
 rm -rf /tmp/dolphin.AppDir
+# Ubuntu keeps Qt 6 qmake outside PATH; the Qt plugin asks qmake where Qt is.
+export QMAKE=/usr/lib/qt6/bin/qmake
 /opt/linuxdeploy/linuxdeploy-x86_64.AppImage --appdir /tmp/dolphin.AppDir \
   --executable build-release/Binaries/dolphin-emu --plugin qt \
   --exclude-library "libvulkan.so*"
@@ -79,6 +81,7 @@ mv /tmp/dolphin.AppDir/usr/plugins "$R/plugins"
 patchelf --set-rpath "\$ORIGIN/lib" "$R/dolphin-emu"
 printf "[Paths]\nPrefix = .\nPlugins = plugins\nLibraries = lib\n" > "$R/qt.conf"
 '
+[ -x "$SRC/release-runtime/dolphin-emu" ] || { echo "the runtime was not built"; exit 1; }
 mv "$SRC/release-runtime" "$OUT/runtime-linux"
 cp -r "$WIN_RUNTIME/Sys" "$WIN_RUNTIME/Languages" "$OUT/runtime-linux/"
 mkdir -p "$OUT/runtime-linux/User"

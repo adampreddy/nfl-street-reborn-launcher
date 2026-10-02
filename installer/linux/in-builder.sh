@@ -14,8 +14,12 @@ mount -t proc proc "$ROOT/proc"
 mount --rbind /sys "$ROOT/sys"; mount --make-rslave "$ROOT/sys"
 mount --rbind /dev "$ROOT/dev"; mount --make-rslave "$ROOT/dev"
 mount --bind "$SRC" "$ROOT/src"; mount --make-private "$ROOT/src"
+# Keeps the command's own exit status: without the explicit exit, the last
+# `|| true` below became the script's status and a failed build read as done.
 cleanup() {
+  local rc=$?
   for m in src dev/pts dev sys proc; do umount -lf "$ROOT/$m" 2>/dev/null || true; done
+  exit "$rc"
 }
 trap cleanup EXIT
 # AppImages (linuxdeploy) cannot use FUSE in a chroot.
