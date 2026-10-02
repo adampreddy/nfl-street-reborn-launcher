@@ -662,6 +662,8 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
             "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
             "hold_reason": m.hold_reason, "seat": m.seat,
+            // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
+            "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
         })),
         "chat": s.chat.messages.iter().map(|c| serde_json::json!({
             "seq": c.seq, "name": c.display_name, "body": c.body, "at": c.at,
@@ -847,5 +849,24 @@ mod tests {
         for k in ["opponent_elo", "opponent_rank", "opponent_team", "opponent_avatar_url"] {
             assert!(v["match"][k].is_null(), "{k} must be null when the server sends nothing");
         }
+    }
+
+    #[test]
+    fn the_match_view_passes_the_series_outcome_live_tally_and_rules_to_the_page() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "relay_state": "complete",
+            "series_live": [2, 0], "outcome": { "kind": "win", "winner_seat": 0, "official": false, "left_seat": null },
+            "rules": { "ranked_best_of": 3, "casual_max_games": 20, "ranked_leave_forfeits": true,
+                "ranked_rematch_cooldown_hours": 24.0, "casual_rematch_unlimited": true } } }))
+            .unwrap();
+        let v = snapshot_json(&s);
+        assert_eq!(v["match"]["series_live"], serde_json::json!([2, 0]));
+        assert_eq!(v["match"]["outcome"]["kind"], "win");
+        assert_eq!(v["match"]["outcome"]["winner_seat"], 0);
+        assert_eq!(v["match"]["outcome"]["official"], false);
+        assert_eq!(v["match"]["rules"]["ranked_best_of"], 3);
+
+        let old: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m" } })).unwrap();
+        let v = snapshot_json(&old);
+        assert!(v["match"]["outcome"].is_null() && v["match"]["rules"].is_null(), "an older server sends neither");
     }
 }

@@ -5,7 +5,9 @@
 // sent: `mm_state` every second (a read of what the launcher's long-poll already holds in memory, so it never touches
 // the network) and one request per action. Which state the mode area shows is decided exactly as before: a live match,
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
-import { bridge, call, el, get, reason } from './shell.js';
+import { bridge, call, el, get, reason, quietCall } from './shell.js';
+import { seriesOverModel, drawSeriesOver } from './series-over.js';
+import { PAGE_ORIGIN } from './live-common.js';
 import { avatar, teamLogo } from './match-rows.js';
 import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { openPanel } from './menu.js';
@@ -64,6 +66,13 @@ const store = {
 
 let busy = false;
 let lastDrawn = '';
+// The public snapshot of the series that just finished, for its per-game scores (read once per match).
+let overLive = { id: null, snap: null };
+function loadOverLive(id) {
+  if (overLive.id === id) return;
+  overLive = { id, snap: null };
+  quietCall('live_match', { matchId: id }).then((s) => { if (overLive.id === id) { overLive.snap = s; lastDrawn = ''; draw(); } }).catch(() => {});
+}
 const status = el('p', { class: 'settings-status on-status', role: 'status' });
 
 function mode() { return store.get('mm:mode', 'casual'); }
@@ -532,7 +541,7 @@ async function draw() {
   }
 
   // Only redraw when something the player can see changed, so typing in chat is never interrupted.
-  const signature = JSON.stringify({ l: state.link, s: state.snapshot, r: state.relay_error, p: state.presence_on, m: mode() });
+  const signature = JSON.stringify({ l: state.link, s: state.snapshot, r: state.relay_error, p: state.presence_on, m: mode(), o: overLive.snap ? overLive.id : null });
   if (signature === lastDrawn || busy) return;
   // Only a text field being typed in (the chat, the room code) holds a redraw. The presence switch is a button, and
   // focus left on a control must never freeze the page (09-26).
@@ -560,6 +569,16 @@ async function draw() {
     body = drawRoom(snap.room, snap.chat ?? []);
   } else if (snap.ticket) {
     body = drawQueued(snap.ticket);
+  } else if (snap.match?.relay_state === 'complete' && seriesOverModel(snap.match, null)) {
+    // The series-over screen (series spec 2026-10-02 §3.3). After the room and the queue, so a new search wins.
+    const m = snap.match;
+    loadOverLive(m.id);
+    body = drawSeriesOver(seriesOverModel(m, overLive.id === m.id ? overLive.snap : null), {
+      el,
+      onFull: () => call('open_website', { url: `${PAGE_ORIGIN}/live/${m.id}` }).catch((e) => { status.textContent = reason(e); }),
+      onFind: () => queueWhenCurrent(),
+      onRematch: () => act('mm_match_action', { matchId: m.id, action: 'rematch', value: null }),
+    });
   } else {
     body = drawIdle(snap);
     showLinks = picked() === 'private';
