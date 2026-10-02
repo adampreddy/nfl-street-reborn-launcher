@@ -288,7 +288,8 @@ dialog.menu .menu-item[aria-checked="true"] .menu-check{visibility:visible}
    The highlight is out of flow with a fixed base width; tabs.js sets translateX + scaleX, so only transform animates. */
 .tabs{position:relative;display:inline-flex;gap:2px;max-width:100%;padding:4px;overflow-x:auto;scrollbar-width:none;border-radius:var(--r-lg);background:rgba(0,0,0,.22);border:1px solid var(--stroke)}
 .tabs .tab{position:relative;z-index:1;height:32px;padding:0 14px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif;white-space:nowrap;cursor:pointer}
-.tabs .tab:hover{color:var(--fg)}
+/* hover is a faint fill, never the selected tab's white: two white tabs read as two picked */
+.tabs .tab:hover:not([aria-pressed="true"]){color:#cfd4db;background:rgba(255,255,255,.05)}
 .tabs .tab[aria-pressed="true"]{color:var(--fg)}
 .tab-ind{position:absolute;top:4px;bottom:4px;left:0;width:100px;transform-origin:0 50%;transform:translateX(0) scaleX(0);border-radius:var(--r-sm);background:var(--glass-3);box-shadow:var(--sheen),0 0 0 1px var(--stroke);transition:transform var(--d2) var(--ease);pointer-events:none}
 .tab-ind.still{transition:none}
