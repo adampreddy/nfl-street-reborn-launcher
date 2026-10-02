@@ -166,7 +166,8 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
         // A one-file launcher (Linux AppImage) fetches the patch as content;
         // first run reaches this step before any content check has run.
-        if !reborn_core::game_patch::bundle_dir(&p,&data).join("manifest.json").is_file() {
+        if !reborn_core::game_patch::bundle_dir(&p,&data).join("manifest.json").is_file()
+            || !reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE).is_file() {
             let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading the game patch…","percent":null}));
         }
         let bundle=crate::content_updates::ensure_import_bundle(&p)?;
