@@ -125,3 +125,20 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .mm-chat strong{font-weight:600;color:var(--fg)}
 .mm-chat-form{display:flex;gap:8px;margin-top:8px}
 .mm-chat-form input{flex:1;height:40px}
+
+/* your room (spec §3.7) */
+.on-room{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.on-card{display:flex;flex-direction:column;min-height:0;padding:18px 20px}
+.on-card-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:12px}
+.on-card-h h2{margin:0;font:600 16px/1.2 Inter,system-ui,sans-serif}
+.on-card-h span{font-size:12px;color:var(--fg-3)}
+.on-codebig{margin:4px 0 6px;font:700 44px/1 Inter,system-ui,sans-serif;letter-spacing:.12em}
+.on-bt{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 16px}
+.on-members{list-style:none;margin:0;padding:0}
+.on-members li{display:flex;align-items:center;gap:12px;height:52px;border-top:1px solid var(--stroke)}
+.on-members b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600}
+.on-members small{margin-left:6px;font-size:12px;font-weight:500;color:var(--fg-3)}
+.on-rd{font-size:12px;font-weight:600;color:var(--ok)}
+.on-nr{font-size:12px;color:var(--fg-3)}
+.on-chat{flex:1;display:flex;flex-direction:column;min-height:0}
+@media (max-width:1000px){.on-room{grid-template-columns:1fr}}

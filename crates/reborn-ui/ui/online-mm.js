@@ -7,7 +7,7 @@
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
 import { bridge, call, el, get, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { acceptWithin, clock, eloBits, modeLine, seekLine, seriesLine, standing } from './online-model.js';
+import { acceptWithin, clock, eloBits, everyoneReady, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { tabs } from './tabs.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
@@ -179,7 +179,7 @@ function chatBox(messages, send) {
   const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something…', 'aria-label': 'Chat message', 'data-key': 'chat' });
   const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', class: 'btn quiet sm', text: 'Send' }));
   form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { send(t); input.value = ''; } });
-  return el('div', {}, log, form);
+  return el('div', { class: 'on-chat' }, log, form);
 }
 
 // ---- the mode area (spec §3.1) ----
@@ -309,24 +309,41 @@ function drawQueued(t) {
   ];
 }
 
+// Your room (spec §3.7): the code to share, who is in and ready, chat; Start for the host once everyone is ready.
 function drawRoom(r, chat) {
-  const members = el('ul', { class: 'mm-members' });
-  for (const m of r.members) members.append(el('li', { text: `${m.name}${m.you ? ' (you)' : ''}${m.ready ? ' — ready' : ''}` }));
   // The launcher marks which member is you; member order means nothing.
   const me = r.members.find((m) => m.you);
   const ready = !!me?.ready;
-  return [
-    el('h2', { text: `${r.mode === 'ranked' ? 'Ranked' : 'Casual'} lobby` }),
-    el('p', {}, 'Lobby code: ', el('code', { text: r.code }), ' ',
-      el('button', { type: 'button', text: 'Copy', onclick: () => navigator.clipboard?.writeText(r.code) })),
-    members,
-    el('div', { class: 'mm-actions' },
-      el('button', { type: 'button', class: 'primary', text: ready ? 'Not ready' : 'Ready',
-        onclick: () => act('mm_room_action', { roomId: r.id, action: 'ready', value: !ready }) }),
-      el('button', { type: 'button', text: 'Start', onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }),
-      el('button', { type: 'button', text: 'Leave lobby', onclick: () => act('mm_room_action', { roomId: r.id, action: 'leave', value: null }) })),
-    chatBox(chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })),
-  ];
+  const copyButton = (key, label, text) => {
+    const b = el('button', { type: 'button', class: 'btn sm', 'data-key': key, text: label });
+    b.addEventListener('click', () => navigator.clipboard?.writeText(text).then(() => { b.textContent = 'Copied'; }, () => {}));
+    return b;
+  };
+  const members = el('ul', { class: 'on-members' });
+  for (const m of r.members) {
+    members.append(el('li', {},
+      avatar(null, m.name, 'on-mav'),
+      el('b', {}, m.name, m.you ? el('small', { text: 'you' }) : null),
+      el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
+  }
+  const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
+    el('div', { class: 'on-card-h' }, el('h2', { text: 'Your room' }), el('span', { text: r.mode === 'ranked' ? 'Ranked' : 'Casual' })),
+    el('span', { class: 'k-label', text: 'Room code' }),
+    el('strong', { class: 'on-codebig', text: r.code }),
+    el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), copyButton('copy-invite', 'Copy invite link', inviteLink(r.code))),
+    el('span', { class: 'k-label', text: 'Players' }),
+    members);
+  const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
+    el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
+    chatBox(chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
+  const row = el('div', { class: 'on-row' },
+    r.you_host === true ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'room-start', 'data-primary': 'true', text: 'Start',
+      disabled: !everyoneReady(r), onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }) : null,
+    el('button', { type: 'button', class: 'btn', 'data-key': 'room-ready', text: ready ? "I'm not ready" : "I'm ready",
+      onclick: () => act('mm_room_action', { roomId: r.id, action: 'ready', value: !ready }) }),
+    el('button', { type: 'button', class: 'btn quiet', 'data-key': 'room-leave', text: 'Leave room',
+      onclick: () => act('mm_room_action', { roomId: r.id, action: 'leave', value: null }) }));
+  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: "Start works once you're both ready. The host starts the game." })];
 }
 
 function face({ url, name, sub, team, tick = false }) {

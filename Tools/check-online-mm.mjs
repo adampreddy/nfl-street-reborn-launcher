@@ -30,7 +30,7 @@ const STATES = {
   // The same idle answer with the Private room tile picked (a page-state pick, clicked after load: CLICK below).
   idle_private: { ...base, snapshot: empty },
   queued: { ...base, snapshot: { ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-22T20:34:50.379Z' } } },
-  lobby: { ...base, snapshot: { ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open',
+  lobby: { ...base, snapshot: { ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
     members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
     chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-22T20:40:00Z' }] } },
   pairing: { ...base, snapshot: { ...empty, match: { id: 'f772e15e-28e4-40ab-b667-70483f736542', mode: 'casual', status: 'pairing', relay_state: 'pairing',
@@ -62,7 +62,8 @@ const EXPECT = {
   queued: { text: ['Looking for a casual game', 'Searching… 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
   idle_private: { text: ['Lobbies', 'Jock · Casual', 'Host a room'], buttons: ['Join', 'Join by code', 'Open a public lobby', 'Host a room'], absent: ['Find a casual game'] },
-  lobby: { text: ['Casual lobby', 'K7QP2M', 'Adam (you)', 'Jock — ready', 'ready when you are'], buttons: ['Ready', 'Start', 'Leave lobby', 'Send'], absent: ['field pick'] },
+  // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
+  lobby: { text: ['Your room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
   pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
   running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
@@ -120,6 +121,10 @@ try {
     for (const t of exp.text ?? []) if (!has(t)) problems.push(`missing text "${t}"`);
     for (const b of exp.buttons ?? []) {
       if (!(await page.locator('#main').getByRole('button', { name: b, exact: true }).count())) problems.push(`missing button "${b}"`);
+    }
+    for (const [sel, n] of Object.entries(exp.counts ?? {})) {
+      const got = await page.locator(sel).count();
+      if (got !== n) problems.push(`${sel}: ${got} found, want ${n}`);
     }
     for (const t of exp.absent ?? []) if (has(t)) problems.push(`should NOT offer "${t}"`);
     if (errors.length) problems.push(`page errors: ${errors.join(' | ')}`);

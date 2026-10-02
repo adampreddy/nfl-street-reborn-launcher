@@ -556,7 +556,7 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             "mode": t.mode, "field": t.field_pick, "waited_ms": t.waited_ms, "enqueued_at": t.enqueued_at,
         })),
         "room": s.room.as_ref().map(|r| serde_json::json!({
-            "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status,
+            "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
             "members": r.members.iter().map(|m| serde_json::json!({
@@ -686,6 +686,12 @@ pub(crate) fn use_no_presence() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_room_view_says_whether_you_host_it() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "mode": "casual", "you_host": true, "members": [] } })).unwrap();
+        assert_eq!(snapshot_json(&s)["room"]["you_host"], true);
+    }
+
     use super::*;
 
     #[test]

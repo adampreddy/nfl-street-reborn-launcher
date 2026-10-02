@@ -113,6 +113,8 @@ pub struct Room {
     pub best_of: u8,
     pub status: String,
     pub members: Vec<RoomMember>,
+    /// The signed-in player hosts this room (the server's `you_host`): only the host is offered Start.
+    pub you_host: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -514,6 +516,14 @@ pub fn iso_to_unix(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_room_says_whether_you_host_it() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "you_host": true, "members": [] } })).unwrap();
+        assert!(s.room.unwrap().you_host);
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "members": [] } })).unwrap();
+        assert!(!s.room.unwrap().you_host, "an older server says nothing: not the host");
+    }
+
     use super::*;
     use crate::net::fake::FakeHttp;
 

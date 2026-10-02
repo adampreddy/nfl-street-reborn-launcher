@@ -245,6 +245,33 @@ const EXPECT = {
   },
   // The matchup card at the minimum window: one column, the faces clear of Leave match (generic check below).
   'online-match-small': { text: ['Match found', 'Jock', 'Accept within 0:14'] },
+  'online-room': {
+    text: ['Your room', 'Casual', 'Room code', 'K7QP2M', 'Players', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
+      "Start works once you're both ready. The host starts the game."],
+    absent: ['Lobby code', 'Leave lobby'],
+    check: async (page) => {
+      const p = [];
+      // Ruling P14: count the markers, not loose text ("you"/"Ready" appear in unrelated words).
+      const rd = await page.locator('.on-rd').count(), nr = await page.locator('.on-nr').count();
+      if (rd !== 1 || nr !== 1) p.push(`ready markers: ${rd} ready, ${nr} not ready (want 1 and 1)`);
+      if (!(await page.getByRole('button', { name: 'Start', exact: true }).isDisabled())) p.push('Start is enabled while Jock is not ready');
+      await page.getByRole('button', { name: 'Copy invite link', exact: true }).click();
+      await page.waitForTimeout(200);
+      if (await page.evaluate(() => window.__copied) !== 'https://nflstreetreborn.com/join.php?r=K7QP2M') p.push(`copied ${await page.evaluate(() => window.__copied)}`);
+      await page.getByRole('button', { name: 'Copy code', exact: true }).click();
+      await page.waitForTimeout(200);
+      if (await page.evaluate(() => window.__copied) !== 'K7QP2M') p.push('Copy code did not copy the code');
+      await page.getByRole('button', { name: "I'm not ready", exact: true }).click();
+      await page.waitForTimeout(300);
+      const r = await calls(page, 'mm_room_action');
+      if (JSON.stringify(r[0]) !== '{"roomId":"r1","action":"ready","value":false}') p.push(`ready sent ${JSON.stringify(r[0])}`);
+      await page.getByRole('button', { name: 'Leave room', exact: true }).click();
+      await page.waitForTimeout(300);
+      const l = (await calls(page, 'mm_room_action')).at(-1);
+      if (JSON.stringify(l) !== '{"roomId":"r1","action":"leave","value":null}') p.push(`Leave room sent ${JSON.stringify(l)}`);
+      return p;
+    },
+  },
   // (states are added above this line)
 };
 
