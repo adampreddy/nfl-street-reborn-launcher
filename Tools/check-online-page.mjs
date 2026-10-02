@@ -138,6 +138,9 @@ const EXPECT = {
       await page.locator('[data-key="mode-casual"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
       if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
+      // Back to Ranked, so the screenshot (taken after this check) shows the state's name.
+      await page.locator('[data-key="mode-ranked"]').click();
+      if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'ranked') p.push('picking Ranked again did not store mm:mode=ranked');
       return p;
     },
   },
@@ -207,7 +210,7 @@ const EXPECT = {
     },
   },
   'online-match-found': {
-    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#9 · 1,162 Elo', 'Adam', '#7 · 1,184 Elo'],
+    text: ['Match found', 'VS', 'Ranked · first to two wins', 'Accept within 0:14', 'Jock', '#1 · 1,320 Elo', 'Adam', '#7 · 1,184 Elo'],
     absent: ['best of', 'Not on our servers?'],
     check: async (page) => {
       const p = [];
@@ -451,13 +454,35 @@ const EXPECT = {
     },
   },
   'online-leaderboard-far': {
-    text: ['1,104'],
+    text: ['1,104', '#14', 'Dime'],
     check: async (page) => {
       const p = [];
       if ((await page.locator('.on-lb-gap').count()) !== 1) p.push('no gap before your row');
       const last = page.locator('.on-lb-row').last();
       if (!(await last.evaluate((n) => n.classList.contains('you')))) p.push('the last row is not yours');
       if ((await last.locator('.on-lb-rank').innerText()).trim() !== '14') p.push('your row does not say 14');
+      return p;
+    },
+  },
+  'online-rank-blip': {
+    text: ['#7', '1,184 Elo'],
+    check: async (page) => {
+      const p = [];
+      const before = (await calls(page, 'stats_dashboard')).length;
+      // The next stats_dashboard read fails; hiding and showing the page re-polls at once (live-common.js makePoller).
+      await page.evaluate(() => {
+        const core = window.__TAURI__.core, real = core.invoke;
+        core.invoke = (cmd, args) => (cmd === 'stats_dashboard' ? (window.__calls.push({ cmd, args }), Promise.reject({ kind: 'unavailable', message: 'Live games couldn\'t be loaded right now.' })) : real(cmd, args));
+        let state = 'hidden';
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+        document.dispatchEvent(new Event('visibilitychange'));
+        state = 'visible';
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.waitForTimeout(400);
+      if ((await calls(page, 'stats_dashboard')).length <= before) p.push('the page did not read stats_dashboard again');
+      const tile = await page.locator('[data-key="mode-ranked"]').innerText();
+      if (!tile.includes('#7') || !tile.includes('1,184 Elo')) p.push(`a failed dashboard read blanked the Ranked tile's rank (${tile.replace(/\s+/g, ' ')})`);
       return p;
     },
   },

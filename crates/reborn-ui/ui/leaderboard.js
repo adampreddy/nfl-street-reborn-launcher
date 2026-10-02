@@ -59,9 +59,13 @@ function tellRank(detail) {
 
 async function poll() {
   const [board, dash] = await Promise.allSettled([quietCall('leaderboard'), quietCall('stats_dashboard')]);
-  const d = dash.status === 'fulfilled' ? dash.value : null;
-  const you = d && d.signed_in && d.ok !== false ? d.you : null;
-  tellRank(you ? { elo: you.elo ?? null, playsAs: you.plays_as ?? null } : null);
+  // A failed read (a network blip) tells nothing: the last rank stays. Only a real answer (signed out, ok:false, or
+  // your figures) changes it.
+  if (dash.status === 'fulfilled') {
+    const d = dash.value;
+    const you = d && d.signed_in && d.ok !== false ? d.you : null;
+    tellRank(you ? { elo: you.elo ?? null, playsAs: you.plays_as ?? null } : null);
+  }
   if (board.status === 'rejected') { showError(reason(board.reason)); throw board.reason; }
   draw(board.value);
 }

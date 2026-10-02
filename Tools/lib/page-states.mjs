@@ -15,14 +15,24 @@ const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_pr
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
-// Stats fixture's elo(); week_delta is the backend's Task 15 field.
+// Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
+// adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
+// record from elo.around), so tile, card and matchup card agree in every screenshot.
 export const LB_TEAM = { tgid: 14, name: 'Falcons', abbrev: 'ATL', logo_url: '/live-assets/teams/14-128.png', primary: '#A71930' };
-const LB_NAMES = ['Jock', 'Playz', 'Tuna', 'Mikel', 'Riley', 'Sauce', 'adamknowsball', 'Bones', 'Vick7', 'Kaz'];
-const lbRow = (name, i) => ({ rank: i + 1, player_id: `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`, display_name: name,
-  avatar_url: i % 3 ? null : `https://cdn.discordapp.com/avatars/12345678901234567${i}/0123456789abcdef0123456789abcdef.png?size=64`,
-  team: i % 2 ? null : LB_TEAM, wins: 20 - i, losses: 3 + i, elo: 1320 - i * 18, delta_week: i % 4 === 0 ? 16 : i % 4 === 1 ? -9 : 0, you: name === 'adamknowsball' });
-export const LEADERBOARD = { ok: true, enabled: true, total: 38, rows: LB_NAMES.map(lbRow), you: null };
 export const DASH = (() => { const d = F.dashboard(); d.you.elo.week_delta = 16; return d; })();
+const LB_NAMES = ['Jock', 'Playz', 'Tuna', 'Mikel', 'Riley', 'Sauce', 'adamknowsball', 'Bones', 'Vick7', 'Kaz'];
+const LB_ELO = [1320, 1302, 1284, 1266, 1248, 1230, 1184, 1170, 1152, 1134];
+const ME_ROW = (() => {
+  const e = DASH.you.elo, a = e.around.find((r) => r.is_player);
+  return { rank: e.rank, player_id: DASH.you.player_id, display_name: DASH.you.display_name, avatar_url: a.avatar_url, team: LB_TEAM,
+    wins: a.wins, losses: a.losses, elo: e.rating, delta_week: e.week_delta, you: true };
+})();
+const lbRow = (name, i) => name === ME_ROW.display_name ? { ...ME_ROW } : ({ rank: i + 1, player_id: `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`, display_name: name,
+  avatar_url: i % 3 ? null : `https://cdn.discordapp.com/avatars/12345678901234567${i}/0123456789abcdef0123456789abcdef.png?size=64`,
+  team: i % 2 ? null : LB_TEAM, wins: 20 - i, losses: 3 + i, elo: LB_ELO[i], delta_week: i % 4 === 0 ? 16 : i % 4 === 1 ? -9 : 0, you: false });
+export const LEADERBOARD = { ok: true, enabled: true, total: 38, rows: LB_NAMES.map(lbRow), you: null };
+// Further down the board: #14 at 1,104 on both the card and the Ranked tile; someone else (Dime) holds #7.
+const DASH_FAR = (() => { const d = JSON.parse(JSON.stringify(DASH)); d.you.elo.rank = 14; d.you.elo.rating = 1104; return d; })();
 
 const SESSION = (id, ended, needs) => ({ id, build: 'offline', minutes: 3.2, ended, needs_recovery: needs });
 const PADS = (n) => ({ pads: Array.from({ length: n }, (_, i) => ({ device_string: `XInput/${i}/Gamepad`, family: 'xbox', port: i + 1, set_aside: null })), other: [], complete: true, unsearched: [], source: 'builtin' });
@@ -102,8 +112,8 @@ function onlineStates() {
     N('online-private', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
     N('online-searching', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
     N('online-match-found', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
-      opponent_elo: 1162, opponent_rank: 9, opponent_team: LB_TEAM, opponent_avatar_url: null }) }) }, { init: PICK('ranked') }),
-    N('online-accepted', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, your_accepted: true, opponent_elo: 1162, opponent_rank: 9 }) }) }),
+      opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM, opponent_avatar_url: null }) }) }, { init: PICK('ranked') }),
+    N('online-accepted', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, your_accepted: true, opponent_elo: 1320, opponent_rank: 1 }) }) }),
     N('online-starting', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'starting', relay_state: 'room_formed', your_accepted: true, your_ready: true }) }) }),
     N('online-playing', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'running', your_accepted: true, your_ready: true, series: [1, 0] }),
       chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
@@ -112,7 +122,7 @@ function onlineStates() {
     N('online-playing-casual', { mm_state: mm({ ...empty, match: match({ id: 'm6', status: 'running', relay_state: 'running', your_accepted: true, your_ready: true }) }) }),
     N('online-match-bare', { mm_state: mm({ ...empty, match: match({ id: 'm7', opponent: null, best_of: null, series: null, relay_deadline: 'not a date', opponent_elo: null, opponent_rank: 0, opponent_team: null }) }) }),
     N('online-match-small', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
-      opponent_elo: 1162, opponent_rank: 9, opponent_team: LB_TEAM }) }) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
+      opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM }) }) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
     N('online-room', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
       members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
       chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) },
@@ -133,8 +143,11 @@ function onlineStates() {
     N('online-live-many', { mm_state: mm(empty), live_matches: [0, 1, 2, 3, 4].map((i) => ({ ...LIST.matches[i % 2], id: `b41cf41a-43c4-4d1b-aaa8-05e4e72c73${String(i).padStart(2, '0')}` })) }, { init: PICK('ranked') }),
     N('online-live-none', { mm_state: mm(empty), live_matches: [] }, { init: PICK('ranked') }),
     N('online-leaderboard', { mm_state: mm(empty) }, { init: PICK('ranked') }),
-    N('online-leaderboard-far', { mm_state: mm(empty), leaderboard: { ...LEADERBOARD, rows: LEADERBOARD.rows.map((r) => ({ ...r, you: false })),
-      you: { ...LEADERBOARD.rows[6], rank: 14, elo: 1104, you: true } } }, { init: PICK('ranked') }),
+    N('online-leaderboard-far', { mm_state: mm(empty), stats_dashboard: DASH_FAR, leaderboard: { ...LEADERBOARD,
+      rows: LEADERBOARD.rows.map((r) => (r.you ? { ...r, player_id: '00000000-0000-4000-8000-000000000006', display_name: 'Dime', avatar_url: null, wins: 12, losses: 6, delta_week: 0, you: false } : r)),
+      you: { ...ME_ROW, rank: 14, elo: 1104 } } }, { init: PICK('ranked') }),
+    // A stats_dashboard read that fails after a good one (a network blip): the check re-polls with the read rejected.
+    N('online-rank-blip', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-elo-off', { mm_state: mm(empty), leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null },
       stats_dashboard: (() => { const d = F.dashboard(); d.you.elo = { rating: null, rank: null, total: 0, games: 0, last_delta: null, peak: null, peak_at: null, history: [], around: [], week_delta: null }; return d; })() },
       { init: PICK('ranked') }),
