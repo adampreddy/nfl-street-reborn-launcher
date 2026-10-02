@@ -429,7 +429,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let user_dir=user.to_path_buf();
   // Written before the emulator, so the id every capture from this session is
   // filed under exists before there is anything to file.
-  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
+  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:crate::online_mm::current_match_id()})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
   std::thread::spawn(move||{

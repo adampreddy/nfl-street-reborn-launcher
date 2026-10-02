@@ -534,6 +534,15 @@ fn parse_mode(mode: &str) -> Result<Mode, String> {
     }
 }
 
+/// The matchmade match the relay is opening Dolphin for right now, if any. The NetPlay session records it in its
+/// intent, so every result from that Dolphin names the match (series spec §3.1). None for Play and private rooms.
+pub fn current_match_id() -> Option<String> {
+    let s = lock(&STATE);
+    s.snapshot.as_ref()?.matched.as_ref()
+        .filter(|m| !matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held"))
+        .map(|m| m.id.clone())
+}
+
 /// Everything the Online page shows, in one read.
 #[tauri::command]
 pub fn mm_state() -> serde_json::Value {
