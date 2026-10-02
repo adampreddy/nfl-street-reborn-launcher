@@ -155,6 +155,12 @@ const EXPECT = {
       return p;
     },
   },
+  'online-room-matchmade': {
+    check: async (page) => {
+      await page.waitForTimeout(1600);
+      return (await page.locator('#direct-dialog').evaluate((d) => d.open)) ? ['the Direct connection dialog opened for a matchmade room'] : [];
+    },
+  },
   'online-ranked': {
     text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private room', 'Host a room or join with a code.',
       'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],

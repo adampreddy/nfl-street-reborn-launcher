@@ -104,6 +104,8 @@ function onlineStates() {
     S('online-room-host', room({})),
     S('online-room-direct', room({ connection: 'direct', code: '', port: 2626 })),
     S('online-room-guest', room({ host: false, can_start: false })),
+    // 10-02: matchmaking's own Netplay room, with data-mm-busy not (yet) set: the Direct connection dialog stays shut.
+    S('online-room-matchmade', room({ host: false, can_start: false, matchmade: true })),
     S('online-room-running', room({ phase: 'running', can_start: false })),
     N('online-layout', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-small', { mm_state: mm(empty) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),

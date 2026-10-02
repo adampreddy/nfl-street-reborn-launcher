@@ -431,7 +431,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // filed under exists before there is anything to file.
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
-  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now()});
+  *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now(),matchmade:rng_seed.is_some()});
   std::thread::spawn(move||{
     // The lock and the guard are held across the wait AND across the
     // collection: the queue and the session log are shared state, and
@@ -469,7 +469,9 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
 }
 
 
-struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant }
+/// `matchmade`: opened by matchmaking (the only caller that hands Dolphin an RNG seed), so the page keeps the
+/// Direct connection dialog shut for it (10-02: the dialog popped up mid-match).
+struct NetplaySession { path:PathBuf, user_dir:Option<PathBuf>, active:bool, sequence:u64, connection:String, port:u16, last_status:serde_json::Value, started:std::time::Instant, matchmade:bool }
 static NETPLAY:std::sync::Mutex<Option<NetplaySession>>=std::sync::Mutex::new(None);
 
 /// The Dolphin user folder of the NetPlay game running right now, so the live feed can read its play lines.
@@ -531,7 +533,7 @@ pub fn netplay_status()->Result<serde_json::Value,String>{
  if !session.active && status["phase"]!="error" {status["phase"]="closed".into();}
  if session.active && status["phase"]=="connecting" && session.started.elapsed().as_secs()>45 {status["phase"]="error".into();status["error"]="Dolphin did not open the room. Check that your Reborn Dolphin runtime supports launcher Netplay.".into();}
  if let Some(e)=status["error"].as_str().and_then(netplay_error_for_player) {status["error"]=e.into();}
- status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();Ok(status)
+ status["active"]=session.active.into();status["connection"]=session.connection.clone().into();status["port"]=session.port.into();status["matchmade"]=session.matchmade.into();Ok(status)
 }
 
 #[tauri::command]
