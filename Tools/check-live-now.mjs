@@ -155,8 +155,8 @@ function check(what, ok, detail = "") {
   const t = text(section);
   check("shows the heading", t.includes("Live now"));
   check("shows both fixture teams", t.includes("Giants") && t.includes("Colts"), t.slice(0, 400));
-  check("shows the mode line for both matches (spec 2026-10-02 §5)", t.includes("Ranked · Game 1") && t.includes("Pickup"), t.slice(0, 400));
-  check("shows both modes", t.includes("Ranked") && t.includes("Pickup"));
+  check("shows the mode line for both matches (spec 2026-10-02 §5)", t.includes("Ranked · Game 1") && t.includes("Casual"), t.slice(0, 400));
+  check("shows both modes", t.includes("Ranked") && t.includes("Casual"));
   check("shows all four seat names", ["Adam", "Jock", "Tuna", "Riley"].every((n) => t.includes(n)), t.slice(0, 400));
   const rows = byClass(section, "live-row");
   check("renders one row per match", rows.length === FIXTURE.matches.length, `${rows.length} row(s)`);

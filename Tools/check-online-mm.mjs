@@ -52,19 +52,19 @@ const CLICK = { idle_private: '[data-key="mode-private"]' };
 
 // What each state must show. A control that is missing, or one that must NOT be offered, fails.
 const EXPECT = {
-  signed_out: { text: ['Sign in with Discord'], absent: ['Find a pickup game'] },
-  offline: { text: ["Can't reach the Reborn servers"], absent: ['Find a pickup game'] },
+  signed_out: { text: ['Sign in with Discord'], absent: ['Find a casual game'] },
+  offline: { text: ["Can't reach the Reborn servers"], absent: ['Find a casual game'] },
   // Matchmaking switched off: the section is empty and the private-room page is untouched.
-  disabled: { absent: ['Find a pickup game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
+  disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
   // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default; the lobby list and
   // the code field are under Private room (their assertions live in check-online-page's online-private/online-lobbies).
-  idle: { text: ['Ranked', 'Pickup Game', 'Private Room', 'Find a pickup game', "Anyone's game", '1 searching', '3 players online'], buttons: ['Find a pickup game'], absent: ['field pick', 'Quick Match'] },
-  queued: { text: ['Finding a pickup game', 'Searching 0:4'], buttons: ['Cancel'], absent: ['Find a pickup game', 'field'] },
+  idle: { text: ['Ranked', 'Casual', 'Private Room', 'Find a casual game', "Anyone's game", '1 searching', '3 players online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
+  queued: { text: ['Finding a casual game', 'Searching 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
-  idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a pickup game'] },
+  idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game'] },
   // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
   lobby: { text: ['Your Room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
-  pairing: { text: ['Jock', 'Game on', 'VS', 'Pickup · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
+  pairing: { text: ['Jock', 'Game on', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
   running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
@@ -151,7 +151,7 @@ try {
       await page.locator('#lobbies-open').click().catch(() => {});
       const panel = page.locator('dialog.menu.panel[open]');
       const pt = await panel.innerText().catch(() => '');
-      if (!pt.includes('Jock · Pickup')) problems.push('the lobby panel lacks "Jock · Casual"');
+      if (!pt.includes('Jock · Casual')) problems.push('the lobby panel lacks "Jock · Casual"');
       if (!(await panel.getByRole('button', { name: 'Join', exact: true }).count())) problems.push('the lobby panel lacks a Join button');
       await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click().catch(() => {});
       await page.waitForTimeout(300);

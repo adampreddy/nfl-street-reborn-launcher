@@ -96,7 +96,7 @@ function rowContent(match) {
     sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a),
     el('div', { class: 'live-foot' },
       el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
-      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Pickup' }),
+      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Casual' }),
       watchLink(match)),
   ];
 }

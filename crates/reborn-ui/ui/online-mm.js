@@ -208,7 +208,7 @@ function chatBox(messages, send) {
 // into that same layer later (a background image, or an <img> inside it) without moving anything else.
 const MODES = [
   { key: 'ranked', name: 'Ranked', line: 'First to two wins. Moves your Elo.' },
-  { key: 'casual', name: 'Pickup Game', line: 'One game. Elo stays put.' },
+  { key: 'casual', name: 'Casual', line: 'One game. Elo stays put.' },
   { key: 'private', name: 'Private Room', line: 'Host a room or join with a code.' },
 ];
 
@@ -255,7 +255,7 @@ function tiles(snap, { searching = null, locked = false, only = null } = {}) {
 
 function findRow(p) {
   return el('div', { class: 'on-row' },
-    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p === 'casual' ? 'pickup' : p} game`, onclick: () => queueWhenCurrent() }),
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p} game`, onclick: () => queueWhenCurrent() }),
     el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched by Elo' : "Anyone's game" }));
 }
 
@@ -356,7 +356,7 @@ function lobbyPanel() {
   else if (!lobbies.length) list.append(el('li', { class: 'note', text: 'No open lobbies. Open one and someone can join you.' }));
   for (const r of lobbies) {
     list.append(el('li', {},
-      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Pickup'}` }),
+      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Casual'}` }),
       el('button', { type: 'button', class: 'btn sm', text: 'Join', onclick: () => { closePanel(); act('mm_room_join', { code: r.code }); } })));
   }
   return el('div', { class: 'on-panel' },
@@ -458,7 +458,7 @@ function drawQueued(t) {
     el('div', { class: 'on-row' },
       el('div', { class: 'on-search' },
         el('span', { class: 'mm-timer on-timer num', text: `Searching ${clock(queuedMs())}` }),
-        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Pickup' }),
+        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Casual' }),
         el('span', { class: 'sweep', 'aria-hidden': 'true' })),
       el('button', { type: 'button', class: 'btn on-cancel', 'data-key': 'cancel', text: 'Cancel', onclick: () => act('mm_leave_queue') })),
   ];

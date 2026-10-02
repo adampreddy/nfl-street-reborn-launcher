@@ -99,7 +99,7 @@ async function focusKeep(page, label, key, what) {
 // ---- every state ----
 const EXPECT = {
   'online-layout': {
-    text: ['Online', 'Ranked, pickup, or private. Pick your game.'],
+    text: ['Online', 'Ranked, casual, or private. Pick your game.'],
     check: async (page) => {
       const p = [];
       const lb = await page.locator('#leaderboard-slot').boundingBox();
@@ -156,7 +156,7 @@ const EXPECT = {
     },
   },
   'online-ranked': {
-    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Pickup Game', 'One game. Elo stays put.', 'Private Room', 'Host a room or join with a code.',
+    text: ['Ranked', 'First to two wins. Moves your Elo.', 'Casual', 'One game. Elo stays put.', 'Private Room', 'Host a room or join with a code.',
       'Find a ranked game', 'Matched by Elo', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
     absent: ['Quick Match', 'Direct connection', 'best of'],
     check: async (page) => {
@@ -183,7 +183,7 @@ const EXPECT = {
       if ((await calls(page, 'player_profile')).length) p.push('the page read player_profile although the board carries your team');
       await page.locator('[data-key="mode-casual"]').click();
       if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('picking Casual did not store mm:mode=casual');
-      if (!(await page.getByRole('button', { name: 'Find a pickup game', exact: true }).isVisible())) p.push('the row did not follow the pick');
+      if (!(await page.getByRole('button', { name: 'Find a casual game', exact: true }).isVisible())) p.push('the row did not follow the pick');
       if ((await looks()).join() !== before.join()) p.push('picking Casual changed how the cards look');
       if ((await boxes()) !== boxesBefore) p.push(`picking Casual moved or resized the cards: ${boxesBefore} -> ${await boxes()}`);
       if (await page.locator('[data-key="mode-casual"]').evaluate((n) => getComputedStyle(n, '::before').borderTopWidth) !== '2px') p.push('the picked Casual card has no outline');
@@ -202,14 +202,14 @@ const EXPECT = {
     },
   },
   'online-casual': {
-    text: ['Find a pickup game', "Anyone's game"],
+    text: ['Find a casual game', "Anyone's game"],
     check: async (page) => {
       const p = [];
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
       if (pressed.join() !== 'mode-casual') p.push(`picked tiles: ${pressed}`);
       // Only the calls from the click on: update-notice.js reads content_status/content_check by itself on load.
       const from = await page.evaluate(() => window.__calls.length);
-      await page.getByRole('button', { name: 'Find a pickup game', exact: true }).click();
+      await page.getByRole('button', { name: 'Find a casual game', exact: true }).click();
       await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'mm_queue'), null, { timeout: 4000 }).catch(() => {});
       const order = await page.evaluate((n) => window.__calls.slice(n).map((c) => c.cmd).filter((c) => /^content_|^mm_queue$/.test(c)), from);
       if (order.join() !== 'content_check,content_repair_image,mm_queue') p.push(`Find ran ${order.join(' → ')}`);
@@ -336,7 +336,7 @@ const EXPECT = {
   'online-playing': { text: ['Playing', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
   // Ruling P9: intermission is still "Playing", with the series line.
   'online-intermission': { text: ['Playing', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
-  'online-playing-casual': { text: ['Playing', 'Pickup · one game'], absent: ['Series', 'Game on'] },
+  'online-playing-casual': { text: ['Playing', 'Casual · one game'], absent: ['Series', 'Game on'] },
   'online-match-bare': {
     text: ['Opponent'], absent: ['undefined', 'NaN', 'null', ' to accept', ' · Elo'],
     check: async (page) => {
@@ -353,7 +353,7 @@ const EXPECT = {
   'online-room': {
     text: ['Your Room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Your crew', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
       'Both ready, then the host kicks it off.'],
-    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Room · Pickup'],
+    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Pickup'],
     check: async (page) => {
       const p = await codeLine(page);
       // Ruling P14: count the markers, not loose text ("you"/"Ready" appear in unrelated words).
@@ -389,7 +389,7 @@ const EXPECT = {
   },
   'online-room-pickup': { text: ['Your Room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
   'online-held': {
-    text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a pickup game'],
+    text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
     absent: ['Leave match', 'Accept'],
     check: async (page) => {
       const p = [];
@@ -463,7 +463,7 @@ const EXPECT = {
       await page.locator('#lobbies-open').click();
       const panel = page.locator('dialog.menu.panel[open]');
       const t = await panel.innerText().catch(() => '');
-      for (const w of ['Jock · Pickup', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
+      for (const w of ['Jock · Casual', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
       if (/best of/i.test(t)) p.push('a lobby is labelled best of');
       await page.screenshot({ path: path.join(out, 'online-lobbies-panel.png') });
       await panel.getByRole('button', { name: 'Join', exact: true }).first().click();
@@ -489,7 +489,7 @@ const EXPECT = {
     },
   },
   'online-live': {
-    text: ['Live now', 'See all', 'Ranked · Game 1', 'Pickup', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
+    text: ['Live now', 'See all', 'Ranked · Game 1', 'Casual', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
     absent: ['Game 1 of 3'],
     check: async (page) => {
       const p = [];

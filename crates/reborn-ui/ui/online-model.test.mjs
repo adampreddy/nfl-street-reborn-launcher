@@ -11,8 +11,8 @@ test('numbers and the clock', () => {
 
 test('the mode line never says best of', () => {
   assert.equal(modeLine('ranked'), 'Ranked · first to two wins');
-  assert.equal(modeLine('casual'), 'Pickup · one game');
-  assert.equal(modeLine(undefined), 'Pickup · one game');
+  assert.equal(modeLine('casual'), 'Casual · one game');
+  assert.equal(modeLine(undefined), 'Casual · one game');
 });
 
 test('the series line is from this seat, only in a series', () => {
@@ -57,7 +57,7 @@ test('the searching pill', () => {
   assert.equal(seekLine('ranked', { rating: 1184 }), 'Finding players near 1,184 Elo');
   assert.equal(seekLine('ranked', { rating: null }), 'Looking for a ranked game');
   assert.equal(seekLine('ranked', null), 'Looking for a ranked game');
-  assert.equal(seekLine('casual', { rating: 1184 }), 'Finding a pickup game');
+  assert.equal(seekLine('casual', { rating: 1184 }), 'Finding a casual game');
 });
 
 test('the held notice keeps each reason\'s words', () => {

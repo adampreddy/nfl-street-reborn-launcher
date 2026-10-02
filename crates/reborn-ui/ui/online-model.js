@@ -13,7 +13,7 @@ export function clock(ms) {
 
 /** Under the VS and in a room. Never "best of 3" (spec §8, DESIGN.md §9). */
 export function modeLine(mode) {
-  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Pickup · one game';
+  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual · one game';
 }
 
 /** "Game 2 · Series 1–0" while a series runs (best_of > 1), counted from this seat; null otherwise. */
@@ -50,7 +50,7 @@ export function standing(rank, elo) {
 
 /** The pill on the picked tile while searching (spec §3.2). */
 export function seekLine(mode, elo) {
-  if (mode !== 'ranked') return 'Finding a pickup game';
+  if (mode !== 'ranked') return 'Finding a casual game';
   const r = int(elo?.rating);
   return r !== null ? `Finding players near ${fmtInt(r)} Elo` : 'Looking for a ranked game';
 }
