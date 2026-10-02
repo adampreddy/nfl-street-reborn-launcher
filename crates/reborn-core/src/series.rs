@@ -190,6 +190,24 @@ pub fn decided_for_exit(mode: &str, local: [u32; 2], need: u32, server_kind: Opt
     }
 }
 
+/// Did this PC's room lose the other player during the series (ruling R1; Task 19 review I2)? Only while the
+/// match is `running` or between games (`intermission`) and our own Dolphin still runs: a room the fork reports
+/// `closed` or `error`, or fewer than two players anywhere but a pre-start lobby that is still filling.
+pub fn room_lost_peer(relay_state: &str, phase: &str, players: usize, active: bool, played_together: bool) -> bool {
+    if !active || !matches!(relay_state, "running" | "intermission") { return false; }
+    if matches!(phase, "closed" | "error") { return true; }
+    players < 2 && (phase == "running" || relay_state == "intermission" || played_together)
+}
+
+/// A peer loss first seen less than this before our own Dolphin exited is not counted: our own shutdown can blank
+/// the room for a moment first, and counting that would turn a player's own close into a lost room.
+pub const PEER_LOST_MIN_MS: u64 = 2_000;
+
+/// Was the peer already lost (first seen at `since_ms`) well before our Dolphin exited at `exited_ms`?
+pub fn peer_lost_before_exit(since_ms: Option<u64>, exited_ms: u64) -> bool {
+    since_ms.is_some_and(|t| t.saturating_add(PEER_LOST_MIN_MS) <= exited_ms)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExitReport { Nothing, Leave(LeaveReason), RoomLost(&'static str) }
 
@@ -227,6 +245,35 @@ mod tests {
         assert_eq!(LeaveReason::DolphinClosed.as_str(), "dolphin-closed");
         assert_eq!(LeaveReason::DolphinCrashed.as_str(), "dolphin-crashed");
         assert_eq!(LeaveReason::Leave.as_str(), "leave");
+    }
+
+    #[test]
+    fn the_room_lost_its_peer_on_a_drop_mid_game_in_the_lobby_between_games_or_a_closed_or_errored_room() {
+        // (relay_state, phase, players, our Dolphin active, played together in this match)
+        assert!(room_lost_peer("running", "running", 1, true, true), "peer gone mid-game");
+        assert!(room_lost_peer("running", "running", 1, true, false));
+        assert!(room_lost_peer("intermission", "lobby", 1, true, true), "peer left between games (review I2)");
+        assert!(room_lost_peer("intermission", "lobby", 1, true, false));
+        assert!(room_lost_peer("running", "lobby", 1, true, true), "back in the lobby after playing, alone");
+        assert!(room_lost_peer("running", "closed", 2, true, true), "room closed under us (review I2)");
+        assert!(room_lost_peer("intermission", "error", 2, true, false));
+        // Not lost:
+        assert!(!room_lost_peer("running", "running", 2, true, true), "both still there");
+        assert!(!room_lost_peer("running", "lobby", 1, true, false), "a pre-start lobby still filling");
+        assert!(!room_lost_peer("running", "connecting", 0, true, false));
+        assert!(!room_lost_peer("running", "running", 1, false, true), "our own Dolphin is gone: that is our exit, not the peer's");
+        assert!(!room_lost_peer("joining", "closed", 1, true, false), "pre-series states belong to the relay driver");
+        assert!(!room_lost_peer("complete", "running", 1, true, true));
+    }
+
+    #[test]
+    fn a_peer_loss_counts_only_when_seen_well_before_our_own_exit() {
+        // Our own Dolphin shutting down can blank its room for a moment before the process ends: a sighting that
+        // close to the exit is that shutdown, not the peer (a forfeit-dodge otherwise).
+        assert!(peer_lost_before_exit(Some(10_000), 10_000 + PEER_LOST_MIN_MS));
+        assert!(peer_lost_before_exit(Some(10_000), 60_000));
+        assert!(!peer_lost_before_exit(Some(10_000), 10_000 + PEER_LOST_MIN_MS - 1));
+        assert!(!peer_lost_before_exit(None, 60_000));
     }
 
     #[test]

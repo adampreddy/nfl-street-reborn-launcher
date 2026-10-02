@@ -66,49 +66,100 @@ static LAUNCH: Mutex<(Option<String>, Option<String>, String)> = Mutex::new((Non
 
 static PRESENCE: Mutex<Option<Box<dyn Presence + Send>>> = Mutex::new(None);
 static POLLER: AtomicBool = AtomicBool::new(false);
-/// This launcher's own tally for the match it is streaming: (match id, [seat0, seat1] wins). The live loop writes it,
-/// the relay loop reads it for the ranked close.
-static LOCAL_WINS: Mutex<Option<(String, [u32; 2])>> = Mutex::new(None);
+/// This launcher's own tally for the match it is streaming: (match id, [seat0, seat1] wins, ms when it was read).
+/// The live loop writes it every second (including the plays it has not sent yet), the relay loop reads it for the
+/// ranked close, and the exit report waits for a reading taken after Dolphin exited.
+static LOCAL_WINS: Mutex<Option<(String, [u32; 2], u64)>> = Mutex::new(None);
 /// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
 /// leave (Task 19 reads this).
 pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
-/// The room lost its other player while this PC's Dolphin was still running (for the match id held). Set by the relay
-/// loop, read when Dolphin exits (ruling R1).
-static PEER_LOST: Mutex<Option<String>> = Mutex::new(None);
+/// The room lost its other player while this PC's Dolphin was still running: (match id, ms first seen). Set by the
+/// relay loop, read when Dolphin exits (ruling R1).
+static PEER_LOST: Mutex<Option<(String, u64)>> = Mutex::new(None);
+/// How long the exit report waits for the live loop to read the plays Dolphin wrote before it exited (review I1).
+const EXIT_GRACE_MS: u64 = 5_000;
+const EXIT_POLL_MS: u64 = 250;
 
-/// Take SERIES_CLOSING and PEER_LOST if (and only if) they name `match_id`: (closing, peer lost). A flag naming
-/// another match is left for [`forget_other_matches`].
-fn spend_exit_flags(match_id: &str) -> (bool, bool) {
-    let take = |m: &Mutex<Option<String>>| {
-        let mut g = lock(m);
+/// The local tally for `match_id` and when it was read; no reading yet is 0-0 read at 0.
+fn local_wins(match_id: &str) -> ([u32; 2], u64) {
+    lock(&LOCAL_WINS).as_ref().filter(|(id, _, _)| id == match_id).map(|(_, w, at)| (*w, *at)).unwrap_or(([0, 0], 0))
+}
+
+/// The room of `match_id` was seen without its peer at `now`. The first sighting is kept.
+fn note_peer_lost(match_id: &str, now: u64) {
+    let mut g = lock(&PEER_LOST);
+    if g.as_ref().is_none_or(|(id, _)| id != match_id) { *g = Some((match_id.to_string(), now)); }
+}
+
+/// Take SERIES_CLOSING and PEER_LOST if (and only if) they name `match_id`: (closing, peer lost first seen at). A
+/// flag naming another match is left for [`forget_other_matches`].
+fn spend_exit_flags(match_id: &str) -> (bool, Option<u64>) {
+    let closing = {
+        let mut g = lock(&SERIES_CLOSING);
         if g.as_deref() == Some(match_id) { g.take(); true } else { false }
     };
-    (take(&SERIES_CLOSING), take(&PEER_LOST))
+    let peer = {
+        let mut g = lock(&PEER_LOST);
+        if g.as_ref().is_some_and(|(id, _)| id == match_id) { g.take().map(|(_, at)| at) } else { None }
+    };
+    (closing, peer)
 }
 
 /// A different match is current (a rematch, a new queue match): flags left by an older one are dropped, so a close
 /// that never made Dolphin exit cannot silence the next match's real leave.
 fn forget_other_matches(current: &str) {
-    for m in [&SERIES_CLOSING, &PEER_LOST] {
-        let mut g = lock(m);
+    {
+        let mut g = lock(&SERIES_CLOSING);
         if g.as_deref().is_some_and(|id| id != current) { *g = None; }
     }
+    let mut g = lock(&PEER_LOST);
+    if g.as_ref().is_some_and(|(id, _)| id != current) { *g = None; }
+}
+
+/// Look until a look says it is final or `grace_ms` has passed, sleeping between looks; the last look's value.
+fn settle<T>(grace_ms: u64, now: &mut dyn FnMut() -> u64, sleep: &mut dyn FnMut(), mut look: impl FnMut() -> (T, bool)) -> T {
+    let deadline = now().saturating_add(grace_ms);
+    loop {
+        let (value, last) = look();
+        if last || now() >= deadline { return value; }
+        sleep();
+    }
+}
+
+fn series_running(m: &MatchView) -> bool {
+    m.status == "running" && matches!(m.relay_state.as_str(), "running" | "intermission")
 }
 
 /// The NetPlay Dolphin exited (dolphin_settings' exit thread, on a thread of its own so filing the captures never
 /// waits on this request, R-P9). Mid-series, tell the server why (spec §3.4, R13). Nothing is reported while the
 /// launcher closes a decided ranked series, nor when it is already decided but the close had not fired yet (I1).
 pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>) {
-    let m = lock(&STATE).snapshot.as_ref().and_then(|s| s.matched.clone());
-    let Some(m) = m else { return };
-    let (closing, peer_lost) = spend_exit_flags(&m.id);
-    let running = m.status == "running" && matches!(m.relay_state.as_str(), "running" | "intermission");
-    let local = lock(&LOCAL_WINS).as_ref().filter(|(id, _)| id == &m.id).map(|(_, w)| *w).unwrap_or([0, 0]);
-    let decided = reborn_core::series::decided_for_exit(
-        &m.mode, local, reborn_core::series::wins_needed(&m), m.outcome.as_ref().map(|o| o.kind.as_str()));
-    let action = match reborn_core::series::exit_report(exit, running, closing || decided, peer_lost) {
+    let exited_at = now_ms();
+    let matched = || lock(&STATE).snapshot.as_ref().and_then(|s| s.matched.clone());
+    let Some(first) = matched() else { return };
+    let (closing, peer_since) = spend_exit_flags(&first.id);
+    let peer_lost = reborn_core::series::peer_lost_before_exit(peer_since, exited_at);
+    if !series_running(&first) { return; }
+    if closing {
+        mm_log(&format!("dolphin exited while the launcher closed the decided series ({exit:?}): not reported"));
+        return;
+    }
+    // Review I1: the deciding play may still be unread (written a moment before the exit, or the poster backing off),
+    // and the server may still lack its second copy. Give the live loop a few seconds to read what Dolphin wrote,
+    // re-reading the tally and the snapshot, before a winner's close could be reported as a leave.
+    let mut now = now_ms;
+    let mut sleep = || std::thread::sleep(Duration::from_millis(EXIT_POLL_MS));
+    let (m, decided) = settle(EXIT_GRACE_MS, &mut now, &mut sleep, || {
+        let m = matched().filter(|m| m.id == first.id).unwrap_or_else(|| first.clone());
+        let (local, read_at) = local_wins(&m.id);
+        let decided = reborn_core::series::decided_for_exit(
+            &m.mode, local, reborn_core::series::wins_needed(&m), m.outcome.as_ref().map(|o| o.kind.as_str()));
+        let last = decided || !series_running(&m) || read_at >= exited_at;
+        ((m, decided), last)
+    });
+    let action = match reborn_core::series::exit_report(exit, series_running(&m), decided, peer_lost) {
         reborn_core::series::ExitReport::Nothing => {
-            if running && (closing || decided) { mm_log(&format!("dolphin exited after the series was decided ({exit:?}): not reported")); }
+            if decided { mm_log(&format!("dolphin exited after the series was decided ({exit:?}): not reported")); }
             return;
         }
         reborn_core::series::ExitReport::Leave(r) => MatchAction::LeaveWith(r),
@@ -269,6 +320,10 @@ fn live_plays_loop(platform: Platform) {
                     let flushed = now.saturating_sub(since) > LIVE_FLUSH_MS
                         || current.as_ref().is_some_and(|(_, p)| p.ready(now) && p.caught_up());
                     if flushed {
+                        // The last reading, taken now: the exit report waits for one from after Dolphin exited.
+                        if let Some((id, p)) = current.as_ref() {
+                            *lock(&LOCAL_WINS) = Some((id.clone(), p.projected_wins(), now_ms()));
+                        }
                         mm_log("live feed: match over, stopped");
                         current = None;
                         ended_at = None;
@@ -276,7 +331,10 @@ fn live_plays_loop(platform: Platform) {
                     }
                 }
             }
-            let Some((_, poster)) = current.as_mut() else { return };
+            let Some((id, poster)) = current.as_mut() else { return };
+            // Every second, unsent plays included (review I1): the ranked close and the exit report read it.
+            let read_at = now_ms();
+            *lock(&LOCAL_WINS) = Some((id.clone(), poster.projected_wins(), read_at));
             if halted {
                 return;
             }
@@ -294,9 +352,6 @@ fn live_plays_loop(platform: Platform) {
             }
             let (Ok(Some(token)), Ok(origin)) = (reborn_core::identity::token(&platform), reborn_core::identity::origin(&platform)) else { return };
             let r = poster.tick(&http, &origin, &token, now);
-            if let Some((id, poster)) = current.as_ref() {
-                *lock(&LOCAL_WINS) = Some((id.clone(), poster.tally().wins()));
-            }
             let notable = r.posted + r.dropped > 0 || r.stopped.is_some();
             let skips_due = r.skipped > 0 && last_skip_log.is_none_or(|t| now.saturating_sub(t) >= LIVE_SKIP_LOG_MS);
             if notable || skips_due {
@@ -334,6 +389,8 @@ fn drive() {
     let mut mem = relay_driver::Memory::default();
     let mut last_room: Option<String> = None;
     let mut close: (String, reborn_core::series::RankedClose) = (String::new(), Default::default());
+    // The match whose room this PC has seen running with both players (alone in a lobby after that is a lost peer).
+    let mut played_together: (String, bool) = (String::new(), false);
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let (connected, matched) = {
@@ -346,11 +403,14 @@ fn drive() {
             continue;
         }
         let room = Room::from_status(&crate::dolphin_settings::netplay_status().unwrap_or_default());
-        // R1: did the other player drop out of a running room before our own Dolphin went away?
+        // R1 (review I2): did the room lose the other player, mid-game, between games, or by closing/erroring under
+        // us, before our own Dolphin went away?
         if let Some(m) = matched.as_ref() {
             forget_other_matches(&m.id);
-            if room.active && room.phase == "running" && room.players.len() < 2 {
-                *lock(&PEER_LOST) = Some(m.id.clone());
+            if played_together.0 != m.id { played_together = (m.id.clone(), false); }
+            if room.phase == "running" && room.players.len() >= 2 { played_together.1 = true; }
+            if reborn_core::series::room_lost_peer(&m.relay_state, &room.phase, room.players.len(), room.active, played_together.1) {
+                note_peer_lost(&m.id, now_ms());
             }
         }
         // The room as the fork reports it, logged when it changes. The 09-26 real match could
@@ -412,7 +472,7 @@ fn drive() {
         // then close the room ~3 s later. Each launcher does this on its own.
         if let Some(m) = matched.as_ref().filter(|m| m.mode == "ranked") {
             if close.0 != m.id { close = (m.id.clone(), Default::default()); }
-            let local = lock(&LOCAL_WINS).as_ref().filter(|(id, _)| id == &m.id).map(|(_, w)| *w).unwrap_or([0, 0]);
+            let (local, _) = local_wins(&m.id);
             let over = reborn_core::series::series_over(local, reborn_core::series::wins_needed(m), m.outcome.as_ref().map(|o| o.kind.as_str()));
             if over && room.active {
                 let newest = crate::dolphin_settings::netplay_user_dir().and_then(|u| reborn_core::series::newest_capture_ms(&u));
@@ -785,23 +845,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_exit_grace_stops_at_the_first_final_look_and_never_runs_past_its_bound() {
+        use std::cell::Cell;
+        let clock = Cell::new(1_000u64);
+        let mut now = || clock.get();
+        let mut sleep = || clock.set(clock.get() + 250);
+        // Final on the third look: two sleeps, the third value.
+        let mut looks = 0;
+        let got = settle(5_000, &mut now, &mut sleep, || { looks += 1; (looks, looks == 3) });
+        assert_eq!((got, looks), (3, 3));
+        // Never final: bounded by the grace (5 s of 250 ms sleeps = 21 looks), returns the last look.
+        clock.set(1_000);
+        let mut looks = 0;
+        let got = settle(5_000, &mut now, &mut sleep, || { looks += 1; (looks, false) });
+        assert_eq!(got, 21);
+        assert_eq!(clock.get(), 6_000);
+        // Final at once: one look, no sleep.
+        let mut looks = 0;
+        let got = settle(5_000, &mut now, &mut sleep, || { looks += 1; (looks, true) });
+        assert_eq!((got, clock.get()), (1, 6_000));
+    }
+
+    #[test]
     fn exit_flags_are_spent_only_by_their_own_match_and_a_new_match_forgets_old_ones() {
         // One test owns both statics (tests run in parallel).
         *lock(&SERIES_CLOSING) = Some("m-old".into());
-        *lock(&PEER_LOST) = Some("m-old".into());
-        assert_eq!(spend_exit_flags("m-new"), (false, false), "another match's flags never apply");
+        note_peer_lost("m-old", 1_000);
+        note_peer_lost("m-old", 2_000);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-old".to_string(), 1_000)), "the first sighting is kept");
+        assert_eq!(spend_exit_flags("m-new"), (false, None), "another match's flags never apply");
         assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "and are not spent by it");
-        assert_eq!(spend_exit_flags("m-old"), (true, true));
+        assert_eq!(spend_exit_flags("m-old"), (true, Some(1_000)));
         assert_eq!(*lock(&SERIES_CLOSING), None);
         assert_eq!(*lock(&PEER_LOST), None);
-        assert_eq!(spend_exit_flags("m-old"), (false, false), "spent once");
+        assert_eq!(spend_exit_flags("m-old"), (false, None), "spent once");
 
         // A rematch (new match id) clears a flag a failed close left behind.
         *lock(&SERIES_CLOSING) = Some("m-old".into());
-        *lock(&PEER_LOST) = Some("m-old".into());
+        note_peer_lost("m-old", 1_000);
         forget_other_matches("m-old");
         assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "the current match keeps its flags");
-        forget_other_matches("m-rematch");
+        assert!(lock(&PEER_LOST).is_some());
+        note_peer_lost("m-rematch", 5_000);
+        assert_eq!(*lock(&PEER_LOST), Some(("m-rematch".to_string(), 5_000)), "a new match's sighting replaces an old one");
+        forget_other_matches("m-next");
         assert_eq!(*lock(&SERIES_CLOSING), None);
         assert_eq!(*lock(&PEER_LOST), None);
     }
