@@ -21,6 +21,23 @@ export function openMenu(anchor, { label, options, current = null, onPick }) {
     if (step) { e.preventDefault(); items[(i + step + items.length) % items.length].focus(); }
     else if (e.key === "Home" || e.key === "End") { e.preventDefault(); items[e.key === "Home" ? 0 : items.length - 1].focus(); }
   });
+  attach(anchor, menu);
+  (items.find((n) => n.dataset.value === String(current)) || items[0])?.focus();
+  return menu;
+}
+
+// A small panel anchored the same way, holding any content (Online's players and lobbies, spec 2026-10-02 §2, §3.1).
+// Tab and the D-pad move inside it (the shell treats an open dialog as its own scope); B, Esc or a click outside close
+// it, and focus goes back to the button.
+export function openPanel(anchor, { label, build }) {
+  openNow?.close();
+  const menu = el("dialog", { class: "menu panel", "aria-label": label }, build());
+  attach(anchor, menu);
+  menu.querySelector("a[href],button:not(:disabled),input,select,textarea")?.focus();
+  return menu;
+}
+
+function attach(anchor, menu) {
   // A click on the backdrop, outside the list, closes it.
   menu.addEventListener("click", (e) => {
     if (e.target !== menu) return;
@@ -43,9 +60,7 @@ export function openMenu(anchor, { label, options, current = null, onPick }) {
   document.body.append(menu);
   menu.showModal();
   place(anchor, menu);
-  (items.find((n) => n.dataset.value === String(current)) || items[0])?.focus();
   openNow = menu;
-  return menu;
 }
 
 // Above the button, right-aligned 8px inside it (the mockup's strip sits at the bottom of Play);

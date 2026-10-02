@@ -126,6 +126,7 @@ function onlineStates() {
     N('online-no-online-list', { mm_state: mm({ ...empty, online: undefined }) }, { init: PICK('ranked') }),
     N('online-offline', { mm_state: mm(null, { link: 'offline' }) }),
     N('online-disabled', { mm_state: mm(null, { link: 'disabled' }) }),
+    N('online-presence', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     // (redesign states are added above this line)
   ];
 }

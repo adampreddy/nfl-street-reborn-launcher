@@ -58,7 +58,7 @@ const EXPECT = {
   disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
   // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default; the lobby list and
   // the code field are under Private room (their assertions live in check-online-page's online-private/online-lobbies).
-  idle: { text: ['Ranked', 'Casual', 'Private room', 'Find a casual game', 'Matched with anyone', '1 searching', '3 online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
+  idle: { text: ['Ranked', 'Casual', 'Private room', 'Find a casual game', 'Matched with anyone', '1 searching', '3 players online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
   queued: { text: ['Looking for a casual game', 'Searching… 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
   // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
   idle_private: { text: ['Lobbies', 'Jock · Casual', 'Host a room'], buttons: ['Join', 'Join by code', 'Open a public lobby', 'Host a room'], absent: ['Find a casual game'] },

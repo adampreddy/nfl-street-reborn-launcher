@@ -8,6 +8,7 @@
 import { bridge, call, el, get, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
 import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
+import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
 
@@ -437,20 +438,42 @@ function drawMatch(m, chat, relayError, snap) {
   return [card, chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];
 }
 
-function drawOnline(snap) {
-  // A value the server does not send hides its spot (spec §7): no snapshot online list, no line.
+// ---- players online and the presence switch, in the heading (spec §2) ----
+const playersBtn = document.getElementById('on-players');
+let lastOnline = { count: null, players: [] };
+let presenceOn = false;
+const ACTIVITY = { idle: 'Online', queued: 'Looking for a game', in_lobby: 'In a room', in_match: 'In a match' };
+
+/** The heading button: "{n} players online". A value the server does not send hides its spot (spec §7): no online list, no button. */
+function showOnline(snap, on) {
+  presenceOn = !!on;
   const online = snap?.online;
-  if (!online || typeof online !== 'object') return null;
-  const names = (online.players ?? []).slice(0, 12).map((p) => p.name).join(', ');
-  return el('p', { class: 'note mm-online', text: `${online.count} online${names ? `: ${names}` : ''}` });
+  const has = !!online && typeof online === 'object';
+  lastOnline = { count: has && typeof online.count === 'number' ? online.count : null, players: has && Array.isArray(online.players) ? online.players : [] };
+  if (!playersBtn) return;
+  const n = lastOnline.count;
+  playersBtn.querySelector('span').textContent = n === null ? 'Players online' : `${n} ${n === 1 ? 'player' : 'players'} online`;
+  playersBtn.hidden = !has;
 }
 
-function presenceToggle(on) {
-  const box = el('input', { type: 'checkbox', id: 'mm-presence' });
-  box.checked = !!on;
-  box.addEventListener('change', () => act('presence_set_enabled', { enabled: box.checked }));
-  return el('label', { class: 'mm-presence', for: 'mm-presence' }, box, ' Show what I\'m doing on Discord');
+// Who is online (the first 12, as before) and the switch that sat at the bottom of the page, unchanged: it sends
+// presence_set_enabled exactly as the old checkbox did (ruling 4 keeps its words).
+function presencePanel() {
+  const list = el('ul', { class: 'on-who' });
+  for (const p of lastOnline.players.slice(0, 12)) {
+    list.append(el('li', {}, el('span', { text: String(p?.name ?? '') }), ACTIVITY[p?.activity] ? el('small', { text: ACTIVITY[p.activity] }) : null));
+  }
+  const sw = el('button', { type: 'button', class: 'look-switch', id: 'mm-presence', role: 'switch', 'aria-checked': String(presenceOn), 'aria-labelledby': 'mm-presence-label' });
+  sw.addEventListener('click', async () => {
+    const next = sw.getAttribute('aria-checked') !== 'true';
+    if (await act('presence_set_enabled', { enabled: next })) sw.setAttribute('aria-checked', String(next));
+  });
+  return el('div', { class: 'on-panel' },
+    lastOnline.count !== null ? el('span', { class: 'k-label', text: `${lastOnline.count} online` }) : null,
+    list,
+    el('div', { class: 'on-switch-row' }, el('span', { id: 'mm-presence-label', text: "Show what I'm doing on Discord" }), sw));
 }
+playersBtn?.addEventListener('click', () => openPanel(playersBtn, { label: 'Players online', build: presencePanel }));
 
 async function draw() {
   if (!bridge) {
@@ -509,10 +532,8 @@ async function draw() {
     if (snap.match?.relay_state === 'held' && dismissedHold !== snap.match.id) body.unshift(heldBox(snap.match));
   }
   setLinks(showLinks);
-  const lockedOut = state.link === 'signed_out' || (state.link === 'offline' && !snap);
-  // Native replaceChildren renders a null as the text "null" (el() would skip it): only spread what exists.
-  const onl = lockedOut ? null : drawOnline(snap);
-  section.replaceChildren(...body, status, ...(onl ? [onl] : []), presenceToggle(state.presence_on));
+  showOnline(snap, state.presence_on);
+  section.replaceChildren(...body, status);
 }
 
 draw();

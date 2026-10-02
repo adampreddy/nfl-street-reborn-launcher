@@ -290,6 +290,8 @@ dialog.menu .menu-item:hover{background:var(--glass-2);color:var(--fg)}
 dialog.menu .menu-item[aria-checked="true"]{color:var(--fg)}
 dialog.menu .menu-check{visibility:hidden}
 dialog.menu .menu-item[aria-checked="true"] .menu-check{visibility:visible}
+/* menu.js openPanel(): the same anchored glass surface, wider, holding any content (Online's players and lobbies) */
+dialog.menu.panel{width:280px;padding:12px}
 
 /* segmented tabs (tabs.js): a dark track and one highlight that slides to the selected option (spec §3.4, §5.2).
    The highlight is out of flow with a fixed base width; tabs.js sets translateX + scaleX, so only transform animates. */

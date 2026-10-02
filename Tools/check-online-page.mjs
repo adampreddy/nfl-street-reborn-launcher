@@ -43,6 +43,7 @@ const calls = (page, cmd) => page.evaluate((c) => window.__calls.filter((x) => x
     const w = jpegWidth(readFileSync(p));
     if (!w || w > 1100) problems.push(`art/online/${f}.jpg is ${w}px wide (a display copy is at most 1100)`);
   }
+  if (!/dialog\.menu\.panel\{/.test(theme)) problems.push('theme.css has no dialog.menu.panel');
   if (problems.length) fail('static', problems.join('; ')); else ok('static');
 }
 
@@ -323,6 +324,28 @@ const EXPECT = {
       if ((await page.locator('.on-tile').count()) !== 1) p.push(`${await page.locator('.on-tile').count()} tiles with matchmaking off`);
       await page.locator('.on-row [data-key="direct"]').click();
       if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('the Direct connection button did not open the dialog');
+      return p;
+    },
+  },
+  'online-presence': {
+    text: ['3 players online'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('#on-players').click();
+      const panel = page.locator('dialog.menu.panel[open]');
+      if (!(await panel.isVisible())) return ['the players button opened nothing'];
+      const t = await panel.innerText();
+      for (const w of ['Adam', 'Jock', 'Tuna', 'Looking for a game', "Show what I'm doing on Discord"]) if (!t.includes(w)) p.push(`the panel lacks "${w}"`);
+      const sw = panel.locator('#mm-presence');
+      if (await sw.getAttribute('aria-checked') !== 'true') p.push('the switch does not show presence on');
+      await sw.click();
+      await page.waitForTimeout(300);
+      const s = await calls(page, 'presence_set_enabled');
+      if (JSON.stringify(s[0]) !== '{"enabled":false}') p.push(`the switch sent ${JSON.stringify(s[0])}`);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+      if (await page.locator('dialog.menu.panel[open]').count()) p.push('Esc did not close the panel');
+      if (await page.evaluate(() => document.activeElement?.id) !== 'on-players') p.push('focus did not return to the players button');
       return p;
     },
   },
