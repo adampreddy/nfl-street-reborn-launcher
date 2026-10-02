@@ -122,6 +122,8 @@ function onlineStates() {
     N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),
     N('online-signed-out', { mm_state: mm(null, { link: 'signed_out' }),
       identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 5 } }, { init: PICK('ranked') }),
+    N('online-connecting', { mm_state: mm(null) }),
+    N('online-no-online-list', { mm_state: mm({ ...empty, online: undefined }) }, { init: PICK('ranked') }),
     N('online-offline', { mm_state: mm(null, { link: 'offline' }) }),
     N('online-disabled', { mm_state: mm(null, { link: 'disabled' }) }),
     // (redesign states are added above this line)

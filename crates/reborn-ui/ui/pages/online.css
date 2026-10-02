@@ -159,3 +159,6 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-notice b{display:block;margin-bottom:4px;font-weight:600}
 .on-notice span{color:var(--fg-2)}
 .on-notice .btn{flex:none;margin-left:auto}
+/* locked tiles do not look picked: the red border would blur into a halo */
+.on-locked .on-tile.on::before{border:1px solid var(--stroke)}
+.on-locked .on-tile.on .on-art{filter:saturate(.25) brightness(.62)}

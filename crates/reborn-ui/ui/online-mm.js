@@ -510,7 +510,9 @@ async function draw() {
   }
   setLinks(showLinks);
   const lockedOut = state.link === 'signed_out' || (state.link === 'offline' && !snap);
-  section.replaceChildren(...body, status, ...(lockedOut ? [] : [drawOnline(snap)]), presenceToggle(state.presence_on));
+  // Native replaceChildren renders a null as the text "null" (el() would skip it): only spread what exists.
+  const onl = lockedOut ? null : drawOnline(snap);
+  section.replaceChildren(...body, status, ...(onl ? [onl] : []), presenceToggle(state.presence_on));
 }
 
 draw();

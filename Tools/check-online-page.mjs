@@ -312,6 +312,8 @@ const EXPECT = {
       return p;
     },
   },
+  'online-connecting': { text: ['Connecting…'], absent: ['null', 'undefined', '0 online'] },
+  'online-no-online-list': { text: ['Find a ranked game'], absent: ['null', 'undefined', ' online'] },
   'online-offline': { text: ["Can't reach the Reborn servers right now.", 'Trying again.'], absent: ['Sign in with Discord', 'Find a', '0 online'] },
   'online-disabled': {
     text: ['Private room', 'Direct connection'],
