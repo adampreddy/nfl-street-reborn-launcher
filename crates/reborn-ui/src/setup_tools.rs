@@ -164,7 +164,12 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // tools come from wherever this launcher carries them: the AppImage's
         // usr/bin on Linux, the same game-import folder on Windows.
         let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
-        let bundle=reborn_core::game_patch::bundle_dir(&p,&data);
+        // A one-file launcher (Linux AppImage) fetches the patch as content;
+        // first run reaches this step before any content check has run.
+        if !reborn_core::game_patch::bundle_dir(&p,&data).join("manifest.json").is_file() {
+            let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading the game patch…","percent":null}));
+        }
+        let bundle=crate::content_updates::ensure_import_bundle(&p)?;
         let tools=reborn_core::game_patch::find_import_tools(&p,&[exe_dir.join(reborn_core::game_patch::BUNDLE_DIR)]).unwrap_or_else(||bundle.clone());
         let source=reborn_core::session::user_path(&image);
         // Game ID is the sole content acceptance gate. Patch compatibility is

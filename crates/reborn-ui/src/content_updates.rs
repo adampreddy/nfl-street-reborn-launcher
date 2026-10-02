@@ -292,6 +292,43 @@ pub(crate) fn origin_url(settings: &reborn_core::settings::Settings) -> String {
         .to_string()
 }
 
+/// Shown when the patch a one-file launcher needs before it can import a
+/// disc could not be downloaded.
+pub(crate) const IMPORT_BUNDLE_UNAVAILABLE: &str =
+    "The game patch could not be downloaded. Check your internet connection, then try again.";
+
+/// Make sure the game-import bundle (patch manifest + reborn.xdelta) is on
+/// disk before a disc is imported, downloading the `game-import` component
+/// when it is not.
+///
+/// The Windows installer carries the bundle beside the launcher, so there
+/// this finds it and returns at once. A Linux launcher is one AppImage file
+/// and the bundle is content; first-run setup imports the disc BEFORE any
+/// content check runs, so without this the very first import on a Steam
+/// Deck had nothing to patch with.
+pub(crate) fn ensure_import_bundle(p: &Platform) -> Result<PathBuf, String> {
+    let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+    let bundle = reborn_core::game_patch::bundle_dir(p, &data_root);
+    if bundle.join("manifest.json").is_file() {
+        return Ok(bundle);
+    }
+    let settings = load_settings(p)?;
+    let origin = Origin::new(&origin_url(&settings));
+    let verifier = verifier()?;
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::GameImport], depth: Depth::Quick };
+    if let Err(e) = updater.run(&request, &ImageHook::default()) {
+        eprintln!("downloading the game-import bundle failed: {e}");
+        return Err(IMPORT_BUNDLE_UNAVAILABLE.to_string());
+    }
+    let bundle = reborn_core::game_patch::bundle_dir(p, &data_root);
+    if bundle.join("manifest.json").is_file() {
+        Ok(bundle)
+    } else {
+        Err(IMPORT_BUNDLE_UNAVAILABLE.to_string())
+    }
+}
+
 pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
     let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
     reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
