@@ -407,6 +407,7 @@ impl<'a> Client<'a> {
             }
             MatchAction::RoomLost(ref r) => ("room-lost", serde_json::json!({ "reason": r })),
             MatchAction::Leave => ("leave", serde_json::json!({})),
+            MatchAction::LeaveWith(r) => ("leave", serde_json::json!({ "reason": r.as_str() })),
             MatchAction::Chat(ref t) => ("chat", serde_json::json!({ "text": t })),
             MatchAction::Rematch => ("rematch", serde_json::json!({})),
         };
@@ -438,6 +439,8 @@ pub enum MatchAction {
     Observed { ports: Vec<u8>, players: serde_json::Value },
     RoomLost(String),
     Leave,
+    /// `/leave` naming why (series spec §3.4): `leave`, `dolphin-closed` or `dolphin-crashed`.
+    LeaveWith(crate::series::LeaveReason),
     Chat(String),
     Rematch,
 }
@@ -577,6 +580,14 @@ mod tests {
     use crate::net::fake::FakeHttp;
 
     const ORIGIN: &str = "https://api.test";
+
+    #[test]
+    fn leaving_with_a_reason_posts_it() {
+        let http = FakeHttp::default().reply(&format!("{ORIGIN}/v1/mm/match/m1/leave"), 200, r#"{"ok":true}"#);
+        Client::new(&http, ORIGIN, "t").match_action("m1", MatchAction::LeaveWith(crate::series::LeaveReason::DolphinCrashed)).unwrap();
+        let body = http.last_body().unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["reason"], "dolphin-crashed");
+    }
     const IDLE: &str = include_str!("../tests/fixtures/mm/live_idle.json");
     const QUEUED: &str = include_str!("../tests/fixtures/mm/live_queued.json");
     const MATCHED: &str = include_str!("../tests/fixtures/mm/live_matched.json");

@@ -451,6 +451,11 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
     let exit=p.processes.wait(handle).ok();
     alive.store(false,std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut state)=NETPLAY.lock(){if let Some(session)=state.as_mut(){session.active=false;}}
+    // Why this launcher left a running series (R13), on its own thread: the report is an HTTP call, and filing this
+    // session's captures below must neither wait on it nor be skipped by it (R-P9). Returns at once for Play and
+    // private rooms (no matched match).
+    let exit_for_report=exit.clone();
+    std::thread::spawn(move||crate::online_mm::dolphin_exited(exit_for_report.as_ref()));
     let collected=reborn_core::session::finish_and_collect(&p,&supervisor,record,exit.as_ref(),&user_dir);
     // Both given back before the network work. A send is one request per queued
     // game with the client's full timeout each, so against a slow or unreachable

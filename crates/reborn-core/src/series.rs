@@ -160,10 +160,91 @@ pub fn newest_capture_ms(user_dir: &std::path::Path) -> Option<u64> {
         .max()
 }
 
+use crate::platform::ExitKind;
+
+/// What made this launcher leave a running series (spec §3.4). The backend counts an unknown reason as a plain
+/// leave (a ranked forfeit), so these strings are exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaveReason { Leave, DolphinClosed, DolphinCrashed }
+
+impl LeaveReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LeaveReason::Leave => "leave",
+            LeaveReason::DolphinClosed => "dolphin-closed",
+            LeaveReason::DolphinCrashed => "dolphin-crashed",
+        }
+    }
+}
+
+/// Is this ranked series already decided when its Dolphin exits: this launcher's tally reached `need`, or the server
+/// says win/forfeit. An exit then is not a leave, even before the launcher's own close fired (Task 18 review I1).
+/// Unlike [`series_over`], a held or abandoned series is NOT decided (review L1): its exit is reported as usual.
+/// Casual has no decider (any leave resolves it now), so it is never decided here.
+pub fn decided_for_exit(mode: &str, local: [u32; 2], need: u32, server_kind: Option<&str>) -> bool {
+    if mode != "ranked" { return false; }
+    match server_kind {
+        Some("win" | "forfeit") => true,
+        Some("held" | "abandoned") => false,
+        _ => local.iter().any(|w| need > 0 && *w >= need),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitReport { Nothing, Leave(LeaveReason), RoomLost(&'static str) }
+
+/// What to tell the server when the NetPlay Dolphin exits (ruling R13). `peer_lost_first`: the room had already
+/// lost the other player while this Dolphin still ran, so this exit is a lost room, not a leave (R1).
+pub fn exit_report(exit: Option<&ExitKind>, series_running: bool, closing_by_us: bool, peer_lost_first: bool) -> ExitReport {
+    if !series_running || closing_by_us { return ExitReport::Nothing; }
+    if peer_lost_first { return ExitReport::RoomLost("peer-gone"); }
+    match exit {
+        Some(ExitKind::Normal) => ExitReport::Leave(LeaveReason::DolphinClosed),
+        _ => ExitReport::Leave(LeaveReason::DolphinCrashed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use crate::platform::ExitKind;
+
+    #[test]
+    fn exit_codes_map_to_leave_reasons() {
+        assert_eq!(exit_report(Some(&ExitKind::Normal), true, false, false), ExitReport::Leave(LeaveReason::DolphinClosed));
+        assert_eq!(exit_report(Some(&ExitKind::Error { code: 3 }), true, false, false), ExitReport::Leave(LeaveReason::DolphinCrashed));
+        assert_eq!(exit_report(Some(&ExitKind::Crashed { detail: "AV".into() }), true, false, false), ExitReport::Leave(LeaveReason::DolphinCrashed));
+        assert_eq!(exit_report(Some(&ExitKind::Terminated), true, false, false), ExitReport::Leave(LeaveReason::DolphinCrashed), "R13: no exit code 0, held not forfeited");
+        assert_eq!(exit_report(None, true, false, false), ExitReport::Leave(LeaveReason::DolphinCrashed));
+    }
+
+    #[test]
+    fn nothing_is_reported_outside_a_series_or_while_the_launcher_closes_it_and_a_lost_peer_is_a_lost_room() {
+        assert_eq!(exit_report(Some(&ExitKind::Normal), false, false, false), ExitReport::Nothing);
+        assert_eq!(exit_report(Some(&ExitKind::Normal), true, true, false), ExitReport::Nothing);
+        assert_eq!(exit_report(Some(&ExitKind::Normal), true, false, true), ExitReport::RoomLost("peer-gone"), "R1");
+        assert_eq!(LeaveReason::DolphinClosed.as_str(), "dolphin-closed");
+        assert_eq!(LeaveReason::DolphinCrashed.as_str(), "dolphin-crashed");
+        assert_eq!(LeaveReason::Leave.as_str(), "leave");
+    }
+
+    #[test]
+    fn a_ranked_series_already_won_is_decided_for_an_exit_but_a_held_or_abandoned_one_is_not() {
+        // I1: closed by the player between the deciding play and the launcher's own stop.
+        assert!(decided_for_exit("ranked", [2, 0], 2, None));
+        assert!(decided_for_exit("ranked", [1, 2], 2, Some("open")));
+        assert!(decided_for_exit("ranked", [0, 0], 2, Some("win")));
+        assert!(decided_for_exit("ranked", [0, 0], 2, Some("forfeit")));
+        // L1: series_over is true for these, but they are not a decided series: the exit is reported.
+        assert!(!decided_for_exit("ranked", [0, 0], 2, Some("held")));
+        assert!(!decided_for_exit("ranked", [2, 0], 2, Some("held")));
+        assert!(!decided_for_exit("ranked", [0, 0], 2, Some("abandoned")));
+        assert!(!decided_for_exit("ranked", [1, 1], 2, Some("open")));
+        assert!(!decided_for_exit("ranked", [1, 0], 2, None));
+        // Casual has no decider: every leave resolves it now.
+        assert!(!decided_for_exit("casual", [2, 0], 1, Some("win")));
+    }
 
     fn fixture(name: &str) -> Value {
         let text = match name {

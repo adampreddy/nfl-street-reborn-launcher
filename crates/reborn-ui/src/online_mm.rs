@@ -72,6 +72,51 @@ static LOCAL_WINS: Mutex<Option<(String, [u32; 2])>> = Mutex::new(None);
 /// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
 /// leave (Task 19 reads this).
 pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
+/// The room lost its other player while this PC's Dolphin was still running (for the match id held). Set by the relay
+/// loop, read when Dolphin exits (ruling R1).
+static PEER_LOST: Mutex<Option<String>> = Mutex::new(None);
+
+/// Take SERIES_CLOSING and PEER_LOST if (and only if) they name `match_id`: (closing, peer lost). A flag naming
+/// another match is left for [`forget_other_matches`].
+fn spend_exit_flags(match_id: &str) -> (bool, bool) {
+    let take = |m: &Mutex<Option<String>>| {
+        let mut g = lock(m);
+        if g.as_deref() == Some(match_id) { g.take(); true } else { false }
+    };
+    (take(&SERIES_CLOSING), take(&PEER_LOST))
+}
+
+/// A different match is current (a rematch, a new queue match): flags left by an older one are dropped, so a close
+/// that never made Dolphin exit cannot silence the next match's real leave.
+fn forget_other_matches(current: &str) {
+    for m in [&SERIES_CLOSING, &PEER_LOST] {
+        let mut g = lock(m);
+        if g.as_deref().is_some_and(|id| id != current) { *g = None; }
+    }
+}
+
+/// The NetPlay Dolphin exited (dolphin_settings' exit thread, on a thread of its own so filing the captures never
+/// waits on this request, R-P9). Mid-series, tell the server why (spec §3.4, R13). Nothing is reported while the
+/// launcher closes a decided ranked series, nor when it is already decided but the close had not fired yet (I1).
+pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>) {
+    let m = lock(&STATE).snapshot.as_ref().and_then(|s| s.matched.clone());
+    let Some(m) = m else { return };
+    let (closing, peer_lost) = spend_exit_flags(&m.id);
+    let running = m.status == "running" && matches!(m.relay_state.as_str(), "running" | "intermission");
+    let local = lock(&LOCAL_WINS).as_ref().filter(|(id, _)| id == &m.id).map(|(_, w)| *w).unwrap_or([0, 0]);
+    let decided = reborn_core::series::decided_for_exit(
+        &m.mode, local, reborn_core::series::wins_needed(&m), m.outcome.as_ref().map(|o| o.kind.as_str()));
+    let action = match reborn_core::series::exit_report(exit, running, closing || decided, peer_lost) {
+        reborn_core::series::ExitReport::Nothing => {
+            if running && (closing || decided) { mm_log(&format!("dolphin exited after the series was decided ({exit:?}): not reported")); }
+            return;
+        }
+        reborn_core::series::ExitReport::Leave(r) => MatchAction::LeaveWith(r),
+        reborn_core::series::ExitReport::RoomLost(why) => MatchAction::RoomLost(why.to_string()),
+    };
+    mm_log(&format!("dolphin exited mid-series ({exit:?}): {action:?}"));
+    if let Err(e) = with_client(|c| c.match_action(&m.id, action)) { mm_log(&format!("exit report FAILED: {e}")); }
+}
 
 /// One line to `<data root>/logs/matchmaking.log`. The launcher is a windowed app, so stderr goes
 /// nowhere; the first real test left no trace of what either launcher saw (2026-09-23). Never
@@ -301,6 +346,13 @@ fn drive() {
             continue;
         }
         let room = Room::from_status(&crate::dolphin_settings::netplay_status().unwrap_or_default());
+        // R1: did the other player drop out of a running room before our own Dolphin went away?
+        if let Some(m) = matched.as_ref() {
+            forget_other_matches(&m.id);
+            if room.active && room.phase == "running" && room.players.len() < 2 {
+                *lock(&PEER_LOST) = Some(m.id.clone());
+            }
+        }
         // The room as the fork reports it, logged when it changes. The 09-26 real match could
         // only be read back from the status file by hand; this is that file's history.
         if room.active || last_room.is_some() {
@@ -729,6 +781,28 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn exit_flags_are_spent_only_by_their_own_match_and_a_new_match_forgets_old_ones() {
+        // One test owns both statics (tests run in parallel).
+        *lock(&SERIES_CLOSING) = Some("m-old".into());
+        *lock(&PEER_LOST) = Some("m-old".into());
+        assert_eq!(spend_exit_flags("m-new"), (false, false), "another match's flags never apply");
+        assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "and are not spent by it");
+        assert_eq!(spend_exit_flags("m-old"), (true, true));
+        assert_eq!(*lock(&SERIES_CLOSING), None);
+        assert_eq!(*lock(&PEER_LOST), None);
+        assert_eq!(spend_exit_flags("m-old"), (false, false), "spent once");
+
+        // A rematch (new match id) clears a flag a failed close left behind.
+        *lock(&SERIES_CLOSING) = Some("m-old".into());
+        *lock(&PEER_LOST) = Some("m-old".into());
+        forget_other_matches("m-old");
+        assert_eq!(lock(&SERIES_CLOSING).as_deref(), Some("m-old"), "the current match keeps its flags");
+        forget_other_matches("m-rematch");
+        assert_eq!(*lock(&SERIES_CLOSING), None);
+        assert_eq!(*lock(&PEER_LOST), None);
+    }
 
     #[test]
     fn page_names_are_the_known_set_and_anything_else_is_home() {
