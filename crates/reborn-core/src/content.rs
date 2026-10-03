@@ -1324,10 +1324,18 @@ impl<'a> ContentService<'a> {
 
             let staged = resolve_under(&staging, &fetch.path)?;
             if staged.exists() {
-                report
-                    .results
-                    .insert(fetch.path.clone(), FetchState::Staged);
-                continue;
+                // Trusted only while it still matches. A staged file that had
+                // gone bad was skipped here on every attempt and then refused
+                // by verify_staged, so "Download again" could never finish
+                // and nothing in that update installed (a Deck tester's
+                // runtime-linux, "0 missing, 1 wrong", 2026-10-03).
+                if file_len(&staged)? == file.bytes && hash_file(&staged)? == file.sha256 {
+                    report
+                        .results
+                        .insert(fetch.path.clone(), FetchState::Staged);
+                    continue;
+                }
+                remove_file(&staged)?;
             }
 
             report
@@ -2429,6 +2437,34 @@ mod tests {
             other => panic!("a changed staged file must not be promoted, got {other:?}"),
         }
         assert!(!live_root(dir.path()).join("NSR.iso").exists());
+    }
+
+    /// The other half: a bad staged file is fetched again, not trusted on the
+    /// next attempt. Trusted, it was refused at promotion forever (a Deck
+    /// tester's runtime-linux, "0 missing, 1 wrong", 2026-10-03).
+    #[test]
+    fn a_bad_staged_file_is_fetched_again_on_the_next_download() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+
+        let good = b"the offline image, release 2.4.0";
+        let bytes = manifest("2.4.0", 8, false, vec![file_of("NSR.iso", good)]);
+        let release = signed(&bytes, 12);
+        let plan = expect_plan(
+            service
+                .plan(&release, "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        let source = Blobs::new(Serving::Whole).with("NSR.iso", good);
+        assert!(service.download(&plan, &source).expect("download").is_complete());
+
+        let staged = service.layout().staging_dir("offline-content", "2.4.0").join("NSR.iso");
+        std::fs::write(&staged, b"the offline image, tampered wi").expect("edit staged file");
+
+        assert!(service.download(&plan, &source).expect("second download").is_complete());
+        assert_eq!(std::fs::read(&staged).expect("staged"), good);
+        assert!(matches!(service.promote(&plan).expect("promotion runs"), Promoted::Applied(_)));
     }
 
     // -----------------------------------------------------------------------

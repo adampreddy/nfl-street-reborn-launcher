@@ -92,6 +92,12 @@ cp -r "$WIN_RUNTIME/Sys" "$WIN_RUNTIME/Languages" "$OUT/runtime-linux/"
 mkdir -p "$OUT/runtime-linux/User"
 cp -r "$WIN_RUNTIME/User/Config" "$WIN_RUNTIME/User/GameSettings" "$OUT/runtime-linux/User/"
 find "$OUT/runtime-linux" -name '*.bak_*' -delete
+# Windows Dolphin takes its window icon from the exe (the Reborn icon); Linux
+# Dolphin reads these three PNGs, which are still the EXGL logo (a Deck tester
+# saw it, 2026-10-03). The launcher's own 256x256 icon replaces them.
+for f in dolphin_logo.png dolphin_logo@2x.png Dolphin.png; do
+  cp "$SRC/launcher/crates/reborn-ui/icons/icon.png" "$OUT/runtime-linux/Sys/Resources/$f"
+done
 
 # --- 2. dolphin-tool (upstream: it has `extract`) ---------------------------
 "$HERE/in-builder.sh" bash -euxc '
