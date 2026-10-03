@@ -1,42 +1,50 @@
-// The game page (Stats, then a game): the site's /games/<id> page inside the launcher. One finished game from the
-// server through the `stats_game` command (Rust does the requests, with the player's token, so a player's own offline
-// game opens too), drawn by the SITE's own renderers, vendored unchanged into site/ (Tools/sync-site-render.mjs): the
-// scoreboard strip, then Live Feed (the latest-play panel over All plays by drive), Box Score and Team Stats. This
-// file is the site's game-page.js controller with the launcher's data source, images and controls around it:
+// The game page (Stats or a profile, then a match): the site's /games/<id> page inside the launcher, for a WHOLE match
+// (owner 10-03, "the box score is the whole match"). A match of several games is one page: the site's own game picker
+// (Game 1 · Game 2 · Game 3, renderPicker) and the series sit above the scoreboard, and picking a game swaps the page
+// below in place. A match of one game (an offline game among them) is just that game, with no picker.
+// Each game comes from the server through the `stats_game` command (Rust does the requests, with the player's token, so
+// a player's own offline game opens too) and is drawn by the SITE's own renderers, vendored unchanged into site/
+// (Tools/sync-site-render.mjs): the scoreboard strip, then Live Feed (the latest-play panel over All plays by drive), Box
+// Score and Team Stats. This file is the site's game-page.js controller with the launcher's data source, images and
+// controls around it:
 //   - the snapshot is built exactly as game-page.js builds it (gameSnapshot, fieldFromBody, rescore);
 //   - the site's renderers only ever set an <img> src that passed their own rules (a root-relative /live-assets/r/...
 //     catalog path, or Discord's avatar CDN). The launcher is not that origin, so the document handed to them prefixes
 //     a /live-assets/ path with the backend origin the CSP img-src allows (LIVE_ORIGIN); nothing else is rewritten;
 //   - untrusted server text reaches the page through textContent only (the renderers build with createElement);
-//   - the launcher keeps ← Back, the game list's ‹ Previous / Next › and Open on web above the page.
-// Opened as game.html?game=<id>.
+//   - the launcher keeps ← Back and Open on web above the page.
+// Opened as game.html?game=<id>[&games=<id>,<id>,...&series=2-1]&from=<page> (stats-model.js matchHref).
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { LIVE_ORIGIN, PAGE_ORIGIN } from './live-common.js';
 import { webLinkShown } from './stats-rows.js';
-import { backHref, neighbours } from './stats-model.js';
-import { fieldFromBody, renderStrip, renderPlayPanel, renderAllPlays, renderBoxScore, renderTeamStats, gameSnapshot, rescore, letterBadge, panelStepSeq, panelPickSeq } from './site/live-render.js';
+import { readMatchAddress } from './stats-model.js';
+import { fieldFromBody, renderStrip, renderPlayPanel, renderAllPlays, renderBoxScore, renderTeamStats, renderPicker, gameSnapshot, rescore, letterBadge, panelStepSeq, panelPickSeq } from './site/live-render.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The site's own words (game-page.js).
 const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
 const NOT_FOUND = "That game couldn't be found.";
 const TABS = ['feed', 'box', 'team'];
-const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
-const gameId = (params.get('game') || '').toLowerCase();
+const address = readMatchAddress(typeof location !== 'undefined' ? location.search : '');
+const matchGames = address.games;              // oldest first; one id for a one-game match
+const BACK = address.back;
 const $ = (id) => document.getElementById(id);
 const screen = $('screen'), bar = $('game-bar'), strip = $('strip'), tabList = document.querySelector('#site-game .tabs');
+const pick = $('game-pick'), body = $('game-body');
 const panelSlot = $('panel'), allSlot = $('allplays'), note = $('note');
 const panels = { feed: $('tab-feed'), box: $('tab-box'), team: $('tab-team') };
 
+let gameId = address.game;     // the game on screen
 let tab = 'feed';
 let snap = null;
 let verified = false;
 let online = false;            // only an online game gets "Open on web" (webLinkShown, stats-rows.js)
 let panelSeq = null;           // the play the panel shows; null = the last play
-const open = new Map();        // "g1:d<first_seq>" -> the viewer's open/closed choice for a drive
+let open = new Map();          // "g1:d<first_seq>" -> the viewer's open/closed choice for a drive (per game)
 let apMode = 'all';            // All plays or Scoring plays
 const badImages = new Set();   // keyed by the SITE's src (the root-relative path), as the renderers check it
 const badAvatars = new Set();
+const loaded = new Map();      // game id -> Promise of { snap, verified, online } or { gone, alert }
 
 /** A site image src as the launcher loads it: our catalog's root-relative path under the backend origin. */
 export function siteImageSrc(src) {
@@ -60,24 +68,7 @@ const siteDoc = {
   },
 };
 
-// ---- the launcher's row: Back, Previous / Next, Open on web ----
-
-// The list of game ids the page we came from was showing (stats.js / profile.js write it right before navigating
-// here). Missing, unparsable, or not naming an ids array: no list to step through.
-function readGameList() {
-  try {
-    const parsed = JSON.parse(sessionStorage.getItem('nsr.gameList'));
-    return parsed && Array.isArray(parsed.ids) ? parsed : null;
-  } catch { return null; }
-}
-const gameList = readGameList();
-// "← Back" returns to the page that stored the list (a profile or Stats), validated by backHref; else Stats.
-const BACK = backHref(gameList?.from);
-
-function openGame(id) {
-  if (!id) return;
-  location.href = `game.html?game=${encodeURIComponent(id)}`;
-}
+// ---- the launcher's row: Back, Open on web ----
 
 async function openOnWeb() {
   try { await call('open_website', { url: `${PAGE_ORIGIN}/games/${gameId}` }); } catch (e) { showError(reason(e)); }
@@ -87,14 +78,6 @@ function drawBar() {
   // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return where we came from.
   const back = el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: BACK, text: '← Back' });
   const end = el('div', { class: 'game-bar-end' });
-  // ‹ Previous / Next ›: only when this game is in the list we came from (neighbours() alone can't tell "not in the
-  // list" from "at one end of it").
-  if (gameList && gameList.ids.includes(gameId)) {
-    const { prev, next } = neighbours(gameList.ids, gameId);
-    end.append(el('div', { class: 'game-bar-end', role: 'group', 'aria-label': gameList.label || 'Games' },
-      el('button', { type: 'button', 'data-key': 'game-prev', text: '‹ Previous', disabled: prev === null, onclick: () => openGame(prev) }),
-      el('button', { type: 'button', 'data-key': 'game-next', text: 'Next ›', disabled: next === null, onclick: () => openGame(next) })));
-  }
   if (online) end.append(el('button', { type: 'button', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }));
   bar.replaceChildren(back, end);
 }
@@ -104,16 +87,33 @@ function showError(text) {
   bar.append(el('p', { class: 'game-error', role: 'alert', text }));
 }
 
-// Left/Right step to the neighbouring game, unless the key is meant for a text field, carries a modifier (Alt+Left
-// is WebView2's own "navigate back"), or was already handled (the tab list's own arrows).
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
-  if (!gameList || !gameList.ids.includes(gameId)) return;
-  const a = document.activeElement;
-  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) return;
-  const { prev, next } = neighbours(gameList.ids, gameId);
-  openGame(e.key === 'ArrowLeft' ? prev : next);
+// ---- the match: the site's game picker and the series, above the scoreboard ----
+
+function drawPicker() {
+  if (matchGames.length < 2) { pick.hidden = true; return; }
+  const at = matchGames.indexOf(gameId) + 1;
+  const nav = renderPicker(matchGames.map((_, i) => ({ game_seq: i + 1 })), at, document, { name: 'match' });
+  nav.setAttribute('aria-label', 'Games in this match');
+  nav.querySelectorAll('button[data-pick]').forEach((b) => b.setAttribute('data-key', `game-${b.dataset.pick}`));
+  // Hyphens on the site's page, never an en dash (Tools/check-game-site.mjs).
+  const series = address.series ? el('span', { class: 'game-series', text: `Series ${address.series}` }) : null;
+  pick.replaceChildren(...[nav, series].filter(Boolean));
+  pick.hidden = false;
+}
+
+pick.addEventListener('click', (e) => {
+  const b = e.target instanceof Element ? e.target.closest('button[data-pick]') : null;
+  if (!b) return;
+  const id = matchGames[Number(b.dataset.pick) - 1];
+  if (id && id !== gameId) switchTo(id);
+});
+// Left / Right walk the picker (as the site's tabs do); the pad's D-pad moves by position.
+pick.addEventListener('keydown', (e) => {
+  const all = [...pick.querySelectorAll('button[data-pick]')];
+  const i = all.indexOf(document.activeElement);
+  if (i < 0 || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+  e.preventDefault();
+  all[Math.max(0, Math.min(all.length - 1, i + (e.key === 'ArrowRight' ? 1 : -1)))]?.focus();
 });
 
 // ---- the site's page (game-page.js) ----
@@ -142,11 +142,12 @@ function draw() {
 }
 
 /** No game to show (a bad id, a game the server does not have, or a failed read): the site's words in the strip and
- *  no tabs (there is nothing under them). */
+ *  no tabs (there is nothing under them). The match's picker stays, so its other games are still one press away. */
 function drawGone(text, alert = false) {
   const p = para('empty', text);
   if (alert) p.setAttribute('role', 'alert');
   strip.replaceChildren(p);
+  note.textContent = '';
   tabList.hidden = true;
   for (const t of TABS) panels[t].hidden = true;
 }
@@ -163,7 +164,7 @@ function stepPanel(how) {
 
 screen.addEventListener('click', (e) => {
   const t = e.target instanceof Element ? e.target : null;
-  if (!t?.closest('#site-game')) return;
+  if (!t?.closest('#game-body')) return;
   const step = t.closest('.pp-step');
   if (step) { if (!step.disabled) stepPanel(step.dataset.step); return; }
   const mode = t.closest('.ap-seg button[data-mode]');
@@ -222,30 +223,74 @@ tabList?.addEventListener('keydown', (e) => {
   showTab(TABS[to], { focus: true });
 });
 
-async function load() {
-  drawBar();
-  if (!UUID_RE.test(gameId)) { drawGone(NOT_FOUND); return; }
-  if (!bridge) { drawGone('Open this page inside the launcher window.', true); return; }
-  let record;
-  try { record = await quietCall('stats_game', { gameId }); } catch (e) { drawGone(reason(e), true); return; }
-  const game = record && typeof record === 'object' ? record.game : null;
-  if (!game || typeof game !== 'object' || !game.id) { drawGone(NOT_FOUND); return; }
-  // The server's own verdict, not whether any rows came back: only a verified game's plays are trusted.
-  verified = game.plays_status === 'verified';
-  online = webLinkShown(game);
-  const list = (v) => (Array.isArray(v) ? v : []);
-  snap = gameSnapshot(game, verified ? list(record.plays) : [], verified ? list(record.lines) : [], verified ? list(record.drives) : []);
-  // The /plays route sends { body, situation } only: give every play its field and its running score_after (the
-  // server's rule, rescore) so All plays shows scores; the strip keeps the capture's own final score.
-  const g0 = snap.games[0];
-  for (const p of g0.plays) p.field ??= fieldFromBody(p.body, p.situation);
-  const captured = g0.score;
-  rescore(g0);
-  if (Array.isArray(captured)) g0.score = captured;
+/** One game's record, read once per page (the picker goes back and forth without asking again). */
+function fetchGame(id) {
+  if (!loaded.has(id)) loaded.set(id, (async () => {
+    if (!UUID_RE.test(id)) return { gone: NOT_FOUND };
+    let record;
+    try { record = await quietCall('stats_game', { gameId: id }); } catch (e) { return { gone: reason(e), alert: true }; }
+    const game = record && typeof record === 'object' ? record.game : null;
+    if (!game || typeof game !== 'object' || !game.id) return { gone: NOT_FOUND };
+    // The server's own verdict, not whether any rows came back: only a verified game's plays are trusted.
+    const ok = game.plays_status === 'verified';
+    const list = (v) => (Array.isArray(v) ? v : []);
+    const s = gameSnapshot(game, ok ? list(record.plays) : [], ok ? list(record.lines) : [], ok ? list(record.drives) : []);
+    // The /plays route sends { body, situation } only: give every play its field and its running score_after (the
+    // server's rule, rescore) so All plays shows scores; the strip keeps the capture's own final score.
+    const g0 = s.games[0];
+    for (const p of g0.plays) p.field ??= fieldFromBody(p.body, p.situation);
+    const captured = g0.score;
+    rescore(g0);
+    if (Array.isArray(captured)) g0.score = captured;
+    return { snap: s, verified: ok, online: webLinkShown(game) };
+  })());
+  return loaded.get(id);
+}
+
+/** Show one game of the match: its strip and tabs; the tab the player was on stays picked. */
+async function show(id) {
+  const got = await fetchGame(id);
+  if (id !== gameId) return; // another game was picked while this one loaded
+  if (got.gone) { snap = null; online = false; drawBar(); drawGone(got.gone, got.alert); return; }
+  ({ snap, verified, online } = got);
+  tabList.hidden = false;
+  showTab(tab);
   drawBar();
   draw();
   note.textContent = verified ? 'Final' : '';
 }
 
+/** The picker: swap the page below it to another game of the match, in place (the address follows, without a history
+ *  entry, so Back still leaves the match). The panel, drives and All plays start fresh for that game. */
+function switchTo(id) {
+  gameId = id;
+  panelSeq = null; open = new Map(); apMode = 'all';
+  try {
+    const q = new URLSearchParams(location.search);
+    q.set('game', id);
+    history.replaceState(history.state, '', `${location.pathname}?${q}`);
+  } catch { /* the address is a convenience only */ }
+  drawPicker();
+  pick.querySelector('button[aria-pressed="true"]')?.focus({ preventScroll: true });
+  body.classList.remove('game-swap');
+  void body.offsetWidth; // restart the swap animation
+  body.classList.add('game-swap');
+  return show(id);
+}
+
+async function load() {
+  drawBar();
+  if (!UUID_RE.test(gameId)) { drawGone(NOT_FOUND); return; }
+  if (!bridge) { drawGone('Open this page inside the launcher window.', true); return; }
+  drawPicker();
+  await show(gameId);
+  // The match's other games load behind the one on screen, so the picker swaps at once.
+  for (const id of matchGames) if (id !== gameId) fetchGame(id);
+}
+
+body.addEventListener('animationend', () => body.classList.remove('game-swap'));
+// Leaving for another launcher page: mark the cross-document view transition, so the page we return to plays the
+// match page's closing half (theme.css, :active-view-transition-type(from-game)).
+window.addEventListener('pageswap', (e) => { try { e.viewTransition?.types?.add('from-game'); } catch { /* no types: the plain transition */ } });
 showTab(tab);
 load().catch(() => drawGone(NOT_FOUND));

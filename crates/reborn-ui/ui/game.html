@@ -24,6 +24,8 @@
     <section id="screen" class="game-site">
       <div id="game-bar" class="game-bar"></div>
       <div id="site-game"><nsr-body class="site"><div class="pg">
+        <div id="game-pick" class="game-pick" hidden></div>
+        <div id="game-body" class="game-body">
         <header id="strip" class="strip-slot"><p class="loading">Loading the game&hellip;</p></header>
         <div class="tabs" role="tablist" aria-label="Game views">
           <button type="button" role="tab" id="tabbtn-feed" aria-controls="tab-feed" data-tab="feed" data-key="tab-feed" aria-selected="true">Live Feed</button>
@@ -36,6 +38,7 @@
         </section>
         <section id="tab-box" class="panel" role="tabpanel" aria-labelledby="tabbtn-box" tabindex="0" hidden></section>
         <section id="tab-team" class="panel" role="tabpanel" aria-labelledby="tabbtn-team" tabindex="0" hidden></section>
+        </div>
       </div></nsr-body></div>
     </section>
     <details class="core"><summary>Diagnostic details</summary><div class="out-head"><button id="clear" type="button">Clear log</button><a href="harness.html">Developer tools</a></div><pre id="out"></pre></details>
