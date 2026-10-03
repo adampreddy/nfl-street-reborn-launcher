@@ -42,6 +42,45 @@ async function codeLine(page) {
   if (!c || !b || b.x < c.x + c.width || Math.abs((b.y + b.height / 2) - (c.y + c.height / 2)) > 8) p.push('Copy code is not beside the code');
   return p;
 }
+// The Direct connection dialog opens at its final size and keeps it (owner 10-03): `open` opens it; its box is read in
+// the first frame it is open, 50 ms and 1000 ms after, then after each change of the form (Host, Direct, back to Join).
+const directBox = (page) => page.locator('#direct-dialog').evaluate((d) => { const r = d.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10).join(','); });
+async function directBoxSteady(page, what, open, { changes = true } = {}) {
+  const p = [];
+  await page.evaluate(() => {
+    const d = document.getElementById('direct-dialog');
+    const box = () => { const r = d.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10).join(','); };
+    window.__dbox = new Promise((done) => {
+      const mo = new MutationObserver(() => {
+        if (!d.open) return;
+        mo.disconnect();
+        const out = {};
+        requestAnimationFrame(() => { out.first = box(); });
+        setTimeout(() => { out.at50 = box(); }, 50);
+        setTimeout(() => { out.at1000 = box(); done(out); }, 1000);
+      });
+      mo.observe(d, { attributes: true, attributeFilter: ['open'] });
+    });
+  });
+  await open();
+  const { first, at50, at1000 } = await page.evaluate(() => window.__dbox);
+  if (first !== at1000 || at50 !== at1000) p.push(`${what}: the dialog went ${first} (first frame), ${at50} (50 ms), ${at1000} (1000 ms)`);
+  const vp = page.viewportSize();
+  const size = at1000.split(',').slice(2).join('x');
+  if (size !== `${Math.min(560, vp.width - 48)}x${Math.min(660, vp.height - 48)}`) p.push(`${what}: the dialog is ${size}`);
+  if (!changes) return p;
+  const steps = [['Host', () => page.getByRole('button', { name: 'Host a game', exact: true }).click()],
+    ['Host + Direct', () => page.getByLabel('Connection', { exact: true }).selectOption('direct')],
+    ['Join + Direct', () => page.getByRole('button', { name: 'Join a game', exact: true }).click()],
+    ['Join + Host code', () => page.getByLabel('Connection', { exact: true }).selectOption('traversal')]];
+  for (const [label, act] of steps) {
+    await act();
+    await page.waitForTimeout(60);
+    const b = await directBox(page);
+    if (b !== at1000) p.push(`${what}: ${label} changed the dialog from ${at1000} to ${b}`);
+  }
+  return p;
+}
 // Signed out: the leaderboard is the anonymous answer, so no row is "you" (spec §4).
 const noYouRow = async (page) => ((await page.locator('.on-lb-row.you').count()) ? ['a signed-out page highlights a "you" row'] : []);
 // Hiding and showing the page re-polls the 60 s leaderboard beat at once (live-common.js makePoller).
@@ -109,9 +148,12 @@ const EXPECT = {
       if (await page.locator('#direct-dialog').evaluate((d) => d.open)) p.push('the direct connection dialog is open on load');
       // From Task 4 on, the links line shows under Private room only (ruling 6): pick it when the link is hidden.
       if (!(await page.locator('#direct-open').isVisible())) await page.locator('[data-key="mode-private"]').click();
-      await page.locator('#direct-open').click();
+      p.push(...await directBoxSteady(page, 'the form', () => page.locator('#direct-open').click()));
       if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('Direct connection did not open its dialog');
       if (!(await page.getByRole('button', { name: 'Join game', exact: true }).isVisible())) p.push("the dialog does not hold online.js's form");
+      await page.screenshot({ path: path.join(out, 'online-direct-dialog.png') });
+      await page.locator('#direct-close').click();
+      p.push(...await directBoxSteady(page, 'reopened', () => page.locator('#direct-open').click(), { changes: false }));
       await page.locator('#direct-close').click();
       if (await page.locator('#direct-dialog').evaluate((d) => d.open)) p.push('Close did not close the dialog');
       return p;
@@ -131,6 +173,9 @@ const EXPECT = {
     check: async (page) => {
       const p = [];
       if (!(await page.locator('#direct-dialog').evaluate((d) => d.open))) p.push('the invite did not open the Direct connection dialog');
+      await page.locator('#direct-close').click();
+      if (!(await page.locator('#direct-open').isVisible())) await page.locator('[data-key="mode-private"]').click();
+      p.push(...await directBoxSteady(page, 'an invite, reopened', () => page.locator('#direct-open').click(), { changes: false }));
       const code = await page.getByLabel('Host code', { exact: true }).inputValue().catch(() => null);
       if (code !== 'K7QP2M9X') p.push(`the dialog's host code is ${JSON.stringify(code)}, not the invite's K7QP2M9X`);
       if (!(await page.getByRole('button', { name: 'Join game', exact: true }).isVisible())) p.push('Join game is not on screen');
@@ -150,8 +195,9 @@ const EXPECT = {
       const stats = page.locator('.shell-nav a[href="stats.html"]');
       if (await stats.evaluate((a) => !!a.closest('[inert]') || document.querySelector('dialog:modal') !== null)) p.push('the page is still inert behind a modal');
       else await stats.click({ trial: true, timeout: 2000 }).catch(() => p.push('the Stats link in the nav is not clickable'));
-      await page.locator('#direct-open').click();
+      p.push(...await directBoxSteady(page, 'a room, reopened', () => page.locator('#direct-open').click(), { changes: false }));
       if (!(await isOpen())) p.push('Direct connection did not reopen the room');
+      await page.screenshot({ path: path.join(out, 'online-direct-room.png') });
       return p;
     },
   },

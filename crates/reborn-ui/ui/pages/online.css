@@ -26,7 +26,10 @@ body[data-mm-busy="true"] .on-links{display:none}
   .page-online .on-head{flex-wrap:wrap;align-items:flex-start}
 }
 /* the direct connection dialog: online.js's Netplay form and room, logic unchanged (spec §3.1) */
-.on-direct{width:min(560px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+/* One fixed size from the first frame (owner 10-03, "I don't like how the size of that window changes"): tall enough for
+   the tallest form (Join + Direct connection + a status line), the same for Host, an invite and a room; a smaller window
+   scrolls inside it. */
+.on-direct{box-sizing:border-box;width:min(560px,calc(100vw - 48px));height:min(660px,calc(100vh - 48px));max-height:none;overflow:auto}
 .on-direct-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
 .on-direct-head h2{margin:0;font:600 16px/1.2 Inter,system-ui,sans-serif}
 .on-direct #screen{display:block}
