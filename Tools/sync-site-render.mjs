@@ -1,8 +1,12 @@
-// The launcher's game page (crates/reborn-ui/ui/game.html) is the site's /games/<id> page: the same renderers, the
-// same stylesheet, the same team colours. They are VENDORED from the Reborn Backend repo into crates/reborn-ui/ui/site/,
-// never ported or edited by hand. This script is the only thing that writes them:
+// The launcher's game page (crates/reborn-ui/ui/game.html) is the site's /games/<id> page, and its match page
+// (match.html) the site's /live/<match> page: the same renderers, the same controller, the same stylesheet, the same
+// team colours. They are VENDORED from the Reborn Backend repo into crates/reborn-ui/ui/site/, never ported or edited by
+// hand. This script is the only thing that writes them:
 //
 //   live-render.js, site-model.js, live-card-core.js   copied unchanged under a 2-line header naming the commit
+//   live-page.js                                        the site's /live/<match> controller, copied unchanged the same
+//                                                       way; match.js runs it with the launcher's data source (its
+//                                                       fetch and EventSource answered by the live_match command)
 //   live.css                                            the site's live.css, every rule scoped under #site-game (see
 //                                                       scopeCss), its viewport breakpoints turned into queries on
 //                                                       the page's own width (pageQuery), fonts pointed at the
@@ -27,7 +31,7 @@ const check = args.includes('--check');
 const at = args.indexOf('--backend');
 const backend = path.resolve(at >= 0 ? args[at + 1] : process.env.REBORN_BACKEND || path.join(root, '..', 'Reborn Backend'));
 const web = path.join(backend, 'src/web');
-const JS = ['live-render.js', 'site-model.js', 'live-card-core.js'];
+const JS = ['live-render.js', 'site-model.js', 'live-card-core.js', 'live-page.js'];
 export const SCOPE = '#site-game';
 // The site's <body class="site"> becomes this element inside #site-game: a tag, like body, so every scoped selector
 // gains exactly one id over the site's own and the site's cascade order between its rules is unchanged.
@@ -41,7 +45,8 @@ const header = (name, commit, comment) => {
   const lines = [`Vendored from Reborn Backend ${from} @${commit}, do not edit: run Tools/sync-site-render.mjs.`,
     name === 'teams.css' ? `The .tg-<tgid> rules src/liveAssets.js serves as /live-assets/teams.css, scoped under ${SCOPE}.`
       : name.endsWith('.css') ? `Scoped under ${SCOPE} (the site's body is <${BODY} class="site">), breakpoints on the page width, the launcher's fonts.`
-        : 'The launcher game page (game.js) draws with it exactly as the site does.'];
+        : name === 'live-page.js' ? 'The launcher match page (match.js) runs it unchanged, answering its fetch and stream itself.'
+          : 'The launcher game and match pages (game.js, match.js) draw with it exactly as the site does.'];
   return comment === 'css' ? lines.map((l) => `/* ${l} */\n`).join('') : lines.map((l) => `// ${l}\n`).join('');
 };
 

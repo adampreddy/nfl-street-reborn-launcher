@@ -1,5 +1,5 @@
 // Vendored from Reborn Backend src/web/site-model.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
-// The launcher game page (game.js) draws with it exactly as the site does.
+// The launcher game and match pages (game.js, match.js) draw with it exactly as the site does.
 // Pure data for the restyled site pages (spec 2026-10-02 site restyle): who sits where, the strip's status and line
 // score, the series pill's words, drives, box score columns and team stats. No DOM, no I/O, no clocks. Web-only: the
 // shared card core (live-card-core.js, a byte copy of the Live bot's) is imported, never edited. Served byte-for-byte
