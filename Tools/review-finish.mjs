@@ -20,7 +20,7 @@ Object.assign(fixture, {
  // What the redesigned Online page and its Join game gate ask for (same answers as run-browser-tests.mjs; empty online data).
  content_status: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
  content_check: {phase:'up_to_date',origin:'https://files.test/',release:'3.0.0 sequence 3',components:[],download_bytes:0,download_files:0,repair_only:false,note:'Everything is current.',installed:null},
- mm_state: null, mm_rooms: [], mm_pending_room: null, leaderboard: null, live_matches: [], stats_dashboard: null,
+ mm_state: null, mm_pending_room: null, leaderboard: null, live_matches: [], stats_dashboard: null,
 });
 fixture.mod_packages = {packages_root:'C:/Reborn/mods',packages:[{id:'football-red',version:'1.0',name:'Red football',active:true,files:1,bytes:1048576},{id:'football-black',version:'1.0',name:'Black football',active:false,files:1,bytes:1048576},{id:'soundtrack-classic',version:'1.0',name:'Classic soundtrack',active:false,files:12,bytes:18000000},{id:'textures',version:'2.1',name:'Reborn textures',active:true,files:54,bytes:18000000}],activation:[{id:'football-red',version:'1.0'},{id:'textures',version:'2.1'}],unreadable:[],exclusive:[{members:['football-red','football-black'],computed:true,example_path:'football.png'}],managed_by_controls:[]};
 fixture.controls_options=[{slug:'xbox',label:'Xbox',suggested:true,describes:'A, B, X and Y prompts.',pack:'Xbox Controls'},{slug:'playstation',label:'PlayStation',suggested:false,describes:'Cross, circle, square and triangle prompts.',pack:'PS Controls'},{slug:'gamecube',label:'GameCube',describes:'Original game prompts.',pack:null}];

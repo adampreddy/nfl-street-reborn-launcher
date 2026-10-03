@@ -202,9 +202,9 @@ const EXPECT = {
     },
   },
   'online-ranked': {
-    text: ['Ranked', 'First to two wins. Climb the board.', 'Casual', 'One game. No Elo, no pressure.', 'Private Room', 'Your crew, your code.',
-      'Find a ranked game', 'Matched to your level', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
-    absent: ['Quick Match', 'Direct connection', 'best of'],
+    text: ['Ranked', 'First to two wins. Climb the board.', 'Casual', 'No Elo, no pressure.', 'Private Room', 'Your crew, your code.',
+      'Find a ranked game', 'Matched to your level', 'Ranked rules ›', '0 searching', '1 searching', '#7', '1,184 Elo', '▲ 16 this week'],
+    absent: ['Quick Match', 'Direct connection', 'best of', 'One game'],
     check: async (page) => {
       const p = [];
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
@@ -248,11 +248,18 @@ const EXPECT = {
     },
   },
   'online-casual': {
-    text: ['Find a casual game', "Anyone's game"],
+    // Casual (Adam, 2026-10-03): Quick game | Pickup before Find, and the one quiet line about leaving whenever.
+    text: ['Find a casual game', 'Casual: play as many games as you want. Leave whenever.', 'Quick game', 'Pickup'],
+    absent: ['One game', "Anyone's game"],
     check: async (page) => {
       const p = [];
       const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
       if (pressed.join() !== 'mode-casual') p.push(`picked tiles: ${pressed}`);
+      const kind = page.getByRole('group', { name: 'Quick game or Pickup', exact: true });
+      const was = await kind.locator('.tab[aria-pressed="true"]').innerText().catch(() => null);
+      if (was?.trim() !== 'Quick game') p.push(`casual's game starts on ${JSON.stringify(was)}, not Quick game`);
+      const row = await page.locator('.on-casual').boundingBox();
+      if (!row || row.height > 53) p.push(`the Casual row is ${row?.height}px tall, not one 52px line`);
       // Only the calls from the click on: update-notice.js reads content_status/content_check by itself on load.
       const from = await page.evaluate(() => window.__calls.length);
       await page.getByRole('button', { name: 'Find a casual game', exact: true }).click();
@@ -260,13 +267,66 @@ const EXPECT = {
       const order = await page.evaluate((n) => window.__calls.slice(n).map((c) => c.cmd).filter((c) => /^content_|^mm_queue$/.test(c)), from);
       if (order.join() !== 'content_check,content_repair_image,mm_queue') p.push(`Find ran ${order.join(' → ')}`);
       const q = await calls(page, 'mm_queue');
-      if (JSON.stringify(q[0]) !== '{"mode":"casual"}') p.push(`mm_queue got ${JSON.stringify(q[0])}`);
+      if (JSON.stringify(q[0]) !== '{"mode":"casual","seedKind":"regular"}') p.push(`mm_queue got ${JSON.stringify(q[0])}`);
+      // Pickup: remembered, and sent with the next queue.
+      await page.waitForTimeout(400);
+      await kind.getByRole('button', { name: 'Pickup', exact: true }).click();
+      if (await page.evaluate(() => localStorage.getItem('mm:kind')) !== 'pickup') p.push('picking Pickup did not store mm:kind=pickup');
+      await page.getByRole('button', { name: 'Find a casual game', exact: true }).click();
+      await page.waitForFunction(() => window.__calls.filter((c) => c.cmd === 'mm_queue').length > 1, null, { timeout: 4000 }).catch(() => {});
+      const q2 = await calls(page, 'mm_queue');
+      if (JSON.stringify(q2[1]) !== '{"mode":"casual","seedKind":"pickup"}') p.push(`mm_queue after Pickup got ${JSON.stringify(q2[1])}`);
+      if (await page.locator('dialog.on-rules[open]').count()) p.push('a casual queue showed the ranked rules');
+      await page.waitForTimeout(400);
+      await kind.getByRole('button', { name: 'Quick game', exact: true }).click();
+      return p;
+    },
+  },
+  'online-ranked-rules': {
+    text: ['Find a ranked game', 'Ranked rules ›'],
+    check: async (page) => {
+      const p = [];
+      const dialog = page.locator('dialog.on-rules[open]');
+      // The first ranked queue on this computer: the rules first, no queue yet.
+      await page.getByRole('button', { name: 'Find a ranked game', exact: true }).click();
+      await page.waitForTimeout(300);
+      if (!(await dialog.count())) { p.push('Find a ranked game did not show the ranked rules'); return p; }
+      const t = await dialog.innerText();
+      for (const w of ['Ranked rules', 'Best of 3. First to two wins takes the match.', 'Every game is played in full.',
+        'Leaving a ranked match early can count as a forfeit.', 'When the match is decided, the launcher closes the game for you.']) if (!t.includes(w)) p.push(`the rules lack "${w}"`);
+      if ((await calls(page, 'mm_queue')).length) p.push('the rules queued before Got it');
+      await page.screenshot({ path: path.join(out, 'online-ranked-rules-dialog.png') });
+      // Cancel: nothing queued, nothing remembered.
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.waitForTimeout(200);
+      if (await dialog.count()) p.push('Cancel did not close the rules');
+      if ((await calls(page, 'mm_queue')).length) p.push('Cancel queued');
+      if (await page.evaluate(() => localStorage.getItem('mm:ranked-rules-seen'))) p.push('Cancel remembered the rules as seen');
+      // Got it, find a game: remembered, and the ranked queue (no game kind).
+      await page.getByRole('button', { name: 'Find a ranked game', exact: true }).click();
+      await page.waitForTimeout(200);
+      await dialog.getByRole('button', { name: 'Got it, find a game', exact: true }).click();
+      await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'mm_queue'), null, { timeout: 4000 }).catch(() => {});
+      const q = await calls(page, 'mm_queue');
+      if (JSON.stringify(q[0]) !== '{"mode":"ranked"}') p.push(`Got it queued ${JSON.stringify(q[0])}`);
+      if (await page.evaluate(() => localStorage.getItem('mm:ranked-rules-seen')) !== '1') p.push('Got it did not remember the rules as seen');
+      // Seen: the next Find queues straight away; the link still opens the rules any time.
+      await page.waitForTimeout(400);
+      await page.getByRole('button', { name: 'Find a ranked game', exact: true }).click();
+      await page.waitForFunction(() => window.__calls.filter((c) => c.cmd === 'mm_queue').length > 1, null, { timeout: 4000 }).catch(() => {});
+      if (await dialog.count()) p.push('the rules showed again after Got it');
+      if ((await calls(page, 'mm_queue')).length !== 2) p.push('a second Find did not queue');
+      await page.waitForTimeout(400);
+      await page.getByRole('button', { name: 'Ranked rules ›', exact: true }).click();
+      await page.waitForTimeout(200);
+      if (!(await dialog.count())) p.push('Ranked rules › did not open the rules');
       return p;
     },
   },
   'online-private': {
-    text: ['Quick game', 'Pickup', 'Host a room', 'Join', 'Not on our servers?', 'Direct connection'],
-    absent: ['Find a'],
+    // Host a room makes a Quick game room; its game is switched from inside the room (Adam, 2026-10-03).
+    text: ['Host a room', 'Join', 'Not on our servers?', 'Direct connection'],
+    absent: ['Find a', 'Quick game', 'Pickup', 'lobbies', 'public lobby'],
     check: async (page) => {
       const p = [];
       if (await page.evaluate(() => { const m = document.getElementById('main'); return m.scrollHeight > m.clientHeight; })) p.push('#main scrolls vertically at 1280x800');
@@ -289,26 +349,15 @@ const EXPECT = {
       await page.getByRole('button', { name: 'Host a room', exact: true }).click();
       await page.waitForTimeout(300);
       const h = await calls(page, 'mm_room_create');
-      if (JSON.stringify(h[0]) !== '{"mode":"casual","public":false,"seedKind":"regular"}') p.push(`Host a room sent ${JSON.stringify(h[0])}`);
-      // Quick game | Pickup (Adam, 2026-10-02): Quick game to start with; Host sends the pick as seedKind.
-      const kind = page.getByRole('group', { name: 'Quick game or Pickup', exact: true });
-      const was = await kind.locator('.tab[aria-pressed="true"]').innerText().catch(() => null);
-      if (was?.trim() !== 'Quick game') p.push(`the game choice starts on ${JSON.stringify(was)}, not Quick game`);
-      await kind.getByRole('button', { name: 'Pickup', exact: true }).click();
-      const pressed = await page.locator('.on-tile[aria-pressed="true"]').evaluateAll((n) => n.map((x) => x.dataset.key));
-      if (pressed.join() !== 'mode-private') p.push(`picking Pickup moved the tile pick to ${pressed}`);
-      await page.getByRole('button', { name: 'Host a room', exact: true }).click();
-      await page.waitForTimeout(300);
-      const h2 = await calls(page, 'mm_room_create');
-      if (JSON.stringify(h2[1]) !== '{"mode":"casual","public":false,"seedKind":"pickup"}') p.push(`Host a room after picking Pickup sent ${JSON.stringify(h2[1])}`);
-      // Back to Quick game, so the screenshot shows the default.
-      await kind.getByRole('button', { name: 'Quick game', exact: true }).click();
+      if (JSON.stringify(h[0]) !== '{"mode":"casual"}') p.push(`Host a room sent ${JSON.stringify(h[0])}`);
+      if (await page.getByRole('group', { name: 'Quick game or Pickup', exact: true }).count()) p.push('the Private row still picks the game before the room exists');
       return p;
     },
   },
   'online-searching': {
-    text: ['Finding players near 1,184 Elo', 'Searching 0:42', 'Cancel'],
-    absent: ['Find a ranked game', 'Not on our servers?'],
+    // The team you play most (the profile's plays_as here: the fixture sends no most_used_team), never a "favourite".
+    text: ['Finding players near 1,184 Elo', 'Searching 0:42', 'Cancel', 'Your most-played team:', 'Falcons'],
+    absent: ['Find a ranked game', 'Not on our servers?', 'favorite', 'favourite', 'Quick game'],
     check: async (page) => {
       const p = [];
       if ((await page.locator('.on-tile.dim').count()) !== 2) p.push('the other two tiles are not dark');
@@ -317,6 +366,17 @@ const EXPECT = {
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       await page.waitForTimeout(300);
       if (!(await calls(page, 'mm_leave_queue')).length) p.push('Cancel did not send mm_leave_queue');
+      return p;
+    },
+  },
+  'online-searching-casual': {
+    text: ['Finding a casual game', 'Casual · Pickup', 'Your most-played team:', 'Chargers'],
+    absent: ['Falcons', 'favorite', 'favourite'],
+    check: async (page) => {
+      const p = [];
+      const reads = await calls(page, 'player_profile');
+      if (reads.length !== 1) p.push(`player_profile was read ${reads.length} times, not once`);
+      else if (!reads[0]?.playerId) p.push('player_profile was read without the signed-in player id');
       return p;
     },
   },
@@ -382,7 +442,7 @@ const EXPECT = {
   'online-playing': { text: ['In play', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
   // Ruling P9: intermission is still "In play", with the series line.
   'online-intermission': { text: ['In play', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
-  'online-playing-casual': { text: ['In play', 'Casual · one game'], absent: ['Series', 'Game on'] },
+  'online-playing-casual': { text: ['In play', 'Casual'], absent: ['Series', 'Game on', 'one game'] },
   'online-match-bare': {
     text: ['Opponent'], absent: ['undefined', 'NaN', 'null', ' to accept', ' · Elo'],
     check: async (page) => {
@@ -399,9 +459,20 @@ const EXPECT = {
   'online-room': {
     text: ['Your room · Quick game', 'K7QP2M', 'Copy code', 'Copy invite link', 'Your crew', 'Adam', 'you', 'Ready', 'Not ready', 'Chat', 'ready when you are',
       'Both ready, then the host kicks it off.'],
-    absent: ['Lobby code', 'Leave lobby', 'Room code', 'Pickup'],
+    absent: ['Lobby code', 'Leave lobby', 'Room code'],
     check: async (page) => {
       const p = await codeLine(page);
+      // The host switches the room's game (Adam, 2026-10-03): Quick game | Pickup inside the room.
+      const kind = page.locator('section[aria-label="Your room"]').getByRole('group', { name: 'Quick game or Pickup', exact: true });
+      if (!(await kind.count())) p.push('the host has no Quick game | Pickup switch in the room');
+      else {
+        const was = await kind.locator('.tab[aria-pressed="true"]').innerText();
+        if (was.trim() !== 'Quick game') p.push(`the switch shows ${JSON.stringify(was)}, not the room's Quick game`);
+        await kind.getByRole('button', { name: 'Pickup', exact: true }).click();
+        await page.waitForTimeout(300);
+        const k = (await calls(page, 'mm_room_action')).find((a) => a.action === 'kind');
+        if (JSON.stringify(k) !== '{"roomId":"r1","action":"kind","value":"pickup"}') p.push(`Pickup sent ${JSON.stringify(k)}`);
+      }
       // Ruling P14: count the markers, not loose text ("you"/"Ready" appear in unrelated words).
       const rd = await page.locator('.on-rd').count(), nr = await page.locator('.on-nr').count();
       if (rd !== 1 || nr !== 1) p.push(`ready markers: ${rd} ready, ${nr} not ready (want 1 and 1)`);
@@ -424,7 +495,7 @@ const EXPECT = {
       if (await page.evaluate(() => window.__copied) !== 'K7QP2M') p.push('Copy code did not copy the code');
       await page.getByRole('button', { name: 'Hold up', exact: true }).click();
       await page.waitForTimeout(300);
-      const r = await calls(page, 'mm_room_action');
+      const r = (await calls(page, 'mm_room_action')).filter((x) => x.action === 'ready');
       if (JSON.stringify(r[0]) !== '{"roomId":"r1","action":"ready","value":false}') p.push(`ready sent ${JSON.stringify(r[0])}`);
       await page.getByRole('button', { name: 'Leave room', exact: true }).click();
       await page.waitForTimeout(300);
@@ -433,7 +504,47 @@ const EXPECT = {
       return p;
     },
   },
-  'online-room-pickup': { text: ['Your room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'], check: codeLine },
+  // A guest reads the room's game in the title, and has no switch.
+  'online-room-pickup': {
+    text: ['Your room · Pickup', 'K7QP2M'], absent: ['Quick game', 'Room code'],
+    check: async (page) => {
+      const p = await codeLine(page);
+      if (await page.getByRole('group', { name: 'Quick game or Pickup', exact: true }).count()) p.push('a guest is offered the game switch');
+      if (await page.getByRole('button', { name: 'Start', exact: true }).count()) p.push('a guest is offered Start');
+      return p;
+    },
+  },
+  // Today's server has no kind route: one quiet sentence, the room carries on, nothing breaks.
+  'online-room-kind-old': {
+    text: ['Your room · Quick game'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('section[aria-label="Your room"]').getByRole('button', { name: 'Pickup', exact: true }).click();
+      await page.waitForTimeout(500);
+      const s = (await page.locator('.on-status').innerText()).trim();
+      if (s !== "Switching the game isn't on the servers yet. Leave and host a new room to change it.") p.push(`the refusal reads ${JSON.stringify(s)}`);
+      if (!(await page.getByRole('button', { name: 'Leave room', exact: true }).isVisible())) p.push('the room went away after the refusal');
+      return p;
+    },
+  },
+  'online-room-started': {
+    text: ['Your room · Quick game'],
+    check: async (page) => {
+      const tabs = page.locator('section[aria-label="Your room"]').getByRole('group', { name: 'Quick game or Pickup', exact: true }).locator('.tab');
+      const n = await tabs.count();
+      const off = await tabs.evaluateAll((xs) => xs.every((x) => x.disabled));
+      return n === 2 && off ? [] : [`the switch is ${n === 2 ? 'still usable' : 'missing'} once the game is starting`];
+    },
+  },
+  // Every line of the conversation shows, in order.
+  'online-room-chat': {
+    text: ['yo, you up?', 'running it back', 'Pickup this time', 'bet. switching it', 'ready when you are'],
+    check: async (page) => {
+      const lines = await page.locator('.mm-chat li').allInnerTexts();
+      const want = ['Jock: yo, you up?', 'Adam: running it back', 'Jock: Pickup this time', 'Adam: bet. switching it', 'Jock: ready when you are'];
+      return JSON.stringify(lines.map((l) => l.trim())) === JSON.stringify(want) ? [] : [`chat shows ${JSON.stringify(lines)}`];
+    },
+  },
   'online-held': {
     text: ['Your last match is held for review', "Your game files differ from Jock's, so that game was not started.", 'Find a casual game'],
     absent: ['Leave match', 'Accept'],
@@ -502,35 +613,15 @@ const EXPECT = {
       return p;
     },
   },
-  'online-lobbies': {
-    text: ['Open lobbies (2) ›'],
+  // No public lobbies (Adam, 2026-10-03: "rather you just have to send the codes"): no link, no panel, no list read.
+  'online-no-lobbies': {
+    text: ['Host a room', 'Join'],
+    absent: ['lobbies', 'public lobby'],
     check: async (page) => {
       const p = [];
-      await page.locator('#lobbies-open').click();
-      const panel = page.locator('dialog.menu.panel[open]');
-      const t = await panel.innerText().catch(() => '');
-      for (const w of ['Jock · Casual', 'Tuna · Ranked', 'Open a public lobby']) if (!t.includes(w)) p.push(`the lobby panel lacks "${w}"`);
-      if (/best of/i.test(t)) p.push('a lobby is labelled best of');
-      await page.screenshot({ path: path.join(out, 'online-lobbies-panel.png') });
-      await panel.getByRole('button', { name: 'Join', exact: true }).first().click();
-      await page.waitForTimeout(300);
-      const j = await calls(page, 'mm_room_join');
-      if (JSON.stringify(j[0]) !== '{"code":"K7QP2M"}') p.push(`Join sent ${JSON.stringify(j[0])}`);
-      return p;
-    },
-  },
-  'online-lobbies-none': {
-    text: ['Open a public lobby ›'],
-    check: async (page) => {
-      const p = [];
-      await page.locator('#lobbies-open').click();
-      const panel = page.locator('dialog.menu.panel[open]');
-      if (!(await panel.innerText().catch(() => '')).includes('No open lobbies. Open one and someone can join you.')) p.push('no "No open lobbies" line');
-      await page.screenshot({ path: path.join(out, 'online-lobbies-none-panel.png') });
-      await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click();
-      await page.waitForTimeout(300);
-      const c = await calls(page, 'mm_room_create');
-      if (JSON.stringify(c[0]) !== '{"mode":"casual","public":true}') p.push(`Open a public lobby sent ${JSON.stringify(c[0])}`);
+      if (await page.locator('#lobbies-open').count()) p.push('the Open lobbies link is still on the page');
+      if ((await calls(page, 'mm_rooms')).length) p.push('the page read mm_rooms');
+      if ((await calls(page, 'mm_room_create')).length) p.push('a room was created without Host a room');
       return p;
     },
   },
