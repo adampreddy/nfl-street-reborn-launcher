@@ -620,7 +620,16 @@ function draw(p, ownerId) {
   const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
   if (FULL_STATS[hash]) fs.tab = hash;
   const first = HASH_TAB[hash] ?? 'overview';
-  showTab(first, { scroll: Boolean(hash) && first !== 'overview' });
+  const deep = Boolean(hash) && first !== 'overview';
+  showTab(first, { scroll: deep });
+  // A deep link (#stats, #passing...) lands on the tabs again once the page has settled: a late stylesheet or web font
+  // can change the layout under the first scroll.
+  if (deep) {
+    const again = () => { if (view.tab === first) view.bar.scrollIntoView?.({ block: 'start' }); };
+    requestAnimationFrame?.(again);
+    if (document.readyState !== 'complete') window.addEventListener?.('load', again, { once: true });
+    document.fonts?.ready.then(again);
+  }
   // A first page that was mostly private rooms (the deployed server still sends them) tops up now, so Recent matches
   // and the Matches tab are full.
   fill().then(() => { if (view.tab === 'overview') drawTabBody(); });
