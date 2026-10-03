@@ -1166,7 +1166,7 @@ mod tests {
             "rules": { "ranked_best_of": 3, "casual_max_games": 20, "ranked_leave_forfeits": true,
                 "ranked_rematch_cooldown_hours": 24.0, "casual_rematch_unlimited": true } } }))
             .unwrap();
-        let v = snapshot_json(&s);
+        let v = snapshot_json(&s, &[]);
         assert_eq!(v["match"]["series_live"], serde_json::json!([2, 0]));
         assert_eq!(v["match"]["outcome"]["kind"], "win");
         assert_eq!(v["match"]["outcome"]["winner_seat"], 0);
@@ -1174,7 +1174,7 @@ mod tests {
         assert_eq!(v["match"]["rules"]["ranked_best_of"], 3);
 
         let old: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m" } })).unwrap();
-        let v = snapshot_json(&old);
+        let v = snapshot_json(&old, &[]);
         assert!(v["match"]["outcome"].is_null() && v["match"]["rules"].is_null(), "an older server sends neither");
     }
 }
