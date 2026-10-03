@@ -11,8 +11,8 @@ test('numbers and the clock', () => {
 
 test('the mode line never says best of', () => {
   assert.equal(modeLine('ranked'), 'Ranked · first to two wins');
-  assert.equal(modeLine('casual'), 'Casual · one game');
-  assert.equal(modeLine(undefined), 'Casual · one game');
+  assert.equal(modeLine('casual'), 'Casual');
+  assert.equal(modeLine(undefined), 'Casual');
 });
 
 test('the series line is from this seat, only in a series', () => {

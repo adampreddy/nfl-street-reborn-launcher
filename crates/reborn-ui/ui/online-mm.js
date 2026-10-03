@@ -5,7 +5,7 @@
 // sent: `mm_state` every second (a read of what the launcher's long-poll already holds in memory, so it never touches
 // the network) and one request per action. Which state the mode area shows is decided exactly as before: a live match,
 // then a room, then a ticket, then idle (a held match draws idle plus a notice).
-import { bridge, call, el, get, reason } from './shell.js';
+import { bridge, call, el, get, quietCall, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
 import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
 import { openPanel } from './menu.js';
@@ -110,6 +110,20 @@ document.addEventListener('pad-back', (e) => {
 // (home.js) keyed by player id; any other id or no cache draws your letter.
 let me = null;
 if (bridge) call('identity_status').then((v) => { if (v?.signed_in) { me = { id: v.player_id, name: v.display_name }; lastDrawn = ''; } }).catch(() => {});
+
+// The team you play most, shown while you search (Adam, 2026-10-03: "tells the user what team the user uses the most
+// but make sure it's not like its their favorite team"). From your public profile's `most_used_team` (online games),
+// else its `plays_as`; neither, and the line is left out. Read once per page load, the first time you search.
+let mostPlayed = { asked: false, team: null };
+function readMostPlayed() {
+  if (mostPlayed.asked || !me?.id) return;
+  mostPlayed.asked = true;
+  quietCall('player_profile', { playerId: me.id }).then((p) => {
+    const h = p?.header;
+    const t = [h?.most_used_team, h?.plays_as].find((x) => x && typeof x === 'object' && typeof x.name === 'string' && x.name);
+    if (t) { mostPlayed.team = t; lastDrawn = ''; draw(); }
+  }).catch(() => {});
+}
 function myAvatarUrl() {
   try { const v = JSON.parse(localStorage.getItem('reborn:avatar') || 'null'); return v && me && v.id === me.id ? v.url : null; } catch { return null; }
 }
@@ -177,7 +191,9 @@ async function queueWhenCurrent() {
     const repair = await call('content_repair_image', {});
     if (!repair?.current) throw new Error(repair?.note || 'Your game files are not up to date.');
     status.textContent = '';
-    await call('mm_queue', { mode: mode() });
+    // Casual sends its Quick game / Pickup pick; ranked never sends one (always Quick games).
+    if (mode() === 'casual') { queuedKind = queueKind(); await call('mm_queue', { mode: 'casual', seedKind: queuedKind }); }
+    else await call('mm_queue', { mode: mode() });
   } catch (e) {
     status.textContent = reason(e);
   } finally {
@@ -196,7 +212,7 @@ new MutationObserver(() => {
 
 function chatBox(messages, send) {
   const log = el('ol', { class: 'mm-chat', 'aria-label': 'Chat', 'aria-live': 'polite' });
-  for (const m of messages.slice(-30)) log.append(el('li', {}, el('strong', { text: `${m.name}: ` }), m.body));
+  for (const m of messages.slice(-30)) log.append(el('li', {}, el('strong', { text: `${m.name}: ` }), String(m.body ?? m.text ?? '')));
   const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something…', 'aria-label': 'Chat message', 'data-key': 'chat' });
   const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', class: 'btn quiet sm', text: 'Send' }));
   form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { send(t); input.value = ''; } });
@@ -208,7 +224,7 @@ function chatBox(messages, send) {
 // into that same layer later (a background image, or an <img> inside it) without moving anything else.
 const MODES = [
   { key: 'ranked', name: 'Ranked', line: 'First to two wins. Climb the board.' },
-  { key: 'casual', name: 'Casual', line: 'One game. No Elo, no pressure.' },
+  { key: 'casual', name: 'Casual', line: 'No Elo, no pressure.' },
   { key: 'private', name: 'Private Room', line: 'Your crew, your code.' },
 ];
 
@@ -253,38 +269,81 @@ function tiles(snap, { searching = null, locked = false, only = null } = {}) {
   return box;
 }
 
+// The two games a casual match or a room plays: Quick game (the `regular` seed) or Pickup.
+const KINDS = { 'Quick game': 'regular', Pickup: 'pickup' };
+const KIND_NAME = { regular: 'Quick game', pickup: 'Pickup' };
+const kindName = (k) => KIND_NAME[k] ?? KIND_NAME.regular;
+
+// Casual's pick (Adam, 2026-10-03: "make casual able to queue pickup and quick game"), remembered on this computer.
+const queueKind = () => (store.get('mm:kind', 'regular') === 'pickup' ? 'pickup' : 'regular');
+// What the last casual queue asked for, so the searching bar can name it when the server does not echo it.
+let queuedKind = null;
+
 function findRow(p) {
-  return el('div', { class: 'on-row' },
-    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: `Find a ${p} game`, onclick: () => queueWhenCurrent() }),
-    el('p', { class: 'on-note', text: p === 'ranked' ? 'Matched to your level' : "Anyone's game" }));
+  if (p === 'ranked') {
+    return el('div', { class: 'on-row' },
+      el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: 'Find a ranked game', onclick: () => findRanked() }),
+      el('p', { class: 'on-note' }, 'Matched to your level. ',
+        el('button', { type: 'button', class: 'sec-link on-rules-link', 'data-key': 'ranked-rules', text: 'Ranked rules ›', onclick: () => rankedRules() })));
+  }
+  const kind = tabs('mm-queue-kind', Object.keys(KINDS), kindName(queueKind()),
+    (name) => { store.set('mm:kind', KINDS[name]); lastDrawn = ''; draw(); }, { label: 'Quick game or Pickup' });
+  return el('div', { class: 'on-row on-casual' },
+    kind,
+    el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: 'Find a casual game', onclick: () => queueWhenCurrent() }),
+    el('p', { class: 'on-note on-casual-note', text: 'Casual: play as many games as you want. Leave whenever.' }));
+}
+
+// ---- the ranked rules (Adam, 2026-10-03: "a notice for the format and rules of ranked games before you queue") ----
+// Shown the first time Find a ranked game is pressed on this computer, and any time from "Ranked rules ›".
+const RULES_SEEN = 'mm:ranked-rules-seen';
+function findRanked() {
+  if (store.get(RULES_SEEN, '') === '1') queueWhenCurrent();
+  else rankedRules(true);
+}
+function rankedRules() {
+  const dialog = el('dialog', { class: 'on-rules', 'aria-labelledby': 'on-rules-title' });
+  const close = () => dialog.close();
+  const go = el('button', { type: 'button', class: 'btn primary', 'data-key': 'rules-go', text: 'Got it, find a game',
+    onclick: () => { store.set(RULES_SEEN, '1'); close(); queueWhenCurrent(); } });
+  dialog.append(
+    el('h2', { id: 'on-rules-title', text: 'Ranked rules' }),
+    el('p', { class: 'on-rules-lead', text: 'Read this once, then go get your wins.' }),
+    el('h3', { text: 'Format' }),
+    el('ul', {},
+      el('li', { text: 'Best of 3. First to two wins takes the match.' }),
+      el('li', { text: 'Every game is played in full.' })),
+    el('h3', { text: 'Rules' }),
+    el('ul', {},
+      el('li', { text: 'Play it out. Leaving a ranked match early can count as a forfeit.' }),
+      el('li', { text: 'When the match is decided, the launcher closes the game for you.' })),
+    el('div', { class: 'on-rules-acts' }, go,
+      el('button', { type: 'button', class: 'btn quiet', 'data-key': 'rules-cancel', text: 'Cancel', onclick: close })));
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  go.focus();
 }
 
 // The code field's text survives the redraws (the field itself is rebuilt).
 let roomCode = '';
-// The game the host's room plays (Adam, 2026-10-02): Quick game (the `regular` seed) unless Pickup is picked. Page state
-// only, so every visit starts on Quick game. Sent with Host a room as `seedKind`.
-const ROOM_KINDS = { 'Quick game': 'regular', Pickup: 'pickup' };
-const KIND_NAME = { regular: 'Quick game', pickup: 'Pickup' };
-let roomKind = 'regular';
+// Host a room makes a Quick game room; the host switches it to Pickup from inside the room (Adam, 2026-10-03: "users
+// can change quick game vs pickup game after they've made the room but not before").
 function privateRow() {
   const code = el('input', { type: 'text', class: 'on-code', maxlength: 12, placeholder: 'Join with a code', 'aria-label': 'Join with a code', spellcheck: 'false', autocomplete: 'off', 'data-key': 'room-code', value: roomCode });
   const join = el('button', { type: 'submit', class: `btn on-join${roomCode.trim() ? '' : ' quiet'}`, 'data-key': 'join', 'aria-label': 'Join by code', text: 'Join' });
   code.addEventListener('input', () => { roomCode = code.value; join.classList.toggle('quiet', !code.value.trim()); });
   const form = el('form', { class: 'on-codeform' }, code, join);
   form.addEventListener('submit', (e) => { e.preventDefault(); const c = code.value.trim(); if (c) act('mm_room_join', { code: c }); });
-  // A private room is a casual game (the Casual/Ranked tabs went, Adam 2026-10-02); the host picks which game it plays.
-  const kind = tabs('mm-room-kind', Object.keys(ROOM_KINDS), KIND_NAME[roomKind],
-    (name) => { roomKind = ROOM_KINDS[name]; lastDrawn = ''; draw(); }, { label: 'Quick game or Pickup' });
+  // A private room is a casual game, joined by its code only (no public lobbies, Adam 2026-10-03).
   return el('div', { class: 'on-row on-private' },
-    kind,
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'host', 'data-primary': 'true', text: 'Host a room',
-      onclick: () => act('mm_room_create', { mode: 'casual', public: false, seedKind: roomKind }) }),
+      onclick: () => act('mm_room_create', { mode: 'casual' }) }),
     form);
 }
 
 function drawIdle(snap) {
   const p = picked();
-  loadLobbies(); // the same `mm_rooms` read on every idle draw as before the redesign
   return [tiles(snap), p === 'private' ? privateRow() : findRow(p)];
 }
 
@@ -329,43 +388,6 @@ function heldBox(m) {
     el('button', { type: 'button', class: 'btn quiet sm', 'data-key': 'held-dismiss', text: 'Dismiss',
       onclick: () => { dismissedHold = m.id; lastDrawn = ''; draw(); } }));
 }
-
-// Public lobbies (spec §3.1): read on every idle draw, as always. Under the Private room row, "Open lobbies (n) ›"
-// opens them in a panel with "Open a public lobby"; with none it reads "Open a public lobby ›" (ruling 8).
-let lobbies = [];
-let lobbyError = null;
-const lobbiesLink = document.getElementById('lobbies-open');
-const closePanel = () => document.querySelector('dialog.menu.panel[open]')?.close();
-async function loadLobbies() {
-  try {
-    const rooms = await call('mm_rooms');
-    lobbies = Array.isArray(rooms) ? rooms : [];
-    lobbyError = null;
-  } catch (e) {
-    lobbies = [];
-    lobbyError = reason(e);
-  }
-  if (lobbiesLink) {
-    lobbiesLink.textContent = lobbies.length ? `Open lobbies (${lobbies.length}) ›` : 'Open a public lobby ›';
-    lobbiesLink.hidden = false;
-  }
-}
-function lobbyPanel() {
-  const list = el('ul', { class: 'on-lobbies' });
-  if (lobbyError) list.append(el('li', { class: 'note', text: lobbyError }));
-  else if (!lobbies.length) list.append(el('li', { class: 'note', text: 'No open lobbies. Open one and someone can join you.' }));
-  for (const r of lobbies) {
-    list.append(el('li', {},
-      el('span', { text: `${r.host ?? 'A player'} · ${r.mode === 'ranked' ? 'Ranked' : 'Casual'}` }),
-      el('button', { type: 'button', class: 'btn sm', text: 'Join', onclick: () => { closePanel(); act('mm_room_join', { code: r.code }); } })));
-  }
-  return el('div', { class: 'on-panel' },
-    el('span', { class: 'k-label', text: 'Public lobbies' }),
-    list,
-    el('button', { type: 'button', class: 'btn sm', 'data-key': 'open-public', text: 'Open a public lobby',
-      onclick: () => { closePanel(); act('mm_room_create', { mode: mode(), public: true }); } }));
-}
-lobbiesLink?.addEventListener('click', () => openPanel(lobbiesLink, { label: 'Public lobbies', build: lobbyPanel }));
 
 // ---- a room invite (spec §3.10) ----
 // A `nflstreetreborn://room/<code>` link left its code behind (mm_pending_room). On load and on window focus the page
@@ -453,15 +475,20 @@ setInterval(() => {
 function drawQueued(t) {
   if (queueClock.key !== t.enqueued_at) queueClock = { key: t.enqueued_at, base: t.waited_ms || 0, at: Date.now() };
   const ranked = t.mode === 'ranked';
+  readMostPlayed();
+  // Casual names its game: the ticket's own kind when the server says, else what this page asked for.
+  const kind = ranked ? null : kindName(t.seed_kind ?? queuedKind ?? queueKind());
+  const team = mostPlayed.team;
   return [
     tiles(null, { searching: ranked ? 'ranked' : 'casual' }),
     el('div', { class: 'on-row' },
       el('div', { class: 'on-search' },
         el('span', { class: 'mm-timer on-timer num', text: `Searching ${clock(queuedMs())}` }),
-        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : 'Casual' }),
+        el('span', { class: 'on-search-mode', text: ranked ? 'Ranked' : `Casual · ${kind}` }),
         el('span', { class: 'sweep', 'aria-hidden': 'true' })),
       el('button', { type: 'button', class: 'btn on-cancel', 'data-key': 'cancel', text: 'Cancel', onclick: () => act('mm_leave_queue') })),
-  ];
+    team ? el('p', { class: 'on-note on-most' }, 'Your most-played team: ', teamLogo(team, 'on-most-logo'), el('b', { text: team.name })) : null,
+  ].filter(Boolean);
 }
 
 // Your room (spec §3.7): the code to share, who is in and ready, chat; Start for the host once everyone is ready.
@@ -481,10 +508,17 @@ function drawRoom(r, chat) {
       el('b', {}, m.name, m.you ? el('small', { text: 'you' }) : null),
       el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
   }
-  // The game the host picked (the snapshot's seed_kind; an older server sends none: Quick game).
-  const kindName = KIND_NAME[r.seed_kind] ?? KIND_NAME.regular;
+  // The game the room plays (the snapshot's seed_kind; an older server sends none: Quick game). Everyone reads it in the
+  // title; the host can switch it until the game starts (the server un-readies everyone, so the crew re-confirms).
+  const kind = kindName(r.seed_kind);
+  const started = typeof r.status === 'string' && r.status !== '' && r.status !== 'open';
+  const kindControl = r.you_host === true
+    ? el('div', { class: 'on-kindrow' }, el('span', { class: 'k-label', text: 'Game' }),
+      tabs('mm-room-kind', Object.keys(KINDS), kind, (name) => changeKind(r.id, KINDS[name]), { label: 'Quick game or Pickup', disabled: started }))
+    : null;
   const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kindName}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kind}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    kindControl,
     el('div', { class: 'on-coderow' },
       el('strong', { class: 'on-codebig', text: r.code }),
       el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
@@ -501,6 +535,28 @@ function drawRoom(r, chat) {
     el('button', { type: 'button', class: 'btn quiet', 'data-key': 'room-leave', text: 'Leave room',
       onclick: () => act('mm_room_action', { roomId: r.id, action: 'leave', value: null }) }));
   return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: 'Both ready, then the host kicks it off.' })];
+}
+
+// The host switches the room's game. A server without the route (before the backend update) refuses it: one quiet
+// sentence, and the room carries on as it is.
+async function changeKind(roomId, seedKind) {
+  if (busy) return;
+  busy = true;
+  status.textContent = '';
+  section.setAttribute('aria-busy', 'true');
+  try {
+    await call('mm_room_action', { roomId, action: 'kind', value: seedKind });
+  } catch (e) {
+    const why = reason(e);
+    status.textContent = /not found|404|isn't something/i.test(why)
+      ? "Switching the game isn't on the servers yet. Leave and host a new room to change it."
+      : why;
+  } finally {
+    busy = false;
+    section.removeAttribute('aria-busy');
+    lastDrawn = '';
+    await draw();
+  }
 }
 
 function face({ url, name, sub, team, tick = false }) {

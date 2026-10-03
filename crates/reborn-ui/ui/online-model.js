@@ -13,7 +13,7 @@ export function clock(ms) {
 
 /** Under the VS and in a room. Never "best of 3" (spec §8, DESIGN.md §9). */
 export function modeLine(mode) {
-  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual · one game';
+  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual';
 }
 
 /** "Game 2 · Series 1–0" while a series runs (best_of > 1), counted from this seat; null otherwise. */
