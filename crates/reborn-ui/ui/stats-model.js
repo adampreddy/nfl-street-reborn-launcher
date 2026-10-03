@@ -736,7 +736,13 @@ export function statCells(role, data) {
 export function pointsSeries(matches, n = 16) {
   const gs = scoredOf(gamesNewestFirst((Array.isArray(matches) ? matches : []).filter(isOnline))).slice(0, n).reverse();
   if (gs.length < 2) return null;
-  const games = gs.map((g, i) => ({ for: g.score[0], against: g.score[1], won: g.letter === 'W', label: i % 4 === 0 || i === gs.length - 1 ? dayLabel(g.at) : '' }));
+  let shown = null;
+  const games = gs.map((g, i) => {
+    // a date under every fourth bar and the last, never the same date twice in a row
+    const day = dayLabel(g.at), put = (i % 4 === 0 || i === gs.length - 1) && day !== shown;
+    if (put) shown = day;
+    return { for: g.score[0], against: g.score[1], won: g.letter === 'W', label: put ? day : '' };
+  });
   const top = Math.max(10, ...games.map((p) => Math.max(p.for, p.against)));
   const step = top <= 40 ? 10 : top <= 80 ? 20 : 50;
   return { games, max: Math.ceil(top / step) * step, step, scored: one(avgOf(games.map((p) => p.for))), allowed: one(avgOf(games.map((p) => p.against))) };

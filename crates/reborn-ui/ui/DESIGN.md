@@ -89,6 +89,11 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--cover-mask` | 100deg black to transparent | the cover wash fading to the right |
 | `--mix-light`, `--mix-dark` | `#fff`, `#000` | `color-mix` ends for portrait and cover gradients |
 | `--game-row-bg` | `rgba(0,0,0,.14)` | a best-of-3 game row |
+| `--rule` | `rgba(255,255,255,.055)` | a rule inside a v2 card (table rows, cell borders; mv2 mockup) |
+| `--red-deep` | `#b81f25` | the dark end of a red share bar (Win rate by team) |
+| `--chart-grey` | `rgba(174,181,192,.45)` | a chart's second series: points allowed, the grey legend key |
+| `--chart-grid`, `--chart-base` | `rgba(255,255,255,.06)`, `.14` | a chart's grid lines and its zero line |
+| `--chart-hole` | `#0d0e11` | the hole a chart dot sits in (the window colour) |
 
 Set per element, not on `:root`: `--tc` (portrait team colour, from the server), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
 
@@ -130,7 +135,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 - **Weights:** 500 UI text, 600 labels and values, 700 headline numbers and page titles. **Nothing above 700.**
 - **Sizes:** page title 30/1.1 at 700 (exception, ruling P4-29: the pages not redesigned, Recovery, game, live and onboarding, keep the legacy page title, 28px at 600, from their layout sheets; spec §9); section title 16 at 600; table header 10.5 at 600, uppercase, tracking .06em; label 11 at 600, uppercase, tracking .07em; body 13 to 14; meta 12 to 12.5.
 - Numbers use `font-variant-numeric: tabular-nums` (`.num`).
-- **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows.
+- **Spacing:** 8, 16, 24. 24 between sections and columns; 16 inside cards; 8 inside rows. Stats and Profile (v2 grid, mv2 mockup) use 16 between cards and 18 inside them.
 - **Section headers are 40px** (`.sec-head`), whatever they hold, so neighbouring cards start on one line.
 - **Rows:** match row 56, game row 40, table row 40, table header 36, nav item 40 (36 in short windows).
 - **Form column:** Settings, Mods and Music are at most 942px wide. Stats and Profile use the full content width.
@@ -182,6 +187,14 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 | `.sweep` | a 2px red line sweeping along the bottom of its positioned parent; transform only | Online |
 | `.refusal`, `.partial`, `.said` | messages: red, amber, green | |
 | `.facts` | label and value table | |
+| `.vgrid` (`.s3` to `.s12`) | Stats and Profile v2: one 12-column grid, 16px gutters, every row's cards stretch to one height (one column under 1100px) | `stats.js`, `profile.js` |
+| `.vc`, `.vc-h`, `.vc-aside`, `.vc-b`, `.vc-th`, `.vc-rows`, `.vc-tr`, `.vc-cells`, `.vc-kv` | a v2 card: 48px header (15px title at 600; aside, link or `.tabs.sm`), a body; table rows and cells grow to fill the card, so no row leaves dead space | `stats-cards.js` |
+| `.tabs.sm` | the small segmented control in a card header (26px tabs) | `tabs.js` |
+| `.qm` (`.ranked`, `.casual`, `.off`) | the queue word: Ranked with a red dot, Casual with a ring, Offline plain | `match-rows.js` |
+| `.wl-strip` | the last results, one W or L square each | `stats-cards.js` |
+| `.share` (`.red`) | a share bar, the fill scaled with `transform` (never sized) | `stats-cards.js` |
+| `.pl-row`, `.pl-cells` | a player: portrait, name, role, up to five numbers with their words | `stats-cards.js` |
+| `.ch`, `.ch-line`, `.ch-bars`, `.ch-mini`, `.ch-donut`, `.ch-days`, `.ch-legend` | charts: shapes in an SVG stretched to its box (non-scaling strokes), every word and dot in HTML so nothing stretches | `stats-cards.js` |
 | `.update-card`, `.update-dialog`, `.update-center` | update notice, fixed to the bottom right | `update-notice.js` |
 
 Buttons with no class, from shared scripts (`update-notice`, `menu-pad-setup`), are styled like `.btn` by `body.themed button:not([class])`. The plain `button` element rule sits in `:where(body.shell)` (specificity 0), so any component class wins without a page prefix.

@@ -97,10 +97,26 @@ test('records: single game rows with "vs <opponent>" from the match list; career
   const career = { passing: { rows: [row('A', 20, { yds: 2210, td: 31 }), row('B', 3, { yds: 561, td: 40 })] },
     rushing: { rows: [row('C', 20, { yds: 1180, td: 12 })] }, receiving: { rows: [row('D', 20, { yds: 1402, td: 14 }), row('C', 20, { yds: 10, td: 3 })] },
     defense: { rows: [row('E', 1, { tkl: 71, sck: 0, int: 2, td: 1 })] } };
-  assert.deepEqual(careerRecords(career).map((r) => [r.label, r.name, r.value, r.game]), [
-    ['Passing Yards', 'A', '2,210', '20 games'], ['Passing TD', 'B', '40', '3 games'], ['Rushing Yards', 'C', '1,180', '20 games'],
-    ['Receiving Yards', 'D', '1,402', '20 games'], ['Total TD', 'C', '15', '20 games'], ['Tackles', 'E', '71', '1 game'], ['Interceptions', 'E', '2', '1 game']]);
+  assert.deepEqual(careerRecords(career).map((r) => [r.label, r.name, r.value, r.perGame, r.game]), [
+    ['Passing Yards', 'A', '2,210', '110.5', '20 games'], ['Passing TD', 'B', '40', '13.3', '3 games'], ['Rushing Yards', 'C', '1,180', '59.0', '20 games'],
+    ['Rushing TD', 'C', '12', '0.6', '20 games'], ['Receiving Yards', 'D', '1,402', '70.1', '20 games'], ['Receiving TD', 'D', '14', '0.7', '20 games'],
+    ['Tackles', 'E', '71', '71.0', '1 game'], ['Interceptions', 'E', '2', '2.0', '1 game'], ['Total TD', 'C', '15', '0.8', '20 games']]);
+  // Passer Rating: one decimal, no per game, never a backup's handful of throws
+  const qb = { passing: { rows: [row('Starter', 10, { att: 200, rtg: 101.2 }), row('Backup', 2, { att: 4, rtg: 158.3 })] } };
+  assert.deepEqual(careerRecords(qb).find((r) => r.label === 'Passer Rating'), { key: 'Passer Rating', label: 'Passer Rating', name: 'Starter', team: { name: 'Falcons', logo_url: null, abbrev: null },
+    value: '101.2', perGame: '—', game: '10 games', date: '', game_id: null });
   assert.deepEqual(careerRecords(null), []);
+});
+
+test('teamRecords and playerRecords: records with no player are Team records, a win shows its margin', async () => {
+  const { teamRecords, playerRecords } = await import('./profile-model.js');
+  const recs = [{ key: 'pass_yds', label: 'Passing yds', value: 288, game_id: 'g-1', at: '2026-09-19T20:00:00Z', name: 'M. Penix Jr.' },
+    { key: 'most_points', label: 'Most points', value: 52, game_id: 'g-9', at: '2026-10-03T20:00:00Z', name: null },
+    { key: 'biggest_win', label: 'Biggest win', value: 36, game_id: 'g-9', at: '2026-10-03T20:00:00Z', name: null }];
+  const matches = [{ id: 'm', queue: 'ranked', opponent: { display_name: 'Playz' }, games: [{ id: 'g-9' }] }];
+  assert.deepEqual(teamRecords(recs, matches).map((r) => [r.label, r.value, r.note]), [['Most points', '52', 'Oct 3 vs Playz'], ['Biggest win', '+36', 'Oct 3 vs Playz']]);
+  assert.deepEqual(playerRecords(recs, matches).map((r) => r.label), ['Passing Yards']);
+  assert.deepEqual(teamRecords(null, []), []);
 });
 
 test('last 10 games: record, average margin, points; nothing from an older server', () => {

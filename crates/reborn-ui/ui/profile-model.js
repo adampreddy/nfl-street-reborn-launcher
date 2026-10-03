@@ -204,25 +204,32 @@ export function singleGameRecords(records, matches) {
   });
 }
 
-// Career records: [label, table, value from a row]. Total TD is rushing + receiving + defensive (careerTiles' rule).
+// Career records (mv2-2): [label, table, value from a row, per game?]. Total TD is rushing + receiving + defensive
+// (careerTiles' rule). Passer Rating's leader is among the passers with at least a quarter of the most attempts, so a
+// backup's one perfect throw never leads it; it has no per-game figure.
 const CAREER_RECORDS = [
-  ['Passing Yards', 'passing', (r) => r.yds], ['Passing TD', 'passing', (r) => r.td],
-  ['Rushing Yards', 'rushing', (r) => r.yds], ['Receiving Yards', 'receiving', (r) => r.yds],
-  ['Total TD', null, null], ['Tackles', 'defense', (r) => r.tkl], ['Sacks', 'defense', (r) => r.sck], ['Interceptions', 'defense', (r) => r.int],
+  ['Passing Yards', 'passing', (r) => r.yds, true], ['Passing TD', 'passing', (r) => r.td, true], ['Passer Rating', 'passing', (r) => r.rtg, false],
+  ['Rushing Yards', 'rushing', (r) => r.yds, true], ['Rushing TD', 'rushing', (r) => r.td, true],
+  ['Receptions', 'receiving', (r) => r.rec, true], ['Receiving Yards', 'receiving', (r) => r.yds, true], ['Receiving TD', 'receiving', (r) => r.td, true],
+  ['Tackles', 'defense', (r) => r.tkl, true], ['Sacks', 'defense', (r) => r.sck, true], ['Interceptions', 'defense', (r) => r.int, true],
+  ['Total TD', null, null, true],
 ];
 
 /**
  * Records, Career: the player who leads each category over their whole career, from the career tables the profile
- * sends (every player used, with their games). "N games" where a single-game record shows its game; no date.
+ * sends (every player used, with their games): the total, and per game when the player's games are known. A category
+ * nobody has is left out. "N games" stays on each row (`game`) for its label.
  */
 export function careerRecords(career) {
   const rows = (t) => (Array.isArray(career?.[t]?.rows) ? career[t].rows.filter((r) => r && r.name) : []);
   const team = (r) => ({ name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null });
   const out = [];
-  for (const [label, table, get] of CAREER_RECORDS) {
+  for (const [label, table, get, perGame] of CAREER_RECORDS) {
     let best = null;
     if (table) {
-      for (const r of rows(table)) { const v = get(r); if (num(v) && v > 0 && (!best || v > best.v)) best = { r, v }; }
+      let pool = rows(table);
+      if (label === 'Passer Rating') { const most = Math.max(0, ...pool.map((r) => (num(r.att) ? r.att : 0))); pool = pool.filter((r) => num(r.att) && r.att > 0 && r.att * 4 >= most); }
+      for (const r of pool) { const v = get(r); if (num(v) && v > 0 && (!best || v > best.v)) best = { r, v }; }
     } else {
       const by = new Map();
       for (const t of ['rushing', 'receiving', 'defense']) for (const r of rows(t)) {
@@ -235,10 +242,25 @@ export function careerRecords(career) {
     }
     if (!best) continue;
     const g = num(best.r.games) && best.r.games > 0 ? best.r.games : null;
-    out.push({ key: label, label, name: best.r.name, team: team(best.r), value: whole(best.v), game: g ? `${fmtInt(g)} ${g === 1 ? 'game' : 'games'}` : DASH, date: '', game_id: null });
+    const dec = label === 'Passer Rating';
+    out.push({ key: label, label, name: best.r.name, team: team(best.r), value: dec ? one(best.v) : whole(best.v),
+      perGame: perGame && g ? one(best.v / g) : DASH, game: g ? `${fmtInt(g)} ${g === 1 ? 'game' : 'games'}` : DASH, date: '', game_id: null });
   }
   return out;
 }
+
+/**
+ * Team records (mv2-2): the records with no player (most points, biggest win, biggest comeback, longest TD), each a
+ * cell: the label, the number (a win's margin "+42") and "Sep 24 vs Playz" (the opponent from the match list).
+ */
+export function teamRecords(records, matches) {
+  return singleGameRecords(records, matches).filter((r) => !r.name).map((r) => ({
+    key: r.key, label: r.label, value: r.key === 'biggest_win' && r.value !== DASH ? `+${r.value}` : r.value,
+    note: [r.date !== DASH ? r.date : null, r.game !== DASH ? r.game : null].filter(Boolean).join(' '), game_id: r.game_id }));
+}
+
+/** Single game player records only (the ones with a player's name); the rest are Team records. */
+export const playerRecords = (records, matches) => singleGameRecords(records, matches).filter((r) => r.name);
 
 /** The Leaderboard card (`elo.around`, backend §5/§14). The profile's own player is marked; it reads "You" only when the
  *  viewer is that player. */

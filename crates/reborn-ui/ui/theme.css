@@ -45,6 +45,9 @@
   --tile-casual:linear-gradient(150deg,#17408a 0%,#0d1b3a 52%,#0b0c0f 100%);
   --tile-private:linear-gradient(150deg,#15703f 0%,#0b2f1c 52%,#0b0d0c 100%);
   --vs-bg:linear-gradient(150deg,#34373e 0%,#1d1f24 55%,#0f1013 100%);
+  /* Stats + Profile v2 (mv2 mockup): the rule inside a card, the red bar's dark end, the chart's allowed bars, grid,
+     axis base and the hole a chart dot sits in (the card colour) */
+  --rule:rgba(255,255,255,.055);--red-deep:#b81f25;--chart-grey:rgba(174,181,192,.45);--chart-grid:rgba(255,255,255,.06);--chart-base:rgba(255,255,255,.14);--chart-hole:#0d0e11;
 }
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}
@@ -426,25 +429,154 @@ img.avatar{object-fit:cover}
 .m-pager{margin-top:auto;display:flex;align-items:center;justify-content:space-between;min-height:52px;padding:0 16px;border-top:1px solid var(--stroke);font-size:12.5px;color:var(--fg-3)}
 .m-empty{margin:0;padding:16px;color:var(--fg-2)}
 @media (max-width:720px){.m-row{grid-template-columns:72px 76px minmax(0,1fr) 40px 14px;gap:12px}.m-row>:nth-child(5){display:none}}
-/* Records (records-view.js): Stats › Records and the Profile's Records tab. Single game | Career pills, one table. */
-.rec-pills{display:flex;flex-wrap:wrap;gap:8px}
-.rec-pill{height:32px;padding:0 14px;border:1px solid var(--stroke);border-radius:999px;background:transparent;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif;cursor:pointer}
-.rec-pill:hover{color:var(--fg);background:var(--glass-1)}
-.rec-pill[aria-pressed="true"]{color:var(--fg);background:var(--glass-3);border-color:var(--stroke-hi);box-shadow:var(--sheen)}
-.rec-table{display:flex;flex-direction:column;overflow:hidden}
-.rec-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1.6fr) 80px minmax(0,1fr) 76px;align-items:center;gap:16px;min-height:40px;padding:0 16px;font-size:13px;color:var(--fg);text-decoration:none}
-.rec-row+.rec-row{border-top:1px solid var(--stroke)}
+/* the v2 Stats list (mv2 mockup): a Queue column, rows that grow to fill their card (40 to 56px) */
+.m-list.with-q{flex:1}
+.m-list.with-q>.m-row{flex:1 1 40px;grid-template-columns:78px 86px minmax(0,1fr) 84px 46px 52px;gap:12px;height:auto;min-height:40px;max-height:56px;padding:0 18px}
+.m-list.with-q>*+.m-row{border-top-color:var(--rule)}
+.m-list.with-q>.m-row.m-hd{flex:none;height:32px;min-height:32px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);font-size:10.5px}
+.m-list.with-q>.m-hd+.m-row{border-top:0}
+.m-list.with-q>.m-row.m-hd>:nth-child(4){text-align:left}
+.m-list.with-q>.m-row.m-hd>:nth-child(6){text-align:right}
+.m-list.with-q .m-res{font-size:13.5px}
+.m-list.with-q .m-mu .team-logo{width:22px;height:22px}
+.m-list.with-q .m-opp .avatar{width:24px;height:24px;font-size:11px}
+.m-list.with-q .m-opp-n{font-weight:600}
+.m-list.with-q>.m-pager{flex:none}
+.m-elo.none{color:var(--fg-3)}
+@media (max-width:720px){.m-list.with-q>.m-row{grid-template-columns:72px minmax(0,1fr) 70px 40px;gap:10px}.m-list.with-q>.m-row>:nth-child(2),.m-list.with-q>.m-row>:nth-child(6){display:none}}
+/* Records (records-view.js): Stats › Records and the Profile's Records view. Single game and Career, two tables side by
+   side (mv2-2): Record · Player (team logo) · Best or Total · Date or Per game. Rows share the card's height. */
+.rec-table{flex:1}
+.rec-rows{flex:1;display:flex;flex-direction:column}
+.rec-row{box-sizing:border-box;flex:1 1 32px;max-height:52px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1.45fr) 56px 70px;align-items:center;gap:12px;min-height:32px;padding:0 18px;font-size:13px;color:var(--fg);text-decoration:none}
+.rec-rows>.rec-row+.rec-row{border-top:1px solid var(--rule)}
 a.rec-row{border-radius:var(--r-md)}
 a.rec-row:hover{background:var(--glass-1)}
-.rec-row.rec-hd{min-height:36px;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
-.rec-row.rec-hd>:nth-child(3),.rec-row.rec-hd>:nth-child(5),.rec-v,.rec-d{text-align:right}
-.rec-k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rec-who{display:flex;align-items:center;gap:8px;min-width:0}
+.rec-v,.rec-d{text-align:right}
+.rec-k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg-2)}
+.rec-who{display:flex;align-items:center;gap:8px;min-width:0;font-weight:600}
 .rec-who .team-logo{flex:none;width:20px;height:20px}
-.rec-who.none{color:var(--fg-3)}
+.rec-who.none{font-weight:500;color:var(--fg-3)}
 .rec-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rec-v{font-weight:600;font-variant-numeric:tabular-nums}
-.rec-g{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg-2)}
-.rec-d{font-size:12.5px;white-space:nowrap;color:var(--fg-3)}
-.rec-empty{margin:0;padding:16px;color:var(--fg-2)}
-@media (max-width:720px){.rec-row{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 56px minmax(0,1fr);gap:12px}.rec-row>:nth-child(5){display:none}}
+.rec-v{font-weight:700;font-variant-numeric:tabular-nums}
+.rec-d{font-size:12.5px;white-space:nowrap;color:var(--fg-3);font-variant-numeric:tabular-nums}
+.rec-empty{margin:0;padding:16px 18px;color:var(--fg-2)}
+@media (max-width:720px){.rec-row{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 52px 60px;gap:10px;padding:0 14px}}
+
+/* ---- Stats + Profile v2 (owner 10-03, the approved mv2 mockup): cards on one 12-column grid ---- */
+/* the grid: 16px gutters, every row's cards share their top and bottom edge (the cards stretch, their rows grow) */
+.vgrid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:stretch}
+.vgrid>.s3{grid-column:span 3}.vgrid>.s4{grid-column:span 4}.vgrid>.s5{grid-column:span 5}.vgrid>.s6{grid-column:span 6}
+.vgrid>.s7{grid-column:span 7}.vgrid>.s8{grid-column:span 8}.vgrid>.s9{grid-column:span 9}.vgrid>.s12{grid-column:span 12}
+@media (max-width:1100px){.vgrid>[class*=" s"],.vgrid>[class^="s"]{grid-column:span 12}}
+/* a card: glass, a 48px header (title left; aside, link or a small segmented control right), then its body */
+.vc{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.vc-h{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;height:48px;padding:0 18px}
+.vc-h h2{margin:0;font:600 15px/1.2 Inter,system-ui,sans-serif;letter-spacing:-.01em;color:var(--fg);white-space:nowrap}
+.vc-aside{font-size:12.5px;color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vc-b{flex:1;display:flex;flex-direction:column;min-height:0;padding:0 18px 18px}
+.vc-th{flex:none;display:grid;align-items:center;gap:12px;height:32px;padding:0 18px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.vc-rows{flex:1;display:flex;flex-direction:column}
+.vc-tr{all:unset;box-sizing:border-box;flex:1 1 40px;display:grid;align-items:center;gap:12px;min-height:40px;padding:0 18px;font-size:13px;color:var(--fg)}
+.vc-rows>.vc-tr+.vc-tr{border-top:1px solid var(--rule)}
+:is(a,button).vc-tr{cursor:pointer;border-radius:var(--r-md)}
+:is(a,button).vc-tr:hover{background:var(--glass-1)}
+.vc .r{text-align:right}
+.vc-big{font:700 60px/1 Inter,system-ui,sans-serif;letter-spacing:-.035em}
+.vc-mid{font:700 32px/1 Inter,system-ui,sans-serif;letter-spacing:-.025em}
+.vc-sub{font-size:13px;color:var(--fg-2)}
+.vc-sub b{font-weight:600;color:var(--fg)}
+.vc-sub b.up,.vc .up{color:var(--ok)}
+.vc .down{color:var(--red-ink)}
+.vc-kv{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--fg-2)}
+.vc-kv b{font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.vc-none{margin:0;color:var(--fg-2);font-size:13px}
+.tabs.sm{padding:3px;border-radius:12px}
+.tabs.sm .tab{height:26px;padding:0 11px;font-size:12px;border-radius:9px}
+.tabs.sm .tab-ind{border-radius:9px}
+/* the queue: Ranked a red dot, Casual a ring, Offline no mark */
+.qm{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);white-space:nowrap}
+.qm.ranked{color:var(--fg)}
+.qm.ranked::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--red)}
+.qm.casual::before{content:"";flex:none;box-sizing:border-box;width:7px;height:7px;border-radius:50%;border:1.5px solid var(--fg-3)}
+.qm.off{color:var(--fg-3)}
+/* the last results: one W/L square each */
+.wl-strip{display:flex;gap:4px}
+.wl-strip>span{display:grid;place-items:center;box-sizing:border-box;width:26px;height:26px;border-radius:6px;font:700 11.5px Inter,system-ui,sans-serif}
+.wl-strip>.W{color:var(--ok);background:color-mix(in srgb,var(--ok) 16%,transparent);border:1px solid color-mix(in srgb,var(--ok) 28%,transparent)}
+.wl-strip>.L{color:var(--red-ink);background:color-mix(in srgb,var(--red-ink) 13%,transparent);border:1px solid color-mix(in srgb,var(--red-ink) 25%,transparent)}
+/* a share bar: the fill is scaled (transform), never sized */
+.share{display:block;height:6px;border-radius:3px;overflow:hidden;background:color-mix(in srgb,var(--red-ink) 35%,transparent)}
+.share>i{display:block;height:100%;background:var(--ok);transform-origin:0 50%;transform:scaleX(var(--w,0))}
+.share.red{height:8px;border-radius:4px;background:var(--glass-1)}
+.share.red>i{border-radius:4px;background:linear-gradient(90deg,var(--red-deep),var(--red))}
+/* a player row: portrait, name, role, then up to five numbers with their words under them */
+.pl-row{flex:1 1 62px;display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px;align-items:center;min-height:62px;padding:0 18px;color:inherit;text-decoration:none}
+.vc-rows>.pl-row{border-top:1px solid var(--rule)}
+a.pl-row{border-radius:var(--r-md)}
+a.pl-row:hover{background:var(--glass-1)}
+a.pl-row:hover .pl-name{text-decoration:underline}
+.pl-row>.player-face{width:44px;height:44px}
+.pl-row>.player-face>.badge{width:19px;height:19px}
+.pl-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.pl-name{font:600 13.5px Inter,system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl-role{flex:none;font:600 10px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.pl-cells{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:5px}
+.pl-cells>span{min-width:0;font:700 14px/1.15 Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pl-cells small{display:block;margin-top:1px;font:500 10.5px Inter,system-ui,sans-serif;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis}
+.pl-cells>span:only-child{grid-column:1/-1}
+.pl-row.none .pl-name{font-weight:500;color:var(--fg-3)}
+/* cells: a label, a number, a note (Team per game, Career highlights, Team records) */
+.vc-cells{flex:1;display:grid;grid-template-columns:repeat(var(--n,4),minmax(0,1fr))}
+.vc-cells>div{display:flex;flex-direction:column;justify-content:center;min-width:0;padding:14px 18px;border-top:1px solid var(--rule)}
+.vc-cells>div+div{border-left:1px solid var(--rule)}
+.vc-cells.wrap>div:nth-child(4n+1){border-left:0}
+.vc-cells .k-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vc-cells b{margin-top:5px;font:700 22px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.vc-cells b small{margin-left:5px;font:600 12px Inter,system-ui,sans-serif;letter-spacing:0;color:var(--fg-3)}
+.vc-cells .n{margin-top:3px;font-size:11.5px;color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* charts (stats-cards.js): shapes in an SVG stretched to its box, words in HTML so they never stretch */
+.ch-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--fg-2)}
+.ch-legend i{display:inline-block;width:9px;height:9px;margin-right:6px;border-radius:2px;vertical-align:-1px}
+.ch-legend .mut{color:var(--fg-3)}
+.ch-key-red{background:var(--red)}.ch-key-grey{background:var(--chart-grey)}.ch-key-W{background:var(--ok)}.ch-key-L{background:var(--red-ink)}
+.ch{position:relative;display:flex;flex-direction:column;flex:1;min-height:0}
+.ch-area{position:relative;flex:1;min-height:80px}
+.ch-area>svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ch-x{position:relative;flex:none;height:20px}
+.ch-x>span,.ch-y>span{position:absolute;font:500 10.5px Inter,system-ui,sans-serif;color:var(--fg-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ch-x>span{bottom:0;left:calc(var(--x) * 100%);transform:translateX(-50%)}
+.ch-x>span.first{transform:none}.ch-x>span.last{transform:translateX(-100%)}
+.ch-y{position:absolute;top:0;bottom:0;pointer-events:none}
+.ch-y>span{top:calc(var(--y) * 100%);transform:translateY(-50%)}
+.ch-line .ch-area{margin-right:38px}
+.ch-line .ch-y{left:calc(100% + 6px)}
+.ch-bars .ch-area{margin-left:26px}
+.ch-bars .ch-y{right:calc(100% + 6px)}.ch-bars .ch-y>span{right:0}
+.ch-bars .ch-x{margin-left:26px}
+.ch-grid{stroke:var(--chart-grid);stroke-width:1;vector-effect:non-scaling-stroke}
+.ch-grid.base{stroke:var(--chart-base)}
+.ch-stroke{fill:none;stroke:var(--red);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.ch-fill-top{stop-color:var(--red);stop-opacity:.32}.ch-fill-bot{stop-color:var(--red);stop-opacity:0}
+.ch-bar-w{fill:var(--red)}.ch-bar-l{fill:color-mix(in srgb,var(--red) 55%,transparent)}.ch-bar-a{fill:var(--chart-grey)}
+.ch-dot{position:absolute;left:calc(var(--x) * 100%);top:calc(var(--y) * 100%);box-sizing:border-box;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;
+  background:var(--red);border:2px solid var(--chart-hole)}
+.ch-dot.peak{width:8px;height:8px;margin:-4px 0 0 -4px;background:var(--chart-hole);border:1.5px solid var(--fg)}
+.ch-peak{position:absolute;left:calc(var(--x) * 100%);top:calc(var(--y) * 100%);transform:translate(-50%,-150%);font:500 10.5px Inter,system-ui,sans-serif;color:var(--fg-2);white-space:nowrap}
+.ch-peak.end{transform:translate(calc(-100% - 8px),-50%)}
+.ch-mini .ch-area{min-height:30px}
+/* the donut: two arcs, the total in its hole */
+.ch-donut{position:relative;flex:none;width:140px;height:140px}
+.ch-donut svg{display:block;width:140px;height:140px;transform:rotate(-90deg)}
+.ch-donut circle{fill:none;stroke-width:18}
+.ch-donut .a{stroke:var(--red)}.ch-donut .b{stroke:var(--fg-2)}
+.ch-donut .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ch-donut .mid b{font:700 22px/1.1 Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.ch-donut .mid small{font-size:11px;color:var(--fg-3)}
+/* results by day: a column per day, a square per match, stacked from the bottom */
+.ch-days{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));align-items:end;gap:0;flex:1;min-height:60px}
+.ch-days>div{display:flex;flex-direction:column-reverse;align-items:center;gap:3px}
+.ch-days i{display:block;width:min(15px,calc(100% - 4px));aspect-ratio:1;border-radius:3px;background:var(--glass-1)}
+.ch-days i.W{background:color-mix(in srgb,var(--ok) 80%,transparent)}.ch-days i.L{background:color-mix(in srgb,var(--red-ink) 80%,transparent)}
+.ch-days+.ch-x{margin-top:6px}

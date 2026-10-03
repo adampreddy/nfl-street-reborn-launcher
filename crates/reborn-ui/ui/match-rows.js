@@ -6,7 +6,7 @@
 // Server text only through el()'s `text`; images only through assetUrl() / avatarSrc() (the CSP's two image prefixes).
 import { el } from './shell.js';
 import { assetUrl, avatarSrc } from './live-common.js';
-import { eloChange, matchHref, matchRowModel, matchSubline } from './stats-model.js';
+import { eloChange, matchHref, matchRowModel, matchSubline, queueMark } from './stats-model.js';
 
 const RESULT_WORD = { W: 'win', L: 'loss' };
 
@@ -46,8 +46,15 @@ export function avatar(url, name, cls = '', { cpu = false } = {}) {
 }
 
 /** The list's column header (the rows carry full aria-labels, so it is hidden from screen readers). */
-export function matchHeader() {
-  return el('div', { class: 'm-row m-hd', 'aria-hidden': 'true' }, ...['Result', 'Matchup', 'Opponent', 'Elo', 'Date', ''].map((t) => el('span', { text: t })));
+export function matchHeader({ queue = false } = {}) {
+  const words = queue ? ['Result', 'Matchup', 'Opponent', 'Queue', 'Elo', 'Date'] : ['Result', 'Matchup', 'Opponent', 'Elo', 'Date', ''];
+  return el('div', { class: 'm-row m-hd', 'aria-hidden': 'true' }, ...words.map((t) => el('span', { text: t })));
+}
+
+/** The queue column (the v2 Stats list, owner 10-03 mockup): Ranked with a red dot, Casual with a ring, Offline plain. */
+export function queueCell(m) {
+  const q = queueMark(m);
+  return el('span', { class: `qm${q.kind ? ` ${q.kind}` : ''}`, text: q.text });
 }
 
 const resultCell = (result, score) => el('span', { class: 'm-res' }, el('b', { class: result || null, text: result }), el('span', { text: score }));
@@ -69,9 +76,10 @@ function label(m, r, sub, elo) {
  * Back on the match page returns to (stats-model.js backHref). The row opens the whole match; a match with no recorded
  * game has nothing to open. Returned as a one-row list (the lists flatMap their rows).
  */
-export function matchRows(m, { where, from }) {
+export function matchRows(m, { where, from, queue = false }) {
   const r = matchRowModel({ ...m, games: Array.isArray(m?.games) ? m.games : [] });
-  const sub = matchSubline(m, where);
+  // With the queue column the queue (and Offline) is its own cell, never a second line under the name.
+  const sub = queue ? '' : matchSubline(m, where);
   const elo = eloChange(m?.elo_delta);
   const kids = [
     resultCell(r.result, r.score),
@@ -79,11 +87,13 @@ export function matchRows(m, { where, from }) {
     // The CPU (or an unknown opponent) gets the same circle with its first letter, so every name starts on one line.
     el('span', { class: 'm-opp' }, avatar(m?.opponent_kind === 'cpu' || !m?.opponent ? null : r.avatar, r.opponent, '', { cpu: m?.opponent_kind === 'cpu' }),
       el('span', { class: 'm-opp-tx' }, el('span', { class: 'm-opp-n', text: r.opponent }), sub ? el('small', { text: sub }) : null)),
-    el('span', { class: `m-elo${elo.kind ? ` ${elo.kind}` : ''}`, text: elo.text }),
+    ...(queue ? [queueCell(m)] : []),
+    el('span', { class: `m-elo${elo.kind ? ` ${elo.kind}` : queue ? ' none' : ''}`, text: elo.text || (queue ? '—' : '') }),
     el('span', { class: 'm-date', text: r.date }),
-    el('span', { 'aria-hidden': 'true' }),
+    ...(queue ? [] : [el('span', { 'aria-hidden': 'true' })]),
   ];
-  const attrs = { class: 'm-row', 'data-key': `match-${r.id}`, 'aria-label': label(m, r, sub, elo) };
+  const q = queue ? queueMark(m).text : '';
+  const attrs = { class: 'm-row', 'data-key': `match-${r.id}`, 'aria-label': label(m, r, sub || q, elo) };
   const href = matchHref(m, from);
   if (!href) return [el('div', { ...attrs, class: 'm-row m-static', role: 'group' }, ...kids)];
   return [el('button', { ...attrs, type: 'button', onclick: () => { location.href = href; } }, ...kids)];
