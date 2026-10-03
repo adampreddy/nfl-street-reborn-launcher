@@ -1,15 +1,21 @@
-// The Stats tab (spec §8.6): the signed-in player's own dashboard (`stats_dashboard`). Left: Your matches (a match of
-// one game opens game.html?game=<id>; a best of 3 opens in place into its games). Right: You (Elo, trend, Record ·
-// Win % · Last 10 · Streak) and Your players. Under both, one line: the local results queue on the left and
-// Profile & sync on the right (offline visibility, sign out, send results now).
+// The Stats tab (spec §8.6): the signed-in player's own dashboard (`stats_dashboard`), in two views picked at the top
+// right (owner 10-03): Matches | Records.
+//   Matches: left, Your matches (a row opens the whole match on one page, game.html; stats-model.js matchHref); right,
+//   You (Elo, trend, then the ONLINE record: Record · Win % · Last 10 · Streak, and Ranked and Casual apart) and Your
+//   players. Under both, one line: the local results queue on the left and Profile & sync on the right (offline
+//   visibility, sign out, send results now).
+//   Records: Single game | Career and one table (records-view.js). The dashboard sends no records: they are the
+//   player's own profile's (`player_profile`, read once when Records first opens). The view is the address's #records.
 // Everything here is server data (player-typed team and player names among it): drawn with el()'s `text`
 // (textContent) only, never markup. Images only through assetUrl() (our /live-assets/ catalog) or avatarSrc() (the
 // Discord avatar CDN), the two image prefixes the CSP allows. The only script-set style is a portrait's --tc (CSSOM).
 import { call, el, markCurrent, partial, quietCall, reason, wireCoreFold } from './shell.js';
 import { queueLine, unsentCount } from './stats-rows.js';
 import { assetUrl } from './live-common.js';
-import { dropPrivate, eloChange, fmtElo, resultsOf, roleCards, trendPoints, youNumbers } from './stats-model.js';
-import { matchHeader, matchRows, pager, storeGameList } from './match-rows.js';
+import { dropPrivate, eloChange, fmtElo, onlineRecord, roleCards, trendPoints, youNumbers } from './stats-model.js';
+import { matchHeader, matchRows, pager } from './match-rows.js';
+import { careerRecords, singleGameRecords } from './profile-model.js';
+import { recordPills, recordsTable } from './records-view.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
 
@@ -24,12 +30,14 @@ const FILTERS = [['all', 'All'], ['online', 'Online'], ['offline', 'Offline']];
 const ROLE_HASH = { passer: 'passing', rusher: 'rushing', receiver: 'receiving', most_played: 'career', dl_lb: 'defense', ballhawk: 'defense' };
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const PAGER_OTHER = { older: 'newer', newer: 'older' };
+const VIEWS = [['matches', 'Matches'], ['records', 'Records']];
+const viewOfHash = () => (typeof location !== 'undefined' && location.hash === '#records' ? 'records' : 'matches');
 
 const state = { signedIn: false, answered: false, dash: null, queue: [], filter: 'all', page: 0, error: null, loaded: false,
-  // Which best-of-3 rows are open (by match id), kept across the 30 s refreshes.
-  expanded: new Set(),
   // Profile & sync: the identity_status and stats_queue answers, or { error } when one failed.
-  identity: null, queueView: null };
+  identity: null, queueView: null,
+  // Matches | Records (the address's #records), Single game | Career, and the profile Records reads its rows from.
+  view: viewOfHash(), recKind: 'single', profile: null, profileFor: null, profileBusy: false, profileError: null, profileStale: false };
 let busy = false, said = null;
 const ok = (value) => value && !value.error;
 const screen = document.getElementById('screen');
@@ -60,7 +68,7 @@ async function load(quiet = false) {
 }
 
 const profileHref = (id, hash = '') => `profile.html?player=${encodeURIComponent(id)}${hash ? `#${hash}` : ''}`;
-const gameHref = (id) => `game.html?game=${encodeURIComponent(id)}`;
+const here = () => (state.view === 'records' ? 'stats.html#records' : 'stats.html');
 
 function svg(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -84,8 +92,7 @@ function matchesBlock(matches) {
   else {
     const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
     state.page = Math.max(0, Math.min(state.page, pages - 1));
-    const openGame = (id) => { storeGameList(list, 'Your matches', 'stats.html'); location.href = gameHref(id); };
-    card.append(...list.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).flatMap((m) => matchRows(m, { where: 'stats', open: state.expanded, openGame })));
+    card.append(...list.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).flatMap((m) => matchRows(m, { where: 'stats', from: here() })));
     if (pages > 1) card.append(pager({ page: state.page, pages, onNewer: () => { state.page--; draw(); }, onOlder: () => { state.page++; draw(); }, olderDisabled: state.page >= pages - 1 }));
   }
   return el('section', { class: 'st-col', 'aria-labelledby': 'st-matches-h' },
@@ -94,7 +101,7 @@ function matchesBlock(matches) {
 
 // ---- You ----
 
-function youBlock(you, recentForm) {
+function youBlock(you, online) {
   const e = fmtElo(you.elo);
   // The change since the last ranked match: eloChange decides up / down / nothing; the card draws it as ▲ 16 / ▼ 18.
   const delta = you.elo?.rating == null ? null : you.elo?.last_delta;
@@ -113,10 +120,14 @@ function youBlock(you, recentForm) {
     chart.append(svg('polyline', { fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke', points: trend }));
     top.append(chart);
   }
-  const nums = el('div', { class: 'st-nums' }, ...youNumbers(you.summary, recentForm).map((n) =>
+  // The record is ONLINE only, and Ranked and Casual are two separate figures (owner 10-03), never one blended number.
+  const y = youNumbers(online);
+  const nums = el('div', { class: 'st-nums' }, ...y.nums.map((n) =>
     el('div', {}, el('span', { class: 'k-label', text: n.label }), el('b', { class: n.kind || null, text: n.value }))));
+  const queues = el('div', { class: 'st-queues' }, ...y.queues.map((q) => el('div', { class: 'st-q', role: 'group', 'aria-label': `${q.label} record ${q.value}` },
+    el('span', { class: 'k-label', text: q.label }), el('b', { text: q.value }), el('span', { class: 'st-q-pct', text: q.pct }))));
   return el('section', { 'aria-labelledby': 'st-you-h' }, el('div', { class: 'sec-head' }, el('h2', { id: 'st-you-h', text: 'You' }), link),
-    el('div', { class: 'glass st-you' }, top, nums));
+    el('div', { class: 'glass st-you' }, top, nums, queues));
 }
 
 // ---- Your players ----
@@ -179,6 +190,52 @@ function accountBlock() {
     el('div', { class: 'glass st-account-body' }, profile, sync, said ? el('p', { class: 'said', role: 'status', text: said }) : null));
 }
 
+// ---- Records: the player's own profile's records (the dashboard sends none), read once when Records first opens ----
+
+async function loadRecords(playerId) {
+  if (!playerId || state.profileBusy || (state.profileFor === playerId && state.profile && !state.profileStale)) return;
+  state.profileBusy = true; state.profileError = null; state.profileStale = false;
+  try {
+    const p = await quietCall('player_profile', { playerId });
+    if (!p || typeof p !== 'object' || p.ok === false) throw new Error(typeof p?.error === 'string' && p.error ? p.error : 'Your records could not be loaded.');
+    state.profile = p; state.profileFor = playerId;
+  } catch (e) { state.profileError = reason(e); }
+  state.profileBusy = false;
+  draw();
+}
+
+function recordsBlock(d) {
+  const you = d.you || {};
+  if (state.profileFor !== you.player_id || !state.profile) {
+    if (!state.profileError) loadRecords(you.player_id);
+    return [state.profileError ? el('p', { class: 'refusal', role: 'alert', text: state.profileError }) : el('p', { class: 'loading', text: 'Loading…' })];
+  }
+  // A game just ended: read the records again, the old ones staying on screen (and the focus with them) meanwhile.
+  if (state.profileStale) loadRecords(you.player_id);
+  const p = state.profile;
+  // "vs <opponent>": the record names its game only; the opponent comes from the matches this page has.
+  const rows = state.recKind === 'career' ? careerRecords(p.career)
+    : singleGameRecords(p.records, [...dropPrivate(d.matches), ...dropPrivate(p.recent_matches)]);
+  const empty = state.recKind === 'career' ? 'No career records yet. Play an online game and they show up here.' : 'No records yet. Play an online game and they show up here.';
+  return [el('section', { class: 'st-records', 'aria-label': 'Records' }, recordPills(state.recKind, (k) => { state.recKind = k; draw(); }),
+    recordsTable(rows, { kind: state.recKind, from: 'stats.html#records', empty }))];
+}
+
+/** Matches | Records at the top right of the page (beside the title). Signed out, or before an answer, it is not drawn. */
+function drawViewSwitch(show) {
+  const slot = document.getElementById?.('stats-view');
+  if (!slot) return;
+  if (!show) { slot.replaceChildren?.(); return; }
+  const bar = tabs('stats-view', VIEWS.map(([, l]) => l), VIEWS.find(([k]) => k === state.view)[1], (label) => {
+    state.view = VIEWS.find(([, l]) => l === label)[0];
+    try { history.replaceState(history.state, '', state.view === 'records' ? '#records' : location.pathname + location.search); } catch { /* the address is a convenience */ }
+    draw();
+    slot.querySelector?.('[aria-pressed="true"]')?.focus({ preventScroll: true });
+  }, { label: 'Stats view' });
+  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', `view-${VIEWS[i][0]}`));
+  slot.replaceChildren(bar);
+}
+
 // ---- drawing ----
 
 // Redraws replace everything (every refresh): put the focus back on the same control, by data-key (spec §10).
@@ -204,11 +261,14 @@ function signInCard(waiting) {
 function draw() {
   if (!screen) return;
   // Guarded: the Node page checker (Tools/check-shell-pages.mjs) draws into a minimal fake DOM without these.
+  const slot = document.getElementById?.('stats-view');
+  const inSwitch = Boolean(slot && typeof slot.contains === 'function' && slot.contains(document.activeElement));
   const active = typeof screen.contains === 'function' && screen.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = active?.getAttribute('data-key') ?? null, focusId = active?.id || null;
   const accountOpen = Boolean(screen.querySelector?.('.st-account')?.open);
   paint(accountOpen);
-  if (focusKey) {
+  if (inSwitch) slot.querySelector?.('[aria-pressed="true"]')?.focus({ preventScroll: true });
+  else if (focusKey) {
     // "Older" on the last page (or "Newer" on the first) is now disabled and can't take focus: use the other one.
     const byKey = (k) => Array.from(screen.querySelectorAll('[data-key]')).find((n) => n.getAttribute('data-key') === k) ?? null;
     let target = byKey(focusKey);
@@ -218,6 +278,7 @@ function draw() {
 }
 
 function paint(accountOpen) {
+  drawViewSwitch(state.loaded && state.signedIn && Boolean(state.dash) && dropPrivate(state.dash.matches).length > 0);
   if (!state.loaded) { screen.replaceChildren(el('p', { class: 'loading', text: 'Loading…' })); return; }
   const account = accountBlock();
   account.open = accountOpen;
@@ -246,11 +307,13 @@ function paint(accountOpen) {
     screen.replaceChildren(...parts, foot(q));
     return;
   }
+  if (state.view === 'records') { screen.replaceChildren(...parts, ...recordsBlock(d)); return; }
   const you = d.you || {};
   parts.push(el('div', { class: 'st-cols' }, matchesBlock(matches),
-    // Record and Win % are the server's career totals; Last 10 comes from the listed matches (private rooms dropped),
-    // not the server's recent_form, which counts private rooms (P4-22).
-    el('div', { class: 'st-side' }, youBlock(you, { results: resultsOf(matches) }), playersBlock(d.best_players, you.player_id))));
+    // The record counts ONLINE matches only, Ranked and Casual apart (owner 10-03). The dashboard's summary counts
+    // offline games too and does not split by queue, so the You card counts the listed matches (private rooms dropped,
+    // P4-22; the server lists up to 200).
+    el('div', { class: 'st-side' }, youBlock(you, onlineRecord(matches)), playersBlock(d.best_players, you.player_id))));
   screen.replaceChildren(...parts, foot(q));
 }
 
@@ -265,6 +328,9 @@ document.addEventListener('session-state', (e) => {
   const next = Boolean(e?.detail);
   const ended = sessionActive && !next;
   sessionActive = next;
+  // The game that just finished may hold a new record: Records reads the profile again when it is next shown.
+  if (ended) state.profileStale = true;
   if (ended && document.visibilityState !== 'hidden') load(true);
 });
+if (typeof window !== 'undefined') window.addEventListener?.('hashchange', () => { const v = viewOfHash(); if (v !== state.view) { state.view = v; draw(); } });
 setInterval(() => { if (!sessionActive && document.visibilityState !== 'hidden') load(true); }, REFRESH_MS);

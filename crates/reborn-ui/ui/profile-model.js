@@ -18,13 +18,34 @@ export function publicQueues(rows) {
 
 export const winRate = (p) => (num(p) ? `${one(p * 100)}%` : null);
 
-/** The card's one summary line: "#7 on the leaderboard | 1,184 Elo | 60.9% win rate" (owner round 11). */
+/**
+ * The profile's record (owner 10-03): ONLINE matches only (a profile never has offline games), Ranked and Casual as two
+ * separate figures. The headline is ranked + casual from `by_queue` (the deployed server's `summary` still counts private
+ * rooms); a server without `by_queue` gives its summary alone. Null when neither is sent.
+ */
+export function profileRecord(summary, byQueue) {
+  const rows = publicQueues(byQueue);
+  const q = (key) => {
+    const r = rows.find((x) => x.key === key);
+    if (!r) return null;
+    const wins = num(r.wins) ? r.wins : 0, losses = num(r.losses) ? r.losses : 0;
+    return { wins, losses, text: `${wins}${REC}${losses}`, pct: wins + losses ? wins / (wins + losses) : null };
+  };
+  const ranked = q('ranked'), casual = q('casual');
+  let wins, losses;
+  if (ranked || casual) { wins = (ranked?.wins ?? 0) + (casual?.wins ?? 0); losses = (ranked?.losses ?? 0) + (casual?.losses ?? 0); }
+  else if (num(summary?.wins) && num(summary?.losses)) { wins = summary.wins; losses = summary.losses; }
+  else return null;
+  return { wins, losses, games: wins + losses, text: `${wins}${REC}${losses}`, pct: wins + losses ? wins / (wins + losses) : null, ranked, casual };
+}
+
+/** The card's one summary line: "#7 on the leaderboard | 1,184 Elo | 14-9 record" (owner 10-03; the record online only). */
 export function summaryFacts(p) {
   const out = [];
   if (num(p?.elo?.rank)) out.push({ strong: `#${p.elo.rank}`, text: 'on the leaderboard' });
   if (num(p?.elo?.rating)) out.push({ strong: fmtInt(p.elo.rating), text: 'Elo' });
-  const w = winRate(p?.summary?.win_pct);
-  if (w) out.push({ strong: w, text: 'win rate' });
+  const r = profileRecord(p?.summary, p?.by_queue);
+  if (r && r.games) out.push({ strong: r.text, text: 'record' });
   return out;
 }
 
@@ -69,16 +90,13 @@ export function eloOverview(elo) {
     note: `${n} ranked ${n === 1 ? 'match' : 'matches'}`, points: areaPoints([start, ...hist.map((x) => x.rating)]) };
 }
 
-/** Overview column 2: "14-9 60.9%", "Ranked and casual", then Ranked and Casual as label / bar / record / pct. */
+/** The Record tile: "14-9 60.9%" (online only, profileRecord), then Ranked and Casual as two separate figures. */
 export function recordOverview(summary, byQueue) {
-  const s = summary || {};
-  if (!num(s.wins) || !num(s.losses)) return null;
-  const total = s.wins + s.losses;
-  const rows = publicQueues(byQueue).filter((r) => r.key === 'ranked' || r.key === 'casual').map((r) => {
-    const w = num(r.wins) ? r.wins : 0, l = num(r.losses) ? r.losses : 0, n = w + l;
-    return { label: r.key === 'ranked' ? 'Ranked' : 'Casual', record: `${w}${REC}${l}`, pct: n ? fmtPct(w / n) : DASH, share: n ? Math.round((w / n) * 1000) / 10 : 0 };
-  });
-  return { value: `${s.wins}${REC}${s.losses}`, pct: winRate(s.win_pct) ?? DASH, note: `${total} ${total === 1 ? 'match' : 'matches'}`, sub: 'Ranked and casual', rows };
+  const r = profileRecord(summary, byQueue);
+  if (!r) return null;
+  const queues = [['Ranked', r.ranked], ['Casual', r.casual]].filter(([, t]) => t)
+    .map(([label, t]) => ({ label, record: t.text, pct: t.pct === null ? DASH : fmtPct(t.pct) }));
+  return { value: r.text, pct: winRate(r.pct) ?? DASH, note: `${r.games} ${r.games === 1 ? 'match' : 'matches'}`, queues };
 }
 
 /** Overview column 3 (profile `recent_form`, backend §8): "6-4 +6.4", points scored and allowed per game. */
@@ -103,13 +121,13 @@ const TILES = [
   ['def_int', 'Interceptions', (c) => c.defense?.total?.int, true],
 ];
 
-/** The Career card: nine tiles, each "#3 · 125.9 / G" when the rank (backend §6) and a game count are known. */
+/** The Career card: nine tiles, each "#3 · 125.9 / game" when the rank (backend §6) and a game count are known. */
 export function careerTiles(career, rank, games) {
   const c = career || {};
   const tiles = TILES.map(([key, label, get, perGame, dec]) => {
     const v = get(c);
     return { key, label, value: num(v) ? (dec ? one(v) : fmtInt(v)) : DASH, rank: num(rank?.[key]) ? `#${rank[key]}` : null,
-      perGame: perGame && num(v) && num(games) && games > 0 ? `${one(v / games)} / G` : null };
+      perGame: perGame && num(v) && num(games) && games > 0 ? `${one(v / games)} / game` : null };
   });
   const pool = num(rank?.pool) && tiles.some((t) => t.rank) ? rank.pool : null;
   return { tiles, footnote: pool ? `Rank among ${fmtInt(pool)} online players` : null };
@@ -150,6 +168,74 @@ export function withCareerLines(best, career) {
 export function spellYards(label) {
   const s = String(label ?? '');
   return /\S\s+yds\b|\byds\s+\S/i.test(s) ? s.replace(/\byds\b/gi, 'Yards') : s;
+}
+
+const dayOf = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : DASH; };
+const whole = (n) => (num(n) ? fmtInt(Math.round(n)) : DASH);
+
+/** game id -> the opponent's name, from a match list (each match's games, and a one-game match's own "g:<id>"). */
+function opponentsByGame(matches) {
+  const out = new Map();
+  for (const m of Array.isArray(matches) ? matches : []) {
+    if (!m || m.queue === 'private') continue;
+    const name = m.opponent?.display_name || (m.opponent_kind === 'cpu' ? 'CPU' : null);
+    if (!name) continue;
+    for (const g of Array.isArray(m.games) ? m.games : []) if (g && typeof g.id === 'string') out.set(g.id, name);
+    if (typeof m.id === 'string' && m.id.startsWith('g:')) out.set(m.id.slice(2), name);
+  }
+  return out;
+}
+
+/**
+ * Records, Single game (owner 10-03): one row per record the server sends (`records`), "Yards" spelled out, the player
+ * and their team, the best, the game as "vs <opponent>" and its date. The record itself carries no opponent: it is
+ * looked up in the match list the page has (`matches`), else the server's own `opponent` when a later server sends one,
+ * else a dash. A row opens its game (`game_id`).
+ */
+export function singleGameRecords(records, matches) {
+  const opp = opponentsByGame(matches);
+  return (Array.isArray(records) ? records : []).filter((r) => r && r.label).map((r) => {
+    const vs = (typeof r.opponent === 'string' ? r.opponent : r.opponent?.display_name) || opp.get(r.game_id) || null;
+    return { key: String(r.key ?? r.label), label: spellYards(r.label), name: r.name || null,
+      team: r.name ? { name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null } : null,
+      value: whole(r.value), game: vs ? `vs ${vs}` : DASH, date: dayOf(r.at), game_id: typeof r.game_id === 'string' ? r.game_id : null };
+  });
+}
+
+// Career records: [label, table, value from a row]. Total TD is rushing + receiving + defensive (careerTiles' rule).
+const CAREER_RECORDS = [
+  ['Passing Yards', 'passing', (r) => r.yds], ['Passing TD', 'passing', (r) => r.td],
+  ['Rushing Yards', 'rushing', (r) => r.yds], ['Receiving Yards', 'receiving', (r) => r.yds],
+  ['Total TD', null, null], ['Tackles', 'defense', (r) => r.tkl], ['Sacks', 'defense', (r) => r.sck], ['Interceptions', 'defense', (r) => r.int],
+];
+
+/**
+ * Records, Career: the player who leads each category over their whole career, from the career tables the profile
+ * sends (every player used, with their games). "N games" where a single-game record shows its game; no date.
+ */
+export function careerRecords(career) {
+  const rows = (t) => (Array.isArray(career?.[t]?.rows) ? career[t].rows.filter((r) => r && r.name) : []);
+  const team = (r) => ({ name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null });
+  const out = [];
+  for (const [label, table, get] of CAREER_RECORDS) {
+    let best = null;
+    if (table) {
+      for (const r of rows(table)) { const v = get(r); if (num(v) && v > 0 && (!best || v > best.v)) best = { r, v }; }
+    } else {
+      const by = new Map();
+      for (const t of ['rushing', 'receiving', 'defense']) for (const r of rows(t)) {
+        if (!num(r.td)) continue;
+        const k = r.key ?? r.name;
+        const was = by.get(k);
+        by.set(k, { r: was?.r ?? r, v: (was?.v ?? 0) + r.td, games: Math.max(was?.games ?? 0, num(r.games) ? r.games : 0) });
+      }
+      for (const x of by.values()) if (x.v > 0 && (!best || x.v > best.v)) best = { r: { ...x.r, games: x.games }, v: x.v };
+    }
+    if (!best) continue;
+    const g = num(best.r.games) && best.r.games > 0 ? best.r.games : null;
+    out.push({ key: label, label, name: best.r.name, team: team(best.r), value: whole(best.v), game: g ? `${fmtInt(g)} ${g === 1 ? 'game' : 'games'}` : DASH, date: '', game_id: null });
+  }
+  return out;
 }
 
 /** The Leaderboard card (`elo.around`, backend §5/§14). The profile's own player is marked; it reads "You" only when the

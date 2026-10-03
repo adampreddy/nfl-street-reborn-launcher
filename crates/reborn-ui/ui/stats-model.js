@@ -297,31 +297,83 @@ export function totalLine(table, kind) {
   return line;
 }
 
-/**
- * Find a game's neighbours in a newest-first list of game ids: "Previous" is the older game (the next
- * entry in the list), "Next" the newer one (the entry before it). Used by the game view's ‹ Previous / Next ›
- * bar to step through the list of games the page it was opened from was showing.
- * @param {Array<string>|null|undefined} list
- * @param {string} id
- * @returns {{prev: string|null, next: string|null}}
- */
-export function neighbours(list, id) {
-  const ids = Array.isArray(list) ? list : [];
-  const i = ids.indexOf(id);
-  if (i === -1) return { prev: null, next: null };
-  return { prev: ids[i + 1] ?? null, next: ids[i - 1] ?? null };
-}
-
-const BACK_PROFILE_RE = /^profile\.html\?player=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BACK_PROFILE_RE = /^profile\.html\?player=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(#[a-z0-9-]{1,24})?$/;
+const BACK_STATS_RE = /^stats\.html(#[a-z0-9-]{1,24})?$/;
 
 /**
- * Where the game view's "← Back" (and B / Esc) goes: the page that stored sessionStorage['nsr.gameList'] (its
- * `from`), accepted only as exactly 'stats.html' or 'profile.html?player=<lowercase uuid>'; anything else is Stats.
+ * Where the game view's "← Back" (and B / Esc) goes: the page that opened it (its `from` address parameter), accepted
+ * only as 'stats.html' or 'profile.html?player=<lowercase uuid>', each with an optional short #view (the tab the player
+ * was on); anything else is Stats.
  * @param {unknown} from
  * @returns {string}
  */
 export function backHref(from) {
-  return typeof from === 'string' && (from === 'stats.html' || BACK_PROFILE_RE.test(from)) ? from : 'stats.html';
+  return typeof from === 'string' && (BACK_STATS_RE.test(from) || BACK_PROFILE_RE.test(from)) ? from : 'stats.html';
+}
+
+const GAME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_GAMES = 25;
+
+/**
+ * The game page's address for a whole match (owner 10-03, "the box score is the whole match"): a match of one game
+ * opens just that game; a match of several opens ONE page holding every game of it (oldest first, as the server sends
+ * them) with its last game shown, and the series from the list's side ("2-1"). `from` is the page Back returns to
+ * (backHref). Null when the match has no recorded game.
+ * @param {Object} match
+ * @param {string} from
+ * @returns {string|null}
+ */
+export function matchHref(match, from) {
+  const ids = (Array.isArray(match?.games) ? match.games : []).map((g) => (typeof g?.id === 'string' ? g.id : null)).filter(Boolean);
+  if (!ids.length) return null;
+  const q = new URLSearchParams({ game: ids[ids.length - 1] });
+  if (ids.length > 1) {
+    q.set('games', ids.slice(0, MAX_GAMES).join(','));
+    const s = match.series;
+    if (Array.isArray(s) && Number.isInteger(s[0]) && Number.isInteger(s[1])) q.set('series', `${s[0]}${HYPHEN}${s[1]}`);
+  }
+  q.set('from', backHref(from));
+  return `game.html?${q}`;
+}
+
+/** The game page's address for one game (a record's game, say). */
+export function gameHref(id, from) {
+  return `game.html?${new URLSearchParams({ game: String(id ?? ''), from: backHref(from) })}`;
+}
+
+/**
+ * The game page's reading of its own address (matchHref): the game shown, the match's games (just that game when there
+ * is no list, or the list does not hold it), the series ("2-1" or null) and where Back goes. Only lowercase game UUIDs
+ * make the list, at most 25.
+ * @param {string} search  location.search
+ * @returns {{game: string, games: Array<string>, series: string|null, back: string}}
+ */
+export function readMatchAddress(search) {
+  const q = new URLSearchParams(search || '');
+  const game = (q.get('game') || '').toLowerCase();
+  const games = [...new Set((q.get('games') || '').toLowerCase().split(',').filter((id) => GAME_UUID_RE.test(id)))].slice(0, MAX_GAMES);
+  const series = /^\d{1,2}-\d{1,2}$/.test(q.get('series') || '') ? q.get('series') : null;
+  const many = games.length > 1 && games.includes(game);
+  return { game, games: many ? games : [game], series: many ? series : null, back: backHref(q.get('from')) };
+}
+
+/**
+ * The record counts ONLINE matches only (owner 10-03): offline and CPU games and private rooms never count. The
+ * headline record, and Ranked and Casual as two separate figures, plus the online results newest first (Last 10, the
+ * streak). Built from a match list (newest first) for the Stats page, whose server answer does not split by queue.
+ * @param {Array<Object>|null|undefined} matches
+ */
+export function onlineRecord(matches) {
+  const online = (Array.isArray(matches) ? matches : []).filter((m) => m && m.mode === 'online' && m.opponent_kind !== 'cpu' && m.queue !== 'private');
+  const tally = (list) => {
+    const r = recordOf(list);
+    const n = r.wins + r.losses;
+    return { ...r, games: n, text: n ? `${r.wins}${HYPHEN}${r.losses}` : EM_DASH, pct: n ? r.wins / n : null };
+  };
+  const results = resultsOf(online);
+  let streak = EM_DASH;
+  if (results.length) { let n = 0; while (n < results.length && results[n] === results[0]) n++; streak = `${results[0]}${n}`; }
+  return { all: tally(online), ranked: tally(online.filter((m) => m.queue === 'ranked')), casual: tally(online.filter((m) => m.queue === 'casual')), results, streak };
 }
 
 /**
@@ -432,21 +484,23 @@ export function lastTen(results) {
 }
 
 /**
- * The You card's four numbers (spec §8.6): Record, Win %, Last 10, Streak. A winning streak is marked 'up'.
- * @param {Object|null} summary
- * @param {{results: Array<string>}|null} recentForm
- * @returns {Array<{label: string, value: string, kind: string}>}
+ * The You card's numbers (spec §8.6), ONLINE matches only (owner 10-03; onlineRecord): Record, Win %, Last 10,
+ * Streak, then Ranked and Casual as two separate figures, never one blended number. A winning streak is marked 'up'.
+ * @param {ReturnType<typeof onlineRecord>} online
+ * @returns {{nums: Array<{label: string, value: string, kind: string}>, queues: Array<{label: string, value: string, pct: string}>}}
  */
-export function youNumbers(summary, recentForm) {
-  const s = summary || {};
-  const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
-  const streak = typeof s.streak === 'string' && /^[WL]\d+$/.test(s.streak) ? s.streak : EM_DASH;
-  return [
-    { label: 'Record', value: isNum(s.wins) && isNum(s.losses) ? `${s.wins}${HYPHEN}${s.losses}` : EM_DASH, kind: '' },
-    { label: 'Win %', value: isNum(s.win_pct) ? fmtPct(s.win_pct) : EM_DASH, kind: '' },
-    { label: 'Last 10', value: lastTen(recentForm?.results), kind: '' },
-    { label: 'Streak', value: streak, kind: streak.startsWith('W') ? 'up' : '' },
-  ];
+export function youNumbers(online) {
+  const o = online || onlineRecord([]);
+  const pct = (t) => (t.pct === null ? EM_DASH : fmtPct(t.pct));
+  return {
+    nums: [
+      { label: 'Record', value: o.all.text, kind: '' },
+      { label: 'Win %', value: pct(o.all), kind: '' },
+      { label: 'Last 10', value: lastTen(o.results), kind: '' },
+      { label: 'Streak', value: o.streak, kind: o.streak.startsWith('W') ? 'up' : '' },
+    ],
+    queues: [['Ranked', o.ranked], ['Casual', o.casual]].map(([label, t]) => ({ label, value: t.text, pct: pct(t) })),
+  };
 }
 
 // Each role's statline (spec §8.6 table, fuller per owner 10-03): [field, unit, one decimal?]. The fields are the

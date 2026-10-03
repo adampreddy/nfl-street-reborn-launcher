@@ -1,7 +1,11 @@
 /* Stats (spec §8.6): matches first, the full content width, two columns whose first cards start and end on one line.
    Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs). The match rows are theme.css's .m-*. */
 body.page-stats #main{padding:36px 36px 32px}
-.page-stats .page-heading{margin-bottom:24px}
+.page-stats .page-heading{margin-bottom:24px;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:24px;align-items:center}
+.page-stats .page-heading>:not(.st-view){grid-column:1}
+/* Matches | Records, at the top right beside the title (owner 10-03) */
+.st-view{grid-column:2;grid-row:1/span 2}
+.st-view:empty{display:none}
 .page-stats #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
 .page-stats #screen>.refusal,.page-stats #screen>.note{margin:0}
 .st-cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:24px;align-items:stretch}
@@ -22,6 +26,14 @@ body.page-stats #main{padding:36px 36px 32px}
 .st-nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;padding-top:16px}
 .st-nums b{display:block;margin-top:4px;font:600 17px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .st-nums b.up{color:var(--ok)}
+/* the record's two parts, Ranked and Casual, as two separate figures (owner 10-03) */
+.st-queues{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.st-q{display:flex;align-items:baseline;gap:10px;padding:10px 12px;border:1px solid var(--stroke);border-radius:var(--r-md);background:var(--glass-1)}
+.st-q .k-label{flex:none}
+.st-q b{font:600 17px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.st-q-pct{margin-left:auto;font-size:12px;color:var(--fg-3);font-variant-numeric:tabular-nums}
+/* Records: the pills over one table, the full content width */
+.st-records{display:flex;flex-direction:column;gap:16px}
 /* Your players: one list that stretches so its bottom meets Your matches */
 .st-plist{flex:1;display:flex;flex-direction:column;padding:0 16px}
 .st-player{flex:1;display:flex;align-items:center;gap:16px;min-height:64px;color:inherit;text-decoration:none}

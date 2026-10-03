@@ -1,10 +1,12 @@
-// The Profile page, the online player hub (spec §8.7, §10, §13): Back first; the card (status, summary line, Share /
-// View on web, the live card); the overview (three columns, big numbers on one line, visuals ending on one line); Match
-// history beside Career / Leaderboard / Records (first cards start and end on one line; 40px headers); the queue filter
-// and the pager; W/L only, never "Best of 3", "ladder" or "Private"; the deployed server's answers; the small window;
-// the model edge cases (P4-23); letter avatars coloured per player; the D-pad through the card, history and tabs;
-// Full stats (one table at a time, top five, Show all, Total, shared column edges, sorting) and More stats; the links
-// from Stats (#passing, #rushing, #receiving, #defense, #career) landing on their table or section.
+// The Profile page, the online player hub (spec §8.7, §10, §13), streamlined (owner 10-03, sr-2 mockup): Back first; the
+// hero (status · Plays as · Joined, "#7 on the leaderboard | 1,184 Elo | 14-9 record", Share / View on web, the live
+// card); the tabs Overview | Matches | Stats | Records | Head to head, one body at a time, the address's #tab following
+// without a history entry. Overview: three tiles (the record online only, Ranked and Casual apart), Recent matches
+// beside a 3x2 Career. Matches: the queue filter and the pager; a row opens the whole match. Stats: Full stats (one
+// table at a time, top five, Show all, Total, shared column edges, sorting) and the rest of the numbers. Records:
+// Single game | Career. Head to head. W/L only, never "Best of 3", "ladder" or "Private"; the deployed server's answers;
+// the small window; the model edge cases (P4-23); letter avatars coloured per player; the D-pad through the hero, the
+// tabs and the lists; the links from Stats (#passing, #rushing, #receiving, #defense, #career) landing on their table.
 //     node Tools/check-profile-page.mjs [outdir]      (screens in target/p4-after by default)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -18,9 +20,11 @@ mkdirSync(out, { recursive: true });
 const srv = await serve();
 const browser = await chromium.launch({ channel: process.env.REBORN_TEST_BROWSER || 'msedge', headless: true });
 const STATE = { name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' };
+const AT = (tab) => ({ ...STATE, url: `${STATE.url}#${tab}` });
 const rect = (page, sel) => page.locator(sel).first().evaluate((n) => { const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, h: r.height }; });
 const texts = (page, sel) => page.locator(sel).evaluateAll((ns) => ns.map((n) => n.textContent.trim()));
 const noSideways = async (page) => assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no sideways scroll');
+const tabOn = (page) => page.locator('.pf-tabbar .tab[aria-pressed="true"]').textContent();
 const contentRules = async (page) => {
   const body = await page.locator('#screen').innerText();
   assert.doesNotMatch(body, /best of 3/i, 'never "Best of 3"');
@@ -51,68 +55,106 @@ async function combosReadable(page, pairs, heads) {
   }
 }
 const NONE = 'No online matches to show yet.';
-// History rows keep their natural height (56px; a best of 3's games 40px): the card fills, never the rows (P4-24).
+// History rows keep their natural height (56px): the card never stretches its rows (P4-24).
 const rowHeights = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height));
 const rowsNatural = async (page, what) => { const hs = await rowHeights(page); assert.ok(hs.length && hs.every((h) => h <= 56.5), `${what}: every history row is at most 56px: ${hs}`); };
 try {
-  { // 1280×800, the redesign's full answers, the owner looking at their own profile
+  { // 1280×800, the redesign's full answers, the owner looking at their own profile: the hero and the Overview
     const { page, errors, close } = await openState(browser, srv.base, STATE);
     await page.locator('.pf-card').waitFor();
     await page.screenshot({ path: path.join(out, 'profile-1280.png') });
-    await page.evaluate(() => document.getElementById('history').scrollIntoView({ block: 'start' }));
-    await page.screenshot({ path: path.join(out, 'profile-1280-lower.png') });
-    await page.evaluate(() => { document.getElementById('main').scrollTop = 0; });
     assert.equal(await page.locator('#screen > :first-child').getAttribute('id'), 'back', 'Back comes first');
     assert.equal(await page.locator('.pf-name').textContent(), 'adamknowsball');
     assert.equal(await page.locator('.pf-status').textContent(), '● In a match');
     assert.equal(await page.locator('.pf-pic .presence-dot').count(), 1);
-    assert.deepEqual(await texts(page, '.pf-sum > span'), ['#7 on the leaderboard', '1,184 Elo', '60.9% win rate']);
+    // status · Plays as · Joined, then one line of standing; the record is online only (ranked + casual)
+    assert.deepEqual(await page.locator('.pf-meta > :not(.pf-dot)').evaluateAll((ns) => ns.map((n) => n.className)), ['pf-status', 'pf-team', '']);
+    assert.match(await page.locator('.pf-meta').textContent(), /Joined Sep 2026$/);
+    assert.deepEqual(await texts(page, '.pf-sum > span'), ['#7 on the leaderboard', '1,184 Elo', '14-9 record']);
     assert.deepEqual(await texts(page, '.pf-acts .btn'), ['Share profile', 'View on web']);
     assert.equal(await page.locator('#plays-as').count(), 1, 'the owner picks Plays as');
-    const pic = await rect(page, '.pf-pic'), id = await rect(page, '.pf-id');
-    assert.equal(Math.round(pic.h), 104);
+    const pic = await rect(page, '.pf-pic'), id = await rect(page, '.pf-id'), acts = await rect(page, '.pf-acts'), card = await rect(page, '.pf-card');
+    assert.equal(Math.round(pic.h), 96);
     assert.ok(Math.abs((pic.top + pic.bottom) / 2 - (id.top + id.bottom) / 2) < 2, 'the avatar is centred on the identity block');
-    // the live card
+    assert.ok(acts.left > id.right - 1 && card.right - acts.right < 40, 'Share and View on web on the hero\'s right');
+    // the live card, under Share / View on web
     assert.equal(await page.locator('.pf-live .q').textContent(), 'Ranked · Game 2 of 3');
     assert.equal(await page.locator('.pf-live strong').textContent(), '14 – 7');
     assert.equal(await page.locator('.pf-live-bot > span').textContent(), 'vs Mikel · Series 1–0');
-    const live = await rect(page, '.pf-live'), card = await rect(page, '.pf-card');
-    assert.ok(live.top > card.top && live.bottom < card.bottom, 'the live card sits inside the profile card');
-    // overview: three identical columns; big numbers on one line; the visuals end on one line
-    assert.deepEqual(await texts(page, '.pf-ovh h2'), ['Elo', 'Record', 'Last 10 games']);
-    assert.deepEqual(await texts(page, '.pf-big'), ['1,184+16', '14-960.9%', '6-4+6.4']);
-    assert.equal(await page.locator('.pf-ov').count(), 1, 'one glass panel');
+    const live = await rect(page, '.pf-live');
+    assert.ok(live.top > acts.bottom && live.bottom < card.bottom, 'the live card sits in the hero, under the buttons');
+    // the tabs, Overview first; no long scroll of cards
+    assert.deepEqual(await texts(page, '.pf-tabbar .tab'), ['Overview', 'Matches', 'Stats', 'Records', 'Head to head']);
+    assert.equal(await tabOn(page), 'Overview');
+    assert.equal(await page.locator('#full-stats, #more, #history, #leaderboard').count(), 0, 'one tab at a time; no Leaderboard card');
+    // three tiles: Elo (change, peak), Record (win %, Ranked and Casual apart), Last 10 (scored, allowed)
+    assert.deepEqual(await texts(page, '.pf-tile h2'), ['Elo', 'Record', 'Last 10 games']);
+    assert.deepEqual(await texts(page, '.pf-big'), ['1,184+16', '14-960.9%', '6-4']);
+    assert.deepEqual(await texts(page, '.pf-tile .pf-sub'), ['Peak 1,212', 'Ranked 8-5·Casual 6-4', '31.4 scored · 25.0 allowed']);
+    assert.deepEqual(await page.locator('.pf-q').evaluateAll((ns) => ns.map((n) => [n.firstChild.textContent, n.lastChild.textContent])), [['Ranked', '8-5'], ['Casual', '6-4']]);
     const bigSize = await page.locator('.pf-big > span').evaluateAll((ns) => [...new Set(ns.map((n) => getComputedStyle(n).fontSize))]);
     assert.deepEqual(bigSize, ['34px'], 'the big numbers are 34px');
     const bigs = await page.locator('.pf-big').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().top)));
     assert.equal(new Set(bigs).size, 1, `the big numbers share a line: ${bigs}`);
-    const ends = await page.evaluate(() => ['.pf-spark', '.pf-bars', '.pf-pair'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().bottom)));
-    assert.ok(Math.max(...ends) - Math.min(...ends) <= 1, `the visuals end on one line: ${ends}`);
-    const widths = await page.locator('.pf-ovc').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().width)));
-    assert.ok(Math.max(...widths) - Math.min(...widths) <= 1, `three identical columns: ${widths}`);
-    assert.deepEqual(await texts(page, '.pf-bar-row > :first-child'), ['Ranked', 'Casual']);
-    assert.deepEqual(await texts(page, '.pf-bar-row b'), ['8-5', '6-4']);
-    // two columns: first cards start together and the columns end together; 40px section headers
-    const hl = await rect(page, '#history .m-list');
-    const first = await rect(page, '.pf-side > section:first-child > .glass');
-    const last = await rect(page, '.pf-side > section:last-child > .glass');
-    assert.ok(Math.abs(hl.top - first.top) < 1, `first cards start together: ${hl.top} vs ${first.top}`);
-    assert.ok(Math.abs(hl.bottom - last.bottom) < 1, `the columns end together: ${hl.bottom} vs ${last.bottom}`);
+    const widths = await page.locator('.pf-tile').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().width)));
+    assert.ok(Math.max(...widths) - Math.min(...widths) <= 1, `three identical tiles: ${widths}`);
+    // Recent matches beside Career: their cards start and end on one line; 40px section headers
+    assert.deepEqual(await texts(page, '.pf-rm-hd span'), ['Result', 'Opponent', 'Elo', 'Date']);
+    const recent = page.locator('.pf-recent > .pf-rm:not(.pf-rm-hd)');
+    assert.equal(await recent.count(), 5);
+    assert.deepEqual(await recent.first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W2–1', 'Playz · Ranked', '+16', 'Sep 26']);
+    const rc = await rect(page, '.pf-recent'), cc = await rect(page, '.pf-career');
+    assert.ok(Math.abs(rc.top - cc.top) < 1 && Math.abs(rc.bottom - cc.bottom) < 1, `Recent matches and Career start and end together: ${JSON.stringify([rc, cc])}`);
     assert.deepEqual([...new Set(await page.locator('.sec-head').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [40]);
+    // Career: six spelled-out tiles, rank among the player base, per game
+    assert.deepEqual(await texts(page, '#career .pf-car-k'), ['Passing Yards', 'Passing TD', 'Passer Rating', 'Rushing Yards', 'Receiving Yards', 'Total TD']);
+    assert.equal(await page.locator('#career .pf-car > div b.num').first().textContent(), '3,021');
+    assert.equal(await page.locator('#career .pf-car-s').first().textContent(), '#3 · 125.9 / game');
+    await contentRules(page);
+    await noSideways(page);
+    // "All matches ›" and "All stats ›" switch tabs, the address following without a history entry
+    const len = await page.evaluate(() => history.length);
+    await page.locator('[data-key="all-matches"]').click();
+    assert.equal(await tabOn(page), 'Matches');
+    assert.equal(await page.evaluate(() => location.hash), '#matches');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'ptab-matches', 'focus moves to the picked tab');
+    await page.locator('[data-key="ptab-overview"]').click();
+    assert.equal(await page.evaluate(() => location.hash), '');
+    await page.locator('[data-key="all-stats"]').click();
+    assert.equal(await tabOn(page), 'Stats');
+    assert.equal(await page.evaluate(() => history.length), len, 'tabs add no history entry');
+    assert.deepEqual(errors, []);
+    // a recent match opens the whole match, Back returning to the Overview
+    await page.locator('[data-key="ptab-overview"]').click();
+    await page.locator('[data-key="recent-m-01"]').click();
+    await page.waitForURL(/game\.html\?/);
+    const u = new URL(page.url());
+    assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('from')], ['g-013', 'g-011,g-012,g-013', `profile.html?player=${F.ME}`]);
+    await close();
+  }
+  { // Live feed opens the native live view
+    const { page, errors, close } = await openState(browser, srv.base, STATE);
+    await page.getByRole('button', { name: 'Live feed', exact: true }).click();
+    await page.waitForURL(/live\.html\?match=dc5226af-d3b8-4c0b-89e8-1c53b2972a30$/);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // Matches: the queue as the second line, the pager in the card, more pages loaded as needed, a row opening the match
+    const { page, errors, close } = await openState(browser, srv.base, AT('matches'));
+    await page.locator('#history .m-list').waitFor();
+    assert.equal(await tabOn(page), 'Matches');
+    const rows = page.locator('#history .m-list > .m-row:not(.m-hd)');
+    assert.equal(await rows.count(), 10);
     await rowsNatural(page, 'ten rows');
-    const recH = await page.locator('#records .pf-rec:not([hidden])').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().height)));
-    assert.deepEqual([...new Set(recH)], [38], `Records rows keep their natural height: ${recH}`);
+    assert.equal(await page.locator('[data-key="match-m-01"] small').textContent(), 'Ranked');
+    assert.equal(await page.locator('[data-key="match-m-02"] small').textContent(), 'Casual');
+    assert.equal(await page.locator('#history [aria-expanded]').count(), 0, 'nothing opens in place');
     // letter avatars (no Discord picture) are coloured per player, the same player always the same colour (mockup)
     const letters = await page.locator('span.avatar').evaluateAll((ns) => ns.map((n) => ({ who: n.textContent, bg: getComputedStyle(n).backgroundImage })));
     const byWho = new Map();
     for (const l of letters) { if (byWho.has(l.who)) assert.equal(byWho.get(l.who), l.bg, `one colour per player (${l.who})`); byWho.set(l.who, l.bg); }
-    assert.ok(new Set(byWho.values()).size >= 2, `letter avatars vary per player: ${JSON.stringify([...byWho])}`);
-    // Match history: the queue as the second line, the pager in the card, more pages loaded as needed
-    const rows = page.locator('#history .m-list > .m-row:not(.m-hd)');
-    assert.equal(await rows.count(), 10);
-    assert.equal(await page.locator('[data-key="match-m-01"] small').textContent(), 'Ranked');
-    assert.equal(await page.locator('[data-key="match-m-02"] small').textContent(), 'Casual');
     assert.equal(await page.locator('#history .m-pager span').textContent(), 'Page 1');
+    await page.screenshot({ path: path.join(out, 'profile-1280-matches.png') });
     await page.locator('#history [data-key="older"]').click();
     await page.waitForFunction(() => document.querySelector('#history .m-pager span')?.textContent === 'Page 2 of 2');
     assert.equal(await rows.count(), 2);
@@ -123,38 +165,39 @@ try {
     assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.key)), ['match-m-01', 'match-m-04']);
     assert.equal(await page.locator('#history .m-pager').count(), 0, 'one page: no pager');
     await rowsNatural(page, 'the Ranked filter');
-    const hl2 = await rect(page, '#history .m-list'), last2 = await rect(page, '.pf-side > section:last-child > .glass');
-    assert.ok(Math.abs(hl2.bottom - last2.bottom) < 1, `the card still meets the right column: ${hl2.bottom} vs ${last2.bottom}`);
-    await page.evaluate(() => document.getElementById('history').scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: path.join(out, 'profile-1280-ranked.png') });
-    await page.getByRole('button', { name: 'All', exact: true }).click();
-    // Career: nine spelled-out tiles, rank among the player base, per game
-    assert.deepEqual(await texts(page, '#career .k-label'), ['Passing Yards', 'Passing TD', 'Passer Rating', 'Rushing Yards', 'Receiving Yards', 'Total TD', 'Tackles', 'Sacks', 'Interceptions']);
-    assert.equal(await page.locator('#career .pf-car > div b.num').first().textContent(), '3,021');
-    assert.equal(await page.locator('#career .pf-car-s').first().textContent(), '#3 · 125.9 / G');
-    assert.equal(await page.locator('#career .pf-note').textContent(), 'Rank among 214 online players');
-    // Leaderboard: #5 to #9 around the player; their own row reads You
-    assert.deepEqual(await texts(page, '.pf-lb-rank'), ['#5', '#6', '#7', '#8', '#9']);
-    assert.equal(await page.locator('.pf-lb-row.me .pf-lb-name').textContent(), 'You');
-    // Records: five, then All ›
-    assert.equal(await page.locator('#records .pf-rec:not([hidden])').count(), 5);
-    // spelled-out labels say Yards, never yds / YDS (owner 10-03)
-    assert.deepEqual((await texts(page, '#records .pf-rec .k')).slice(0, 3), ['Passing Yards', 'Rushing Yards', 'Receiving Yards']);
-    assert.doesNotMatch(await page.locator('#records').textContent(), /\byds\b/i);
-    assert.equal(await page.locator('#records .sec-link').textContent(), 'All ›');
+    await contentRules(page);
+    await noSideways(page);
+    await page.locator('[data-key="match-m-04"]').click();
+    await page.waitForURL(/game\.html\?/);
+    const u = new URL(page.url());
+    assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('series'), u.searchParams.get('from')],
+      ['g-042', 'g-041,g-042', '0-2', `profile.html?player=${F.ME}#matches`], 'the whole match; Back returns to Matches');
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // Records: Single game | Career, one table, "vs <opponent>" from the matches the page has
+    const { page, errors, close } = await openState(browser, srv.base, AT('records'));
+    await page.locator('#records .rec-table').waitFor();
+    assert.equal(await tabOn(page), 'Records');
+    assert.deepEqual(await texts(page, '#records .rec-pill'), ['Single game', 'Career']);
+    assert.deepEqual(await texts(page, '#records .rec-row:not(.rec-hd) .rec-k'), ['Passing Yards', 'Rushing Yards', 'Receiving Yards', 'Tackles', 'Longest TD', 'Most points', 'Biggest win']);
+    assert.doesNotMatch(await page.locator('#records').textContent(), /\byds\b/i, 'spelled-out labels say Yards');
+    assert.deepEqual((await texts(page, '#records .rec-g')).slice(0, 4), ['vs Playz', 'vs Playz', 'vs Playz', 'vs Mikel']);
+    assert.match(await page.locator('#records a.rec-row').first().getAttribute('href'), new RegExp(`^game\\.html\\?game=g-011&from=profile\\.html%3Fplayer%3D${F.ME}%23records$`));
+    await page.screenshot({ path: path.join(out, 'profile-1280-records.png') });
+    await page.locator('[data-key="rec-kind-career"]').click();
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'rec-kind-career');
+    assert.deepEqual(await texts(page, '#records .rec-row:not(.rec-hd) .rec-k'), ['Passing Yards', 'Passing TD', 'Rushing Yards', 'Receiving Yards', 'Total TD', 'Tackles', 'Sacks', 'Interceptions']);
     await contentRules(page);
     await noSideways(page);
     assert.deepEqual(errors, []);
-    // an opponent's name opens their profile (through the game list; a Leaderboard row links straight to it)
-    assert.equal(await page.locator('.pf-lb-row[data-key="lb-1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e"]').getAttribute('href'), 'profile.html?player=1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e');
-    // Live feed opens the native live view
-    await page.getByRole('button', { name: 'Live feed', exact: true }).click();
-    await page.waitForURL(/live\.html\?match=dc5226af-d3b8-4c0b-89e8-1c53b2972a30$/);
     await close();
   }
-  { // Full stats: one table at a time, top five, "Show all N players", a Total row; every table on one column grid
-    const { page, errors, close } = await openState(browser, srv.base, STATE);
+  { // Stats: Full stats, one table at a time, top five, "Show all N players", a Total row; every table on one column grid
+    const { page, errors, close } = await openState(browser, srv.base, AT('stats'));
     await page.locator('#full-stats .tbl').waitFor();
+    assert.equal(await tabOn(page), 'Stats');
     assert.deepEqual(await texts(page, '#full-stats .tab'), ['Passing', 'Rushing', 'Receiving', 'Defense']);
     assert.deepEqual(await texts(page, '#full-stats thead th'), ['Player', 'C/ATT', 'YDS', 'TD', 'INT', 'AIR', 'YAC', 'Y/A', 'RTG', 'LNG']);
     const body = page.locator('#full-stats tbody tr:not(.more):not(.total)');
@@ -185,9 +228,8 @@ try {
     assert.equal(await page.locator('[data-key="sort-rushing-yds"]').evaluate((n) => document.activeElement === n), true, 'focus stays on the sort button');
     await page.locator('[data-key="sort-rushing-yds"]').click();
     assert.equal(await firstName(), 'B. Robinson');
-    // More stats keeps every number the old profile showed, and the old profile's Best players (P4-5, P4-25)
-    assert.deepEqual(await texts(page, '#more h3'), ['Head to head', 'Your players', 'By team', 'Per game', 'Best QB → receiver', 'Laterals & pitches', 'In wins vs losses', 'By game type']);
-    assert.equal(await page.locator('#h2h a.who').getAttribute('href'), 'profile.html?player=1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', 'an opponent opens their profile');
+    // the rest of the numbers: Your players, per game, by team, QB → receiver and the others (P4-5, P4-25)
+    assert.deepEqual(await texts(page, '#more h3'), ['Your players', 'Per game', 'By team', 'Best QB → receiver', 'Laterals & pitches', 'In wins vs losses', 'By game type']);
     assert.deepEqual(await texts(page, '#more-players .pf-pl-name'), ['M. Penix Jr.', 'S. Barkley', 'D. London', 'N. Bolton', 'A.J. Terrell', 'B. Robinson']);
     // each player's fuller statline from its own career row (owner 10-03), games kept as they were
     assert.deepEqual(await page.locator('#more-players .pf-pl-line').evaluateAll((ns) => ns.map((n) => [...n.children].map((s) => s.textContent))), [
@@ -200,9 +242,6 @@ try {
     assert.doesNotMatch(await page.locator('#more-players').textContent(), /NaN|null|undefined/);
     await page.locator('#more-players').screenshot({ path: path.join(out, 'profile-1280-players-lines.png') });
     assert.deepEqual(await texts(page, '#by-type tbody th'), ['Normal']);
-    // Career's "Full stats ›" goes there
-    await page.locator('#career .sec-link').click();
-    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
     await contentRules(page);
     await noSideways(page);
     await page.getByRole('button', { name: 'Passing', exact: true }).click();
@@ -220,40 +259,36 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // a link from Stats (#defense) opens that table and scrolls to Full stats
-    const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#defense` });
-    await page.locator('#full-stats .tbl').waitFor();
-    assert.equal(await page.locator('#full-stats .tab[aria-pressed="true"]').textContent(), 'Defense');
-    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
-    assert.deepEqual(errors, []);
-    await close();
-  }
-  { // every link Stats' Your players draws lands on its table (passing, rushing, receiving) or section (career)
-    for (const [hash, tab] of [['passing', 'Passing'], ['rushing', 'Rushing'], ['receiving', 'Receiving']]) {
-      const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#${hash}` });
+  { // the links from Stats' Your players: #passing / #rushing / #receiving / #defense open Stats on that table,
+    // #career the Overview's Career
+    for (const [hash, tab] of [['passing', 'Passing'], ['rushing', 'Rushing'], ['receiving', 'Receiving'], ['defense', 'Defense']]) {
+      const { page, errors, close } = await openState(browser, srv.base, AT(hash));
       await page.locator('#full-stats .tbl').waitFor();
+      assert.equal(await tabOn(page), 'Stats');
       assert.equal(await page.locator('#full-stats .tab[aria-pressed="true"]').textContent(), tab);
-      await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
+      await page.waitForFunction(() => { const t = document.querySelector('.pf-tabbar').getBoundingClientRect().top; return t >= -2 && t < 120; });
       assert.deepEqual(errors, []);
       await close();
     }
-    const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: `${STATE.url}#career` });
+    const { page, errors, close } = await openState(browser, srv.base, AT('career'));
     await page.locator('#career').waitFor();
-    await page.waitForFunction(() => { const t = document.getElementById('career').getBoundingClientRect().top; return t >= -2 && t < 120; });
+    assert.equal(await tabOn(page), 'Overview');
     assert.deepEqual(errors, []);
     await close();
   }
-  { // More stats' long lists show five rows and "Show all N" (as the old profile capped them); H2H "Last" shows a
-    // one-game match's score, a series' date (P4-26)
+  { // Head to head: its own tab; long lists show five rows and "Show all N" (as the old profile capped them); "Last"
+    // shows a one-game match's score, a series' date (P4-26)
     const p = F.profile();
     const base = p.head_to_head[0];
-    p.head_to_head = Array.from({ length: 7 }, (_, i) => ({ ...structuredClone(base), player_id: `${'0123456'[i]}b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e`, display_name: `Rival ${i + 1}` }));
+    p.head_to_head = Array.from({ length: 7 }, (_, i) => ({ ...structuredClone(base), player_id: `${'0123456'[i]}b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e`, display_name: `Rival ${i + 1}`, avatar_url: null }));
     Object.assign(p.head_to_head[0].last, { game_id: 'g:0b2c3d4e', score: [35, 14] });
     p.by_team = Array.from({ length: 6 }, (_, i) => ({ ...structuredClone(p.by_team[0]), key: `tgid:${i}`, name: `Team ${i + 1}` }));
     p.combos = Array.from({ length: 8 }, (_, i) => ({ ...structuredClone(p.combos[0]), rec: 60 - i }));
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
-    await page.locator('#more').waitFor();
-    for (const [id, n, what] of [['h2h', 7, 'opponents'], ['by-team', 6, 'teams'], ['combos', 8, 'combos']]) {
+    const { page, errors, close } = await openState(browser, srv.base, AT('h2h'), { data: { player_profile: p } });
+    await page.locator('#h2h').waitFor();
+    assert.equal(await tabOn(page), 'Head to head');
+    assert.equal(await page.locator('#h2h a.who').first().getAttribute('href'), '0b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e'.replace(/^/, 'profile.html?player='), 'an opponent opens their profile');
+    const check = async (id, n, what) => {
       const rows = page.locator(`#${id} tbody tr:not(.more)`);
       assert.equal(await rows.filter({ visible: true }).count(), 5, `${id}: five rows first`);
       const b = page.locator(`#${id} .pf-showall`);
@@ -262,16 +297,25 @@ try {
       assert.equal(await rows.filter({ visible: true }).count(), n, `${id}: every row after Show all`);
       assert.equal(await b.textContent(), 'Show top 5');
       assert.equal(await b.evaluate((x) => document.activeElement === x), true, `${id}: focus stays on the button`);
-    }
+    };
+    // letter avatars (no Discord picture) are coloured per player, never one colour for all (mockup)
+    const bgs = await page.locator('#h2h span.avatar').evaluateAll((ns) => ns.map((n) => getComputedStyle(n).backgroundImage));
+    assert.ok(new Set(bgs).size >= 2, `letter avatars vary per player: ${bgs}`);
+    await check('h2h', 7, 'opponents');
     assert.equal(await page.locator('#h2h tbody tr').nth(0).locator('td').nth(3).textContent(), 'W 35–14', 'a one-game match shows its score');
     assert.equal(await page.locator('#h2h tbody tr').nth(1).locator('td').nth(3).textContent(), 'W Sep 26', 'a series shows its date');
+    await page.screenshot({ path: path.join(out, 'profile-1280-h2h.png') });
+    await page.locator('[data-key="ptab-stats"]').click();
+    await page.locator('#more').waitFor();
+    await check('by-team', 6, 'teams');
+    await check('combos', 8, 'combos');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
   { // 800×560, a pad: Right across Full stats' headings keeps each one wholly in view, clear of the sticky Player
     // column; Head to head fits without scrolling (P4-26)
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { viewport: { width: 800, height: 560 }, pad: true });
+    const { page, errors, close } = await openState(browser, srv.base, AT('stats'), { viewport: { width: 800, height: 560 }, pad: true });
     await page.locator('#full-stats .tbl').waitFor();
     const press = async (b) => {
       await page.evaluate((b) => { pads[0].buttons[b] = { pressed: true, value: 1 }; }, b);
@@ -299,27 +343,29 @@ try {
     // back Left to C/ATT: it comes out from under the sticky Player column
     for (let i = 0; i < 12 && (await key()) !== 'sort-passing-cmp'; i++) { await press(14); await settle(page); assert.equal(await inView(), '', 'Left keeps the heading in view'); }
     assert.equal(await key(), 'sort-passing-cmp');
+    await page.screenshot({ path: path.join(out, 'profile-800-full-stats-pad.png') });
+    await page.locator('[data-key="ptab-h2h"]').click();
+    await page.locator('#h2h').waitFor();
     const h2h = await page.locator('#h2h').evaluate((n) => [n.scrollWidth, n.clientWidth]);
     assert.ok(h2h[0] <= h2h[1] + 1, `Head to head does not scroll at 800: ${h2h}`);
     assert.deepEqual(await texts(page, '#h2h thead th'), ['Opponent', 'Record', 'PTS', 'Allowed', 'Last', 'Best win', 'Worst loss']);
     assert.deepEqual(await page.locator('#h2h thead th').evaluateAll((ns) => ns.filter((n) => n.offsetParent).map((n) => n.textContent)), ['Opponent', 'Record', 'PTS', 'Last', 'Best win']);
-    await page.screenshot({ path: path.join(out, 'profile-800-full-stats-pad.png') });
     assert.deepEqual(errors, []);
     await close();
   }
-  { // a private room is never drawn in More stats (P4-3): not in By game type, not as a team
+  { // a private room is never drawn in Stats (P4-3): not in By game type, not as a team
     const p = F.profile();
     p.by_game_type.push({ key: 'private', name: 'Private room', games: 3, wins: 2, losses: 1, win_pct: 0.667, pts_per_game: 30 });
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
+    const { page, errors, close } = await openState(browser, srv.base, AT('stats'), { data: { player_profile: p } });
     await page.locator('#more').waitFor();
     assert.deepEqual(await texts(page, '#by-type tbody th'), ['Normal']);
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
-  { // the small window: Full stats and More stats in one column, no sideways page scroll, no number cut off (a wide
+  { // the small window: Full stats and the rest in one column, no sideways page scroll, no number cut off (a wide
     // table scrolls inside its own card)
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { viewport: { width: 800, height: 560 } });
+    const { page, errors, close } = await openState(browser, srv.base, AT('stats'), { viewport: { width: 800, height: 560 } });
     const clipped = () => page.locator('#full-stats td, #full-stats thead th, #more td, #more thead th').evaluateAll((ns) =>
       ns.filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent.trim()));
     await page.locator('#full-stats .tbl').waitFor();
@@ -347,6 +393,8 @@ try {
     const { page, errors, close } = await openState(browser, srv.base, STATE, { glass: true });
     await page.locator('.pf-card').waitFor();
     await page.screenshot({ path: path.join(out, 'profile-1280-glass.png') });
+    await page.locator('[data-key="ptab-stats"]').click();
+    await page.locator('#combos').waitFor();
     // over the glass the pairs and numbers still read at 4.5:1; the small uppercase headings at least 2.5:1 (they were 1.45)
     await combosReadable(page, 4.5, 2.5);
     await page.locator('#combos').screenshot({ path: path.join(out, 'profile-1280-combos-glass.png') });
@@ -364,34 +412,23 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // Back returns to the page this one was opened from
+  { // Back returns to the page this one was opened from, even after switching tabs (they add no history entry)
     const { page, errors, close } = await openState(browser, srv.base, { name: 'stats', url: 'stats.html', scope: 'main' });
     await page.locator(`a[href^="profile.html?player=${F.ME}"]`).first().click();
     await page.locator('.pf-card').waitFor();
+    await page.locator('[data-key="ptab-records"]').click();
+    await page.locator('[data-key="ptab-matches"]').click();
     await page.locator('#back').click();
     await page.waitForURL(/stats\.html$/);
     await page.locator('.st-cols, #screen').first().waitFor();
     assert.deepEqual(errors, []);
     await close();
   }
-  { // Career's "Full stats ›" scrolls in place: one Back still leaves the page (P4-26); the href stays for a middle-click
-    const { page, errors, close } = await openState(browser, srv.base, { name: 'stats', url: 'stats.html', scope: 'main' });
-    await page.locator(`a[href^="profile.html?player=${F.ME}"]`).first().click();
-    await page.locator('#full-stats .tbl').waitFor();
-    assert.equal(await page.locator('#career .sec-link').getAttribute('href'), '#full-stats');
-    await page.locator('#career .sec-link').click();
-    await page.waitForFunction(() => { const t = document.getElementById('full-stats').getBoundingClientRect().top; return t >= -2 && t < 120; });
-    assert.equal(await page.evaluate(() => location.hash), '', 'no history entry for the in-page link');
-    await page.locator('#back').click();
-    await page.waitForURL(/stats\.html$/);
-    assert.deepEqual(errors, []);
-    await close();
-  }
-  { // someone else's profile: their row keeps their name, and only the owner picks Plays as
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { identity_status: { signed_in: true, display_name: 'Playz', player_id: '1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', show_offline: false } } });
+  { // someone else's profile: only the owner picks Plays as; their own players read "Players"
+    const { page, errors, close } = await openState(browser, srv.base, AT('stats'), { data: { identity_status: { signed_in: true, display_name: 'Playz', player_id: '1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', show_offline: false } } });
     await page.locator('.pf-card').waitFor();
-    assert.equal(await page.locator('.pf-lb-row.me .pf-lb-name').textContent(), 'adamknowsball');
     assert.equal(await page.locator('#plays-as').count(), 0);
+    assert.equal(await page.locator('#more-players h3').textContent(), 'Players');
     assert.deepEqual(errors, []);
     await close();
   }
@@ -400,19 +437,19 @@ try {
     await page.locator('.pf-card').waitFor();
     assert.equal(await page.locator('.pf-live').count(), 0);
     assert.equal(await page.locator('.pf-status').textContent(), '● Online now');
-    assert.deepEqual(await texts(page, '.pf-ovh h2'), ['Elo', 'Record'], 'no Last 10 games without recent_form');
+    assert.deepEqual(await texts(page, '.pf-tile h2'), ['Elo', 'Record'], 'no Last 10 games without recent_form');
+    assert.deepEqual(await texts(page, '.pf-sum > span'), ['#7 on the leaderboard', '1,184 Elo', '14-9 record'], 'the private room never counts in the record');
+    assert.deepEqual(await page.locator('.pf-q').evaluateAll((ns) => ns.map((n) => n.firstChild.textContent)), ['Ranked', 'Casual']);
     assert.ok((await texts(page, '#career .pf-car-s')).every((t) => !t.includes('#')), 'no ranks without career_rank');
-    assert.equal(await page.locator('#career .pf-note').count(), 0);
-    assert.equal(await page.locator('#leaderboard').count(), 0, 'no Leaderboard without elo.around');
-    assert.deepEqual(await texts(page, '.pf-bar-row > :first-child'), ['Ranked', 'Casual']);
-    assert.equal(await page.locator('[data-key="match-m-05"]').count(), 0, 'the private room is dropped');
+    assert.equal(await page.locator('[data-key="match-m-05"], [data-key="recent-m-05"]').count(), 0, 'the private room is dropped');
+    await page.locator('[data-key="ptab-stats"]').click();
     await page.getByRole('button', { name: 'Rushing', exact: true }).click();
     assert.equal(await page.locator('#full-stats tr.total > *').last().textContent(), '770', 'YCO from the older server\'s yac');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
-  { // model edge cases (P4-23): a casual live game says no "of N"; an Elo with no history shows no note and no "started at"
+  { // model edge cases (P4-23): a casual live game says no "of N"; an Elo with no history shows no "started at"
     const p = F.profile();
     Object.assign(p.header.live, { queue: 'casual', best_of: 3, game_number: 2 });
     p.elo.history = [];
@@ -420,29 +457,28 @@ try {
     await page.locator('.pf-card').waitFor();
     assert.equal(await page.locator('.pf-live .q').textContent(), 'Casual', 'a casual live game shows its queue only');
     assert.doesNotMatch(await page.locator('.pf-live').innerText(), /of \d|Series/, 'no "of N" and no series for casual');
-    const elo = page.locator('.pf-ovc').first();
-    assert.equal(await elo.locator('.pf-ovh span').count(), 0, 'no "0 ranked matches" note');
+    const elo = page.locator('.pf-tile').first();
     assert.doesNotMatch(await elo.innerText(), /started at/, 'no "started at" without history');
-    assert.equal(await elo.locator('.pf-spark').count(), 0, 'no chart without history');
+    assert.equal(await elo.locator('.pf-sub').textContent(), 'Peak 1,212', 'the peak the server sent');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
-  { // only private rooms played: never "no games", never "Private"; the overview is not drawn from rooms that don't count
+  { // only private rooms played: never "no games", never "Private"; no tabs drawn from rooms that don't count
     const p = F.profile({ live: false });
     const room = F.allMatches().find((m) => m.queue === 'private');
     Object.assign(p, { recent_matches: [room], matches_total: 1 });
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: [room] } });
     await page.locator('.pf-card').waitFor();
     assert.equal(await page.locator('.pf-none').textContent(), NONE);
-    assert.equal(await page.locator('[data-key="match-m-05"]').count(), 0);
+    assert.equal(await page.locator('.pf-tabbar').count(), 0);
     assert.doesNotMatch(await page.locator('#screen').innerText(), /never|no online games/i, 'never claims they have not played');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
   { // a first page that is mostly, or entirely, private rooms (the deployed server still sends them) tops up to a full
-    // page at once, not only on a tab or "Older"; the empty words show only when no public match exists at all
+    // page at once; the empty words show only when no public match exists at all
     const room = F.allMatches().find((m) => m.queue === 'private');
     const rooms = (n) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(room), id: `p-0${i}`, match_id: `p-0${i}`, at: `2026-09-27T${String(19 - i).padStart(2, '0')}:00:00.000Z` }));
     const pub = F.publicMatches();
@@ -454,8 +490,13 @@ try {
     ]) {
       const p = F.profile({ live: false });
       Object.assign(p, { recent_matches: first, matches_total: total });
-      const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: all } });
+      const { page, errors, close } = await openState(browser, srv.base, AT('matches'), { data: { player_profile: p, player_profile_all: all } });
       await page.locator('.pf-card').waitFor();
+      if (await page.locator('.pf-none').count()) {
+        assert.deepEqual(want, [], `${what}: the honest empty state only when nothing public exists`);
+        await close();
+        continue;
+      }
       await page.waitForFunction(() => !/Loading/.test(document.querySelector('#history .m-list')?.textContent || ''));
       assert.deepEqual(await rowKeys(page), want, `${what}: the first page fills to ${want.length} public rows`);
       if (want.length) {
@@ -472,13 +513,13 @@ try {
     }
   }
   { // the 30 s refresh redraws the header only: live -> not live drops the live card and reads "● Online now"; focus,
-    // scroll and the history page stay; it uses the first load's arguments; it skips while the window is hidden
+    // scroll, the tab and the history page stay; it uses the first load's arguments; it skips while the window is hidden
     const init = () => {
       const real = window.setInterval;
       window.__ticks = [];
       window.setInterval = (fn, ms, ...a) => { if (ms === 30000) { window.__ticks.push(fn); return 0; } return real.call(window, fn, ms, ...a); };
     };
-    const { page, errors, close } = await openState(browser, srv.base, STATE, { init });
+    const { page, errors, close } = await openState(browser, srv.base, AT('matches'), { init });
     await page.locator('.pf-live').waitFor();
     assert.equal(await page.evaluate(() => window.__ticks.length), 1, 'one 30 s timer');
     await page.locator('#history [data-key="older"]').click();
@@ -509,6 +550,7 @@ try {
     assert.equal(await page.locator('.pf-pic .presence-dot').count(), 1, 'still online: the presence dot stays');
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'share', 'focus does not move');
     assert.equal(await page.evaluate(() => document.getElementById('main').scrollTop), scroll, 'scroll does not move');
+    assert.equal(await tabOn(page), 'Matches', 'the tab stays');
     assert.equal(await page.locator('#history .m-pager span').textContent(), 'Page 2 of 2', 'the history page stays');
     await contentRules(page);
     assert.deepEqual(errors, []);
@@ -529,30 +571,33 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // a player with three matches: rows stay 56px, the card still fills to the right column
+  { // a player with three matches: Recent matches shows three, rows stay their height, the cards still end together
     const p = F.profile({ live: false });
     const three = F.publicMatches().slice(0, 3);
     Object.assign(p, { recent_matches: three, matches_total: 3 });
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: three } });
     await page.locator('.pf-card').waitFor();
+    assert.equal(await page.locator('.pf-recent > .pf-rm:not(.pf-rm-hd)').count(), 3);
+    const rc = await rect(page, '.pf-recent'), cc = await rect(page, '.pf-career');
+    assert.ok(Math.abs(rc.bottom - cc.bottom) < 1, `the cards end together: ${rc.bottom} vs ${cc.bottom}`);
+    await page.locator('[data-key="ptab-matches"]').click();
     await rowsNatural(page, 'three matches');
-    const hl = await rect(page, '#history .m-list'), last = await rect(page, '.pf-side > section:last-child > .glass');
-    assert.ok(Math.abs(hl.bottom - last.bottom) < 1, `the card meets the right column: ${hl.bottom} vs ${last.bottom}`);
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
   { // a brand-new player: no matches at all
     const p = F.profile({ live: false });
-    Object.assign(p, { recent_matches: [], matches_total: 0, summary: { games: 0, wins: 0, losses: 0, win_pct: null } });
+    Object.assign(p, { recent_matches: [], matches_total: 0, summary: { games: 0, wins: 0, losses: 0, win_pct: null }, by_queue: [] });
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p, player_profile_all: [] } });
     await page.locator('.pf-card').waitFor();
     assert.equal(await page.locator('.pf-none').textContent(), NONE);
+    assert.deepEqual(await texts(page, '.pf-sum > span'), ['#7 on the leaderboard', '1,184 Elo'], 'no "0-0 record"');
     await contentRules(page);
     assert.deepEqual(errors, []);
     await close();
   }
-  { // the D-pad walks the card, the history tabs and rows, and the pager; B is Back
+  { // the D-pad walks the hero in reading order, then the tabs, then the tab's body; B is Back
     const { page, errors, close } = await openState(browser, srv.base, STATE, { pad: true });
     await page.locator('.pf-card').waitFor();
     const key = () => page.evaluate(() => document.activeElement?.getAttribute('data-key') || document.activeElement?.textContent?.trim());
@@ -564,28 +609,27 @@ try {
     };
     await page.locator('#back').focus();
     const seen = [await key()];
-    for (let i = 0; i < 8 && !String(seen.at(-1)).startsWith('match-'); i++) { await press(13); seen.push(await key()); }
+    for (let i = 0; i < 8 && !String(seen.at(-1)).startsWith('ptab-'); i++) { await press(13); seen.push(await key()); }
     console.log(`pad walk: ${seen.join(' > ')}`);
-    // the card reads in order: Back, Plays as, Share profile, View on web (share before the live card), then the tabs
-    assert.deepEqual(seen.slice(0, 4), ['back', 'plays-as', 'share', 'web'], `Down reads the card in order: ${seen}`);
-    assert.ok(!seen.includes('live-feed') || seen.indexOf('share') < seen.indexOf('live-feed'), `Share comes before Live feed: ${seen}`);
-    assert.ok(['All', 'Ranked', 'Casual'].includes(seen[4]), `Down from View on web reaches the history tabs: ${seen}`);
-    assert.equal(seen.at(-1), 'match-m-01', `Down then reaches the first match: ${seen}`);
+    // top-down: Share profile and View on web (top right), Plays as, then the live card under the buttons
+    assert.deepEqual(seen.slice(0, 5), ['back', 'share', 'web', 'plays-as', 'live-feed'], `Down reads the hero in order: ${seen}`);
+    assert.match(String(seen.at(-1)), /^ptab-/, `Down from the hero reaches the tabs: ${seen}`);
+    await page.locator('[data-key="live-feed"]').focus();
     await press(12); await press(12); await press(12);
-    assert.equal(await key(), 'share', 'Up walks back through the card in order');
+    assert.equal(await key(), 'share', 'Up walks back through the hero in order');
     await press(15);
     assert.equal(await key(), 'web', 'Right from Share profile is View on web');
+    // the tabs: Right walks them, A picks; Down goes on into the tab's body
+    await page.locator('[data-key="ptab-overview"]').focus();
     await press(15);
-    assert.equal(await key(), 'live-feed', 'Right from View on web is the live card');
+    assert.equal(await key(), 'ptab-matches');
+    await press(0);
+    assert.equal(await tabOn(page), 'Matches');
     await press(13);
-    // the live card sits over the right column: Down lands on Career's "Full stats ›" (Task 7), Left from it on the history tabs
-    assert.equal(await key(), 'full-stats', 'Down from Live feed reaches the first stop of the right column');
-    await press(14);
-    { const k = await key(); assert.ok(['All', 'Ranked', 'Casual'].includes(k), `Left from Full stats › reaches the history tabs: ${k}`); }
-    await page.locator('[data-key="live-feed"]').focus();
-    await press(14);
-    assert.equal(await key(), 'web', 'Left from Live feed comes back to View on web');
-    await page.locator('[data-key="match-m-18"]').scrollIntoViewIfNeeded().catch(() => {});
+    assert.equal(await key(), 'match-m-01', 'Down from the tabs reaches the first match (the filter sits at the right)');
+    await press(12);
+    { const k = await key(); assert.ok(['All', 'Ranked', 'Casual', 'ptab-matches'].includes(k), `Up from the first match: ${k}`); }
+    await page.locator('[data-key="match-m-01"]').focus();
     const lastRow = page.locator('#history .m-list > .m-row:not(.m-hd)').last();
     await lastRow.focus();
     await press(13);
@@ -593,9 +637,8 @@ try {
     await press(0);
     await page.waitForFunction(() => document.querySelector('#history .m-pager span')?.textContent === 'Page 2 of 2');
     assert.equal(await key(), 'newer', 'focus stays in the pager after Older (Older is now disabled)');
-    // past the pager, Down goes on into Full stats' table; the tabs sit over its right-hand columns
-    await press(13);
-    { const k = await key(); assert.match(String(k), /^sort-passing-/, `Down from the pager reaches the Passing table: ${k}`); }
+    // Stats: the table's headings, its tabs above, Show all below
+    await page.locator('[data-key="ptab-stats"]').click();
     await page.locator('[data-key="sort-passing-long"]').focus();
     await press(12);
     { const k = await key(); assert.ok(['Passing', 'Rushing', 'Receiving', 'Defense'].includes(k), `Up from the last heading reaches the Full stats tabs: ${k}`); }
@@ -611,11 +654,11 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // the small window
+  { // the small window: the tiles and Recent matches / Career stack in one column
     const { page, errors, close } = await openState(browser, srv.base, STATE, { viewport: { width: 800, height: 560 } });
     await page.locator('.pf-card').waitFor();
     await noSideways(page);
-    assert.ok((await rect(page, '.pf-side')).top > (await rect(page, '#history')).bottom - 1, 'one column in a small window');
+    assert.ok((await rect(page, '#career')).top > (await rect(page, '#recent')).bottom - 1, 'one column in a small window');
     await contentRules(page);
     await page.screenshot({ path: path.join(out, 'profile-800.png') });
     assert.deepEqual(errors, []);

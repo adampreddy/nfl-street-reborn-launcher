@@ -1,8 +1,8 @@
 // Spec §13 for Stats and Profile: screens at 1280×800 and 800×560 in each look (glass on and off, slow and quick
-// motion), a best of 3 open, Profile live and not live; the motion each uses (nav marker --d3, tab highlight --d2, the
-// best-of-3 reveal --d3; reduced motion instant); controller mode (spec §6.3): a mouse user with a pad connected sees no
-// prompts, pad input brings the prompts and a plain white ring, D-pad Down skips a closed best of 3's games and reaches
-// them once A opens it, and a mouse move hides the prompts again.
+// motion), Stats › Records, Profile live and not live; the motion each uses (nav marker --d3, tab highlights --d2;
+// reduced motion instant); controller mode (spec §6.3): a mouse user with a pad connected sees no prompts, pad input
+// brings the prompts and a plain white ring, the D-pad walks the match rows, A opens a whole match, and a mouse move
+// hides the prompts again.
 //     node Tools/check-glass-stats-profile.mjs [outdir]      (default target/glass-review)
 import { chromium } from 'playwright';
 import { mkdirSync, readdirSync } from 'node:fs';
@@ -40,14 +40,15 @@ try {
       await settle(page);
       assert.equal(await style(page, '.nav-marker', 'transitionDuration'), t.d3, `nav marker at --d3 (${tag})`);
       assert.match(await style(page, '.st-col .tab-ind', 'transitionDuration'), fixedDur(t.d2), `tab highlight at --d2 (${tag})`);
-      assert.equal(await style(page, '#games-m-01', 'transitionDuration'), t.d3, `best-of-3 reveal at --d3 (${tag})`);
+      assert.match(await style(page, '#stats-view .tab-ind', 'transitionDuration'), fixedDur(t.d2), `Matches | Records highlight at --d2 (${tag})`);
       await noSideways(page, `stats ${tag}`);
       await shot(page, `stats-${tag}.png`);
-      await page.locator('[data-key="match-m-01"]').click();
+      await page.locator('[data-key="view-records"]').click();
+      await page.locator('.rec-table').waitFor();
       await page.waitForTimeout(slow ? 1100 : 350);
       await settle(page);
-      assert.ok(await page.locator('#games-m-01').evaluate((n) => n.getBoundingClientRect().height > 100), `the best of 3 opened (${tag})`);
-      await shot(page, `stats-bo3-${tag}.png`);
+      await noSideways(page, `stats records ${tag}`);
+      await shot(page, `stats-records-${tag}.png`);
       assert.deepEqual(errors, []);
       await close();
     }
@@ -57,6 +58,7 @@ try {
       await look(page, glass);
       await settle(page);
       assert.equal(await page.locator('.pf-live').count(), live ? 1 : 0, `profile live card (${tag}, live=${live})`);
+      assert.match(await style(page, '.pf-tabbar .tab-ind', 'transitionDuration'), fixedDur(t.d2), `profile tab highlight at --d2 (${tag})`);
       await noSideways(page, `profile ${tag}`);
       await shot(page, `profile-${live ? 'live' : 'idle'}-${tag}.png`);
       assert.deepEqual(errors, []);
@@ -66,7 +68,7 @@ try {
   { // reduced motion: every state change is instant
     const { page, close } = await openState(browser, srv.base, STATS);
     await page.locator('.st-cols').waitFor();
-    for (const sel of ['.nav-marker', '.st-col .tab-ind', '#games-m-01']) assert.match(await style(page, sel, 'transitionDuration'), /^0s/, `${sel} under reduced motion`);
+    for (const sel of ['.nav-marker', '.st-col .tab-ind', '#stats-view .tab-ind']) assert.match(await style(page, sel, 'transitionDuration'), /^0s/, `${sel} under reduced motion`);
     await close();
   }
   { // controller mode on Stats (spec §6.3)
@@ -79,13 +81,9 @@ try {
     assert.equal(await style(page, '.input-footer', 'display'), 'flex', 'pad input: the prompts');
     await page.locator('[data-key="match-m-01"]').focus();
     await press(page, 13);                                   // D-pad Down
-    assert.equal(await activeKey(page), 'match-m-02', 'Down skips a closed best of 3’s games');
+    assert.equal(await activeKey(page), 'match-m-02', 'Down walks to the next match (nothing opens in place)');
     await press(page, 12);                                   // D-pad Up
     assert.equal(await activeKey(page), 'match-m-01');
-    await press(page, 0);                                    // A opens it
-    assert.equal(await page.locator('[data-key="match-m-01"]').getAttribute('aria-expanded'), 'true');
-    await press(page, 13);
-    assert.equal(await activeKey(page), 'game-g-011', 'Down reaches Game 1 once it is open');
     const ring = await page.evaluate(() => { const s = getComputedStyle(document.activeElement); return `${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor}`; });
     assert.equal(ring, 'solid 2px rgb(255, 255, 255)', 'a plain white focus ring, no glow');
     await shot(page, 'stats-pad-1280.png');
@@ -93,9 +91,12 @@ try {
     await page.mouse.move(360, 340);
     await page.waitForFunction(() => !document.body.classList.contains('gamepad-input'));
     assert.equal(await style(page, '.input-footer', 'display'), 'none', 'mouse: the prompts go');
+    await page.locator('[data-key="match-m-01"]').focus();
+    await press(page, 0);                                    // A opens the whole match
+    await page.waitForURL(/game\.html\?game=g-013&games=g-011%2Cg-012%2Cg-013/);
     assert.deepEqual(errors, []);
     await close();
   }
-  assert.equal(shots.length, 33, `screenshot count: 8 looks x 4 screens (stats, stats-bo3, profile-live, profile-idle) + the pad shot; got ${shots.length}`);
+  assert.equal(shots.length, 33, `screenshot count: 8 looks x 4 screens (stats, stats-records, profile-live, profile-idle) + the pad shot; got ${shots.length}`);
   console.log(`check-glass-stats-profile: PASS (${shots.length} screens in ${out}; ${readdirSync(out).filter((f) => /^(stats|profile)-.*\.png$/.test(f)).length} Stats/Profile files present)`);
 } finally { await browser.close(); await srv.close(); }

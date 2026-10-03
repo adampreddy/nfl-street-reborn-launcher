@@ -2,15 +2,17 @@
 // Live Feed | Box Score | Team Stats, drawn by the site's own renderers vendored into ui/site/. On the site's 644488b4
 // fixture (Tools/fixtures/game-644488b4.json, as stats_game answers it) this checks the strip, the three tabs, the
 // empty words, that no text says undefined/NaN/null or carries an en dash, that every image comes from a prefix the
-// CSP allows, that tabs, plays and drives are reachable by pad, and that the vendored files match the backend.
-// Screens at 1280x800 for each tab.
+// CSP allows, that tabs, plays and drives are reachable by pad, and that the vendored files match the backend. A match
+// of several games is ONE page (owner 10-03): the site's game picker and the series above the scoreboard swap the game
+// in place, with no Previous / Next; Back returns where the match was opened from. Screens at 1280x800 for each tab and
+// for the match.
 //     node Tools/check-game-site.mjs [outdir]      (screens in target/game-site by default)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { serve, openState, root, GAME_644, GAME_ID } from './lib/page-states.mjs';
+import { serve, openState, root, GAME_644, GAME_ID, GAME_3, MATCH_URL, matchGames } from './lib/page-states.mjs';
 
 const out = path.resolve(process.argv[2] || path.join(root, 'target/game-site'));
 mkdirSync(out, { recursive: true });
@@ -62,9 +64,11 @@ try {
     assert.equal(await page.locator('#allplays .dv').count(), GAME_644.drives.length);
     assert.equal(await page.locator('#allplays .dv.open').count(), 0, 'post-game: every drive collapsed');
     assert.equal(await page.locator('#note').textContent(), 'Final');
-    // the launcher's row: Back (B / Esc) and Open on web for an online game
+    // the launcher's row: Back (B / Esc) and Open on web for an online game; no Previous / Next, no picker for one game
     assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
     assert.equal(await page.locator('[data-key="web"]').isVisible(), true);
+    assert.equal(await page.locator('[data-key="game-prev"], [data-key="game-next"]').count(), 0, 'no Previous / Next');
+    assert.equal(await page.locator('#game-pick').isVisible(), false, 'one game: no picker');
     await clean(page, 'feed');
     await images(page, 'feed');
     await shot(page, 'game-feed');
@@ -164,6 +168,68 @@ try {
     assert.ok(await page.locator('#allplays .dv-hd').evaluateAll((ns) => ns.every((n) => n.tabIndex >= 0)));
     await page.keyboard.press('Escape');
     await page.waitForURL(/stats\.html$/);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // a whole match on one page: Game 1 · Game 2 · Game 3 and the series over the scoreboard, the last game shown first;
+    // picking a game swaps the page below in place (the tab stays), the address follows without a history entry
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } }, { reducedMotion: 'no-preference' });
+    await page.locator('#strip .strip').waitFor();
+    assert.deepEqual(await texts(page, '#game-pick .picker button'), ['Game 1', 'Game 2', 'Game 3']);
+    assert.equal(await page.locator('#game-pick .picker button[aria-pressed="true"]').textContent(), 'Game 3');
+    assert.equal(await page.locator('#game-pick .game-series').textContent(), 'Series 2-1');
+    { const pk = await page.locator('#game-pick').boundingBox(), st = await page.locator('#strip').boundingBox();
+      assert.ok(pk.y + pk.height <= st.y + 1, 'the picker sits above the scoreboard'); }
+    assert.equal(await page.locator('[data-key="game-prev"], [data-key="game-next"]').count(), 0, 'no Previous / Next');
+    assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
+    await clean(page, 'match');
+    await shot(page, 'game-match');
+    const histLen = await page.evaluate(() => history.length);
+    await page.locator('[data-key="tab-box"]').click();
+    await page.locator('[data-key="game-2"]').click();
+    assert.equal(await page.evaluate(() => document.body.querySelector('#game-body').getAnimations().map((a) => a.animationName).join()), 'game-in', 'the swap rises in');
+    { const [dur, d2] = await page.evaluate(() => [getComputedStyle(document.getElementById('game-body')).animationDuration, getComputedStyle(document.documentElement).getPropertyValue('--d2').trim()]);
+      assert.equal(parseFloat(dur) * 1000, parseFloat(d2), `the swap runs on --d2: ${dur} vs ${d2}`); }
+    await page.waitForFunction(() => document.querySelector('#game-pick button[aria-pressed="true"]')?.textContent === 'Game 2');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'game-2', 'focus stays on the picker');
+    assert.equal(new URL(page.url()).searchParams.get('game'), GAME_644.game.id, 'the address follows the game');
+    assert.equal(await page.evaluate(() => history.length), histLen, 'no history entry: Back still leaves the match');
+    assert.equal(await page.locator('#tabbtn-box').getAttribute('aria-selected'), 'true', 'the tab stays picked');
+    assert.equal(await page.locator('#tab-box .bx-col').count(), 2);
+    // the left / right arrows walk the picker, never other games or pages
+    await page.keyboard.press('ArrowLeft');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'game-1');
+    assert.match(page.url(), /game.html/);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => /^Totals only/.test(document.querySelector('#tab-box .empty')?.textContent ?? ''));
+    assert.equal(new URL(page.url()).searchParams.get('game'), GAME_ID);
+    await clean(page, 'match, game 1');
+    await shot(page, 'game-match-g1');
+    // each game is read once: going back to one already seen asks nothing
+    const asked = await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'stats_game').map((c) => c.args.gameId));
+    assert.deepEqual([...asked].sort(), [GAME_ID, GAME_644.game.id, GAME_3].sort(), `each game read once: ${asked}`);
+    await page.locator('[data-key="game-3"]').click();
+    await page.waitForFunction(() => document.querySelector('#game-pick button[aria-pressed="true"]')?.textContent === 'Game 3');
+    assert.equal(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'stats_game').length), asked.length);
+    // the opening and closing transitions ride the cross-document view transition, on --d2. Read from the source: the
+    // test browser may predate :active-view-transition-type (Chromium 125) and drop the closing rule, as it would
+    // drop the whole cross-document transition (126); the launcher's WebView2 is evergreen.
+    const css = await page.evaluate(async () => (await (await fetch('theme.css')).text()) + (await (await fetch('pages/game.css')).text()));
+    assert.match(css, /html:has\(body\.page-game\)::view-transition-new\(page\)\{animation:game-in var\(--d2\) var\(--ease\) both\}/, 'opening: game-in on --d2');
+    assert.match(css, /html:active-view-transition-type\(from-game\)::view-transition-old\(page\)\{animation:game-out var\(--d2\) var\(--ease\) both\}/, 'closing: game-out on --d2');
+    assert.match(css, /@keyframes game-in\{from\{opacity:0;transform:translateY\(\d+px\)\}\}/, 'a fade with a slight rise');
+    assert.match(css, /prefers-reduced-motion:reduce\)\{\.game-body\.game-swap\{animation:none\}\}/, 'reduced motion: no swap animation');
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // Back returns where the match was opened from (a profile's Matches tab, say), validated
+    const from = 'profile.html?player=0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d#matches';
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-from', url: `game.html?game=${GAME_644.game.id}&from=${encodeURIComponent(from)}`, scope: 'main', data: { stats_game: GAME_644 } });
+    await page.locator('#strip .strip').waitFor();
+    assert.equal(await page.locator('#back').getAttribute('href'), from);
+    await page.goto(`${srv.base}/game.html?game=${GAME_644.game.id}&from=${encodeURIComponent('https://evil.example/')}`);
+    await page.locator('#back').waitFor();
+    assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
     assert.deepEqual(errors, []);
     await close();
   }
