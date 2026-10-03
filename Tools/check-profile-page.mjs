@@ -3,8 +3,8 @@
 // card, the Elo panel or a clean Unranked state); then the v2 grid, every row's cards sharing their edges: Elo history
 // with the leaderboard around them · Record · Last 10; Career highlights; Their / Your players (box-score numbers)
 // · Recent matches; Head to head · Win rate by team, each left out when its data is. The fuller views (#matches,
-// #stats, #records, #h2h) open in place from the "All ..." links, the address following without a history entry;
-// Back returns to the profile first. Matches: the queue filter and the pager; Stats: Full stats and the rest; Records:
+// #stats, #records, #h2h) open in place from the "All ..." links, each a history entry (owner 10-03: the mouse's back
+// button returns to the profile); Back of any kind returns to the profile first, the hero never changing size. Matches: the queue filter and the pager; Stats: Full stats and the rest; Records:
 // Single game and Career side by side; Head to head. W/L only, never "Best of 3", "ladder" or "Private"; the deployed
 // server's answers; Elo off; the small window; the D-pad; the links from Stats (#passing...) landing on their table.
 //     node Tools/check-profile-page.mjs [outdir]      (screens in target/p4-after by default)
@@ -146,22 +146,40 @@ try {
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(out, 'profile-1280-lower.png') });
     await page.evaluate(() => { document.getElementById('main').scrollTop = 0; });
-    // "All matches ›" opens the match history in place, the address following without a history entry; Back returns
+    // "All matches ›" opens the match history in place as a history entry; the mouse's back button (page.goBack) and the
+    // page's Back both return to the profile, focus on the link that opened the view
     const len = await page.evaluate(() => history.length);
     await page.locator('[data-key="all-matches"]').click();
     assert.equal(await tabOn(page), 'matches');
     assert.equal(await page.evaluate(() => location.hash), '#matches');
-    assert.equal(await page.evaluate(() => history.length), len, 'no history entry');
+    assert.equal(await page.evaluate(() => history.length), len + 1, 'a history entry');
     assert.equal(await page.locator('#players').count(), 0, 'the fuller view replaces the profile\'s grid');
-    await page.locator('#back').click();
-    assert.equal(await tabOn(page), 'overview');
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
     assert.equal(await page.evaluate(() => location.hash), '');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'all-matches', 'focus back on the link that opened it');
+    await page.goForward();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'matches');
+    await page.locator('#back').click();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
+    assert.equal(await page.evaluate(() => location.hash), '');
+    for (const [k, v] of [['all-stats', 'stats'], ['all-players', 'stats'], ['all-h2h', 'h2h']]) {
+      if (!(await page.locator(`[data-key="${k}"]`).count())) continue;
+      await page.locator(`[data-key="${k}"]`).click();
+      assert.equal(await tabOn(page), v);
+      await page.goBack();
+      await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
+    }
+    // a view opened from a view (More stats' Records ›) steps back one view at a time
     await page.locator('[data-key="all-stats"]').click();
-    assert.equal(await tabOn(page), 'stats');
-    await page.locator('#back').click();
-    await page.locator('[data-key="all-players"]').click();
-    assert.equal(await tabOn(page), 'stats');
-    await page.locator('#back').click();
+    if (await page.locator('[data-key="to-records"]').count()) {
+      await page.locator('[data-key="to-records"]').click();
+      assert.equal(await tabOn(page), 'records');
+      await page.goBack();
+      await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'stats');
+    }
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
     assert.deepEqual(errors, []);
     // a recent match opens the whole match, Back returning to the profile
     await page.locator('[data-key="recent-m-01"]').click();
@@ -450,8 +468,8 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // Back returns to the profile from a fuller view, then to the page the profile was opened from (views add no
-    // history entry)
+  { // Back returns to the profile from a fuller view, then to the page the profile was opened from: the page's Back,
+    // then the mouse's (page.goBack)
     const { page, errors, close } = await openState(browser, srv.base, { name: 'stats', url: 'stats.html', scope: 'main' });
     // Your passer opens the profile at its top (Adam 10-03); All stats › opens Full stats; Back steps out of it
     await page.locator('[data-key="card-passer"]').click();
@@ -461,12 +479,59 @@ try {
     await page.locator('#full-stats').waitFor();
     assert.equal(await tabOn(page), 'stats');
     await page.locator('#back').click();
-    assert.equal(await tabOn(page), 'overview');
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
     await page.locator('#back').click();
     await page.waitForURL(/stats\.html$/);
     await page.locator('#screen').first().waitFor();
+    // the same with the mouse's back button: Match history, back to the profile, back to Stats
+    await page.locator('[data-key="card-passer"]').click();
+    await page.locator('#players').waitFor();
+    await page.locator('[data-key="all-matches"]').click();
+    await page.locator('#history').waitFor();
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
+    await page.goBack();
+    await page.waitForURL(/stats\.html$/);
+    await page.locator('#st-record, #screen').first().waitFor();
+    // a deep link (Stats' All players ›, #stats) still lands on its view; Back there returns to the profile in place
+    await page.locator('[data-key="all-players"]').click();
+    await page.locator('#full-stats').waitFor();
+    assert.equal(await tabOn(page), 'stats');
+    await page.locator('#back').click();
+    await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
     assert.deepEqual(errors, []);
     await close();
+  }
+  { // the hero never changes size between the profile and its views (owner 10-03, "the bar at the top changes size when
+    // you click match history"). Real scrollbars (the test browser hides them) and a tall window, where one view
+    // scrolls and another does not.
+    const real = await chromium.launch({ channel: process.env.REBORN_TEST_BROWSER || 'msedge', headless: true, ignoreDefaultArgs: ['--hide-scrollbars'] });
+    try {
+      for (const viewport of [{ width: 1280, height: 800 }, { width: 1600, height: 1200 }]) {
+        const { page, errors, close } = await openState(real, srv.base, STATE, { viewport });
+        await page.locator('#recent').waitFor();
+        const box = () => page.evaluate(() => ['#back', '.pf-card', '.pf-elo', '.pf-row'].map((s) => { const r = document.querySelector(s).getBoundingClientRect();
+          return `${s} ${[r.left, r.top, r.width, r.height].map((x) => Math.round(x * 10) / 10).join(',')}`; }));
+        const at = await box();
+        const clip = { x: 180, y: 0, width: viewport.width - 180, height: 380 };
+        await page.screenshot({ path: path.join(out, `profile-head-overview-${viewport.height}.png`), clip });
+        for (const [k, v] of [['all-matches', 'matches'], ['all-stats', 'stats'], ['all-players', 'stats']]) {
+          await page.locator(`[data-key="${k}"]`).click();
+          await page.waitForFunction((t) => document.querySelector('.pf-body')?.dataset.tab === t, v);
+          await page.evaluate(() => { document.getElementById('main').scrollTop = 0; });
+          await page.waitForTimeout(300);
+          if (v === 'matches') await page.screenshot({ path: path.join(out, `profile-head-matches-${viewport.height}.png`), clip });
+          assert.deepEqual(await box(), at, `the hero keeps its size in ${v} (${viewport.width}x${viewport.height})`);
+          await page.goBack();
+          await page.waitForFunction(() => document.querySelector('.pf-body')?.dataset.tab === 'overview');
+          await page.evaluate(() => { document.getElementById('main').scrollTop = 0; });
+          await page.waitForTimeout(200);
+          assert.deepEqual(await box(), at, `and on the profile again (${viewport.width}x${viewport.height})`);
+        }
+        assert.deepEqual(errors, []);
+        await close();
+      }
+    } finally { await real.close(); }
   }
   { // someone else's profile: only the owner picks Plays as; their players read "Their players" (and "Players" in
     // More stats); the leaderboard names the owner, never "You"

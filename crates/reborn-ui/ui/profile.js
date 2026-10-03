@@ -7,8 +7,9 @@
 //   · Last 10; Career highlights; Their players (five numbers each) · Recent matches; Head to head · Win rate by team.
 // "All matches ›", "All stats ›", "All players ›" and "All opponents ›" open the fuller views in place (the whole match
 // history, Full stats and the rest of the numbers, Head to head): the address's #matches, #stats (or #passing,
-// #rushing, #receiving, #defense, the links from Stats), #records, #h2h, without a history entry; Back returns to the
-// profile. A card whose data the server does not send is left out and its row partner takes the width. A match opens
+// #rushing, #receiving, #defense, the links from Stats), #records, #h2h, each a history entry (Adam 10-03: the mouse's
+// back button returns to the profile), so Back (the page's, the mouse's, the browser's, controller B) returns to the
+// profile, then to the page the profile was opened from. A card whose data the server does not send is left out and its row partner takes the width. A match opens
 // the whole match on one page. Private rooms never show (the deployed server still sends them; dropped on the way in).
 // Everything drawn is server data: el()'s `text` (textContent) only, never markup. Images only through assetUrl() or
 // avatarSrc() (the CSP's two image prefixes). Script-set styles are custom properties and the cover's --c1/--c2,
@@ -62,7 +63,11 @@ const link = (key, text, onclick) => el('button', { type: 'button', class: 'sec-
 function backButton() {
   const b = el('button', { type: 'button', class: 'pf-back', id: 'back', 'data-key': 'back', 'data-nav': 'rows' }, el('span', { class: 'chev', 'aria-hidden': 'true' }), el('span', { text: 'Back' }));
   b.addEventListener('click', () => {
-    if (view.tab !== 'overview') { showTab('overview'); b.focus({ preventScroll: true }); return; }
+    if (view.tab !== 'overview') {
+      // A view opened from a link is a history entry (pfFrom): step back out of it (popstate draws where it came from).
+      if (history.state?.pfView === view.tab && history.state?.pfFrom) { history.back(); return; }
+      showTab('overview'); b.focus({ preventScroll: true }); return;
+    }
     let fromLauncher = false;
     try { fromLauncher = Boolean(document.referrer) && new URL(document.referrer).origin === location.origin; } catch { /* no referrer */ }
     if (fromLauncher && history.length > 1) history.back(); else location.href = 'stats.html';
@@ -230,23 +235,41 @@ function hero(p, ownerId) {
 }
 
 // ---- the views: the profile itself, or one fuller view (#matches, #stats, #records, #h2h) in its place ----
-// The address's #<view> names it (no history entry: one Back still leaves the page), so a game opened from a view comes
-// back to it; the links from Stats (#passing, #rushing, #receiving, #defense) open Full stats on that table.
+// The address's #<view> names it, so a game opened from a view comes back to it; the links from Stats (#passing,
+// #rushing, #receiving, #defense) open Full stats on that table. A view opened from a link is a history entry
+// (openView); Back, of any kind, pops it and popstate (jump) draws the view the address names.
 
 const VIEWS = ['overview', 'matches', 'stats', 'records', 'h2h'];
 const HASH_VIEW = { '': 'overview', overview: 'overview', career: 'overview', matches: 'matches', history: 'matches', stats: 'stats', 'full-stats': 'stats',
   more: 'stats', passing: 'stats', rushing: 'stats', receiving: 'stats', defense: 'stats', records: 'records', h2h: 'h2h' };
-const view = { tab: 'overview', tabs: [], p: null, self: false, body: null };
+const view = { tab: 'overview', tabs: [], p: null, self: false, body: null,
+  // Leaving the profile for a view: the link that opened it and the scroll, put back when Back returns to the profile.
+  opener: null, scroll: 0 };
 const here = (tab = view.tab) => `profile.html?player=${playerId}${tab === 'overview' ? '' : `#${tab}`}`;
 
-/** Show a view: the body redrawn, the address following without a history entry. `focus`: the view's first control. */
-function showTab(tab, { focus = false, scroll = false } = {}) {
+const addressOf = (tab) => `${location.pathname}${location.search}${tab === 'overview' ? '' : `#${tab}`}`;
+
+/** Show a view: the body redrawn. `address`: the address follows without a history entry (replaceState; off when the
+ *  address already names it). `focus`: the view's first control. */
+function showTab(tab, { focus = false, scroll = false, address = true } = {}) {
   view.tab = view.tabs.includes(tab) ? tab : 'overview';
-  try { history.replaceState(history.state, '', `${location.pathname}${location.search}${view.tab === 'overview' ? '' : `#${view.tab}`}`); } catch { /* the address is a convenience */ }
+  if (address) try { history.replaceState({ ...(history.state || {}), pfView: view.tab }, '', addressOf(view.tab)); } catch { /* the address is a convenience */ }
   drawBody();
   if (focus) view.body.querySelector('button, a[href], select')?.focus({ preventScroll: true });
   if (scroll) view.body.scrollIntoView?.({ block: 'start' });
   else if (view.tab !== 'overview') document.getElementById('main')?.scrollTo?.({ top: 0 });
+}
+
+/** A link opens a fuller view: a new history entry (Adam 10-03: the mouse's back button returns to the profile). */
+function openView(tab) {
+  const to = view.tabs.includes(tab) ? tab : 'overview';
+  if (to === view.tab) { showTab(to, { focus: true }); return; }
+  if (view.tab === 'overview') {
+    view.opener = document.activeElement?.getAttribute?.('data-key') ?? null;
+    view.scroll = document.getElementById('main')?.scrollTop ?? 0;
+  }
+  try { history.pushState({ pfView: to, pfFrom: view.tab }, '', addressOf(to)); } catch { /* no history: the view still opens */ }
+  showTab(to, { focus: true, address: false });
 }
 
 function drawBody() {
@@ -327,14 +350,14 @@ function careerCard(p) {
   const shown = tiles.filter((t) => t.key !== 'sck' && t.value !== DASH);
   if (!shown.length) return null;
   const cells = shown.map((t) => ({ label: t.label, value: t.value, note: [t.rank, t.perGame].filter(Boolean).join(' · ') }));
-  return card('career', 'Career highlights', cellGrid(cells, cells.length), { aside: link('all-stats', 'All stats ›', () => showTab('stats', { focus: true })), flush: true });
+  return card('career', 'Career highlights', cellGrid(cells, cells.length), { aside: link('all-stats', 'All stats ›', () => openView('stats')), flush: true });
 }
 
 function playersCard(p) {
   const rows = playerRows(withCareerLines(p.best_players, p.career), { roles: ROLES.filter(([r]) => r !== 'most_played') });
   if (!rows.length) return null;
   return card('players', view.self ? 'Your players' : 'Their players', el('div', { class: 'vc-rows' }, ...rows),
-    { aside: link('all-players', 'All players ›', () => showTab('stats', { focus: true })), flush: true });
+    { aside: link('all-players', 'All players ›', () => openView('stats')), flush: true });
 }
 
 const RECENT_COLS = '62px minmax(0,1fr) 74px 48px';
@@ -352,7 +375,7 @@ function recentCard() {
   });
   return card('recent', 'Recent matches', [tableHead(['Result', 'Opponent', 'Queue', 'Date'], RECENT_COLS, [3]),
     el('div', { class: 'vc-rows pf-recent' }, ...(rows.length ? rows : [el('p', { class: 'm-empty', text: NONE_TEXT })]))],
-  { aside: link('all-matches', 'All matches ›', () => showTab('matches', { focus: true })), flush: true });
+  { aside: link('all-matches', 'All matches ›', () => openView('matches')), flush: true });
 }
 
 // Head to head's "Last": a one-game match ("g:<game id>") shows its score; a series' summed points would read like a
@@ -383,7 +406,7 @@ function h2hCard(p) {
       el('span', { class: `r num pf-res ${letter}`, text: h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH }), el('span', { class: 'r num pf-date', text: best })), H2H_COLS);
   });
   return card('h2h-card', 'Head to head', [tableHead(['Opponent', 'Record', 'Points', 'Last', 'Biggest win'], H2H_COLS, [1, 2, 3, 4]), el('div', { class: 'vc-rows' }, ...rows)],
-    { aside: all.length > SHOWN ? link('all-h2h', `All ${all.length} opponents ›`, () => showTab('h2h', { focus: true })) : 'Online', flush: true });
+    { aside: all.length > SHOWN ? link('all-h2h', `All ${all.length} opponents ›`, () => openView('h2h')) : 'Online', flush: true });
 }
 
 
@@ -609,7 +632,7 @@ function moreStats(p, self) {
   if (types.length) cards.push(moreCard('by-type', 'By game type', smallTable('Record by game type', ['Game type', 'Record', 'Pts / gm', 'Win %'],
     types.map((t) => [String(t.name ?? DASH), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
   if (!cards.length) return null;
-  const toRecords = view.tabs.includes('records') ? link('to-records', 'Records ›', () => showTab('records', { focus: true })) : null;
+  const toRecords = view.tabs.includes('records') ? link('to-records', 'Records ›', () => openView('records')) : null;
   return el('section', { id: 'more', 'aria-labelledby': 'more-h' }, sectionHead('more', 'More stats', toRecords), el('div', { class: 'pf-more' }, ...cards));
 }
 
@@ -631,13 +654,23 @@ function h2hSection(p) {
 
 // ---- the page ----
 
-/** The address's #hash picks the view (and, for #passing / #rushing / #receiving / #defense, the Full stats table). */
+/** Back / Forward (popstate) or an address change (hashchange): the address's #hash picks the view (and, for #passing /
+ *  #rushing / #receiving / #defense, the Full stats table). Back to the profile puts its scroll and the link that
+ *  opened the view back. */
 function jump() {
   if (!view.p) return;
   const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
+  const table = Boolean(FULL_STATS[hash]) && fs.tab !== hash;
   if (FULL_STATS[hash]) fs.tab = hash;
-  const tab = HASH_VIEW[hash] ?? 'overview';
-  if (tab !== view.tab || FULL_STATS[hash]) showTab(tab, { scroll: Boolean(hash) && tab !== 'overview' });
+  const tab = view.tabs.includes(HASH_VIEW[hash]) ? HASH_VIEW[hash] : 'overview';
+  if (tab === view.tab && !table) return;
+  const leaving = view.tab;
+  showTab(tab, { address: false });
+  if (tab !== 'overview' || leaving === 'overview') return;
+  const main = document.getElementById('main');
+  if (main) main.scrollTop = view.scroll;
+  const back = view.opener ? Array.from(view.body.querySelectorAll('[data-key]')).find((n) => n.getAttribute('data-key') === view.opener) : null;
+  (back || document.getElementById('back'))?.focus({ preventScroll: true });
 }
 
 function draw(p, ownerId) {
@@ -718,4 +751,5 @@ function startRefresh() {
 markCurrent();
 wireCoreFold();
 load();
-if (typeof window !== 'undefined') window.addEventListener?.('hashchange', jump);
+// popstate: Back / Forward over the views' entries; hashchange: an address typed or set (jump does nothing twice).
+if (typeof window !== 'undefined') { window.addEventListener?.('popstate', jump); window.addEventListener?.('hashchange', jump); }
