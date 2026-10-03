@@ -17,6 +17,15 @@ const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.j
 // stats_game for a VERIFIED game: the backend's test/fixtures/site-restyle/644488b4-snapshot.json game 1 (Bills 8, Eagles
 // 36) in the shape the server's /v1/games/:id, /plays, /boxscore and /drives give it (plays as { body, situation }).
 export const GAME_644 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/game-644488b4.json'), 'utf8'));
+// A whole match on one page (owner 10-03): three games, oldest first. Game 1 the totals-only game (GAME_ID), game 2 the
+// verified 644488b4, game 3 the same verified game under its own id.
+export const GAME_3 = 'bbbbbbbb-2222-4333-8444-555555555555';
+export function matchGames() {
+  const third = structuredClone(GAME_644);
+  third.game.id = GAME_3;
+  return { [GAME_644.game.id]: GAME_644, [GAME_3]: third };
+}
+export const MATCH_URL = `game.html?game=${GAME_3}&games=${[GAME_ID, GAME_644.game.id, GAME_3].join(',')}&series=2-1&from=stats.html`;
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
 // Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
 // adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
@@ -46,8 +55,10 @@ const PREP = { summary: { controller: 'XInput/0/Gamepad', controller_port: 0, co
 // A state may also carry: data (answers replacing the defaults), progress (extra onboarding_progress fields) and
 // click (a selector clicked after load, to reach a tab).
 export const STATES = {
-  stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }],
-  profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' }],
+  stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }, { name: 'stats-records', url: 'stats.html#records', scope: 'main' }],
+  // The profile's tabs (owner 10-03): Overview, then each tab by its address.
+  profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' },
+    ...['matches', 'stats', 'records', 'h2h'].map((t) => ({ name: `profile-${t}`, url: `profile.html?player=${F.ME}#${t}`, scope: 'main' }))],
   recovery: [
     { name: 'recovery', url: 'recovery.html', scope: 'main' },
     { name: 'recovery-clean', url: 'recovery.html', scope: 'main', data: { sessions: [SESSION('s1', 'Exited', false)] } },
@@ -62,6 +73,7 @@ export const STATES = {
     { name: 'game-box', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-box"]' },
     { name: 'game-team', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
     { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
+    { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } },
   ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
@@ -280,6 +292,7 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       window.__calls.push({ cmd, args });
       if (cmd === 'launcher_look') return { ...data.launcher_look, windowGlass: glass, slowAnimations: slow, glassApplied: glass };
       if (cmd === 'window_glass_apply') return { ...data.launcher_look, windowGlass: !!args.enabled, glassApplied: !!args.enabled };
+      if (cmd === 'stats_game' && data.stats_game_by_id && args.gameId in data.stats_game_by_id) return data.stats_game_by_id[args.gameId];
       if (cmd === 'player_profile' && args.before) return { ok: true, matches: (data.player_profile_all || []).filter((m) => m.at < args.before).slice(0, 10) };
       if (cmd === 'launch') return new Promise(() => {});
       if (cmd in data) return data[cmd];
