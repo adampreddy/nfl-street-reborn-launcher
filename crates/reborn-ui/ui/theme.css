@@ -347,9 +347,6 @@ body.themed .vendor-dualsense .controller{position:relative}
 .sec-head .tabs{padding:3px}
 .sec-link{padding:0;border:0;background:none;font:600 12.5px Inter,system-ui,sans-serif;color:var(--red-ink);text-decoration:none;cursor:pointer}
 .sec-link:hover{color:var(--fg)}
-.sec-links{display:flex;gap:16px}
-.sec-links a{font-size:12.5px;color:var(--fg-2);text-decoration:none}
-.sec-links a:hover{color:var(--fg)}
 .k-label{display:block;font:600 11px/1.3 Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
 .num{font-variant-numeric:tabular-nums}
 /* team logo: the backend's full-colour logos (spec §3.4); the abbreviation in a small badge when there is none */

@@ -171,7 +171,7 @@ One definition each, in `theme.css`. A page file may place them, never restyle t
 | `.tabs`, `.tab`, `.tab-ind` | segmented control, one highlight that slides with `translateX` and `scaleX` | `tabs.js` |
 | `dialog.menu` | anchored glass list in the top layer, check on the current option, D-pad inside it, B closes; `dialog.menu.panel` (280px, `openPanel()`) holds any content the same way (Online's players and lobbies) | `menu.js` |
 | `.save-lane`, `.save-bar` | the save bar in its own lane | `savebar.js`, `settings-draft.js` |
-| `.sec-head`, `.sec-link`, `.sec-links`, `.k-label` | 40px section header, its links, an uppercase label | |
+| `.sec-head`, `.sec-link`, `.k-label` | 40px section header, its link, an uppercase label | |
 | `.m-list`, `.m-row`, `.m-hd`, `.m-game`, `.m-pager` | the match list of Stats and Profile (grid columns 84, 92, flexible, 44, 56, 14) | `match-rows.js` |
 | `.rows-reveal`, `.chev` | a best of 3 opening in place; the chevron turns | `match-rows.js` |
 | `.tbl`, `tr.total` | table: uppercase header, fixed 220px name column shared by every table, Total row with a `--stroke-hi` rule | |
