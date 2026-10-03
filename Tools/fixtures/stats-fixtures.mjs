@@ -126,9 +126,10 @@ function career() {
   };
 }
 const RECORDS = () => [
-  { key: 'pass_yds', label: 'Passing Yards', value: 288, game_id: 'g-011', at: at(19), name: 'M. Penix Jr.', ...face(ATL) },
-  { key: 'rush_yds', label: 'Rushing Yards', value: 171, game_id: 'g-012', at: at(19), name: 'S. Barkley', ...face(PHI) },
-  { key: 'rec_yds', label: 'Receiving Yards', value: 164, game_id: 'g-013', at: at(20), name: 'D. London', ...face(ATL) },
+  // the deployed server's own labels (players.js LINE_RECORDS): the page spells "yds" out as "Yards"
+  { key: 'pass_yds', label: 'Passing yds', value: 288, game_id: 'g-011', at: at(19), name: 'M. Penix Jr.', ...face(ATL) },
+  { key: 'rush_yds', label: 'Rushing yds', value: 171, game_id: 'g-012', at: at(19), name: 'S. Barkley', ...face(PHI) },
+  { key: 'rec_yds', label: 'Receiving yds', value: 164, game_id: 'g-013', at: at(20), name: 'D. London', ...face(ATL) },
   { key: 'tackles', label: 'Tackles', value: 12, game_id: 'g-021', at: at(21), name: 'N. Bolton', ...face(KC) },
   { key: 'longest_td', label: 'Longest TD', value: 99, game_id: 'g-041', at: at(22), name: null, team: null, tgid: null, logo_url: null },
   { key: 'most_points', label: 'Most points', value: 49, game_id: 'g-031', at: at(24), name: null, team: null, tgid: null, logo_url: null },

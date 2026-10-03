@@ -120,6 +120,9 @@ try {
     assert.equal(await page.locator('.pf-lb-row.me .pf-lb-name').textContent(), 'You');
     // Records: five, then All ›
     assert.equal(await page.locator('#records .pf-rec:not([hidden])').count(), 5);
+    // spelled-out labels say Yards, never yds / YDS (owner 10-03)
+    assert.deepEqual((await texts(page, '#records .pf-rec .k')).slice(0, 3), ['Passing Yards', 'Rushing Yards', 'Receiving Yards']);
+    assert.doesNotMatch(await page.locator('#records').textContent(), /\byds\b/i);
     assert.equal(await page.locator('#records .sec-link').textContent(), 'All ›');
     await contentRules(page);
     await noSideways(page);

@@ -14,7 +14,7 @@ import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
 import { fmtInt, fmtPct, roleCards } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, storeGameList, teamLogo } from './match-rows.js';
-import { FULL_STATS, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, publicQueues, recordOverview, sortValue, splitTop, statusLine, summaryFacts, withCareerLines } from './profile-model.js';
+import { FULL_STATS, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, publicQueues, recordOverview, sortValue, splitTop, statusLine, spellYards, summaryFacts, withCareerLines } from './profile-model.js';
 import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -372,10 +372,11 @@ function recordsSection(p) {
   if (!rows.length) return null;
   const head = sectionHead('records', 'Records');
   const nodes = rows.map((r) => {
-    const cells = [el('span', { class: 'k', text: r.label }),
+    const name = spellYards(r.label);
+    const cells = [el('span', { class: 'k', text: name }),
       r.name ? el('span', { class: 'who' }, teamLogo({ name: r.team, logo_url: r.logo_url, abbrev: r.abbrev }), el('span', { text: r.name })) : el('span'),
       el('b', { class: 'num', text: int(r.value) }), el('span', { class: 'pf-mute num', text: day(r.at) })];
-    const label = `${r.label}: ${int(r.value)}${r.name ? `, ${r.name}` : ''}, ${day(r.at)}`;
+    const label = `${name}: ${int(r.value)}${r.name ? `, ${r.name}` : ''}, ${day(r.at)}`;
     return r.game_id
       ? el('a', { class: 'pf-rec', href: gameHref(r.game_id), 'aria-label': `${label}. Open the game` }, ...cells)
       : el('div', { class: 'pf-rec', role: 'group', 'aria-label': label }, ...cells);

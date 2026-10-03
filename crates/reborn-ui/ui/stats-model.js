@@ -62,9 +62,9 @@ export function fmtElo(elo) {
  */
 function unitLabel(unit) {
   const labels = {
-    pass_yds: 'pass yds',
-    rush_yds: 'rush yds',
-    rec_yds: 'rec yds',
+    pass_yds: 'passing yards',
+    rush_yds: 'rushing yards',
+    rec_yds: 'receiving yards',
     tkl_sck: 'tkl + sck',
     int: 'INT',
     games: 'games'

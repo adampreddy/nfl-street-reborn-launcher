@@ -145,6 +145,13 @@ export function withCareerLines(best, career) {
   return out;
 }
 
+/** A label spelled out in words says "Yards", never "YDS"/"yds" (owner 10-03): the server's record labels read
+ *  "Passing yds"; this draws "Passing Yards". A bare "YDS" (a compact column heading) is left alone. */
+export function spellYards(label) {
+  const s = String(label ?? '');
+  return /\S\s+yds\b|\byds\s+\S/i.test(s) ? s.replace(/\byds\b/gi, 'Yards') : s;
+}
+
 /** The Leaderboard card (`elo.around`, backend §5/§14). The profile's own player is marked; it reads "You" only when the
  *  viewer is that player. */
 export function leaderboardRows(around, { self = false } = {}) {

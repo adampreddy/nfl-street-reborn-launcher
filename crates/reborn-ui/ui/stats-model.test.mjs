@@ -45,7 +45,7 @@ test('matchRowModel: a series shows 2–1 and expands; one game shows its score 
 test('roleCards: six cards in order, None yet when empty', () => {
   const c = roleCards({ passer: { name: 'Penix', team: 'Falcons', logo_url: '/l', portrait_url: null, value: 2104, unit: 'pass_yds' }, rusher: null, receiver: null, dl_lb: null, ballhawk: null, most_played: null });
   assert.deepEqual(c.map((x) => x.label), ['Best passer', 'Best rusher', 'Best receiver', 'Best DL/LB', 'Ballhawk', 'Most played']);
-  assert.equal(c[0].stat, '2,104 pass yds'); assert.equal(c[0].initial, 'P');
+  assert.equal(c[0].stat, '2,104 passing yards'); assert.equal(c[0].initial, 'P');
   assert.equal(c[1].name, 'None yet'); assert.equal(c[1].stat, '');
 });
 
@@ -185,5 +185,14 @@ test('ties and unknown results count for nothing', () => {
 
 test('fmtInt: a missing number (undefined, a string) is a dash, never a throw', () => {
   assert.equal(fmtInt(undefined), '—'); assert.equal(fmtInt('12'), '—');
-  assert.equal(roleCards({ passer: { name: 'A. Passer', yds: 10, unit: 'pass_yds' } })[0].stat, '— pass yds');
+  assert.equal(roleCards({ passer: { name: 'A. Passer', yds: 10, unit: 'pass_yds' } })[0].stat, '— passing yards');
+});
+
+test('spellYards: a spelled-out label says Yards; a bare YDS heading stays', async () => {
+  const { spellYards } = await import('./profile-model.js');
+  assert.equal(spellYards('Passing yds'), 'Passing Yards');
+  assert.equal(spellYards('Rushing YDS'), 'Rushing Yards');
+  assert.equal(spellYards('YDS'), 'YDS');
+  assert.equal(spellYards('Tackles'), 'Tackles');
+  assert.equal(spellYards(null), '');
 });
