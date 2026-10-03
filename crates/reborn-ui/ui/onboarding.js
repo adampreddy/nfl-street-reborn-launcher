@@ -804,7 +804,14 @@ function contentDownload(){
         while(alive&&s.phase==='installing'){await new Promise(r=>setTimeout(r,1000));s=await call('content_status');}
       }
       if(!alive||phase==='skipped')return;
-      if(s.phase==='installed'||s.phase==='up_to_date'||!wanted.length&&s.phase!=='available'){phase='done';setRows('Installed','done');}
+      if(s.phase==='installed'||s.phase==='up_to_date'||!wanted.length&&s.phase!=='available'){
+        // Build the texture folder Dolphin reads now, not at the first Play:
+        // until then the Play page said "Texture pack not loading" right
+        // after the pack had installed (-9 test, 2026-10-03).
+        lead.textContent='Preparing textures…';
+        await call('mods_sync',{runtime:pending.runtime||null}).catch(()=>{});
+        phase='done';setRows('Installed','done');
+      }
       else {phase='problem';note=s.note||'The download did not finish. Try again; it resumes where it stopped.';}
     }catch(e){phase='problem';note=String(e?.message||e)+' Try again; it resumes where it stopped.';}
     render();
