@@ -2,7 +2,7 @@
 // answer as it is and returns strings ready to draw, or null / [] when the server did not send what a piece needs, so
 // the page leaves that piece out: nothing is invented (spec §8.7, "Degrades gracefully until the backend work ships").
 // An older server's shapes are handled here too: private rooms (backend §1) and rushing `yac` for YCO (backend §9).
-import { eloChange, fmtInt, fmtPct } from './stats-model.js';
+import { eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
 
 // Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
 const DASH = '—', EN = '–', MINUS = '−', REC = '-';
@@ -151,12 +151,14 @@ export function withCareerLines(best, career) {
     let extra = {};
     if (ROLE_TABLE[role]) extra = pickStats(find(ROLE_TABLE[role]));
     else if (role === 'most_played') {
+      // A server that already sends the full row (backend cc79302) keeps it: its own columns say its role. Else one
+      // career row, by role (Adam 10-03, position-relevant): a quarterback's passing row; else the rushing or
+      // receiving row with more yards; else the defensive row. Never columns from two roles.
+      if (playerKind(b)) { out[role] = { ...b }; continue; }
       const rush = find('rushing'), rec = find('receiving');
-      const pick = rush && rec ? ((num(rec.yds) ? rec.yds : 0) > (num(rush.yds) ? rush.yds : 0) ? rec : rush) : rush || rec;
-      const { games: _g, ...stats } = pickStats(pick);
-      extra = pick === rec ? { rec: stats.rec, yds: stats.yds, td: stats.td } : { att: stats.att, yds: stats.yds, td: stats.td };
+      const pick = find('passing') || (rush && rec ? ((num(rec.yds) ? rec.yds : 0) > (num(rush.yds) ? rush.yds : 0) ? rec : rush) : rush || rec) || find('defense');
+      extra = pickStats(pick);
       if (num(b.value) && b.unit === 'games') extra.games = b.value;
-      extra = Object.fromEntries(Object.entries(extra).filter(([, v]) => num(v)));
     }
     out[role] = { ...extra, ...b };
   }

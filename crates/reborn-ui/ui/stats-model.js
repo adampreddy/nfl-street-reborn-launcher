@@ -676,6 +676,31 @@ const CELLS = {
   dl_lb: [['tkl', 'Tackles'], ['sck', 'Sacks'], ['tfl', 'TFL'], ['ff', 'FF'], ['pbu', 'PBU']],
   ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'Tackles'], ['ff', 'FF'], ['td', 'TD']],
 };
+// Most played (Adam 10-03, "more relevant to the player's position"): Games, then the four numbers of that player's
+// role, never another role's (no tackles on a quarterback).
+const GAME_LINES = {
+  passer: [['cmp/att', 'Cmp/Att'], ['yds', 'Yards'], ['td', 'TD'], ['rtg', 'Rating', true]],
+  rusher: [['att', 'Carries'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD']],
+  receiver: [['rec', 'Catches'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD']],
+  defender: [['tkl', 'Tackles'], ['sck', 'Sacks'], ['int', 'INT'], ['ff', 'FF']],
+};
+const POSITION_KIND = { QB: 'passer', RB: 'rusher', HB: 'rusher', FB: 'rusher', WR: 'receiver', TE: 'receiver',
+  DL: 'defender', DE: 'defender', DT: 'defender', LB: 'defender', OLB: 'defender', MLB: 'defender', CB: 'defender', S: 'defender', FS: 'defender', SS: 'defender', DB: 'defender' };
+/**
+ * Which role a player row is: its `position` when the server sends one, else the career table the row came from,
+ * told by that table's own columns (backend players.js PROJ): passing has `cmp`, rushing `att` with `avg`/`btk`/`yco`
+ * (no `cmp`), receiving `rec`, defense `tkl`. Null when nothing says.
+ */
+export function playerKind(row) {
+  if (!row || typeof row !== 'object') return null;
+  const pos = typeof row.position === 'string' ? POSITION_KIND[row.position.trim().toUpperCase()] : null;
+  if (pos) return pos;
+  if (isNum(row.cmp)) return 'passer';
+  if (isNum(row.rec)) return 'receiver';
+  if (isNum(row.att)) return 'rusher';
+  if (isNum(row.tkl) || isNum(row.sck)) return 'defender';
+  return null;
+}
 const VALUE_LABEL = { pass_yds: 'Passing Yards', rush_yds: 'Rushing Yards', rec_yds: 'Receiving Yards', tkl_sck: 'Tackles + Sacks', int: 'Interceptions', games: 'Games' };
 
 /**
@@ -693,9 +718,9 @@ export function statCells(role, data) {
   });
   let cells;
   if (role === 'most_played') {
-    const line = isNum(data.cmp) ? CELLS.passer : isNum(data.att) ? CELLS.rusher : isNum(data.rec) ? CELLS.receiver : CELLS.dl_lb;
+    const kind = playerKind(data);
     const games = isNum(data.games) ? data.games : data.unit === 'games' && isNum(data.value) ? data.value : null;
-    const rest = take(line.filter(([k]) => k !== 'long')).slice(0, 4);
+    const rest = kind ? take(GAME_LINES[kind]) : [];
     cells = rest.length ? [...(games === null ? [] : [{ value: fmtInt(games), label: 'Games' }]), ...rest] : [];
   } else cells = take(CELLS[role] || []);
   if (cells.length >= 2) return cells.slice(0, 5);

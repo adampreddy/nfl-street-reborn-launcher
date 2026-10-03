@@ -297,7 +297,7 @@ test('statCells: five spelled-out numbers per role from the full row; the old va
   assert.deepEqual(cells('dl_lb', { tkl: 19, sck: 6, tfl: 8, ff: 3, pbu: 2 }), ['19 Tackles', '6 Sacks', '8 TFL', '3 FF', '2 PBU']);
   assert.deepEqual(cells('ballhawk', { int: 5, pbu: 7, tkl: 14, ff: 2, td: 2 }), ['5 INT', '7 PBU', '14 Tackles', '2 FF', '2 TD']);
   // most played: games, then the picked row's line (a passer here), four numbers
-  assert.deepEqual(cells('most_played', { games: 11, cmp: 38, att: 61, yds: 1102, td: 12, int: 2, rtg: 109.1, value: 11, unit: 'games' }), ['11 Games', '38/61 Cmp/Att', '1,102 Yards', '12 TD', '2 INT']);
+  assert.deepEqual(cells('most_played', { games: 11, cmp: 38, att: 61, yds: 1102, td: 12, int: 2, rtg: 109.1, value: 11, unit: 'games' }), ['11 Games', '38/61 Cmp/Att', '1,102 Yards', '12 TD', '109.1 Rating']);
   assert.deepEqual(cells('most_played', { att: 96, yds: 535, td: 5, value: 23, unit: 'games' }), ['23 Games', '96 Carries', '535 Yards', '5 TD']);
   // a field not sent is left out, never a dash or NaN
   assert.deepEqual(cells('passer', { yds: 3108, td: 31, rtg: NaN, cmp: 1 }), ['3,108 Yards', '31 TD']);
@@ -347,4 +347,24 @@ test('teamRates, yardsSplit, teamPerGame, winsLosses, queueMark, rowSpans', () =
   assert.deepEqual(V2.rowSpans([['a', 6], [null, 3], ['c', 3]]), [['a', 8], ['c', 4]]);
   assert.deepEqual(V2.rowSpans([[null, 7], ['b', 5]]), [['b', 12]]);
   assert.deepEqual(V2.rowSpans([]), []);
+});
+
+test('most played: Games, then four numbers of that player’s role only (Adam 10-03, position-relevant)', () => {
+  const labels = (d) => V2.statCells('most_played', d).map((c) => c.label);
+  // the live server's rows (api /v1/players/6d8ed15e.../profile, 10-03): a passing row, a rushing row, a receiving row, a defensive row
+  const qb = { key: 'p11', games: 3, cmp: 8, att: 16, yds: 407, td: 5, int: 1, air: 214, yac: 193, ypa: 25.4, rtg: 109.4, long: 73, sacked: 5, value: 3, unit: 'games' };
+  const rb = { key: 'p44', games: 2, att: 8, yds: 150, avg: 18.8, td: 1, long: 79, btk: 9, yco: 12, value: 2, unit: 'games' };
+  const wr = { key: 'p4', games: 3, rec: 4, yds: 250, avg: 62.5, yac: 120, td: 4, long: 73, drops: 0, value: 3, unit: 'games' };
+  const db = { key: 'p53', games: 2, tkl: 8, tfl: 2, sck: 0, int: 3, pbu: 1, ff: 2, fr: 2, td: 1, value: 2, unit: 'games' };
+  assert.deepEqual(labels(qb), ['Games', 'Cmp/Att', 'Yards', 'TD', 'Rating']);
+  assert.deepEqual(labels(rb), ['Games', 'Carries', 'Yards', 'Average', 'TD']);
+  assert.deepEqual(labels(wr), ['Games', 'Catches', 'Yards', 'Average', 'TD']);
+  assert.deepEqual(labels(db), ['Games', 'Tackles', 'Sacks', 'INT', 'FF']);
+  assert.deepEqual(V2.statCells('most_played', qb).map((c) => c.value), ['3', '8/16', '407', '5', '109.4']);
+  assert.deepEqual([qb, rb, wr, db].map(V2.playerKind), ['passer', 'rusher', 'receiver', 'defender']);
+  // a position field, when a server sends one, decides
+  assert.equal(V2.playerKind({ position: 'te', att: 1, rec: 3 }), 'receiver');
+  assert.deepEqual(labels({ position: 'LB', tkl: 9, sck: 1, int: 0, ff: 1, games: 4 }), ['Games', 'Tackles', 'Sacks', 'INT', 'FF']);
+  // never another role's numbers: a quarterback shows no tackles
+  assert.ok(!labels({ ...qb, tkl: 4 }).includes('Tackles'));
 });

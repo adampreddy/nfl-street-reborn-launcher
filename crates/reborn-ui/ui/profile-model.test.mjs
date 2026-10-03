@@ -203,7 +203,13 @@ test('withCareerLines: each best player takes its own career row by key; most pl
     most_played: { key: 'rb', value: 7, unit: 'games' }, dl_lb: null, ballhawk: { key: 'nobody', value: 1, unit: 'int' } }, career);
   assert.deepEqual(b.passer, { cmp: 10, att: 20, yds: 150, td: 2, int: 1, rtg: 99.1, key: 'qb', value: 150, unit: 'pass_yds' });
   assert.equal(b.rusher.long, 20);
-  assert.deepEqual(b.most_played, { att: 30, yds: 120, td: 1, games: 7, key: 'rb', value: 7, unit: 'games' });
+  assert.deepEqual(b.most_played, { att: 30, yds: 120, avg: 4, td: 1, long: 20, games: 7, key: 'rb', value: 7, unit: 'games' });
+  // a quarterback most played takes his PASSING row (position-relevant, Adam 10-03), never his carries
+  const qb = withCareerLines({ most_played: { key: 'qb', value: 9, unit: 'games' } }, career).most_played;
+  assert.deepEqual([qb.cmp, qb.att, qb.rtg, qb.games], [10, 20, 99.1, 9]);
+  // a server that sends the full row (backend cc79302) keeps it as it is
+  const full = { key: 'qb', cmp: 8, att: 16, yds: 407, td: 5, rtg: 109.4, games: 3, value: 3, unit: 'games' };
+  assert.deepEqual(withCareerLines({ most_played: full }, career).most_played, full);
   assert.equal(b.dl_lb, null);
   assert.deepEqual(b.ballhawk, { key: 'nobody', value: 1, unit: 'int' });
   // no career sent (an older server): the players stay as they came
