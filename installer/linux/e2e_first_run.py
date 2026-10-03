@@ -79,6 +79,11 @@ if (!s || s.value) return false;
 s.value = 'none'; s.dispatchEvent(new Event('change', {bubbles: true})); return true;
 """
 
+PICK_FIRST = """
+const r = document.querySelector('input[type=radio]:not(:disabled)');
+if (!r) return false; r.click(); return true;
+"""
+
 used = set()
 last_key, same_since, step = None, time.time(), 0
 deadline = time.time() + 60 * 60
@@ -102,6 +107,10 @@ while time.time() < deadline:
         if r["v"] == "fresh" and not r["checked"] and "radio-fresh" not in used:
             js("const r=document.querySelector('input[type=radio][value=fresh]'); r.click(); return 1;")
             used.add("radio-fresh"); acted = True
+    # A step that waits on a choice nobody made (graphics preset, button
+    # textures): take the first option, as a player clicking through would.
+    if not acted and st["next"] and st["next"]["disabled"] and st["radios"] and not any(r["checked"] for r in st["radios"]):
+        if js(PICK_FIRST): acted = True; log("chose the first option")
     # No pad in a headless run: the controller step's own way past.
     if not acted and "select-later" not in used and js(SELECT_LATER):
         used.add("select-later"); acted = True; log("chose: Set up a controller later")
