@@ -84,5 +84,8 @@ body.page-stats #main{padding:28px 28px 28px}
 .st-signin .st-signin-go{height:52px;min-width:280px;padding:0 32px;font-size:17px;font-weight:700}
 .st-signin .refusal{margin:16px 0 0}
 .st-signin .st-signin-note{margin:16px 0 0;font-size:12.5px;color:var(--fg-3)}
-/* the view switch slot: Your profile beside Matches | Records */
-#stats-view{display:flex;align-items:center;gap:12px}
+/* the view switch slot: Your profile, then Matches | Records (owner 10-03). The button is the switch's height; the two
+   segments share one fixed width, so the switch and its highlight keep their size in either view. */
+#stats-view{display:flex;align-items:stretch;gap:12px}
+#stats-view .st-me{height:auto;align-self:stretch}
+#stats-view .tabs .tab{width:96px;padding:0;text-align:center}

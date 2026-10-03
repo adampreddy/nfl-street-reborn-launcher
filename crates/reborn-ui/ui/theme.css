@@ -234,7 +234,10 @@ body.themed{font:500 14px/1.45 Inter,system-ui,sans-serif;color:var(--fg);-webki
 :where(body.themed img){max-width:100%}
 body.themed [hidden]{display:none!important}
 :where(body.themed *){scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
-body.themed #main{overflow:auto;outline:none}
+/* The scroll area keeps its scrollbar lane whether or not the page scrolls (Adam 10-03: the profile and Stats headers
+   changed size when a shorter view dropped the scrollbar and the content widened under it). Both edges, so centred
+   content stays centred. */
+body.themed #main{overflow:auto;scrollbar-gutter:stable both-edges;outline:none}
 body.themed .page-heading .eyebrow{display:none}
 body.themed .page-heading h1{font:700 30px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
 body.themed .page-heading .purpose{margin-top:8px;color:var(--fg-2)}

@@ -275,18 +275,18 @@ function drawViewSwitch(show) {
   const slot = document.getElementById?.('stats-view');
   if (!slot) return;
   if (!show) { slot.replaceChildren?.(); return; }
-  // Your profile is the switch's third option (Adam, 10-03): it opens the profile page; the other two swap the view.
+  // Your profile is its own button left of the switch (Adam, 10-03: "i don't want profiles to be apart of it"); the
+  // switch is Matches | Records only, its two segments one fixed width (pages/stats.css), so it never changes size.
   const me = state.dash?.you?.player_id;
-  const names = [...VIEWS.map(([, l]) => l), ...(me ? ['Your profile'] : [])];
-  const bar = tabs('stats-view', names, VIEWS.find(([k]) => k === state.view)[1], (label) => {
-    if (label === 'Your profile') { location.href = profileHref(me); return; }
+  const bar = tabs('stats-view', VIEWS.map(([, l]) => l), VIEWS.find(([k]) => k === state.view)[1], (label) => {
     state.view = VIEWS.find(([, l]) => l === label)[0];
     try { history.replaceState(history.state, '', state.view === 'records' ? '#records' : location.pathname + location.search); } catch { /* the address is a convenience */ }
     draw();
     slot.querySelector?.('[aria-pressed="true"]')?.focus({ preventScroll: true });
   }, { label: 'Stats view' });
-  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', i < VIEWS.length ? `view-${VIEWS[i][0]}` : 'your-profile'));
-  slot.replaceChildren(bar);
+  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', `view-${VIEWS[i][0]}`));
+  const mine = me ? el('a', { class: 'btn sm st-me', href: profileHref(me), 'data-key': 'your-profile', text: 'Your profile' }) : null;
+  slot.replaceChildren(...[mine, bar].filter(Boolean));
 }
 
 // ---- drawing ----

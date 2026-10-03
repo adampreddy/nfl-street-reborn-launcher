@@ -65,10 +65,14 @@ try {
     assert.deepEqual(await noDeadSpace(page), []);
     assert.deepEqual([...new Set(await page.locator('.vc-h').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [48], 'every card header is 48px');
     // Your Record: online overall from by_queue (ranked 1-1 + casual 7-3), the halves with the server's points per game
-    // Your profile is the view switch's third option; it opens the player's own profile
+    // Your profile is its own button left of the switch (owner 10-03), the switch's height; it opens the player's own profile
     assert.equal(await page.locator('#st-record .vc-aside').textContent(), 'Online games only');
-    const mine = page.locator('#stats-view [data-key="your-profile"]');
+    const mine = page.locator('#stats-view > [data-key="your-profile"]');
     assert.equal(await mine.textContent(), 'Your profile');
+    assert.deepEqual((await mine.getAttribute('class')).split(' ').slice(0, 2), ['btn', 'sm']);
+    { const b = await rect(page, '#stats-view > [data-key="your-profile"]'), v = await rect(page, '#stats-view .tabs');
+      assert.ok(Math.abs(b.top - v.top) < 0.5 && Math.abs(b.h - v.h) < 0.5, `Your profile is the switch's height: ${b.h} vs ${v.h}`);
+      assert.ok(Math.abs(v.left - b.right - 12) < 0.6, `Your profile sits 12px left of the switch: ${v.left - b.right}`); }
     await Promise.all([page.waitForURL(/profile\.html\?player=[0-9a-f-]+$/), mine.click()]);
     await page.goBack(); await page.locator('#st-record').waitFor();
     assert.equal(await page.locator('.st-overall .vc-big').textContent(), '8-4');
@@ -126,7 +130,7 @@ try {
     assert.deepEqual(await texts(page, '#st-wl .st-cmp-r:not(.st-cmp-h) > span'), ['Points', 'Yards', 'Turnovers']);
     assert.deepEqual(await texts(page, '#st-wl .st-cmp-h b'), ['In 14 wins', 'In 9 losses']);
     // Matches | Records at the top right, beside the title, Matches picked
-    assert.deepEqual(await texts(page, '#stats-view .tab'), ['Matches', 'Records', 'Your profile']);
+    assert.deepEqual(await texts(page, '#stats-view .tab'), ['Matches', 'Records'], 'Your profile is not part of the switch');
     assert.equal(await page.locator('#stats-view .tab[aria-pressed="true"]').textContent(), 'Matches');
     { const v = await rect(page, '#stats-view .tabs'), h = await rect(page, '.page-heading h1'), c = await rect(page, '#st-elo');
       assert.ok(Math.abs(v.right - c.right) < 1.5, `the switch ends on the content's right edge: ${v.right} vs ${c.right}`);
@@ -266,6 +270,34 @@ try {
     assert.equal(await page.evaluate(() => location.hash), '');
     assert.deepEqual(errors, []);
     await close();
+  }
+  { // Matches <-> Records never changes the switch (owner 10-03, "the switch at the top changes size"): its box and its
+    // highlight's width stay put, and the header row keeps its height. Run with REAL scrollbars (the test browser hides
+    // them by default) and a tall window, where one view scrolls and the other may not.
+    const real = await chromium.launch({ channel: process.env.REBORN_TEST_BROWSER || 'msedge', headless: true, ignoreDefaultArgs: ['--hide-scrollbars'] });
+    try {
+      for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 1500 }]) {
+        const { page, errors, close } = await openState(real, srv.base, STATE, { data: FULL, viewport });
+        await page.locator('#st-record').waitFor();
+        const measure = async () => { await page.waitForTimeout(450); return page.evaluate(() => {
+          const r = (n) => { const b = n.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map((x) => Math.round(x * 10) / 10).join(','); };
+          const ind = document.querySelector('#stats-view .tab-ind');
+          return { sw: r(document.querySelector('#stats-view .tabs')), me: r(document.querySelector('#stats-view > .st-me')), head: r(document.querySelector('.page-heading')),
+            ind: Math.round(ind.getBoundingClientRect().width * 10) / 10 }; }); };
+        const a = await measure();
+        await page.screenshot({ path: path.join(out, `stats-head-matches-${viewport.height}.png`), clip: { x: 180, y: 0, width: viewport.width - 180, height: 140 } });
+        await page.locator('[data-key="view-records"]').click();
+        await page.locator('#rec-single').waitFor();
+        const b = await measure();
+        await page.screenshot({ path: path.join(out, `stats-head-records-${viewport.height}.png`), clip: { x: 180, y: 0, width: viewport.width - 180, height: 140 } });
+        assert.deepEqual(b, a, `the switch, Your profile, the header row and the highlight keep their size (${viewport.width}x${viewport.height})`);
+        await page.locator('[data-key="view-matches"]').click();
+        await page.locator('#st-record').waitFor();
+        assert.deepEqual(await measure(), a, 'and back again');
+        assert.deepEqual(errors, []);
+        await close();
+      }
+    } finally { await real.close(); }
   }
   { // opened at #records (Back from a record's game) it shows Records
     const { page, errors, close } = await openState(browser, srv.base, { ...STATE, url: 'stats.html#records' });
