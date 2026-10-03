@@ -1,6 +1,6 @@
 /* Profile, the online player hub (spec §8.7). Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs).
    The match rows, table, portrait, cover wash and dots are theme.css components. */
-body.page-profile #main{padding:36px 36px 32px}
+body.page-profile #main{padding:24px 28px 28px}
 /* the page title stays for screen readers; the page starts with Back and the card (mockup) */
 .page-profile .page-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .page-profile #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
@@ -8,32 +8,38 @@ body.page-profile #main{padding:36px 36px 32px}
 .pf-back{all:unset;border-radius:var(--r-md);align-self:flex-start;display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);cursor:pointer}
 .pf-back:hover{color:var(--fg)}
 .pf-back .chev{margin:0;transform:rotate(135deg)}
-/* the profile card: the cover wash behind the whole card, the avatar centred on the identity block, the live card right */
-.pf-card{position:relative;overflow:hidden}
-/* avatar | identity | Share, View on web over the live card (the live card's row exists only while they play) */
-.pf-row{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"pic id acts" "pic id live";align-items:center;column-gap:24px;padding:22px 26px}
-.pf-row>.pf-pic{grid-area:pic}
-.pf-row>.pf-id{grid-area:id}
-.pf-row>.pf-acts{grid-area:acts}
-.pf-row>.pf-live{grid-area:live;margin-top:14px}
-.pf-row:not(:has(>.pf-live)){grid-template-areas:"pic id acts"}
-.pf-pic{position:relative;display:grid;place-items:center;width:96px;height:96px;border-radius:50%}
+/* the hero (mv2-3): the cover wash behind the whole card; avatar | name, status | Plays as | Joined, the buttons (the
+   live card under them while they play) on the left; the Elo panel on the right */
+.pf-card{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) 400px;align-items:stretch}
+.pf-row{position:relative;display:flex;align-items:center;gap:22px;padding:24px 26px;min-width:0}
+.pf-pic{position:relative;flex:none;display:grid;place-items:center;width:96px;height:96px;border-radius:50%}
 .pf-pic>.pf-avatar{width:96px;height:96px;font-size:40px;background:transparent}
-.pf-name{font:700 28px/1.15 Inter,system-ui,sans-serif;letter-spacing:-.01em}
-.pf-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:var(--fg-2)}
+.pf-id{min-width:0}
+.pf-name{font:700 28px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
+.pf-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--fg-2)}
+.pf-meta b{font-weight:600;color:var(--fg)}
 .pf-dot{color:var(--fg-3)}
 .pf-status{font-weight:600;color:var(--ok)}
+.pf-status.off{font-weight:500;color:var(--fg-2)}
 .pf-team{display:inline-flex;align-items:center;gap:8px}
 .pf-team .team-logo{width:18px;height:18px}
 .pf-team select{height:28px;padding:0 8px;font-size:12.5px}
 .pf-said{font-size:12px;color:var(--fg-2)}
-.pf-sum{display:flex;flex-wrap:wrap;margin-top:12px;font-size:13.5px;color:var(--fg-2)}
-.pf-sum>span{display:inline-flex;align-items:baseline;gap:6px;padding:0 16px;line-height:20px}
-.pf-sum>span:first-child{padding-left:0}
-.pf-sum>span+span{border-left:1px solid var(--stroke-hi)}
-.pf-sum b{font:700 15px Inter,system-ui,sans-serif;color:var(--fg)}
-.pf-acts{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
-.pf-live{width:260px;padding:12px 14px;border-radius:12px;background:var(--on-art);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.pf-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
+.pf-id>.pf-live{margin-top:14px}
+/* the Elo panel: the rating and the week's change, Rank · Peak · Record, the sparkline along its foot */
+.pf-elo{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-content:center;align-items:end;gap:6px 28px;padding:22px 26px;
+  background:var(--field-bg);border-left:1px solid var(--stroke)}
+.pf-elo>.k-label{grid-column:1/-1}
+.pf-elo-v{white-space:nowrap;font:700 46px/1 Inter,system-ui,sans-serif;letter-spacing:-.035em}
+.pf-elo-v small{margin-left:8px;font:600 14px Inter,system-ui,sans-serif;letter-spacing:0;color:var(--fg-2)}
+.pf-elo-v small.up{color:var(--ok)}.pf-elo-v small.down{color:var(--red-ink)}
+.pf-elo-facts{display:grid;grid-template-columns:auto auto;gap:3px 14px;font-size:12.5px;color:var(--fg-2);white-space:nowrap}
+.pf-elo-facts b{font-weight:600;text-align:right;color:var(--fg)}
+.pf-elo>.ch{grid-column:1/-1;margin-top:6px;height:34px;flex:none}
+.pf-elo.unranked .pf-elo-v{font-size:34px;color:var(--fg-2)}
+.pf-elo.unranked .vc-sub{grid-column:1/-1;margin:0}
+.pf-live{width:300px;max-width:100%;padding:12px 14px;border-radius:12px;background:var(--on-art);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
 .pf-live-top{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-2)}
 .pf-live-top .lbl{font:700 11px Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--red-ink)}
 .pf-live-top .q{margin-left:auto}
@@ -44,54 +50,45 @@ body.page-profile #main{padding:36px 36px 32px}
 .pf-live-sc .team-logo{width:28px;height:28px}
 .pf-live-sc strong{font:700 22px Inter,system-ui,sans-serif}
 .pf-live-bot{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--fg-2)}
-/* the tabs under the hero, then one tab's body (owner 10-03: no long scroll of cards) */
-.pf-tabbar{display:flex;margin-top:-4px}
-.pf-body{display:flex;flex-direction:column;gap:24px;min-width:0}
-/* Overview: three tiles; the big numbers share a line */
-.pf-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-.pf-tiles.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
-.pf-tiles.cols-1{grid-template-columns:minmax(0,1fr)}
-.pf-tile{display:flex;flex-direction:column;min-width:0;padding:18px 20px}
-.pf-tile h2{font:600 13px/1.3 Inter,system-ui,sans-serif;color:var(--fg-2)}
-.pf-big{display:flex;align-items:baseline;gap:10px;margin-top:10px;font:700 34px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
-.pf-big em{font:600 14px Inter,system-ui,sans-serif;font-style:normal;letter-spacing:0;color:var(--fg-3)}
-.pf-big em.up{color:var(--ok)}
-.pf-big em.down{color:var(--red-ink)}
-.pf-sub{margin-top:6px;font-size:12.5px;color:var(--fg-3)}
-/* the record's two parts, Ranked and Casual, side by side and clearly apart (owner 10-03) */
-.pf-queues{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
-.pf-q{display:inline-flex;align-items:baseline;gap:6px}
-.pf-q b{font-weight:600;color:var(--fg)}
-.pf-qsep{color:var(--fg-3)}
-/* Recent matches beside Career: two equal columns whose cards end on one line */
-.pf-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:stretch}
-.pf-col{display:flex;flex-direction:column;min-width:0}
-.pf-col>.glass{flex:1}
-.pf-recent{display:flex;flex-direction:column;overflow:hidden}
-.pf-rm{all:unset;box-sizing:border-box;display:grid;grid-template-columns:96px minmax(0,1fr) 52px 60px;align-items:center;gap:12px;width:100%;min-height:40px;padding:0 16px;font-size:13px;color:var(--fg);cursor:pointer}
-.pf-rm:where(button){border-radius:var(--r-md)}
-.pf-rm:hover{background:var(--glass-1)}
-.pf-recent>*+.pf-rm{border-top:1px solid var(--stroke)}
-.pf-rm.pf-rm-hd{min-height:36px;cursor:default;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
-.pf-rm.pf-rm-hd:hover{background:none}
-.pf-rm.pf-rm-hd>:nth-child(3),.pf-rm.pf-rm-hd>:nth-child(4){text-align:right}
-.pf-rm-res{display:flex;align-items:baseline;gap:6px;font-weight:600}
-.pf-rm-res b.W{color:var(--ok)}
-.pf-rm-res b.L{color:var(--red-ink)}
-.pf-rm-opp{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-rm-q{color:var(--fg-2)}
-.pf-rm-elo,.pf-rm-date{font-size:12.5px;text-align:right;white-space:nowrap;color:var(--fg-3)}
-.pf-rm-elo.up{color:var(--ok)}
-.pf-rm-elo.down{color:var(--red-ink)}
-.pf-career{display:flex}
-.pf-car{flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
-.pf-car>div{display:flex;flex-direction:column;justify-content:center;min-width:0;padding:16px 18px}
-.pf-car>div:nth-child(n+4){border-top:1px solid var(--stroke)}
-.pf-car>div:not(:nth-child(3n+1)){border-left:1px solid var(--stroke)}
-.pf-car-k{font-size:12.5px;color:var(--fg-2)}
-.pf-car b{display:block;margin-top:4px;font:700 20px Inter,system-ui,sans-serif}
-.pf-car-s{display:block;margin-top:2px;font-size:11.5px;color:var(--fg-3)}
-.pf-car-s b{display:inline;margin:0;font:600 11.5px Inter,system-ui,sans-serif;color:var(--fg-3)}
+/* the profile under the hero: the v2 grid rows (theme.css .vgrid), 16px apart */
+.pf-body{display:flex;flex-direction:column;gap:16px;min-width:0}
+/* Elo history: the curve, the leaderboard around them on the right */
+.pf-elo-h{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:18px}
+.pf-elo-h.solo{grid-template-columns:minmax(0,1fr)}
+.pf-lad{display:flex;flex-direction:column;margin:0 -18px 0 0;border-left:1px solid var(--rule)}
+.pf-lad>.k-label{padding:0 0 8px 14px}
+.pf-lad .vc-tr{grid-template-columns:22px minmax(0,1fr) auto;min-height:30px;padding:0 18px 0 14px;font-size:12.5px;text-decoration:none}
+.pf-lad .vc-tr b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-lad .vc-tr.me{background:var(--red-wash);box-shadow:inset 2px 0 0 var(--red)}
+.pf-lad-r{color:var(--fg-3)}.pf-lad-e{color:var(--fg-2)}
+/* Record and Last 10 */
+.pf-big{font:700 40px/1 Inter,system-ui,sans-serif;letter-spacing:-.03em}
+.pf-big+.vc-sub{margin:6px 0 0}
+.pf-halves{display:grid;grid-template-columns:1fr 1fr;margin-top:auto;padding-top:12px;border-top:1px solid var(--rule)}
+.pf-q{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.pf-q+.pf-q{padding-left:18px;border-left:1px solid var(--rule)}
+.pf-q b{margin-top:6px;font:700 20px Inter,system-ui,sans-serif}
+.pf-q small{margin-top:2px;font-size:11.5px;color:var(--fg-3)}
+#record .vc-b,#last10 .vc-b{gap:0}
+#record .pf-halves{margin-top:14px}
+.pf-strip{margin-top:14px;padding-top:12px;border-top:1px solid var(--rule)}
+.pf-strip .wl-strip{gap:3px}
+.pf-strip .wl-strip>span{flex:1;width:auto;height:22px;font-size:10.5px}
+.pf-kv{margin-top:auto;padding-top:12px}
+/* the tables of the profile: Recent matches, Head to head, Top connections */
+.pf-res{font-weight:700}
+.pf-res.W{color:var(--ok)}.pf-res.L{color:var(--red-ink)}
+.pf-who{display:flex;align-items:center;gap:9px;min-width:0;color:inherit;text-decoration:none}
+.pf-who b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+a.pf-who:hover b{text-decoration:underline}
+.pf-who .avatar{width:24px;height:24px;font-size:11px}
+.pf-who .team-logo{width:22px;height:22px}
+.pf-date,.pf-mut{color:var(--fg-3)}
+.pf-mut{color:var(--fg-2)}
+.pf-recent .m-empty{padding:16px 18px}
+/* Career highlights: eight cells in a row, labels small enough to read whole (mv2-3) */
+#career .vc-cells>div{padding:14px}
+#career .k-label{font-size:10px;letter-spacing:.03em}
 .pf-records{display:flex;flex-direction:column;gap:16px}
 .pf-none{margin:0;padding:16px 0;color:var(--fg-2)}
 .pf-err{margin:0;padding:8px 16px;font-size:12px;color:var(--red-ink)}
@@ -116,23 +113,14 @@ body.page-profile #main{padding:36px 36px 32px}
 #combos .tbl tbody th{white-space:normal;padding-top:6px;padding-bottom:6px;line-height:1.35}
 #combos .tbl .who>span:last-child{white-space:normal}
 .pf-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
-.pf-pls{display:flex;flex-direction:column;padding:0 16px}
-.pf-pl{display:flex;align-items:center;gap:14px;min-height:56px;border-top:1px solid var(--stroke)}
-.pf-pl-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.pf-pl-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.pf-pl-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-pl-head .k-label{flex:none;font-size:10px}
-.pf-pl-line{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--fg-2)}
-.pf-pl-line>span{white-space:nowrap}
-.pf-pl-line b{font-weight:600;color:var(--fg)}
-.pf-pl.none .pf-pl-name{font-weight:500;color:var(--fg-3)}
+.pf-pls{padding-bottom:4px}
+.pf-pls>.pl-row:first-child{border-top:0}
 @media (max-width:1100px){
-  .pf-two{grid-template-columns:minmax(0,1fr)}
-  .pf-row{grid-template-columns:auto minmax(0,1fr)}
-  .pf-row,.pf-row:not(:has(>.pf-live)){grid-template-areas:"pic id" "acts acts" "live live"}
-  .pf-row>.pf-acts{justify-content:flex-start;margin-top:16px}
-  .pf-live{width:auto}
+  .pf-card{grid-template-columns:minmax(0,1fr)}
+  .pf-elo{border-left:0;border-top:1px solid var(--stroke)}
   .pf-more{grid-template-columns:minmax(0,1fr)}
+  .pf-elo-h{grid-template-columns:minmax(0,1fr)}
+  .pf-lad{margin:0;border-left:0;border-top:1px solid var(--rule);padding-top:8px}
 }
 /* Below 1280 a wide table can scroll sideways in its card: the Player column stays put on a solid surface and the
    numbers scroll under it (profile.js followFocus keeps a pad's focused heading in view). */
@@ -146,5 +134,4 @@ body.page-profile #main{padding:36px 36px 32px}
   #h2h .tbl{min-width:0}
   #h2h .tbl tr>:nth-child(4),#h2h .tbl tr>:nth-child(7){display:none}
 }
-@media (max-width:860px){.pf-tiles,.pf-tiles.cols-2{grid-template-columns:minmax(0,1fr)}}
-@media (max-width:720px){.pf-row,.pf-row:not(:has(>.pf-live)){grid-template-columns:minmax(0,1fr);grid-template-areas:"pic" "id" "acts" "live"}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}.pf-car>div:nth-child(n){border-left:0;border-top:1px solid var(--stroke)}.pf-car>div:nth-child(-n+2){border-top:0}.pf-car>div:nth-child(even){border-left:1px solid var(--stroke)}}
+@media (max-width:720px){.pf-row{flex-direction:column;align-items:flex-start}}

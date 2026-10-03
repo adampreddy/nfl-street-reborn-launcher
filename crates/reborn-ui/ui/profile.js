@@ -1,30 +1,35 @@
 // The public profile, the online player hub (spec §8.7): one player's ONLINE games (`player_profile`), opened as
-// profile.html?player=<uuid>[#tab]. Streamlined (owner 10-03, sr-2 mockup): Back · the hero (the cover from the
-// avatar's colours, avatar, name, status · Plays as · Joined, one line "#7 on the leaderboard | 1,184 Elo | 14-9
-// record", Share profile / View on web, the live card while they play) · tabs Overview | Matches | Stats | Records |
-// Head to head, one tab's body at a time. Overview: three tiles (Elo, Record, Last 10 games), Recent matches beside
-// Career. Matches: the whole history. Stats: Full stats, then the rest of the numbers. Records: Single game | Career.
-// The record is online only, Ranked and Casual apart. A match opens the whole match on one page (game.html).
-// A piece whose data the server does not send yet is left out, never drawn as a placeholder (spec §8.7). Private rooms
-// never show (the deployed server still sends them; they are dropped on the way in).
+// profile.html?player=<uuid>[#view]. The approved mv2 mockup (owner 10-03): no tabs, one short scroll on the v2 grid.
+//   Back · the hero: the cover from the avatar's colours, avatar and presence, name, status | Plays as | Joined, Share
+//   profile and View on web (the live card under them while they play), and the Elo panel on the right (rating, the
+//   week's change, rank of total, peak, ranked record, sparkline; or a clean Unranked state).
+//   Then: Elo history (with the leaderboard around them, when the server sends it) · Record (Ranked and Casual apart)
+//   · Last 10; Career highlights; Their players (five numbers each) · Recent matches; Head to head · Top connections.
+// "All matches ›", "All stats ›", "All players ›" and "All opponents ›" open the fuller views in place (the whole match
+// history, Full stats and the rest of the numbers, Head to head): the address's #matches, #stats (or #passing,
+// #rushing, #receiving, #defense, the links from Stats), #records, #h2h, without a history entry; Back returns to the
+// profile. A card whose data the server does not send is left out and its row partner takes the width. A match opens
+// the whole match on one page. Private rooms never show (the deployed server still sends them; dropped on the way in).
 // Everything drawn is server data: el()'s `text` (textContent) only, never markup. Images only through assetUrl() or
-// avatarSrc() (the CSP's two image prefixes). Script-set styles are the card's --c1/--c2 and a bar's width, through the
-// CSSOM, never a style attribute.
+// avatarSrc() (the CSP's two image prefixes). Script-set styles are custom properties and the cover's --c1/--c2,
+// through the CSSOM, never a style attribute.
 import { bridge, call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
-import { PAGE_ORIGIN, assetUrl, avatarSrc } from './live-common.js';
+import { PAGE_ORIGIN, avatarSrc } from './live-common.js';
 import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
-import { eloChange, fmtInt, fmtPct, matchHref, matchRowModel, matchSubline, roleCards } from './stats-model.js';
+import { eloCard, fmtInt, fmtPct, lastTenGames, matchHref, matchRowModel, queueMark, rowSpans, streakOf } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, teamLogo } from './match-rows.js';
-import { FULL_STATS, careerRecords, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, liveCard, publicQueues, recordOverview, singleGameRecords, sortValue, splitTop, statusLine, summaryFacts, withCareerLines } from './profile-model.js';
-import { recordPills, recordsTable } from './records-view.js';
+import { FULL_STATS, careerRecords, careerTiles, cellValue, isPublic, lastTenOverview, leaderboardRows, liveCard, playerRecords, profileRecord, publicQueues,
+  sortValue, splitTop, statusLine, teamRecords, winRate, withCareerLines } from './profile-model.js';
+import { recordsView } from './records-view.js';
+import { ROLES, card, cellGrid, cols, eloLine, playerRows, tableHead, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHOWN = 5;     // a long table shows five rows; "Show all N" shows every row in place
 const HPAGE = 10;    // Match history rows per page
-const DASH = '—';
-const SVG_NS = 'http://www.w3.org/2000/svg';
+const RECENT = 7;    // Recent matches on the profile
+const DASH = '—', EN = '–';
 const HISTORY_TABS = [['all', 'All'], ['ranked', 'Ranked'], ['casual', 'Casual']];
 const PAGER_OTHER = { older: 'newer', newer: 'older' };
 // The empty states never say a player has never played: private rooms count on the server but never show here.
@@ -42,25 +47,22 @@ const day = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime
 const monthYear = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : null; };
 const profileHref = (id) => `profile.html?player=${encodeURIComponent(id)}`;
 const webUrl = () => `${PAGE_ORIGIN}/u/${playerId}`;
-
-function svg(tag, attrs = {}) {
-  const node = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
-  return node;
-}
+const one = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 /** A section's 40px header: its <h2> and, on the right, a link or tabs. */
 function sectionHead(id, title, extra = null) {
   return el('div', { class: 'sec-head' }, el('h2', { id: `${id}-h`, text: title }), extra);
 }
+const link = (key, text, onclick) => el('button', { type: 'button', class: 'sec-link', 'data-key': key, text, onclick });
 
 // ---- Back ----
 
-// Back returns to the launcher page this one was opened from (Stats, a game, the live view, another profile); opened
-// any other way, it goes to Stats.
+// Back returns to the profile from a fuller view; on the profile, to the launcher page this one was opened from
+// (Stats, a game, the live view, another profile); opened any other way, it goes to Stats.
 function backButton() {
   const b = el('button', { type: 'button', class: 'pf-back', id: 'back', 'data-key': 'back', 'data-nav': 'rows' }, el('span', { class: 'chev', 'aria-hidden': 'true' }), el('span', { text: 'Back' }));
   b.addEventListener('click', () => {
+    if (view.tab !== 'overview') { showTab('overview'); b.focus({ preventScroll: true }); return; }
     let fromLauncher = false;
     try { fromLauncher = Boolean(document.referrer) && new URL(document.referrer).origin === location.origin; } catch { /* no referrer */ }
     if (fromLauncher && history.length > 1) history.back(); else location.href = 'stats.html';
@@ -68,11 +70,11 @@ function backButton() {
   return b;
 }
 
-// ---- the profile card ----
+// ---- the hero ----
 
 function playsAsText(team) {
   if (!team || !team.name) return null;
-  return el('span', { class: 'pf-team' }, el('span', { text: 'Plays as' }), teamLogo(team), el('span', { text: team.name }));
+  return el('span', { class: 'pf-team' }, el('span', { text: 'Plays as' }), teamLogo(team), el('b', { text: team.name }));
 }
 
 /** The owner's own "Plays as" choice: "Most played" (the server's pick) or any team in By team except Pickup. */
@@ -122,8 +124,8 @@ function coverColours(target, url) {
       c.width = c.height = 32;
       const x = c.getContext('2d');
       x.drawImage(im, 0, 0, 32, 32);
-      const cols = dominantColors(x.getImageData(0, 0, 32, 32).data);
-      if (cols) { target.style.setProperty('--c1', cols[0]); target.style.setProperty('--c2', cols[1]); target.classList.add('has-colour'); }
+      const colours = dominantColors(x.getImageData(0, 0, 32, 32).data);
+      if (colours) { target.style.setProperty('--c1', colours[0]); target.style.setProperty('--c2', colours[1]); target.classList.add('has-colour'); }
     } catch { /* tainted canvas: keep the neutral cover */ }
   };
   im.src = src;
@@ -142,10 +144,28 @@ function liveBlock(raw) {
       el('button', { type: 'button', class: 'btn sm', 'data-key': 'live-feed', text: 'Live feed', onclick: () => { location.href = c.href; } })));
 }
 
-// The header's live parts (status, presence dot, live card), redrawn in place by the 30 s refresh; set by card().
+/** The hero's Elo panel (mv2-3): the rating, the week's change, rank of total, peak, ranked record, the sparkline; or
+ *  Unranked ("Rankings start soon" while Elo is off). */
+function eloPanel(p) {
+  const e = eloCard(p.elo);
+  const box = el('div', { class: 'pf-elo', role: 'group', 'aria-label': 'Elo' }, el('span', { class: 'k-label', text: 'Elo · Ranked' }));
+  if (e.state !== 'rated') {
+    box.classList.add('unranked');
+    box.append(el('div', { class: 'pf-elo-v', text: e.title }), el('p', { class: 'vc-sub', text: e.note }));
+    return box;
+  }
+  const ranked = profileRecord(p.summary, p.by_queue)?.ranked;
+  const facts = [['Rank', e.rankOf], ['Peak', e.peak], ['Record', ranked && ranked.wins + ranked.losses ? ranked.text : null]].filter(([, v]) => v);
+  box.append(el('div', { class: 'pf-elo-v' }, e.value, e.week ? el('small', { class: e.week.kind || null, text: `${e.week.text} this week` }) : null),
+    facts.length ? el('div', { class: 'pf-elo-facts' }, ...facts.flatMap(([k, v]) => [el('span', { text: k }), el('b', { class: 'num', text: v })])) : null,
+    eloLine(e.values, { mini: true, label: `Elo over ${e.values.length - 1} ranked matches` }));
+  return box;
+}
+
+// The header's live parts (status, presence dot, live card), redrawn in place by the 30 s refresh; set by hero().
 let updateHeader = null;
 
-function card(p, ownerId) {
+function hero(p, ownerId) {
   const h = p.header || {};
   const name = h.display_name || 'Player';
   const dot = el('span', { class: 'presence-dot', 'aria-hidden': 'true' });
@@ -157,15 +177,15 @@ function card(p, ownerId) {
   if (team) bits.push(team);
   const joined = monthYear(h.joined);
   if (joined) bits.push(el('span', { text: `Joined ${joined}` }));
-  bits.forEach((b, i) => { if (i) meta.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); meta.append(b); });
+  const sep = () => el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '|' });
+  bits.forEach((b, i) => { if (i) meta.append(sep()); meta.append(b); });
   // The status leads the line while there is one; it comes and goes with the refresh without touching the rest.
   const statusEl = el('span', { class: 'pf-status' });
-  const statusSep = bits.length ? el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' }) : null;
-  const facts = summaryFacts(p);
+  const statusSep = bits.length ? sep() : null;
   const said = el('span', { class: 'pf-said', role: 'status' });
   let saidTimer = null;
-  const share = el('button', { type: 'button', class: 'btn primary sm', 'data-key': 'share', text: 'Share profile' });
-  share.addEventListener('click', async () => {
+  const shareBtn = el('button', { type: 'button', class: 'btn primary sm', 'data-key': 'share', text: 'Share profile' });
+  shareBtn.addEventListener('click', async () => {
     const url = webUrl();
     try { await navigator.clipboard.writeText(url); said.textContent = 'Link copied'; } catch { said.textContent = url; }
     clearTimeout(saidTimer);
@@ -175,27 +195,23 @@ function card(p, ownerId) {
   web.addEventListener('click', async () => {
     try { await call('open_website', { url: webUrl() }); } catch (e) { said.textContent = reason(e); }
   });
-  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta,
-    facts.length ? el('p', { class: 'pf-sum' }, ...facts.map((f) => el('span', {}, el('b', { class: 'num', text: f.strong }), ` ${f.text}`))) : null);
-  // Share profile and View on web at the hero's top right (sr-2 mockup), the live card under them while they play
-  // (grid areas in profile.css; the DOM order is the reading order top-down).
-  const acts = el('div', { class: 'pf-acts' }, said, share, web);
-  // data-nav="rows" (Back and the card only): Down reads the card row by row, never straight into the tabs below it;
-  // data-nav-seq: Share profile, View on web, Plays as, Live feed in reading order. The rest of the page keeps column moves.
-  const row = el('div', { class: 'pf-row', 'data-nav-seq': '' }, pic, acts, id);
-  const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), row);
+  const acts = el('div', { class: 'pf-acts' }, shareBtn, web, said);
+  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta, acts);
+  // data-nav="rows" (Back and the hero only): Down reads the hero row by row; data-nav-seq: Share profile, View on web,
+  // Plays as, Live feed in reading order. The rest of the page keeps column moves.
+  const row = el('div', { class: 'pf-row', 'data-nav-seq': '' }, pic, id);
+  const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), row, eloPanel(p));
   let liveKey = null, liveEl = null;
   // Only the status, the presence dot and the live card change; nothing focusable is rebuilt unless the live card
   // itself changed, and a focused Live feed keeps focus (or moves to View on web when the card leaves).
   updateHeader = (next) => {
-    const status = statusLine(next);
+    const status = statusLine(next) ?? (next?.online === false ? { text: 'Offline', kind: 'off' } : null);
     if (status) {
-      statusEl.textContent = `● ${status.text}`;
+      statusEl.textContent = status.kind === 'off' ? status.text : `● ${status.text}`;
+      statusEl.classList.toggle('off', status.kind === 'off');
       if (!statusEl.isConnected) meta.prepend(...[statusEl, statusSep].filter(Boolean));
-      if (!dot.isConnected) pic.append(dot);
-    } else {
-      statusEl.remove(); statusSep?.remove(); dot.remove();
-    }
+    } else { statusEl.remove(); statusSep?.remove(); }
+    if (status && status.kind !== 'off') { if (!dot.isConnected) pic.append(dot); } else dot.remove();
     const key = JSON.stringify(next?.live ?? null);
     if (key === liveKey) return;
     liveKey = key;
@@ -203,7 +219,7 @@ function card(p, ownerId) {
     const fresh = liveBlock(next?.live);
     if (liveEl && fresh) liveEl.replaceWith(fresh);
     else if (liveEl) liveEl.remove();
-    else if (fresh) row.append(fresh);
+    else if (fresh) id.append(fresh);
     liveEl = fresh;
     if (hadFocus) (fresh?.querySelector('[data-key="live-feed"]') ?? web).focus({ preventScroll: true });
   };
@@ -213,35 +229,27 @@ function card(p, ownerId) {
   return box;
 }
 
-// ---- the tabs: Overview | Matches | Stats | Records | Head to head (owner 10-03, "no long scroll of cards") ----
-// One tab's body at a time under the hero. The address's #<tab> names it (no history entry: one Back still leaves the
-// page), so a game opened from a tab comes back to it; the links from Stats (#passing, #rushing, #receiving, #defense)
-// open Stats on that table, #career the Overview, #history the Matches tab.
+// ---- the views: the profile itself, or one fuller view (#matches, #stats, #records, #h2h) in its place ----
+// The address's #<view> names it (no history entry: one Back still leaves the page), so a game opened from a view comes
+// back to it; the links from Stats (#passing, #rushing, #receiving, #defense) open Full stats on that table.
 
-const TABS = [['overview', 'Overview'], ['matches', 'Matches'], ['stats', 'Stats'], ['records', 'Records'], ['h2h', 'Head to head']];
-const HASH_TAB = { '': 'overview', overview: 'overview', career: 'overview', matches: 'matches', history: 'matches', stats: 'stats', 'full-stats': 'stats',
+const VIEWS = ['overview', 'matches', 'stats', 'records', 'h2h'];
+const HASH_VIEW = { '': 'overview', overview: 'overview', career: 'overview', matches: 'matches', history: 'matches', stats: 'stats', 'full-stats': 'stats',
   more: 'stats', passing: 'stats', rushing: 'stats', receiving: 'stats', defense: 'stats', records: 'records', h2h: 'h2h' };
-const view = { tab: 'overview', tabs: [], p: null, self: false, recKind: 'single', bar: null, body: null };
+const view = { tab: 'overview', tabs: [], p: null, self: false, body: null };
 const here = (tab = view.tab) => `profile.html?player=${playerId}${tab === 'overview' ? '' : `#${tab}`}`;
 
-/** Switch tabs: the bar and the body redrawn, the address following without a history entry. */
+/** Show a view: the body redrawn, the address following without a history entry. `focus`: the view's first control. */
 function showTab(tab, { focus = false, scroll = false } = {}) {
   view.tab = view.tabs.includes(tab) ? tab : 'overview';
   try { history.replaceState(history.state, '', `${location.pathname}${location.search}${view.tab === 'overview' ? '' : `#${view.tab}`}`); } catch { /* the address is a convenience */ }
-  drawTabBar();
-  drawTabBody();
-  if (focus) view.bar.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
-  if (scroll) view.bar.scrollIntoView?.({ block: 'start' });
+  drawBody();
+  if (focus) view.body.querySelector('button, a[href], select')?.focus({ preventScroll: true });
+  if (scroll) view.body.scrollIntoView?.({ block: 'start' });
+  else if (view.tab !== 'overview') document.getElementById('main')?.scrollTo?.({ top: 0 });
 }
 
-function drawTabBar() {
-  const names = view.tabs.map((k) => TABS.find(([x]) => x === k)[1]);
-  const bar = tabs('profile-tabs', names, TABS.find(([k]) => k === view.tab)[1], (label) => showTab(TABS.find(([, l]) => l === label)[0], { focus: true }), { label: 'Profile sections' });
-  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', `ptab-${view.tabs[i]}`));
-  view.bar.replaceChildren(bar);
-}
-
-function drawTabBody() {
+function drawBody() {
   const p = view.p;
   const parts = {
     overview: () => overview(p),
@@ -255,66 +263,139 @@ function drawTabBody() {
   if (view.tab === 'matches') fill();
 }
 
-// ---- Overview: three tiles, then Recent matches beside Career (sr-2 mockup) ----
-
-function tile(title, big, side, kind, sub) {
-  return el('section', { class: 'glass pf-tile' }, el('h2', { text: title }),
-    el('div', { class: 'pf-big num' }, el('span', { text: big }), side ? el('em', { class: kind || null, text: side }) : null), sub);
+/** One grid row from [[card, span], ...]; null when no card of it has data (rowSpans gives the partner the width). */
+function gridRow(cards) {
+  const present = rowSpans(cards);
+  if (!present.length) return null;
+  for (const [node, span] of present) node.className = node.className.replace(/\bs\d+\b/, `s${span}`);
+  return el('div', { class: 'vgrid' }, ...present.map(([node]) => node));
 }
+
+// ---- the profile (mv2-3, mv2-4) ----
 
 function overview(p) {
-  const tiles = [];
-  const e = eloOverview(p.elo);
-  if (e) {
-    const peak = num(p.elo.peak) || list(p.elo.history).some((x) => x && num(x.rating)) ? e.sub.split(' · ')[0] : '';
-    tiles.push(tile('Elo', e.value, e.change.text, e.change.kind, peak ? el('p', { class: 'pf-sub', text: peak }) : null));
-  }
-  const rr = recordOverview(p.summary, p.by_queue);
-  // A new player (0-0) reads "—", with no percentage and no queue figures (P4-23).
-  if (rr && rr.value !== '0-0') {
-    // The record is online only, and Ranked and Casual are two separate figures (owner 10-03).
-    const queues = rr.queues.length ? el('p', { class: 'pf-sub pf-queues' }, ...rr.queues.flatMap((q, i) => [
-      i ? el('span', { class: 'pf-qsep', 'aria-hidden': 'true', text: '·' }) : null,
-      el('span', { class: 'pf-q', role: 'group', 'aria-label': `${q.label} record ${q.record}` }, el('span', { text: q.label }), ' ', el('b', { class: 'num', text: q.record }))]).filter(Boolean)) : null;
-    tiles.push(tile('Record', rr.value, rr.pct, '', queues));
-  } else if (rr) tiles.push(tile('Record', DASH, '', '', null));
-  const l = lastTenOverview(p.recent_form);
-  if (l) tiles.push(tile('Last 10 games', l.value, null, '', el('p', { class: 'pf-sub', text: `${l.scored} scored · ${l.allowed} allowed` })));
-  const out = [];
-  if (tiles.length) out.push(el('div', { class: `pf-tiles cols-${tiles.length}` }, ...tiles));
-  out.push(el('div', { class: 'pf-two' }, recentSection(), careerSection(p)));
-  return out;
+  return [
+    gridRow([[eloHistoryCard(p), 6], [recordCard(p), 3], [lastTenCard(p), 3]]),
+    gridRow([[careerCard(p), 12]]),
+    gridRow([[playersCard(p), 7], [recentCard(), 5]]),
+    gridRow([[h2hCard(p), 7], [combosCard(p), 5]]),
+  ].filter(Boolean);
 }
 
-const RECENT = 5;
-function recentSection() {
+function eloHistoryCard(p) {
+  const e = eloCard(p.elo);
+  if (e.state !== 'rated') return null;
+  const chart = eloLine(e.values, { labels: e.labels, peak: e.peakValue, label: `Elo over ${Math.max(0, e.values.length - 1)} ranked matches` });
+  const lad = leaderboardRows(p.elo?.around, { self: view.self });
+  if (!chart && !lad.length) return null;
+  const ladder = lad.length ? el('div', { class: 'pf-lad' }, el('span', { class: 'k-label', text: `Around ${e.rank || ''}`.trim() }),
+    el('div', { class: 'vc-rows' }, ...lad.map((r) => {
+      const kids = [el('span', { class: 'num pf-lad-r', text: r.rank.slice(1) }), el('b', { text: r.name }), el('span', { class: 'num pf-lad-e', text: r.elo })];
+      const attrs = { class: `vc-tr${r.me ? ' me' : ''}`, 'aria-label': `${r.rank} ${r.name}, ${r.elo} Elo` };
+      return r.player_id && !r.me && UUID_RE.test(r.player_id) ? el('a', { ...attrs, href: profileHref(r.player_id), 'data-key': `lad-${r.player_id}` }, ...kids)
+        : el('div', { ...attrs, role: 'group' }, ...kids);
+    }))) : null;
+  return card('elo-history', 'Elo history', el('div', { class: `pf-elo-h${ladder ? '' : ' solo'}` }, chart, ladder),
+    { aside: e.games ? `${e.games} ranked ${e.games === 1 ? 'game' : 'games'}` : null });
+}
+
+function recordCard(p) {
+  const r = profileRecord(p.summary, p.by_queue);
+  // A new player (0-0) has no record to show (P4-23).
+  if (!r || !r.games) return null;
+  const halves = [['Ranked', 'ranked', r.ranked], ['Casual', 'casual', r.casual]].filter(([, , t]) => t)
+    .map(([label, kind, t]) => el('div', { class: 'pf-q', role: 'group', 'aria-label': `${label} record ${t.text}` },
+      el('span', { class: `qm ${kind}`, text: label }), el('b', { class: 'num', text: t.text }), el('small', { class: 'num', text: winRate(t.pct) ?? DASH })));
+  return card('record', 'Record', [el('div', { class: 'pf-big', text: r.text }), el('p', { class: 'vc-sub' }, el('b', { text: winRate(r.pct) ?? DASH }), ' online'),
+    halves.length ? el('div', { class: 'pf-halves' }, ...halves) : null]);
+}
+
+function lastTenCard(p) {
+  const l = lastTenOverview(p.recent_form);
+  if (!l) return null;
+  const letters = lastTenGames(hist.loaded);
+  const streak = streakOf(letters);
+  return card('last10', 'Last 10', [el('div', { class: 'pf-big', text: l.value }),
+    el('p', { class: 'vc-sub' }, 'Streak ', el('b', { class: streak.startsWith('W') ? 'up' : streak.startsWith('L') ? 'down' : null, text: streak })),
+    letters.length ? el('div', { class: 'pf-strip' }, wlStrip(letters)) : null,
+    el('div', { class: 'vc-kv pf-kv' }, el('span', { text: 'Scored / allowed' }), el('b', { text: `${l.scored} / ${l.allowed}` })),
+    l.margin.text ? el('div', { class: 'vc-kv' }, el('span', { text: 'Avg margin' }), el('b', { class: l.margin.kind || null, text: l.margin.text })) : null]);
+}
+
+function careerCard(p) {
+  const { tiles } = careerTiles(p.career, p.career_rank, p.per_game?.games);
+  const shown = tiles.filter((t) => t.key !== 'sck' && t.value !== DASH);
+  if (!shown.length) return null;
+  const cells = shown.map((t) => ({ label: t.label, value: t.value, note: [t.rank, t.perGame].filter(Boolean).join(' · ') }));
+  return card('career', 'Career highlights', cellGrid(cells, cells.length), { aside: link('all-stats', 'All stats ›', () => showTab('stats', { focus: true })), flush: true });
+}
+
+function playersCard(p) {
+  const rows = playerRows(withCareerLines(p.best_players, p.career), { roles: ROLES.filter(([r]) => r !== 'most_played') });
+  if (!rows.length) return null;
+  return card('players', view.self ? 'Your players' : 'Their players', el('div', { class: 'vc-rows' }, ...rows),
+    { aside: link('all-players', 'All players ›', () => showTab('stats', { focus: true })), flush: true });
+}
+
+const RECENT_COLS = '62px minmax(0,1fr) 74px 48px';
+function recentCard() {
   const rows = hist.loaded.slice(0, RECENT).map((m) => {
     const r = matchRowModel({ ...m, games: list(m.games) });
-    const elo = eloChange(m.elo_delta);
-    const sub = matchSubline(m, 'profile');
+    const q = queueMark(m);
     const href = matchHref(m, here('overview'));
-    const cells = [el('span', { class: 'pf-rm-res' }, el('b', { class: r.result || null, text: r.result }), el('span', { class: 'num', text: r.score })),
-      el('span', { class: 'pf-rm-opp' }, el('span', { class: 'pf-rm-n', text: r.opponent }), sub ? el('span', { class: 'pf-rm-q', text: ` · ${sub}` }) : null),
-      el('span', { class: `pf-rm-elo num${elo.kind ? ` ${elo.kind}` : ''}`, text: elo.text }), el('span', { class: 'pf-rm-date num', text: r.date })];
-    const label = `${r.date}. ${r.result === 'W' ? 'Win' : r.result === 'L' ? 'Loss' : ''} ${r.score} against ${r.opponent}${sub ? `, ${sub}` : ''}${elo.text ? `, ${elo.text} Elo` : ''}.`;
-    return href ? el('button', { type: 'button', class: 'pf-rm', 'data-key': `recent-${r.id}`, 'aria-label': label, onclick: () => { location.href = href; } }, ...cells)
-      : el('div', { class: 'pf-rm', role: 'group', 'aria-label': label }, ...cells);
+    const cells = [el('span', { class: `pf-res ${r.result || ''}`, text: `${r.result} ${r.score}`.trim() }),
+      el('span', { class: 'pf-who' }, avatar(m.opponent_kind === 'cpu' || !m.opponent ? null : r.avatar, r.opponent, '', { cpu: m.opponent_kind === 'cpu' }), el('b', { text: r.opponent })),
+      el('span', { class: `qm ${q.kind}`, text: q.text }), el('span', { class: 'r num pf-date', text: r.date })];
+    const label = `${r.date}. ${r.result === 'W' ? 'Win' : r.result === 'L' ? 'Loss' : ''} ${r.score} against ${r.opponent}${q.text ? `, ${q.text}` : ''}.`;
+    return cols(href ? el('button', { type: 'button', class: 'vc-tr', 'data-key': `recent-${r.id}`, 'aria-label': label, onclick: () => { location.href = href; } }, ...cells)
+      : el('div', { class: 'vc-tr', role: 'group', 'aria-label': label }, ...cells), RECENT_COLS);
   });
-  const head = el('div', { class: 'pf-rm pf-rm-hd', 'aria-hidden': 'true' }, ...['Result', 'Opponent', 'Elo', 'Date'].map((t) => el('span', { text: t })));
-  return el('section', { id: 'recent', class: 'pf-col', 'aria-labelledby': 'recent-h' },
-    sectionHead('recent', 'Recent matches', el('button', { type: 'button', class: 'sec-link', 'data-key': 'all-matches', text: 'All matches ›', onclick: () => showTab('matches', { focus: true }) })),
-    el('div', { class: 'glass pf-recent' }, head, ...(rows.length ? rows : [el('p', { class: 'm-empty', text: NONE_TEXT })])));
+  return card('recent', 'Recent matches', [tableHead(['Result', 'Opponent', 'Queue', 'Date'], RECENT_COLS, [3]),
+    el('div', { class: 'vc-rows pf-recent' }, ...(rows.length ? rows : [el('p', { class: 'm-empty', text: NONE_TEXT })]))],
+  { aside: link('all-matches', 'All matches ›', () => showTab('matches', { focus: true })), flush: true });
 }
 
-function careerSection(p) {
-  const { tiles } = careerTiles(p.career, p.career_rank, p.per_game?.games);
-  const six = tiles.slice(0, 6);
-  if (six.every((t) => t.value === DASH)) return null;
-  const grid = el('div', { class: 'pf-car' }, ...six.map((t) => el('div', {},
-    el('span', { class: 'pf-car-k', text: t.label }), el('b', { class: 'num', text: t.value }),
-    t.rank || t.perGame ? el('span', { class: 'pf-car-s num' }, t.rank ? el('b', { text: t.rank }) : null, t.rank && t.perGame ? ' · ' : null, t.perGame) : null)));
-  const link = view.tabs.includes('stats') ? el('button', { type: 'button', class: 'sec-link', 'data-key': 'all-stats', text: 'All stats ›', onclick: () => showTab('stats', { focus: true }) }) : null;
-  return el('section', { id: 'career', class: 'pf-col', 'aria-labelledby': 'career-h' }, sectionHead('career', 'Career', link), el('div', { class: 'glass pf-career' }, grid));
+// Head to head's "Last": a one-game match ("g:<game id>") shows its score; a series' summed points would read like a
+// single score, so it shows its date (as the old profile did).
+function lastOf(last) {
+  const single = typeof last?.game_id === 'string' && last.game_id.startsWith('g:');
+  const s = last?.score;
+  return single && Array.isArray(s) && num(s[0]) && num(s[1]) ? `${s[0]}${EN}${s[1]}` : day(last?.at);
+}
+const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}-${num(r?.losses) ? r.losses : 0}`;
+
+function opponentCell(h) {
+  const name = h.display_name || 'Player';
+  const inner = [avatar(h.avatar_url, name), el('b', { text: name })];
+  return h.player_id && UUID_RE.test(String(h.player_id).toLowerCase())
+    ? el('a', { class: 'pf-who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'pf-who' }, ...inner);
+}
+
+const H2H_COLS = 'minmax(0,1fr) 64px 88px 96px 104px';
+function h2hCard(p) {
+  const all = list(p.head_to_head).filter(Boolean);
+  if (!all.length) return null;
+  const rows = all.slice(0, SHOWN).map((h) => {
+    const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
+    const best = num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}${h.biggest_win.at ? ` ${day(h.biggest_win.at)}` : ''}` : DASH;
+    return cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${h.display_name || 'Player'}: ${recordOf(h)}` }, opponentCell(h),
+      el('b', { class: 'r num', text: recordOf(h) }), el('span', { class: 'r num pf-mut', text: `${int(h.pts_for)}${EN}${int(h.pts_against)}` }),
+      el('span', { class: `r num pf-res ${letter}`, text: h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH }), el('span', { class: 'r num pf-date', text: best })), H2H_COLS);
+  });
+  return card('h2h-card', 'Head to head', [tableHead(['Opponent', 'Record', 'Points', 'Last', 'Biggest win'], H2H_COLS, [1, 2, 3, 4]), el('div', { class: 'vc-rows' }, ...rows)],
+    { aside: all.length > SHOWN ? link('all-h2h', `All ${all.length} opponents ›`, () => showTab('h2h', { focus: true })) : 'Online', flush: true });
+}
+
+const COMBO_COLS = 'minmax(0,1fr) 40px 46px 34px';
+function combosCard(p) {
+  const combos = list(p.combos).filter((c) => c && c.passer && c.receiver).slice(0, SHOWN);
+  if (!combos.length) return null;
+  // the surname: the last word that is not a suffix ("M. Penix Jr." is Penix)
+  const last = (n) => String(n || '').trim().split(/\s+/).filter((w) => !/^(jr|sr|ii|iii|iv|v)\.?$/i.test(w)).at(-1) || DASH;
+  return card('connections', 'Top connections', [tableHead(['Passer to receiver', 'Rec', 'Yards', 'TD'], COMBO_COLS, [1, 2, 3]),
+    el('div', { class: 'vc-rows' }, ...combos.map((c) => cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${c.passer.name} to ${c.receiver.name}: ${int(c.rec)} catches, ${int(c.yds)} yards, ${int(c.td)} TD` },
+      el('span', { class: 'pf-who' }, teamLogo({ name: c.passer.team, logo_url: c.passer.logo_url }), el('b', { text: `${last(c.passer.name)} → ${last(c.receiver.name)}` })),
+      el('span', { class: 'r num', text: int(c.rec) }), el('b', { class: 'r num', text: int(c.yds) }), el('span', { class: 'r num', text: int(c.td) })), COMBO_COLS)))], { flush: true });
 }
 
 // ---- Matches: the Stats rows, the queue as the second line; All / Ranked / Casual (spec §8.7.4) ----
@@ -333,7 +414,7 @@ function initHistory(p) {
 
 async function fill() {
   if (hist.busy) return;
-  const need = () => shownMatches().length < (hist.page + 1) * HPAGE;
+  const need = () => shownMatches().length < Math.max((hist.page + 1) * HPAGE, RECENT);
   if (hist.done || !need()) return;
   hist.busy = true; hist.error = ''; hist.render();
   try {
@@ -382,17 +463,13 @@ function historySection() {
   return el('section', { id: 'history', class: 'pf-col', 'data-nav': 'column', 'aria-labelledby': 'history-h' }, head, cardEl);
 }
 
-// ---- Records: Single game | Career, one table (records-view.js), as Stats › Records ----
+// ---- Records: Single game and Career side by side, Team records (records-view.js), as Stats › Records ----
 
 function recordsSection(p) {
-  const rows = view.recKind === 'career' ? careerRecords(p.career) : singleGameRecords(p.records, hist.loaded);
-  const empty = view.recKind === 'career' ? 'No career records yet.' : 'No records yet.';
-  const pills = recordPills(view.recKind, (k) => {
-    view.recKind = k;
-    drawTabBody();
-    view.body.querySelector(`[data-key="rec-kind-${k}"]`)?.focus({ preventScroll: true });
-  });
-  return el('section', { id: 'records', class: 'pf-records', 'aria-label': 'Records' }, pills, recordsTable(rows, { kind: view.recKind, from: here('records'), empty }));
+  const parts = recordsView({ single: playerRecords(p.records, hist.loaded), career: careerRecords(p.career), team: teamRecords(p.records, hist.loaded) },
+    { from: here('records'), aside: 'Online games' });
+  return el('section', { id: 'records', class: 'pf-records', 'aria-labelledby': 'records-h' }, sectionHead('records', 'Records'),
+    ...(parts.length ? parts : [el('p', { class: 'pf-none', text: 'No records yet.' })]));
 }
 
 // ---- Stats: Full stats (one table at a time, the top five, "Show all N players", then Total; spec §8.7.5), then the
@@ -458,27 +535,26 @@ function fullStatsSection(p) {
   return el('section', { id: 'full-stats', 'aria-labelledby': 'full-stats-h' }, head, body);
 }
 
-const oneOr = (n) => (num(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : DASH);
-const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}-${num(r?.losses) ? r.losses : 0}`;
+const oneOr = (n) => (num(n) ? one(n) : DASH);
 const pctOf = (p) => (num(p) ? fmtPct(p) : DASH);
 const convOf = (p) => (num(p) ? `${Math.round(p * 100)}%` : DASH);
 
 /** A small table. With `cap` ({ id, what }), a long list shows five rows and a "Show all N <what>" row below them; the
  *  same button then reads "Show top 5" (it stays, so focus never falls back to the page top). */
-function smallTable(caption, headers, rows, cap = null) {
+function smallTable(caption, headers, rows, capOpt = null) {
   const trs = rows.map((cells) => el('tr', {}, ...cells.map((c, i) => {
     const cell = i === 0 ? el('th', { scope: 'row' }) : el('td');
     if (typeof c === 'string') cell.textContent = c; else if (c) cell.append(c);
     return cell;
   })));
   const body = el('tbody', {}, ...trs);
-  if (cap && trs.length > SHOWN) {
+  if (capOpt && trs.length > SHOWN) {
     const label = el('span');
-    const b = el('button', { type: 'button', class: 'pf-showall', 'data-key': `showall-${cap.id}`, 'aria-expanded': 'false' }, label, el('span', { class: 'chev', 'aria-hidden': 'true' }));
+    const b = el('button', { type: 'button', class: 'pf-showall', 'data-key': `showall-${capOpt.id}`, 'aria-expanded': 'false' }, label, el('span', { class: 'chev', 'aria-hidden': 'true' }));
     const set = (open) => {
       trs.slice(SHOWN).forEach((r) => { r.hidden = !open; });
       b.setAttribute('aria-expanded', String(open));
-      label.textContent = open ? `Show top ${SHOWN}` : `Show all ${trs.length} ${cap.what}`;
+      label.textContent = open ? `Show top ${SHOWN}` : `Show all ${trs.length} ${capOpt.what}`;
     };
     b.addEventListener('click', () => set(b.getAttribute('aria-expanded') !== 'true'));
     set(false);
@@ -506,45 +582,21 @@ function followFocus(box) {
 }
 
 function moreCard(id, title, table, wide = false) {
-  const card = el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
-  return wide ? followFocus(card) : card;
+  const c = el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
+  return wide ? followFocus(c) : c;
 }
 
-// Head to head's "Last": a one-game match ("g:<game id>") shows its score; a series' summed points would read like a
-// single score, so it shows its date (as the old profile did).
-function lastOf(last) {
-  const single = typeof last?.game_id === 'string' && last.game_id.startsWith('g:');
-  const s = last?.score;
-  return single && Array.isArray(s) && num(s[0]) && num(s[1]) ? `${s[0]}–${s[1]}` : day(last?.at);
-}
-
-/** Your players (P4-25): the Stats page's six role rows, the portrait over the team colour, the role's statline when the
- *  server sends one, else its one number. */
-function playersCard(best, self) {
-  const cards = roleCards(best || {});
-  if (!cards.some((c) => c.stat)) return null;
-  const rows = cards.map((c) => {
-    const face = el('span', { class: 'player-face', 'aria-hidden': 'true' });
-    if (c.primary && face.style?.setProperty) face.style.setProperty('--tc', c.primary);
-    const letter = () => el('span', { class: 'face letter', text: c.initial || '' });
-    const src = assetUrl(c.portrait);
-    if (src) { const img = el('img', { class: 'face', alt: '', src }); img.addEventListener('error', () => img.replaceWith(letter()), { once: true }); face.append(img); }
-    else face.append(letter());
-    const badge = assetUrl(c.logo);
-    if (badge) { const img = el('img', { class: 'badge', alt: '', src: badge }); img.addEventListener('error', () => img.remove(), { once: true }); face.append(img); }
-    const line = el('span', { class: 'pf-pl-line num' });
-    if (c.line.length) line.append(...c.line.map((s) => el('span', {}, el('b', { text: s.value }), ` ${s.unit}`)));
-    else if (c.stat) line.textContent = c.stat;
-    return el('div', { class: `pf-pl${c.stat ? '' : ' none'}` }, face,
-      el('span', { class: 'pf-pl-tx' }, el('span', { class: 'pf-pl-head' }, el('span', { class: 'pf-pl-name', text: c.name }), el('span', { class: 'k-label', text: c.label })),
-        c.stat ? line : null));
-  });
-  return moreCard('more-players', self ? 'Your players' : 'Players', el('div', { class: 'pf-pls' }, ...rows));
+/** Every player row (P4-25; Adam 10-03: Most played shows its own role's numbers), the v2 rows. */
+function playersMore(p, self) {
+  const rows = playerRows(withCareerLines(p.best_players, p.career));
+  if (!rows.length) return null;
+  return el('section', { id: 'more-players', class: 'glass pf-more-card', 'aria-labelledby': 'more-players-h' },
+    el('h3', { id: 'more-players-h', text: self ? 'Your players' : 'Players' }), el('div', { class: 'vc-rows pf-pls' }, ...rows));
 }
 
 function moreStats(p, self) {
   const cards = [];
-  const players = playersCard(withCareerLines(p.best_players, p.career), self);
+  const players = playersMore(p, self);
   if (players) cards.push(players);
   const pg = p.per_game;
   if (pg && pg.games) cards.push(moreCard('per-game', 'Per game', smallTable(`Per game, over ${int(pg.games)} games with play-by-play`, ['Stat', `Per game (${int(pg.games)} games)`], [
@@ -568,10 +620,11 @@ function moreStats(p, self) {
   if (types.length) cards.push(moreCard('by-type', 'By game type', smallTable('Record by game type', ['Game type', 'Record', 'Pts / gm', 'Win %'],
     types.map((t) => [String(t.name ?? DASH), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
   if (!cards.length) return null;
-  return el('section', { id: 'more', 'aria-labelledby': 'more-h' }, sectionHead('more', 'More stats'), el('div', { class: 'pf-more' }, ...cards));
+  const toRecords = view.tabs.includes('records') ? link('to-records', 'Records ›', () => showTab('records', { focus: true })) : null;
+  return el('section', { id: 'more', 'aria-labelledby': 'more-h' }, sectionHead('more', 'More stats', toRecords), el('div', { class: 'pf-more' }, ...cards));
 }
 
-// ---- Head to head ----
+// ---- Head to head, every opponent ----
 
 function h2hSection(p) {
   const h2h = list(p.head_to_head).filter(Boolean);
@@ -589,18 +642,19 @@ function h2hSection(p) {
 
 // ---- the page ----
 
-/** The address's #hash picks the tab (and, for #passing / #rushing / #receiving / #defense, the Full stats table). */
+/** The address's #hash picks the view (and, for #passing / #rushing / #receiving / #defense, the Full stats table). */
 function jump() {
   if (!view.p) return;
   const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
   if (FULL_STATS[hash]) fs.tab = hash;
-  const tab = HASH_TAB[hash] ?? 'overview';
+  const tab = HASH_VIEW[hash] ?? 'overview';
   if (tab !== view.tab || FULL_STATS[hash]) showTab(tab, { scroll: Boolean(hash) && tab !== 'overview' });
 }
 
 function draw(p, ownerId) {
   const self = Boolean(ownerId) && ownerId === String(p.header?.player_id || '').toLowerCase();
-  const out = [backButton(), card(p, ownerId)];
+  view.self = self;
+  const out = [backButton(), hero(p, ownerId)];
   // Nothing public to show: no matches at all, or only private rooms (dropped) and nothing more to load.
   const raw = list(p.recent_matches);
   const onlyHidden = !raw.some(isPublic) && raw.length >= (num(p.matches_total) ? p.matches_total : raw.length);
@@ -610,29 +664,28 @@ function draw(p, ownerId) {
     return;
   }
   initHistory(p);
-  const hasStats = Object.keys(FULL_STATS).some((k) => list(p.career?.[k]?.rows).length) || Boolean(moreStats(p, self));
+  const hasStats = Object.keys(FULL_STATS).some((k) => list(p.career?.[k]?.rows).length);
   const hasRecords = list(p.records).some((r) => r && r.label) || careerRecords(p.career).length > 0;
-  Object.assign(view, { p, self, recKind: 'single',
-    tabs: ['overview', 'matches', hasStats && 'stats', hasRecords && 'records', list(p.head_to_head).some(Boolean) && 'h2h'].filter(Boolean),
-    bar: el('div', { class: 'pf-tabbar' }), body: el('div', { class: 'pf-body' }) });
-  out.push(view.bar, view.body);
+  Object.assign(view, { p, tabs: VIEWS.filter((v) => v === 'overview' || v === 'matches' || (v === 'stats' && (hasStats || list(p.by_team).length))
+    || (v === 'records' && hasRecords) || (v === 'h2h' && list(p.head_to_head).some(Boolean))), body: el('div', { class: 'pf-body' }) });
+  out.push(view.body);
   screen.replaceChildren(...out);
   const hash = typeof location !== 'undefined' ? decodeURIComponent(location.hash || '').slice(1) : '';
   if (FULL_STATS[hash]) fs.tab = hash;
-  const first = HASH_TAB[hash] ?? 'overview';
+  const first = HASH_VIEW[hash] ?? 'overview';
   const deep = Boolean(hash) && first !== 'overview';
   showTab(first, { scroll: deep });
-  // A deep link (#stats, #passing...) lands on the tabs again once the page has settled: a late stylesheet or web font
+  // A deep link (#stats, #passing...) lands on its view again once the page has settled: a late stylesheet or web font
   // can change the layout under the first scroll.
   if (deep) {
-    const again = () => { if (view.tab === first) view.bar.scrollIntoView?.({ block: 'start' }); };
+    const again = () => { if (view.tab === first) view.body.scrollIntoView?.({ block: 'start' }); };
     requestAnimationFrame?.(again);
     if (document.readyState !== 'complete') window.addEventListener?.('load', again, { once: true });
     document.fonts?.ready.then(again);
   }
   // A first page that was mostly private rooms (the deployed server still sends them) tops up now, so Recent matches
-  // and the Matches tab are full.
-  fill().then(() => { if (view.tab === 'overview') drawTabBody(); });
+  // and the match history are full.
+  fill().then(() => { if (view.tab === 'overview') drawBody(); });
 }
 
 function missing() {
@@ -656,8 +709,8 @@ async function load() {
 }
 
 // Every 30 s (as Stats), a quiet `player_profile` (the first load's arguments) redraws the header's live parts only:
-// focus, scroll, the open tab and the history pages stay as they are. Skipped while the window is hidden or a
-// profile request (this one, or Match history loading more) is still out.
+// focus, scroll, the view and the history pages stay as they are. Skipped while the window is hidden or a profile
+// request (this one, or Match history loading more) is still out.
 const REFRESH_MS = 30000;
 let refreshing = false, refreshTimer = null;
 async function refreshHeader() {
