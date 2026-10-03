@@ -1,7 +1,8 @@
 // One match list for Stats (Your matches) and Profile (Match history), spec §8.6 and §8.7: a header RESULT · MATCHUP ·
 // OPPONENT · ELO · DATE, one row per match (a best of 3 is one row with its series and a single Elo change), and the
-// pager inside the card. Matches first (spec §10). A row opens the WHOLE match on one page (owner 10-03): every game of
-// it behind a game picker (game.html, stats-model.js matchHref); a one-game match opens just that game.
+// pager inside the card. Matches first (spec §10). A row opens the WHOLE match on one page (owner 10-03, stats-model.js
+// matchHref): a matchmade match the site's /live/<match> page (match.html); any other, every game of it behind a game
+// picker (game.html), a one-game match just that game.
 // Server text only through el()'s `text`; images only through assetUrl() / avatarSrc() (the CSP's two image prefixes).
 import { el } from './shell.js';
 import { assetUrl, avatarSrc } from './live-common.js';

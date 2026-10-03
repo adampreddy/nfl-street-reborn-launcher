@@ -1,5 +1,6 @@
-// The game page (Stats or a profile, then a match): the site's /games/<id> page inside the launcher, for a WHOLE match
-// (owner 10-03, "the box score is the whole match"). A match of several games is one page: the site's own game picker
+// The game page (Stats or a profile, then a match that is NOT matchmade -- an offline or unlinked game; a matchmade
+// match opens match.html, the site's /live/<match> page, stats-model.js matchHref): the site's /games/<id> page inside
+// the launcher, for a WHOLE match (owner 10-03, "the box score is the whole match"). A match of several games is one page: the site's own game picker
 // (Game 1 · Game 2 · Game 3, renderPicker) and the series sit above the scoreboard, and picking a game swaps the page
 // below in place. A match of one game (an offline game among them) is just that game, with no picker.
 // Each game comes from the server through the `stats_game` command (Rust does the requests, with the player's token, so

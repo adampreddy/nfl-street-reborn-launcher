@@ -315,10 +315,12 @@ const GAME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const MAX_GAMES = 25;
 
 /**
- * The game page's address for a whole match (owner 10-03, "the box score is the whole match"): a match of one game
- * opens just that game; a match of several opens ONE page holding every game of it (oldest first, as the server sends
- * them) with its last game shown, and the series from the list's side ("2-1"). `from` is the page Back returns to
- * (backHref). Null when the match has no recorded game.
+ * The address a match row opens (owner 10-03, "the box score is the whole match"). A matchmade match (the server's
+ * `match_id`, a lowercase UUID) opens the match page (match.html), the site's /live/<match> page: every game of it, the
+ * last one shown, as the site draws it. Anything else (an offline game, an unlinked one) opens the game page
+ * (game.html): a match of one game just that game; a match of several ONE page holding every game of it (oldest first,
+ * as the server sends them) with its last game shown, and the series from the list's side ("2-1"). `from` is the page
+ * Back returns to (backHref). Null when the match has no recorded game.
  * @param {Object} match
  * @param {string} from
  * @returns {string|null}
@@ -326,6 +328,9 @@ const MAX_GAMES = 25;
 export function matchHref(match, from) {
   const ids = (Array.isArray(match?.games) ? match.games : []).map((g) => (typeof g?.id === 'string' ? g.id : null)).filter(Boolean);
   if (!ids.length) return null;
+  if (typeof match.match_id === 'string' && GAME_UUID_RE.test(match.match_id)) {
+    return `match.html?${new URLSearchParams({ match: match.match_id, from: backHref(from) })}`;
+  }
   const q = new URLSearchParams({ game: ids[ids.length - 1] });
   if (ids.length > 1) {
     q.set('games', ids.slice(0, MAX_GAMES).join(','));

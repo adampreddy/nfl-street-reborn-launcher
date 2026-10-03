@@ -4,15 +4,17 @@
 // empty words, that no text says undefined/NaN/null or carries an en dash, that every image comes from a prefix the
 // CSP allows, that tabs, plays and drives are reachable by pad, and that the vendored files match the backend. A match
 // of several games is ONE page (owner 10-03): the site's game picker and the series above the scoreboard swap the game
-// in place, with no Previous / Next; Back returns where the match was opened from. Screens at 1280x800 for each tab and
-// for the match.
+// in place, with no Previous / Next; Back returns where the match was opened from. A MATCHMADE match opens the match
+// page instead (match.html): the site's /live/<match> page, its controller (site/live-page.js) run unchanged on the real
+// 5c8d58ca snapshot (Tools/fixtures/match-5c8d58ca.json, as live_match answers it). Screens at 1280x800 for each tab
+// and for the match.
 //     node Tools/check-game-site.mjs [outdir]      (screens in target/game-site by default)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { serve, openState, root, GAME_644, GAME_ID, GAME_3, MATCH_URL, matchGames } from './lib/page-states.mjs';
+import { serve, openState, root, GAME_644, GAME_ID, GAME_3, MATCH_URL, matchGames, MATCH_5C8, MATCH_PAGE_URL } from './lib/page-states.mjs';
 
 const out = path.resolve(process.argv[2] || path.join(root, 'target/game-site'));
 mkdirSync(out, { recursive: true });
@@ -219,6 +221,117 @@ try {
     assert.match(css, /html:active-view-transition-type\(from-game\)::view-transition-old\(page\)\{animation:game-out var\(--d2\) var\(--ease\) both\}/, 'closing: game-out on --d2');
     assert.match(css, /@keyframes game-in\{from\{opacity:0;transform:translateY\(\d+px\)\}\}/, 'a fade with a slight rise');
     assert.match(css, /prefers-reduced-motion:reduce\)\{\.game-body\.game-swap\{animation:none\}\}/, 'reduced motion: no swap animation');
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // the match page (a matchmade match): the site's /live/<match> page on the real 5c8d58ca snapshot -- full team names,
+    // both players, the G1 / G2 / G3 line score, the series banner, Game 1 · Game 2 · Game 3 landing on the last game,
+    // the latest play's portrait, All plays by drive; Box Score and Team Stats for each game and the series total
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'match-feed', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 } });
+    await page.locator('#strip .strip').waitFor();
+    assert.deepEqual(await texts(page, '#strip .st-name'), ['San Francisco 49ers', 'Los Angeles Rams'], 'full team names');
+    assert.deepEqual(await texts(page, '#strip .st-player'), ['Playz', 'adamknowsball']);
+    assert.deepEqual(await texts(page, '#strip .st-pts'), ['36', '12']);
+    assert.match(await page.locator('#strip').innerText(), /Final\s*·\s*Unofficial/);
+    // the line score: a column per game, a row per team
+    assert.deepEqual(await texts(page, '#strip table.ls thead th'), ['', 'G1', 'G2', 'G3']);
+    assert.deepEqual(await page.locator('#strip table.ls tbody tr').evaluateAll((rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()))),
+      [['SF', '2', '36', '36'], ['LAR', '36', '0', '12']]);
+    assert.equal(await page.locator('#strip .pill').textContent(), 'SF wins the series 2-1', 'the series banner');
+    // the tabs, every one focusable (pad), and the Live Feed's games, the last one picked
+    assert.deepEqual(await texts(page, '#site-game .tabs [role="tab"]'), ['Live Feed', 'Box Score', 'Team Stats']);
+    assert.deepEqual(await page.locator('#site-game [role="tab"]').evaluateAll((ns) => ns.map((n) => n.tabIndex)), [0, 0, 0]);
+    assert.deepEqual(await texts(page, '#feed-pick .picker button'), ['Game 1', 'Game 2', 'Game 3']);
+    assert.equal(await page.locator('#feed-pick .picker button[aria-pressed="true"]').textContent(), 'Game 3');
+    // the latest play: the touchdown catch, the receiver's portrait
+    assert.match(await page.locator('#panel').innerText(), /31-yard catch[\s\S]*Mike Evans/);
+    assert.ok(await page.locator('#panel img.portrait').count() > 0, 'the panel shows a portrait');
+    const portraits = await page.locator('#site-game img.portrait').evaluateAll((ns) => ns.map((n) => n.src));
+    assert.ok(portraits.every((s) => s.startsWith('https://api.nflstreetreborn.com/live-assets/r/') && s.includes('/portraits/')), `portraits from the catalog: ${portraits}`);
+    // the site's own src is what the page reads back (a failed image is remembered under the renderers' key)
+    assert.match(await page.locator('#panel img.portrait').first().evaluate((n) => n.getAttribute('src')), /^\/live-assets\/r\//);
+    assert.deepEqual(await texts(page, '#allplays .ap-seg button'), ['All plays', 'Scoring plays']);
+    assert.equal(await page.locator('#allplays .dv').count(), MATCH_5C8.games[2].drives.length);
+    assert.ok((await page.locator('#allplays').innerText()).includes('GAME 3'));
+    // the launcher's row: Back, and Open on web to the site's own /live/<match>
+    assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
+    await page.locator('[data-key="web"]').click();
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'open_website').map((c) => c.args.url)),
+      [`https://online.nflstreetreborn.com/live/${MATCH_5C8.match.id}`]);
+    // the snapshot came from the live_match command, never a fetch from the page
+    assert.deepEqual(await page.evaluate(() => [...new Set(window.__calls.filter((c) => c.cmd === 'live_match').map((c) => c.args.matchId))]), [MATCH_5C8.match.id]);
+    await clean(page, 'match feed');
+    await images(page, 'match feed');
+    await shot(page, 'match-feed');
+    // Game 1 in the Live Feed: its own panel and drives
+    await page.locator('#feed-pick .picker button[data-pick="1"]').click();
+    await page.waitForFunction(() => document.querySelector('#feed-pick .picker button[aria-pressed="true"]')?.textContent === 'Game 1');
+    assert.equal(await page.locator('#allplays .dv').count(), MATCH_5C8.games[0].drives.length);
+    assert.ok((await page.locator('#allplays').innerText()).includes('GAME 1'));
+    await clean(page, 'match feed, game 1');
+    // Box Score: Series total first (the site's default once there are two games), then each game
+    await page.locator('[data-key="tab-box"]').click();
+    assert.equal(await page.locator('#tab-box').isVisible(), true);
+    assert.deepEqual(await texts(page, '#tab-box .picker button'), ['Game 1', 'Game 2', 'Game 3', 'Series total']);
+    assert.equal(await page.locator('#tab-box .picker button[aria-pressed="true"]').textContent(), 'Series total');
+    for (const pick of ['total', '1', '2', '3']) {
+      await page.locator(`#tab-box .picker button[data-pick="${pick}"]`).click();
+      await page.waitForFunction((p) => document.querySelector('#tab-box .picker button[aria-pressed="true"]')?.dataset.pick === p, pick);
+      const cols = page.locator('#tab-box .bx-col');
+      assert.equal(await cols.count(), 2, `box ${pick}: two teams`);
+      assert.equal((await cols.nth(0).locator('.bx-sh').first().innerText()).trim(), 'San Francisco Passing', `box ${pick}: the full team name`);
+      await clean(page, `match box ${pick}`);
+      await images(page, `match box ${pick}`);
+    }
+    await page.locator('#tab-box .picker button[data-pick="total"]').click();
+    await shot(page, 'match-box');
+    // Team Stats: the same picker, each game
+    await page.locator('[data-key="tab-team"]').click();
+    for (const pick of ['total', '1', '2', '3']) {
+      await page.locator(`#tab-team .picker button[data-pick="${pick}"]`).click();
+      await page.waitForFunction((p) => document.querySelector('#tab-team .picker button[aria-pressed="true"]')?.dataset.pick === p, pick);
+      assert.deepEqual(await texts(page, '#tab-team thead th'), ['Team stats', 'SF', 'LAR'], `team ${pick}`);
+      assert.ok((await texts(page, '#tab-team tbody td.who')).includes('Total yards'));
+      await clean(page, `match team ${pick}`);
+    }
+    await page.locator('#tab-team .picker button[data-pick="total"]').click();
+    await shot(page, 'match-team');
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // the match page by controller: Down reaches the tabs, Right walks them, A shows Box Score; B / Esc goes Back
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'match-pad', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 } }, { pad: true });
+    const press = async (i) => {
+      await page.evaluate((i) => { window.pads[0].buttons[i] = { pressed: true, value: 1 }; }, i);
+      await page.waitForTimeout(120);
+      await page.evaluate((i) => { window.pads[0].buttons[i] = { pressed: false, value: 0 }; }, i);
+      await page.waitForTimeout(120);
+    };
+    const key = () => page.evaluate(() => document.activeElement?.getAttribute('data-key') ?? document.activeElement?.className ?? '');
+    const seen = [];
+    for (let i = 0; i < 8 && !(await key()).startsWith('tab-'); i++) { await press(13); seen.push(await key()); }
+    assert.match(await key(), /^tab-/, `Down reaches the tabs (went ${seen.join(' > ')})`);
+    for (let i = 0; i < 3 && (await key()) !== 'tab-box'; i++) await press(15);
+    assert.equal(await key(), 'tab-box', 'Right walks the tabs');
+    await press(0);
+    assert.equal(await page.locator('#tab-box').isVisible(), true, 'A on Box Score shows it');
+    assert.deepEqual(await page.locator('#site-game [role="tab"]').evaluateAll((ns) => ns.map((n) => n.tabIndex)), [0, 0, 0], 'every tab stays reachable');
+    assert.ok(await page.locator('#tab-box .picker button').evaluateAll((ns) => ns.length > 0 && ns.every((n) => n.tabIndex >= 0)), 'the games are reachable');
+    await page.locator('#tabbtn-feed').click();
+    assert.ok(await page.locator('#allplays .dv-hd').evaluateAll((ns) => ns.length > 0 && ns.every((n) => n.tabIndex >= 0)), 'the drives are reachable');
+    await page.keyboard.press('Escape');
+    await page.waitForURL(/stats\.html$/);
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // a match the server does not have (live_match answers null, the backend's 404): the site's words; a bad id too
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'match-gone', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: null } });
+    await page.waitForFunction(() => document.querySelector('#strip .empty')?.textContent === 'No such match.');
+    await page.goto(`${srv.base}/match.html?match=nope`);
+    await page.locator('#strip .empty').waitFor();
+    assert.equal(await page.locator('#strip .empty').textContent(), 'No such match.');
+    assert.equal(await page.locator('#site-game .tabs').isVisible(), false);
+    assert.equal(await page.locator('#back').isVisible(), true);
     assert.deepEqual(errors, []);
     await close();
   }

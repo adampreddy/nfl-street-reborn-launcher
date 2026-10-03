@@ -25,6 +25,10 @@ export function matchGames() {
   third.game.id = GAME_3;
   return { [GAME_644.game.id]: GAME_644, [GAME_3]: third };
 }
+// The match page (match.html, the site's /live/<match>): a real ranked best of 3, GET /v1/live/5c8d58ca-... as the
+// backend answered it on 2026-10-03 (49ers 2-1 Rams, Playz vs adamknowsball), as the live_match command hands it over.
+export const MATCH_5C8 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/match-5c8d58ca.json'), 'utf8'));
+export const MATCH_PAGE_URL = `match.html?match=${MATCH_5C8.match.id}&from=stats.html`;
 export const MATCH_URL = `game.html?game=${GAME_3}&games=${[GAME_ID, GAME_644.game.id, GAME_3].join(',')}&series=2-1&from=stats.html`;
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
 // Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
@@ -74,6 +78,13 @@ export const STATES = {
     { name: 'game-team', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
     { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
     { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } },
+  ],
+  // The match page (a matchmade match): the site's /live/<match> page on the real 5c8d58ca snapshot, each tab.
+  match: [
+    { name: 'match-feed', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 } },
+    { name: 'match-box', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 }, click: '[data-key="tab-box"]' },
+    { name: 'match-team', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 }, click: '[data-key="tab-team"]' },
+    { name: 'match-missing', url: 'match.html?match=nope', scope: 'main' },
   ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
@@ -282,12 +293,13 @@ export async function settle(page) {
   await page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))), new Promise((r) => setTimeout(r, 5000))]));
 }
 
-export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null, init = null } = {}) {
+export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null, init = null, realImages = false } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, timezoneId: 'UTC', locale: 'en-US' });
   // `init`: an extra script run before the page's own (a check that drives the page's timers itself, say).
   if (init) await context.addInitScript(init);
   const png = readFileSync(path.join(ui, 'art/cover.png'));
-  await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
+  // `realImages`: the backend's catalog images and Discord avatars load for real (a screenshot to compare with the site).
+  if (!realImages) await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   const all = { ...answers(), ...(state.data || {}), ...(data || {}) };
   await context.addInitScript(({ data, stages, glass, slow, pad, extra }) => {
     const FIXED = Date.UTC(2026, 8, 30, 20, 0, 0);

@@ -107,6 +107,18 @@ test('matchHref: one game opens that game; a match of several opens one page wit
   assert.equal(gameHref(G(4), 'stats.html#records'), `game.html?game=${G(4)}&from=stats.html%23records`);
 });
 
+test("matchHref: a matchmade match (a match id) opens the match page, the site's /live/<match>; an unlinked one the game page", () => {
+  const M = 'dc5226af-d3b8-4c0b-89e8-1c53b2972a30';
+  assert.equal(matchHref({ match_id: M, games: [{ id: G(1) }, { id: G(2) }], series: [1, 1] }, 'stats.html#matches'), `match.html?match=${M}&from=stats.html%23matches`);
+  assert.equal(matchHref({ match_id: M, games: [{ id: G(1) }] }, 'https://evil.example/'), `match.html?match=${M}&from=stats.html`, 'Back is validated');
+  // no match id, or one that is not a lowercase UUID (an offline game's list key): the game page, as before
+  assert.match(matchHref({ match_id: null, games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
+  assert.match(matchHref({ match_id: 'g:g-031', games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
+  assert.match(matchHref({ match_id: M.toUpperCase(), games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
+  // no recorded game: no link at all
+  assert.equal(matchHref({ match_id: M, games: [] }, 'stats.html'), null);
+});
+
 test('readMatchAddress: the shown game, the match, the series, Back; anything odd falls back to one game', () => {
   const a = readMatchAddress(new URL('http://x/' + matchHref({ games: [{ id: G(1) }, { id: G(2) }], series: [1, 1] }, 'stats.html#records')).search);
   assert.deepEqual(a, { game: G(2), games: [G(1), G(2)], series: '1-1', back: 'stats.html#records' });
