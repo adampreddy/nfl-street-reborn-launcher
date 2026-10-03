@@ -4525,6 +4525,14 @@ async fn settings_paths() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn pick_path(kind: String) -> Result<Option<String>, String> {
+    // The Linux first-run test (installer/linux/e2e_first_run.py) cannot click
+    // a native file dialog, and the page's invoke cannot be swapped (Tauri
+    // freezes it). Set only by that test; a player never has it.
+    if kind == "game" {
+        if let Some(path) = std::env::var_os("REBORN_E2E_PICK_GAME") {
+            return Ok(Some(PathBuf::from(path).display().to_string()));
+        }
+    }
     let dialog = rfd::AsyncFileDialog::new().set_title("Choose a location for NFL Street Reborn");
     let picked = match kind.as_str() {
         "folder" => dialog.pick_folder().await,

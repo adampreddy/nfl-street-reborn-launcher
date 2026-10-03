@@ -7,13 +7,13 @@ Welcome screen to the Play page and then Play. Every screen is screenshotted
 and its text logged, so a stuck screen says where and why.
 
 The one stand-in: the native file picker cannot be clicked through WebDriver,
-so `pick_path` is answered with the game file given on the command line.
+so the launcher answers `pick_path` with REBORN_E2E_PICK_GAME (the game file).
 Everything else is the launcher's own code and the server's own content.
 
 Usage (inside the jammy build root, with Xvfb on $DISPLAY and tauri-driver
 listening on 127.0.0.1:4444):  e2e_first_run.py <launcher-binary> <game-file> <out-dir>
 """
-import base64, json, os, sys, time, urllib.request
+import base64, json, os, sys, time, urllib.error, urllib.request
 
 APP, GAME, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(OUT, exist_ok=True)
@@ -30,8 +30,11 @@ def log(*a):
 def wd(method, path, body=None, timeout=600):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method=method, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read() or b"{}").get("value")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}").get("value")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"WebDriver {method} {path}: {e.read().decode(errors='replace')[:800]}")
 
 
 session = wd("POST", "/session", {"capabilities": {"alwaysMatch": {"tauri:options": {"application": APP}}}})["sessionId"]
@@ -48,20 +51,8 @@ def shot(name):
         f.write(base64.b64decode(png))
 
 
-# The file picker stand-in, installed again whenever the page reloads.
-PATCH = """
-const i = window.__TAURI_INTERNALS__, g = arguments[0];
-if (!i) return 'no-bridge';
-if (!i.__e2e) {
-  // core.invoke is a frozen export; every call goes through this one.
-  const o = i.invoke.bind(i);
-  const f = (cmd, a, opt) => cmd === 'pick_path' ? Promise.resolve(g) : o(cmd, a, opt);
-  try { i.invoke = f; } catch (_) {}
-  if (i.invoke !== f) Object.defineProperty(i, 'invoke', {value: f, configurable: true, writable: true});
-  i.__e2e = i.invoke === f;
-}
-return i.__e2e ? 'patched' : 'patch-failed';
-"""
+# The file picker stand-in is the launcher's REBORN_E2E_PICK_GAME (set by
+# e2e-first-run.sh): the page's invoke is frozen and cannot be swapped.
 
 STATE = """
 const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
@@ -86,9 +77,6 @@ used = set()
 last_key, same_since, step = None, time.time(), 0
 deadline = time.time() + 60 * 60
 while time.time() < deadline:
-    patched = js(PATCH, GAME)
-    if patched != "patched":
-        log("!!! file picker stand-in:", patched)
     st = js(STATE)
     key = (st["url"], st["heading"], st["text"][:300], json.dumps(st["next"]))
     if key != last_key:
