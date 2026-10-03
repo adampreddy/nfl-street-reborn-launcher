@@ -65,7 +65,11 @@ try {
     assert.deepEqual(await noDeadSpace(page), []);
     assert.deepEqual([...new Set(await page.locator('.vc-h').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [48], 'every card header is 48px');
     // Your Record: online overall from by_queue (ranked 1-1 + casual 7-3), the halves with the server's points per game
+    // the way to the player's own profile sits at the top, beside Matches | Records
     assert.equal(await page.locator('#st-record .vc-aside').textContent(), 'Online games only');
+    const mine = page.locator('#stats-view [data-key="your-profile"]');
+    assert.equal(await mine.textContent(), 'Your profile ›');
+    assert.match(await mine.getAttribute('href'), /^profile\.html\?player=[0-9a-f-]+$/);
     assert.equal(await page.locator('.st-overall .vc-big').textContent(), '8-4');
     assert.deepEqual(await texts(page, '#st-record .st-half:not(.st-overall) .vc-mid'), ['1-1', '7-3']);
     assert.deepEqual(await texts(page, '#st-record .st-half:not(.st-overall) .vc-kv'), ['Elo1,184 · #7', 'Points / game23.8', 'Games10', 'Points / game21.6']);
@@ -107,7 +111,7 @@ try {
       ['Ballhawk', '7 INT', '14 PBU', '33 TKL', '1 TD'],
       ['Most played', '23 GAMES', '96 CAR', '535 YDS', '5.6 AVG', '5 TD']]);
     assert.equal(await page.locator('#st-players .pl-row').first().locator('.player-face').evaluate((n) => getComputedStyle(n).getPropertyValue('--tc').trim()), '#A71930');
-    assert.match(await page.locator('[data-key="card-passer"]').getAttribute('href'), /#passing$/);
+    assert.match(await page.locator('[data-key="card-passer"]').getAttribute('href'), /^profile\.html\?player=[0-9a-f-]+$/);
     assert.match(await page.locator('[data-key="all-players"]').getAttribute('href'), /#stats$/);
     // the charts
     assert.equal(await page.locator('#st-points svg rect').count(), 30, 'fifteen online games with a score, two bars each');

@@ -31,7 +31,6 @@ const EMPTY = 'No games yet. Play one and it shows up here.';
 const NONE_SHOWN = 'No games to show yet.';
 const FILTERS = [['all', 'All'], ['ranked', 'Ranked'], ['casual', 'Casual'], ['offline', 'Offline']];
 // Which part of the profile each player opens: their role's Full stats table.
-const ROLE_HASH = { passer: 'passing', rusher: 'rushing', receiver: 'receiving', most_played: 'stats', dl_lb: 'defense', ballhawk: 'defense' };
 const PAGER_OTHER = { older: 'newer', newer: 'older' };
 const VIEWS = [['matches', 'Matches'], ['records', 'Records']];
 const viewOfHash = () => (typeof location !== 'undefined' && location.hash === '#records' ? 'records' : 'matches');
@@ -144,7 +143,8 @@ function matchesBlock(matches) {
 }
 
 function playersBlock(best, playerId) {
-  const rows = playerRows(best, { href: playerId ? (role) => profileHref(playerId, ROLE_HASH[role] || 'stats') : null });
+  // A player opens the profile at its top (Adam, 10-03: deep links into Full stats read as the old page).
+  const rows = playerRows(best, { href: playerId ? () => profileHref(playerId) : null });
   if (!rows.length) return null;
   const link = playerId ? el('a', { class: 'sec-link', href: profileHref(playerId, 'stats'), 'data-key': 'all-players', text: 'All players ›' }) : null;
   return card('st-players', 'Your players', el('div', { class: 'vc-rows' }, ...rows), { aside: link, flush: true });
@@ -290,7 +290,10 @@ function drawViewSwitch(show) {
     slot.querySelector?.('[aria-pressed="true"]')?.focus({ preventScroll: true });
   }, { label: 'Stats view' });
   if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', `view-${VIEWS[i][0]}`));
-  slot.replaceChildren(bar);
+  // The player's own profile, at the top of the page beside the view switch (Adam, 10-03).
+  const me = state.dash?.you?.player_id;
+  const mine = me ? el('a', { class: 'btn sm st-profile-link', href: profileHref(me), 'data-key': 'your-profile', text: 'Your profile ›' }) : null;
+  slot.replaceChildren(...[mine, bar].filter(Boolean));
 }
 
 // ---- drawing ----
