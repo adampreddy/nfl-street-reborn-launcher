@@ -51,7 +51,7 @@ body.page-profile #main{padding:24px 28px 28px}
 .pf-live-sc strong{font:700 22px Inter,system-ui,sans-serif}
 .pf-live-bot{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--fg-2)}
 /* the profile under the hero: the v2 grid rows (theme.css .vgrid), 16px apart */
-.pf-body{display:flex;flex-direction:column;gap:16px;min-width:0}
+.pf-body,.pf-view{display:flex;flex-direction:column;gap:16px;min-width:0}
 /* Elo history: the curve, the leaderboard around them on the right */
 .pf-elo-h{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:18px}
 .pf-elo-h.solo{grid-template-columns:minmax(0,1fr)}
@@ -92,23 +92,47 @@ a.pf-who:hover b{text-decoration:underline}
 .pf-records{display:flex;flex-direction:column;gap:16px}
 .pf-none{margin:0;padding:16px 0;color:var(--fg-2)}
 .pf-err{margin:0;padding:8px 16px;font-size:12px;color:var(--red-ink)}
-/* Full stats and More stats: theme.css's .tbl (a shared 220px name column, so every table's columns line up) */
-.pf-tbl{overflow-x:auto;overflow-y:hidden}
-.pf-tbl .tbl{min-width:960px}
+/* All stats and Head to head (owner 10-03): v2 cards (.vc) on the 12-column grid like the profile itself. A table sits
+   straight in its card and fills it (its rows share any extra height, so no card leaves space under its last row);
+   theme.css's .tbl, its uppercase box-score headings on the card's rules, 18px in from the card's edges as .vc-tr is.
+   The shared 220px name column keeps every table's columns lined up. */
+.pf-tcard>.tbl,.pf-tcard>.pf-tbl{flex:1}
+.pf-tbl{display:flex;flex-direction:column;overflow-x:auto;overflow-y:hidden}
+.pf-tbl>.tbl{flex:1}
+.pf-tcard .tbl thead th{height:32px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.pf-tcard .tbl tbody>tr:first-child>*{border-top:0}
+.pf-tcard .tbl tbody>tr>*{border-top-color:var(--rule)}
+.pf-tcard .tbl tr.total>*{border-top-color:var(--stroke-hi)}
+.pf-tcard .tbl tr>:first-child{padding-left:18px}
+.pf-tcard .tbl tr>:last-child{padding-right:18px}
+.pf-tcard .tbl tr.more>td{padding:0}
+#full-stats .tbl{min-width:960px}
+#h2h .tbl{min-width:820px}
+.pf-fs-tabs{display:flex}
+/* In wins vs losses: the Stats page's comparison, its rows sharing the card's height */
+.pf-cmp{flex:1;display:flex;flex-direction:column;padding:0 18px 6px}
+.pf-cmp-r{flex:1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;min-height:44px;border-top:1px solid var(--rule);font-variant-numeric:tabular-nums}
+.pf-cmp-r>b{font:700 20px Inter,system-ui,sans-serif}
+.pf-cmp-r>b:last-child{text-align:right}
+.pf-cmp-r>span{width:96px;font-size:11.5px;text-align:center;color:var(--fg-3)}
+.pf-cmp-h{flex:none;min-height:34px;height:34px}
+.pf-cmp-h>b{font:600 12px Inter,system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase}
+/* a column of cards in one grid cell (In wins vs losses over Laterals & pitches), together the row's height */
+.pf-stack{display:flex;flex-direction:column;gap:16px;min-width:0}
+.pf-stack>.vc{flex:1 1 auto}
+/* Per game: six cells to a row (theme.css's .vc-cells draws four) */
+#per-game .vc-cells>div{justify-content:flex-start}
+#per-game .vc-cells.wrap>div:nth-child(4n+1){border-left:1px solid var(--rule)}
+#per-game .vc-cells.wrap>div:nth-child(6n+1){border-left:0}
 .pf-sort{all:unset;border-radius:var(--r-md);cursor:pointer}
 .pf-sort:hover{color:var(--fg)}
 .tbl tr.more td{height:auto;padding:0}
 .pf-showall{all:unset;border-radius:var(--r-md);box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:38px;cursor:pointer;font:600 12.5px Inter,system-ui,sans-serif;color:var(--fg-2)}
 .pf-showall:hover{background:var(--glass-1);color:var(--fg)}
 .pf-showall .chev{margin:0}
-.pf-more{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
-.pf-more-card{overflow:hidden;padding-top:8px}
-.pf-more-card.wide{grid-column:1/-1;overflow-x:auto}
-.pf-more-card.wide .tbl{min-width:820px}
-.pf-more-card h3{margin:0;padding:8px 16px;font:600 14px Inter,system-ui,sans-serif}
 /* Best QB → receiver (owner 10-03, "you can't even read the text"): headings --fg-2, the pairs and their numbers --fg,
    and a long pair wraps instead of being cut off */
-#combos h3,#combos .tbl tbody>tr>*{color:var(--fg)}
+#combos .vc-h h2,#combos .tbl tbody>tr>*{color:var(--fg)}
 #combos .tbl thead th{color:var(--fg-2)}
 #combos .tbl tbody th{white-space:normal;padding-top:6px;padding-bottom:6px;line-height:1.35}
 #combos .tbl .who>span:last-child{white-space:normal}
@@ -118,15 +142,17 @@ a.pf-who:hover b{text-decoration:underline}
 @media (max-width:1100px){
   .pf-card{grid-template-columns:minmax(0,1fr)}
   .pf-elo{border-left:0;border-top:1px solid var(--stroke)}
-  .pf-more{grid-template-columns:minmax(0,1fr)}
+  #per-game .vc-cells{--n:3 !important}
+  #per-game .vc-cells.wrap>div:nth-child(6n+1){border-left:1px solid var(--rule)}
+  #per-game .vc-cells.wrap>div:nth-child(3n+1){border-left:0}
   .pf-elo-h{grid-template-columns:minmax(0,1fr)}
   .pf-lad{margin:0;border-left:0;border-top:1px solid var(--rule);padding-top:8px}
 }
 /* Below 1280 a wide table can scroll sideways in its card: the Player column stays put on a solid surface and the
    numbers scroll under it (profile.js followFocus keeps a pad's focused heading in view). */
 @media (max-width:1279px){
-  .pf-tbl .tbl tr>:first-child:not([colspan]),.pf-more-card.wide .tbl tr>:first-child:not([colspan]){position:sticky;left:0;z-index:1}
-  .pf-tbl.scrolled .tbl tr>:first-child:not([colspan]),.pf-more-card.wide.scrolled .tbl tr>:first-child:not([colspan]){background:var(--surface-solid)}
+  .pf-tbl .tbl tr>:first-child:not([colspan]){position:sticky;left:0;z-index:1}
+  .pf-tbl.scrolled .tbl tr>:first-child:not([colspan]){background:var(--surface-solid)}
 }
 @media (max-width:1000px){
   body.page-profile #main{padding:24px 24px 16px}

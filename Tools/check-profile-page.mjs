@@ -56,7 +56,7 @@ async function combosReadable(page, pairs, heads) {
   const px = await page.screenshot({ clip: { x: at.x, y: at.y, width: 1, height: 1 } });
   const bg = await page.evaluate(async (b64) => { const bm = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = new OffscreenCanvas(1, 1).getContext('2d'); c.drawImage(bm, 0, 0); return [...c.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, px.toString('base64'));
-  const colours = await page.locator('#combos').evaluate((root) => [...root.querySelectorAll('h3, thead th, tbody th .who > span:last-child, tbody td')]
+  const colours = await page.locator('#combos').evaluate((root) => [...root.querySelectorAll('.vc-h h2, thead th, tbody th .who > span:last-child, tbody td')]
     .map((n) => ({ text: n.textContent.trim(), head: n.matches('thead th'), rgb: getComputedStyle(n).color.match(/\d+/g).slice(0, 3).map(Number) })));
   const lum = (rgb) => { const c = rgb.map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
@@ -283,8 +283,25 @@ try {
     assert.equal(await page.locator('[data-key="sort-rushing-yds"]').evaluate((n) => document.activeElement === n), true, 'focus stays on the sort button');
     await page.locator('[data-key="sort-rushing-yds"]').click();
     assert.equal(await firstName(), 'B. Robinson');
-    // the rest of the numbers: Your players, per game, by team, QB → receiver and the others (P4-5, P4-25)
-    assert.deepEqual(await texts(page, '#more h3'), ['Your players', 'Per game', 'By team', 'Best QB → receiver', 'Laterals & pitches', 'In wins vs losses', 'By game type']);
+    // the rest of the numbers: Your players, per game, by team, QB → receiver and the others (P4-5, P4-25), as v2 cards
+    // on the 12-column grid (owner 10-03, "the all stats page is formatted pretty weird"): rows sharing their edges, no
+    // card with space under its last row, the table switch small in Full stats' header, box-score column labels
+    assert.equal(await page.locator('#all-stats > .sec-head h2').textContent(), 'All stats');
+    assert.deepEqual(await texts(page, '#more .vc-h h2'), ['Per game', 'Your players', 'In wins vs losses', 'Laterals & pitches', 'By team', 'Best QB → receiver', 'By game type']);
+    assert.deepEqual(await page.locator('#all-stats .vgrid').evaluateAll((gs) => gs.map((g) => [...g.children].map((c) => `${c.id || c.className.split(' ')[0]}:${c.className.match(/\bs(\d+)\b/)[1]}`).join(' '))),
+      ['full-stats:12', 'per-game:12', 'more-players:7 pf-stack:5', 'by-team:6 combos:6', 'by-type:12']);
+    assert.deepEqual(await rowsAligned(page), []);
+    assert.equal(await page.locator('#full-stats .vc-h .tabs.sm').count(), 1, 'the table switch is the small segmented control, in the card header');
+    assert.deepEqual([...new Set(await page.locator('#all-stats .vc-h').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [48], 'every card header is 48px');
+    assert.deepEqual([...new Set(await page.locator('#all-stats .vc').evaluateAll((ns) => ns.map((n) => n.classList.contains('glass'))))], [true], 'glass cards');
+    assert.deepEqual([...new Set(await page.locator('#all-stats thead th').evaluateAll((ns) => ns.map((n) => getComputedStyle(n).textTransform)))], ['uppercase']);
+    // a table fills its card (no space under its last row), its numbers right-aligned under their headings
+    const gaps = await page.locator('#all-stats .pf-tcard').evaluateAll((cs) => cs.map((c) => { const t = c.querySelector('table').getBoundingClientRect(), r = c.getBoundingClientRect();
+      return `${c.id}:${Math.round(r.bottom - t.bottom)}`; }));
+    assert.ok(gaps.every((g) => +g.split(':')[1] <= 1), `tables reach their card's foot: ${gaps}`);
+    assert.deepEqual([...new Set(await page.locator('#all-stats tbody td').evaluateAll((ns) => ns.filter((n) => !n.colSpan || n.colSpan === 1).map((n) => getComputedStyle(n).textAlign)))], ['right']);
+    { const [a, b] = await page.locator('.pf-stack > .vc').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().toJSON())), pl = await rect(page, '#more-players');
+      assert.ok(Math.abs(a.top - pl.top) < 0.6 && Math.abs(b.bottom - pl.bottom) < 0.6 && Math.abs(b.top - a.bottom - 16) < 0.6, 'the stacked cards fill the row of the players, 16px apart'); }
     assert.deepEqual(await texts(page, '#more-players .pl-name'), ['M. Penix Jr.', 'S. Barkley', 'D. London', 'N. Bolton', 'A.J. Terrell', 'B. Robinson']);
     // each player's numbers from its own career row (owner 10-03), box-score labels (Adam 10-03); Most played its
     // own role's four after GAMES (a rusher here: never another role's numbers)
@@ -542,7 +559,7 @@ try {
     assert.equal(await page.locator('#players-h').textContent(), 'Their players');
     assert.equal(await page.locator('.pf-lad .vc-tr.me b').textContent(), 'adamknowsball');
     await go(page, 'stats');
-    assert.equal(await page.locator('#more-players h3').textContent(), 'Players');
+    assert.equal(await page.locator('#more-players .vc-h h2').textContent(), 'Players');
     assert.deepEqual(errors, []);
     await close();
   }

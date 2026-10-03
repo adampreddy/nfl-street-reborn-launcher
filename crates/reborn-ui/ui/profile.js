@@ -18,7 +18,7 @@ import { bridge, call, el, markCurrent, quietCall, reason, wireCoreFold } from '
 import { PAGE_ORIGIN, avatarSrc } from './live-common.js';
 import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
-import { eloCard, fmtInt, fmtPct, lastTenGames, matchHref, matchRowModel, queueMark, rowSpans, streakOf } from './stats-model.js';
+import { eloCard, fmtInt, fmtPct, lastTenGames, matchHref, matchRowModel, queueMark, rowSpans, streakOf, winsLosses } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, teamLogo } from './match-rows.js';
 import { FULL_STATS, careerRecords, careerTiles, cellValue, isPublic, lastTenOverview, leaderboardRows, liveCard, playerRecords, profileRecord, publicQueues,
   sortValue, splitTop, statusLine, teamRecords, winRate, withCareerLines } from './profile-model.js';
@@ -277,7 +277,7 @@ function drawBody() {
   const parts = {
     overview: () => overview(p),
     matches: () => [historySection(p)],
-    stats: () => [fullStatsSection(p), moreStats(p, view.self)],
+    stats: () => statsView(p, view.self),
     records: () => [recordsSection(p)],
     h2h: () => [h2hSection(p)],
   }[view.tab]();
@@ -523,20 +523,23 @@ function statTable(kind, data) {
     el('tbody', {}, ...body));
 }
 
-function fullStatsSection(p) {
+/** Full stats: a v2 card (owner 10-03, "the all stats page is formatted pretty weird"), the table switch small in its
+ *  header as Your matches' filter is, the table straight under it. */
+function fullStatsCard(p) {
   fs.kinds = Object.keys(FULL_STATS).filter((k) => list(p.career?.[k]?.rows).length);
   if (!fs.kinds.length) return null;
   if (!fs.kinds.includes(fs.tab)) fs.tab = fs.kinds[0];
-  const head = el('div', { class: 'sec-head' });
-  const body = followFocus(el('div', { class: 'glass pf-tbl' }));
+  const slot = el('div', { class: 'pf-fs-tabs' });
+  const body = followFocus(el('div', { class: 'pf-tbl' }));
   fs.render = () => {
-    const tabFocus = typeof head.contains === 'function' && head.contains(document.activeElement);
+    const tabFocus = typeof slot.contains === 'function' && slot.contains(document.activeElement);
     const active = typeof body.contains === 'function' && body.contains(document.activeElement) ? document.activeElement?.getAttribute('data-key') : null;
-    head.replaceChildren(el('h2', { id: 'full-stats-h', text: 'Full stats' }),
-      tabs('profile-full', fs.kinds.map((k) => FULL_STATS[k].title), FULL_STATS[fs.tab].title,
-        (title) => { fs.tab = fs.kinds.find((k) => FULL_STATS[k].title === title); fs.render(); }, { label: 'Stat tables' }));
+    const bar = tabs('profile-full', fs.kinds.map((k) => FULL_STATS[k].title), FULL_STATS[fs.tab].title,
+      (title) => { fs.tab = fs.kinds.find((k) => FULL_STATS[k].title === title); fs.render(); }, { label: 'Stat tables' });
+    bar.classList?.add('sm');
+    slot.replaceChildren(bar);
     body.replaceChildren(statTable(fs.tab, p.career[fs.tab]));
-    if (tabFocus) head.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    if (tabFocus) slot.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
     else if (active) {
       // "Show all" leaves once every player shows: focus moves to the table's first heading, not back to the page top.
       const all = Array.from(body.querySelectorAll('[data-key]'));
@@ -544,7 +547,7 @@ function fullStatsSection(p) {
     }
   };
   fs.render();
-  return el('section', { id: 'full-stats', 'aria-labelledby': 'full-stats-h' }, head, body);
+  return card('full-stats', 'Full stats', body, { aside: slot, flush: true, cls: 'pf-tcard' });
 }
 
 const oneOr = (n) => (num(n) ? one(n) : DASH);
@@ -593,54 +596,84 @@ function followFocus(box) {
   return box;
 }
 
-function moreCard(id, title, table, wide = false) {
-  const c = el('section', { id, class: `glass pf-more-card${wide ? ' wide' : ''}`, 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), table);
-  return wide ? followFocus(c) : c;
+/** A table card: the v2 card with the table straight in it, filling the card (its rows share the extra height, so a
+ *  card beside a taller one has no empty space under its last row). `wide`: the table may scroll sideways in it. */
+function tableCard(id, title, table, { wide = false, aside = null } = {}) {
+  return card(id, title, wide ? followFocus(el('div', { class: 'pf-tbl' }, table)) : table, { aside, flush: true, cls: 'pf-tcard' });
 }
 
 /** Every player row (P4-25; Adam 10-03: Most played shows its own role's numbers), the v2 rows. */
 function playersMore(p, self) {
   const rows = playerRows(withCareerLines(p.best_players, p.career));
   if (!rows.length) return null;
-  return el('section', { id: 'more-players', class: 'glass pf-more-card', 'aria-labelledby': 'more-players-h' },
-    el('h3', { id: 'more-players-h', text: self ? 'Your players' : 'Players' }), el('div', { class: 'vc-rows pf-pls' }, ...rows));
+  return card('more-players', self ? 'Your players' : 'Players', el('div', { class: 'vc-rows pf-pls' }, ...rows), { flush: true });
+}
+
+/** Per game, as Career highlights reads: one cell per number, six to a row. */
+function perGameCard(pg) {
+  if (!pg || !pg.games) return null;
+  const cells = [['Total yards', oneOr(pg.yds)], ['Passing yards', oneOr(pg.pass)], ['Rushing yards', oneOr(pg.rush)], ['First downs', oneOr(pg.first_downs)],
+    ['Turnovers', oneOr(pg.turnovers)], ['Points per drive', oneOr(pg.pts_per_drive)], ['Three-and-outs', oneOr(pg.three_outs)],
+    ['Conversions', `${convOf(pg.conv1_pct)} / ${convOf(pg.conv2_pct)}`, '1-pt / 2-pt'], ['Longest drive', num(pg.longest_drive) ? `${pg.longest_drive} plays` : DASH],
+    ['Lead changes', oneOr(pg.lead_changes)], ['Biggest lead', oneOr(pg.biggest_lead)], ['Safeties', int(pg.safeties)]].map(([label, value, note]) => ({ label, value, note }));
+  return card('per-game', 'Per game', cellGrid(cells, 6), { aside: `${int(pg.games)} games with play-by-play`, flush: true });
+}
+
+/** In wins vs losses: the Stats page's comparison (points, yards, turnovers a game in wins and in losses). */
+function winsLossesCard(wvl) {
+  const w = winsLosses(wvl);
+  if (w) {
+    return card('wins-losses', 'In wins vs losses', el('div', { class: 'pf-cmp' },
+      el('div', { class: 'pf-cmp-r pf-cmp-h' }, el('b', { class: 'up', text: `In ${w.wins} ${w.wins === 1 ? 'win' : 'wins'}` }), el('span'), el('b', { class: 'down', text: `In ${w.losses} ${w.losses === 1 ? 'loss' : 'losses'}` })),
+      ...w.rows.map((r) => el('div', { class: 'pf-cmp-r', role: 'group', 'aria-label': `${r.label}: ${r.win} in wins, ${r.loss} in losses` },
+        el('b', { class: 'num', text: r.win }), el('span', { text: r.label }), el('b', { class: 'num', text: r.loss })))), { aside: 'Per game' });
+  }
+  // Only wins, or only losses: the plain table.
+  const a = wvl?.wins, b = wvl?.losses;
+  if (!a?.games && !b?.games) return null;
+  return tableCard('wins-losses', 'In wins vs losses', smallTable('Per-game numbers in wins and in losses', ['Games', 'PTS', 'YDS', 'TO'],
+    [[`Wins (${int(a?.games ?? 0)})`, oneOr(a?.pts), oneOr(a?.yds), oneOr(a?.to)], [`Losses (${int(b?.games ?? 0)})`, oneOr(b?.pts), oneOr(b?.yds), oneOr(b?.to)]]));
 }
 
 function moreStats(p, self) {
-  const cards = [];
-  const players = playersMore(p, self);
-  if (players) cards.push(players);
-  const pg = p.per_game;
-  if (pg && pg.games) cards.push(moreCard('per-game', 'Per game', smallTable(`Per game, over ${int(pg.games)} games with play-by-play`, ['Stat', `Per game (${int(pg.games)} games)`], [
-    ['Total yards', oneOr(pg.yds)], ['Pass / rush', `${oneOr(pg.pass)} / ${oneOr(pg.rush)}`], ['First downs', oneOr(pg.first_downs)], ['Turnovers', oneOr(pg.turnovers)],
-    ['1-pt conversions', convOf(pg.conv1_pct)], ['2-pt conversions', convOf(pg.conv2_pct)], ['Points per drive', oneOr(pg.pts_per_drive)], ['Three-and-outs', oneOr(pg.three_outs)],
-    ['Longest drive', num(pg.longest_drive) ? `${pg.longest_drive} plays` : DASH], ['Lead changes', oneOr(pg.lead_changes)], ['Biggest lead', oneOr(pg.biggest_lead)], ['Safeties', int(pg.safeties)]])));
   const teams = list(p.by_team).filter(Boolean);
-  if (teams.length) cards.push(moreCard('by-team', 'By team', smallTable('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'],
-    teams.map((t) => [who(t.name, t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url, abbrev: t.abbrev }), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]), { id: 'by-team', what: 'teams' })));
+  const byTeam = teams.length ? tableCard('by-team', 'By team', smallTable('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'],
+    teams.map((t) => [who(t.name, t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url, abbrev: t.abbrev }), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]), { id: 'by-team', what: 'teams' })) : null;
   const combos = list(p.combos).filter((c) => c && c.passer && c.receiver);
-  if (combos.length) cards.push(moreCard('combos', 'Best QB → receiver', smallTable('Quarterback to receiver combinations', ['Combo', 'REC', 'YDS', 'TD'],
-    combos.map((c) => [who(`${c.passer.name} → ${c.receiver.name}`, { name: c.passer.team, logo_url: c.passer.logo_url }), int(c.rec), int(c.yds), int(c.td)]), { id: 'combos', what: 'combos' })));
+  const combo = combos.length ? tableCard('combos', 'Best QB → receiver', smallTable('Quarterback to receiver combinations', ['Combo', 'REC', 'YDS', 'TD'],
+    combos.map((c) => [who(`${c.passer.name} → ${c.receiver.name}`, { name: c.passer.team, logo_url: c.passer.logo_url }), int(c.rec), int(c.yds), int(c.td)]), { id: 'combos', what: 'combos' })) : null;
   const pt = p.pitches;
-  if (pt && (pt.pitches || pt.pitch_plays)) cards.push(moreCard('pitches', 'Laterals & pitches', smallTable('Laterals and pitches', ['Stat', 'Total'],
-    [['Pitches', int(pt.pitches)], ['Plays with a pitch', int(pt.pitch_plays)], ['Yards on those plays', int(pt.pitch_yds)]])));
-  const w = p.wins_vs_losses?.wins, l = p.wins_vs_losses?.losses;
-  if (w?.games || l?.games) cards.push(moreCard('wins-losses', 'In wins vs losses', smallTable('Per-game numbers in wins and in losses', ['Games', 'PTS', 'YDS', 'TO'],
-    [[`Wins (${int(w?.games ?? 0)})`, oneOr(w?.pts), oneOr(w?.yds), oneOr(w?.to)], [`Losses (${int(l?.games ?? 0)})`, oneOr(l?.pts), oneOr(l?.yds), oneOr(l?.to)]])));
+  const pitches = pt && (pt.pitches || pt.pitch_plays) ? card('pitches', 'Laterals & pitches', cellGrid([{ label: 'Pitches', value: int(pt.pitches), note: 'thrown' },
+    { label: 'Plays', value: int(pt.pitch_plays), note: 'with a pitch' }, { label: 'Yards', value: int(pt.pitch_yds), note: 'on those plays' }], 3), { aside: 'Career', flush: true }) : null;
   // A private room is never drawn (P4-3): the deployed server may list one as a game type.
   const types = publicQueues(p.by_game_type);
-  if (types.length) cards.push(moreCard('by-type', 'By game type', smallTable('Record by game type', ['Game type', 'Record', 'Pts / gm', 'Win %'],
-    types.map((t) => [String(t.name ?? DASH), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))));
-  if (!cards.length) return null;
+  const byType = types.length ? tableCard('by-type', 'By game type', smallTable('Record by game type', ['Game type', 'Record', 'Pts / gm', 'Win %'],
+    types.map((t) => [String(t.name ?? DASH), recordOf(t), oneOr(t.pts_per_game), pctOf(t.win_pct)]))) : null;
+  // Beside the players (six tall rows): In wins vs losses over Laterals & pitches, one column filling the row's height.
+  const side = [winsLossesCard(p.wins_vs_losses), pitches].filter(Boolean);
+  const right = side.length > 1 ? el('div', { class: 'pf-stack s5' }, ...side) : side[0] ?? null;
+  const rows = [
+    gridRow([[perGameCard(p.per_game), 12]]),
+    gridRow([[playersMore(p, self), 7], [right, 5]]),
+    gridRow([[byTeam, 6], [combo, 6]]),
+    gridRow([[byType, 12]]),
+  ].filter(Boolean);
+  return rows.length ? el('div', { id: 'more', class: 'pf-view', role: 'group', 'aria-label': 'More stats' }, ...rows) : null;
+}
+
+/** All stats (the #stats view): its title and Records ›, Full stats, then the rest of the numbers, one v2 grid. */
+function statsView(p, self) {
   const toRecords = view.tabs.includes('records') ? link('to-records', 'Records ›', () => openView('records')) : null;
-  return el('section', { id: 'more', 'aria-labelledby': 'more-h' }, sectionHead('more', 'More stats', toRecords), el('div', { class: 'pf-more' }, ...cards));
+  const full = gridRow([[fullStatsCard(p), 12]]);
+  return [el('section', { id: 'all-stats', class: 'pf-view', 'aria-labelledby': 'all-stats-h' }, sectionHead('all-stats', 'All stats', toRecords),
+    ...[full, moreStats(p, self)].filter(Boolean))];
 }
 
 // ---- Head to head, every opponent ----
 
 function h2hSection(p) {
   const h2h = list(p.head_to_head).filter(Boolean);
-  return el('section', { id: 'h2h-tab', 'aria-label': 'Head to head' }, moreCard('h2h', 'Head to head', smallTable('Record against every opponent',
+  return el('section', { id: 'h2h-tab', class: 'pf-view', 'aria-label': 'Head to head' }, gridRow([[tableCard('h2h', 'Head to head', smallTable('Record against every opponent',
     ['Opponent', 'Record', 'PTS', 'Allowed', 'Last', 'Best win', 'Worst loss'], h2h.map((h) => {
       const name = h.display_name || 'Player';
       const inner = [avatar(h.avatar_url, name), el('span', { text: name })];
@@ -649,7 +682,7 @@ function h2hSection(p) {
       const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
       return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH,
         num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `−${h.biggest_loss.margin}` : DASH];
-    }), { id: 'h2h', what: 'opponents' }), true));
+    }), { id: 'h2h', what: 'opponents' }), { wide: true, aside: 'Online' }), 12]]));
 }
 
 // ---- the page ----
