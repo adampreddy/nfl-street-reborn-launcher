@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtInt, fmtPct, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, trendPoints, neighbours, backHref } from './stats-model.js';
+import { fmtInt, fmtPct, fmtElo, gameRowModel, matchRowModel, roleCards, totalLine, trendPoints, backHref, matchHref, gameHref, readMatchAddress, onlineRecord } from './stats-model.js';
 
 test('number formats', () => {
   assert.equal(fmtInt(1284), '1,284'); assert.equal(fmtInt(null), '—'); assert.equal(fmtInt(NaN), '—');
@@ -59,20 +59,15 @@ test('trendPoints', () => {
   assert.equal(trendPoints([{ rating: 1000 }, { rating: 1100 }], 100, 50), '0,50 100,0');
 });
 
-test('neighbours in a newest-first list', () => {
-  assert.deepEqual(neighbours(['a', 'b', 'c'], 'b'), { prev: 'c', next: 'a' });
-  assert.deepEqual(neighbours(['a', 'b'], 'a'), { prev: 'b', next: null });
-  assert.deepEqual(neighbours(['a'], 'x'), { prev: null, next: null });
-  assert.deepEqual(neighbours(null, 'a'), { prev: null, next: null });
-});
-
-test('backHref: only stats.html or a profile of a real player id, else Stats', () => {
+test('backHref: only stats.html or a profile of a real player id, each with a short #view, else Stats', () => {
   const id = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
   assert.equal(backHref('stats.html'), 'stats.html');
+  assert.equal(backHref('stats.html#records'), 'stats.html#records');
   assert.equal(backHref(`profile.html?player=${id}`), `profile.html?player=${id}`);
+  assert.equal(backHref(`profile.html?player=${id}#matches`), `profile.html?player=${id}#matches`);
   for (const bad of [undefined, null, 42, '', 'profile.html', 'profile.html?player=nope', `profile.html?player=${id}&x=1`,
     `profile.html?player=${id.toUpperCase()}`, 'https://evil.example/', 'javascript:alert(1)', '//evil.example/stats.html',
-    'game.html?game=' + id, 'stats.html#x', ` stats.html`])
+    'game.html?game=' + id, 'stats.html#X', 'stats.html#a b', `stats.html#${'x'.repeat(30)}`, ` stats.html`, `profile.html?player=${id}#<b>`])
     assert.equal(backHref(bad), 'stats.html', String(bad));
 });
 
@@ -101,14 +96,48 @@ test('matchSubline: Stats says Offline only, Profile says the queue, never Best 
   assert.equal(matchSubline({ queue: 'private' }, 'profile'), '');
 });
 
+const G = (n) => `00000000-0000-4000-8000-00000000000${n}`;
+test('matchHref: one game opens that game; a match of several opens one page with all of them, the last one shown', () => {
+  assert.equal(matchHref({ games: [{ id: G(1) }] }, 'stats.html'), `game.html?game=${G(1)}&from=stats.html`);
+  const three = matchHref({ games: [{ id: G(1) }, { id: G(2) }, { id: G(3) }], series: [2, 1] }, 'stats.html');
+  assert.equal(three, `game.html?game=${G(3)}&games=${encodeURIComponent([G(1), G(2), G(3)].join(','))}&series=2-1&from=stats.html`);
+  assert.equal(matchHref({ games: [] }, 'stats.html'), null);
+  assert.equal(matchHref({}, 'stats.html'), null);
+  assert.match(matchHref({ games: [{ id: G(1) }] }, 'https://evil.example/'), /from=stats\.html$/, 'Back is validated on the way out too');
+  assert.equal(gameHref(G(4), 'stats.html#records'), `game.html?game=${G(4)}&from=stats.html%23records`);
+});
+
+test('readMatchAddress: the shown game, the match, the series, Back; anything odd falls back to one game', () => {
+  const a = readMatchAddress(new URL('http://x/' + matchHref({ games: [{ id: G(1) }, { id: G(2) }], series: [1, 1] }, 'stats.html#records')).search);
+  assert.deepEqual(a, { game: G(2), games: [G(1), G(2)], series: '1-1', back: 'stats.html#records' });
+  assert.deepEqual(readMatchAddress(`?game=${G(1)}`), { game: G(1), games: [G(1)], series: null, back: 'stats.html' });
+  // the shown game is not in the list: just that game
+  assert.deepEqual(readMatchAddress(`?game=${G(5)}&games=${G(1)},${G(2)}&series=1-1`).games, [G(5)]);
+  // only UUIDs make the list; a bad series is dropped; a bad Back is Stats
+  assert.deepEqual(readMatchAddress(`?game=${G(2)}&games=${G(1)},nope,${G(2)}&series=2–1&from=javascript:x`), { game: G(2), games: [G(1), G(2)], series: null, back: 'stats.html' });
+});
+
+test('onlineRecord: online only, Ranked and Casual apart, offline, CPU and private rooms never count', () => {
+  const m = (result, extra) => ({ result, mode: 'online', queue: 'ranked', opponent_kind: 'human', ...extra });
+  const r = onlineRecord([m('win'), m('win', { queue: 'casual' }), m('loss', { mode: 'offline', queue: null, opponent_kind: 'cpu' }),
+    m('loss'), m('win', { queue: 'private' }), m('loss', { queue: 'casual' }), m('loss', { queue: 'casual', opponent_kind: 'cpu' })]);
+  assert.deepEqual([r.all.text, r.ranked.text, r.casual.text], ['2-2', '1-1', '1-1']);
+  assert.deepEqual(r.results, ['W', 'W', 'L', 'L']);
+  assert.equal(r.streak, 'W2');
+  const none = onlineRecord(null);
+  assert.deepEqual([none.all.text, none.streak, none.all.pct], ['—', '—', null]);
+});
+
 test('lastTen and youNumbers', () => {
   assert.equal(lastTen(['W', 'W', 'L', 'W', 'L', 'W', 'W', 'L', 'W', 'L', 'W']), '6-4');
   assert.equal(lastTen([]), '—');
   assert.equal(lastTen(['T', 'W']), '1-0');
-  const n = youNumbers({ wins: 14, losses: 9, ties: 0, win_pct: 0.609, streak: 'W2' }, { results: ['W', 'L'] });
-  assert.deepEqual(n.map((x) => [x.label, x.value, x.kind]), [['Record', '14-9', ''], ['Win %', '.609', ''], ['Last 10', '1-1', ''], ['Streak', 'W2', 'up']]);
-  assert.deepEqual(youNumbers({}, null).map((x) => x.value), ['—', '—', '—', '—']);
-  assert.equal(youNumbers({ wins: 1, losses: 3, streak: 'L3' }, null)[3].kind, '');
+  const on = (result, queue) => ({ result, queue, mode: 'online', opponent_kind: 'human' });
+  const n = youNumbers(onlineRecord([on('win', 'ranked'), on('win', 'casual'), on('loss', 'ranked')]));
+  assert.deepEqual(n.nums.map((x) => [x.label, x.value, x.kind]), [['Record', '2-1', ''], ['Win %', '.667', ''], ['Last 10', '2-1', ''], ['Streak', 'W2', 'up']]);
+  assert.deepEqual(n.queues, [{ label: 'Ranked', value: '1-1', pct: '.500' }, { label: 'Casual', value: '1-0', pct: '1.000' }]);
+  assert.deepEqual(youNumbers(onlineRecord([])).nums.map((x) => x.value), ['—', '—', '—', '—']);
+  assert.equal(youNumbers(onlineRecord([on('loss', 'ranked')])).nums[3].kind, '');
 });
 
 test('statLine: the fuller line of a role from the fields the server sends, missing ones left out, else its one number', () => {
@@ -155,7 +184,7 @@ test('no Stats output counts or mentions a private match', () => {
   assert.deepEqual(resultsOf(kept), ['W', 'L', 'W']);
   assert.deepEqual(recordOf(kept), { wins: 2, losses: 1 });
   assert.equal(lastTen(resultsOf(kept)), '2-1');
-  const nums = youNumbers({ wins: 2, losses: 1, win_pct: 0.667, streak: 'W1' }, { results: resultsOf(kept) });
+  const nums = youNumbers(onlineRecord(kept));
   const rows = kept.map(matchRowModel);
   const keptOut = JSON.stringify([nums, rows, kept.map((m) => matchSubline(m)), kept.map((m) => matchSubline(m, 'profile'))]);
   assert.ok(!/private/i.test(keptOut));
@@ -170,7 +199,7 @@ test('no Stats output counts or mentions a private match', () => {
     matchSubline(PRIV), matchSubline(PRIV, 'profile'),
     roleCards({ passer: PV, rusher: PV, receiver: PV, dl_lb: PV, ballhawk: PV, most_played: PV }),
     totalLine({ total: PT }, 'passing'), totalLine({ total: PT }, 'rushing'), totalLine({ total: PT }, 'receiving'), totalLine({ total: PT }, 'defense'),
-    fmtElo({ ...PRIV, rating: 1000, last_delta: 5, rank: 3 }), youNumbers({ ...PRIV, wins: 1, losses: 0 }, null),
+    fmtElo({ ...PRIV, rating: 1000, last_delta: 5, rank: 3 }), youNumbers(onlineRecord([PRIV])),
   ]);
   assert.ok(!/private/i.test(onPriv));
   assert.equal(matchSubline(PRIV), '');
