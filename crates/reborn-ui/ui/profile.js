@@ -4,7 +4,7 @@
 //   profile and View on web (the live card under them while they play), and the Elo panel on the right (rating, the
 //   week's change, rank of total, peak, ranked record, sparkline; or a clean Unranked state).
 //   Then: Elo history (with the leaderboard around them, when the server sends it) · Record (Ranked and Casual apart)
-//   · Last 10; Career highlights; Their players (five numbers each) · Recent matches; Head to head · Top connections.
+//   · Last 10; Career highlights; Their players (five numbers each) · Recent matches; Head to head · Win rate by team.
 // "All matches ›", "All stats ›", "All players ›" and "All opponents ›" open the fuller views in place (the whole match
 // history, Full stats and the rest of the numbers, Head to head): the address's #matches, #stats (or #passing,
 // #rushing, #receiving, #defense, the links from Stats), #records, #h2h, without a history entry; Back returns to the
@@ -22,7 +22,7 @@ import { avatar, matchHeader, matchRows, pager, teamLogo } from './match-rows.js
 import { FULL_STATS, careerRecords, careerTiles, cellValue, isPublic, lastTenOverview, leaderboardRows, liveCard, playerRecords, profileRecord, publicQueues,
   sortValue, splitTop, statusLine, teamRecords, winRate, withCareerLines } from './profile-model.js';
 import { recordsView } from './records-view.js';
-import { ROLES, card, cellGrid, cols, eloLine, playerRows, tableHead, wlStrip } from './stats-cards.js';
+import { ROLES, card, cellGrid, cols, eloLine, playerRows, tableHead, teamRatesCard, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -278,7 +278,7 @@ function overview(p) {
     gridRow([[eloHistoryCard(p), 6], [recordCard(p), 3], [lastTenCard(p), 3]]),
     gridRow([[careerCard(p), 12]]),
     gridRow([[playersCard(p), 7], [recentCard(), 5]]),
-    gridRow([[h2hCard(p), 7], [combosCard(p), 5]]),
+    gridRow([[h2hCard(p), 7], [teamRatesCard(p.by_team, 'pf-teams'), 5]]),
   ].filter(Boolean);
 }
 
@@ -386,17 +386,6 @@ function h2hCard(p) {
     { aside: all.length > SHOWN ? link('all-h2h', `All ${all.length} opponents ›`, () => showTab('h2h', { focus: true })) : 'Online', flush: true });
 }
 
-const COMBO_COLS = 'minmax(0,1fr) 40px 46px 34px';
-function combosCard(p) {
-  const combos = list(p.combos).filter((c) => c && c.passer && c.receiver).slice(0, SHOWN);
-  if (!combos.length) return null;
-  // the surname: the last word that is not a suffix ("M. Penix Jr." is Penix)
-  const last = (n) => String(n || '').trim().split(/\s+/).filter((w) => !/^(jr|sr|ii|iii|iv|v)\.?$/i.test(w)).at(-1) || DASH;
-  return card('connections', 'Top connections', [tableHead(['Passer to receiver', 'Rec', 'Yards', 'TD'], COMBO_COLS, [1, 2, 3]),
-    el('div', { class: 'vc-rows' }, ...combos.map((c) => cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${c.passer.name} to ${c.receiver.name}: ${int(c.rec)} catches, ${int(c.yds)} yards, ${int(c.td)} TD` },
-      el('span', { class: 'pf-who' }, teamLogo({ name: c.passer.team, logo_url: c.passer.logo_url }), el('b', { text: `${last(c.passer.name)} → ${last(c.receiver.name)}` })),
-      el('span', { class: 'r num', text: int(c.rec) }), el('b', { class: 'r num', text: int(c.yds) }), el('span', { class: 'r num', text: int(c.td) })), COMBO_COLS)))], { flush: true });
-}
 
 // ---- Matches: the Stats rows, the queue as the second line; All / Ranked / Casual (spec §8.7.4) ----
 // `player_profile` takes no queue, so the filter runs here, over the matches loaded so far, and "Older" loads more

@@ -15,11 +15,11 @@
 // Discord avatar CDN), the two image prefixes the CSP allows. Script-set styles are custom properties (CSSOM).
 import { call, el, markCurrent, partial, quietCall, reason, wireCoreFold } from './shell.js';
 import { queueLine, unsentCount } from './stats-rows.js';
-import { dropPrivate, eloCard, lastTenStrip, pointsSeries, recordCard, resultsByDay, rowSpans, teamPerGame, teamRates, winsLosses, yardsSplit } from './stats-model.js';
+import { dropPrivate, eloCard, lastTenStrip, pointsSeries, recordCard, resultsByDay, rowSpans, teamPerGame, winsLosses, yardsSplit } from './stats-model.js';
 import { matchHeader, matchRows, pager, teamLogo } from './match-rows.js';
 import { careerRecords, playerRecords, teamRecords } from './profile-model.js';
 import { recordsView } from './records-view.js';
-import { card, cellGrid, cols, dayColumns, donut, eloLine, pointsBars, playerRows, share, wlStrip } from './stats-cards.js';
+import { card, cellGrid, cols, dayColumns, donut, eloLine, pointsBars, playerRows, share, teamRatesCard, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
 
@@ -180,14 +180,6 @@ function daysBlock(matches) {
   return card('st-days', 'Results by day', [chart, legend], { aside: `Last ${r.days.length} days` });
 }
 
-function teamsBlock(byTeam) {
-  const rows = teamRates(byTeam);
-  if (!rows.length) return null;
-  const COLS = '120px minmax(0,1fr) 42px 40px';
-  return card('st-teams', 'Win rate by team', el('div', { class: 'vc-rows st-teams' }, ...rows.map((t) => cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${t.name}: ${t.record}, ${t.pct} wins` },
-    el('span', { class: 'st-team' }, teamLogo(t.team), el('b', { text: t.name })), share(t.share, 'red'), el('span', { class: 'r num', text: t.record }), el('span', { class: 'r num st-pct', text: t.pct })), COLS))),
-  { aside: 'Online games', flush: true });
-}
 
 function perGameBlock(pg) {
   const cells = teamPerGame(pg);
@@ -283,17 +275,18 @@ function drawViewSwitch(show) {
   const slot = document.getElementById?.('stats-view');
   if (!slot) return;
   if (!show) { slot.replaceChildren?.(); return; }
-  const bar = tabs('stats-view', VIEWS.map(([, l]) => l), VIEWS.find(([k]) => k === state.view)[1], (label) => {
+  // Your profile is the switch's third option (Adam, 10-03): it opens the profile page; the other two swap the view.
+  const me = state.dash?.you?.player_id;
+  const names = [...VIEWS.map(([, l]) => l), ...(me ? ['Your profile'] : [])];
+  const bar = tabs('stats-view', names, VIEWS.find(([k]) => k === state.view)[1], (label) => {
+    if (label === 'Your profile') { location.href = profileHref(me); return; }
     state.view = VIEWS.find(([, l]) => l === label)[0];
     try { history.replaceState(history.state, '', state.view === 'records' ? '#records' : location.pathname + location.search); } catch { /* the address is a convenience */ }
     draw();
     slot.querySelector?.('[aria-pressed="true"]')?.focus({ preventScroll: true });
   }, { label: 'Stats view' });
-  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', `view-${VIEWS[i][0]}`));
-  // The player's own profile, at the top of the page beside the view switch (Adam, 10-03).
-  const me = state.dash?.you?.player_id;
-  const mine = me ? el('a', { class: 'btn sm st-profile-link', href: profileHref(me), 'data-key': 'your-profile', text: 'Your profile ›' }) : null;
-  slot.replaceChildren(...[mine, bar].filter(Boolean));
+  if (typeof bar.querySelectorAll === 'function') bar.querySelectorAll('.tab').forEach((b, i) => b.setAttribute('data-key', i < VIEWS.length ? `view-${VIEWS[i][0]}` : 'your-profile'));
+  slot.replaceChildren(bar);
 }
 
 // ---- drawing ----
@@ -375,7 +368,7 @@ function paint(accountOpen) {
     gridRow([[recordBlock(d, matches), 7], [eloBlock(d), 5]]),
     gridRow([[matchesBlock(matches), 7], [playersBlock(d.best_players, you.player_id), 5]]),
     gridRow([[pointsBlock(matches), 8], [yardsBlock(pg), 4]]),
-    gridRow([[daysBlock(matches), 6], [teamsBlock(fromProfile(d, 'by_team')), 6]]),
+    gridRow([[daysBlock(matches), 6], [teamRatesCard(fromProfile(d, 'by_team')), 6]]),
     gridRow([[perGameBlock(pg), 8], [winsLossesBlock(fromProfile(d, 'wins_vs_losses')), 4]]),
   ].filter(Boolean);
   parts.push(el('div', { class: 'st-grid' }, ...rows));

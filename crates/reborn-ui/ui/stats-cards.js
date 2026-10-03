@@ -5,7 +5,8 @@
 // script-set styles are custom properties (--x, --y, --w, --n) through the CSSOM.
 import { el } from './shell.js';
 import { assetUrl } from './live-common.js';
-import { statCells, teamColour } from './stats-model.js';
+import { statCells, teamColour, teamRates } from './stats-model.js';
+import { teamLogo } from './match-rows.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 let uid = 0;
@@ -184,4 +185,14 @@ export function dayColumns(byDay) {
   const labels = byDay.days.map((d, i) => (i % 5 === 0 || i === n - 1 ? { at: i === 0 ? 0 : i === n - 1 ? 1 : (i + 0.5) / n, text: d.label } : null)).filter(Boolean);
   const words = byDay.days.filter((d) => d.results.length).map((d) => `${d.label} ${d.results.join('')}`).join(', ');
   return el('div', { class: 'ch', role: 'img', 'aria-label': `Results by day: ${words}` }, grid, xLabels(labels));
+}
+
+/** Win rate by team (Stats, and the Profile in place of Top connections): one bar per team, W-L and win %. */
+export function teamRatesCard(byTeam, id = 'st-teams') {
+  const rows = teamRates(byTeam);
+  if (!rows.length) return null;
+  const COLS = '120px minmax(0,1fr) 42px 40px';
+  return card(id, 'Win rate by team', el('div', { class: 'vc-rows st-teams' }, ...rows.map((t) => cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${t.name}: ${t.record}, ${t.pct} wins` },
+    el('span', { class: 'st-team' }, teamLogo(t.team), el('b', { text: t.name })), share(t.share, 'red'), el('span', { class: 'r num', text: t.record }), el('span', { class: 'r num st-pct', text: t.pct })), COLS))),
+  { aside: 'Online games', flush: true });
 }

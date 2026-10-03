@@ -580,3 +580,8 @@ a.pl-row:hover .pl-name{text-decoration:underline}
 .ch-days i{display:block;width:min(15px,calc(100% - 4px));aspect-ratio:1;border-radius:3px;background:var(--glass-1)}
 .ch-days i.W{background:color-mix(in srgb,var(--ok) 80%,transparent)}.ch-days i.L{background:color-mix(in srgb,var(--red-ink) 80%,transparent)}
 .ch-days+.ch-x{margin-top:6px}
+/* Win rate by team rows (stats-cards.js teamRatesCard), shared by Stats and Profile */
+.st-team{display:flex;align-items:center;gap:9px;min-width:0}
+.st-team b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-team .team-logo{width:22px;height:22px}
+.st-teams>.vc-tr{border-top:1px solid var(--rule)}

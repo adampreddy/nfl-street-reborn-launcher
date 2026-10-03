@@ -65,11 +65,12 @@ try {
     assert.deepEqual(await noDeadSpace(page), []);
     assert.deepEqual([...new Set(await page.locator('.vc-h').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [48], 'every card header is 48px');
     // Your Record: online overall from by_queue (ranked 1-1 + casual 7-3), the halves with the server's points per game
-    // the way to the player's own profile sits at the top, beside Matches | Records
+    // Your profile is the view switch's third option; it opens the player's own profile
     assert.equal(await page.locator('#st-record .vc-aside').textContent(), 'Online games only');
     const mine = page.locator('#stats-view [data-key="your-profile"]');
-    assert.equal(await mine.textContent(), 'Your profile ›');
-    assert.match(await mine.getAttribute('href'), /^profile\.html\?player=[0-9a-f-]+$/);
+    assert.equal(await mine.textContent(), 'Your profile');
+    await Promise.all([page.waitForURL(/profile\.html\?player=[0-9a-f-]+$/), mine.click()]);
+    await page.goBack(); await page.locator('#st-record').waitFor();
     assert.equal(await page.locator('.st-overall .vc-big').textContent(), '8-4');
     assert.deepEqual(await texts(page, '#st-record .st-half:not(.st-overall) .vc-mid'), ['1-1', '7-3']);
     assert.deepEqual(await texts(page, '#st-record .st-half:not(.st-overall) .vc-kv'), ['Elo1,184 · #7', 'Points / game23.8', 'Games10', 'Points / game21.6']);
@@ -125,7 +126,7 @@ try {
     assert.deepEqual(await texts(page, '#st-wl .st-cmp-r:not(.st-cmp-h) > span'), ['Points', 'Yards', 'Turnovers']);
     assert.deepEqual(await texts(page, '#st-wl .st-cmp-h b'), ['In 14 wins', 'In 9 losses']);
     // Matches | Records at the top right, beside the title, Matches picked
-    assert.deepEqual(await texts(page, '#stats-view .tab'), ['Matches', 'Records']);
+    assert.deepEqual(await texts(page, '#stats-view .tab'), ['Matches', 'Records', 'Your profile']);
     assert.equal(await page.locator('#stats-view .tab[aria-pressed="true"]').textContent(), 'Matches');
     { const v = await rect(page, '#stats-view .tabs'), h = await rect(page, '.page-heading h1'), c = await rect(page, '#st-elo');
       assert.ok(Math.abs(v.right - c.right) < 1.5, `the switch ends on the content's right edge: ${v.right} vs ${c.right}`);

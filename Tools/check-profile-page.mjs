@@ -2,7 +2,7 @@
 // short scroll. Back first; the hero (status | Plays as | Joined, Share profile / View on web, no Challenge, the live
 // card, the Elo panel or a clean Unranked state); then the v2 grid, every row's cards sharing their edges: Elo history
 // with the leaderboard around them · Record · Last 10; Career highlights; Their / Your players (box-score numbers)
-// · Recent matches; Head to head · Top connections, each left out when its data is. The fuller views (#matches,
+// · Recent matches; Head to head · Win rate by team, each left out when its data is. The fuller views (#matches,
 // #stats, #records, #h2h) open in place from the "All ..." links, the address following without a history entry;
 // Back returns to the profile first. Matches: the queue filter and the pager; Stats: Full stats and the rest; Records:
 // Single game and Career side by side; Head to head. W/L only, never "Best of 3", "ladder" or "Private"; the deployed
@@ -102,7 +102,7 @@ try {
     // no tabs: one short scroll of the v2 grid
     assert.equal(await page.locator('.pf-tabbar, #full-stats, #history').count(), 0, 'no tabs; the fuller views are not drawn');
     assert.equal(await tabOn(page), 'overview');
-    assert.deepEqual(await spans(page), ['elo-history:6 record:3 last10:3', 'career:12', 'players:7 recent:5', 'h2h-card:7 connections:5']);
+    assert.deepEqual(await spans(page), ['elo-history:6 record:3 last10:3', 'career:12', 'players:7 recent:5', 'h2h-card:7 pf-teams:5']);
     assert.deepEqual(await rowsAligned(page), []);
     assert.deepEqual([...new Set(await page.locator('.vc-h').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height)))], [48]);
     // Elo history: the curve and the leaderboard around them, their own row marked ("You" on their own profile)
@@ -135,9 +135,11 @@ try {
     assert.deepEqual(await texts(page, '#recent .vc-th span'), ['Result', 'Opponent', 'Queue', 'Date']);
     assert.equal(await page.locator('#recent .vc-tr').count(), 7);
     assert.deepEqual(await page.locator('[data-key="recent-m-01"] > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W 2–1', 'Playz', 'Ranked', 'Sep 26']);
-    // Head to head and Top connections
+    // Head to head and Win rate by team (in place of Top connections, Adam 10-03)
     assert.deepEqual(await page.locator('#h2h-card .vc-tr').first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Playz', '5-3', '212–180', 'W Sep 26', '+21']);
-    assert.deepEqual(await page.locator('#connections .vc-tr').first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Penix → London', '61', '902', '9']);
+    assert.equal(await page.locator('#pf-teams h2').textContent(), 'Win rate by team');
+    assert.ok(await page.locator('#pf-teams .vc-tr').count() > 0, 'a team row');
+    assert.equal(await page.locator('#connections').count(), 0, 'Top connections is gone');
     await contentRules(page);
     await noSideways(page);
     await page.evaluate(() => { document.getElementById('main').scrollTop = 1e6; });
@@ -485,7 +487,7 @@ try {
     assert.equal(await page.locator('.pf-live').count(), 0);
     assert.equal(await page.locator('.pf-status').textContent(), '● Online now');
     // no recent_form: no Last 10; no elo.around: no leaderboard beside the curve; Elo history and Record take the row
-    assert.deepEqual(await spans(page), ['elo-history:8 record:4', 'career:12', 'players:7 recent:5', 'h2h-card:7 connections:5']);
+    assert.deepEqual(await spans(page), ['elo-history:8 record:4', 'career:12', 'players:7 recent:5', 'h2h-card:7 pf-teams:5']);
     assert.equal(await page.locator('.pf-lad').count(), 0);
     assert.deepEqual(await rowsAligned(page), []);
     assert.deepEqual(await texts(page, '.pf-elo-facts > *'), ['Rank', '#7', 'Peak', '1,212', 'Record', '8-5'], 'no board size: "#7", never a made-up total');
