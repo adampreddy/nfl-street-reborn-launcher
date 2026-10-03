@@ -1,52 +1,66 @@
-/* Stats (spec §8.6): matches first, the full content width, two columns whose first cards start and end on one line.
-   Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs). The match rows are theme.css's .m-*. */
-body.page-stats #main{padding:36px 36px 32px}
-.page-stats .page-heading{margin-bottom:24px;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:24px;align-items:center}
+/* Stats (spec §8.6), the approved mv2 mockup (owner 10-03): one 12-column grid (.vgrid, theme.css), 16px gutters,
+   every row's cards sharing their top and bottom edges. Layout only: every colour is a theme.css token
+   (Tools/check-theme-tokens.mjs). The cards, rows, charts and match rows are theme.css components. */
+body.page-stats #main{padding:28px 28px 28px}
+.page-stats .page-heading{margin-bottom:20px;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:16px;align-items:end}
 .page-stats .page-heading>:not(.st-view){grid-column:1}
+.page-stats .page-heading .eyebrow{display:none}
+.page-stats .page-heading .purpose{margin-top:8px}
 /* Matches | Records, at the top right beside the title (owner 10-03) */
-.st-view{grid-column:2;grid-row:1/span 2}
+.st-view{grid-column:2;grid-row:1/span 3;align-self:end}
 .st-view:empty{display:none}
-.page-stats #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
+.page-stats #screen{display:flex;flex-direction:column;gap:16px;min-width:0}
 .page-stats #screen>.refusal,.page-stats #screen>.note{margin:0}
-.st-cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:24px;align-items:stretch}
-.st-col{display:flex;flex-direction:column;min-width:0}
-.st-col>.st-list{flex:1}
-.st-side{display:flex;flex-direction:column;gap:24px;min-width:0}
-.st-side>section{display:flex;flex-direction:column}
-.st-side>section:last-child{flex:1}
-/* You */
-.st-you{padding:16px}
-.st-you-top{display:flex;align-items:flex-end;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--stroke)}
-.st-elo-big{margin-top:4px;font:700 32px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.st-elo-big.unranked{font-size:22px;color:var(--fg-2)}
-.st-chg{margin-top:4px;font-size:12px;color:var(--fg-2)}
-.st-chg .up{font-weight:600;color:var(--ok)}
-.st-chg .down{font-weight:600;color:var(--red-ink)}
-.st-spark{flex:1;min-width:0;height:54px;color:var(--red)}
-.st-nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;padding-top:16px}
-.st-nums b{display:block;margin-top:4px;font:600 17px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
-.st-nums b.up{color:var(--ok)}
-/* the record's two parts, Ranked and Casual, as two separate figures (owner 10-03) */
-.st-queues{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
-.st-q{display:flex;align-items:baseline;gap:10px;padding:10px 12px;border:1px solid var(--stroke);border-radius:var(--r-md);background:var(--glass-1)}
-.st-q .k-label{flex:none}
-.st-q b{font:600 17px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
-.st-q-pct{margin-left:auto;font-size:12px;color:var(--fg-3);font-variant-numeric:tabular-nums}
-/* Records: the pills over one table, the full content width */
-.st-records{display:flex;flex-direction:column;gap:16px}
-/* Your players: one list that stretches so its bottom meets Your matches */
-.st-plist{flex:1;display:flex;flex-direction:column;padding:0 16px}
-.st-player{flex:1;display:flex;align-items:center;gap:16px;min-height:64px;color:inherit;text-decoration:none}
-.st-player+.st-player{border-top:1px solid var(--stroke)}
-a.st-player:hover .st-pname{text-decoration:underline}
-.st-ptx{flex:1;min-width:0}
-.st-phead{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.st-pname{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.st-phead .k-label{flex:none;font-size:10px}
-.st-player.none .st-pname{font-weight:500;color:var(--fg-3)}
-.st-line{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:4px;font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums}
-.st-line>span{white-space:nowrap}
-.st-line b{font-weight:600;color:var(--fg)}
+.st-grid,.st-records{display:flex;flex-direction:column;gap:16px}
+/* Your Record: overall, Ranked, Casual in three columns, Last 10 along the foot */
+.st-rec{flex:1;display:grid;grid-template-columns:1.05fr 1fr 1fr}
+.st-half{display:flex;flex-direction:column;gap:0;min-width:0;padding:4px 20px 0}
+.st-half+.st-half{border-left:1px solid var(--rule)}
+.st-overall{padding-left:0}
+.st-half .vc-big{margin:10px 0 8px}
+.st-half .vc-mid{margin:10px 0 8px}
+.st-half .share{margin:14px 0 2px}
+.st-half .vc-kv{margin-top:8px}
+.st-streak{margin-top:6px}
+.st-half .k-label.qm{display:inline-flex;font:600 11px/1.3 Inter,system-ui,sans-serif;letter-spacing:.07em;color:var(--fg-3)}
+.st-l10{display:flex;align-items:center;gap:16px;margin-top:16px;padding-top:14px;border-top:1px solid var(--rule)}
+.st-l10>.k-label{flex:none;width:52px}
+.st-l10-sum{margin-left:auto;font-size:12.5px;line-height:1.5;text-align:right;color:var(--fg-2);font-variant-numeric:tabular-nums}
+.st-l10-sum b{color:var(--fg)}
+/* Elo: the number, Rank · Peak · This week on the right, the curve filling the rest of the card */
+.st-elo-top{display:flex;align-items:flex-end;gap:18px}
+.st-elo-v{margin-top:6px;font-size:40px}
+.st-elo-meta{display:grid;grid-auto-flow:column;gap:4px 18px;margin-left:auto;text-align:right;font-size:12.5px;color:var(--fg-2)}
+.st-elo-meta b{display:block;font:700 15px Inter,system-ui,sans-serif;color:var(--fg);font-variant-numeric:tabular-nums}
+.st-elo-card .ch{margin-top:14px}
+.st-elo-wait{margin:auto 0}
+.st-unranked{flex:1;display:flex;flex-direction:column;justify-content:center;gap:8px}
+.st-unranked .vc-mid{color:var(--fg-2)}
+.st-unranked .vc-sub{margin:0}
+/* Your matches: the queue list fills its card; Your players: the rows fill theirs */
+.st-list{flex:1}
+/* Yards split */
+.st-donut{flex:1;display:flex;align-items:center;gap:18px}
+.st-yparts{flex:1;display:grid;gap:12px}
+.st-yv{margin-top:4px;font:700 20px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.st-yv small{margin-left:5px;font:600 12px Inter,system-ui,sans-serif;color:var(--fg-3)}
+.st-yn{font-size:11.5px;color:var(--fg-3)}
+/* Results by day */
+.st-days-legend{margin-top:10px}
+/* Win rate by team */
+.st-team{display:flex;align-items:center;gap:9px;min-width:0}
+.st-team b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-team .team-logo{width:22px;height:22px}
+.st-pct{color:var(--fg-3)}
+.st-teams>.vc-tr{border-top:1px solid var(--rule)}
+/* Wins vs losses */
+.st-cmp{flex:1;display:flex;flex-direction:column}
+.st-cmp-r{flex:1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;border-top:1px solid var(--rule);font-variant-numeric:tabular-nums}
+.st-cmp-r>b{font:700 18px Inter,system-ui,sans-serif}
+.st-cmp-r>b:last-child{text-align:right}
+.st-cmp-r>span{width:96px;font-size:11.5px;text-align:center;color:var(--fg-3)}
+.st-cmp-h{flex:none;height:34px;border-top:0}
+.st-cmp-h>b{font:600 12px Inter,system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase}
 /* the footer line: the queue note on the left, Profile & sync on the right */
 .st-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 24px;font-size:12px;color:var(--fg-3)}
 .st-account{margin-left:auto}
@@ -59,9 +73,13 @@ a.st-player:hover .st-pname{text-decoration:underline}
 .st-account-body p{margin:0 0 8px;font-size:12.5px;color:var(--fg-2)}
 .st-account-body label{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--fg-2)}
 .st-account-body>.said{grid-column:1/-1;margin:0}
-@media (max-width:1100px){.st-cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:1000px){body.page-stats #main{padding:24px 24px 16px}}
-@media (max-width:720px){.st-nums{grid-template-columns:repeat(2,minmax(0,1fr))}.st-account-body{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:720px){
+  .st-rec{grid-template-columns:minmax(0,1fr)}
+  .st-half{padding:12px 0 0}.st-half+.st-half{border-left:0;border-top:1px solid var(--rule);margin-top:12px}
+  .st-account-body{grid-template-columns:minmax(0,1fr)}
+  .st-l10{flex-wrap:wrap}
+}
 /* Signed out: the sign-in card, centred on the page, one even rhythm: title 12, message 24, button 16, note. */
 .st-signin{display:flex;flex-direction:column;align-items:center;max-width:640px;margin:64px auto 0;padding:40px 48px;text-align:center}
 .st-signin h2{margin:0 0 12px;font-size:28px;font-weight:700;line-height:1.15}

@@ -76,7 +76,8 @@ function best(lines) {
     Object.assign(b.dl_lb, { tkl: 71, sck: 5, tfl: 9, ff: 2, pbu: 6 });
     // no ff sent: left out of the line
     Object.assign(b.ballhawk, { int: 7, pbu: 14, tkl: 33, td: 1 });
-    Object.assign(b.most_played, { games: 23, att: 96, yds: 535, td: 5 });
+    // the live server (backend cc79302) spreads the whole career row: most played here is a rusher's row
+    Object.assign(b.most_played, { games: 23, att: 96, yds: 535, avg: 5.6, td: 5, long: 38, btk: 14, yco: 230 });
   }
   return clone(b);
 }
@@ -86,14 +87,23 @@ function stripColours(x) {
   else if (x && typeof x === 'object') { delete x.primary; delete x.secondary; Object.values(x).forEach(stripColours); }
 }
 
-/** `stats_dashboard`: the launcher adds `signed_in`. `lines: true` = a server that also sends each role's statline. */
-export function dashboard({ lines = false } = {}) {
-  return { ok: true, signed_in: true,
+/** `stats_dashboard`: the launcher adds `signed_in`. `lines: true` = a server that sends each role's full career row
+ *  (backend cc79302); `byQueue: true` = one that sends `by_queue` (ranked and casual, online only); `week: n` = the
+ *  Elo's `week_delta`. The default is the shape the deployed server sent before cc79302: value + unit only. */
+export function dashboard({ lines = false, byQueue = false, week = null } = {}) {
+  const d = { ok: true, signed_in: true,
     you: { player_id: ME, display_name: 'adamknowsball', plays_as: clone(ATL), elo: elo(), summary: { ...SUMMARY } },
     matches: allMatches(),
     recent_form: { results: ['W', 'W', 'L', 'W', 'L', 'W', 'W', 'L', 'W', 'L'], pts_for: 314, pts_against: 250 },
     head_to_head: [], best_players: best(lines) };
+  // the server's counts (its whole history, not just the 200 listed): ranked 1-1 and casual 7-3, points from its rows
+  if (byQueue) d.by_queue = [{ key: 'ranked', name: 'Ranked', games: 2, wins: 1, losses: 1, win_pct: 0.5, pts_per_game: 23.8 },
+    { key: 'casual', name: 'Casual', games: 10, wins: 7, losses: 3, win_pct: 0.7, pts_per_game: 21.6 }];
+  if (week !== null) d.you.elo.week_delta = week;
+  return d;
 }
+/** Elo switched off until launch (backend eloSwitch): unranked on an empty board. */
+export const ELO_OFF = { rating: null, rank: null, total: 0, games: 0, last_delta: null, peak: null, peak_at: null, history: [], around: [], week_delta: null };
 export function oldDashboard() {
   const d = dashboard();
   for (const k of ['total', 'peak', 'peak_at', 'around']) delete d.you.elo[k];
@@ -126,14 +136,22 @@ function career() {
   };
 }
 const RECORDS = () => [
-  // the deployed server's own labels (players.js LINE_RECORDS): the page spells "yds" out as "Yards"
+  // the server's own labels and order (players.js LINE_RECORDS, then the team records): the page spells "yds" out
   { key: 'pass_yds', label: 'Passing yds', value: 288, game_id: 'g-011', at: at(19), name: 'M. Penix Jr.', ...face(ATL) },
+  { key: 'pass_td', label: 'Passing TD', value: 5, game_id: 'g-012', at: at(19), name: 'M. Penix Jr.', ...face(ATL) },
   { key: 'rush_yds', label: 'Rushing yds', value: 171, game_id: 'g-012', at: at(19), name: 'S. Barkley', ...face(PHI) },
+  { key: 'rush_td', label: 'Rushing TD', value: 3, game_id: 'g-021', at: at(21), name: 'S. Barkley', ...face(PHI) },
+  { key: 'rec', label: 'Receptions', value: 7, game_id: 'g-013', at: at(20), name: 'D. London', ...face(ATL) },
   { key: 'rec_yds', label: 'Receiving yds', value: 164, game_id: 'g-013', at: at(20), name: 'D. London', ...face(ATL) },
+  { key: 'rec_td', label: 'Receiving TD', value: 3, game_id: 'g-013', at: at(20), name: 'K. Pitts', ...face(ATL) },
   { key: 'tackles', label: 'Tackles', value: 12, game_id: 'g-021', at: at(21), name: 'N. Bolton', ...face(KC) },
+  { key: 'sacks', label: 'Sacks', value: 3, game_id: 'g-021', at: at(21), name: 'N. Bolton', ...face(KC) },
+  { key: 'def_int', label: 'Interceptions', value: 2, game_id: 'g-041', at: at(22), name: 'A.J. Terrell', ...face(ATL) },
+  { key: 'rush_long', label: 'Longest run', value: 61, game_id: 'g-012', at: at(19), name: 'S. Barkley', ...face(PHI) },
   { key: 'longest_td', label: 'Longest TD', value: 99, game_id: 'g-041', at: at(22), name: null, team: null, tgid: null, logo_url: null },
   { key: 'most_points', label: 'Most points', value: 49, game_id: 'g-031', at: at(24), name: null, team: null, tgid: null, logo_url: null },
   { key: 'biggest_win', label: 'Biggest win', value: 42, game_id: 'g-031', at: at(24), name: null, team: null, tgid: null, logo_url: null },
+  { key: 'biggest_comeback', label: 'Biggest comeback', value: 14, game_id: 'g-011', at: at(26), name: null, team: null, tgid: null, logo_url: null },
 ];
 
 /** `player_profile` for ME. `live: false` = online, but not in a match. */
