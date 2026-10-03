@@ -426,3 +426,25 @@ img.avatar{object-fit:cover}
 .m-pager{margin-top:auto;display:flex;align-items:center;justify-content:space-between;min-height:52px;padding:0 16px;border-top:1px solid var(--stroke);font-size:12.5px;color:var(--fg-3)}
 .m-empty{margin:0;padding:16px;color:var(--fg-2)}
 @media (max-width:720px){.m-row{grid-template-columns:72px 76px minmax(0,1fr) 40px 14px;gap:12px}.m-row>:nth-child(5){display:none}}
+/* Records (records-view.js): Stats › Records and the Profile's Records tab. Single game | Career pills, one table. */
+.rec-pills{display:flex;flex-wrap:wrap;gap:8px}
+.rec-pill{height:32px;padding:0 14px;border:1px solid var(--stroke);border-radius:999px;background:transparent;color:var(--fg-2);font:500 13px Inter,system-ui,sans-serif;cursor:pointer}
+.rec-pill:hover{color:var(--fg);background:var(--glass-1)}
+.rec-pill[aria-pressed="true"]{color:var(--fg);background:var(--glass-3);border-color:var(--stroke-hi);box-shadow:var(--sheen)}
+.rec-table{display:flex;flex-direction:column;overflow:hidden}
+.rec-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1.6fr) 80px minmax(0,1fr) 76px;align-items:center;gap:16px;min-height:40px;padding:0 16px;font-size:13px;color:var(--fg);text-decoration:none}
+.rec-row+.rec-row{border-top:1px solid var(--stroke)}
+a.rec-row{border-radius:var(--r-md)}
+a.rec-row:hover{background:var(--glass-1)}
+.rec-row.rec-hd{min-height:36px;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3)}
+.rec-row.rec-hd>:nth-child(3),.rec-row.rec-hd>:nth-child(5),.rec-v,.rec-d{text-align:right}
+.rec-k{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec-who{display:flex;align-items:center;gap:8px;min-width:0}
+.rec-who .team-logo{flex:none;width:20px;height:20px}
+.rec-who.none{color:var(--fg-3)}
+.rec-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec-v{font-weight:600;font-variant-numeric:tabular-nums}
+.rec-g{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg-2)}
+.rec-d{font-size:12.5px;white-space:nowrap;color:var(--fg-3)}
+.rec-empty{margin:0;padding:16px;color:var(--fg-2)}
+@media (max-width:720px){.rec-row{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 56px minmax(0,1fr);gap:12px}.rec-row>:nth-child(5){display:none}}

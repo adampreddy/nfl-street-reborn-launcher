@@ -1,10 +1,11 @@
 // One match list for Stats (Your matches) and Profile (Match history), spec §8.6 and §8.7: a header RESULT · MATCHUP ·
-// OPPONENT · ELO · DATE, one row per match (a best of 3 is one row with its series and a single Elo change, and opens
-// in place into its games), and the pager inside the card. Matches first (spec §10).
+// OPPONENT · ELO · DATE, one row per match (a best of 3 is one row with its series and a single Elo change), and the
+// pager inside the card. Matches first (spec §10). A row opens the WHOLE match on one page (owner 10-03): every game of
+// it behind a game picker (game.html, stats-model.js matchHref); a one-game match opens just that game.
 // Server text only through el()'s `text`; images only through assetUrl() / avatarSrc() (the CSP's two image prefixes).
 import { el } from './shell.js';
 import { assetUrl, avatarSrc } from './live-common.js';
-import { eloChange, matchRowModel, matchSubline } from './stats-model.js';
+import { eloChange, matchHref, matchRowModel, matchSubline } from './stats-model.js';
 
 const RESULT_WORD = { W: 'win', L: 'loss' };
 
@@ -48,22 +49,6 @@ export function matchHeader() {
   return el('div', { class: 'm-row m-hd', 'aria-hidden': 'true' }, ...['Result', 'Matchup', 'Opponent', 'Elo', 'Date', ''].map((t) => el('span', { text: t })));
 }
 
-/** The ids of a set of matches' games, newest first (the server sends each match's games oldest first). This is the
- *  ordered list game.html's ‹ Previous / Next › bar steps through. */
-export function gameIdsOf(matches) {
-  const ids = [];
-  for (const m of Array.isArray(matches) ? matches : []) {
-    const games = Array.isArray(m?.games) ? m.games : [];
-    for (let i = games.length - 1; i >= 0; i--) if (games[i] && typeof games[i].id === 'string') ids.push(games[i].id);
-  }
-  return ids;
-}
-
-/** Remembered right before opening a game, so the game view can step through this list and come back (`from`). */
-export function storeGameList(matches, label, from) {
-  try { sessionStorage.setItem('nsr.gameList', JSON.stringify({ ids: gameIdsOf(matches), label, from })); } catch { /* best effort */ }
-}
-
 const resultCell = (result, score) => el('span', { class: 'm-res' }, el('b', { class: result || null, text: result }), el('span', { text: score }));
 const matchup = (me, opp) => el('span', { class: 'm-mu' }, teamLogo(me), el('i', { text: 'vs' }), teamLogo(opp));
 
@@ -79,11 +64,11 @@ function label(m, r, sub, elo) {
 }
 
 /**
- * A match's row, and for a best of 3 its games under it. `where` picks the second line ('stats': Offline only;
- * 'profile': Ranked / Casual). `open` (a Set of match ids) is read and updated, so it survives redraws; opening
- * toggles classes in place (the reveal animates), closed games are inert. `openGame(id)` opens one game.
+ * A match's row. `where` picks the second line ('stats': Offline only; 'profile': Ranked / Casual). `from` is the page
+ * Back on the match page returns to (stats-model.js backHref). The row opens the whole match; a match with no recorded
+ * game has nothing to open. Returned as a one-row list (the lists flatMap their rows).
  */
-export function matchRows(m, { where, open, openGame }) {
+export function matchRows(m, { where, from }) {
   const r = matchRowModel({ ...m, games: Array.isArray(m?.games) ? m.games : [] });
   const sub = matchSubline(m, where);
   const elo = eloChange(m?.elo_delta);
@@ -95,30 +80,12 @@ export function matchRows(m, { where, open, openGame }) {
       el('span', { class: 'm-opp-tx' }, el('span', { class: 'm-opp-n', text: r.opponent }), sub ? el('small', { text: sub }) : null)),
     el('span', { class: `m-elo${elo.kind ? ` ${elo.kind}` : ''}`, text: elo.text }),
     el('span', { class: 'm-date', text: r.date }),
-    el('span', { class: r.expandable ? 'chev' : null, 'aria-hidden': 'true' }),
+    el('span', { 'aria-hidden': 'true' }),
   ];
   const attrs = { class: 'm-row', 'data-key': `match-${r.id}`, 'aria-label': label(m, r, sub, elo) };
-  if (!r.expandable) {
-    if (r.onlyGame) return [el('button', { ...attrs, type: 'button', onclick: () => openGame(r.onlyGame) }, ...kids)];
-    // A match with no recorded game has nothing to open.
-    return [el('div', { ...attrs, class: 'm-row m-static', role: 'group' }, ...kids)];
-  }
-  const isOpen = open.has(r.id);
-  const id = `games-${String(r.id).replace(/[^A-Za-z0-9_-]/g, '_')}`;
-  const inner = el('div', { inert: isOpen ? null : '' }, ...r.games.map((g, i) => el('button', {
-    type: 'button', class: 'm-row m-game', 'data-key': `game-${g.id}`, onclick: () => openGame(g.id),
-    'aria-label': `Game ${i + 1}. ${g.score !== '—' ? `Score ${g.score}` : 'No score'}${g.result ? `, ${RESULT_WORD[g.result]}` : ''}. ${g.date} ${g.time}.`,
-  }, resultCell(g.result, g.score), matchup(g.me, g.opp), el('span', { class: 'm-opp', text: `Game ${i + 1} · ${g.time}` }), el('span'), el('span'), el('span'))));
-  const reveal = el('div', { class: `rows-reveal${isOpen ? ' open' : ''}`, id }, inner);
-  const row = el('button', { ...attrs, type: 'button', 'aria-expanded': String(isOpen), 'aria-controls': id }, ...kids);
-  row.addEventListener('click', () => {
-    const now = !open.has(r.id);
-    if (now) open.add(r.id); else open.delete(r.id);
-    row.setAttribute('aria-expanded', String(now));
-    reveal.classList?.toggle('open', now);
-    if (now) inner.removeAttribute?.('inert'); else inner.setAttribute('inert', '');
-  });
-  return [row, reveal];
+  const href = matchHref(m, from);
+  if (!href) return [el('div', { ...attrs, class: 'm-row m-static', role: 'group' }, ...kids)];
+  return [el('button', { ...attrs, type: 'button', onclick: () => { location.href = href; } }, ...kids)];
 }
 
 /** Newer / "Page N of M" / Older, inside the card as its last row. `pages` null draws "Page N" (the total is not known). */
