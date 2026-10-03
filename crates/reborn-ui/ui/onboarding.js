@@ -774,7 +774,10 @@ function contentDownload(){
     const [t0,b0]=samples[0];const speed=now>t0?(got-b0)*1000/(now-t0):0;
     bar.value=total?Math.min(99,got*100/total):0;
     amount.textContent=`${contentSize(got)} of ${contentSize(total)} · ${total?Math.floor(got*100/total):0}%`;
-    rate.textContent=speed>0?`${(speed/1048576).toFixed(1)} MB/s · ${contentEta((total-got)/speed)}`:'Starting…';
+    // The first seconds fetch the emulator's 2,300 small files, which read as
+    // "0.0 MB/s · about 158 h left" (-9 test): no estimate until it means something.
+    const measured=now-t0>=5000&&speed>=102400;
+    rate.textContent=measured?`${(speed/1048576).toFixed(1)} MB/s · ${contentEta((total-got)/speed)}`:'Measuring speed…';
   }
   async function poll(){
     if(!alive||phase!=='downloading')return;
