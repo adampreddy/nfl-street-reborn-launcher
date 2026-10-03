@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/live-card-core.js @e7ca37c, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/live-card-core.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
 // The launcher game page (game.js) draws with it exactly as the site does.
 /**
  * The live card's pure core: everything the Discord card and the web live card show, as strings and numbers.

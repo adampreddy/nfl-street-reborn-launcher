@@ -1,4 +1,4 @@
-/* Vendored from Reborn Backend src/web/live.css @e7ca37c, do not edit: run Tools/sync-site-render.mjs. */
+/* Vendored from Reborn Backend src/web/live.css @ca3fdf5, do not edit: run Tools/sync-site-render.mjs. */
 /* Scoped under #site-game (the site's body is <nsr-body class="site">), breakpoints on the page width, the launcher's fonts. */
 @font-face { font-family: "Inter NSR"; src: url("../fonts/InterVariable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Anton NSR"; src: url("../fonts/Anton.woff2") format("woff2"); font-weight: 400; font-display: swap; }

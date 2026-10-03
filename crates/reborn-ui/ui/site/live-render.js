@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/live-render.js @e7ca37c, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/live-render.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
 // The launcher game page (game.js) draws with it exactly as the site does.
 // Pure render helpers for the live game page (/live/<match>). Plain data in, DOM nodes out -- built ONLY with
 // doc.createElement, textContent, className, setAttribute and appendChild. Never markup strings: every name and every
