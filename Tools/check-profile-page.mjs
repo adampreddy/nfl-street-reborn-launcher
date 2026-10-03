@@ -451,8 +451,11 @@ try {
   { // Back returns to the profile from a fuller view, then to the page the profile was opened from (views add no
     // history entry)
     const { page, errors, close } = await openState(browser, srv.base, { name: 'stats', url: 'stats.html', scope: 'main' });
-    // Your passer opens the profile on Full stats' Passing table (#passing)
+    // Your passer opens the profile at its top (Adam 10-03); All stats › opens Full stats; Back steps out of it
     await page.locator('[data-key="card-passer"]').click();
+    await page.locator('#players').waitFor();
+    assert.equal(await tabOn(page), 'overview');
+    await page.locator('[data-key="all-stats"]').click();
     await page.locator('#full-stats').waitFor();
     assert.equal(await tabOn(page), 'stats');
     await page.locator('#back').click();
