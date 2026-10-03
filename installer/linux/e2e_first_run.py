@@ -147,11 +147,14 @@ while time.time() < phase2_end:
         clicked_play = bool(js(CLICK_TEXT, "▶ Play now") or js("const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Play now')&&!b.disabled); if(!b) return false; b.click(); return true;"))
         log("clicked Play now:", clicked_play); play_at = time.time()
     if play_at:
-        ps = subprocess.run(["pgrep", "-af", "dolphin-emu"], capture_output=True, text=True).stdout.strip()
+        # The game, not the controller scan (dolphin-emu --dump-device-inputs).
+        ps = chr(10).join(l for l in subprocess.run(["pgrep", "-af", "dolphin-emu"], capture_output=True, text=True).stdout.splitlines()
+                       if "--dump-device-inputs" not in l and (" -e " in l or ".iso" in l)).strip()
         if ps:
-            log("=== emulator running:", ps[:300]); time.sleep(25)
+            log("=== emulator running:", ps[:300]); time.sleep(45)
             subprocess.run(["import", "-window", "root", os.path.join(OUT, "dolphin.png")])
-            log("=== PLAY WORKS"); break
+            alive = subprocess.run(["pgrep", "-f", ps.split()[1]], capture_output=True).returncode == 0
+            log("=== PLAY WORKS (still running after 45 s)" if alive else "!!! the game exited within 45 s"); break
         if time.time() - play_at > 120:
             log("!!! no emulator 2 min after Play"); shot("play-failed"); break
     time.sleep(6)
