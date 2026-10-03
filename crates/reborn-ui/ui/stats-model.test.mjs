@@ -102,11 +102,11 @@ test('matchSubline: Stats says Offline only, Profile says the queue, never Best 
 });
 
 test('lastTen and youNumbers', () => {
-  assert.equal(lastTen(['W', 'W', 'L', 'W', 'L', 'W', 'W', 'L', 'W', 'L', 'W']), '6–4');
+  assert.equal(lastTen(['W', 'W', 'L', 'W', 'L', 'W', 'W', 'L', 'W', 'L', 'W']), '6-4');
   assert.equal(lastTen([]), '—');
-  assert.equal(lastTen(['T', 'W']), '1–0');
+  assert.equal(lastTen(['T', 'W']), '1-0');
   const n = youNumbers({ wins: 14, losses: 9, ties: 0, win_pct: 0.609, streak: 'W2' }, { results: ['W', 'L'] });
-  assert.deepEqual(n.map((x) => [x.label, x.value, x.kind]), [['Record', '14–9', ''], ['Win %', '.609', ''], ['Last 10', '1–1', ''], ['Streak', 'W2', 'up']]);
+  assert.deepEqual(n.map((x) => [x.label, x.value, x.kind]), [['Record', '14-9', ''], ['Win %', '.609', ''], ['Last 10', '1-1', ''], ['Streak', 'W2', 'up']]);
   assert.deepEqual(youNumbers({}, null).map((x) => x.value), ['—', '—', '—', '—']);
   assert.equal(youNumbers({ wins: 1, losses: 3, streak: 'L3' }, null)[3].kind, '');
 });
@@ -146,7 +146,7 @@ test('no Stats output counts or mentions a private match', () => {
   const kept = dropPrivate([PRIV, PUB('a', 'win'), PUB('b', 'loss'), PUB('c', 'win')]);
   assert.deepEqual(resultsOf(kept), ['W', 'L', 'W']);
   assert.deepEqual(recordOf(kept), { wins: 2, losses: 1 });
-  assert.equal(lastTen(resultsOf(kept)), '2–1');
+  assert.equal(lastTen(resultsOf(kept)), '2-1');
   const nums = youNumbers({ wins: 2, losses: 1, win_pct: 0.667, streak: 'W1' }, { results: resultsOf(kept) });
   const rows = kept.map(matchRowModel);
   const keptOut = JSON.stringify([nums, rows, kept.map((m) => matchSubline(m)), kept.map((m) => matchSubline(m, 'profile'))]);

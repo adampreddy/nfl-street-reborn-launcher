@@ -521,7 +521,7 @@ const EXPECT = {
     },
   },
   'online-leaderboard': {
-    text: ['Leaderboard', '38 ranked', 'Player', 'Elo', 'Jock', '20–3', '1,320', '▲ 16', '▼ 9', 'Full leaderboard ›'],
+    text: ['Leaderboard', '38 ranked', 'Player', 'Elo', 'Jock', '20-3', '1,320', '▲ 16', '▼ 9', 'Full leaderboard ›'],
     check: async (page) => {
       const p = [];
       if ((await page.locator('.on-lb-row').count()) !== 10) p.push(`${await page.locator('.on-lb-row').count()} rows, not 10`);

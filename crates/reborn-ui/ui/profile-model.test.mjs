@@ -65,19 +65,19 @@ test('Elo overview: value, change, peak and start; the peak from history when th
 
 test('record overview: ranked and casual only, W–L, bars as the win share', () => {
   const r = recordOverview({ wins: 14, losses: 9, win_pct: 0.609 }, [{ key: 'ranked', wins: 8, losses: 5 }, { key: 'casual', wins: 6, losses: 4 }, { key: 'private', name: 'Private room', wins: 2, losses: 1 }]);
-  assert.equal(r.value, '14–9');
+  assert.equal(r.value, '14-9');
   assert.equal(r.pct, '60.9%');
   assert.equal(r.note, '23 matches');
   assert.equal(r.sub, 'Ranked and casual');
-  assert.deepEqual(r.rows, [{ label: 'Ranked', record: '8–5', pct: '.615', share: 61.5 }, { label: 'Casual', record: '6–4', pct: '.600', share: 60 }]);
+  assert.deepEqual(r.rows, [{ label: 'Ranked', record: '8-5', pct: '.615', share: 61.5 }, { label: 'Casual', record: '6-4', pct: '.600', share: 60 }]);
   assert.equal(recordOverview({}, []), null);
 });
 
 test('last 10 games: record, average margin, points; nothing from an older server', () => {
   assert.deepEqual(lastTenOverview({ games: 10, wins: 6, losses: 4, avg_margin: 6.4, pts_for_pg: 31.4, pts_against_pg: 25 }),
-    { value: '6–4', margin: { text: '+6.4', kind: 'up' }, scored: '31.4', allowed: '25.0' });
+    { value: '6-4', margin: { text: '+6.4', kind: 'up' }, scored: '31.4', allowed: '25.0' });
   assert.deepEqual(lastTenOverview({ games: 3, wins: 1, losses: 2, avg_margin: -3, pts_for_pg: null, pts_against_pg: 8 }),
-    { value: '1–2', margin: { text: '−3.0', kind: 'down' }, scored: '—', allowed: '8.0' });
+    { value: '1-2', margin: { text: '−3.0', kind: 'down' }, scored: '—', allowed: '8.0' });
   assert.equal(lastTenOverview(null), null);
   assert.equal(lastTenOverview({ games: 0, wins: 0, losses: 0 }), null);
   assert.equal(lastTenOverview({ results: ['W'] }), null, 'the dashboard shape is not the profile block');
@@ -147,7 +147,7 @@ test('no output ever carries Private, ladder, Best of 3 or a T result, even for 
   assert.doesNotMatch(text, /"T"|–T|\bT\b/);
   assert.equal(liveCard(live), null);
   assert.equal(statusLine({ live, online: true }).kind, 'online');
-  assert.equal(recordOverview({ wins: 14, losses: 9, ties: 4 }, byQueue).value, '14–9');
+  assert.equal(recordOverview({ wins: 14, losses: 9, ties: 4 }, byQueue).value, '14-9');
   assert.equal(recordOverview({ wins: 14, losses: 9, ties: 4 }, byQueue).rows.length, 2);
 });
 

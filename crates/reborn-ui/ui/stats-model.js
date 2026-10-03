@@ -5,7 +5,8 @@
 
 // Dash characters (exact Unicode required by tests)
 const EM_DASH = '—'; // U+2014 for missing values
-const EN_DASH = '–'; // U+2013 for score/record separators
+const EN_DASH = '–'; // U+2013 for score and series separators
+const HYPHEN = '-'; // ASCII hyphen-minus for win-loss records (owner ruling: "14-9", never "14–9")
 const MINUS = '−'; // U+2212 for Elo changes
 
 /**
@@ -419,7 +420,7 @@ export function recordOf(matches) {
 }
 
 /**
- * "6–4" from the dashboard's recent_form.results (newest first; only W and L count), or an em dash.
+ * "6-4" from the dashboard's recent_form.results (newest first; only W and L count), or an em dash.
  * @param {Array<string>|null|undefined} results
  * @returns {string}
  */
@@ -427,7 +428,7 @@ export function lastTen(results) {
   const r = (Array.isArray(results) ? results : []).filter((x) => x === 'W' || x === 'L').slice(0, 10);
   if (!r.length) return EM_DASH;
   const w = r.filter((x) => x === 'W').length;
-  return `${w}${EN_DASH}${r.length - w}`;
+  return `${w}${HYPHEN}${r.length - w}`;
 }
 
 /**
@@ -441,7 +442,7 @@ export function youNumbers(summary, recentForm) {
   const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
   const streak = typeof s.streak === 'string' && /^[WL]\d+$/.test(s.streak) ? s.streak : EM_DASH;
   return [
-    { label: 'Record', value: isNum(s.wins) && isNum(s.losses) ? `${s.wins}${EN_DASH}${s.losses}` : EM_DASH, kind: '' },
+    { label: 'Record', value: isNum(s.wins) && isNum(s.losses) ? `${s.wins}${HYPHEN}${s.losses}` : EM_DASH, kind: '' },
     { label: 'Win %', value: isNum(s.win_pct) ? fmtPct(s.win_pct) : EM_DASH, kind: '' },
     { label: 'Last 10', value: lastTen(recentForm?.results), kind: '' },
     { label: 'Streak', value: streak, kind: streak.startsWith('W') ? 'up' : '' },

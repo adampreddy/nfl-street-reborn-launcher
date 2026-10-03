@@ -99,7 +99,7 @@ test('the leaderboard model', () => {
   const rows = Array.from({ length: 12 }, (_, i) => ({ rank: i + 1, display_name: `P${i}`, avatar_url: null, team: null, wins: 5, losses: 2, elo: 1300 - i, delta_week: i === 0 ? 16 : i === 1 ? -9 : 0, you: false }));
   const v = leaderboardView({ enabled: true, total: 38, rows, you: { rank: 14, display_name: 'Me', wins: 1, losses: 1, elo: 1001, delta_week: 0 } });
   assert.equal(v.soon, false); assert.equal(v.total, 38); assert.equal(v.rows.length, 10, 'top 10 only');
-  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', avatar: null, team: null, record: '5–2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false });
+  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', avatar: null, team: null, record: '5-2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false });
   assert.deepEqual(v.rows[1].change, { dir: 'down', text: '▼ 9' });
   assert.equal(v.rows[2].change, null);
   assert.equal(v.you.rank, 14); assert.equal(v.you.you, true);

@@ -30,7 +30,7 @@ const contentRules = async (page) => {
   if (await page.locator('#history .m-list > .m-row:not(.m-hd)').count()) assert.ok(results.length > 0, 'match rows show their result letters');
   assert.ok(results.every((t) => t === 'W' || t === 'L' || t === ''), 'results are W or L');
   // no ties: no record anywhere reads W–L–T
-  assert.doesNotMatch(body, /\b\d+–\d+–\d+\b/, 'records are W–L only, never a tie');
+  assert.doesNotMatch(body, /\b\d+[–-]\d+[–-]\d+\b/, 'records are W-L only, never a tie');
 };
 const NONE = 'No online matches to show yet.';
 // History rows keep their natural height (56px; a best of 3's games 40px): the card fills, never the rows (P4-24).
@@ -62,7 +62,7 @@ try {
     assert.ok(live.top > card.top && live.bottom < card.bottom, 'the live card sits inside the profile card');
     // overview: three identical columns; big numbers on one line; the visuals end on one line
     assert.deepEqual(await texts(page, '.pf-ovh h2'), ['Elo', 'Record', 'Last 10 games']);
-    assert.deepEqual(await texts(page, '.pf-big'), ['1,184+16', '14–960.9%', '6–4+6.4']);
+    assert.deepEqual(await texts(page, '.pf-big'), ['1,184+16', '14-960.9%', '6-4+6.4']);
     assert.equal(await page.locator('.pf-ov').count(), 1, 'one glass panel');
     const bigSize = await page.locator('.pf-big > span').evaluateAll((ns) => [...new Set(ns.map((n) => getComputedStyle(n).fontSize))]);
     assert.deepEqual(bigSize, ['34px'], 'the big numbers are 34px');
@@ -73,7 +73,7 @@ try {
     const widths = await page.locator('.pf-ovc').evaluateAll((ns) => ns.map((n) => Math.round(n.getBoundingClientRect().width)));
     assert.ok(Math.max(...widths) - Math.min(...widths) <= 1, `three identical columns: ${widths}`);
     assert.deepEqual(await texts(page, '.pf-bar-row > :first-child'), ['Ranked', 'Casual']);
-    assert.deepEqual(await texts(page, '.pf-bar-row b'), ['8–5', '6–4']);
+    assert.deepEqual(await texts(page, '.pf-bar-row b'), ['8-5', '6-4']);
     // two columns: first cards start together and the columns end together; 40px section headers
     const hl = await rect(page, '#history .m-list');
     const first = await rect(page, '.pf-side > section:first-child > .glass');

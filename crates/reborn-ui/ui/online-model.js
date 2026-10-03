@@ -94,7 +94,7 @@ function lbRow(r) {
   return {
     rank: int(r?.rank), name: typeof r?.display_name === 'string' ? r.display_name : '', avatar: typeof r?.avatar_url === 'string' ? r.avatar_url : null,
     team: r?.team && typeof r.team === 'object' ? r.team : null,
-    record: wins !== null && losses !== null ? `${wins}–${losses}` : null,
+    record: wins !== null && losses !== null ? `${wins}-${losses}` : null,
     elo: elo !== null ? fmtInt(elo) : null, change: change(r?.delta_week), you: r?.you === true,
   };
 }

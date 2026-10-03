@@ -256,8 +256,8 @@ function overview(p) {
     cols.push(ovColumn('Elo', note, e.value, e.change.text, e.change.kind, sub, hasHistory ? areaChart(e.points, `Elo over ${e.note}, now ${e.value}`) : null));
   }
   const rr = recordOverview(p.summary, p.by_queue);
-  // A new player (0–0) reads "—", with no "0 matches" filler and no empty bars (P4-23).
-  const r = rr && rr.value === '0–0' ? { ...rr, value: DASH, pct: '', note: null, rows: [] } : rr;
+  // A new player (0-0) reads "—", with no "0 matches" filler and no empty bars (P4-23).
+  const r = rr && rr.value === '0-0' ? { ...rr, value: DASH, pct: '', note: null, rows: [] } : rr;
   if (r) cols.push(ovColumn('Record', r.note, r.value, r.pct, '', r.sub, r.rows.length ? el('div', { class: 'pf-bars' }, ...r.rows.map((row) => {
     const fill = el('i');
     if (fill.style) fill.style.width = `${row.share}%`;
@@ -450,7 +450,7 @@ function fullStatsSection(p) {
 // ---- More stats: the rest of the profile's numbers, kept so nothing a player could see before is lost ----
 
 const oneOr = (n) => (num(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : DASH);
-const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}–${num(r?.losses) ? r.losses : 0}`;
+const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}-${num(r?.losses) ? r.losses : 0}`;
 const pctOf = (p) => (num(p) ? fmtPct(p) : DASH);
 const convOf = (p) => (num(p) ? `${Math.round(p * 100)}%` : DASH);
 

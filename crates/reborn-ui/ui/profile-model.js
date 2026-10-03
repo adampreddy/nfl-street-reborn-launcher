@@ -4,7 +4,8 @@
 // An older server's shapes are handled here too: private rooms (backend §1) and rushing `yac` for YCO (backend §9).
 import { eloChange, fmtInt, fmtPct } from './stats-model.js';
 
-const DASH = '—', EN = '–', MINUS = '−';
+// Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
+const DASH = '—', EN = '–', MINUS = '−', REC = '-';
 const num = (n) => typeof n === 'number' && Number.isFinite(n);
 const one = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const sum = (...xs) => (xs.some(num) ? xs.reduce((a, x) => a + (num(x) ? x : 0), 0) : null);
@@ -68,24 +69,24 @@ export function eloOverview(elo) {
     note: `${n} ranked ${n === 1 ? 'match' : 'matches'}`, points: areaPoints([start, ...hist.map((x) => x.rating)]) };
 }
 
-/** Overview column 2: "14–9 60.9%", "Ranked and casual", then Ranked and Casual as label / bar / record / pct. */
+/** Overview column 2: "14-9 60.9%", "Ranked and casual", then Ranked and Casual as label / bar / record / pct. */
 export function recordOverview(summary, byQueue) {
   const s = summary || {};
   if (!num(s.wins) || !num(s.losses)) return null;
   const total = s.wins + s.losses;
   const rows = publicQueues(byQueue).filter((r) => r.key === 'ranked' || r.key === 'casual').map((r) => {
     const w = num(r.wins) ? r.wins : 0, l = num(r.losses) ? r.losses : 0, n = w + l;
-    return { label: r.key === 'ranked' ? 'Ranked' : 'Casual', record: `${w}${EN}${l}`, pct: n ? fmtPct(w / n) : DASH, share: n ? Math.round((w / n) * 1000) / 10 : 0 };
+    return { label: r.key === 'ranked' ? 'Ranked' : 'Casual', record: `${w}${REC}${l}`, pct: n ? fmtPct(w / n) : DASH, share: n ? Math.round((w / n) * 1000) / 10 : 0 };
   });
-  return { value: `${s.wins}${EN}${s.losses}`, pct: winRate(s.win_pct) ?? DASH, note: `${total} ${total === 1 ? 'match' : 'matches'}`, sub: 'Ranked and casual', rows };
+  return { value: `${s.wins}${REC}${s.losses}`, pct: winRate(s.win_pct) ?? DASH, note: `${total} ${total === 1 ? 'match' : 'matches'}`, sub: 'Ranked and casual', rows };
 }
 
-/** Overview column 3 (profile `recent_form`, backend §8): "6–4 +6.4", points scored and allowed per game. */
+/** Overview column 3 (profile `recent_form`, backend §8): "6-4 +6.4", points scored and allowed per game. */
 export function lastTenOverview(rf) {
   if (!rf || !num(rf.games) || rf.games === 0 || !num(rf.wins) || !num(rf.losses)) return null;
   const m = num(rf.avg_margin) ? rf.avg_margin : null;
   const margin = m === null ? { text: '', kind: '' } : { text: `${m > 0 ? '+' : m < 0 ? MINUS : ''}${one(Math.abs(m))}`, kind: m > 0 ? 'up' : m < 0 ? 'down' : '' };
-  return { value: `${rf.wins}${EN}${rf.losses}`, margin, scored: num(rf.pts_for_pg) ? one(rf.pts_for_pg) : DASH, allowed: num(rf.pts_against_pg) ? one(rf.pts_against_pg) : DASH };
+  return { value: `${rf.wins}${REC}${rf.losses}`, margin, scored: num(rf.pts_for_pg) ? one(rf.pts_for_pg) : DASH, allowed: num(rf.pts_against_pg) ? one(rf.pts_against_pg) : DASH };
 }
 
 // Career tiles: [key (career_rank field), label, value from the career totals, per game?, one decimal?]

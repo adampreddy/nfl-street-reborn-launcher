@@ -99,8 +99,8 @@ try {
     assert.equal(await page.locator('.st-you svg.st-spark').count(), 1);
     assert.deepEqual(await texts(page, '.st-nums .k-label'), ['Record', 'Win %', 'Last 10', 'Streak']);
     // Record and Win % are the server's career totals (P4-22); Last 10 is the newest ten LISTED matches, the private
-    // room dropped (W W W L L W W L W W = 7–3; the server's recent_form, which counts the private room, says 6–4).
-    assert.deepEqual(await texts(page, '.st-nums b'), ['14–9', '.609', '7–3', 'W2']);
+    // room dropped (W W W L L W W L W W = 7-3; the server's recent_form, which counts the private room, says 6-4).
+    assert.deepEqual(await texts(page, '.st-nums b'), ['14-9', '.609', '7-3', 'W2']);
     assert.match(await page.locator('.st-nums b').nth(3).getAttribute('class'), /\bup\b/);
     // Your players: the portrait on the team colour, the name and role, the statline the server sent
     assert.equal(await page.locator('.st-player').count(), 6);
