@@ -177,11 +177,12 @@ function card(p, ownerId) {
   });
   const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta,
     facts.length ? el('p', { class: 'pf-sum' }, ...facts.map((f) => el('span', {}, el('b', { class: 'num', text: f.strong }), ` ${f.text}`))) : null);
-  // Share profile and View on web on the hero's right (sr-2 mockup), the live card under them while they play.
-  const right = el('div', { class: 'pf-right' }, el('div', { class: 'pf-acts' }, said, share, web));
+  // Share profile and View on web at the hero's top right (sr-2 mockup), the live card under them while they play
+  // (grid areas in profile.css; the DOM order is the reading order top-down).
+  const acts = el('div', { class: 'pf-acts' }, said, share, web);
   // data-nav="rows" (Back and the card only): Down reads the card row by row, never straight into the tabs below it;
-  // data-nav-seq: Plays as, Share profile, View on web, Live feed in reading order. The rest of the page keeps column moves.
-  const row = el('div', { class: 'pf-row', 'data-nav-seq': '' }, pic, id, right);
+  // data-nav-seq: Share profile, View on web, Plays as, Live feed in reading order. The rest of the page keeps column moves.
+  const row = el('div', { class: 'pf-row', 'data-nav-seq': '' }, pic, acts, id);
   const box = el('div', { class: 'glass pf-card', 'data-nav': 'rows' }, el('div', { class: 'cover-wash', 'aria-hidden': 'true' }), row);
   let liveKey = null, liveEl = null;
   // Only the status, the presence dot and the live card change; nothing focusable is rebuilt unless the live card
@@ -202,7 +203,7 @@ function card(p, ownerId) {
     const fresh = liveBlock(next?.live);
     if (liveEl && fresh) liveEl.replaceWith(fresh);
     else if (liveEl) liveEl.remove();
-    else if (fresh) right.append(fresh);
+    else if (fresh) row.append(fresh);
     liveEl = fresh;
     if (hadFocus) (fresh?.querySelector('[data-key="live-feed"]') ?? web).focus({ preventScroll: true });
   };
@@ -274,7 +275,7 @@ function overview(p) {
     // The record is online only, and Ranked and Casual are two separate figures (owner 10-03).
     const queues = rr.queues.length ? el('p', { class: 'pf-sub pf-queues' }, ...rr.queues.flatMap((q, i) => [
       i ? el('span', { class: 'pf-qsep', 'aria-hidden': 'true', text: '·' }) : null,
-      el('span', { class: 'pf-q', role: 'group', 'aria-label': `${q.label} record ${q.record}` }, el('span', { text: q.label }), el('b', { class: 'num', text: q.record }))]).filter(Boolean)) : null;
+      el('span', { class: 'pf-q', role: 'group', 'aria-label': `${q.label} record ${q.record}` }, el('span', { text: q.label }), ' ', el('b', { class: 'num', text: q.record }))]).filter(Boolean)) : null;
     tiles.push(tile('Record', rr.value, rr.pct, '', queues));
   } else if (rr) tiles.push(tile('Record', DASH, '', '', null));
   const l = lastTenOverview(p.recent_form);

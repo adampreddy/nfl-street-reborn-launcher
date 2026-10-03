@@ -10,8 +10,13 @@ body.page-profile #main{padding:36px 36px 32px}
 .pf-back .chev{margin:0;transform:rotate(135deg)}
 /* the profile card: the cover wash behind the whole card, the avatar centred on the identity block, the live card right */
 .pf-card{position:relative;overflow:hidden}
-.pf-row{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:24px;padding:22px 26px}
-.pf-right{display:flex;flex-direction:column;align-items:flex-end;gap:14px}
+/* avatar | identity | Share, View on web over the live card (the live card's row exists only while they play) */
+.pf-row{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"pic id acts" "pic id live";align-items:center;column-gap:24px;padding:22px 26px}
+.pf-row>.pf-pic{grid-area:pic}
+.pf-row>.pf-id{grid-area:id}
+.pf-row>.pf-acts{grid-area:acts}
+.pf-row>.pf-live{grid-area:live;margin-top:14px}
+.pf-row:not(:has(>.pf-live)){grid-template-areas:"pic id acts"}
 .pf-pic{position:relative;display:grid;place-items:center;width:96px;height:96px;border-radius:50%}
 .pf-pic>.pf-avatar{width:96px;height:96px;font-size:40px;background:transparent}
 .pf-name{font:700 28px/1.15 Inter,system-ui,sans-serif;letter-spacing:-.01em}
@@ -124,8 +129,8 @@ body.page-profile #main{padding:36px 36px 32px}
 @media (max-width:1100px){
   .pf-two{grid-template-columns:minmax(0,1fr)}
   .pf-row{grid-template-columns:auto minmax(0,1fr)}
-  .pf-right{grid-column:1/-1;align-items:stretch}
-  .pf-acts{justify-content:flex-start}
+  .pf-row,.pf-row:not(:has(>.pf-live)){grid-template-areas:"pic id" "acts acts" "live live"}
+  .pf-row>.pf-acts{justify-content:flex-start;margin-top:16px}
   .pf-live{width:auto}
   .pf-more{grid-template-columns:minmax(0,1fr)}
 }
@@ -142,4 +147,4 @@ body.page-profile #main{padding:36px 36px 32px}
   #h2h .tbl tr>:nth-child(4),#h2h .tbl tr>:nth-child(7){display:none}
 }
 @media (max-width:860px){.pf-tiles,.pf-tiles.cols-2{grid-template-columns:minmax(0,1fr)}}
-@media (max-width:720px){.pf-row{grid-template-columns:minmax(0,1fr)}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}.pf-car>div:nth-child(n){border-left:0;border-top:1px solid var(--stroke)}.pf-car>div:nth-child(-n+2){border-top:0}.pf-car>div:nth-child(even){border-left:1px solid var(--stroke)}}
+@media (max-width:720px){.pf-row,.pf-row:not(:has(>.pf-live)){grid-template-columns:minmax(0,1fr);grid-template-areas:"pic" "id" "acts" "live"}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}.pf-car>div:nth-child(n){border-left:0;border-top:1px solid var(--stroke)}.pf-car>div:nth-child(-n+2){border-top:0}.pf-car>div:nth-child(even){border-left:1px solid var(--stroke)}}
