@@ -1,5 +1,5 @@
-// The renderers for one game's view, shared by the live match view (live.js) and the native game view (game.js),
-// so a finished game on the Stats tab is drawn exactly as the live view draws it. Pure drawing from a snapshot:
+// The renderers for one game's view: the live match view (live.js), and notFound() for Profile. (The Stats tab's game
+// page, game.js, draws with the site's own renderers, vendored in site/.) Pure drawing from a snapshot:
 // no requests, no page state. The rules they follow are stated at the top of live.js.
 //
 // Everything drawn here is untrusted player-typed data (display names, team names, play text) and goes through

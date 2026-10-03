@@ -1,0 +1,31 @@
+/* Game (Stats, then a game): the site's /games/<id> page inside the launcher. The page itself is the site's own
+   stylesheet and team colours, vendored into ../site/ (Tools/sync-site-render.mjs scopes every rule under #site-game,
+   the site's <body class="site"> being <nsr-body class="site">). This file only fits that page into the launcher:
+   layout and resets, every colour a theme.css token (Tools/check-theme-tokens.mjs). */
+@import url("../site/live.css");
+@import url("../site/teams.css");
+
+body.page-game #main{padding:28px 36px 32px}
+@media (max-width:1000px){body.page-game #main{padding:20px 24px 16px}}
+.page-game .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.page-game #screen{display:flex;flex-direction:column;gap:16px;max-width:1104px;margin:0 auto;min-width:0}
+
+/* Back, the game list's Previous / Next, and Open on web: the launcher's own row over the site's page. */
+.game-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.game-bar-end{display:flex;align-items:center;gap:8px}
+.game-error{margin:0;padding:12px 16px;border:1px solid var(--stroke-hi);border-radius:10px;background:var(--glass-1);color:var(--fg);font-size:13px}
+
+/* The site's body: a block, the launcher's width, no padding or page colour of its own (the launcher's material shows
+   around the site's .pg card, as the site's #0b0c0e page shows around it). Same weight as the scoped body.site rule,
+   later in the cascade. #site-game is the size container the site's breakpoints query (Tools/sync-site-render.mjs
+   pageQuery), so the page changes layout at the page width the site does, whatever width the sidebar takes. */
+#site-game{container:site-page/inline-size}
+#site-game nsr-body{display:block}
+#site-game nsr-body.site{max-width:none;margin:0;padding:0;background:transparent;overflow-x:visible}
+@media (max-width:600px){#site-game nsr-body.site{padding:0}}
+
+/* theme.css has classes of the same name for its own tables, tabs and avatars (.tbl, .tabs, .avatar); what the site's
+   rules leave unset would leak in. These put the browser defaults back at (1,0,0), so every scoped site rule still wins. */
+#site-game :where(.tabs){position:static;max-width:none;border:0;border-radius:0;scrollbar-width:thin}
+#site-game :where(.tbl th,.tbl td){display:table-cell;height:auto;white-space:normal;overflow:visible;text-overflow:clip;width:auto;max-width:none;gap:normal;vertical-align:middle;color:inherit;text-decoration:none}
+#site-game :where(.avatar){display:inline-block;place-items:normal;font:inherit;color:inherit}
