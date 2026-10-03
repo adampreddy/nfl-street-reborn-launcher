@@ -98,6 +98,8 @@ pub struct Ticket {
     pub mode: String,
     pub region: Option<String>,
     pub field_pick: Option<String>,
+    /// Casual's game kind (`regular` / `pickup`) when the server says; an older server sends none.
+    pub seed_kind: Option<String>,
     pub enqueued_at: String,
     pub expires_at: String,
     pub waited_ms: u64,
@@ -178,19 +180,46 @@ pub struct MatchView {
 #[serde(default)]
 pub struct Chat {
     pub scope: Option<String>,
+    /// The room or match the lines belong to. Seqs count per parent, so a new parent starts a new log.
+    pub parent_id: Option<String>,
+    /// The seq this delta starts after, as the server used it (0 when it re-sent the whole conversation).
+    pub since: u64,
     pub latest_seq: u64,
     pub truncated: bool,
     pub messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, from = "ChatWire")]
 pub struct ChatMessage {
     pub seq: u64,
     pub player_id: String,
     pub display_name: String,
+    /// The line. The server sends it as `text` (snapshot.js, match.js); `body` is the launcher's own name for it.
+    /// Before this read `text`, the wire's line decoded to "" and every chat line drew as an empty message
+    /// (2026-10-03). Not a `#[serde(alias)]`: the backend is adding `body` beside `text` for older betas, and an
+    /// alias with both keys present is a "duplicate field" error that would fail the WHOLE snapshot.
     pub body: String,
     pub at: String,
+}
+
+/// A chat line as it arrives: `text` (the server's name), `body` (an older name), or both. `text` wins when present.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ChatWire {
+    seq: u64,
+    player_id: String,
+    display_name: String,
+    text: Option<String>,
+    body: Option<String>,
+    at: String,
+}
+
+impl From<ChatWire> for ChatMessage {
+    fn from(w: ChatWire) -> Self {
+        let body = w.text.filter(|t| !t.is_empty()).or(w.body).unwrap_or_default();
+        ChatMessage { seq: w.seq, player_id: w.player_id, display_name: w.display_name, body, at: w.at }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -224,40 +253,12 @@ pub struct QueueReply {
     pub match_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct RoomSummary {
-    pub id: String,
-    pub code: String,
-    pub mode: String,
-    pub best_of: u8,
-    #[serde(deserialize_with = "host_name")]
-    pub host: Option<String>,
-    pub created_at: String,
-}
-
-/// The lobby browser's `host`: the server sends `{ id, display_name }` (rooms.js), an older one a plain name. Either
-/// reads as the name; anything else as no name.
-fn host_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(match Option::<serde_json::Value>::deserialize(d)? {
-        Some(serde_json::Value::String(s)) => Some(s),
-        Some(serde_json::Value::Object(o)) => o.get("display_name").and_then(|n| n.as_str()).map(str::to_string),
-        _ => None,
-    })
-}
-
 /// `GET /v1/rooms/<code>`: who hosts a room and its mode, for the invite line on the Online page.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RoomLookup {
     pub host_name: Option<String>,
     pub mode: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Rooms {
-    rooms: Vec<RoomSummary>,
 }
 
 #[derive(Deserialize, Default)]
@@ -311,11 +312,6 @@ impl<'a> Client<'a> {
         serde_json::from_slice(body).map_err(|e| MmError::Protocol(format!("{e}")))
     }
 
-    fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, MmError> {
-        let r = self.http.get_text_as(&self.url(path), Some(&self.token)).map_err(|e| MmError::Offline(e.to_string()))?;
-        Self::decode(r.status, r.body.as_bytes())
-    }
-
     fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: serde_json::Value) -> Result<T, MmError> {
         let bytes = serde_json::to_vec(&body).map_err(|e| MmError::Protocol(e.to_string()))?;
         let r = self.http.post_json(&self.url(path), &bytes, Some(&self.token)).map_err(|e| MmError::Offline(e.to_string()))?;
@@ -335,13 +331,19 @@ impl<'a> Client<'a> {
     }
 
     /// Join the queue. There is no field pick (Adam, 2026-09-22): the game plays on whatever field
-    /// the shipped seed starts on, so the body is the mode and region only.
-    pub fn enqueue(&self, mode: Mode, region: Option<&str>) -> Result<QueueReply, MmError> {
-        let mode = match mode {
-            Mode::Casual => "casual",
-            Mode::Ranked => "ranked",
-        };
-        self.post("/v1/mm/queue", serde_json::json!({ "mode": mode, "region": region }))
+    /// the shipped seed starts on, so the body is the mode, the region and, for casual only, the game kind.
+    ///
+    /// `seed_kind` is casual's Quick game (`regular`) or Pickup pick (Adam, 2026-10-03). Ranked never sends one: a
+    /// ranked series is always Quick games. Anything but `pickup` is sent as `regular`, and a server that predates the
+    /// field ignores it (it pairs Quick games only, which is what it always did).
+    pub fn enqueue(&self, mode: Mode, region: Option<&str>, seed_kind: Option<&str>) -> Result<QueueReply, MmError> {
+        let mut body = serde_json::json!({ "mode": if mode == Mode::Ranked { "ranked" } else { "casual" }, "region": region });
+        if mode == Mode::Casual {
+            if let Some(k) = seed_kind {
+                body["seed_kind"] = serde_json::json!(known_seed_kind(k));
+            }
+        }
+        self.post("/v1/mm/queue", body)
     }
 
     /// Leave the queue. The server route is a DELETE, not a POST.
@@ -351,19 +353,16 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    pub fn rooms(&self) -> Result<Vec<RoomSummary>, MmError> {
-        Ok(self.get::<Rooms>("/v1/mm/rooms")?.rooms)
-    }
-
-    /// `seed_kind` is the host's game: `pickup`, or anything else is a `regular` (Quick game) one. A server without
-    /// the field ignores it and plays a regular game.
-    pub fn create_room(&self, mode: Mode, public: bool, seed_kind: &str) -> Result<serde_json::Value, MmError> {
+    /// A room is joined by its code only (Adam, 2026-10-03: no public lobbies, "you just have to send the codes"), so
+    /// every room is created with `visibility: code`. `seed_kind` is the room's game: `pickup`, or anything else is a
+    /// `regular` (Quick game) one; the host can change it afterwards (`RoomAction::Kind`). A server without the field
+    /// ignores it and plays a regular game.
+    pub fn create_room(&self, mode: Mode, seed_kind: &str) -> Result<serde_json::Value, MmError> {
         let mode = if mode == Mode::Ranked { "ranked" } else { "casual" };
         let best_of = if mode == "ranked" { 3 } else { 1 };
-        let seed_kind = if seed_kind.trim() == "pickup" { "pickup" } else { "regular" };
         self.post(
             "/v1/mm/rooms",
-            serde_json::json!({ "mode": mode, "visibility": if public { "public" } else { "code" }, "best_of": best_of, "seed_kind": seed_kind }),
+            serde_json::json!({ "mode": mode, "visibility": "code", "best_of": best_of, "seed_kind": known_seed_kind(seed_kind) }),
         )
     }
 
@@ -393,6 +392,7 @@ impl<'a> Client<'a> {
             RoomAction::Ready(r) => ("ready", serde_json::json!({ "ready": r })),
             RoomAction::Chat(ref t) => ("chat", serde_json::json!({ "text": t })),
             RoomAction::Start => ("start", serde_json::json!({})),
+            RoomAction::Kind(ref k) => ("kind", serde_json::json!({ "seed_kind": known_seed_kind(k) })),
         };
         self.post(&format!("/v1/mm/rooms/{}/{}", url_path(room_id), path), body)
     }
@@ -424,12 +424,20 @@ fn url_path(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
 }
 
+/// The two game kinds a server knows: `pickup`, and `regular` (Quick game) for anything else.
+fn known_seed_kind(k: &str) -> &'static str {
+    if k.trim() == "pickup" { "pickup" } else { "regular" }
+}
+
 #[derive(Debug, Clone)]
 pub enum RoomAction {
     Leave,
     Ready(bool),
     Chat(String),
     Start,
+    /// The host changes the room's game after creating it (Adam, 2026-10-03): `pickup` or `regular`. The server
+    /// un-readies everyone, so the guest confirms the new game. A server without the route answers 404, a refusal.
+    Kind(String),
 }
 
 #[derive(Debug, Clone)]
@@ -557,16 +565,24 @@ pub fn iso_to_unix(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_lobby_hosts_name_reads_from_either_shape() {
-        // rooms.js sends `host: { id, display_name }`; a plain name, null or nothing must read too. Before this, one
-        // public lobby made the whole list fail to decode, so the lobby list showed a protocol error.
-        let rooms: Rooms = serde_json::from_value(serde_json::json!({ "rooms": [
-            { "code": "K7QP2M", "mode": "casual", "host": { "id": "h1", "display_name": "Jock" } },
-            { "code": "R4NK3D", "mode": "casual", "host": "Tuna" },
-            { "code": "X1", "mode": "casual", "host": null },
-            { "code": "X2", "mode": "casual" } ] })).unwrap();
-        let hosts: Vec<Option<&str>> = rooms.rooms.iter().map(|r| r.host.as_deref()).collect();
-        assert_eq!(hosts, vec![Some("Jock"), Some("Tuna"), None, None]);
+    fn a_chat_line_reads_the_servers_text_field_and_an_old_body_field() {
+        // The exact shape snapshot.js (and match.js) sends: the line is `text`. Before the alias it decoded to "".
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "chat": { "scope": "room", "parent_id": "r1", "since": 0,
+            "latest_seq": 2, "truncated": false, "messages": [
+                { "seq": 1, "player_id": "p1", "display_name": "Jock", "text": "ready when you are", "at": "2026-10-03T12:00:00.000Z" },
+                { "seq": 2, "player_id": "p2", "display_name": "Adam", "body": "on my way", "at": "2026-10-03T12:00:01.000Z" } ] } }))
+        .unwrap();
+        let lines: Vec<&str> = s.chat.messages.iter().map(|m| m.body.as_str()).collect();
+        assert_eq!(lines, vec!["ready when you are", "on my way"]);
+        assert_eq!(s.chat.parent_id.as_deref(), Some("r1"));
+        // A server that sends both (the backend's compatibility change) reads as one line, never a decode error.
+        let both: ChatMessage = serde_json::from_value(serde_json::json!({ "seq": 3, "text": "gg", "body": "gg" })).unwrap();
+        assert_eq!(both.body, "gg");
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "chat": { "latest_seq": 1, "messages": [
+            { "seq": 1, "display_name": "Jock", "text": "gg", "body": "gg" } ] } })).expect("both keys must not fail the snapshot");
+        assert_eq!(s.chat.messages[0].body, "gg");
+        let empty: ChatMessage = serde_json::from_value(serde_json::json!({ "seq": 4, "display_name": "Jock" })).unwrap();
+        assert_eq!(empty.body, "");
     }
 
     #[test]
@@ -603,16 +619,18 @@ mod tests {
         let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"room":{"id":"r","code":"K7QP2M"}}"#);
         let c = Client::new(&http, ORIGIN, "tok");
         let body = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
-        c.create_room(Mode::Casual, false, "pickup").unwrap();
+        c.create_room(Mode::Casual, "pickup").unwrap();
         let b = body(&http);
         assert_eq!(b["seed_kind"], "pickup");
         assert_eq!(b["mode"], "casual");
         assert_eq!(b["visibility"], "code");
         assert_eq!(b["best_of"], 1);
-        c.create_room(Mode::Casual, false, "regular").unwrap();
+        c.create_room(Mode::Casual, "regular").unwrap();
         assert_eq!(body(&http)["seed_kind"], "regular");
-        c.create_room(Mode::Ranked, true, "../evil").unwrap();
-        assert_eq!(body(&http)["seed_kind"], "regular", "only the two known kinds reach the server");
+        c.create_room(Mode::Ranked, "../evil").unwrap();
+        let b = body(&http);
+        assert_eq!(b["seed_kind"], "regular", "only the two known kinds reach the server");
+        assert_eq!(b["visibility"], "code", "no public lobbies: every room is joined by its code");
     }
 
     #[test]
@@ -753,7 +771,7 @@ mod tests {
         let c = Client::new(&http, ORIGIN, "t");
         // The fixture is a real refusal captured before the field pick was removed; any refusal
         // sentence the server sends travels the same way.
-        let err = c.enqueue(Mode::Casual, Some("na-east")).unwrap_err();
+        let err = c.enqueue(Mode::Casual, Some("na-east"), None).unwrap_err();
         assert_eq!(err, MmError::Refused("Pick a field first.".into()));
         assert_eq!(err.to_string(), "Pick a field first.");
     }
@@ -781,7 +799,7 @@ mod tests {
         // An action's 404 is still the server's own sentence, not the switch.
         let q = format!("{ORIGIN}/v1/mm/queue");
         let http = FakeHttp::default().reply(&q, 404, r#"{"ok":false,"error":"Not found"}"#);
-        assert_eq!(Client::new(&http, ORIGIN, "t").enqueue(Mode::Casual, None).unwrap_err(), MmError::Refused("Not found".into()));
+        assert_eq!(Client::new(&http, ORIGIN, "t").enqueue(Mode::Casual, None, None).unwrap_err(), MmError::Refused("Not found".into()));
     }
 
     #[test]
@@ -806,12 +824,43 @@ mod tests {
         let url = format!("{ORIGIN}/v1/mm/queue");
         let http = FakeHttp::default().reply(&url, 200, QUEUE_MATCHED);
         let c = Client::new(&http, ORIGIN, "t");
-        let r = c.enqueue(Mode::Ranked, Some("na-east")).expect("queue");
+        let r = c.enqueue(Mode::Ranked, Some("na-east"), Some("pickup")).expect("queue");
         assert!(r.matched);
         let posts = http.posts.lock().unwrap();
         let sent: serde_json::Value = serde_json::from_slice(&posts[0].1).unwrap();
         assert_eq!(sent["mode"], "ranked");
         assert!(sent.get("field").is_none(), "no field is sent: {sent}");
+        assert!(sent.get("seed_kind").is_none(), "ranked never sends a game kind: {sent}");
+    }
+
+    #[test]
+    fn a_casual_queue_sends_its_game_kind_and_only_the_two_known_ones() {
+        let url = format!("{ORIGIN}/v1/mm/queue");
+        let http = FakeHttp::default().reply(&url, 200, QUEUE_MATCHED);
+        let c = Client::new(&http, ORIGIN, "t");
+        let sent = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
+        c.enqueue(Mode::Casual, None, Some("pickup")).unwrap();
+        assert_eq!(sent(&http)["seed_kind"], "pickup");
+        c.enqueue(Mode::Casual, None, Some("../evil")).unwrap();
+        assert_eq!(sent(&http)["seed_kind"], "regular");
+        c.enqueue(Mode::Casual, None, None).unwrap();
+        assert!(sent(&http).get("seed_kind").is_none(), "no pick, no field: today's body");
+    }
+
+    #[test]
+    fn the_host_changes_the_rooms_game_through_the_kind_route() {
+        let url = format!("{ORIGIN}/v1/mm/rooms/r1/kind");
+        let http = FakeHttp::default().reply(&url, 200, r#"{"ok":true}"#);
+        let c = Client::new(&http, ORIGIN, "t");
+        c.room_action("r1", RoomAction::Kind("pickup".into())).unwrap();
+        let b: serde_json::Value = serde_json::from_slice(&http.last_body().unwrap()).unwrap();
+        assert_eq!(b, serde_json::json!({ "seed_kind": "pickup" }));
+        c.room_action("r1", RoomAction::Kind("anything".into())).unwrap();
+        let b: serde_json::Value = serde_json::from_slice(&http.last_body().unwrap()).unwrap();
+        assert_eq!(b["seed_kind"], "regular");
+        // Today's server has no such route: a 404 is a refusal with a sentence, never a crash.
+        let old = FakeHttp::default().reply(&url, 404, r#"{"ok":false,"error":"Not found"}"#);
+        assert!(matches!(Client::new(&old, ORIGIN, "t").room_action("r1", RoomAction::Kind("pickup".into())), Err(MmError::Refused(_))));
     }
 
     #[test]

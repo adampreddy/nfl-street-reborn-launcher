@@ -6410,7 +6410,6 @@ fn main() {
             online_mm::mm_state,
             online_mm::mm_queue,
             online_mm::mm_leave_queue,
-            online_mm::mm_rooms,
             online_mm::mm_room_create,
             online_mm::mm_room_join,
             online_mm::mm_room_lookup,
