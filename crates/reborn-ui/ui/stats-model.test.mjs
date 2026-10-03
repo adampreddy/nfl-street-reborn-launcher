@@ -237,3 +237,114 @@ test('spellYards: a spelled-out label says Yards; a bare YDS heading stays', asy
   assert.equal(spellYards('Tackles'), 'Tackles');
   assert.equal(spellYards(null), '');
 });
+
+// ---- Stats + Profile v2 (mv2 mockup) ----
+import * as V2 from './stats-model.js';
+const isoDay = (d, h = 20) => new Date(Date.UTC(2026, 8, d, h)).toISOString();
+const g = (id, d, score, extra = {}) => ({ id, at: isoDay(d), score, result: score[0] > score[1] ? 'win' : 'loss', ...extra });
+const m = (id, games, extra = {}) => {
+  const w = games.filter((x) => x.result === 'win').length;
+  return { id, at: games.at(-1).at, mode: 'online', queue: 'ranked', opponent_kind: 'human', games, result: w * 2 > games.length ? 'win' : 'loss', ...extra };
+};
+
+test('recordCard: by_queue wins when sent; else counted from the online matches; offline, CPU and private never count', () => {
+  const list = [m('a', [g('a1', 20, [28, 21])]), m('b', [g('b1', 19, [10, 30])], { queue: 'casual' }), m('c', [g('c1', 18, [49, 7])], { mode: 'offline', queue: null, opponent_kind: 'cpu' }),
+    m('d', [g('d1', 17, [31, 30])], { queue: 'private' })];
+  const fromList = V2.recordCard(undefined, list);
+  assert.equal(fromList.source, 'list');
+  assert.equal(fromList.text, '1-1');
+  assert.deepEqual([fromList.ranked.text, fromList.ranked.rate, fromList.ranked.pts], ['1-0', '100.0%', '28.0']);
+  assert.deepEqual([fromList.casual.text, fromList.casual.pts], ['0-1', '10.0']);
+  const server = V2.recordCard([{ key: 'ranked', wins: 8, losses: 5, pts_per_game: 31.4 }, { key: 'casual', wins: 6, losses: 4, pts_per_game: 28.9 }, { key: 'private', wins: 9, losses: 0 }], list);
+  assert.equal(server.source, 'server');
+  assert.deepEqual([server.text, server.rate, server.games], ['14-9', '60.9%', 23]);
+  assert.deepEqual([server.ranked.text, server.ranked.rate, server.ranked.pts, server.casual.rate], ['8-5', '61.5%', '31.4', '60.0%']);
+  assert.ok(Math.abs(server.ranked.share - 8 / 13) < 1e-9);
+  assert.equal(V2.recordCard([], []), null, 'no online match: no card');
+  assert.equal(V2.recordCard(null, [list[2], list[3]]), null, 'only offline and private: no card');
+});
+
+test('lastTenStrip, streakOf, lastTenGames', () => {
+  const list = Array.from({ length: 12 }, (_, i) => m(`x${i}`, [g(`x${i}`, 28 - i, i % 3 === 2 ? [10, 20] : [30, 20])]));
+  const s = V2.lastTenStrip(list);
+  assert.deepEqual(s.results, ['W', 'W', 'L', 'W', 'W', 'L', 'W', 'W', 'L', 'W']);
+  assert.deepEqual([s.text, s.streak, s.streakKind, s.scored, s.allowed], ['7-3', 'W2', 'up', '24.0', '20.0']);
+  assert.equal(V2.lastTenStrip([]), null);
+  assert.equal(V2.streakOf(['L', 'L', 'W']), 'L2');
+  assert.equal(V2.streakOf([]), '—');
+  // a best of 3 adds each of its games, newest first
+  assert.deepEqual(V2.lastTenGames([m('s', [g('s1', 20, [7, 14]), { ...g('s2', 20, [21, 14]), at: isoDay(20, 21) }])]), ['W', 'L']);
+});
+
+test('eloCard: rated, unranked, off; nothing invented', () => {
+  const e = V2.eloCard({ rating: 1077, rank: 7, total: 42, games: 13, peak: 1080, week_delta: 12, history: [{ at: isoDay(12), rating: 1025, delta: 25 }, { at: isoDay(13), rating: 1013, delta: -12 }, { at: isoDay(14), rating: 1077, delta: 64 }] });
+  assert.deepEqual([e.state, e.value, e.rank, e.rankOf, e.peak, e.week.text, e.week.kind, e.games], ['rated', '1,077', '#7', '#7 of 42', '1,080', '+12', 'up', 13]);
+  assert.deepEqual(e.values, [1000, 1025, 1013, 1077], 'the curve starts where the first match began');
+  assert.deepEqual(e.labels.map((l) => l.text), ['Sep 12', 'Sep 12', 'Sep 14']);
+  const bare = V2.eloCard({ rating: 1184, rank: 7, last_delta: 16 });
+  assert.deepEqual([bare.week, bare.rankOf, bare.peak, bare.values], [null, '#7', null, []], 'no week_delta, total or history: nothing made up');
+  assert.equal(V2.eloCard({ rating: 990, week_delta: -9 }).week.text, '−9');
+  assert.deepEqual(V2.eloCard({ rating: null, rank: null, total: 0, history: [] }), { state: 'off', title: 'Unranked', note: 'Rankings start soon.' });
+  assert.equal(V2.eloCard(undefined).state, 'off');
+  assert.equal(V2.eloCard({ rating: null, total: 38 }).state, 'unranked');
+});
+
+test('statCells: five spelled-out numbers per role from the full row; the old value/unit shape falls back to one', () => {
+  const cells = (r, d) => V2.statCells(r, d).map((c) => `${c.value} ${c.label}`);
+  assert.deepEqual(cells('passer', { cmp: 41, att: 68, yds: 1284, td: 14, int: 3, rtg: 118.6, value: 1284, unit: 'pass_yds' }), ['41/68 Cmp/Att', '1,284 Yards', '14 TD', '3 INT', '118.6 Rating']);
+  assert.deepEqual(cells('rusher', { att: 52, yds: 611, avg: 11.75, td: 7, long: 74 }), ['52 Carries', '611 Yards', '11.8 Average', '7 TD', '74 Long']);
+  assert.deepEqual(cells('receiver', { rec: 23, yds: 688, avg: 29.9, td: 8, long: 81 }), ['23 Catches', '688 Yards', '29.9 Average', '8 TD', '81 Long']);
+  assert.deepEqual(cells('dl_lb', { tkl: 19, sck: 6, tfl: 8, ff: 3, pbu: 2 }), ['19 Tackles', '6 Sacks', '8 TFL', '3 FF', '2 PBU']);
+  assert.deepEqual(cells('ballhawk', { int: 5, pbu: 7, tkl: 14, ff: 2, td: 2 }), ['5 INT', '7 PBU', '14 Tackles', '2 FF', '2 TD']);
+  // most played: games, then the picked row's line (a passer here), four numbers
+  assert.deepEqual(cells('most_played', { games: 11, cmp: 38, att: 61, yds: 1102, td: 12, int: 2, rtg: 109.1, value: 11, unit: 'games' }), ['11 Games', '38/61 Cmp/Att', '1,102 Yards', '12 TD', '2 INT']);
+  assert.deepEqual(cells('most_played', { att: 96, yds: 535, td: 5, value: 23, unit: 'games' }), ['23 Games', '96 Carries', '535 Yards', '5 TD']);
+  // a field not sent is left out, never a dash or NaN
+  assert.deepEqual(cells('passer', { yds: 3108, td: 31, rtg: NaN, cmp: 1 }), ['3,108 Yards', '31 TD']);
+  // the deployed server: value + unit only
+  assert.deepEqual(cells('passer', { value: 3108, unit: 'pass_yds' }), ['3,108 Passing Yards']);
+  assert.deepEqual(cells('dl_lb', { value: 96, unit: 'tkl_sck' }), ['96 Tackles + Sacks']);
+  assert.deepEqual(cells('most_played', { value: 23, unit: 'games' }), ['23 Games']);
+  assert.deepEqual(V2.statCells('passer', null), []);
+  assert.deepEqual(V2.statCells('passer', { name: 'x' }), []);
+});
+
+test('pointsSeries: the newest online games, oldest first, axis rounded to its step', () => {
+  const list = Array.from({ length: 20 }, (_, i) => m(`p${i}`, [g(`p${i}`, 28 - i, [20 + i, 15])])).concat([m('off', [g('off', 29, [70, 0])], { mode: 'offline', opponent_kind: 'cpu' })]);
+  const s = V2.pointsSeries(list);
+  assert.equal(s.games.length, 16);
+  assert.deepEqual(s.games.map((x) => x.for).slice(0, 3), [35, 34, 33], 'oldest of the newest sixteen first; the offline 70 left out');
+  assert.equal(s.games.at(-1).label, 'Sep 28');
+  assert.deepEqual([s.max, s.step, s.allowed], [40, 10, '15.0']);
+  assert.equal(V2.pointsSeries([list[0]]), null);
+});
+
+test('resultsByDay: 24 days ending on the newest match, a day stacks oldest first, the best day', () => {
+  const list = [m('a', [g('a', 26, [1, 0])]), m('b', [{ ...g('b', 19, [0, 1]), at: isoDay(19, 21) }]), m('c', [g('c', 19, [1, 0])]), m('d', [{ ...g('d', 19, [1, 0]), at: isoDay(19, 22) }])];
+  const r = V2.resultsByDay(list);
+  assert.equal(r.days.length, 24);
+  assert.equal(r.days.at(-1).label, 'Sep 26');
+  assert.deepEqual(r.days.find((d) => d.label === 'Sep 19').results, ['W', 'L', 'W']);
+  assert.deepEqual([r.tallest, r.best], [3, 'Sep 19 · 2-1']);
+  assert.equal(V2.resultsByDay([]), null);
+});
+
+test('teamRates, yardsSplit, teamPerGame, winsLosses, queueMark, rowSpans', () => {
+  const t = V2.teamRates([{ key: 'tgid:1', name: 'Ravens', logo_url: '/l', wins: 7, losses: 3 }, { key: 'pickup', name: 'Pickup', wins: 1, losses: 1 }, { key: 'tgid:2', name: 'Rams', wins: 0, losses: 0 }]);
+  assert.deepEqual(t.map((x) => [x.name, x.record, x.pct]), [['Ravens', '7-3', '70%'], ['Pickup', '1-1', '50%']]);
+  assert.deepEqual(t[1].team, { abbrev: 'PU' });
+  assert.deepEqual(V2.yardsSplit({ pass: 136.4, rush: 93.8 }), { total: '230', pass: '136.4', rush: '93.8', passShare: 136.4 / 230.2, passPct: '59%', rushPct: '41%' });
+  assert.equal(V2.yardsSplit({ pass: 0, rush: 0 }), null);
+  assert.equal(V2.yardsSplit({ pass: 10 }), null);
+  assert.deepEqual(V2.teamPerGame({ games: 23, yds: 230.2, pass: 136.4, biggest_lead: 36, turnovers: null }).map((c) => `${c.label} ${c.value}${c.unit ? ` ${c.unit}` : ''}`),
+    ['Yards / game 230.2', 'Passing 136.4 Yards', 'Biggest lead 36']);
+  assert.deepEqual(V2.teamPerGame(null), []);
+  assert.deepEqual(V2.winsLosses({ wins: { games: 14, pts: 38.2, yds: 284, to: 0.9 }, losses: { games: 9, pts: 19.6, yds: 161.4, to: 2.3 } }).rows,
+    [{ label: 'Points', win: '38.2', loss: '19.6' }, { label: 'Yards', win: '284', loss: '161' }, { label: 'Turnovers', win: '0.9', loss: '2.3' }]);
+  assert.equal(V2.winsLosses({ wins: { games: 3 }, losses: { games: 0 } }), null);
+  assert.deepEqual([V2.queueMark({ mode: 'online', queue: 'ranked' }), V2.queueMark({ mode: 'online', queue: 'casual' }), V2.queueMark({ mode: 'offline' })].map((q) => q.kind), ['ranked', 'casual', 'off']);
+  assert.deepEqual(V2.rowSpans([['a', 7], ['b', 5]]), [['a', 7], ['b', 5]]);
+  assert.deepEqual(V2.rowSpans([['a', 6], [null, 3], ['c', 3]]), [['a', 8], ['c', 4]]);
+  assert.deepEqual(V2.rowSpans([[null, 7], ['b', 5]]), [['b', 12]]);
+  assert.deepEqual(V2.rowSpans([]), []);
+});

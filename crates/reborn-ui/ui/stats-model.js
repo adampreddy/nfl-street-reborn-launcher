@@ -551,3 +551,259 @@ export function statLine(role, data) {
 export function teamColour(hex) {
   return typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
 }
+
+// ---- Stats + Profile v2 (owner 10-03, "I like the mockup": one 12-column grid, equal-height rows) ----
+// Pure: every function takes the server's answer as it is and returns strings and numbers ready to draw, or null / []
+// when the data a piece needs is not there, so the page leaves that piece out. Nothing here invents a number.
+
+const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
+const one = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const pctText = (p) => (isNum(p) ? `${one(p * 100)}%` : EM_DASH);
+const dayLabel = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : EM_DASH; };
+const dayKey = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null; };
+const isOnline = (m) => Boolean(m) && m.mode === 'online' && m.opponent_kind !== 'cpu' && m.queue !== 'private';
+/** A match list's decided games, newest first (a best of 3 adds every game of it). */
+function gamesNewestFirst(matches) {
+  const out = [];
+  for (const m of Array.isArray(matches) ? matches : []) for (const g of Array.isArray(m?.games) ? m.games : []) {
+    const r = getResultChar(g?.result);
+    if (r) out.push({ ...g, letter: r });
+  }
+  return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+const avgOf = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const scoredOf = (gs) => gs.filter((g) => Array.isArray(g.score) && isNum(g.score[0]) && isNum(g.score[1]));
+
+/**
+ * Your Record (Stats, mv2-0): ONLINE matches only, Ranked and Casual as two halves. The halves come from the server's
+ * `by_queue` when it sends it (its ranked and casual rows), else they are counted from the online matches the page
+ * has, as before. Each half: "8-5", its win rate, the bar's share and points per game when known. Null when there is
+ * no online match at all.
+ */
+export function recordCard(byQueue, matches) {
+  const rows = (Array.isArray(byQueue) ? byQueue : []).filter((r) => r && (r.key === 'ranked' || r.key === 'casual'));
+  const online = (Array.isArray(matches) ? matches : []).filter(isOnline);
+  const fromList = (q) => {
+    const list = online.filter((m) => m.queue === q);
+    const r = recordOf(list);
+    return { wins: r.wins, losses: r.losses, pts: avgOf(scoredOf(gamesNewestFirst(list)).map((g) => g.score[0])) };
+  };
+  const half = (key) => {
+    const row = rows.find((r) => r.key === key);
+    const t = row ? { wins: isNum(row.wins) ? row.wins : 0, losses: isNum(row.losses) ? row.losses : 0, pts: isNum(row.pts_per_game) ? row.pts_per_game : null } : fromList(key);
+    const n = t.wins + t.losses;
+    return { wins: t.wins, losses: t.losses, games: n, text: `${t.wins}${HYPHEN}${t.losses}`, share: n ? t.wins / n : null, rate: n ? pctText(t.wins / n) : EM_DASH,
+      pts: isNum(t.pts) ? one(t.pts) : EM_DASH };
+  };
+  const ranked = half('ranked'), casual = half('casual');
+  const wins = ranked.wins + casual.wins, losses = ranked.losses + casual.losses, games = wins + losses;
+  if (!games) return null;
+  return { text: `${wins}${HYPHEN}${losses}`, games, rate: pctText(wins / games), ranked, casual, source: rows.length ? 'server' : 'list' };
+}
+
+/** The current streak from W/L letters (newest first): "W6", or an em dash. */
+export function streakOf(results) {
+  const r = (Array.isArray(results) ? results : []).filter((x) => x === 'W' || x === 'L');
+  if (!r.length) return EM_DASH;
+  let n = 0;
+  while (n < r.length && r[n] === r[0]) n++;
+  return `${r[0]}${n}`;
+}
+
+/**
+ * Last 10 (Stats' Your Record foot): the newest ten online MATCHES' letters (newest first), their record, the streak
+ * over every online match, and points scored / allowed per game over the games of those ten. Null with no online
+ * match.
+ */
+export function lastTenStrip(matches) {
+  const online = (Array.isArray(matches) ? matches : []).filter(isOnline);
+  const ten = online.filter((m) => getResultChar(m.result)).slice(0, 10);
+  if (!ten.length) return null;
+  const results = ten.map((m) => getResultChar(m.result));
+  const streak = streakOf(resultsOf(online));
+  const gs = scoredOf(gamesNewestFirst(ten));
+  const w = results.filter((x) => x === 'W').length;
+  return { results, text: `${w}${HYPHEN}${results.length - w}`, streak, streakKind: streak.startsWith('W') ? 'up' : streak.startsWith('L') ? 'down' : '',
+    scored: gs.length ? one(avgOf(gs.map((g) => g.score[0]))) : null, allowed: gs.length ? one(avgOf(gs.map((g) => g.score[1]))) : null };
+}
+
+/**
+ * The newest ten decided GAMES' letters of a match list (newest first): the profile's Last 10 strip, the same games
+ * the server's `recent_form` counts (backend lastGames).
+ */
+export function lastTenGames(matches) {
+  return gamesNewestFirst((Array.isArray(matches) ? matches : []).filter((m) => m && m.queue !== 'private' && getResultChar(m.result))).slice(0, 10).map((g) => g.letter);
+}
+
+/**
+ * The Elo card (Stats mv2-0; Profile's hero panel and Elo history). `state`:
+ *   'rated'    -- a rating: the value, "#7" ("#7 of 214" when the server sends the board's size), the peak, the week's
+ *                 change when the server sends `week_delta`, and the curve (the start, then every ranked match).
+ *   'unranked' -- Elo is on but this player has no rating yet (the board has players).
+ *   'off'      -- no Elo at all (off until launch: no rating on an empty board, or no `elo` sent).
+ * Never a fake number: anything the server does not send is null.
+ */
+export function eloCard(elo) {
+  if (!elo || typeof elo !== 'object' || !isNum(elo.rating)) {
+    const on = Boolean(elo) && isNum(elo.total) && elo.total > 0;
+    return { state: on ? 'unranked' : 'off', title: 'Unranked', note: on ? 'No ranked games yet. Play a ranked match to get a rating.' : 'Rankings start soon.' };
+  }
+  const hist = (Array.isArray(elo.history) ? elo.history : []).filter((h) => h && isNum(h.rating));
+  const start = hist.length ? hist[0].rating - (isNum(hist[0].delta) ? hist[0].delta : 0) : null;
+  const values = hist.length ? [start, ...hist.map((h) => h.rating)] : [];
+  const dates = hist.length ? [hist[0].at, ...hist.map((h) => h.at)] : [];
+  const peak = isNum(elo.peak) ? elo.peak : values.length ? Math.max(elo.rating, ...values) : null;
+  const week = isNum(elo.week_delta) ? elo.week_delta : null;
+  const mid = dates.length > 2 ? Math.floor((dates.length - 1) / 2) : null;
+  return {
+    state: 'rated', value: fmtInt(elo.rating), rating: elo.rating,
+    rank: isNum(elo.rank) ? `#${elo.rank}` : null,
+    rankOf: isNum(elo.rank) ? (isNum(elo.total) && elo.total > 0 ? `#${elo.rank} of ${fmtInt(elo.total)}` : `#${elo.rank}`) : null,
+    peak: isNum(peak) ? fmtInt(peak) : null, peakValue: isNum(peak) ? peak : null,
+    week: week === null ? null : { text: week > 0 ? `+${week}` : week < 0 ? `${MINUS}${-week}` : '0', kind: week > 0 ? 'up' : week < 0 ? 'down' : '' },
+    games: isNum(elo.games) && elo.games > 0 ? elo.games : hist.length || null,
+    values,
+    labels: dates.length >= 2 ? [{ at: 0, text: dayLabel(dates[0]) }, ...(mid === null ? [] : [{ at: mid / (dates.length - 1), text: dayLabel(dates[mid]) }]), { at: 1, text: dayLabel(dates.at(-1)) }] : [],
+  };
+}
+
+// Each role's five numbers as the mockup spells them (owner 10-03): [field, label, one decimal?]. Labels are words
+// ("Yards", "Carries", "Rating"); the abbreviations kept are the game's own (TD, INT, TFL, FF, PBU).
+const CELLS = {
+  passer: [['cmp/att', 'Cmp/Att'], ['yds', 'Yards'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'Rating', true]],
+  rusher: [['att', 'Carries'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD'], ['long', 'Long']],
+  receiver: [['rec', 'Catches'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD'], ['long', 'Long']],
+  dl_lb: [['tkl', 'Tackles'], ['sck', 'Sacks'], ['tfl', 'TFL'], ['ff', 'FF'], ['pbu', 'PBU']],
+  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'Tackles'], ['ff', 'FF'], ['td', 'TD']],
+};
+const VALUE_LABEL = { pass_yds: 'Passing Yards', rush_yds: 'Rushing Yards', rec_yds: 'Receiving Yards', tkl_sck: 'Tackles + Sacks', int: 'Interceptions', games: 'Games' };
+
+/**
+ * A player row's numbers (Your players / Their players, at most five): the role's line from the full career row the
+ * server sends on `best_players` (backend cc79302), a field it does not send left out. Most played: its games, then
+ * four numbers of whichever row the server picked (a passer's, a rusher's, a receiver's or a defender's). With fewer
+ * than two numbers (the deployed server sends only `value` + `unit`): that one number, spelled out ("3,108" "Passing
+ * Yards"). Nothing at all: [].
+ */
+export function statCells(role, data) {
+  if (!data || typeof data !== 'object') return [];
+  const take = (spec) => spec.flatMap(([k, label, dec]) => {
+    if (k === 'cmp/att') return isNum(data.cmp) && isNum(data.att) ? [{ value: `${fmtInt(data.cmp)}/${fmtInt(data.att)}`, label }] : [];
+    return isNum(data[k]) ? [{ value: dec ? one(data[k]) : fmtInt(data[k]), label }] : [];
+  });
+  let cells;
+  if (role === 'most_played') {
+    const line = isNum(data.cmp) ? CELLS.passer : isNum(data.att) ? CELLS.rusher : isNum(data.rec) ? CELLS.receiver : CELLS.dl_lb;
+    const games = isNum(data.games) ? data.games : data.unit === 'games' && isNum(data.value) ? data.value : null;
+    const rest = take(line.filter(([k]) => k !== 'long')).slice(0, 4);
+    cells = rest.length ? [...(games === null ? [] : [{ value: fmtInt(games), label: 'Games' }]), ...rest] : [];
+  } else cells = take(CELLS[role] || []);
+  if (cells.length >= 2) return cells.slice(0, 5);
+  if (!isNum(data.value)) return [];
+  return [{ value: fmtInt(data.value), label: VALUE_LABEL[data.unit] || String(data.unit || '') }];
+}
+
+/**
+ * Points per game (Stats mv2-1): the newest `n` online games with a score, OLDEST first (the chart reads left to
+ * right), each { for, against, won, label } with a date under every fourth bar and the last. The axis top rounds up
+ * to its step. Null with fewer than two games.
+ */
+export function pointsSeries(matches, n = 16) {
+  const gs = scoredOf(gamesNewestFirst((Array.isArray(matches) ? matches : []).filter(isOnline))).slice(0, n).reverse();
+  if (gs.length < 2) return null;
+  const games = gs.map((g, i) => ({ for: g.score[0], against: g.score[1], won: g.letter === 'W', label: i % 4 === 0 || i === gs.length - 1 ? dayLabel(g.at) : '' }));
+  const top = Math.max(10, ...games.map((p) => Math.max(p.for, p.against)));
+  const step = top <= 40 ? 10 : top <= 80 ? 20 : 50;
+  return { games, max: Math.ceil(top / step) * step, step, scored: one(avgOf(games.map((p) => p.for))), allowed: one(avgOf(games.map((p) => p.against))) };
+}
+
+/**
+ * Results by day (Stats mv2-1): `days` days ending on the newest online match's day, each with the W/L letters of
+ * the matches played that day (oldest first, so a day's stack builds upward), and the best day (most wins, then the
+ * fewest losses, then the newest). Null with no online match.
+ */
+export function resultsByDay(matches, days = 24) {
+  const online = (Array.isArray(matches) ? matches : []).filter(isOnline).filter((m) => getResultChar(m.result) && dayKey(m.at));
+  if (!online.length) return null;
+  const end = new Date(`${online.map((m) => dayKey(m.at)).sort().at(-1)}T00:00:00Z`);
+  const by = new Map();
+  for (const m of [...online].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+    const k = dayKey(m.at);
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(getResultChar(m.result));
+  }
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(end.getTime() - i * 86400000);
+    const k = d.toISOString().slice(0, 10);
+    out.push({ key: k, label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }), results: by.get(k) || [] });
+  }
+  let best = null;
+  for (const d of out) {
+    const w = d.results.filter((x) => x === 'W').length, l = d.results.length - w;
+    if (w && (!best || w > best.w || (w === best.w && l <= best.l))) best = { w, l, label: d.label };
+  }
+  return { days: out, tallest: Math.max(1, ...out.map((d) => d.results.length)), best: best ? `${best.label} · ${best.w}${HYPHEN}${best.l}` : null };
+}
+
+/** Win rate by team (Stats mv2-1): the server's `by_team` rows that have games, most played first, at most `n`; the
+ *  Pickup row reads "Pickup" (no logo, its badge "PU"). */
+export function teamRates(byTeam, n = 5) {
+  return (Array.isArray(byTeam) ? byTeam : []).filter((t) => t && isNum(t.wins) && isNum(t.losses) && t.wins + t.losses > 0)
+    .sort((a, b) => (b.wins + b.losses) - (a.wins + a.losses)).slice(0, n).map((t) => {
+      const g = t.wins + t.losses;
+      return { key: String(t.key ?? t.name), name: String(t.name ?? EM_DASH), team: t.key === 'pickup' ? { abbrev: 'PU' } : { name: t.name, logo_url: t.logo_url ?? null, abbrev: t.abbrev ?? null },
+        record: `${t.wins}${HYPHEN}${t.losses}`, share: t.wins / g, pct: `${Math.round((t.wins / g) * 100)}%` };
+    });
+}
+
+/** Yards split (Stats mv2-1): passing and rushing yards per game from `per_game`, with each one's share. Null unless
+ *  both are numbers and their sum is above zero. */
+export function yardsSplit(perGame) {
+  const p = perGame?.pass, r = perGame?.rush;
+  if (!isNum(p) || !isNum(r) || p + r <= 0) return null;
+  const share = p / (p + r);
+  return { total: fmtInt(Math.round(p + r)), pass: one(p), rush: one(r), passShare: share, passPct: `${Math.round(share * 100)}%`, rushPct: `${100 - Math.round(share * 100)}%` };
+}
+
+/** Team per game (Stats mv2-1): the `per_game` numbers the server sends, each a cell { key, label, value, unit, note };
+ *  a number it does not send leaves its cell out. */
+export function teamPerGame(perGame) {
+  if (!perGame || typeof perGame !== 'object') return [];
+  const cell = (k, label, unit, note, whole = false) => (isNum(perGame[k]) ? [{ key: k, label, value: whole ? fmtInt(perGame[k]) : one(perGame[k]), unit, note }] : []);
+  return [
+    ...cell('yds', 'Yards / game', '', 'per game'), ...cell('pass', 'Passing', 'Yards', 'per game'), ...cell('rush', 'Rushing', 'Yards', 'per game'),
+    ...cell('pts_per_drive', 'Points / drive', '', 'per drive'), ...cell('first_downs', 'First downs', '', 'per game'), ...cell('turnovers', 'Turnovers', '', 'per game'),
+    ...cell('three_outs', 'Three-and-outs', '', 'per game'), ...cell('biggest_lead', 'Biggest lead', '', 'in one game', true),
+  ];
+}
+
+/** Wins vs losses (Stats mv2-1): per-game points, yards and turnovers in wins and in losses (`wins_vs_losses`). Null
+ *  unless both sides have games. */
+export function winsLosses(wvl) {
+  const w = wvl?.wins, l = wvl?.losses;
+  if (!isNum(w?.games) || !isNum(l?.games) || !w.games || !l.games) return null;
+  const v = (x, whole) => (isNum(x) ? (whole ? fmtInt(Math.round(x)) : one(x)) : EM_DASH);
+  const rows = [['Points', 'pts'], ['Yards', 'yds', true], ['Turnovers', 'to']].map(([label, k, whole]) => ({ label, win: v(w[k], whole), loss: v(l[k], whole) }))
+    .filter((r) => r.win !== EM_DASH || r.loss !== EM_DASH);
+  return rows.length ? { wins: w.games, losses: l.games, rows } : null;
+}
+
+/** The queue column's word and marker: Ranked (a red dot), Casual (a ring), Offline (no marker). */
+export function queueMark(match) {
+  if (match?.mode === 'offline' || match?.opponent_kind === 'cpu') return { text: 'Offline', kind: 'off' };
+  if (match?.queue === 'ranked') return { text: 'Ranked', kind: 'ranked' };
+  if (match?.queue === 'casual') return { text: 'Casual', kind: 'casual' };
+  return { text: '', kind: '' };
+}
+
+/** A 12-column row: the cards present, their preferred spans scaled so the row adds up to 12 (one card alone spans
+ *  12). `cards` is [[node, span], ...]; a null node is a card left out. */
+export function rowSpans(cards) {
+  const list = (Array.isArray(cards) ? cards : []).filter((c) => c && c[0]);
+  if (!list.length) return [];
+  const total = list.reduce((a, c) => a + c[1], 0);
+  const spans = list.map((c) => Math.max(1, Math.round((c[1] * 12) / total)));
+  spans[spans.length - 1] += 12 - spans.reduce((a, b) => a + b, 0);
+  return list.map((c, i) => [c[0], spans[i]]);
+}
