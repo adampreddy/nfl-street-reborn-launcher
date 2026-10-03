@@ -83,7 +83,7 @@ try{
   assert.equal(await key(),'match-m-02','Down from a best of 3 is the next match');
   await press(page,12);
   assert.equal(await key(),'match-m-01','Up returns to the best of 3');
-  await page.locator('[data-key="match-m-15"]').focus();
+  await page.locator('[data-key="match-m-13"]').focus();
   await press(page,13);
   assert.equal(await key(),'older','the last row goes down to the pager (Older; Newer is disabled on page 1)');
   await page.locator('[data-key="match-m-12"]').focus();
