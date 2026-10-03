@@ -124,6 +124,39 @@ while time.time() < deadline:
     time.sleep(3)
 else:
     log("!!! out of time")
+
+# Phase 2, what a Deck player does next: take the content update the Play
+# page offers (a Linux install carries none of it), then press Play and see
+# the emulator start.
+import subprocess
+def busy(t):
+    return any(w in t for w in ("Updating", "Downloading", "Installing", "Verifying", "Applying", "% "))
+phase2_end = time.time() + 75 * 60
+clicked_update = clicked_play = False
+idle_polls, last_text, play_at = 0, None, None
+while time.time() < phase2_end:
+    st = js(STATE)
+    t = st["text"].replace(chr(10), " | ")
+    if t[:600] != last_text:
+        log("--- play page:", t[:700]); last_text = t[:600]
+    if not clicked_update and "Update now" in st["buttons"]:
+        clicked_update = bool(js(CLICK_TEXT, "Update now")); log("clicked Update now"); shot("update-start")
+    idle_polls = 0 if busy(t) else idle_polls + 1
+    if clicked_update and not clicked_play and idle_polls >= 5 and "Play now" in t:
+        shot("before-play")
+        clicked_play = bool(js(CLICK_TEXT, "▶ Play now") or js("const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Play now')&&!b.disabled); if(!b) return false; b.click(); return true;"))
+        log("clicked Play now:", clicked_play); play_at = time.time()
+    if play_at:
+        ps = subprocess.run(["pgrep", "-af", "dolphin-emu"], capture_output=True, text=True).stdout.strip()
+        if ps:
+            log("=== emulator running:", ps[:300]); time.sleep(25)
+            subprocess.run(["import", "-window", "root", os.path.join(OUT, "dolphin.png")])
+            log("=== PLAY WORKS"); break
+        if time.time() - play_at > 120:
+            log("!!! no emulator 2 min after Play"); shot("play-failed"); break
+    time.sleep(6)
+else:
+    log("!!! phase 2 out of time"); shot("phase2-timeout")
 LOG.close()
 try:
     wd("DELETE", S)
