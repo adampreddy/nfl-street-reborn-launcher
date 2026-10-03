@@ -32,6 +32,24 @@ const contentRules = async (page) => {
   // no ties: no record anywhere reads W–L–T
   assert.doesNotMatch(body, /\b\d+[–-]\d+[–-]\d+\b/, 'records are W-L only, never a tie');
 };
+// Best QB → receiver reads (owner 10-03, "you can't even read the text"): each word's contrast against the card behind it,
+// sampled from the rendered pixels so the glass layers count. `pairs` for the names and numbers, `heads` for the headings.
+async function combosReadable(page, pairs, heads) {
+  await page.evaluate(() => document.getElementById('combos').scrollIntoView({ block: 'center' }));
+  await settle(page);
+  const at = await page.locator('#combos').evaluate((n) => { const r = n.getBoundingClientRect(); return { x: r.right - 12, y: r.top + 6 }; });
+  const px = await page.screenshot({ clip: { x: at.x, y: at.y, width: 1, height: 1 } });
+  const bg = await page.evaluate(async (b64) => { const bm = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = new OffscreenCanvas(1, 1).getContext('2d'); c.drawImage(bm, 0, 0); return [...c.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, px.toString('base64'));
+  const colours = await page.locator('#combos').evaluate((root) => [...root.querySelectorAll('h3, thead th, tbody th .who > span:last-child, tbody td')]
+    .map((n) => ({ text: n.textContent.trim(), head: n.matches('thead th'), rgb: getComputedStyle(n).color.match(/\d+/g).slice(0, 3).map(Number) })));
+  const lum = (rgb) => { const c = rgb.map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  for (const c of colours) {
+    const need = c.head ? heads : pairs;
+    assert.ok(ratio(c.rgb, bg) >= need, `combos "${c.text}" reads at ${ratio(c.rgb, bg).toFixed(2)}:1 on rgb(${bg}), needs ${need}:1`);
+  }
+}
 const NONE = 'No online matches to show yet.';
 // History rows keep their natural height (56px; a best of 3's games 40px): the card fills, never the rows (P4-24).
 const rowHeights = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().height));
@@ -198,6 +216,7 @@ try {
     await page.evaluate(() => document.getElementById('more').scrollIntoView({ block: 'start' }));
     await settle(page);
     await page.screenshot({ path: path.join(out, 'profile-1280-more.png') });
+    await combosReadable(page, 4.5, 4.5);
     assert.deepEqual(errors, []);
     await close();
   }
@@ -328,6 +347,9 @@ try {
     const { page, errors, close } = await openState(browser, srv.base, STATE, { glass: true });
     await page.locator('.pf-card').waitFor();
     await page.screenshot({ path: path.join(out, 'profile-1280-glass.png') });
+    // over the glass the pairs and numbers still read at 4.5:1; the small uppercase headings at least 2.5:1 (they were 1.45)
+    await combosReadable(page, 4.5, 2.5);
+    await page.locator('#combos').screenshot({ path: path.join(out, 'profile-1280-combos-glass.png') });
     assert.deepEqual(errors, []);
     await close();
   }

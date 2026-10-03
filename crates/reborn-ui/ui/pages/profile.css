@@ -111,6 +111,12 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
 .pf-more-card.wide{grid-column:1/-1;overflow-x:auto}
 .pf-more-card.wide .tbl{min-width:820px}
 .pf-more-card h3{margin:0;padding:8px 16px;font:600 14px Inter,system-ui,sans-serif}
+/* Best QB → receiver (owner 10-03, "you can't even read the text"): headings --fg-2, the pairs and their numbers --fg,
+   and a long pair wraps instead of being cut off */
+#combos h3,#combos .tbl tbody>tr>*{color:var(--fg)}
+#combos .tbl thead th{color:var(--fg-2)}
+#combos .tbl tbody th{white-space:normal;padding-top:6px;padding-bottom:6px;line-height:1.35}
+#combos .tbl .who>span:last-child{white-space:normal}
 .pf-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .pf-pls{display:flex;flex-direction:column;padding:0 16px}
 .pf-pl{display:flex;align-items:center;gap:14px;min-height:56px;border-top:1px solid var(--stroke)}
