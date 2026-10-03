@@ -22,7 +22,7 @@
 #                               settings a PC player has.
 #
 # Output: /home/reborn/release/<launcher version>/
-#   NFL Street Reborn_<v>_amd64.AppImage   the launcher, with DolphinTool and
+#   NFL Street Reborn_<v>_amd64.AppImage   the launcher, with the runtime, DolphinTool and
 #                                          xdelta3 inside
 #   runtime-linux/                         publishable as `runtime-linux`
 #   BUILD-INFO.txt                         commits, glibc floor, sizes
@@ -107,10 +107,28 @@ cp /usr/bin/xdelta3 /src/launcher/crates/reborn-ui/binaries/xdelta3-x86_64-unkno
 '
 
 # --- 3. The launcher AppImage -------------------------------------------------
+cp -a "$OUT/runtime-linux" "$SRC/release-runtime-copy"
 "$HERE/in-builder.sh" env REBORN_BUILD_VERSION="$BUILD_VERSION" bash -euxc '
 export CARGO_TARGET_DIR=/src/launcher/target-jammy
 bash /src/launcher/installer/linux/build-appimage.sh
 '
+# The emulator rides inside too, at usr/bin/runtime, where the launcher
+# already looks ($APPDIR/usr/bin/runtime). Fetched as content alone it failed
+# on a tester's Deck ("no emulator was installed", 2026-10-03); bundled, a
+# Deck plays with no download but the textures. A newer runtime-linux from
+# the content server lands in the data root, which the launcher looks in first.
+"$HERE/in-builder.sh" bash -euxc '
+A=$(ls /src/launcher/target-jammy/release/bundle/appimage/*.AppImage)
+W=$(mktemp -d); cd "$W"
+"$A" --appimage-extract > /dev/null
+cp -a /src/release-runtime-copy squashfs-root/usr/bin/runtime
+OFF=$("$A" --appimage-offset)
+COMP=$(unsquashfs -s -o "$OFF" "$A" | sed -n "s/^Compression //p")
+mksquashfs squashfs-root fs.sqfs -root-owned -noappend -comp "$COMP" -quiet
+head -c "$OFF" "$A" > new.AppImage && cat fs.sqfs >> new.AppImage && chmod 755 new.AppImage
+mv new.AppImage "$A"; cd /; rm -rf "$W"
+'
+rm -rf "$SRC/release-runtime-copy"
 cp "$SRC/launcher/target-jammy/release/bundle/appimage/"*.AppImage "$OUT/NFL Street Reborn $BUILD_VERSION.AppImage"
 
 # --- 4. What was built ---------------------------------------------------------

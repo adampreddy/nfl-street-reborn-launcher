@@ -14,7 +14,7 @@ cp "$HERE/e2e_first_run.py" "$W/"
 "$HERE/in-builder.sh" bash -uc '
 export HOME=/src/e2e/home XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p $XDG_RUNTIME_DIR; chmod 700 $XDG_RUNTIME_DIR
 export DISPLAY=:51 GDK_BACKEND=x11
-export APPDIR=/src/e2e/app/squashfs-root APPIMAGE=/src/e2e/NFL-Street-Reborn.AppImage REBORN_E2E_PICK_GAME=/src/e2e/game.iso
+export APPDIR=/src/e2e/app/squashfs-root APPIMAGE=/src/e2e/NFL-Street-Reborn.AppImage REBORN_E2E_PICK_GAME=/src/e2e/game.iso E2E_PHASE2=${E2E_PHASE2:-1}
 Xvfb :51 -screen 0 1280x800x24 -nolisten tcp > /src/e2e/out/xvfb.log 2>&1 &
 sleep 2
 dbus-launch --exit-with-session > /dev/null 2>&1 || true

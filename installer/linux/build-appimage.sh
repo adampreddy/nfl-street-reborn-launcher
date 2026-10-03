@@ -9,7 +9,8 @@
 #     AppImage, patch as content"). The launcher finds them through $APPDIR.
 #   - NOT the game patch bundle (manifest + reborn.xdelta, 184 MB): that is
 #     the `game-import` content component, fetched into the data root.
-#   - NOT Dolphin: that is the `runtime-linux` content component.
+#   - Dolphin is added by build-release.sh afterwards (usr/bin/runtime); it
+#     is also the `runtime-linux` content component, for updates.
 #
 # Inputs, placed by CI or by hand before running:
 #   crates/reborn-ui/binaries/DolphinTool-x86_64-unknown-linux-gnu

@@ -323,7 +323,7 @@ pub(crate) fn ensure_import_bundle(p: &Platform) -> Result<PathBuf, String> {
     // Promoting game-patch with no disc yet only records it; setup's own
     // patch step moves the imported disc to the newest build with it.
     let wanted = [reborn_core::inventory::ComponentId::GameImport, reborn_core::inventory::ComponentId::GamePatch];
-    let request = CheckRequest { components: &wanted, depth: Depth::Quick };
+    let request = CheckRequest { components: &wanted, depth: Depth::Verify };
     if let Err(e) = updater.run(&request, &ImageHook::default()) {
         eprintln!("downloading the game-import bundle failed: {e}");
         return Err(IMPORT_BUNDLE_UNAVAILABLE.to_string());
@@ -352,7 +352,7 @@ pub(crate) fn ensure_patch_chain(p: &Platform) -> Result<(), String> {
     let origin = Origin::new(&origin_url(&settings));
     let verifier = verifier()?;
     let updater = Updater::new(p, &data_root, &origin, &verifier);
-    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::GamePatch], depth: Depth::Quick };
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::GamePatch], depth: Depth::Verify };
     if let Err(e) = updater.run(&request, &ImageHook::default()) {
         eprintln!("downloading the game-patch chain failed: {e}");
     }
@@ -391,7 +391,11 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
     let verifier = match verifier() { Ok(v) => v, Err(e) => return fail(e) };
     let origin = Origin::new(&origin_url(&settings));
     let updater = Updater::new(p, &data_root, &origin, &verifier);
-    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::runtime_here()], depth: Depth::Quick };
+    // Verify, not Quick: this runs only when the files are missing, and a
+    // Deck that had half-installed it under an earlier build kept a record
+    // saying it was there, so Quick found nothing to do and the tester got
+    // "the download finished but no emulator was installed" (2026-10-03).
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::runtime_here()], depth: Depth::Verify };
     tracing::warn!("no emulator on disk: downloading {}", reborn_core::inventory::ComponentId::runtime_here().as_str());
     match updater.run(&request, &ImageHook::default()) {
         Err(e) => fail(e.to_string()),

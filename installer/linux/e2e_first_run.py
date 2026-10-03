@@ -131,7 +131,8 @@ else:
 import subprocess
 def busy(t):
     return any(w in t for w in ("Updating", "Downloading", "Installing", "Verifying", "Applying", "% "))
-phase2_end = time.time() + 75 * 60
+# E2E_PHASE2=0 stops at the Play page (no 8 GB download, no game boot).
+phase2_end = time.time() + (75 * 60 if os.environ.get("E2E_PHASE2", "1") != "0" else 0)
 clicked_update = clicked_play = False
 idle_polls, last_text, play_at = 0, None, None
 while time.time() < phase2_end:
@@ -159,7 +160,8 @@ while time.time() < phase2_end:
             log("!!! no emulator 2 min after Play"); shot("play-failed"); break
     time.sleep(6)
 else:
-    log("!!! phase 2 out of time"); shot("phase2-timeout")
+    if os.environ.get("E2E_PHASE2", "1") != "0":
+        log("!!! phase 2 out of time"); shot("phase2-timeout")
 LOG.close()
 try:
     wd("DELETE", S)
