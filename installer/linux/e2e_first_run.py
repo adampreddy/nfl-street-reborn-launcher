@@ -73,6 +73,12 @@ const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim(
 if (!b) return false; b.click(); return true;
 """
 
+SELECT_LATER = """
+const s = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'none'));
+if (!s || s.value) return false;
+s.value = 'none'; s.dispatchEvent(new Event('change', {bubbles: true})); return true;
+"""
+
 used = set()
 last_key, same_since, step = None, time.time(), 0
 deadline = time.time() + 60 * 60
@@ -96,6 +102,9 @@ while time.time() < deadline:
         if r["v"] == "fresh" and not r["checked"] and "radio-fresh" not in used:
             js("const r=document.querySelector('input[type=radio][value=fresh]'); r.click(); return 1;")
             used.add("radio-fresh"); acted = True
+    # No pad in a headless run: the controller step's own way past.
+    if not acted and "select-later" not in used and js(SELECT_LATER):
+        used.add("select-later"); acted = True; log("chose: Set up a controller later")
     for label in ("Browse for NFL Street 2", "Skip for now", "Skip"):
         if not acted and label in st["buttons"] and label not in used:
             if js(CLICK_TEXT, label): used.add(label); acted = True; log("clicked", label)
