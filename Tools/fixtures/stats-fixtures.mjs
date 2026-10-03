@@ -69,10 +69,12 @@ function best(lines) {
     most_played: { key: 'p-robinson', name: 'B. Robinson', ...face(ATL), portrait_url: '/live-assets/portraits/223-192.png', value: 23, unit: 'games' },
   };
   if (lines) {
-    Object.assign(b.passer, { yds: 3108, td: 31, int: 11, rtg: 108.9 });
-    Object.assign(b.rusher, { att: 212, yds: 1715, td: 12, avg: 5.6 });
-    Object.assign(b.receiver, { rec: 98, yds: 1714, td: 14, avg: 14.3 });
-    Object.assign(b.dl_lb, { tkl: 71, sck: 5, tfl: 9, pbu: 6 });
+    // the career row's own fields (backend profile/players.js PROJ), as a server that spreads the row would send them
+    Object.assign(b.passer, { cmp: 198, att: 331, yds: 3108, td: 31, int: 11, rtg: 108.9, long: 74 });
+    Object.assign(b.rusher, { att: 212, yds: 1715, td: 12, avg: 5.6, long: 61 });
+    Object.assign(b.receiver, { rec: 98, yds: 1714, td: 14, avg: 14.3, long: 74 });
+    Object.assign(b.dl_lb, { tkl: 71, sck: 5, tfl: 9, ff: 2, pbu: 6 });
+    // no ff sent: left out of the line
     Object.assign(b.ballhawk, { int: 7, pbu: 14, tkl: 33, td: 1 });
     Object.assign(b.most_played, { games: 23, att: 96, yds: 535, td: 5 });
   }
@@ -99,7 +101,9 @@ export function oldDashboard() {
   return d;
 }
 
-const row = (name, t, cols) => ({ key: name, name, ...face(t), games: 20, ...cols });
+// The best players' career rows carry the same key as best_players (the backend picks them from these rows).
+const KEYS = { 'M. Penix Jr.': 'p-penix', 'S. Barkley': 'p-barkley', 'D. London': 'p-london', 'N. Bolton': 'p-bolton', 'A.J. Terrell': 'p-terrell', 'B. Robinson': 'p-robinson' };
+const row = (name, t, cols) => ({ key: KEYS[name] ?? name, name, ...face(t), games: 20, ...cols });
 function career() {
   return {
     passing: { rows: [

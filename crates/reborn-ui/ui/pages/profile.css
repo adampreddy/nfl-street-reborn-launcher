@@ -118,7 +118,8 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
 .pf-pl-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .pf-pl-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pf-pl-head .k-label{flex:none;font-size:10px}
-.pf-pl-line{font-size:12px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-pl-line{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--fg-2)}
+.pf-pl-line>span{white-space:nowrap}
 .pf-pl-line b{font-weight:600;color:var(--fg)}
 .pf-pl.none .pf-pl-name{font-weight:500;color:var(--fg-3)}
 @media (max-width:1100px){

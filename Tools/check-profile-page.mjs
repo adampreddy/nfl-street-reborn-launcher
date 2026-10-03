@@ -168,6 +168,16 @@ try {
     assert.deepEqual(await texts(page, '#more h3'), ['Head to head', 'Your players', 'By team', 'Per game', 'Best QB → receiver', 'Laterals & pitches', 'In wins vs losses', 'By game type']);
     assert.equal(await page.locator('#h2h a.who').getAttribute('href'), 'profile.html?player=1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', 'an opponent opens their profile');
     assert.deepEqual(await texts(page, '#more-players .pf-pl-name'), ['M. Penix Jr.', 'S. Barkley', 'D. London', 'N. Bolton', 'A.J. Terrell', 'B. Robinson']);
+    // each player's fuller statline from its own career row (owner 10-03), games kept as they were
+    assert.deepEqual(await page.locator('#more-players .pf-pl-line').evaluateAll((ns) => ns.map((n) => [...n.children].map((s) => s.textContent))), [
+      ['141/238 C/ATT', '2,210 YDS', '31 TD', '11 INT', '110.5 RTG'],
+      ['212 CAR', '1,180 YDS', '5.6 AVG', '12 TD', '61 LNG'],
+      ['98 REC', '1,402 YDS', '14.3 AVG', '14 TD', '74 LNG'],
+      ['71 TKL', '5 SCK', '9 TFL', '2 FF', '6 PBU'],
+      ['7 INT', '14 PBU', '33 TKL', '0 FF', '1 TD'],
+      ['23 GAMES', '96 CAR', '535 YDS', '5 TD']]);
+    assert.doesNotMatch(await page.locator('#more-players').textContent(), /NaN|null|undefined/);
+    await page.locator('#more-players').screenshot({ path: path.join(out, 'profile-1280-players-lines.png') });
     assert.deepEqual(await texts(page, '#by-type tbody th'), ['Normal']);
     // Career's "Full stats ›" goes there
     await page.locator('#career .sec-link').click();

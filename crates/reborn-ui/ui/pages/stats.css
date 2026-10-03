@@ -32,9 +32,9 @@ a.st-player:hover .st-pname{text-decoration:underline}
 .st-pname{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .st-phead .k-label{flex:none;font-size:10px}
 .st-player.none .st-pname{font-weight:500;color:var(--fg-3)}
-.st-line{margin-top:4px;font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-line{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:4px;font-size:12.5px;color:var(--fg-2);font-variant-numeric:tabular-nums}
+.st-line>span{white-space:nowrap}
 .st-line b{font-weight:600;color:var(--fg)}
-.st-line .sep{margin:0 6px;color:var(--fg-3)}
 /* the footer line: the queue note on the left, Profile & sync on the right */
 .st-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 24px;font-size:12px;color:var(--fg-3)}
 .st-account{margin-left:auto}

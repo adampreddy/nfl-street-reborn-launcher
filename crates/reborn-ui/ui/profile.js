@@ -14,7 +14,7 @@ import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
 import { fmtInt, fmtPct, roleCards } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, storeGameList, teamLogo } from './match-rows.js';
-import { FULL_STATS, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, publicQueues, recordOverview, sortValue, splitTop, statusLine, summaryFacts } from './profile-model.js';
+import { FULL_STATS, careerTiles, cellValue, eloOverview, isPublic, lastTenOverview, leaderboardRows, liveCard, publicQueues, recordOverview, sortValue, splitTop, statusLine, summaryFacts, withCareerLines } from './profile-model.js';
 import { tabs } from './tabs.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -524,7 +524,7 @@ function playersCard(best, self) {
     const badge = assetUrl(c.logo);
     if (badge) { const img = el('img', { class: 'badge', alt: '', src: badge }); img.addEventListener('error', () => img.remove(), { once: true }); face.append(img); }
     const line = el('span', { class: 'pf-pl-line num' });
-    if (c.line.length) c.line.forEach((s, i) => { if (i) line.append(el('span', { class: 'pf-dot', 'aria-hidden': 'true', text: '·' })); line.append(el('span', {}, el('b', { text: s.value }), ` ${s.unit}`)); });
+    if (c.line.length) line.append(...c.line.map((s) => el('span', {}, el('b', { text: s.value }), ` ${s.unit}`)));
     else if (c.stat) line.textContent = c.stat;
     return el('div', { class: `pf-pl${c.stat ? '' : ' none'}` }, face,
       el('span', { class: 'pf-pl-tx' }, el('span', { class: 'pf-pl-head' }, el('span', { class: 'pf-pl-name', text: c.name }), el('span', { class: 'k-label', text: c.label })),
@@ -546,7 +546,7 @@ function moreStats(p, self) {
       return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH,
         num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `−${h.biggest_loss.margin}` : DASH];
     }), { id: 'h2h', what: 'opponents' }), true));
-  const players = playersCard(p.best_players, self);
+  const players = playersCard(withCareerLines(p.best_players, p.career), self);
   if (players) cards.push(players);
   const teams = list(p.by_team).filter(Boolean);
   if (teams.length) cards.push(moreCard('by-team', 'By team', smallTable('Record by team played as', ['Team', 'Record', 'Pts / gm', 'Win %'],

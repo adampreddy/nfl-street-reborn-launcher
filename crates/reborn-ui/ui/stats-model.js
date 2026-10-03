@@ -449,19 +449,21 @@ export function youNumbers(summary, recentForm) {
   ];
 }
 
-// Each role's statline (spec §8.6 table): [field, unit, one decimal?].
+// Each role's statline (spec §8.6 table, fuller per owner 10-03): [field, unit, one decimal?]. The fields are the
+// career table row's own (backend profile/players.js PROJ); 'cmp/att' draws "141/238 C/ATT".
 const STATLINES = {
-  passer: [['yds', 'YDS'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'RTG', true]],
-  rusher: [['att', 'CAR'], ['yds', 'YDS'], ['td', 'TD'], ['avg', 'AVG', true]],
-  receiver: [['rec', 'REC'], ['yds', 'YDS'], ['td', 'TD'], ['avg', 'AVG', true]],
-  dl_lb: [['tkl', 'TKL'], ['sck', 'SCK'], ['tfl', 'TFL'], ['pbu', 'PBU']],
-  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'TKL'], ['td', 'TD']],
+  passer: [['cmp/att', 'C/ATT'], ['yds', 'YDS'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'RTG', true]],
+  rusher: [['att', 'CAR'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD'], ['long', 'LNG']],
+  receiver: [['rec', 'REC'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD'], ['long', 'LNG']],
+  dl_lb: [['tkl', 'TKL'], ['sck', 'SCK'], ['tfl', 'TFL'], ['ff', 'FF'], ['pbu', 'PBU']],
+  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'TKL'], ['ff', 'FF'], ['td', 'TD']],
 };
 const UNIT_SHORT = { pass_yds: 'YDS', rush_yds: 'YDS', rec_yds: 'YDS', tkl_sck: 'TKL + SCK', int: 'INT', games: 'GAMES' };
 
 /**
- * A player row's statline: the role's four numbers when the server sends them (numbers formatted, units uppercase),
- * else the one number it always sends (`value` + `unit`), else nothing.
+ * A player row's statline: every number of the role's line the server sends (numbers formatted, units uppercase; a
+ * field it does not send is left out, never drawn as a dash), when it sends at least two of them; else the one
+ * number it always sends (`value` + `unit`), else nothing. Most played keeps its games count first.
  * @param {string} role
  * @param {Object|null} data
  * @returns {Array<{value: string, unit: string}>}
@@ -473,7 +475,11 @@ export function statLine(role, data) {
   const spec = role === 'most_played'
     ? [['games', 'GAMES'], isNum(data.att) && !isNum(data.rec) ? ['att', 'CAR'] : ['rec', 'REC'], ['yds', 'YDS'], ['td', 'TD']]
     : STATLINES[role];
-  if (spec && spec.every(([k]) => isNum(data[k]))) return spec.map(([k, unit, dec]) => ({ value: fmt(data[k], dec), unit }));
+  const line = (spec || []).flatMap(([k, unit, dec]) => {
+    if (k === 'cmp/att') return isNum(data.cmp) && isNum(data.att) ? [{ value: `${fmtInt(data.cmp)}/${fmtInt(data.att)}`, unit }] : [];
+    return isNum(data[k]) ? [{ value: fmt(data[k], dec), unit }] : [];
+  });
+  if (line.length >= 2) return line;
   if (!isNum(data.value)) return [];
   return [{ value: fmtInt(data.value), unit: UNIT_SHORT[data.unit] || String(data.unit || '').toUpperCase() }];
 }

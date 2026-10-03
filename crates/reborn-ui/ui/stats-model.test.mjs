@@ -111,10 +111,18 @@ test('lastTen and youNumbers', () => {
   assert.equal(youNumbers({ wins: 1, losses: 3, streak: 'L3' }, null)[3].kind, '');
 });
 
-test('statLine: the four numbers of a role when the server sends them, else its one number', () => {
-  assert.deepEqual(statLine('passer', { yds: 3108, td: 31, int: 11, rtg: 108.9, value: 3108, unit: 'pass_yds' }),
-    [{ value: '3,108', unit: 'YDS' }, { value: '31', unit: 'TD' }, { value: '11', unit: 'INT' }, { value: '108.9', unit: 'RTG' }]);
-  assert.deepEqual(statLine('rusher', { att: 212, yds: 1715, td: 12, avg: 5.6 }).map((s) => s.unit), ['CAR', 'YDS', 'TD', 'AVG']);
+test('statLine: the fuller line of a role from the fields the server sends, missing ones left out, else its one number', () => {
+  assert.deepEqual(statLine('passer', { cmp: 141, att: 238, yds: 3108, td: 31, int: 11, rtg: 108.9, value: 3108, unit: 'pass_yds' }),
+    [{ value: '141/238', unit: 'C/ATT' }, { value: '3,108', unit: 'YDS' }, { value: '31', unit: 'TD' }, { value: '11', unit: 'INT' }, { value: '108.9', unit: 'RTG' }]);
+  // no cmp/att sent: C/ATT is left out, never "—/—" or NaN
+  assert.deepEqual(statLine('passer', { yds: 3108, td: 31, int: 11, rtg: 108.9 }).map((s) => s.unit), ['YDS', 'TD', 'INT', 'RTG']);
+  assert.deepEqual(statLine('passer', { cmp: 1, att: null, yds: 3, td: 0, rtg: NaN }).map((s) => `${s.value} ${s.unit}`), ['3 YDS', '0 TD']);
+  assert.deepEqual(statLine('rusher', { att: 212, yds: 1715, td: 12, avg: 5.6, long: 61 }).map((s) => `${s.value} ${s.unit}`), ['212 CAR', '1,715 YDS', '5.6 AVG', '12 TD', '61 LNG']);
+  assert.deepEqual(statLine('receiver', { rec: 98, yds: 1402, avg: 14.3, td: 14 }).map((s) => s.unit), ['REC', 'YDS', 'AVG', 'TD']);
+  assert.deepEqual(statLine('dl_lb', { tkl: 71, sck: 5, tfl: 9, ff: 2, pbu: 6 }).map((s) => s.unit), ['TKL', 'SCK', 'TFL', 'FF', 'PBU']);
+  assert.deepEqual(statLine('ballhawk', { int: 7, pbu: 14, tkl: 33, td: 1 }).map((s) => s.unit), ['INT', 'PBU', 'TKL', 'TD']);
+  // one field alone is not a line: the one number instead
+  assert.deepEqual(statLine('passer', { td: 3, value: 40, unit: 'pass_yds' }), [{ value: '40', unit: 'YDS' }]);
   assert.deepEqual(statLine('most_played', { games: 23, att: 96, yds: 535, td: 5 }).map((s) => `${s.value} ${s.unit}`), ['23 GAMES', '96 CAR', '535 YDS', '5 TD']);
   assert.deepEqual(statLine('most_played', { games: 23, rec: 40, yds: 535, td: 5 })[1], { value: '40', unit: 'REC' });
   assert.deepEqual(statLine('passer', { value: 3108, unit: 'pass_yds' }), [{ value: '3,108', unit: 'YDS' }]);

@@ -110,7 +110,9 @@ try {
     assert.equal(await first.locator('.k-label').textContent(), 'Best passer');
     assert.equal(await first.locator('.st-line').textContent(), '3,108 YDS');
     assert.match(await first.getAttribute('href'), /#passing$/);
-    assert.deepEqual(await texts(page, '.sec-links a'), ['Offense', 'Defense', 'Records']);
+    // no Offense / Defense / Records strip beside Your players (owner ruling 10-03)
+    assert.equal(await page.locator('.sec-links').count(), 0);
+    assert.equal(await page.locator('#st-players-h').locator('xpath=..').locator('a, nav').count(), 0);
     // the footer line: the queue note on the left, Profile & sync on the right, on the columns' right edge
     assert.equal(await page.locator('.st-foot .st-queue').textContent(), '2 games not uploaded yet: The server did not answer.');
     assert.equal(await page.locator('.st-account > summary').textContent(), 'Profile & sync ›');
@@ -124,8 +126,19 @@ try {
   { // a server that sends every role's statline
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: F.dashboard({ lines: true }) } });
     await page.locator('.st-player').first().waitFor();
-    assert.equal(await page.locator('.st-player').first().locator('.st-line').textContent(), '3,108 YDS·31 TD·11 INT·108.9 RTG');
-    assert.equal(await page.locator('.st-player').nth(1).locator('.st-line').textContent(), '212 CAR·1,715 YDS·12 TD·5.6 AVG');
+    const lines = await page.locator('.st-player .st-line').evaluateAll((ns) => ns.map((n) => [...n.children].map((s) => s.textContent)));
+    assert.deepEqual(lines, [
+      ['198/331 C/ATT', '3,108 YDS', '31 TD', '11 INT', '108.9 RTG'],
+      ['212 CAR', '1,715 YDS', '5.6 AVG', '12 TD', '61 LNG'],
+      ['98 REC', '1,714 YDS', '14.3 AVG', '14 TD', '74 LNG'],
+      ['71 TKL', '5 SCK', '9 TFL', '2 FF', '6 PBU'],
+      ['7 INT', '14 PBU', '33 TKL', '1 TD'],
+      ['23 GAMES', '96 CAR', '535 YDS', '5 TD']]);
+    assert.doesNotMatch(await page.locator('.st-plist').textContent(), /NaN|null|undefined|—/);
+    // a long line wraps between numbers, never inside one, and never runs out of its card
+    for (const s of await page.locator('.st-line > span').evaluateAll((ns) => ns.map((n) => { const r = n.getBoundingClientRect(), c = n.closest('.st-plist').getBoundingClientRect(); return { h: r.height, inside: r.right <= c.right + 0.5 }; })))
+      assert.ok(s.h < 20 && s.inside, `statline numbers stay on one line inside the card: ${JSON.stringify(s)}`);
+    await page.locator('.st-plist').screenshot({ path: path.join(out, 'stats-1280-players-lines.png') });
     assert.deepEqual(errors, []);
     await close();
   }

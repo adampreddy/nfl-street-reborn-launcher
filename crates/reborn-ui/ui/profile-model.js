@@ -115,6 +115,36 @@ export function careerTiles(career, rank, games) {
   return { tiles, footnote: pool ? `Rank among ${fmtInt(pool)} online players` : null };
 }
 
+// Which career table holds each role's row (backend profile/players.js bestPlayers picks from these same rows).
+const ROLE_TABLE = { passer: 'passing', rusher: 'rushing', receiver: 'receiving', dl_lb: 'defense', ballhawk: 'defense' };
+const STAT_KEYS = ['games', 'cmp', 'att', 'yds', 'td', 'int', 'rtg', 'avg', 'long', 'rec', 'tkl', 'sck', 'tfl', 'ff', 'pbu'];
+const pickStats = (row) => Object.fromEntries(STAT_KEYS.filter((k) => num(row?.[k])).map((k) => [k, row[k]]));
+
+/** Your players' fuller statlines (owner 10-03): `best_players` sends one number per role, the profile's `career`
+ *  tables (the same rows the server picked them from) send the rest. Each best player gets its own career row's
+ *  numbers, matched by `key`; a field the server sent on the player itself wins. Most played takes its games and the
+ *  rushing or receiving row with more yards (never the passing row: its `att` is pass attempts, not carries). */
+export function withCareerLines(best, career) {
+  const out = { ...(best || {}) };
+  const rows = (t) => (Array.isArray(career?.[t]?.rows) ? career[t].rows : []);
+  for (const [role, b] of Object.entries(out)) {
+    if (!b || typeof b !== 'object' || typeof b.key !== 'string') continue;
+    const find = (t) => rows(t).find((r) => r && r.key === b.key) ?? null;
+    let extra = {};
+    if (ROLE_TABLE[role]) extra = pickStats(find(ROLE_TABLE[role]));
+    else if (role === 'most_played') {
+      const rush = find('rushing'), rec = find('receiving');
+      const pick = rush && rec ? ((num(rec.yds) ? rec.yds : 0) > (num(rush.yds) ? rush.yds : 0) ? rec : rush) : rush || rec;
+      const { games: _g, ...stats } = pickStats(pick);
+      extra = pick === rec ? { rec: stats.rec, yds: stats.yds, td: stats.td } : { att: stats.att, yds: stats.yds, td: stats.td };
+      if (num(b.value) && b.unit === 'games') extra.games = b.value;
+      extra = Object.fromEntries(Object.entries(extra).filter(([, v]) => num(v)));
+    }
+    out[role] = { ...extra, ...b };
+  }
+  return out;
+}
+
 /** The Leaderboard card (`elo.around`, backend §5/§14). The profile's own player is marked; it reads "You" only when the
  *  viewer is that player. */
 export function leaderboardRows(around, { self = false } = {}) {

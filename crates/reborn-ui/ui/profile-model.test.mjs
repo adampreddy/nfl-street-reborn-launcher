@@ -160,3 +160,23 @@ test('absent shapes: an old server gets nulls and empty lists, never a throw', (
   assert.deepEqual(summaryFacts(undefined), []);
   assert.equal(careerTiles(undefined, undefined, undefined).footnote, null);
 });
+
+test('withCareerLines: each best player takes its own career row by key; most played never takes pass attempts', async () => {
+  const { withCareerLines } = await import('./profile-model.js');
+  const career = {
+    passing: { rows: [{ key: 'qb', cmp: 10, att: 20, yds: 150, td: 2, int: 1, rtg: 99.1, air: 80 }] },
+    rushing: { rows: [{ key: 'rb', att: 30, yds: 120, avg: 4, td: 1, long: 20 }, { key: 'qb', att: 3, yds: 9, td: 0 }] },
+    receiving: { rows: [{ key: 'rb', rec: 5, yds: 60, avg: 12, td: 0 }] },
+    defense: { rows: [] },
+  };
+  const b = withCareerLines({ passer: { key: 'qb', value: 150, unit: 'pass_yds' }, rusher: { key: 'rb', value: 120, unit: 'rush_yds' },
+    most_played: { key: 'rb', value: 7, unit: 'games' }, dl_lb: null, ballhawk: { key: 'nobody', value: 1, unit: 'int' } }, career);
+  assert.deepEqual(b.passer, { cmp: 10, att: 20, yds: 150, td: 2, int: 1, rtg: 99.1, key: 'qb', value: 150, unit: 'pass_yds' });
+  assert.equal(b.rusher.long, 20);
+  assert.deepEqual(b.most_played, { att: 30, yds: 120, td: 1, games: 7, key: 'rb', value: 7, unit: 'games' });
+  assert.equal(b.dl_lb, null);
+  assert.deepEqual(b.ballhawk, { key: 'nobody', value: 1, unit: 'int' });
+  // no career sent (an older server): the players stay as they came
+  assert.deepEqual(withCareerLines({ passer: { key: 'qb', value: 1, unit: 'pass_yds' } }, undefined), { passer: { key: 'qb', value: 1, unit: 'pass_yds' } });
+  assert.deepEqual(withCareerLines(null, career), {});
+});

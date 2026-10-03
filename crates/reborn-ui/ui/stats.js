@@ -130,11 +130,8 @@ function playerRow(c, playerId) {
   else face.append(letter());
   const badge = assetUrl(c.logo);
   if (badge) { const img = el('img', { class: 'badge', alt: '', src: badge }); img.addEventListener('error', () => img.remove(), { once: true }); face.append(img); }
-  const line = el('div', { class: 'st-line' });
-  c.line.forEach((s, i) => {
-    if (i) line.append(el('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }));
-    line.append(el('span', {}, el('b', { text: s.value }), ` ${s.unit}`));
-  });
+  // One span per number; a long line wraps between numbers, never inside one.
+  const line = el('div', { class: 'st-line' }, ...c.line.map((s) => el('span', {}, el('b', { text: s.value }), ` ${s.unit}`)));
   const tx = el('div', { class: 'st-ptx' },
     el('div', { class: 'st-phead' }, el('span', { class: 'st-pname', text: c.name }), el('span', { class: 'k-label', text: c.label })),
     c.line.length ? line : null);
@@ -144,10 +141,7 @@ function playerRow(c, playerId) {
 }
 
 function playersBlock(best, playerId) {
-  const links = playerId ? el('nav', { class: 'sec-links', 'aria-label': 'Your profile sections' },
-    ...[['Offense', 'career'], ['Defense', 'defense'], ['Records', 'records']].map(([label, hash]) =>
-      el('a', { href: profileHref(playerId, hash), 'data-key': `more-${hash}`, text: label }))) : null;
-  return el('section', { 'aria-labelledby': 'st-players-h' }, el('div', { class: 'sec-head' }, el('h2', { id: 'st-players-h', text: 'Your players' }), links),
+  return el('section', { 'aria-labelledby': 'st-players-h' }, el('div', { class: 'sec-head' }, el('h2', { id: 'st-players-h', text: 'Your players' })),
     el('div', { class: 'glass st-plist' }, ...roleCards(best || {}).map((c) => playerRow(c, playerId))));
 }
 
