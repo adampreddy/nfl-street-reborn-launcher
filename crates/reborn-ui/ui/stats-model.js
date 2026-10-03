@@ -667,22 +667,22 @@ export function eloCard(elo) {
   };
 }
 
-// Each role's five numbers as the mockup spells them (owner 10-03): [field, label, one decimal?]. Labels are words
-// ("Yards", "Carries", "Rating"); the abbreviations kept are the game's own (TD, INT, TFL, FF, PBU).
+// Each role's five numbers (owner 10-03, mv2 mockup), labelled with the site box score's compact abbreviations (Adam
+// 10-03, "it should be CAR and C/ATT"): [field, label, one decimal?]. Card titles and record names stay spelled out.
 const CELLS = {
-  passer: [['cmp/att', 'Cmp/Att'], ['yds', 'Yards'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'Rating', true]],
-  rusher: [['att', 'Carries'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD'], ['long', 'Long']],
-  receiver: [['rec', 'Catches'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD'], ['long', 'Long']],
-  dl_lb: [['tkl', 'Tackles'], ['sck', 'Sacks'], ['tfl', 'TFL'], ['ff', 'FF'], ['pbu', 'PBU']],
-  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'Tackles'], ['ff', 'FF'], ['td', 'TD']],
+  passer: [['cmp/att', 'C/ATT'], ['yds', 'YDS'], ['td', 'TD'], ['int', 'INT'], ['rtg', 'RTG', true]],
+  rusher: [['att', 'CAR'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD'], ['long', 'LONG']],
+  receiver: [['rec', 'REC'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD'], ['long', 'LONG']],
+  dl_lb: [['tkl', 'TKL'], ['sck', 'SCK'], ['tfl', 'TFL'], ['ff', 'FF'], ['pbu', 'PBU']],
+  ballhawk: [['int', 'INT'], ['pbu', 'PBU'], ['tkl', 'TKL'], ['ff', 'FF'], ['td', 'TD']],
 };
 // Most played (Adam 10-03, "more relevant to the player's position"): Games, then the four numbers of that player's
 // role, never another role's (no tackles on a quarterback).
 const GAME_LINES = {
-  passer: [['cmp/att', 'Cmp/Att'], ['yds', 'Yards'], ['td', 'TD'], ['rtg', 'Rating', true]],
-  rusher: [['att', 'Carries'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD']],
-  receiver: [['rec', 'Catches'], ['yds', 'Yards'], ['avg', 'Average', true], ['td', 'TD']],
-  defender: [['tkl', 'Tackles'], ['sck', 'Sacks'], ['int', 'INT'], ['ff', 'FF']],
+  passer: [['cmp/att', 'C/ATT'], ['yds', 'YDS'], ['td', 'TD'], ['rtg', 'RTG', true]],
+  rusher: [['att', 'CAR'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD']],
+  receiver: [['rec', 'REC'], ['yds', 'YDS'], ['avg', 'AVG', true], ['td', 'TD']],
+  defender: [['tkl', 'TKL'], ['sck', 'SCK'], ['int', 'INT'], ['ff', 'FF']],
 };
 const POSITION_KIND = { QB: 'passer', RB: 'rusher', HB: 'rusher', FB: 'rusher', WR: 'receiver', TE: 'receiver',
   DL: 'defender', DE: 'defender', DT: 'defender', LB: 'defender', OLB: 'defender', MLB: 'defender', CB: 'defender', S: 'defender', FS: 'defender', SS: 'defender', DB: 'defender' };
@@ -701,14 +701,13 @@ export function playerKind(row) {
   if (isNum(row.tkl) || isNum(row.sck)) return 'defender';
   return null;
 }
-const VALUE_LABEL = { pass_yds: 'Passing Yards', rush_yds: 'Rushing Yards', rec_yds: 'Receiving Yards', tkl_sck: 'Tackles + Sacks', int: 'Interceptions', games: 'Games' };
+const VALUE_LABEL = { pass_yds: 'PASS YDS', rush_yds: 'RUSH YDS', rec_yds: 'REC YDS', tkl_sck: 'TKL + SCK', int: 'INT', games: 'GAMES' };
 
 /**
  * A player row's numbers (Your players / Their players, at most five): the role's line from the full career row the
  * server sends on `best_players` (backend cc79302), a field it does not send left out. Most played: its games, then
  * four numbers of whichever row the server picked (a passer's, a rusher's, a receiver's or a defender's). With fewer
- * than two numbers (the deployed server sends only `value` + `unit`): that one number, spelled out ("3,108" "Passing
- * Yards"). Nothing at all: [].
+ * than two numbers (an older server sends only `value` + `unit`): that one number ("3,108" "PASS YDS"). Nothing: [].
  */
 export function statCells(role, data) {
   if (!data || typeof data !== 'object') return [];
@@ -721,7 +720,7 @@ export function statCells(role, data) {
     const kind = playerKind(data);
     const games = isNum(data.games) ? data.games : data.unit === 'games' && isNum(data.value) ? data.value : null;
     const rest = kind ? take(GAME_LINES[kind]) : [];
-    cells = rest.length ? [...(games === null ? [] : [{ value: fmtInt(games), label: 'Games' }]), ...rest] : [];
+    cells = rest.length ? [...(games === null ? [] : [{ value: fmtInt(games), label: 'GAMES' }]), ...rest] : [];
   } else cells = take(CELLS[role] || []);
   if (cells.length >= 2) return cells.slice(0, 5);
   if (!isNum(data.value)) return [];
