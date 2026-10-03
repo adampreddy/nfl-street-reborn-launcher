@@ -60,7 +60,7 @@ const PREP = { summary: { controller: 'XInput/0/Gamepad', controller_port: 0, co
 // click (a selector clicked after load, to reach a tab).
 export const STATES = {
   stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }, { name: 'stats-records', url: 'stats.html#records', scope: 'main' }],
-  // The profile's tabs (owner 10-03): Overview, then each tab by its address.
+  // The profile (mv2, no tabs), then each fuller view by its address.
   profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' },
     ...['matches', 'stats', 'records', 'h2h'].map((t) => ({ name: `profile-${t}`, url: `profile.html?player=${F.ME}#${t}`, scope: 'main' }))],
   recovery: [

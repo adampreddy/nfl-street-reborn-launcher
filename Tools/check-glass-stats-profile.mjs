@@ -35,16 +35,16 @@ try {
     const opts = { viewport, glass, slow, reducedMotion: 'no-preference' };
     { // Stats
       const { page, errors, close } = await openState(browser, srv.base, STATS, opts);
-      await page.locator('.st-cols').waitFor();
+      await page.locator('#st-matches').waitFor();
       await look(page, glass);
       await settle(page);
       assert.equal(await style(page, '.nav-marker', 'transitionDuration'), t.d3, `nav marker at --d3 (${tag})`);
-      assert.match(await style(page, '.st-col .tab-ind', 'transitionDuration'), fixedDur(t.d2), `tab highlight at --d2 (${tag})`);
+      assert.match(await style(page, '#st-matches .tab-ind', 'transitionDuration'), fixedDur(t.d2), `tab highlight at --d2 (${tag})`);
       assert.match(await style(page, '#stats-view .tab-ind', 'transitionDuration'), fixedDur(t.d2), `Matches | Records highlight at --d2 (${tag})`);
       await noSideways(page, `stats ${tag}`);
       await shot(page, `stats-${tag}.png`);
       await page.locator('[data-key="view-records"]').click();
-      await page.locator('.rec-table').waitFor();
+      await page.locator('#rec-single').waitFor();
       await page.waitForTimeout(slow ? 1100 : 350);
       await settle(page);
       await noSideways(page, `stats records ${tag}`);
@@ -58,7 +58,7 @@ try {
       await look(page, glass);
       await settle(page);
       assert.equal(await page.locator('.pf-live').count(), live ? 1 : 0, `profile live card (${tag}, live=${live})`);
-      assert.match(await style(page, '.pf-tabbar .tab-ind', 'transitionDuration'), fixedDur(t.d2), `profile tab highlight at --d2 (${tag})`);
+      assert.equal(await page.locator('.pf-tabbar').count(), 0, `no profile tabs (mv2) (${tag})`);
       await noSideways(page, `profile ${tag}`);
       await shot(page, `profile-${live ? 'live' : 'idle'}-${tag}.png`);
       assert.deepEqual(errors, []);
@@ -67,13 +67,13 @@ try {
   }
   { // reduced motion: every state change is instant
     const { page, close } = await openState(browser, srv.base, STATS);
-    await page.locator('.st-cols').waitFor();
-    for (const sel of ['.nav-marker', '.st-col .tab-ind', '#stats-view .tab-ind']) assert.match(await style(page, sel, 'transitionDuration'), /^0s/, `${sel} under reduced motion`);
+    await page.locator('#st-matches').waitFor();
+    for (const sel of ['.nav-marker', '#st-matches .tab-ind', '#stats-view .tab-ind']) assert.match(await style(page, sel, 'transitionDuration'), /^0s/, `${sel} under reduced motion`);
     await close();
   }
   { // controller mode on Stats (spec §6.3)
     const { page, errors, close } = await openState(browser, srv.base, STATS, { pad: true });
-    await page.locator('.st-cols').waitFor();
+    await page.locator('#st-matches').waitFor();
     assert.equal(await style(page, '.input-footer', 'display'), 'none', 'a pad connected, a mouse user: no prompts');
     await page.locator('[data-key="match-m-02"]').focus();
     await press(page, 12);                                   // the first pad input turns controller mode on
