@@ -14,6 +14,9 @@ export const GAME_ID = 'aaaaaaaa-1111-4222-8333-444444444444';
 const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_profile', 'system_check', 'updates', 'preparation', 'completion'];
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
+// stats_game for a VERIFIED game: the backend's test/fixtures/site-restyle/644488b4-snapshot.json game 1 (Bills 8, Eagles
+// 36) in the shape the server's /v1/games/:id, /plays, /boxscore and /drives give it (plays as { body, situation }).
+export const GAME_644 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/game-644488b4.json'), 'utf8'));
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
 // Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
 // adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
@@ -52,10 +55,12 @@ export const STATES = {
     { name: 'recovery-notready', url: 'recovery.html', scope: 'main', data: { launch_check: { ...answers().launch_check, ready: false, problem: 'The game file could not be found.' } } },
   ],
   game: [
+    // The game page is the site's /games/<id> page (vendored renderers): an unverified game shows the strip and the
+    // totals-only words; a verified one (GAME_644, the site's own 644488b4 fixture as stats_game answers it) its tabs.
     { name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' },
-    { name: 'game-plays', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() } },
-    { name: 'game-box', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-box"]' },
-    { name: 'game-drives', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-drives"]' },
+    { name: 'game-feed', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 } },
+    { name: 'game-box', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-box"]' },
+    { name: 'game-team', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
     { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
   ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
@@ -188,11 +193,6 @@ function onlineStates() {
   ];
 }
 
-/** stats_game for a VERIFIED game (plays_status 'verified'), so game.js draws the tabs: plays, box score, drives. */
-function verifiedGame() {
-  const g = answers().stats_game;
-  return { ...g, game: { ...g.game, plays_status: 'verified' }, plays: SNAP.games[1]?.plays ?? [] };
-}
 
 /** Every command's answer (check-shell-pages.mjs's FULL, plus what these pages read). Unknown commands answer null. */
 export function answers() {
