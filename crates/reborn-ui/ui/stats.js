@@ -37,7 +37,7 @@ const state = { signedIn: false, answered: false, dash: null, queue: [], filter:
   // Profile & sync: the identity_status and stats_queue answers, or { error } when one failed.
   identity: null, queueView: null,
   // Matches | Records (the address's #records), Single game | Career, and the profile Records reads its rows from.
-  view: viewOfHash(), recKind: 'single', profile: null, profileFor: null, profileBusy: false, profileError: null };
+  view: viewOfHash(), recKind: 'single', profile: null, profileFor: null, profileBusy: false, profileError: null, profileStale: false };
 let busy = false, said = null;
 const ok = (value) => value && !value.error;
 const screen = document.getElementById('screen');
@@ -193,8 +193,8 @@ function accountBlock() {
 // ---- Records: the player's own profile's records (the dashboard sends none), read once when Records first opens ----
 
 async function loadRecords(playerId) {
-  if (!playerId || state.profileBusy || (state.profileFor === playerId && state.profile)) return;
-  state.profileBusy = true; state.profileError = null;
+  if (!playerId || state.profileBusy || (state.profileFor === playerId && state.profile && !state.profileStale)) return;
+  state.profileBusy = true; state.profileError = null; state.profileStale = false;
   try {
     const p = await quietCall('player_profile', { playerId });
     if (!p || typeof p !== 'object' || p.ok === false) throw new Error(typeof p?.error === 'string' && p.error ? p.error : 'Your records could not be loaded.');
@@ -210,6 +210,8 @@ function recordsBlock(d) {
     if (!state.profileError) loadRecords(you.player_id);
     return [state.profileError ? el('p', { class: 'refusal', role: 'alert', text: state.profileError }) : el('p', { class: 'loading', text: 'Loading…' })];
   }
+  // A game just ended: read the records again, the old ones staying on screen (and the focus with them) meanwhile.
+  if (state.profileStale) loadRecords(you.player_id);
   const p = state.profile;
   // "vs <opponent>": the record names its game only; the opponent comes from the matches this page has.
   const rows = state.recKind === 'career' ? careerRecords(p.career)
@@ -327,7 +329,7 @@ document.addEventListener('session-state', (e) => {
   const ended = sessionActive && !next;
   sessionActive = next;
   // The game that just finished may hold a new record: Records reads the profile again when it is next shown.
-  if (ended) { state.profile = null; state.profileFor = null; }
+  if (ended) state.profileStale = true;
   if (ended && document.visibilityState !== 'hidden') load(true);
 });
 if (typeof window !== 'undefined') window.addEventListener?.('hashchange', () => { const v = viewOfHash(); if (v !== state.view) { state.view = v; draw(); } });
