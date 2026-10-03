@@ -544,13 +544,16 @@ fn find_runtime_and_game_for(
     // nothing is dropped, so the search is not poisoned by a dead path.
     let live_hint = cleaned_runtime.as_deref().filter(|path| path.is_file());
 
-    // A Linux launcher fetches its emulator as content; see ensure_runtime.
-    let download_failed = content_updates::ensure_runtime(platform);
+    // A Linux launcher fetches its emulator as content, in the background;
+    // a page never waits for it here (see content_updates::runtime_now).
     let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root).map_err(|looked| {
         let message = reborn_core::session::no_runtime_message(&looked);
-        match &download_failed {
-            Some(why) => format!("Reborn could not download its emulator: {why}. {message}"),
-            None => message,
+        match content_updates::runtime_now(platform) {
+            content_updates::RuntimeNow::Downloading => {
+                "Reborn is still downloading its emulator. This takes a minute or two the first time.".to_string()
+            }
+            content_updates::RuntimeNow::Failed(why) => format!("Reborn could not download its emulator: {why}. {message}"),
+            content_updates::RuntimeNow::Ready => message,
         }
     })?;
 
@@ -1091,6 +1094,8 @@ async fn launch(
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
+        // Play is worth waiting for: let a running emulator download finish.
+        content_updates::ensure_runtime(&p);
         let (found, game_path) = find_runtime_and_game_for(
             &p,
             runtime.as_deref(),
@@ -3201,6 +3206,8 @@ async fn onboarding_confirm_game(
             checked_setup_image(&reborn_core::session::user_path(chosen))?;
         }
         let user = selected_user_dir(&p, None)?;
+        // The game search reads the emulator's folders: wait for its download.
+        content_updates::ensure_runtime(&p);
         let (_, game) = find_runtime_and_game_for(&p, None, image.as_deref(), legacy.as_deref(), user.as_deref())?;
         let total_bytes = Some(checked_setup_image(&game)?);
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;

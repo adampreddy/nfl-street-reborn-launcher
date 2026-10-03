@@ -50,12 +50,17 @@ def shot(name):
 
 # The file picker stand-in, installed again whenever the page reloads.
 PATCH = """
-const c = window.__TAURI__ && window.__TAURI__.core;
-if (!c) return 'no-bridge';
-if (!c.__e2e) { const o = c.invoke.bind(c);
-  c.invoke = (cmd, a) => cmd === 'pick_path' ? Promise.resolve(arguments[0]) : o(cmd, a);
-  c.__e2e = true; }
-return 'patched';
+const i = window.__TAURI_INTERNALS__, g = arguments[0];
+if (!i) return 'no-bridge';
+if (!i.__e2e) {
+  // core.invoke is a frozen export; every call goes through this one.
+  const o = i.invoke.bind(i);
+  const f = (cmd, a, opt) => cmd === 'pick_path' ? Promise.resolve(g) : o(cmd, a, opt);
+  try { i.invoke = f; } catch (_) {}
+  if (i.invoke !== f) Object.defineProperty(i, 'invoke', {value: f, configurable: true, writable: true});
+  i.__e2e = i.invoke === f;
+}
+return i.__e2e ? 'patched' : 'patch-failed';
 """
 
 STATE = """
@@ -81,7 +86,9 @@ used = set()
 last_key, same_since, step = None, time.time(), 0
 deadline = time.time() + 60 * 60
 while time.time() < deadline:
-    js(PATCH, GAME)
+    patched = js(PATCH, GAME)
+    if patched != "patched":
+        log("!!! file picker stand-in:", patched)
     st = js(STATE)
     key = (st["url"], st["heading"], st["text"][:300], json.dumps(st["next"]))
     if key != last_key:

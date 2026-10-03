@@ -383,6 +383,7 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
     let fail = |why: String| {
         // WARN reaches launcher.log; a Deck tester's report is that file.
         tracing::warn!("downloading the emulator failed: {why}");
+        *LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.clone());
         Some(why)
     };
     let data_root = match p.paths.data_root() { Ok(d) => d, Err(e) => return fail(e.to_string()) };
@@ -399,6 +400,7 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
             // (a refused plan, a problem the check reported): say what it said.
             if reborn_core::session::resolve_runtime(p, None, None).is_ok() {
                 tracing::warn!("emulator downloaded");
+                *LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 None
             } else {
                 let problems = out.check.problems();
@@ -409,6 +411,39 @@ pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
 }
 
 static RUNTIME_DOWNLOAD: Mutex<()> = Mutex::new(());
+static LAST_RUNTIME_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Where the emulator stands, for a page that must not wait for it.
+pub(crate) enum RuntimeNow {
+    Ready,
+    Downloading,
+    Failed(String),
+}
+
+/// The emulator's state without waiting for its download.
+///
+/// -5 still held Welcome on "Loading…" for the whole download: the page's
+/// launch_check looked for the emulator through ensure_runtime, which waited
+/// on the background download's lock (e2e run, 2026-10-03). Pages ask here
+/// instead; only Play and confirming the game wait (ensure_runtime). With no
+/// download running and no emulator, one is started again, so a failed
+/// first attempt is retried the next time a page looks.
+pub(crate) fn runtime_now(p: &Platform) -> RuntimeNow {
+    if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return RuntimeNow::Ready;
+    }
+    match RUNTIME_DOWNLOAD.try_lock() {
+        Err(std::sync::TryLockError::WouldBlock) => RuntimeNow::Downloading,
+        _ => {
+            let last = LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            start_runtime_download();
+            match last {
+                Some(why) => RuntimeNow::Failed(why),
+                None => RuntimeNow::Downloading,
+            }
+        }
+    }
+}
 
 /// Start the emulator download as the launcher opens, off every page's path.
 ///
