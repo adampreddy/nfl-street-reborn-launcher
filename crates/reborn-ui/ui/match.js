@@ -1,4 +1,4 @@
-// The match page (Stats or a profile, then a matchmade match): the site's /live/<match> page inside the launcher, the
+// The match page (Stats or a profile, then a match or a game): the site's /live/<match> page inside the launcher, the
 // whole match on one page as the site draws it -- the scoreboard strip with full team names, both players, the G1 / G2 /
 // G3 line score and the series banner, then Live Feed (Game 1 · Game 2 · Game 3, landing on the last game; the
 // latest-play panel with the portrait over All plays by drive), Box Score and Team Stats (each with its own picker and
@@ -24,15 +24,30 @@
 //   - the tabs: the site's roving tabindex leaves only the picked tab focusable, but a controller reaches a control only
 //     when it is focusable (app-shell.js), so every tab stays in the tab order;
 //   - Back (B / Esc) and Open on web (the site's /live/<match>) above the page.
+//
+// A game that is not part of a matchmade match (an offline game, an unlinked online one, a record's game) opens here
+// too (owner 10-03: one style for every box score), as match.html?game=<id>[&games=<id>,...]&from=<page>
+// (stats-model.js matchHref / gameHref): each game is read with `stats_game` (Rust, with the player's token, so an
+// offline game opens too), game-snapshot.js turns them into the snapshot the controller reads, and the controller's
+// request for it is answered with that. A game the server has no plays for says so above the page (totals only).
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { LIVE_ORIGIN, PAGE_ORIGIN } from './live-common.js';
-import { backHref } from './stats-model.js';
+import { backHref, readMatchAddress } from './stats-model.js';
+import { webLinkShown } from './stats-rows.js';
+import { matchSnapshot } from './game-snapshot.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NOT_FOUND = 'No such match.';   // the site's words (live-page.js) for a match the server does not have
 const query = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 const matchId = (query.get('match') || '').toLowerCase();
 const BACK = backHref(query.get('from'));
+// A game (no match id): the game opened, and the match's games oldest first (just it, for a one-game match).
+const games = !query.has('match') && query.has('game') ? readMatchAddress(typeof location !== 'undefined' ? location.search : '') : null;
+const GAME_NOT_FOUND = "That game couldn't be found.";
+// The site's own words (its game page) for a game it has no verified plays for.
+const TOTALS_ONLY = 'Totals only for this game. It was played before play-by-play existed (or its plays could not be checked), and older totals may be inaccurate.';
+let gameSnap = null;     // a game's snapshot, built once (the controller asks again on its tick)
+let webUrl = UUID_RE.test(matchId) ? `${PAGE_ORIGIN}/live/${matchId}` : null;
 const $ = (id) => document.getElementById(id);
 
 /** A site image src as the launcher loads it: our catalog's root-relative path under the backend origin. */
@@ -72,6 +87,7 @@ function installDataSource() {
     const m = SNAPSHOT.exec(url);
     if (!m) return realFetch(input, init);
     const id = decodeURIComponent(m[1]);
+    if (gameSnap) return Promise.resolve(id === gameSnap.match.id ? new Response(JSON.stringify(gameSnap), { status: 200, headers: { 'content-type': 'application/json' } }) : new Response('', { status: 404 }));
     return UUID_RE.test(id) ? liveMatchResponse(id) : Promise.resolve(new Response('', { status: 404 }));
   };
   window.EventSource = LauncherStream;
@@ -107,15 +123,28 @@ function keepTabsReachable() {
 // ---- the launcher's row: Back, Open on web ----
 
 async function openOnWeb() {
-  try { await call('open_website', { url: `${PAGE_ORIGIN}/live/${matchId}` }); } catch (e) { showError(reason(e)); }
+  try { await call('open_website', { url: webUrl }); } catch (e) { showError(reason(e)); }
 }
 
-function drawBar() {
+function drawBar(note = null) {
   // id="back": app-shell.js's controller B / Esc clicks a visible #back, so both return where we came from.
   const back = el('a', { class: 'button lv-back', id: 'back', 'data-key': 'back', href: BACK, text: '← Back' });
   const end = el('div', { class: 'game-bar-end' });
-  if (UUID_RE.test(matchId)) end.append(el('button', { type: 'button', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }));
-  $('game-bar').replaceChildren(back, end);
+  if (webUrl) end.append(el('button', { type: 'button', 'data-key': 'web', text: 'Open on web', onclick: openOnWeb }));
+  $('game-bar').replaceChildren(...[back, end, note ? el('p', { class: 'game-note', id: 'totals-note', text: note }) : null].filter(Boolean));
+}
+
+/** A game's (or a non-matchmade match's) snapshot from its games' records; null when the game opened is not there. */
+async function loadGames() {
+  const ids = games.games;
+  const records = await Promise.all(ids.map((id) => quietCall('stats_game', { gameId: id }).then((r) => r, () => null)));
+  const opened = records[ids.indexOf(games.game)];
+  if (!opened?.game?.id) return null;
+  const { snap, totalsOnly } = matchSnapshot(games.game, records);
+  if (webLinkShown(opened.game)) webUrl = `${PAGE_ORIGIN}/games/${games.game}`;
+  const note = !totalsOnly.length ? null : ids.length === 1 ? TOTALS_ONLY
+    : `Totals only for Game ${totalsOnly.join(', ')}.${TOTALS_ONLY.slice(TOTALS_ONLY.indexOf(' It was'))}`;
+  return { snap, note };
 }
 
 function showError(text) {
@@ -135,11 +164,18 @@ function drawGone(text, alert = false) {
 
 async function start() {
   drawBar();
-  if (!UUID_RE.test(matchId)) { drawGone(NOT_FOUND); return; }
+  const id = games ? games.game : matchId;
+  if (!UUID_RE.test(id)) { drawGone(games ? GAME_NOT_FOUND : NOT_FOUND); return; }
   if (!bridge) { drawGone('Open this page inside the launcher window.', true); return; }
+  if (games) {
+    const got = await loadGames();
+    if (!got) { drawGone(GAME_NOT_FOUND); return; }
+    gameSnap = got.snap;
+    drawBar(got.note);
+  }
   const meta = document.createElement('meta');
   meta.name = 'nsr-match';
-  meta.content = matchId;
+  meta.content = id;
   document.head.append(meta);
   installDataSource();
   installImageOrigin();

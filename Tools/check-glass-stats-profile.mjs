@@ -93,7 +93,7 @@ try {
     assert.equal(await style(page, '.input-footer', 'display'), 'none', 'mouse: the prompts go');
     await page.locator('[data-key="match-m-01"]').focus();
     await press(page, 0);                                    // A opens the whole match
-    await page.waitForURL(/game\.html\?game=g-013&games=g-011%2Cg-012%2Cg-013/);
+    await page.waitForURL(/match\.html\?game=g-013&games=g-011%2Cg-012%2Cg-013/);
     assert.deepEqual(errors, []);
     await close();
   }

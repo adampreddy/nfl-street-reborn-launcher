@@ -248,7 +248,8 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `stats.html`, `profile.html` | `pages/stats.css`, `pages/profile.css` |
 | `recovery.html` | `pages/recovery.css` |
 | `online.html` | `pages/online.css` |
-| `live.html`, `game.html` | `pages/live.css` |
+| `live.html` | `pages/live.css` |
+| `match.html` (every match and game) | `pages/game.css` |
 | `onboarding.html` | `onboarding.css` |
 | `harness.html` | `harness.css` (the developer page only; its own plain look) |
 

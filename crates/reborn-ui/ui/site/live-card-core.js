@@ -1,5 +1,5 @@
 // Vendored from Reborn Backend src/web/live-card-core.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
-// The launcher game and match pages (game.js, match.js) draw with it exactly as the site does.
+// The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.
 /**
  * The live card's pure core: everything the Discord card and the web live card show, as strings and numbers.
  * No imports, no I/O, no clocks, no DOM. The same file runs in Node (the bot, both repos' tests) and in the

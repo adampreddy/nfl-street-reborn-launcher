@@ -29,7 +29,7 @@ export function matchGames() {
 // backend answered it on 2026-10-03 (49ers 2-1 Rams, Playz vs adamknowsball), as the live_match command hands it over.
 export const MATCH_5C8 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/match-5c8d58ca.json'), 'utf8'));
 export const MATCH_PAGE_URL = `match.html?match=${MATCH_5C8.match.id}&from=stats.html`;
-export const MATCH_URL = `game.html?game=${GAME_3}&games=${[GAME_ID, GAME_644.game.id, GAME_3].join(',')}&series=2-1&from=stats.html`;
+export const MATCH_URL = `match.html?game=${GAME_3}&games=${[GAME_ID, GAME_644.game.id, GAME_3].join(',')}&series=2-1&from=stats.html`;
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
 // Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
 // adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
@@ -70,13 +70,14 @@ export const STATES = {
     { name: 'recovery-notready', url: 'recovery.html', scope: 'main', data: { launch_check: { ...answers().launch_check, ready: false, problem: 'The game file could not be found.' } } },
   ],
   game: [
-    // The game page is the site's /games/<id> page (vendored renderers): an unverified game shows the strip and the
-    // totals-only words; a verified one (GAME_644, the site's own 644488b4 fixture as stats_game answers it) its tabs.
-    { name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' },
-    { name: 'game-feed', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 } },
-    { name: 'game-box', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-box"]' },
-    { name: 'game-team', url: `game.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
-    { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
+    // A game (no match id) opens the match page by its games (owner 10-03: one style for every box score): an unverified
+    // game shows the strip and the totals-only words; a verified one (GAME_644, the site's own 644488b4 fixture as
+    // stats_game answers it) its tabs; a match of several games every game of it.
+    { name: 'game', url: `match.html?game=${GAME_ID}`, scope: 'main' },
+    { name: 'game-feed', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 } },
+    { name: 'game-box', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-box"]' },
+    { name: 'game-team', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
+    { name: 'game-missing', url: 'match.html?game=nope', scope: 'main' },
     { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } },
   ],
   // The match page (a matchmade match): the site's /live/<match> page on the real 5c8d58ca snapshot, each tab.

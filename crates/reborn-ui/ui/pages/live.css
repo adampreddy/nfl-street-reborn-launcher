@@ -1,4 +1,4 @@
-/* game.html + live.html: the layout the retired stylesheets gave these pages (spec §9, §11),
+/* live.html: the layout the retired stylesheets gave these pages (spec §9, §11),
    made by Tools/extract-layout-css.mjs and checked with Tools/compare-page-layout.mjs.
    Layout only: colours are theme tokens; shadows, glows, filters, transitions and font families are gone.
    Every selector starts with html:not(#_) so the old layout outranks theme.css's base rules: load this file on these pages only.

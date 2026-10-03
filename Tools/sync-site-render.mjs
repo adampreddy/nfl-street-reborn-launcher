@@ -1,5 +1,6 @@
-// The launcher's game page (crates/reborn-ui/ui/game.html) is the site's /games/<id> page, and its match page
-// (match.html) the site's /live/<match> page: the same renderers, the same controller, the same stylesheet, the same
+// The launcher's match page (crates/reborn-ui/ui/match.html, every match and game: a non-matchmade game is built into a
+// match-shaped snapshot by game-snapshot.js) is the site's /live/<match> page
+// (every rule the same): the same renderers, the same controller, the same stylesheet, the same
 // team colours. They are VENDORED from the Reborn Backend repo into crates/reborn-ui/ui/site/, never ported or edited by
 // hand. This script is the only thing that writes them:
 //
@@ -46,7 +47,7 @@ const header = (name, commit, comment) => {
     name === 'teams.css' ? `The .tg-<tgid> rules src/liveAssets.js serves as /live-assets/teams.css, scoped under ${SCOPE}.`
       : name.endsWith('.css') ? `Scoped under ${SCOPE} (the site's body is <${BODY} class="site">), breakpoints on the page width, the launcher's fonts.`
         : name === 'live-page.js' ? 'The launcher match page (match.js) runs it unchanged, answering its fetch and stream itself.'
-          : 'The launcher game and match pages (game.js, match.js) draw with it exactly as the site does.'];
+          : 'The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.'];
   return comment === 'css' ? lines.map((l) => `/* ${l} */\n`).join('') : lines.map((l) => `// ${l}\n`).join('');
 };
 

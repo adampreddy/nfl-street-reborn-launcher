@@ -217,12 +217,12 @@ try {
   { // a row opens the WHOLE match on one page (owner 10-03): an offline game just that game, a best of 3 all of its games
     const { page, errors, close } = await openState(browser, srv.base, STATE);
     await page.locator('[data-key="match-g:g-031"]').click();
-    await page.waitForURL(/game\.html\?/);
+    await page.waitForURL(/match\.html\?/);
     const one = new URL(page.url());
     assert.deepEqual([one.searchParams.get('game'), one.searchParams.get('games'), one.searchParams.get('from')], ['g-031', null, 'stats.html']);
     await page.goto(`${srv.base}/stats.html`);
     await page.locator('[data-key="match-m-01"]').click();
-    await page.waitForURL(/game\.html\?.*games=/);
+    await page.waitForURL(/match\.html\?.*games=/);
     const u = new URL(page.url());
     assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('series'), u.searchParams.get('from')],
       ['g-013', 'g-011,g-012,g-013', '2-1', 'stats.html'], 'every game of the match on one page');
@@ -248,7 +248,7 @@ try {
     const first = page.locator('#rec-single .rec-row').first();
     assert.deepEqual(await first.locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Passing Yards', 'M. Penix Jr.', '288', 'Sep 19']);
     assert.match(await first.getAttribute('aria-label'), /vs Playz/, 'the game it was set in, in the label');
-    assert.match(await first.getAttribute('href'), /^game\.html\?game=g-011&from=stats\.html%23records$/, 'a record opens its game, Back returns to Records');
+    assert.match(await first.getAttribute('href'), /^match\.html\?game=g-011&from=stats\.html%23records$/, 'a record opens its game, Back returns to Records');
     assert.deepEqual(await page.locator('#rec-career .rec-row').evaluateAll((ns) => ns.map((n) => [...n.children].map((c) => c.textContent.trim()).join(' | '))), [
       'Passing Yards | M. Penix Jr. | 2,210 | 110.5', 'Passing TD | M. Penix Jr. | 31 | 1.6', 'Passer Rating | M. Penix Jr. | 110.5 | —',
       'Rushing Yards | S. Barkley | 1,180 | 59.0', 'Rushing TD | S. Barkley | 12 | 0.6', 'Receptions | D. London | 98 | 4.9', 'Receiving Yards | D. London | 1,402 | 70.1',

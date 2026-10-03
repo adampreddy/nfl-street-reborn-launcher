@@ -183,7 +183,7 @@ try {
     assert.deepEqual(errors, []);
     // a recent match opens the whole match, Back returning to the profile
     await page.locator('[data-key="recent-m-01"]').click();
-    await page.waitForURL(/game\.html\?/);
+    await page.waitForURL(/match\.html\?/);
     const u = new URL(page.url());
     assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('from')], ['g-013', 'g-011,g-012,g-013', `profile.html?player=${F.ME}`]);
     await close();
@@ -225,7 +225,7 @@ try {
     await contentRules(page);
     await noSideways(page);
     await page.locator('[data-key="match-m-04"]').click();
-    await page.waitForURL(/game\.html\?/);
+    await page.waitForURL(/match\.html\?/);
     const u = new URL(page.url());
     assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('series'), u.searchParams.get('from')],
       ['g-042', 'g-041,g-042', '0-2', `profile.html?player=${F.ME}#matches`], 'the whole match; Back returns to Matches');
@@ -241,7 +241,7 @@ try {
     assert.deepEqual((await texts(page, '#rec-single .rec-k')).slice(0, 3), ['Passing Yards', 'Passing TD', 'Rushing Yards']);
     assert.doesNotMatch(await page.locator('#records').textContent(), /\byds\b/i, 'spelled-out labels say Yards');
     assert.match(await page.locator('#rec-single a.rec-row').first().getAttribute('aria-label'), /vs Playz/);
-    assert.match(await page.locator('#rec-single a.rec-row').first().getAttribute('href'), new RegExp(`^game\\.html\\?game=g-011&from=profile\\.html%3Fplayer%3D${F.ME}%23records$`));
+    assert.match(await page.locator('#rec-single a.rec-row').first().getAttribute('href'), new RegExp(`^match\\.html\\?game=g-011&from=profile\\.html%3Fplayer%3D${F.ME}%23records$`));
     assert.deepEqual((await texts(page, '#rec-career .rec-k')).slice(0, 3), ['Passing Yards', 'Passing TD', 'Passer Rating']);
     await page.screenshot({ path: path.join(out, 'profile-1280-records.png') });
     await contentRules(page);

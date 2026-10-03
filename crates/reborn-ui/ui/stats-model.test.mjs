@@ -98,23 +98,23 @@ test('matchSubline: Stats says Offline only, Profile says the queue, never Best 
 
 const G = (n) => `00000000-0000-4000-8000-00000000000${n}`;
 test('matchHref: one game opens that game; a match of several opens one page with all of them, the last one shown', () => {
-  assert.equal(matchHref({ games: [{ id: G(1) }] }, 'stats.html'), `game.html?game=${G(1)}&from=stats.html`);
+  assert.equal(matchHref({ games: [{ id: G(1) }] }, 'stats.html'), `match.html?game=${G(1)}&from=stats.html`);
   const three = matchHref({ games: [{ id: G(1) }, { id: G(2) }, { id: G(3) }], series: [2, 1] }, 'stats.html');
-  assert.equal(three, `game.html?game=${G(3)}&games=${encodeURIComponent([G(1), G(2), G(3)].join(','))}&series=2-1&from=stats.html`);
+  assert.equal(three, `match.html?game=${G(3)}&games=${encodeURIComponent([G(1), G(2), G(3)].join(','))}&series=2-1&from=stats.html`);
   assert.equal(matchHref({ games: [] }, 'stats.html'), null);
   assert.equal(matchHref({}, 'stats.html'), null);
   assert.match(matchHref({ games: [{ id: G(1) }] }, 'https://evil.example/'), /from=stats\.html$/, 'Back is validated on the way out too');
-  assert.equal(gameHref(G(4), 'stats.html#records'), `game.html?game=${G(4)}&from=stats.html%23records`);
+  assert.equal(gameHref(G(4), 'stats.html#records'), `match.html?game=${G(4)}&from=stats.html%23records`);
 });
 
-test("matchHref: a matchmade match (a match id) opens the match page, the site's /live/<match>; an unlinked one the game page", () => {
+test("matchHref: a matchmade match (a match id) opens the match page, the site's /live/<match>; an unlinked one the same page by its games", () => {
   const M = 'dc5226af-d3b8-4c0b-89e8-1c53b2972a30';
   assert.equal(matchHref({ match_id: M, games: [{ id: G(1) }, { id: G(2) }], series: [1, 1] }, 'stats.html#matches'), `match.html?match=${M}&from=stats.html%23matches`);
   assert.equal(matchHref({ match_id: M, games: [{ id: G(1) }] }, 'https://evil.example/'), `match.html?match=${M}&from=stats.html`, 'Back is validated');
-  // no match id, or one that is not a lowercase UUID (an offline game's list key): the game page, as before
-  assert.match(matchHref({ match_id: null, games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
-  assert.match(matchHref({ match_id: 'g:g-031', games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
-  assert.match(matchHref({ match_id: M.toUpperCase(), games: [{ id: G(1) }] }, 'stats.html'), /^game\.html\?/);
+  // no match id, or one that is not a lowercase UUID (an offline game's list key): the same page, by its games
+  assert.match(matchHref({ match_id: null, games: [{ id: G(1) }] }, 'stats.html'), /^match\.html\?game=/);
+  assert.match(matchHref({ match_id: 'g:g-031', games: [{ id: G(1) }] }, 'stats.html'), /^match\.html\?game=/);
+  assert.match(matchHref({ match_id: M.toUpperCase(), games: [{ id: G(1) }] }, 'stats.html'), /^match\.html\?game=/);
   // no recorded game: no link at all
   assert.equal(matchHref({ match_id: M, games: [] }, 'stats.html'), null);
 });

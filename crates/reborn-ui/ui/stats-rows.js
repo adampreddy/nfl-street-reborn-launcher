@@ -53,7 +53,7 @@ export function queueLine(entries) {
   return why ? `${line}: ${why}` : line;
 }
 
-// ---- one finished game as a snapshot (the site's gameSnapshot, restated; game.js now uses the vendored original) ----
+// ---- one finished game as a snapshot (the site's gameSnapshot, restated; game-snapshot.js uses the vendored original) ----
 
 const bit = (v) => v === 0 || v === 1;
 

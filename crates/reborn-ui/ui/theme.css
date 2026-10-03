@@ -93,7 +93,7 @@ body.shell #main{view-transition-name:page}
 ::view-transition-old(page){animation:look-leave var(--d1) var(--ease) both}
 ::view-transition-new(page){animation:look-enter var(--d3) var(--ease) both}
 html:has(body.page-home)::view-transition-new(page){animation-name:look-enter-fade}
-/* Closing a match (game.js marks the transition "from-game" as it leaves): the match page fades and sinks a little on
+/* Closing a match (match.js marks the transition "from-game" as it leaves): the match page fades and sinks a little on
    --d2 while the page it returns to comes in (pages/game.css has the opening half). */
 @keyframes game-out{to{opacity:0;transform:translateY(10px)}}
 html:active-view-transition-type(from-game)::view-transition-old(page){animation:game-out var(--d2) var(--ease) both}

@@ -1,13 +1,12 @@
-// The game page (Stats, then a game) is the site's /games/<id> page inside the launcher: the scoreboard strip, then
-// Live Feed | Box Score | Team Stats, drawn by the site's own renderers vendored into ui/site/. On the site's 644488b4
-// fixture (Tools/fixtures/game-644488b4.json, as stats_game answers it) this checks the strip, the three tabs, the
-// empty words, that no text says undefined/NaN/null or carries an en dash, that every image comes from a prefix the
-// CSP allows, that tabs, plays and drives are reachable by pad, and that the vendored files match the backend. A match
-// of several games is ONE page (owner 10-03): the site's game picker and the series above the scoreboard swap the game
-// in place, with no Previous / Next; Back returns where the match was opened from. A MATCHMADE match opens the match
-// page instead (match.html): the site's /live/<match> page, its controller (site/live-page.js) run unchanged on the real
-// 5c8d58ca snapshot (Tools/fixtures/match-5c8d58ca.json, as live_match answers it). Screens at 1280x800 for each tab
-// and for the match.
+// Every box score is ONE page (owner 10-03, "it opens the wrong style box score page"): match.html, the site's
+// /live/<match> page inside the launcher, its controller (site/live-page.js) and renderers vendored unchanged into
+// ui/site/. A MATCHMADE match opens it by its id on the real 5c8d58ca snapshot (Tools/fixtures/match-5c8d58ca.json, as
+// live_match answers it); a game that is not (an offline game, an unlinked one, a record's game) by its games, the
+// snapshot built from stats_game by game-snapshot.js -- on the site's 644488b4 fixture (Tools/fixtures/
+// game-644488b4.json). This checks the strip (full team names, both players, the G1.. line score), the three tabs, the
+// empty and totals-only words, that no text says undefined/NaN/null or carries an en dash, that every image comes from
+// a prefix the CSP allows, that tabs, plays and drives are reachable by pad, that Back returns where the page was opened
+// from, and that the vendored files match the backend. Screens at 1280x800 for each tab and for the match.
 //     node Tools/check-game-site.mjs [outdir]      (screens in target/game-site by default)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -23,7 +22,7 @@ execFileSync(process.execPath, [path.join(root, 'Tools/sync-site-render.mjs'), '
 
 const ALLOWED = ['https://api.nflstreetreborn.com/live-assets/', 'https://cdn.discordapp.com/avatars/'];
 const ID = GAME_644.game.id;
-const STATE = (name, extra = {}) => ({ name, url: `game.html?game=${ID}`, scope: 'main', data: { stats_game: GAME_644 }, ...extra });
+const STATE = (name, extra = {}) => ({ name, url: `match.html?game=${ID}`, scope: 'main', data: { stats_game: GAME_644 }, ...extra });
 const srv = await serve();
 const browser = await chromium.launch({ channel: process.env.REBORN_TEST_BROWSER || 'msedge', headless: true });
 const texts = (page, sel) => page.locator(sel).evaluateAll((ns) => ns.map((n) => n.textContent.trim()));
@@ -46,14 +45,20 @@ async function images(page, where) {
 }
 
 try {
-  { // Live Feed (the default tab): strip, latest-play panel, All plays by drive
+  { // a single game (not matchmade) on the match page: the strip as a match's (full team names, both players, Final
+    // over the G1 line score, no series banner for one game), Live Feed (the default tab), All plays by drive
     const { page, errors, close } = await openState(browser, srv.base, STATE('game-feed'));
     await page.locator('#strip .strip').waitFor();
-    // the strip: both teams, both players, both scores, Final over the one-column line score
-    const strip = await page.locator('#strip').innerText();
-    for (const w of ['Bills', 'Eagles', 'adamknowsball', 'Playz', 'Final']) assert.ok(strip.includes(w), `strip names ${w}: ${strip}`);
+    assert.deepEqual(await texts(page, '#strip .st-name'), ['Buffalo Bills', 'Philadelphia Eagles'], 'full team names, as the match page');
+    assert.deepEqual(await texts(page, '#strip .st-player'), ['adamknowsball', 'Playz']);
+    assert.match(await page.locator('#strip .st-status').textContent(), /^Final/);
     assert.deepEqual(await texts(page, '#strip .st-pts'), ['8', '36']);
+    assert.deepEqual(await texts(page, '#strip table.ls thead th'), ['', 'G1']);
+    assert.deepEqual(await page.locator('#strip table.ls tbody tr').evaluateAll((rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()))), [['BUF', '8'], ['PHI', '36']]);
+    assert.equal(await page.locator('#strip .pill').count(), 0, 'one game: no series banner');
     assert.equal(await page.locator('#strip .st-team.a').evaluate((n) => n.classList.contains('trailing')), true, 'the trailing side is dimmed');
+    assert.equal(await page.locator('body.page-match').count(), 1, 'the match page itself');
+    assert.equal(await page.locator('#totals-note').count(), 0, 'a verified game: no totals-only words');
     // the site's tabs, Live Feed picked, every tab focusable (pad)
     assert.deepEqual(await texts(page, '#site-game .tabs [role="tab"]'), ['Live Feed', 'Box Score', 'Team Stats']);
     assert.deepEqual(await page.locator('#site-game [role="tab"]').evaluateAll((ns) => ns.map((n) => [n.getAttribute('aria-selected'), n.tabIndex])), [['true', 0], ['false', 0], ['false', 0]]);
@@ -65,12 +70,13 @@ try {
     assert.deepEqual(await texts(page, '#allplays .ap-seg button'), ['All plays', 'Scoring plays']);
     assert.equal(await page.locator('#allplays .dv').count(), GAME_644.drives.length);
     assert.equal(await page.locator('#allplays .dv.open').count(), 0, 'post-game: every drive collapsed');
-    assert.equal(await page.locator('#note').textContent(), 'Final');
-    // the launcher's row: Back (B / Esc) and Open on web for an online game; no Previous / Next, no picker for one game
+    assert.equal(await page.locator('#allplays .ap-qh').count(), 0, 'one game: no Game 1 heading over the drives');
+    // the launcher's row: Back (B / Esc) and Open on web (the site's /games/<id>) for an online game; no game picker
     assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
-    assert.equal(await page.locator('[data-key="web"]').isVisible(), true);
-    assert.equal(await page.locator('[data-key="game-prev"], [data-key="game-next"]').count(), 0, 'no Previous / Next');
-    assert.equal(await page.locator('#game-pick').isVisible(), false, 'one game: no picker');
+    await page.locator('[data-key="web"]').click();
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'open_website').map((c) => c.args.url)), [`https://online.nflstreetreborn.com/games/${ID}`]);
+    assert.equal(await page.locator('#feed-pick .picker, #tab-box .picker').count(), 0, 'one game: no picker');
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'live_match').length), 0, 'a game never asks live_match');
     await clean(page, 'feed');
     await images(page, 'feed');
     await shot(page, 'game-feed');
@@ -90,8 +96,8 @@ try {
     await close();
   }
   { // Box Score: two team columns, Passing / Rushing / Receiving / Defense / Fumbles, TEAM rows, the "No ..." words.
-    // The fixture without the Eagles' passer's line, so one section is empty ("No Eagles passing"), as on the site's
-    // own game page when a side never threw.
+    // The fixture without the Eagles' passer's line, so one section is empty ("No Philadelphia passing"), as on the
+    // site's own page when a side never threw.
     const lines = GAME_644.lines.filter((l) => !(l.team_index === 1 && l.stats?.pass_att > 0));
     const { page, errors, close } = await openState(browser, srv.base, STATE('game-box', { click: '[data-key="tab-box"]', data: { stats_game: { ...GAME_644, lines } } }));
     assert.equal(await page.locator('#tabbtn-box').getAttribute('aria-selected'), 'true');
@@ -101,7 +107,7 @@ try {
     assert.equal(await cols.count(), 2);
     for (let i = 0; i < 2; i++) {
       const heads = await cols.nth(i).locator('.bx-sh').allInnerTexts();
-      const team = i ? 'Eagles' : 'Bills';
+      const team = i ? 'Philadelphia' : 'Buffalo';
       assert.deepEqual(heads.map((h) => h.trim()), ['Passing', 'Rushing', 'Receiving', 'Defense', 'Fumbles'].map((k) => `${team} ${k}`));
       const sections = cols.nth(i).locator('.bx-sec');
       for (let s = 0; s < 5; s++) {
@@ -110,7 +116,7 @@ try {
         else assert.match(await sec.locator('.bx-none').textContent(), /^No /, `${team} section ${s}: the empty words`);
       }
     }
-    assert.deepEqual(await texts(page, '#tab-box .bx-none'), ['No Eagles passing']);
+    assert.deepEqual(await texts(page, '#tab-box .bx-none'), ['No Philadelphia passing']);
     // the box sits in two columns side by side at 1280 wide, and tables keep their layout (theme.css's .tbl does not leak)
     const [a, b] = await cols.evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().toJSON()));
     assert.ok(Math.abs(a.top - b.top) < 1 && b.left > a.right, 'two columns side by side');
@@ -173,46 +179,36 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // a whole match on one page: Game 1 · Game 2 · Game 3 and the series over the scoreboard, the last game shown first;
-    // picking a game swaps the page below in place (the tab stays), the address follows without a history entry
-    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } }, { reducedMotion: 'no-preference' });
+  { // a match that is not matchmade, every game on one page as a matchmade one: the G1..G3 line score and the series
+    // banner, Game 1 · Game 2 · Game 3 in the Live Feed (landing on the last), Series total in Box Score and Team Stats;
+    // the totals-only game says so above the page; each game read once
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } });
     await page.locator('#strip .strip').waitFor();
-    assert.deepEqual(await texts(page, '#game-pick .picker button'), ['Game 1', 'Game 2', 'Game 3']);
-    assert.equal(await page.locator('#game-pick .picker button[aria-pressed="true"]').textContent(), 'Game 3');
-    assert.equal(await page.locator('#game-pick .game-series').textContent(), 'Series 2-1');
-    { const pk = await page.locator('#game-pick').boundingBox(), st = await page.locator('#strip').boundingBox();
-      assert.ok(pk.y + pk.height <= st.y + 1, 'the picker sits above the scoreboard'); }
-    assert.equal(await page.locator('[data-key="game-prev"], [data-key="game-next"]').count(), 0, 'no Previous / Next');
+    assert.deepEqual(await texts(page, '#strip table.ls thead th'), ['', 'G1', 'G2', 'G3']);
+    assert.deepEqual(await page.locator('#strip table.ls tbody tr').evaluateAll((rs) => rs.map((r) => [...r.children].map((c) => c.textContent.trim()))),
+      [['BUF', '0', '8', '8'], ['PHI', '0', '36', '36']]);
+    assert.equal(await page.locator('#strip .pill').textContent(), 'PHI wins 2-0', 'the series banner (the totals-only game decided nothing)');
+    assert.deepEqual(await texts(page, '#feed-pick .picker button'), ['Game 1', 'Game 2', 'Game 3']);
+    assert.equal(await page.locator('#feed-pick .picker button[aria-pressed="true"]').textContent(), 'Game 3');
+    assert.ok((await page.locator('#allplays').innerText()).includes('GAME 3'));
+    assert.match(await page.locator('#totals-note').textContent(), /^Totals only for Game 1\. It was played before play-by-play existed/);
     assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
     await clean(page, 'match');
     await shot(page, 'game-match');
-    const histLen = await page.evaluate(() => history.length);
-    await page.locator('[data-key="tab-box"]').click();
-    await page.locator('[data-key="game-2"]').click();
-    assert.equal(await page.evaluate(() => document.body.querySelector('#game-body').getAnimations().map((a) => a.animationName).join()), 'game-in', 'the swap rises in');
-    { const [dur, d2] = await page.evaluate(() => [getComputedStyle(document.getElementById('game-body')).animationDuration, getComputedStyle(document.documentElement).getPropertyValue('--d2').trim()]);
-      assert.equal(parseFloat(dur) * 1000, parseFloat(d2), `the swap runs on --d2: ${dur} vs ${d2}`); }
-    await page.waitForFunction(() => document.querySelector('#game-pick button[aria-pressed="true"]')?.textContent === 'Game 2');
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'game-2', 'focus stays on the picker');
-    assert.equal(new URL(page.url()).searchParams.get('game'), GAME_644.game.id, 'the address follows the game');
-    assert.equal(await page.evaluate(() => history.length), histLen, 'no history entry: Back still leaves the match');
-    assert.equal(await page.locator('#tabbtn-box').getAttribute('aria-selected'), 'true', 'the tab stays picked');
-    assert.equal(await page.locator('#tab-box .bx-col').count(), 2);
-    // the left / right arrows walk the picker, never other games or pages
-    await page.keyboard.press('ArrowLeft');
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'game-1');
-    assert.match(page.url(), /game.html/);
-    await page.keyboard.press('Enter');
-    await page.waitForFunction(() => /^Totals only/.test(document.querySelector('#tab-box .empty')?.textContent ?? ''));
-    assert.equal(new URL(page.url()).searchParams.get('game'), GAME_ID);
+    // Game 1, the totals-only game: the site's words for a game with no plays
+    await page.locator('#feed-pick .picker button[data-pick="1"]').click();
+    await page.waitForFunction(() => document.querySelector('#feed-pick .picker button[aria-pressed="true"]')?.textContent === 'Game 1');
+    assert.match(await page.locator('#panel').innerText(), /No live plays reached us for this game\./);
     await clean(page, 'match, game 1');
     await shot(page, 'game-match-g1');
-    // each game is read once: going back to one already seen asks nothing
+    await page.locator('[data-key="tab-box"]').click();
+    assert.deepEqual(await texts(page, '#tab-box .picker button'), ['Game 1', 'Game 2', 'Game 3', 'Series total']);
+    assert.equal(await page.locator('#tab-box .picker button[aria-pressed="true"]').textContent(), 'Series total');
+    assert.equal(await page.locator('#tab-box .bx-col').count(), 2);
+    await clean(page, 'match box');
+    // each game is read once
     const asked = await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'stats_game').map((c) => c.args.gameId));
     assert.deepEqual([...asked].sort(), [GAME_ID, GAME_644.game.id, GAME_3].sort(), `each game read once: ${asked}`);
-    await page.locator('[data-key="game-3"]').click();
-    await page.waitForFunction(() => document.querySelector('#game-pick button[aria-pressed="true"]')?.textContent === 'Game 3');
-    assert.equal(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'stats_game').length), asked.length);
     // the opening and closing transitions ride the cross-document view transition, on --d2. Read from the source: the
     // test browser may predate :active-view-transition-type (Chromium 125) and drop the closing rule, as it would
     // drop the whole cross-document transition (126); the launcher's WebView2 is evergreen.
@@ -220,7 +216,6 @@ try {
     assert.match(css, /html:has\(body\.page-game\)::view-transition-new\(page\)\{animation:game-in var\(--d2\) var\(--ease\) both\}/, 'opening: game-in on --d2');
     assert.match(css, /html:active-view-transition-type\(from-game\)::view-transition-old\(page\)\{animation:game-out var\(--d2\) var\(--ease\) both\}/, 'closing: game-out on --d2');
     assert.match(css, /@keyframes game-in\{from\{opacity:0;transform:translateY\(\d+px\)\}\}/, 'a fade with a slight rise');
-    assert.match(css, /prefers-reduced-motion:reduce\)\{\.game-body\.game-swap\{animation:none\}\}/, 'reduced motion: no swap animation');
     assert.deepEqual(errors, []);
     await close();
   }
@@ -337,31 +332,35 @@ try {
   }
   { // Back returns where the match was opened from (a profile's Matches tab, say), validated
     const from = 'profile.html?player=0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d#matches';
-    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-from', url: `game.html?game=${GAME_644.game.id}&from=${encodeURIComponent(from)}`, scope: 'main', data: { stats_game: GAME_644 } });
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-from', url: `match.html?game=${GAME_644.game.id}&from=${encodeURIComponent(from)}`, scope: 'main', data: { stats_game: GAME_644 } });
     await page.locator('#strip .strip').waitFor();
     assert.equal(await page.locator('#back').getAttribute('href'), from);
-    await page.goto(`${srv.base}/game.html?game=${GAME_644.game.id}&from=${encodeURIComponent('https://evil.example/')}`);
+    await page.goto(`${srv.base}/match.html?game=${GAME_644.game.id}&from=${encodeURIComponent('https://evil.example/')}`);
     await page.locator('#back').waitFor();
     assert.equal(await page.locator('#back').getAttribute('href'), 'stats.html');
     assert.deepEqual(errors, []);
     await close();
   }
-  { // an unverified game: the strip, then the site's totals-only words under every tab
-    const { page, errors, close } = await openState(browser, srv.base, { name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' });
+  { // an unverified game: the strip, the site's totals-only words above the page, the site's empty words in the tabs
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game', url: `match.html?game=${GAME_ID}`, scope: 'main' });
     await page.locator('#strip .strip').waitFor();
-    assert.match(await page.locator('#tab-feed .empty').textContent(), /^Totals only for this game\./);
+    assert.match(await page.locator('#totals-note').textContent(), /^Totals only for this game\./);
+    assert.match(await page.locator('#panel').innerText(), /No live plays reached us for this game\./);
     await page.locator('[data-key="tab-box"]').click();
-    assert.match(await page.locator('#tab-box .empty').textContent(), /^Totals only for this game\./);
+    assert.equal(await page.locator('#tab-box .empty').textContent(), 'No box score for this game yet.');
     await clean(page, 'unverified');
     await shot(page, 'game-unverified');
     assert.deepEqual(errors, []);
     await close();
   }
-  { // a bad id: the site's words, no tabs, Back still there
-    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' });
+  { // a bad id, or a game the server does not have: the site's words, no tabs, Back still there
+    const { page, errors, close } = await openState(browser, srv.base, { name: 'game-missing', url: 'match.html?game=nope', scope: 'main', data: { stats_game: null } });
     assert.equal(await page.locator('#strip .empty').textContent(), "That game couldn't be found.");
     assert.equal(await page.locator('#site-game .tabs').isVisible(), false);
     assert.equal(await page.locator('#back').isVisible(), true);
+    await page.goto(`${srv.base}/match.html?game=${GAME_3}`);
+    await page.waitForFunction(() => document.querySelector('#strip .empty')?.textContent === "That game couldn't be found.");
+    assert.equal(await page.locator('#site-game .tabs').isVisible(), false);
     assert.deepEqual(errors, []);
     await close();
   }

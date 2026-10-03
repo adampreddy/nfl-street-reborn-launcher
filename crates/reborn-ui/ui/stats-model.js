@@ -317,10 +317,11 @@ const MAX_GAMES = 25;
 /**
  * The address a match row opens (owner 10-03, "the box score is the whole match"). A matchmade match (the server's
  * `match_id`, a lowercase UUID) opens the match page (match.html), the site's /live/<match> page: every game of it, the
- * last one shown, as the site draws it. Anything else (an offline game, an unlinked one) opens the game page
- * (game.html): a match of one game just that game; a match of several ONE page holding every game of it (oldest first,
- * as the server sends them) with its last game shown, and the series from the list's side ("2-1"). `from` is the page
- * Back returns to (backHref). Null when the match has no recorded game.
+ * last one shown, as the site draws it. Anything else (an offline game, an unlinked one) opens the SAME page (owner
+ * 10-03: one style for every box score) by its games, match.html?game=...: a match of one game just that game; a match
+ * of several ONE page holding every game of it (oldest first, as the server sends them) with its last game named, and
+ * the series from the list's side ("2-1"). `from` is the page Back returns to (backHref). Null when the match has no
+ * recorded game.
  * @param {Object} match
  * @param {string} from
  * @returns {string|null}
@@ -338,16 +339,16 @@ export function matchHref(match, from) {
     if (Array.isArray(s) && Number.isInteger(s[0]) && Number.isInteger(s[1])) q.set('series', `${s[0]}${HYPHEN}${s[1]}`);
   }
   q.set('from', backHref(from));
-  return `game.html?${q}`;
+  return `match.html?${q}`;
 }
 
-/** The game page's address for one game (a record's game, say). */
+/** The match page's address for one game (a record's game, say). */
 export function gameHref(id, from) {
-  return `game.html?${new URLSearchParams({ game: String(id ?? ''), from: backHref(from) })}`;
+  return `match.html?${new URLSearchParams({ game: String(id ?? ''), from: backHref(from) })}`;
 }
 
 /**
- * The game page's reading of its own address (matchHref): the game shown, the match's games (just that game when there
+ * The match page's reading of a game address (matchHref): the game shown, the match's games (just that game when there
  * is no list, or the list does not hold it), the series ("2-1" or null) and where Back goes. Only lowercase game UUIDs
  * make the list, at most 25.
  * @param {string} search  location.search

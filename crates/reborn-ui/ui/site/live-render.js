@@ -1,5 +1,5 @@
 // Vendored from Reborn Backend src/web/live-render.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
-// The launcher game and match pages (game.js, match.js) draw with it exactly as the site does.
+// The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.
 // Pure render helpers for the live game page (/live/<match>). Plain data in, DOM nodes out -- built ONLY with
 // doc.createElement, textContent, className, setAttribute and appendChild. Never markup strings: every name and every
 // summary.text is a player's untrusted copy. `doc` is a parameter so tests can hand in a minimal fake document.
