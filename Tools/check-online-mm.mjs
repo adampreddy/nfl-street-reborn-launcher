@@ -32,7 +32,8 @@ const STATES = {
   queued: { ...base, snapshot: { ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-22T20:34:50.379Z' } } },
   lobby: { ...base, snapshot: { ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
     members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
-    chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-22T20:40:00Z' }] } },
+    chat: [{ seq: 1, name: 'Jock', text: 'yo', at: '2026-09-22T20:39:00Z' }, { seq: 2, name: 'Adam', text: 'running it back', at: '2026-09-22T20:39:30Z' },
+      { seq: 3, name: 'Jock', text: 'ready when you are', at: '2026-09-22T20:40:00Z' }] } },
   pairing: { ...base, snapshot: { ...empty, match: { id: 'f772e15e-28e4-40ab-b667-70483f736542', mode: 'casual', status: 'pairing', relay_state: 'pairing',
     relay_deadline: '2026-09-22T20:35:10.425Z', best_of: 1, you_host: true, opponent: 'Jock', field: null, your_field_pick: 'the_pit',
     your_accepted: false, your_ready: false, series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0 } } },
@@ -56,16 +57,19 @@ const EXPECT = {
   offline: { text: ["Can't reach the Reborn servers"], absent: ['Find a casual game'] },
   // Matchmaking switched off: the section is empty and the private-room page is untouched.
   disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
-  // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default; the lobby list and
-  // the code field are under Private room (their assertions live in check-online-page's online-private/online-lobbies).
-  idle: { text: ['Ranked', 'Casual', 'Private room', 'Find a casual game', 'Matched with anyone', '1 searching', '3 players online'], buttons: ['Find a casual game'], absent: ['field pick', 'Quick Match'] },
-  queued: { text: ['Looking for a casual game', 'Searching… 0:4'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
-  // Ruling P15: the lobby list, joining by code and opening a public lobby stay asserted here, under Private room.
-  idle_private: { text: ['Open lobbies (1) ›', 'Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game'] },
+  // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default, with its Quick game |
+  // Pickup pick (2026-10-03); the code field is under Private room (check-online-page's online-private).
+  idle: { text: ['Ranked', 'Casual', 'Private Room', 'Find a casual game', 'Casual: play as many games as you want. Leave whenever.', '1 searching', '3 players online'],
+    buttons: ['Find a casual game', 'Quick game', 'Pickup'], absent: ['field pick', 'Quick Match', 'One game'] },
+  queued: { text: ['Finding a casual game', 'Searching 0:4', 'Casual · Quick game'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
+  // No public lobbies (2026-10-03, replacing ruling P15's lobby list): joining by code and hosting a room stay.
+  idle_private: { text: ['Host a room'], buttons: ['Join by code', 'Host a room'], absent: ['Find a casual game', 'lobbies', 'public lobby', 'Pickup'] },
   // Ruling P14: the ready markers are counted (one ready, one not), not matched as loose text.
-  lobby: { text: ['Your room', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'ready when you are'], buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1 } },
-  pairing: { text: ['Jock', 'Match found', 'VS', 'Casual · one game'], buttons: ['Accept', 'Decline', 'Leave match'] },
-  running_bo3: { text: ['Jock', 'Playing', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
+  // The chat shows every line, in order (the launcher keeps the conversation; the server's line is `text`).
+  lobby: { text: ['Your room · Quick game', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'yo', 'running it back', 'ready when you are'],
+    buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link', 'Quick game', 'Pickup'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1, '.mm-chat li': 3 } },
+  pairing: { text: ['Jock', 'Game on', 'VS', 'Casual'], buttons: ['Accept', 'Decline', 'Leave match'], absent: ['one game'] },
+  running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
 };
@@ -90,11 +94,9 @@ try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await context.addInitScript(({ state }) => {
       window.__calls = [];
-      const rooms = [{ code: 'K7QP2M', mode: 'casual', best_of: 1, host: 'Jock' }];
       window.__TAURI__ = { core: { invoke: async (cmd, args) => {
         window.__calls.push(cmd);
         if (cmd === 'mm_state') return state;
-        if (cmd === 'mm_rooms') return rooms;
         if (cmd === 'netplay_status') return { active: false, phase: 'idle' };
         if (cmd === 'netplay_pending_join') return null;
         if (cmd === 'session_active') return false;
@@ -106,7 +108,7 @@ try {
     page.on('pageerror', (e) => errors.push(String(e.message || e)));
     await page.goto(`${url}/online.html`);
     await page.locator('section.mm').waitFor({ state: 'attached' });
-    await page.waitForTimeout(1300); // one draw tick, plus the lobby list load
+    await page.waitForTimeout(1300); // one draw tick
     if (CLICK[name]) { await page.locator(CLICK[name]).click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(1300); }
 
     // Compared case-insensitively on purpose. innerText is the RENDERED text, and the page's CSS
@@ -145,18 +147,9 @@ try {
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');
 
-    // Under Private room, "Open lobbies (n) ›" opens the list in a panel: the lobby, Join, and one click to open a public
-    // lobby (mm_room_create; arguments are check-online-page's job).
-    if (name === 'idle_private') {
-      await page.locator('#lobbies-open').click().catch(() => {});
-      const panel = page.locator('dialog.menu.panel[open]');
-      const pt = await panel.innerText().catch(() => '');
-      if (!pt.includes('Jock · Casual')) problems.push('the lobby panel lacks "Jock · Casual"');
-      if (!(await panel.getByRole('button', { name: 'Join', exact: true }).count())) problems.push('the lobby panel lacks a Join button');
-      await panel.getByRole('button', { name: 'Open a public lobby', exact: true }).click().catch(() => {});
-      await page.waitForTimeout(300);
-      if (!(await page.evaluate(() => window.__calls.includes('mm_room_create')))) problems.push('Open a public lobby did not send mm_room_create');
-    }
+    // No public lobbies (2026-10-03): no lobbies link on the page, and the lobby list is never read.
+    if (await page.locator('#lobbies-open').count()) problems.push('the Open lobbies link is still on the page');
+    if (await page.evaluate(() => window.__calls.includes('mm_rooms'))) problems.push('the page still reads mm_rooms (public lobbies)');
 
     // The relay opens Dolphin by itself, so it must be told what Play would launch with.
     if (!(await page.evaluate(() => window.__calls.includes('mm_launch_prefs')))) problems.push('the page never reported its launch preferences to the relay');

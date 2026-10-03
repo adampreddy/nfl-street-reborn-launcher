@@ -71,26 +71,19 @@ try{
   await page.context().close();
  }
  {
-  // Stats, Your matches (plain column moves, no data-nav opt-in): the D-pad walks the list row by row. Down from a
-  // closed best of 3 skips its (inert) games; A opens it and Down then lands on Game 1; the last row goes down to
-  // the pager inside the card; Right from a row crosses to the Your players row beside it.
+  // Stats, Your matches (plain column moves, no data-nav opt-in): the D-pad walks the list row by row (a best of 3 is
+  // one row: A opens the whole match on its own page); the last row goes down to the pager inside the card; Right from
+  // a row crosses to the Your players row beside it.
   const saved=fixture.stats_dashboard;fixture.stats_dashboard=StatsF.dashboard();
   const page=await open('stats.html');
   const key=()=>page.evaluate(()=>document.activeElement?.getAttribute('data-key'));
   const m1=page.locator('[data-key="match-m-01"]');
   await m1.waitFor();await m1.focus();
   await press(page,13);
-  assert.equal(await key(),'match-m-02','Down from a closed best of 3 skips its games');
+  assert.equal(await key(),'match-m-02','Down from a best of 3 is the next match');
   await press(page,12);
   assert.equal(await key(),'match-m-01','Up returns to the best of 3');
-  await press(page,0);
-  assert.equal(await m1.getAttribute('aria-expanded'),'true','A opens the best of 3');
-  await page.waitForFunction(()=>document.getElementById('games-m-01').getBoundingClientRect().height>100,null,{polling:100});
-  await press(page,13);
-  assert.equal(await key(),'game-g-011','Down from an open best of 3 lands on Game 1');
-  await press(page,13);await press(page,13);await press(page,13);
-  assert.equal(await key(),'match-m-02','Down past Game 3 reaches the next match');
-  await page.locator('[data-key="match-m-15"]').focus();
+  await page.locator('[data-key="match-m-13"]').focus();
   await press(page,13);
   assert.equal(await key(),'older','the last row goes down to the pager (Older; Newer is disabled on page 1)');
   await page.locator('[data-key="match-m-12"]').focus();

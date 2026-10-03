@@ -13,7 +13,7 @@ export function clock(ms) {
 
 /** Under the VS and in a room. Never "best of 3" (spec §8, DESIGN.md §9). */
 export function modeLine(mode) {
-  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual · one game';
+  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual';
 }
 
 /** "Game 2 · Series 1–0" while a series runs (best_of > 1), counted from this seat; null otherwise. */
@@ -28,7 +28,7 @@ export function seriesLine(m) {
  *  has come (the spot hides; online-mm.js's 1 s ticker counts it down). */
 export function acceptWithin(deadline, nowMs) {
   const t = typeof deadline === 'string' ? Date.parse(deadline) : NaN;
-  return Number.isFinite(t) && t > nowMs ? `Accept within ${clock(t - nowMs)}` : null;
+  return Number.isFinite(t) && t > nowMs ? `${clock(t - nowMs)} to accept` : null;
 }
 
 /** The Ranked tile's numbers, from boardStanding()'s `elo`. With no rating (Elo off) nothing shows at all. */
@@ -50,9 +50,9 @@ export function standing(rank, elo) {
 
 /** The pill on the picked tile while searching (spec §3.2). */
 export function seekLine(mode, elo) {
-  if (mode !== 'ranked') return 'Looking for a casual game';
+  if (mode !== 'ranked') return 'Finding a casual game';
   const r = int(elo?.rating);
-  return r !== null ? `Looking for players near ${fmtInt(r)} Elo` : 'Looking for a ranked game';
+  return r !== null ? `Finding players near ${fmtInt(r)} Elo` : 'Looking for a ranked game';
 }
 
 /** The held notice (spec §3.8): today's text per hold_reason; the generic one is §8's new sentence. */
@@ -81,8 +81,8 @@ export function inviteLink(code) {
 export function inviteLine(host, code) {
   if (typeof code !== 'string' || !code) return null;
   return typeof host === 'string' && host
-    ? { who: host, rest: ` invited you to a room · ${code}` }
-    : { who: null, rest: `You were invited to a room · ${code}` };
+    ? { who: host, rest: ` wants you in the room · ${code}` }
+    : { who: null, rest: `You've got a room invite · ${code}` };
 }
 
 function change(d) {
@@ -94,7 +94,7 @@ function lbRow(r) {
   return {
     rank: int(r?.rank), name: typeof r?.display_name === 'string' ? r.display_name : '', avatar: typeof r?.avatar_url === 'string' ? r.avatar_url : null,
     team: r?.team && typeof r.team === 'object' ? r.team : null,
-    record: wins !== null && losses !== null ? `${wins}–${losses}` : null,
+    record: wins !== null && losses !== null ? `${wins}-${losses}` : null,
     elo: elo !== null ? fmtInt(elo) : null, change: change(r?.delta_week), you: r?.you === true,
   };
 }

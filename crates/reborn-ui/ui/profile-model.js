@@ -2,9 +2,10 @@
 // answer as it is and returns strings ready to draw, or null / [] when the server did not send what a piece needs, so
 // the page leaves that piece out: nothing is invented (spec §8.7, "Degrades gracefully until the backend work ships").
 // An older server's shapes are handled here too: private rooms (backend §1) and rushing `yac` for YCO (backend §9).
-import { eloChange, fmtInt, fmtPct } from './stats-model.js';
+import { eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
 
-const DASH = '—', EN = '–', MINUS = '−';
+// Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
+const DASH = '—', EN = '–', MINUS = '−', REC = '-';
 const num = (n) => typeof n === 'number' && Number.isFinite(n);
 const one = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const sum = (...xs) => (xs.some(num) ? xs.reduce((a, x) => a + (num(x) ? x : 0), 0) : null);
@@ -17,13 +18,34 @@ export function publicQueues(rows) {
 
 export const winRate = (p) => (num(p) ? `${one(p * 100)}%` : null);
 
-/** The card's one summary line: "#7 on the leaderboard | 1,184 Elo | 60.9% win rate" (owner round 11). */
+/**
+ * The profile's record (owner 10-03): ONLINE matches only (a profile never has offline games), Ranked and Casual as two
+ * separate figures. The headline is ranked + casual from `by_queue` (the deployed server's `summary` still counts private
+ * rooms); a server without `by_queue` gives its summary alone. Null when neither is sent.
+ */
+export function profileRecord(summary, byQueue) {
+  const rows = publicQueues(byQueue);
+  const q = (key) => {
+    const r = rows.find((x) => x.key === key);
+    if (!r) return null;
+    const wins = num(r.wins) ? r.wins : 0, losses = num(r.losses) ? r.losses : 0;
+    return { wins, losses, text: `${wins}${REC}${losses}`, pct: wins + losses ? wins / (wins + losses) : null };
+  };
+  const ranked = q('ranked'), casual = q('casual');
+  let wins, losses;
+  if (ranked || casual) { wins = (ranked?.wins ?? 0) + (casual?.wins ?? 0); losses = (ranked?.losses ?? 0) + (casual?.losses ?? 0); }
+  else if (num(summary?.wins) && num(summary?.losses)) { wins = summary.wins; losses = summary.losses; }
+  else return null;
+  return { wins, losses, games: wins + losses, text: `${wins}${REC}${losses}`, pct: wins + losses ? wins / (wins + losses) : null, ranked, casual };
+}
+
+/** The card's one summary line: "#7 on the leaderboard | 1,184 Elo | 14-9 record" (owner 10-03; the record online only). */
 export function summaryFacts(p) {
   const out = [];
   if (num(p?.elo?.rank)) out.push({ strong: `#${p.elo.rank}`, text: 'on the leaderboard' });
   if (num(p?.elo?.rating)) out.push({ strong: fmtInt(p.elo.rating), text: 'Elo' });
-  const w = winRate(p?.summary?.win_pct);
-  if (w) out.push({ strong: w, text: 'win rate' });
+  const r = profileRecord(p?.summary, p?.by_queue);
+  if (r && r.games) out.push({ strong: r.text, text: 'record' });
   return out;
 }
 
@@ -68,24 +90,21 @@ export function eloOverview(elo) {
     note: `${n} ranked ${n === 1 ? 'match' : 'matches'}`, points: areaPoints([start, ...hist.map((x) => x.rating)]) };
 }
 
-/** Overview column 2: "14–9 60.9%", "Ranked and casual", then Ranked and Casual as label / bar / record / pct. */
+/** The Record tile: "14-9 60.9%" (online only, profileRecord), then Ranked and Casual as two separate figures. */
 export function recordOverview(summary, byQueue) {
-  const s = summary || {};
-  if (!num(s.wins) || !num(s.losses)) return null;
-  const total = s.wins + s.losses;
-  const rows = publicQueues(byQueue).filter((r) => r.key === 'ranked' || r.key === 'casual').map((r) => {
-    const w = num(r.wins) ? r.wins : 0, l = num(r.losses) ? r.losses : 0, n = w + l;
-    return { label: r.key === 'ranked' ? 'Ranked' : 'Casual', record: `${w}${EN}${l}`, pct: n ? fmtPct(w / n) : DASH, share: n ? Math.round((w / n) * 1000) / 10 : 0 };
-  });
-  return { value: `${s.wins}${EN}${s.losses}`, pct: winRate(s.win_pct) ?? DASH, note: `${total} ${total === 1 ? 'match' : 'matches'}`, sub: 'Ranked and casual', rows };
+  const r = profileRecord(summary, byQueue);
+  if (!r) return null;
+  const queues = [['Ranked', r.ranked], ['Casual', r.casual]].filter(([, t]) => t)
+    .map(([label, t]) => ({ label, record: t.text, pct: t.pct === null ? DASH : fmtPct(t.pct) }));
+  return { value: r.text, pct: winRate(r.pct) ?? DASH, note: `${r.games} ${r.games === 1 ? 'match' : 'matches'}`, queues };
 }
 
-/** Overview column 3 (profile `recent_form`, backend §8): "6–4 +6.4", points scored and allowed per game. */
+/** Overview column 3 (profile `recent_form`, backend §8): "6-4 +6.4", points scored and allowed per game. */
 export function lastTenOverview(rf) {
   if (!rf || !num(rf.games) || rf.games === 0 || !num(rf.wins) || !num(rf.losses)) return null;
   const m = num(rf.avg_margin) ? rf.avg_margin : null;
   const margin = m === null ? { text: '', kind: '' } : { text: `${m > 0 ? '+' : m < 0 ? MINUS : ''}${one(Math.abs(m))}`, kind: m > 0 ? 'up' : m < 0 ? 'down' : '' };
-  return { value: `${rf.wins}${EN}${rf.losses}`, margin, scored: num(rf.pts_for_pg) ? one(rf.pts_for_pg) : DASH, allowed: num(rf.pts_against_pg) ? one(rf.pts_against_pg) : DASH };
+  return { value: `${rf.wins}${REC}${rf.losses}`, margin, scored: num(rf.pts_for_pg) ? one(rf.pts_for_pg) : DASH, allowed: num(rf.pts_against_pg) ? one(rf.pts_against_pg) : DASH };
 }
 
 // Career tiles: [key (career_rank field), label, value from the career totals, per game?, one decimal?]
@@ -102,17 +121,146 @@ const TILES = [
   ['def_int', 'Interceptions', (c) => c.defense?.total?.int, true],
 ];
 
-/** The Career card: nine tiles, each "#3 · 125.9 / G" when the rank (backend §6) and a game count are known. */
+/** The Career card: nine tiles, each "#3 · 125.9 / game" when the rank (backend §6) and a game count are known. */
 export function careerTiles(career, rank, games) {
   const c = career || {};
   const tiles = TILES.map(([key, label, get, perGame, dec]) => {
     const v = get(c);
     return { key, label, value: num(v) ? (dec ? one(v) : fmtInt(v)) : DASH, rank: num(rank?.[key]) ? `#${rank[key]}` : null,
-      perGame: perGame && num(v) && num(games) && games > 0 ? `${one(v / games)} / G` : null };
+      perGame: perGame && num(v) && num(games) && games > 0 ? `${one(v / games)} / game` : null };
   });
   const pool = num(rank?.pool) && tiles.some((t) => t.rank) ? rank.pool : null;
   return { tiles, footnote: pool ? `Rank among ${fmtInt(pool)} online players` : null };
 }
+
+// Which career table holds each role's row (backend profile/players.js bestPlayers picks from these same rows).
+const ROLE_TABLE = { passer: 'passing', rusher: 'rushing', receiver: 'receiving', dl_lb: 'defense', ballhawk: 'defense' };
+const STAT_KEYS = ['games', 'cmp', 'att', 'yds', 'td', 'int', 'rtg', 'avg', 'long', 'rec', 'tkl', 'sck', 'tfl', 'ff', 'pbu'];
+const pickStats = (row) => Object.fromEntries(STAT_KEYS.filter((k) => num(row?.[k])).map((k) => [k, row[k]]));
+
+/** Your players' fuller statlines (owner 10-03): `best_players` sends one number per role, the profile's `career`
+ *  tables (the same rows the server picked them from) send the rest. Each best player gets its own career row's
+ *  numbers, matched by `key`; a field the server sent on the player itself wins. Most played takes its games and the
+ *  rushing or receiving row with more yards (never the passing row: its `att` is pass attempts, not carries). */
+export function withCareerLines(best, career) {
+  const out = { ...(best || {}) };
+  const rows = (t) => (Array.isArray(career?.[t]?.rows) ? career[t].rows : []);
+  for (const [role, b] of Object.entries(out)) {
+    if (!b || typeof b !== 'object' || typeof b.key !== 'string') continue;
+    const find = (t) => rows(t).find((r) => r && r.key === b.key) ?? null;
+    let extra = {};
+    if (ROLE_TABLE[role]) extra = pickStats(find(ROLE_TABLE[role]));
+    else if (role === 'most_played') {
+      // A server that already sends the full row (backend cc79302) keeps it: its own columns say its role. Else one
+      // career row, by role (Adam 10-03, position-relevant): a quarterback's passing row; else the rushing or
+      // receiving row with more yards; else the defensive row. Never columns from two roles.
+      if (playerKind(b)) { out[role] = { ...b }; continue; }
+      const rush = find('rushing'), rec = find('receiving');
+      const pick = find('passing') || (rush && rec ? ((num(rec.yds) ? rec.yds : 0) > (num(rush.yds) ? rush.yds : 0) ? rec : rush) : rush || rec) || find('defense');
+      extra = pickStats(pick);
+      if (num(b.value) && b.unit === 'games') extra.games = b.value;
+    }
+    out[role] = { ...extra, ...b };
+  }
+  return out;
+}
+
+/** A label spelled out in words says "Yards", never "YDS"/"yds" (owner 10-03): the server's record labels read
+ *  "Passing yds"; this draws "Passing Yards". A bare "YDS" (a compact column heading) is left alone. */
+export function spellYards(label) {
+  const s = String(label ?? '');
+  return /\S\s+yds\b|\byds\s+\S/i.test(s) ? s.replace(/\byds\b/gi, 'Yards') : s;
+}
+
+const dayOf = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : DASH; };
+const whole = (n) => (num(n) ? fmtInt(Math.round(n)) : DASH);
+
+/** game id -> the opponent's name, from a match list (each match's games, and a one-game match's own "g:<id>"). */
+function opponentsByGame(matches) {
+  const out = new Map();
+  for (const m of Array.isArray(matches) ? matches : []) {
+    if (!m || m.queue === 'private') continue;
+    const name = m.opponent?.display_name || (m.opponent_kind === 'cpu' ? 'CPU' : null);
+    if (!name) continue;
+    for (const g of Array.isArray(m.games) ? m.games : []) if (g && typeof g.id === 'string') out.set(g.id, name);
+    if (typeof m.id === 'string' && m.id.startsWith('g:')) out.set(m.id.slice(2), name);
+  }
+  return out;
+}
+
+/**
+ * Records, Single game (owner 10-03): one row per record the server sends (`records`), "Yards" spelled out, the player
+ * and their team, the best, the game as "vs <opponent>" and its date. The record itself carries no opponent: it is
+ * looked up in the match list the page has (`matches`), else the server's own `opponent` when a later server sends one,
+ * else a dash. A row opens its game (`game_id`).
+ */
+export function singleGameRecords(records, matches) {
+  const opp = opponentsByGame(matches);
+  return (Array.isArray(records) ? records : []).filter((r) => r && r.label).map((r) => {
+    const vs = (typeof r.opponent === 'string' ? r.opponent : r.opponent?.display_name) || opp.get(r.game_id) || null;
+    return { key: String(r.key ?? r.label), label: spellYards(r.label), name: r.name || null,
+      team: r.name ? { name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null } : null,
+      value: whole(r.value), game: vs ? `vs ${vs}` : DASH, date: dayOf(r.at), game_id: typeof r.game_id === 'string' ? r.game_id : null };
+  });
+}
+
+// Career records (mv2-2): [label, table, value from a row, per game?]. Total TD is rushing + receiving + defensive
+// (careerTiles' rule). Passer Rating's leader is among the passers with at least a quarter of the most attempts, so a
+// backup's one perfect throw never leads it; it has no per-game figure.
+const CAREER_RECORDS = [
+  ['Passing Yards', 'passing', (r) => r.yds, true], ['Passing TD', 'passing', (r) => r.td, true], ['Passer Rating', 'passing', (r) => r.rtg, false],
+  ['Rushing Yards', 'rushing', (r) => r.yds, true], ['Rushing TD', 'rushing', (r) => r.td, true],
+  ['Receptions', 'receiving', (r) => r.rec, true], ['Receiving Yards', 'receiving', (r) => r.yds, true], ['Receiving TD', 'receiving', (r) => r.td, true],
+  ['Tackles', 'defense', (r) => r.tkl, true], ['Sacks', 'defense', (r) => r.sck, true], ['Interceptions', 'defense', (r) => r.int, true],
+  ['Total TD', null, null, true],
+];
+
+/**
+ * Records, Career: the player who leads each category over their whole career, from the career tables the profile
+ * sends (every player used, with their games): the total, and per game when the player's games are known. A category
+ * nobody has is left out. "N games" stays on each row (`game`) for its label.
+ */
+export function careerRecords(career) {
+  const rows = (t) => (Array.isArray(career?.[t]?.rows) ? career[t].rows.filter((r) => r && r.name) : []);
+  const team = (r) => ({ name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null });
+  const out = [];
+  for (const [label, table, get, perGame] of CAREER_RECORDS) {
+    let best = null;
+    if (table) {
+      let pool = rows(table);
+      if (label === 'Passer Rating') { const most = Math.max(0, ...pool.map((r) => (num(r.att) ? r.att : 0))); pool = pool.filter((r) => num(r.att) && r.att > 0 && r.att * 4 >= most); }
+      for (const r of pool) { const v = get(r); if (num(v) && v > 0 && (!best || v > best.v)) best = { r, v }; }
+    } else {
+      const by = new Map();
+      for (const t of ['rushing', 'receiving', 'defense']) for (const r of rows(t)) {
+        if (!num(r.td)) continue;
+        const k = r.key ?? r.name;
+        const was = by.get(k);
+        by.set(k, { r: was?.r ?? r, v: (was?.v ?? 0) + r.td, games: Math.max(was?.games ?? 0, num(r.games) ? r.games : 0) });
+      }
+      for (const x of by.values()) if (x.v > 0 && (!best || x.v > best.v)) best = { r: { ...x.r, games: x.games }, v: x.v };
+    }
+    if (!best) continue;
+    const g = num(best.r.games) && best.r.games > 0 ? best.r.games : null;
+    const dec = label === 'Passer Rating';
+    out.push({ key: label, label, name: best.r.name, team: team(best.r), value: dec ? one(best.v) : whole(best.v),
+      perGame: perGame && g ? one(best.v / g) : DASH, game: g ? `${fmtInt(g)} ${g === 1 ? 'game' : 'games'}` : DASH, date: '', game_id: null });
+  }
+  return out;
+}
+
+/**
+ * Team records (mv2-2): the records with no player (most points, biggest win, biggest comeback, longest TD), each a
+ * cell: the label, the number (a win's margin "+42") and "Sep 24 vs Playz" (the opponent from the match list).
+ */
+export function teamRecords(records, matches) {
+  return singleGameRecords(records, matches).filter((r) => !r.name).map((r) => ({
+    key: r.key, label: r.label, value: r.key === 'biggest_win' && r.value !== DASH ? `+${r.value}` : r.value,
+    note: [r.date !== DASH ? r.date : null, r.game !== DASH ? r.game : null].filter(Boolean).join(' '), game_id: r.game_id }));
+}
+
+/** Single game player records only (the ones with a player's name); the rest are Team records. */
+export const playerRecords = (records, matches) => singleGameRecords(records, matches).filter((r) => r.name);
 
 /** The Leaderboard card (`elo.around`, backend §5/§14). The profile's own player is marked; it reads "You" only when the
  *  viewer is that player. */

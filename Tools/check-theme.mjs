@@ -3,11 +3,11 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import assert from "node:assert/strict";
 const ui = "crates/reborn-ui/ui/";
-const PAGES = ["index","controls","game","live","mods","music","onboarding","online","profile","recovery","settings","stats"];
+const PAGES = ["index","controls","match","live","mods","music","onboarding","online","profile","recovery","settings","stats"];
 // Pages moved onto the design system load exactly theme.css + their own page file (spec §11) and say so
 // with body.themed. Later tasks add pages here as they move.
 const THEMED = { index: "pages/play.css", settings: "pages/settings.css", mods: "pages/mods.css", music: "pages/music.css", controls: "pages/controls.css", stats: "pages/stats.css", profile: "pages/profile.css",
-  recovery: "pages/recovery.css", game: "pages/live.css", live: "pages/live.css", online: "pages/online.css",
+  recovery: "pages/recovery.css", match: "pages/game.css", live: "pages/live.css", online: "pages/online.css",
   onboarding: "onboarding.css",
 };
 for (const p of PAGES) {

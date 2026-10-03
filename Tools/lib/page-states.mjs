@@ -14,6 +14,22 @@ export const GAME_ID = 'aaaaaaaa-1111-4222-8333-444444444444';
 const STAGES = ['welcome', 'game_verification', 'controller_setup', 'controls_profile', 'system_check', 'updates', 'preparation', 'completion'];
 const SNAP = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-snapshot.json'), 'utf8'));
 const LIST = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/live-list.json'), 'utf8'));
+// stats_game for a VERIFIED game: the backend's test/fixtures/site-restyle/644488b4-snapshot.json game 1 (Bills 8, Eagles
+// 36) in the shape the server's /v1/games/:id, /plays, /boxscore and /drives give it (plays as { body, situation }).
+export const GAME_644 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/game-644488b4.json'), 'utf8'));
+// A whole match on one page (owner 10-03): three games, oldest first. Game 1 the totals-only game (GAME_ID), game 2 the
+// verified 644488b4, game 3 the same verified game under its own id.
+export const GAME_3 = 'bbbbbbbb-2222-4333-8444-555555555555';
+export function matchGames() {
+  const third = structuredClone(GAME_644);
+  third.game.id = GAME_3;
+  return { [GAME_644.game.id]: GAME_644, [GAME_3]: third };
+}
+// The match page (match.html, the site's /live/<match>): a real ranked best of 3, GET /v1/live/5c8d58ca-... as the
+// backend answered it on 2026-10-03 (49ers 2-1 Rams, Playz vs adamknowsball), as the live_match command hands it over.
+export const MATCH_5C8 = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/match-5c8d58ca.json'), 'utf8'));
+export const MATCH_PAGE_URL = `match.html?match=${MATCH_5C8.match.id}&from=stats.html`;
+export const MATCH_URL = `match.html?game=${GAME_3}&games=${[GAME_ID, GAME_644.game.id, GAME_3].join(',')}&series=2-1&from=stats.html`;
 // The Online redesign's leaderboard and dashboard answers (spec 2026-10-02 §4, §7). adamknowsball is #7, as in the
 // Stats fixture's elo(); week_delta is the backend's Task 15 field. One player, one set of figures: the board's
 // adamknowsball row is built from the same dashboard the Ranked tile reads (rating, rank, week change and the ranked
@@ -43,8 +59,10 @@ const PREP = { summary: { controller: 'XInput/0/Gamepad', controller_port: 0, co
 // A state may also carry: data (answers replacing the defaults), progress (extra onboarding_progress fields) and
 // click (a selector clicked after load, to reach a tab).
 export const STATES = {
-  stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }],
-  profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' }],
+  stats: [{ name: 'stats', url: 'stats.html', scope: 'main' }, { name: 'stats-records', url: 'stats.html#records', scope: 'main' }],
+  // The profile (mv2, no tabs), then each fuller view by its address.
+  profile: [{ name: 'profile', url: `profile.html?player=${F.ME}`, scope: 'main' },
+    ...['matches', 'stats', 'records', 'h2h'].map((t) => ({ name: `profile-${t}`, url: `profile.html?player=${F.ME}#${t}`, scope: 'main' }))],
   recovery: [
     { name: 'recovery', url: 'recovery.html', scope: 'main' },
     { name: 'recovery-clean', url: 'recovery.html', scope: 'main', data: { sessions: [SESSION('s1', 'Exited', false)] } },
@@ -52,11 +70,22 @@ export const STATES = {
     { name: 'recovery-notready', url: 'recovery.html', scope: 'main', data: { launch_check: { ...answers().launch_check, ready: false, problem: 'The game file could not be found.' } } },
   ],
   game: [
-    { name: 'game', url: `game.html?game=${GAME_ID}`, scope: 'main' },
-    { name: 'game-plays', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() } },
-    { name: 'game-box', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-box"]' },
-    { name: 'game-drives', url: `game.html?game=${GAME_ID}`, scope: 'main', data: { stats_game: verifiedGame() }, click: '[data-key="tab-drives"]' },
-    { name: 'game-missing', url: 'game.html?game=nope', scope: 'main' },
+    // A game (no match id) opens the match page by its games (owner 10-03: one style for every box score): an unverified
+    // game shows the strip and the totals-only words; a verified one (GAME_644, the site's own 644488b4 fixture as
+    // stats_game answers it) its tabs; a match of several games every game of it.
+    { name: 'game', url: `match.html?game=${GAME_ID}`, scope: 'main' },
+    { name: 'game-feed', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 } },
+    { name: 'game-box', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-box"]' },
+    { name: 'game-team', url: `match.html?game=${GAME_644.game.id}`, scope: 'main', data: { stats_game: GAME_644 }, click: '[data-key="tab-team"]' },
+    { name: 'game-missing', url: 'match.html?game=nope', scope: 'main' },
+    { name: 'game-match', url: MATCH_URL, scope: 'main', data: { stats_game_by_id: matchGames() } },
+  ],
+  // The match page (a matchmade match): the site's /live/<match> page on the real 5c8d58ca snapshot, each tab.
+  match: [
+    { name: 'match-feed', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 } },
+    { name: 'match-box', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 }, click: '[data-key="tab-box"]' },
+    { name: 'match-team', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 }, click: '[data-key="tab-team"]' },
+    { name: 'match-missing', url: 'match.html?match=nope', scope: 'main' },
   ],
   live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
@@ -68,7 +97,7 @@ export const STATES = {
   ],
 };
 
-/** Online's matchmaking panel (online-mm.js reads `mm_state` and `mm_rooms`) and its private room (online.js polls
+/** Online's matchmaking panel (online-mm.js reads `mm_state`; public lobbies and `mm_rooms` went 2026-10-03) and its private room (online.js polls
  *  `netplay_status`; an active snapshot shows the `.netplay-lobby` section), ruling P4-14. The answers have the shapes
  *  Tools/check-online-mm.mjs (captured from the real backend) and Tools/check-online-restored.mjs give them. The frozen
  *  clock keeps the queue timer still. */
@@ -78,7 +107,6 @@ function onlineStates() {
   const mm = (snapshot, extra = {}) => ({ link: 'connected', error: null, presence_on: true, relay_error: null, snapshot, ...extra });
   const match = (m) => ({ id: 'm1', mode: 'casual', status: 'pairing', relay_state: 'pairing', relay_deadline: null, best_of: 1, you_host: true, opponent: 'Jock',
     field: null, your_field_pick: 'the_pit', your_accepted: false, your_ready: false, series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0, ...m });
-  const rooms = [{ code: 'K7QP2M', mode: 'casual', best_of: 1, host: 'Jock' }, { code: 'R4NK3D', mode: 'ranked', best_of: 3, host: 'Tuna' }];
   const players = [{ id: 1, name: 'Adam', status: 'OK', ping: '0 ms' }, { id: 2, name: 'Jock', status: 'OK', ping: '38 ms' }];
   const room = (r) => ({ netplay_status: { phase: 'lobby', active: true, host: true, connection: 'traversal', port: 2626, code: 'ABC12345', can_start: true, players, ports: [1, 2, 0, 0], ...r } });
   const S = (name, data) => ({ name, url: 'online.html', scope: 'main', data });
@@ -86,20 +114,27 @@ function onlineStates() {
   const PICK = (m) => `try{localStorage.setItem('mm:mode','${m}')}catch{}`;
   const MATCH_FOUND = { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
     opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM, opponent_avatar_url: null }) }) };
-  const N = (name, data, extra = {}) => ({ name, url: 'online.html', scope: 'main', data: { leaderboard: LEADERBOARD, mm_rooms: [], ...data }, ...extra });
+  const N = (name, data, extra = {}) => ({ name, url: 'online.html', scope: 'main', data: { leaderboard: LEADERBOARD, ...data }, ...extra });
+  // Chat lines as the launcher hands them to the page: the line as `text` (the server's name; mm_state carries it under
+  // `body` too). online-mm-lobby keeps a `body`-only line, the page's older shape.
+  const say = (seq, name, text) => ({ seq, name, text, at: `2026-09-30T19:5${seq}:00Z` });
+  const ROOM = (r, chat = []) => ({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+    members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }], ...r }, chat });
+  // Your public profile: the team you play most online (Chargers) differs from the one you picked to play as (Falcons).
+  const PROFILE_MOST = { ...F.profile(), header: { ...F.profile().header, most_used_team: { name: 'Chargers', abbrev: 'LAC', tgid: 27, logo_url: null, primary: '#0080c6', secondary: '#ffc20e' } } };
   return [
-    S('online-mm-idle', { mm_state: mm(empty), mm_rooms: rooms }),
+    S('online-mm-idle', { mm_state: mm(empty) }),
     S('online-mm-queued', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: 'the_pit', waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }),
     S('online-mm-lobby', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open',
       members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
       chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) }),
     S('online-mm-pairing', { mm_state: mm({ ...empty, match: match({}) }) }),
     S('online-mm-match', { mm_state: mm({ ...empty, match: match({ id: 'm2', mode: 'ranked', status: 'running', relay_state: 'running', best_of: 3, you_host: false,
-      your_accepted: true, your_ready: true, series: [0, 1], wins_needed: 2, seat: 1 }), chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
+      your_accepted: true, your_ready: true, series: [0, 1], wins_needed: 2, seat: 1 }), chat: [say(1, 'Jock', 'gg')] }) }),
     S('online-mm-relay-error', { mm_state: mm({ ...empty, match: match({ id: 'm4', relay_state: 'go', your_accepted: true, your_ready: true }) },
       { relay_error: 'This Dolphin build does not support launcher Netplay.' }) }),
     S('online-mm-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true,
-      your_ready: true, series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }), mm_rooms: [] }),
+      your_ready: true, series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
     S('online-mm-signed-out', { mm_state: mm(null, { link: 'signed_out' }) }),
     S('online-room-host', room({})),
     S('online-room-direct', room({ connection: 'direct', code: '', port: 2626 })),
@@ -114,28 +149,38 @@ function onlineStates() {
     N('online-netplay-invite', { mm_state: mm(empty), netplay_pending_join: { code: 'K7QP2M9X' } }, { init: PICK('ranked') }),
     N('online-ranked', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-casual', { mm_state: mm(empty), content_repair_image: { current: true } }, { init: PICK('casual') }),
+    // The ranked rules (Adam, 2026-10-03): shown before the first ranked queue, and from "Ranked rules ›".
+    N('online-ranked-rules', { mm_state: mm(empty), content_repair_image: { current: true } }, { init: PICK('ranked') }),
     N('online-private', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
     N('online-searching', { mm_state: mm({ ...empty, ticket: { mode: 'ranked', field: null, waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }) }, { init: PICK('ranked') }),
+    // A casual Pickup search, with the team you play most (most_used_team, not the plays-as pick).
+    N('online-searching-casual', { mm_state: mm({ ...empty, ticket: { mode: 'casual', field: null, seed_kind: 'pickup', waited_ms: 42000, enqueued_at: '2026-09-30T19:59:18.000Z' } }),
+      player_profile: PROFILE_MOST }, { init: PICK('casual') }),
     N('online-match-found', MATCH_FOUND, { init: PICK('ranked') }),
     // The same, with the check moving the page's clock: "Accept within" counts down every second and hides at the deadline.
     N('online-match-found-tick', MATCH_FOUND, { init: PICK('ranked') }),
     N('online-accepted', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, your_accepted: true, opponent_elo: 1320, opponent_rank: 1 }) }) }),
     N('online-starting', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'starting', relay_state: 'room_formed', your_accepted: true, your_ready: true }) }) }),
     N('online-playing', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'running', your_accepted: true, your_ready: true, series: [1, 0] }),
-      chat: [{ seq: 1, name: 'Jock', body: 'gg', at: '2026-09-30T19:58:00Z' }] }) }),
-    // Ruling P9: between games of a series the card still says Playing, with the series line.
+      chat: [say(1, 'Jock', 'gg')] }) }),
+    // Ruling P9: between games of a series the card still says In play, with the series line.
     N('online-intermission', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, status: 'running', relay_state: 'intermission', your_accepted: true, your_ready: true, series: [1, 0] }) }) }),
     N('online-playing-casual', { mm_state: mm({ ...empty, match: match({ id: 'm6', status: 'running', relay_state: 'running', your_accepted: true, your_ready: true }) }) }),
     N('online-match-bare', { mm_state: mm({ ...empty, match: match({ id: 'm7', opponent: null, best_of: null, series: null, relay_deadline: 'not a date', opponent_elo: null, opponent_rank: 0, opponent_team: null }) }) }),
     N('online-match-small', { mm_state: mm({ ...empty, match: match({ id: 'm5', mode: 'ranked', best_of: 3, wins_needed: 2, relay_deadline: '2026-09-30T20:00:14.000Z',
       opponent_elo: 1320, opponent_rank: 1, opponent_team: LB_TEAM }) }) }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
-    N('online-room', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
-      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
-      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) },
+    N('online-room', { mm_state: mm(ROOM({}, [say(1, 'Jock', 'ready when you are')])) },
       { init: "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(t)=>{window.__copied=t;}}})" }),
-    // The host picked Pickup (the snapshot's seed_kind).
-    N('online-room-pickup', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true, seed_kind: 'pickup',
-      members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false }] }, chat: [] }) }),
+    // The host switched the room to Pickup (the snapshot's seed_kind); a GUEST reads it in the title, with no switch.
+    N('online-room-pickup', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: false, seed_kind: 'pickup',
+      members: [{ name: 'Jock', ready: true, field: null, you: false }, { name: 'Adam', ready: false, field: null, you: true }] }, chat: [] }) }),
+    // Today's server has no kind route: the switch is refused with a quiet sentence and the room carries on.
+    N('online-room-kind-old', { mm_state: mm(ROOM({})), mm_room_action: { __reject: 'Not found' } }),
+    // The game is starting: the host's switch is shown but cannot be used.
+    N('online-room-started', { mm_state: mm(ROOM({ status: 'starting', members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false }] })) }),
+    // A room with a conversation (the chat keeps every line, 2026-10-03).
+    N('online-room-chat', { mm_state: mm(ROOM({}, [say(1, 'Jock', 'yo, you up?'), say(2, 'Adam', 'running it back'), say(3, 'Jock', 'Pickup this time'),
+      say(4, 'Adam', 'bet. switching it'), say(5, 'Jock', 'ready when you are')])) }),
     N('online-held', { mm_state: mm({ ...empty, match: match({ id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', best_of: 3, your_accepted: true, your_ready: true,
       series: [1, 1], wins_needed: 2, hold_reason: 'content-mismatch' }) }) }),
     N('online-held-other', { mm_state: mm({ ...empty, match: match({ id: 'm8', status: 'held', relay_state: 'held', your_accepted: true, your_ready: true, hold_reason: 'series-too-fast' }) }) }),
@@ -146,8 +191,8 @@ function onlineStates() {
     N('online-offline', { mm_state: mm(null, { link: 'offline' }) }),
     N('online-disabled', { mm_state: mm(null, { link: 'disabled' }) }),
     N('online-presence', { mm_state: mm(empty) }, { init: PICK('ranked') }),
-    N('online-lobbies', { mm_state: mm(empty), mm_rooms: rooms }, { click: '[data-key="mode-private"]' }),
-    N('online-lobbies-none', { mm_state: mm(empty), mm_rooms: [] }, { click: '[data-key="mode-private"]' }),
+    // No public lobbies (Adam, 2026-10-03: "you just have to send the codes"): nothing lists or opens one.
+    N('online-no-lobbies', { mm_state: mm(empty) }, { click: '[data-key="mode-private"]' }),
     N('online-live', { mm_state: mm(empty) }, { init: PICK('ranked') }),
     N('online-live-many', { mm_state: mm(empty), live_matches: [0, 1, 2, 3, 4].map((i) => ({ ...LIST.matches[i % 2], id: `b41cf41a-43c4-4d1b-aaa8-05e4e72c73${String(i).padStart(2, '0')}` })) }, { init: PICK('ranked') }),
     N('online-live-none', { mm_state: mm(empty), live_matches: [] }, { init: PICK('ranked') }),
@@ -185,16 +230,11 @@ function onlineStates() {
     // The chat field keeps its text and focus across redraws too (ruling P16): a room with chat.
     N('online-focus-keep-chat', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
       members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
-      chat: [{ seq: 1, name: 'Jock', body: 'ready when you are', at: '2026-09-30T19:58:00Z' }] }) }),
+      chat: [say(1, 'Jock', 'ready when you are')] }) }),
     // (redesign states are added above this line)
   ];
 }
 
-/** stats_game for a VERIFIED game (plays_status 'verified'), so game.js draws the tabs: plays, box score, drives. */
-function verifiedGame() {
-  const g = answers().stats_game;
-  return { ...g, game: { ...g.game, plays_status: 'verified' }, plays: SNAP.games[1]?.plays ?? [] };
-}
 
 /** Every command's answer (check-shell-pages.mjs's FULL, plus what these pages read). Unknown commands answer null. */
 export function answers() {
@@ -205,7 +245,7 @@ export function answers() {
     ...['Up', 'Down', 'Left', 'Right'].flatMap((x) => ['Main Stick', 'C-Stick', 'D-Pad'].map((g) => ({ key: `${g}/${x}`, label: `${g} ${x}`, binding: `\`${x}\`` }))),
     ...['L', 'R'].map((x) => ({ key: `Triggers/${x}`, label: x, binding: `\`Trigger ${x}\`` }))];
   Object.assign(data, {
-    session_active: false, ui_notices: [], netplay_status: null, netplay_pending_join: null, mm_state: null, mm_rooms: null, mm_launch_prefs: null,
+    session_active: false, ui_notices: [], netplay_status: null, netplay_pending_join: null, mm_state: null, mm_launch_prefs: null,
     settings_paths: { runtime: null, game: null, userDir: null, legacyRoot: null },
     update_policy: { automatic: false, source: 'settings' }, update_check: { state: 'current', current: '3.0.0' }, update_activity: { downloading: false, ready: null },
     content_status: { phase: 'up_to_date', note: 'Everything is current.', components: [] },
@@ -256,12 +296,13 @@ export async function settle(page) {
   await page.evaluate(() => Promise.race([Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))), new Promise((r) => setTimeout(r, 5000))]));
 }
 
-export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null, init = null } = {}) {
+export async function openState(browser, base, state, { viewport = { width: 1280, height: 800 }, glass = false, slow = false, reducedMotion = 'reduce', pad = false, data = null, init = null, realImages = false } = {}) {
   const context = await browser.newContext({ viewport, reducedMotion, timezoneId: 'UTC', locale: 'en-US' });
   // `init`: an extra script run before the page's own (a check that drives the page's timers itself, say).
   if (init) await context.addInitScript(init);
   const png = readFileSync(path.join(ui, 'art/cover.png'));
-  await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
+  // `realImages`: the backend's catalog images and Discord avatars load for real (a screenshot to compare with the site).
+  if (!realImages) await context.route(/^https:\/\/(api\.nflstreetreborn\.com|cdn\.discordapp\.com)\//, (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   const all = { ...answers(), ...(state.data || {}), ...(data || {}) };
   await context.addInitScript(({ data, stages, glass, slow, pad, extra }) => {
     const FIXED = Date.UTC(2026, 8, 30, 20, 0, 0);
@@ -282,9 +323,11 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       window.__calls.push({ cmd, args });
       if (cmd === 'launcher_look') return { ...data.launcher_look, windowGlass: glass, slowAnimations: slow, glassApplied: glass };
       if (cmd === 'window_glass_apply') return { ...data.launcher_look, windowGlass: !!args.enabled, glassApplied: !!args.enabled };
+      if (cmd === 'stats_game' && data.stats_game_by_id && args.gameId in data.stats_game_by_id) return data.stats_game_by_id[args.gameId];
       if (cmd === 'player_profile' && args.before) return { ok: true, matches: (data.player_profile_all || []).filter((m) => m.at < args.before).slice(0, 10) };
       if (cmd === 'launch') return new Promise(() => {});
-      if (cmd in data) return data[cmd];
+      // `{ __reject: 'why' }`: the command fails with that sentence (a server that refuses, or lacks the route).
+      if (cmd in data) { const v = data[cmd]; if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
       if (/^onboarding_/.test(cmd)) return { outcome: 'recorded' };
       return null;
     } } };

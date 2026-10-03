@@ -6400,7 +6400,7 @@ fn main() {
                 let saved = reborn_core::settings::settings_path(&Platform::detect())
                     .and_then(|f| reborn_core::settings::launcher_look(&f))
                     .map(|l| l.window_glass)
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 apply_glass(&w, material_here(), saved);
             }
             Ok(())
@@ -6410,7 +6410,6 @@ fn main() {
             online_mm::mm_state,
             online_mm::mm_queue,
             online_mm::mm_leave_queue,
-            online_mm::mm_rooms,
             online_mm::mm_room_create,
             online_mm::mm_room_join,
             online_mm::mm_room_lookup,

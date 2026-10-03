@@ -1,6 +1,6 @@
 /* Profile, the online player hub (spec §8.7). Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs).
    The match rows, table, portrait, cover wash and dots are theme.css components. */
-body.page-profile #main{padding:36px 36px 32px}
+body.page-profile #main{padding:24px 28px 28px}
 /* the page title stays for screen readers; the page starts with Back and the card (mockup) */
 .page-profile .page-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .page-profile #screen{display:flex;flex-direction:column;gap:24px;min-width:0}
@@ -8,26 +8,38 @@ body.page-profile #main{padding:36px 36px 32px}
 .pf-back{all:unset;border-radius:var(--r-md);align-self:flex-start;display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);cursor:pointer}
 .pf-back:hover{color:var(--fg)}
 .pf-back .chev{margin:0;transform:rotate(135deg)}
-/* the profile card: the cover wash behind the whole card, the avatar centred on the identity block, the live card right */
-.pf-card{position:relative;overflow:hidden}
-.pf-row{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:24px;padding:24px}
-.pf-pic{position:relative;display:grid;place-items:center;width:104px;height:104px;border-radius:50%}
-.pf-pic>.pf-avatar{width:104px;height:104px;font-size:42px;background:transparent}
-.pf-name{font:700 28px/1.15 Inter,system-ui,sans-serif;letter-spacing:-.01em}
-.pf-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:var(--fg-2)}
+/* the hero (mv2-3): the cover wash behind the whole card; avatar | name, status | Plays as | Joined, the buttons (the
+   live card under them while they play) on the left; the Elo panel on the right */
+.pf-card{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) 400px;align-items:stretch}
+.pf-row{position:relative;display:flex;align-items:center;gap:22px;padding:24px 26px;min-width:0}
+.pf-pic{position:relative;flex:none;display:grid;place-items:center;width:96px;height:96px;border-radius:50%}
+.pf-pic>.pf-avatar{width:96px;height:96px;font-size:40px;background:transparent}
+.pf-id{min-width:0}
+.pf-name{font:700 28px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
+.pf-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--fg-2)}
+.pf-meta b{font-weight:600;color:var(--fg)}
 .pf-dot{color:var(--fg-3)}
 .pf-status{font-weight:600;color:var(--ok)}
+.pf-status.off{font-weight:500;color:var(--fg-2)}
 .pf-team{display:inline-flex;align-items:center;gap:8px}
 .pf-team .team-logo{width:18px;height:18px}
 .pf-team select{height:28px;padding:0 8px;font-size:12.5px}
 .pf-said{font-size:12px;color:var(--fg-2)}
-.pf-sum{display:flex;flex-wrap:wrap;margin-top:12px;font-size:13.5px;color:var(--fg-2)}
-.pf-sum>span{display:inline-flex;align-items:baseline;gap:6px;padding:0 16px;line-height:20px}
-.pf-sum>span:first-child{padding-left:0}
-.pf-sum>span+span{border-left:1px solid var(--stroke-hi)}
-.pf-sum b{font:700 15px Inter,system-ui,sans-serif;color:var(--fg)}
-.pf-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px}
-.pf-live{width:260px;padding:12px 14px;border-radius:12px;background:var(--on-art);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.pf-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
+.pf-id>.pf-live{margin-top:14px}
+/* the Elo panel: the rating and the week's change, Rank · Peak · Record, the sparkline along its foot */
+.pf-elo{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-content:center;align-items:end;gap:6px 28px;padding:22px 26px;
+  background:var(--field-bg);border-left:1px solid var(--stroke)}
+.pf-elo>.k-label{grid-column:1/-1}
+.pf-elo-v{white-space:nowrap;font:700 46px/1 Inter,system-ui,sans-serif;letter-spacing:-.035em}
+.pf-elo-v small{margin-left:8px;font:600 14px Inter,system-ui,sans-serif;letter-spacing:0;color:var(--fg-2)}
+.pf-elo-v small.up{color:var(--ok)}.pf-elo-v small.down{color:var(--red-ink)}
+.pf-elo-facts{display:grid;grid-template-columns:auto auto;gap:3px 14px;font-size:12.5px;color:var(--fg-2);white-space:nowrap}
+.pf-elo-facts b{font-weight:600;text-align:right;color:var(--fg)}
+.pf-elo>.ch{grid-column:1/-1;margin-top:6px;height:34px;flex:none}
+.pf-elo.unranked .pf-elo-v{font-size:34px;color:var(--fg-2)}
+.pf-elo.unranked .vc-sub{grid-column:1/-1;margin:0}
+.pf-live{width:300px;max-width:100%;padding:12px 14px;border-radius:12px;background:var(--on-art);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
 .pf-live-top{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-2)}
 .pf-live-top .lbl{font:700 11px Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--red-ink)}
 .pf-live-top .q{margin-left:auto}
@@ -38,102 +50,109 @@ body.page-profile #main{padding:36px 36px 32px}
 .pf-live-sc .team-logo{width:28px;height:28px}
 .pf-live-sc strong{font:700 22px Inter,system-ui,sans-serif}
 .pf-live-bot{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--fg-2)}
-/* the overview: one surface, identical columns; the big numbers share a line, the visuals end on one line */
-.pf-ov{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
-.pf-ov.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
-.pf-ov.cols-1{grid-template-columns:minmax(0,1fr)}
-.pf-ovc{display:flex;flex-direction:column;min-width:0;padding:20px 24px}
-.pf-ovc+.pf-ovc{border-left:1px solid var(--stroke)}
-.pf-ovh{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.pf-ovh h2{font:600 14px/1.3 Inter,system-ui,sans-serif}
-.pf-ovh span{font-size:12px;color:var(--fg-3)}
-.pf-big{display:flex;align-items:baseline;gap:10px;margin-top:14px;font:700 34px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
-.pf-big em{font:600 15px Inter,system-ui,sans-serif;font-style:normal;letter-spacing:0;color:var(--fg-2)}
-.pf-big em.up{color:var(--ok)}
-.pf-big em.down{color:var(--red-ink)}
-.pf-sub{margin-top:4px;font-size:12.5px;color:var(--fg-3)}
-.pf-spark{display:block;box-sizing:content-box;width:100%;height:70px;margin-top:auto;padding-top:16px;color:var(--red)}
-.pf-bars,.pf-pair{margin-top:auto;padding-top:16px}
-.pf-bar-row{display:grid;grid-template-columns:62px minmax(0,1fr) 40px 40px;align-items:center;gap:10px;height:28px;font-size:13px}
-.pf-bar{display:block;height:4px;border-radius:2px;overflow:hidden;background:color-mix(in srgb,var(--red) 35%,transparent)}
-.pf-bar i{display:block;height:100%;background:var(--ok)}
-.pf-bar-row b{font-weight:600;text-align:right}
-.pf-mute{font-size:12px;text-align:right;color:var(--fg-3)}
-.pf-pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.pf-pair span{display:block;font-size:12px;color:var(--fg-3)}
-.pf-pair b{font:600 18px Inter,system-ui,sans-serif}
-/* Match history beside Career / Leaderboard / Records: first cards start and end on one line */
-.pf-cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:24px;align-items:stretch}
-.pf-col{display:flex;flex-direction:column;min-width:0}
-.pf-col>.m-list{flex:1}
-/* rows keep their natural height (56px, games 40px); the card fills down to the right column, the pager at its bottom */
-.pf-col .m-list>*{flex:none}
-.pf-side{display:flex;flex-direction:column;gap:24px;min-width:0}
-.pf-side>section{display:flex;flex-direction:column}
-.pf-side>section:last-child{flex:1}
-.pf-side>section:last-child>.glass{flex:1}
-.pf-pad{padding:16px}
-.pf-car{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 16px}
-.pf-car b{display:block;margin-top:4px;font:600 18px Inter,system-ui,sans-serif}
-.pf-car-s{display:block;margin-top:2px;font-size:11.5px;color:var(--fg-3)}
-.pf-car-s b{display:inline;margin:0;font:600 11.5px Inter,system-ui,sans-serif;color:var(--fg)}
-.pf-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--stroke);font-size:11.5px;color:var(--fg-3)}
-.pf-lb{display:flex;flex-direction:column;padding:0 16px}
-.pf-lb-row{flex:1;display:grid;grid-template-columns:36px 28px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:40px;font-size:13px;color:inherit;text-decoration:none}
-.pf-lb-row+.pf-lb-row{border-top:1px solid var(--stroke)}
-.pf-lb-row .avatar{width:28px;height:28px;font-size:12px}
-.pf-lb-rank{color:var(--fg-3)}
-.pf-lb-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-lb-row.me{margin:0 -16px;padding:0 16px;background:color-mix(in srgb,var(--red) 8%,transparent);box-shadow:inset 3px 0 0 var(--red)}
-.pf-lb-row.me .pf-lb-name{font-weight:600}
-a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
-.pf-recs{display:flex;flex-direction:column;padding:0 16px}
-.pf-rec{display:grid;grid-template-columns:minmax(0,1fr) auto 44px 48px;align-items:center;gap:12px;min-height:38px;font-size:12.5px;color:inherit;text-decoration:none}
-.pf-rec[hidden]{display:none}
-.pf-rec+.pf-rec{border-top:1px solid var(--stroke)}
-.pf-rec .k{color:var(--fg-2)}
-.pf-rec .who{display:inline-flex;align-items:center;gap:6px;min-width:0}
-.pf-rec .who .team-logo{width:18px;height:18px}
-.pf-rec b{font-weight:600;text-align:right}
+/* the profile under the hero: the v2 grid rows (theme.css .vgrid), 16px apart */
+.pf-body,.pf-view{display:flex;flex-direction:column;gap:16px;min-width:0}
+/* Elo history: the curve, the leaderboard around them on the right */
+.pf-elo-h{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:18px}
+.pf-elo-h.solo{grid-template-columns:minmax(0,1fr)}
+.pf-lad{display:flex;flex-direction:column;margin:0 -18px 0 0;border-left:1px solid var(--rule)}
+.pf-lad>.k-label{padding:0 0 8px 14px}
+.pf-lad .vc-tr{grid-template-columns:22px minmax(0,1fr) auto;min-height:30px;padding:0 18px 0 14px;font-size:12.5px;text-decoration:none}
+.pf-lad .vc-tr b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-lad .vc-tr.me{background:var(--red-wash);box-shadow:inset 2px 0 0 var(--red)}
+.pf-lad-r{color:var(--fg-3)}.pf-lad-e{color:var(--fg-2)}
+/* Record and Last 10 */
+.pf-big{font:700 40px/1 Inter,system-ui,sans-serif;letter-spacing:-.03em}
+.pf-big+.vc-sub{margin:6px 0 0}
+.pf-halves{display:grid;grid-template-columns:1fr 1fr;margin-top:auto;padding-top:12px;border-top:1px solid var(--rule)}
+.pf-q{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.pf-q+.pf-q{padding-left:18px;border-left:1px solid var(--rule)}
+.pf-q b{margin-top:6px;font:700 20px Inter,system-ui,sans-serif}
+.pf-q small{margin-top:2px;font-size:11.5px;color:var(--fg-3)}
+#record .vc-b,#last10 .vc-b{gap:0}
+#record .pf-halves{margin-top:14px}
+.pf-strip{margin-top:14px;padding-top:12px;border-top:1px solid var(--rule)}
+.pf-strip .wl-strip{gap:3px}
+.pf-strip .wl-strip>span{flex:1;width:auto;height:22px;font-size:10.5px}
+.pf-kv{margin-top:auto;padding-top:12px}
+/* the tables of the profile: Recent matches, Head to head, Top connections */
+.pf-res{font-weight:700}
+.pf-res.W{color:var(--ok)}.pf-res.L{color:var(--red-ink)}
+.pf-who{display:flex;align-items:center;gap:9px;min-width:0;color:inherit;text-decoration:none}
+.pf-who b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+a.pf-who:hover b{text-decoration:underline}
+.pf-who .avatar{width:24px;height:24px;font-size:11px}
+.pf-who .team-logo{width:22px;height:22px}
+.pf-date,.pf-mut{color:var(--fg-3)}
+.pf-mut{color:var(--fg-2)}
+.pf-recent .m-empty{padding:16px 18px}
+/* Career highlights: eight cells in a row, labels small enough to read whole (mv2-3) */
+#career .vc-cells>div{padding:14px}
+#career .k-label{font-size:10px;letter-spacing:.03em}
+.pf-records{display:flex;flex-direction:column;gap:16px}
 .pf-none{margin:0;padding:16px 0;color:var(--fg-2)}
 .pf-err{margin:0;padding:8px 16px;font-size:12px;color:var(--red-ink)}
-/* Full stats and More stats: theme.css's .tbl (a shared 220px name column, so every table's columns line up) */
-.pf-tbl{overflow-x:auto;overflow-y:hidden}
-.pf-tbl .tbl{min-width:960px}
+/* All stats and Head to head (owner 10-03): v2 cards (.vc) on the 12-column grid like the profile itself. A table sits
+   straight in its card and fills it (its rows share any extra height, so no card leaves space under its last row);
+   theme.css's .tbl, its uppercase box-score headings on the card's rules, 18px in from the card's edges as .vc-tr is.
+   The shared 220px name column keeps every table's columns lined up. */
+.pf-tcard>.tbl,.pf-tcard>.pf-tbl{flex:1}
+.pf-tbl{display:flex;flex-direction:column;overflow-x:auto;overflow-y:hidden}
+.pf-tbl>.tbl{flex:1}
+.pf-tcard .tbl thead th{height:32px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.pf-tcard .tbl tbody>tr:first-child>*{border-top:0}
+.pf-tcard .tbl tbody>tr>*{border-top-color:var(--rule)}
+.pf-tcard .tbl tr.total>*{border-top-color:var(--stroke-hi)}
+.pf-tcard .tbl tr>:first-child{padding-left:18px}
+.pf-tcard .tbl tr>:last-child{padding-right:18px}
+.pf-tcard .tbl tr.more>td{padding:0}
+#full-stats .tbl{min-width:960px}
+#h2h .tbl{min-width:820px}
+.pf-fs-tabs{display:flex}
+/* In wins vs losses: the Stats page's comparison, its rows sharing the card's height */
+.pf-cmp{flex:1;display:flex;flex-direction:column;padding:0 18px 6px}
+.pf-cmp-r{flex:1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;min-height:44px;border-top:1px solid var(--rule);font-variant-numeric:tabular-nums}
+.pf-cmp-r>b{font:700 20px Inter,system-ui,sans-serif}
+.pf-cmp-r>b:last-child{text-align:right}
+.pf-cmp-r>span{width:96px;font-size:11.5px;text-align:center;color:var(--fg-3)}
+.pf-cmp-h{flex:none;min-height:34px;height:34px}
+.pf-cmp-h>b{font:600 12px Inter,system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase}
+/* a column of cards in one grid cell (In wins vs losses over Laterals & pitches), together the row's height */
+.pf-stack{display:flex;flex-direction:column;gap:16px;min-width:0}
+.pf-stack>.vc{flex:1 1 auto}
+/* Per game: six cells to a row (theme.css's .vc-cells draws four) */
+#per-game .vc-cells>div{justify-content:flex-start}
+#per-game .vc-cells.wrap>div:nth-child(4n+1){border-left:1px solid var(--rule)}
+#per-game .vc-cells.wrap>div:nth-child(6n+1){border-left:0}
 .pf-sort{all:unset;border-radius:var(--r-md);cursor:pointer}
 .pf-sort:hover{color:var(--fg)}
 .tbl tr.more td{height:auto;padding:0}
 .pf-showall{all:unset;border-radius:var(--r-md);box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:38px;cursor:pointer;font:600 12.5px Inter,system-ui,sans-serif;color:var(--fg-2)}
 .pf-showall:hover{background:var(--glass-1);color:var(--fg)}
 .pf-showall .chev{margin:0}
-.pf-more{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
-.pf-more-card{overflow:hidden;padding-top:8px}
-.pf-more-card.wide{grid-column:1/-1;overflow-x:auto}
-.pf-more-card.wide .tbl{min-width:820px}
-.pf-more-card h3{margin:0;padding:8px 16px;font:600 14px Inter,system-ui,sans-serif}
+/* Best QB → receiver (owner 10-03, "you can't even read the text"): headings --fg-2, the pairs and their numbers --fg,
+   and a long pair wraps instead of being cut off */
+#combos .vc-h h2,#combos .tbl tbody>tr>*{color:var(--fg)}
+#combos .tbl thead th{color:var(--fg-2)}
+#combos .tbl tbody th{white-space:normal;padding-top:6px;padding-bottom:6px;line-height:1.35}
+#combos .tbl .who>span:last-child{white-space:normal}
 .pf-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
-.pf-pls{display:flex;flex-direction:column;padding:0 16px}
-.pf-pl{display:flex;align-items:center;gap:14px;min-height:56px;border-top:1px solid var(--stroke)}
-.pf-pl-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.pf-pl-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.pf-pl-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-pl-head .k-label{flex:none;font-size:10px}
-.pf-pl-line{font-size:12px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-pl-line b{font-weight:600;color:var(--fg)}
-.pf-pl.none .pf-pl-name{font-weight:500;color:var(--fg-3)}
+.pf-pls{padding-bottom:4px}
+.pf-pls>.pl-row:first-child{border-top:0}
 @media (max-width:1100px){
-  .pf-cols{grid-template-columns:minmax(0,1fr)}
-  .pf-ov,.pf-ov.cols-2{grid-template-columns:minmax(0,1fr)}
-  .pf-ovc+.pf-ovc{border-left:0;border-top:1px solid var(--stroke)}
-  .pf-row{grid-template-columns:auto minmax(0,1fr)}
-  .pf-live{grid-column:1/-1;width:auto}
-  .pf-more{grid-template-columns:minmax(0,1fr)}
+  .pf-card{grid-template-columns:minmax(0,1fr)}
+  .pf-elo{border-left:0;border-top:1px solid var(--stroke)}
+  #per-game .vc-cells{--n:3 !important}
+  #per-game .vc-cells.wrap>div:nth-child(6n+1){border-left:1px solid var(--rule)}
+  #per-game .vc-cells.wrap>div:nth-child(3n+1){border-left:0}
+  .pf-elo-h{grid-template-columns:minmax(0,1fr)}
+  .pf-lad{margin:0;border-left:0;border-top:1px solid var(--rule);padding-top:8px}
 }
 /* Below 1280 a wide table can scroll sideways in its card: the Player column stays put on a solid surface and the
    numbers scroll under it (profile.js followFocus keeps a pad's focused heading in view). */
 @media (max-width:1279px){
-  .pf-tbl .tbl tr>:first-child:not([colspan]),.pf-more-card.wide .tbl tr>:first-child:not([colspan]){position:sticky;left:0;z-index:1}
-  .pf-tbl.scrolled .tbl tr>:first-child:not([colspan]),.pf-more-card.wide.scrolled .tbl tr>:first-child:not([colspan]){background:var(--surface-solid)}
+  .pf-tbl .tbl tr>:first-child:not([colspan]){position:sticky;left:0;z-index:1}
+  .pf-tbl.scrolled .tbl tr>:first-child:not([colspan]){background:var(--surface-solid)}
 }
 @media (max-width:1000px){
   body.page-profile #main{padding:24px 24px 16px}
@@ -141,4 +160,4 @@ a.pf-lb-row:hover .pf-lb-name{text-decoration:underline}
   #h2h .tbl{min-width:0}
   #h2h .tbl tr>:nth-child(4),#h2h .tbl tr>:nth-child(7){display:none}
 }
-@media (max-width:720px){.pf-row{grid-template-columns:minmax(0,1fr)}.pf-car{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:720px){.pf-row{flex-direction:column;align-items:flex-start}}

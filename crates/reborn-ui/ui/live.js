@@ -16,7 +16,7 @@
 // `/live-assets/...` catalog under the default origin, or from Discord's avatar CDN -- the only two
 // prefixes the launcher's CSP `img-src` allows. A custom `backend_origin` (Settings) cannot widen that
 // static CSP, so its images would simply fail to load and draw their badges instead.
-// The renderers (header, the three tabs, "not found") live in live-game-render.js, shared with game.js.
+// The renderers (header, the three tabs, "not found") live in live-game-render.js.
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN, makePoller } from './live-common.js';
 import { TABS, header, newestGame, notFound } from './live-game-render.js';

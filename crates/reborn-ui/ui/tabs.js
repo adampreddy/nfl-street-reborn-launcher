@@ -32,6 +32,8 @@ function place(group, bar, ind) {
   const on = bar.querySelector('[aria-pressed="true"]');
   if (!bar.isConnected || !on) return;
   const to = { x: on.offsetLeft, w: on.offsetWidth };
+  // The highlight sits exactly on the selected tab: same top and height (static; only transform animates).
+  ind.style.top = `${on.offsetTop}px`; ind.style.height = `${on.offsetHeight}px`;
   // A strip wider than its box scrolls inside itself: keep the selected tab in view (the highlight scrolls with it).
   if (bar.scrollWidth > bar.clientWidth) {
     const right = on.offsetLeft + on.offsetWidth;

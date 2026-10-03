@@ -42,17 +42,17 @@ The mode area shows exactly one of the states below. Which one is decided by the
 uses today (`online-mm.js` 335–359): live match → room → ticket → idle. Held matches draw idle plus a notice.
 
 ### 3.1 Idle: the three tiles
-- **Ranked** tile (big, spans two rows): name 56px Inter 800; "First to two wins. Moves your Elo.";
+- **Ranked** tile (big, spans two rows): name 56px Inter 800; "First to two wins. Climb the board.";
   bottom-right `#7` (34px), "1,184 Elo", "▲ 16 this week" (green; red ▼ for a drop; hidden when 0 or unknown).
-- **Casual** tile: "One game. Elo stays put."
-- **Private room** tile: "Host a room or join with a code."
+- **Casual** tile: "One game. No Elo, no pressure."
+- **Private room** tile: "Your crew, your code."
 - Ranked and Casual show a pill top-right: `● {queue_depth[mode]} searching` (from `snapshot.queue_depth`,
   which exists today). Hidden when the count is unknown. Private room shows no count (rooms are private).
 - **Pick:** one tile is picked. Picked = 2px red border, picture in full colour. Not picked = 1px stroke,
   picture desaturated and darkened. The pick is stored in `localStorage mm:mode` as today; Private room is a
   third value stored only in page state (`mm:mode` keeps `ranked|casual` so the queue command is unchanged).
 - **Action row** follows the pick:
-  - Ranked: primary button "Find a ranked game", note "Matched by Elo".
+  - Ranked: primary button "Find a ranked game", note "Matched to your level".
   - Casual: "Find a casual game", note "Matched with anyone".
   - Private room: primary "Host a room" (= `mm_room_create {mode, public:false}`), a room-code field
     (`Room code`), a quiet **Join** button (= `mm_room_join {code}`, quiet until a code is typed), note
@@ -89,7 +89,7 @@ uses today (`online-mm.js` 335–359): live match → room → ticket → idle. 
 - A relay error shows as today's `p.refusal` text under the pill.
 
 ### 3.6 Playing a series
-- "PLAYING", VS, "Game {n} · Series {a}–{b}" (when `best_of > 1`), "Ranked · first to two wins".
+- "IN PLAY", VS, "Game {n} · Series {a}–{b}" (when `best_of > 1`), "Ranked · first to two wins".
   Leave match top-right. Casual shows "Casual · one game" and no series line.
 
 ### 3.7 Your private lobby (room)
@@ -184,6 +184,7 @@ off (today), ranks/Elo/changes are hidden and the leaderboard card shows "Rankin
   "Leave lobby" → "Leave room". "Player name / Host code / Join game / Create room" (direct connection dialog) unchanged.
 - `check-online-mm` assertions are updated to these strings; every behavioural assertion (commands, args,
   `#screen` hidden while busy, timer moves, presence_page sent, no page errors) stays.
+- NFL Street voice, 10-03 (display words only; stored `mm:mode` stays casual/ranked, commands and args unchanged): purpose line "Ranked, casual, or your crew. Pick your game."; tile lines "First to two wins. Climb the board." / "One game. No Elo, no pressure." / "Your crew, your code."; Ranked note "Matched to your level"; matchup label "IN PLAY" while running/intermission (was PLAYING); tiles Casual / Private Room; button "Find a casual game", notes "Anyone's game" and "Send the code to your crew"; searching "Finding a casual game" / "Finding players near N Elo" / "Searching 0:42"; "GAME ON" label, "0:14 to accept", "You're in. Waiting on <name>…"; The casual queue keeps its name "Casual" everywhere (mode line, live-card footer, lobby list, search chip) because Pickup is a private-room game type (Quick game | Pickup); "Your room", "Your crew", "Hold up" (ready toggle when ready), "Both ready, then the host kicks it off."; signed-out "Sign in to hit the street"; invite "<host> wants you in the room" / "You've got a room invite"; "Streets are quiet right now."; "Rankings drop soon.". Ranked button and the signed-out body stay as they were.
 
 ## 9. Files
 - `online.html` (structure), `pages/online.css` (new, theme tokens only), `online-mm.js` (render functions

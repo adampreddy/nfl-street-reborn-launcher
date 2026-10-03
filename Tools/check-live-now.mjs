@@ -182,7 +182,7 @@ function check(what, ok, detail = "") {
   const page = await loadLive(invoke);
   const section = page.section();
   const t = text(section);
-  check("the empty state says so", t.includes("No live games right now."), t);
+  check("the empty state says so", t.includes("Streets are quiet right now."), t);
   check("the empty state has no rows", byClass(section, "live-row").length === 0);
   page.done();
 }

@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Game | NFL Street Reborn</title>
+  <title>Match | NFL Street Reborn</title>
   <script src="look-boot.js"></script>
   <link rel="icon" href="art/nsr-sidebar-display.png">
-  <link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="pages/live.css">
+  <link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="pages/game.css">
 </head>
-<body class="shell themed ob page-online">
+<body class="shell themed ob page-game page-match">
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="backdrop" aria-hidden="true"></div>
   <header class="app-header"><span class="breadcrumb">NFL STREET REBORN</span><span id="bridge" class="pill">Connecting</span></header>
@@ -19,12 +19,30 @@
     <div class="nav-bottom"><a href="settings.html"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-6 0v6"/></svg><span>Settings</span></a><a href="recovery.html"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3h.01"/></svg><span>Help</span></a></div>
   </nav>
   <main id="main" tabindex="-1">
-    <div class="page-heading"><span class="eyebrow">NFL STREET REBORN</span><h1>Game</h1><p class="purpose">One game, play by play.</p></div>
-    <section id="screen" class="live-view"><p class="loading">Loading…</p></section>
+    <h1 class="sr-only">Match</h1>
+    <!-- The site's /live/<match> page (Reborn Backend src/web/live.html), run by the vendored site/live-page.js. -->
+    <section id="screen" class="game-site">
+      <div id="game-bar" class="game-bar"></div>
+      <div id="site-game"><nsr-body class="site"><div class="pg">
+        <header id="strip" class="strip-slot"><p class="loading">Loading the game&hellip;</p></header>
+        <div class="tabs" role="tablist" aria-label="Game views">
+          <button type="button" role="tab" id="tabbtn-feed" aria-controls="tab-feed" data-tab="feed" data-key="tab-feed" aria-selected="true">Live Feed</button>
+          <button type="button" role="tab" id="tabbtn-box" aria-controls="tab-box" data-tab="box" data-key="tab-box" aria-selected="false">Box Score</button>
+          <button type="button" role="tab" id="tabbtn-team" aria-controls="tab-team" data-tab="team" data-key="tab-team" aria-selected="false">Team Stats</button>
+        </div>
+        <p id="latest" class="latest" role="status" aria-live="polite"></p>
+        <section id="tab-feed" class="panel" role="tabpanel" aria-labelledby="tabbtn-feed" tabindex="0">
+          <div id="feed-pick"></div>
+          <div class="feed-col"><div id="panel"></div><div id="allplays"></div></div>
+        </section>
+        <section id="tab-box" class="panel" role="tabpanel" aria-labelledby="tabbtn-box" tabindex="0" hidden></section>
+        <section id="tab-team" class="panel" role="tabpanel" aria-labelledby="tabbtn-team" tabindex="0" hidden></section>
+        <p id="note" class="conn" role="status"></p>
+      </div></nsr-body></div>
+    </section>
     <details class="core"><summary>Diagnostic details</summary><div class="out-head"><button id="clear" type="button">Clear log</button><a href="harness.html">Developer tools</a></div><pre id="out"></pre></details>
   </main>
   <footer class="input-footer"><span id="input-hints"></span><span>NFL STREET REBORN</span></footer>
-  <script type="module" src="app-shell.js"></script><script type="module" src="game.js"></script>
+  <script type="module" src="app-shell.js"></script><script type="module" src="match.js"></script>
 </body>
 </html>
-

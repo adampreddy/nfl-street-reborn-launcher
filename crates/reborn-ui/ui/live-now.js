@@ -170,7 +170,7 @@ if (bridge) {
     if (matches.length) { drawRows(matches.slice(0, 3)); return; }
     rows.clear();
     watchLinks.clear();
-    content.replaceChildren(el('p', { class: 'live-empty', text: 'No live games right now.' }));
+    content.replaceChildren(el('p', { class: 'live-empty', text: 'Streets are quiet right now.' }));
   }
 
   /** A failed poll: its one line above the last good rows, which stay. The same words twice

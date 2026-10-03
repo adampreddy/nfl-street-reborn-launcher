@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use reborn_core::matchmaking::{activity_for, Client, MatchAction, MatchView, MmError, RoomAction, Snapshot};
+use reborn_core::matchmaking::{activity_for, Chat, ChatMessage, Client, MatchAction, MatchView, MmError, RoomAction, Snapshot};
 use reborn_core::relay_driver::{self, Room, Step};
 use reborn_core::platform::Platform;
 use reborn_core::presence::{payload, Activity, Mode, Presence};
@@ -49,6 +49,10 @@ struct State {
     /// Why the last relay step (opening the room, relaying the code, ...) did not land, in the
     /// words the step itself gave. Cleared by the next step that does.
     relay_error: Option<String>,
+    /// The conversation so far in the current room or match. The long poll carries only the lines after the
+    /// launcher's chat cursor, so the log is built up here; showing each poll's delta as the whole log made every
+    /// earlier line vanish on the next change (2026-10-03, "the chat doesn't work at all").
+    chat_log: ChatLog,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -58,7 +62,60 @@ static STATE: Mutex<State> = Mutex::new(State {
     page: "Home",
     presence_on: true,
     relay_error: None,
+    chat_log: ChatLog::new(),
 });
+
+/// The most lines kept per room or match (the page draws the last 30).
+const CHAT_KEEP: usize = 200;
+
+/// One room's or match's chat, accumulated from the long poll's deltas. Seqs count per parent (snapshot.js Q4), so a
+/// new parent (another room, the room's match starting) starts a new log, and a delta the server re-sent from 0
+/// replaces it.
+#[derive(Debug, PartialEq)]
+struct ChatLog {
+    /// `(scope, parent id)`: `room`/`match` and its id. None when there is nothing to chat in.
+    parent: Option<(String, String)>,
+    lines: Vec<ChatMessage>,
+}
+
+impl ChatLog {
+    const fn new() -> Self {
+        ChatLog { parent: None, lines: Vec::new() }
+    }
+
+    /// Takes in one changed snapshot's chat. Returns true when it was a delta from the middle of a conversation this
+    /// log never read (a new parent with `since > 0`): the caller then asks again from 0, so no line is skipped.
+    fn absorb(&mut self, chat: &Chat) -> bool {
+        let Some(scope) = chat.scope.clone() else {
+            self.clear();
+            return false;
+        };
+        let key = Some((scope, chat.parent_id.clone().unwrap_or_default()));
+        let mut gap = false;
+        if key != self.parent {
+            self.parent = key;
+            self.lines.clear();
+            gap = chat.since > 0;
+        } else if chat.since == 0 {
+            // The whole conversation again (a server restart, a cursor it clamped): it replaces what is held.
+            self.lines.clear();
+        }
+        for m in &chat.messages {
+            if self.lines.last().map_or(true, |l| m.seq > l.seq) {
+                self.lines.push(m.clone());
+            }
+        }
+        if self.lines.len() > CHAT_KEEP {
+            self.lines.drain(..self.lines.len() - CHAT_KEEP);
+        }
+        gap
+    }
+
+    fn clear(&mut self) {
+        self.parent = None;
+        self.lines.clear();
+    }
+}
 
 /// What the relay opens Dolphin with: the runtime, game and graphics preset the page's own Play and
 /// private-room paths use (they live in the page's storage, so the page reports them).
@@ -641,8 +698,23 @@ fn run(platform: Platform) {
                 }
                 epoch = snap.epoch.clone();
                 since = snap.version;
-                chat = snap.chat.latest_seq;
-                let wait = if snap.restarting { 250 } else { snap.poll_after_ms.min(10_000) };
+                // The chat cursor follows what was actually delivered: a capped delta (`truncated`) ends before the
+                // parent's latest seq, so the cursor stops at its last line and the next poll (asked at once) carries on.
+                let gap = lock(&STATE).chat_log.absorb(&snap.chat);
+                chat = match snap.chat.messages.last() {
+                    Some(last) if snap.chat.truncated => last.seq,
+                    _ => snap.chat.latest_seq,
+                };
+                if snap.chat.truncated {
+                    since = 0;
+                }
+                if gap {
+                    // A new room or match read from an old cursor: ask again from the start of its conversation.
+                    mm_log("poll: chat moved to a new room or match mid-cursor, re-reading it");
+                    chat = 0;
+                    since = 0;
+                }
+                let wait = if snap.restarting || snap.chat.truncated || gap { 250 } else { snap.poll_after_ms.min(10_000) };
                 // What the server says about this player, logged when it changes: when a launcher
                 // first saw a match is exactly what the 2026-09-23 test could not answer.
                 let seen = format!(
@@ -667,6 +739,9 @@ fn run(platform: Platform) {
                 std::thread::sleep(Duration::from_secs(60));
             }
             Err(MmError::SignedOut) => {
+                // Whoever signs in next starts with no cursor and no conversation.
+                chat = 0;
+                lock(&STATE).chat_log.clear();
                 set_link(Link::SignedOut, None, None);
                 refresh_presence();
                 std::thread::sleep(Duration::from_secs(10));
@@ -737,16 +812,19 @@ pub fn mm_state() -> serde_json::Value {
         "error": s.last_error,
         "relay_error": s.relay_error,
         "presence_on": s.presence_on,
-        "snapshot": s.snapshot.as_ref().map(snapshot_json),
+        "snapshot": s.snapshot.as_ref().map(|snap| snapshot_json(snap, &s.chat_log.lines)),
     })
 }
 
-/// The snapshot as the page wants it: the fields it draws, not the wire's whole shape.
-fn snapshot_json(s: &Snapshot) -> serde_json::Value {
+/// The snapshot as the page wants it: the fields it draws, not the wire's whole shape. `chat` is the conversation
+/// accumulated so far (`ChatLog`), never the one poll's delta the snapshot carries.
+fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
     serde_json::json!({
         "player": s.player.as_ref().map(|p| serde_json::json!({ "name": p.display_name, "region": p.region })),
         "ticket": s.ticket.as_ref().map(|t| serde_json::json!({
             "mode": t.mode, "field": t.field_pick, "waited_ms": t.waited_ms, "enqueued_at": t.enqueued_at,
+            // Casual's Quick game or Pickup (null from a server that does not say): the searching bar names it.
+            "seed_kind": t.seed_kind,
         })),
         "room": s.room.as_ref().map(|r| serde_json::json!({
             "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
@@ -772,8 +850,9 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
             // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
             "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
         })),
-        "chat": s.chat.messages.iter().map(|c| serde_json::json!({
-            "seq": c.seq, "name": c.display_name, "body": c.body, "at": c.at,
+        "chat": chat.iter().map(|c| serde_json::json!({
+            // The line under both names: `body` (what the page always read) and `text` (the server's own name).
+            "seq": c.seq, "name": c.display_name, "body": c.body, "text": c.body, "at": c.at,
         })).collect::<Vec<_>>(),
         "queue_depth": { "ranked": s.queue_depth.ranked, "casual": s.queue_depth.casual },
         "online": { "count": s.online.count, "players": s.online.players.iter().map(|p| serde_json::json!({
@@ -782,11 +861,12 @@ fn snapshot_json(s: &Snapshot) -> serde_json::Value {
     })
 }
 
+/// `seed_kind`: casual's Quick game (`regular`) or Pickup. Ranked ignores it (`Client::enqueue` never sends one).
 #[tauri::command]
-pub async fn mm_queue(mode: String) -> Result<serde_json::Value, String> {
+pub async fn mm_queue(mode: String, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mode = parse_mode(&mode)?;
-        let r = with_client(|c| c.enqueue(mode, None))?;
+        let r = with_client(|c| c.enqueue(mode, None, seed_kind.as_deref()))?;
         Ok(serde_json::json!({ "matched": r.matched, "match_id": r.match_id }))
     })
     .await
@@ -799,25 +879,13 @@ pub async fn mm_leave_queue() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn mm_rooms() -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let rooms = with_client(|c| c.rooms())?;
-        Ok(serde_json::json!(rooms
-            .iter()
-            .map(|r| serde_json::json!({ "code": r.code, "mode": r.mode, "best_of": r.best_of, "host": r.host }))
-            .collect::<Vec<_>>()))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn mm_room_create(mode: String, public: bool, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn mm_room_create(mode: String, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mode = parse_mode(&mode)?;
-        // Quick game (`regular`) or Pickup, the host's pick on the Private row; a public lobby sends none.
+        // A room is joined by its code only (no public lobbies, 2026-10-03). Host a room sends no kind: a Quick game
+        // (`regular`) room, which the host can switch to Pickup from the room (`mm_room_action` `kind`).
         let seed_kind = crate::dolphin_settings::seed_kind_or_default(seed_kind.as_deref());
-        with_client(|c| c.create_room(mode, public, seed_kind))
+        with_client(|c| c.create_room(mode, seed_kind))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -848,7 +916,8 @@ pub async fn mm_room_action(room_id: String, action: String, value: Option<serde
             "ready" => RoomAction::Ready(value.as_ref().and_then(|v| v.as_bool()).unwrap_or(true)),
             "chat" => RoomAction::Chat(value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string()),
             "start" => RoomAction::Start,
-            _ => return Err("That isn't something a lobby can do.".to_string()),
+            "kind" => RoomAction::Kind(value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string()),
+            _ => return Err("That isn't something a room can do.".to_string()),
         };
         with_client(|c| c.room_action(&room_id, a))
     })
@@ -900,7 +969,7 @@ mod tests {
     #[test]
     fn the_room_view_says_whether_you_host_it() {
         let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r", "code": "K7QP2M", "mode": "casual", "you_host": true, "members": [] } })).unwrap();
-        assert_eq!(snapshot_json(&s)["room"]["you_host"], true);
+        assert_eq!(snapshot_json(&s, &[])["room"]["you_host"], true);
     }
 
     use super::*;
@@ -910,15 +979,75 @@ mod tests {
         let s: Snapshot = serde_json::from_value(serde_json::json!({
             "room": { "id": "r", "code": "K7QP2M", "seed_kind": "pickup", "members": [] },
             "match": { "id": "m", "seed_kind": "pickup", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
-        let v = snapshot_json(&s);
+        let v = snapshot_json(&s, &[]);
         assert_eq!(v["room"]["seed_kind"], "pickup");
         assert_eq!(v["match"]["seed_kind"], "pickup");
         let s: Snapshot = serde_json::from_value(serde_json::json!({
             "room": { "id": "r", "code": "K7QP2M", "members": [] },
             "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock" } } })).unwrap();
-        let v = snapshot_json(&s);
+        let v = snapshot_json(&s, &[]);
         assert_eq!(v["room"]["seed_kind"], "regular", "an older server sends none: a regular game");
         assert_eq!(v["match"]["seed_kind"], "regular");
+    }
+
+    fn delta(scope: &str, parent: &str, since: u64, lines: &[(u64, &str)]) -> Chat {
+        serde_json::from_value(serde_json::json!({ "scope": scope, "parent_id": parent, "since": since,
+            "latest_seq": lines.last().map_or(since, |l| l.0), "messages": lines.iter().map(|(seq, t)| serde_json::json!({
+                "seq": seq, "player_id": "p", "display_name": "Jock", "text": t, "at": "2026-10-03T12:00:00.000Z" })).collect::<Vec<_>>() }))
+        .unwrap()
+    }
+
+    fn said(log: &ChatLog) -> Vec<&str> {
+        log.lines.iter().map(|m| m.body.as_str()).collect()
+    }
+
+    #[test]
+    fn the_chat_log_keeps_every_line_across_polls_and_starts_over_for_a_new_room_or_match() {
+        let mut log = ChatLog::new();
+        assert!(!log.absorb(&delta("room", "r1", 0, &[(1, "yo"), (2, "ready?")])));
+        // The next changed poll carries only the line after the cursor (or none: a ready toggle). Nothing is lost.
+        assert!(!log.absorb(&delta("room", "r1", 2, &[(3, "go")])));
+        assert!(!log.absorb(&delta("room", "r1", 3, &[])));
+        assert_eq!(said(&log), vec!["yo", "ready?", "go"]);
+        // A line seen twice (a re-sent delta) is kept once.
+        log.absorb(&delta("room", "r1", 2, &[(3, "go")]));
+        assert_eq!(said(&log), vec!["yo", "ready?", "go"]);
+        // The server re-sent the whole conversation (since 0): it replaces the log.
+        log.absorb(&delta("room", "r1", 0, &[(1, "yo"), (2, "ready?"), (3, "go"), (4, "gl")]));
+        assert_eq!(said(&log), vec!["yo", "ready?", "go", "gl"]);
+        // The match starts: a new parent, a new conversation.
+        assert!(!log.absorb(&delta("match", "m1", 0, &[(1, "gg")])));
+        assert_eq!(said(&log), vec!["gg"]);
+        // A new parent read from the middle (an old cursor the server did not clamp): flagged so the poller re-reads.
+        assert!(log.absorb(&delta("room", "r2", 1, &[(2, "late")])));
+        // Nothing to chat in: the log is empty.
+        log.absorb(&Chat::default());
+        assert!(log.lines.is_empty() && log.parent.is_none());
+    }
+
+    #[test]
+    fn the_chat_log_keeps_the_newest_lines_when_it_is_long() {
+        let mut log = ChatLog::new();
+        let lines: Vec<(u64, String)> = (1..=250).map(|i| (i, format!("line {i}"))).collect();
+        let refs: Vec<(u64, &str)> = lines.iter().map(|(i, t)| (*i, t.as_str())).collect();
+        log.absorb(&delta("room", "r1", 0, &refs));
+        assert_eq!(log.lines.len(), CHAT_KEEP);
+        assert_eq!(log.lines.last().unwrap().body, "line 250");
+        assert_eq!(log.lines.first().unwrap().body, "line 51");
+    }
+
+    #[test]
+    fn the_page_gets_the_whole_conversation_not_the_last_delta() {
+        let mut log = ChatLog::new();
+        log.absorb(&delta("room", "r1", 0, &[(1, "yo")]));
+        log.absorb(&delta("room", "r1", 1, &[(2, "go")]));
+        let s: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r1", "code": "K7QP2M", "members": [] },
+            "chat": { "scope": "room", "parent_id": "r1", "since": 1, "latest_seq": 2, "messages": [
+                { "seq": 2, "display_name": "Jock", "text": "go" } ] } })).unwrap();
+        let v = snapshot_json(&s, &log.lines);
+        let bodies: Vec<&str> = v["chat"].as_array().unwrap().iter().map(|c| c["body"].as_str().unwrap()).collect();
+        assert_eq!(bodies, vec!["yo", "go"]);
+        assert_eq!(v["chat"][0]["name"], "Jock");
     }
 
     #[test]
@@ -1016,7 +1145,7 @@ mod tests {
             "opponent": { "id": "o", "display_name": "Jock", "rating": 1162, "rank": 9,
                 "team": { "name": "Falcons", "logo_url": "/live-assets/teams/14-128.png" }, "avatar_url": "https://cdn.discordapp.com/avatars/1/a.png" } } }))
             .unwrap();
-        let v = snapshot_json(&with);
+        let v = snapshot_json(&with, &[]);
         assert_eq!(v["match"]["opponent"], "Jock", "the name keeps its old key");
         assert_eq!(v["match"]["opponent_elo"], 1162);
         assert_eq!(v["match"]["opponent_rank"], 9);
@@ -1024,7 +1153,7 @@ mod tests {
         assert_eq!(v["match"]["opponent_avatar_url"], "https://cdn.discordapp.com/avatars/1/a.png");
 
         let without: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock", "rating": null } } })).unwrap();
-        let v = snapshot_json(&without);
+        let v = snapshot_json(&without, &[]);
         for k in ["opponent_elo", "opponent_rank", "opponent_team", "opponent_avatar_url"] {
             assert!(v["match"][k].is_null(), "{k} must be null when the server sends nothing");
         }

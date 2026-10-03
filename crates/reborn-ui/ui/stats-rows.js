@@ -53,7 +53,7 @@ export function queueLine(entries) {
   return why ? `${line}: ${why}` : line;
 }
 
-// ---- the native game view's snapshot (game.js), kept here so it is testable under node ----
+// ---- one finished game as a snapshot (the site's gameSnapshot, restated; game-snapshot.js uses the vendored original) ----
 
 const bit = (v) => v === 0 || v === 1;
 
