@@ -6400,7 +6400,7 @@ fn main() {
                 let saved = reborn_core::settings::settings_path(&Platform::detect())
                     .and_then(|f| reborn_core::settings::launcher_look(&f))
                     .map(|l| l.window_glass)
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 apply_glass(&w, material_here(), saved);
             }
             Ok(())

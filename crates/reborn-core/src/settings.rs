@@ -333,7 +333,7 @@ pub fn set_automatic_updates(path: &Path, automatic: bool) -> Result<Option<bool
     Ok(was)
 }
 
-/// How the launcher window looks, as the player set it (absent = on).
+/// How the launcher window looks, as the player set it (absent: glass off, slow animations on).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct LauncherLook {
     pub window_glass: bool,
@@ -344,7 +344,8 @@ pub struct LauncherLook {
 pub fn launcher_look(path: &Path) -> Result<LauncherLook> {
     let s = Settings::load(path)?;
     Ok(LauncherLook {
-        window_glass: s.window_glass.unwrap_or(true),
+        // Adam, 2026-10-03: glass is off until the player turns it on.
+        window_glass: s.window_glass.unwrap_or(false),
         slow_animations: s.slow_animations.unwrap_or(true),
     })
 }
@@ -565,13 +566,23 @@ mod tests {
     }
 
     #[test]
-    fn the_look_defaults_to_glass_and_slow_animations() {
-        // Adam, 2026-09-30: glass where the OS has it, slow animations on by
-        // default. Absent means never set, and never set means on.
+    fn the_look_defaults_to_no_glass_and_slow_animations() {
+        // Adam, 2026-09-30: slow animations on by default. Adam, 2026-10-03:
+        // glass off by default. Absent means never set.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(SETTINGS_FILE);
-        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: true, slow_animations: true });
+        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: false, slow_animations: true });
         assert!(!path.exists(), "reading must not create the file");
+    }
+
+    #[test]
+    fn a_player_who_turned_glass_on_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        set_launcher_look(&path, Some(true), None).unwrap();
+        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: true, slow_animations: true });
+        std::fs::write(&path, format!(r#"{{"schema":"{SETTINGS_SCHEMA}","window_glass":true}}"#)).unwrap();
+        assert!(launcher_look(&path).unwrap().window_glass, "a saved choice of on survives the new default");
     }
 
     #[test]
@@ -591,7 +602,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(SETTINGS_FILE);
         std::fs::write(&path, format!(r#"{{"schema":"{SETTINGS_SCHEMA}","automatic_updates":true}}"#)).unwrap();
-        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: true, slow_animations: true });
+        assert_eq!(launcher_look(&path).unwrap(), LauncherLook { window_glass: false, slow_animations: true });
         assert_eq!(Settings::load(&path).unwrap().automatic_updates, Some(true));
     }
 }
