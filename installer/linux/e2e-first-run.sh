@@ -11,10 +11,20 @@ rm -rf "$W/home" "$W/app" "$W/out"; mkdir -p "$W/home" "$W/app" "$W/out"
 (cd "$W/app" && cp "$REL"/*.AppImage a.AppImage && ./a.AppImage --appimage-extract > /dev/null && rm a.AppImage)
 [ -f "$W/game.iso" ] || cp "$GAME" "$W/game.iso"
 cp "$HERE/e2e_first_run.py" "$W/"
+# Phase 2 downloads the 8 GB content into this distro's disk, which grows the
+# Windows vhdx: on 10-03 a run filled C: to 0.18 GB and WSL remounted its disk
+# read-only. Run it only with room to spare; the flag goes through a file
+# because in-builder.sh does not pass the environment into the build root.
+PHASE2=${E2E_PHASE2:-1}
+FREE_GB=$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)
+if [ "$PHASE2" != 0 ] && [ "${FREE_GB:-0}" -lt 25 ]; then
+  echo "only ${FREE_GB} GB free on C: (phase 2 needs 25): stopping at the Play page"; PHASE2=0
+fi
+echo "$PHASE2" > "$W/phase2"
 "$HERE/in-builder.sh" bash -uc '
 export HOME=/src/e2e/home XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p $XDG_RUNTIME_DIR; chmod 700 $XDG_RUNTIME_DIR
 export DISPLAY=:51 GDK_BACKEND=x11
-export APPDIR=/src/e2e/app/squashfs-root APPIMAGE=/src/e2e/NFL-Street-Reborn.AppImage REBORN_E2E_PICK_GAME=/src/e2e/game.iso E2E_PHASE2=${E2E_PHASE2:-1}
+export APPDIR=/src/e2e/app/squashfs-root APPIMAGE=/src/e2e/NFL-Street-Reborn.AppImage REBORN_E2E_PICK_GAME=/src/e2e/game.iso E2E_PHASE2=$(cat /src/e2e/phase2)
 Xvfb :51 -screen 0 1280x800x24 -nolisten tcp > /src/e2e/out/xvfb.log 2>&1 &
 sleep 2
 dbus-launch --exit-with-session > /dev/null 2>&1 || true
