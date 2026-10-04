@@ -255,7 +255,7 @@ const EXPECT = {
   },
   'online-casual': {
     // Casual (Adam, 2026-10-03): Quick game | Pickup before Find, and the one quiet line about leaving whenever.
-    text: ['Find a casual game', 'Casual: play as many games as you want. Leave whenever.', 'Quick game', 'Pickup'],
+    text: ['Find a casual game', 'Best of 3. No Elo on the line.', 'Quick game', 'Pickup'],
     absent: ['One game', "Anyone's game"],
     check: async (page) => {
       const p = [];

@@ -59,7 +59,7 @@ const EXPECT = {
   disabled: { absent: ['Find a casual game', "Can't reach", 'Online play', 'Quick Match', 'Sign in'] },
   // The redesign (spec 2026-10-02 §3.1): tiles and an action row. Casual is the stored default, with its Quick game |
   // Pickup pick (2026-10-03); the code field is under Private room (check-online-page's online-private).
-  idle: { text: ['Ranked', 'Casual', 'Private Room', 'Find a casual game', 'Casual: play as many games as you want. Leave whenever.', '1 searching', '3 players online'],
+  idle: { text: ['Ranked', 'Casual', 'Private Room', 'Find a casual game', 'Best of 3. No Elo on the line.', '1 searching', '3 players online'],
     buttons: ['Find a casual game', 'Quick game', 'Pickup'], absent: ['field pick', 'Quick Match', 'One game'] },
   queued: { text: ['Finding a casual game', 'Searching 0:4', 'Casual · Quick game'], buttons: ['Cancel'], absent: ['Find a casual game', 'field'] },
   // No public lobbies (2026-10-03, replacing ruling P15's lobby list): joining by code and hosting a room stay.

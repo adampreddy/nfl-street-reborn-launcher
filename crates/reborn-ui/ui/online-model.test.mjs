@@ -13,6 +13,10 @@ test('the mode line never says best of', () => {
   assert.equal(modeLine('ranked'), 'Ranked · first to two wins');
   assert.equal(modeLine('casual'), 'Casual');
   assert.equal(modeLine(undefined), 'Casual');
+  assert.equal(modeLine('casual', 3), 'Casual · first to two wins', 'casual is a best of 3 too (Adam 10-04)');
+  assert.equal(modeLine('casual', 1), 'Casual');
+  assert.equal(modeLine('casual', 20), 'Casual', 'an open-ended casual match names no series');
+  assert.equal(modeLine('ranked', 3), 'Ranked · first to two wins');
 });
 
 test('the series line is from this seat, only in a series', () => {

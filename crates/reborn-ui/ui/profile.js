@@ -137,8 +137,11 @@ function coverColours(target, url) {
 }
 
 /** The live card, only while they play a public match (spec §8.7.2): LIVE · queue · game, the score, vs · series. */
+// A casual match names its game and series only when it is a real series (best of 2 to 7; casual is a best of 3 too,
+// Adam 10-04): an older server's open-ended casual match (20 games) reads as one game.
+const casualSeries = (bo) => Number.isInteger(bo) && bo > 1 && bo <= 7;
 function liveBlock(raw) {
-  const c = liveCard(raw && raw.queue !== 'ranked' ? { ...raw, best_of: 1 } : raw);
+  const c = liveCard(raw && raw.queue !== 'ranked' && !casualSeries(raw.best_of) ? { ...raw, best_of: 1 } : raw);
   if (!c) return null;
   const side = (t, right) => el('span', { class: `t${right ? ' r' : ''}` },
     ...(right ? [el('b', { text: t?.abbrev || '' }), teamLogo(t)] : [teamLogo(t), el('b', { text: t?.abbrev || '' })]));

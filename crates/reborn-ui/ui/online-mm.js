@@ -299,7 +299,7 @@ function findRow(p) {
   return el('div', { class: 'on-row on-casual' },
     kind,
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'find', 'data-primary': 'true', text: 'Find a casual game', onclick: () => queueWhenCurrent() }),
-    el('p', { class: 'on-note on-casual-note', text: 'Casual: play as many games as you want. Leave whenever.' }));
+    el('p', { class: 'on-note on-casual-note', text: 'Best of 3. No Elo on the line.' }));
 }
 
 // ---- the ranked rules (Adam, 2026-10-03: "a notice for the format and rules of ranked games before you queue") ----
@@ -587,7 +587,7 @@ function drawMatch(m, chat, relayError, snap) {
     el('span', { class: 'k-label on-found', text: playing ? 'In play' : 'Game on' }),
     el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
     series ? el('span', { class: 'on-ser num', text: series }) : null,
-    el('span', { class: 'on-mode-line', text: modeLine(m.mode) }));
+    el('span', { class: 'on-mode-line', text: modeLine(m.mode, m.best_of) }));
   if (pairing && !m.your_accepted) {
     mid.append(el('div', { class: 'on-acts' },
       el('button', { type: 'button', class: 'btn primary', 'data-key': 'accept', 'data-primary': 'true', text: 'Accept', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: true }) }),
@@ -603,7 +603,7 @@ function drawMatch(m, chat, relayError, snap) {
   // The relay's own failure (the room would not open, the code would not send) in its own words.
   if (relayError) mid.append(el('p', { class: 'refusal', text: relayError }));
   const mine = eloBits(rankInfo?.elo);
-  const card = el('section', { class: 'on-vs', 'aria-label': `${modeLine(m.mode)} against ${opp}` },
+  const card = el('section', { class: 'on-vs', 'aria-label': `${modeLine(m.mode, m.best_of)} against ${opp}` },
     el('span', { class: 'on-art', 'aria-hidden': 'true' }),
     el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
     el('div', { class: 'on-vs-in' },

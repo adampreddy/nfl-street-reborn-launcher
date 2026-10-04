@@ -11,9 +11,16 @@ export function clock(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** Under the VS and in a room. Never "best of 3" (spec §8, DESIGN.md §9). */
-export function modeLine(mode) {
-  return mode === 'ranked' ? 'Ranked · first to two wins' : 'Casual';
+// "first to two wins" for a best of 3, "first to three wins" for a best of 5. A best of anything else (an older
+// server's open-ended casual match, 20 games) is no series to name.
+const FIRST_TO = { 2: 'two', 3: 'three' };
+
+/** Under the VS and in a room. Never "best of 3" (spec §8, DESIGN.md §9). Casual names its series too when the server
+ *  says it is one (`bestOf` > 1; casual is a best of 3 too, Adam 10-04). */
+export function modeLine(mode, bestOf) {
+  if (mode === 'ranked') return 'Ranked · first to two wins';
+  const words = int(bestOf) > 1 ? FIRST_TO[Math.ceil(bestOf / 2)] : null;
+  return words ? `Casual · first to ${words} wins` : 'Casual';
 }
 
 /** "Game 2 · Series 1–0" while a series runs (best_of > 1), counted from this seat; null otherwise. */

@@ -96,9 +96,17 @@ function rowContent(match) {
     sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a),
     el('div', { class: 'live-foot' },
       el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
-      el('span', { class: 'live-mode-line', text: match.mode === 'ranked' ? `Ranked · Game ${gameNo}` : 'Casual' }),
+      el('span', { class: 'live-mode-line', text: modeGame(match, gameNo) }),
       watchLink(match)),
   ];
+}
+
+/** "Ranked · Game 2"; a casual series (best of 2 to 7, casual is a best of 3 too, Adam 10-04) "Casual · Game 2"; any
+ *  other casual match (one game, or an older server's open-ended one) just "Casual". */
+function modeGame(match, gameNo) {
+  if (match.mode === 'ranked') return `Ranked · Game ${gameNo}`;
+  const bo = Number.isInteger(match.best_of) ? match.best_of : 1;
+  return bo > 1 && bo <= 7 ? `Casual · Game ${gameNo}` : 'Casual';
 }
 
 // ---- the section, its keyed rows, and polling ----

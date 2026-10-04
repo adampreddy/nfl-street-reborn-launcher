@@ -599,14 +599,24 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // model edge cases (P4-23): a casual live game says no "of N"; an Elo with no history draws no curve, its peak the server's
+  { // a casual best of 3 is a series like ranked (Adam 10-04): its game and series show
     const p = F.profile();
     Object.assign(p.header.live, { queue: 'casual', best_of: 3, game_number: 2 });
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
+    await page.locator('.pf-card').waitFor();
+    assert.equal(await page.locator('.pf-live .q').textContent(), 'Casual · Game 2 of 3', 'a casual series names its game');
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // model edge cases (P4-23): an open-ended casual match (an older server's 20 games) says no "of N"; an Elo with no
+    // history draws no curve, its peak the server's
+    const p = F.profile();
+    Object.assign(p.header.live, { queue: 'casual', best_of: 20, game_number: 2 });
     p.elo.history = [];
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
     await page.locator('.pf-card').waitFor();
     assert.equal(await page.locator('.pf-live .q').textContent(), 'Casual', 'a casual live game shows its queue only');
-    assert.doesNotMatch(await page.locator('.pf-live').innerText(), /of \d|Series/, 'no "of N" and no series for casual');
+    assert.doesNotMatch(await page.locator('.pf-live').innerText(), /of \d|Series/, 'no "of N" and no series for an open-ended casual match');
     assert.equal(await page.locator('.pf-elo svg').count(), 0, 'no history: no sparkline');
     assert.deepEqual((await texts(page, '.pf-elo-facts > *')).slice(2, 4), ['Peak', '1,212'], 'the peak the server sent');
     assert.equal(await page.locator('#elo-history .ch').count(), 0, 'no curve without history; the leaderboard alone');
