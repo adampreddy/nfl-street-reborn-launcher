@@ -6137,15 +6137,16 @@ fn main() {
         Mode::Window => {}
     }
 
-    // Steam Deck Game Mode (gamescope). WebKitGTK's DMA-BUF renderer draws a
-    // blank window there, a known WebKitGTK/gamescope issue; this flag is the
-    // usual remedy and is set only in Game Mode, because under a software
-    // renderer it crashed WebKit in testing. The window is fullscreen there:
+    // Steam Deck Game Mode (gamescope). The window is fullscreen there:
     // gamescope has no title bar or desktop to fit a window into.
+    //
+    // No WEBKIT_DISABLE_DMABUF_RENDERER. It was set here as the usual remedy
+    // for a blank WebKit window under gamescope, and it was the crash: with
+    // it, every page after the first killed the web process ("every panel
+    // besides Play crashes", Deck tester 2026-10-03). Reproduced with
+    // XDG_CURRENT_DESKTOP=gamescope: flag set, Settings crashes; flag off,
+    // every page opens. Desktop Mode never had it and works.
     let game_mode = reborn_core::platform::in_game_mode();
-    if game_mode && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
 
     tauri::Builder::default()
         .setup(move |app| {
