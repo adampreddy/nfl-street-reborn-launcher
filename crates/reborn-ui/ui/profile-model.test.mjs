@@ -26,8 +26,8 @@ test('summary line: rank, Elo and the online record, each only when the server s
 test('live card: game N of 3 and the series for a best of 3; never a private room', () => {
   const c = liveCard({ match_id: 'm1', queue: 'ranked', best_of: 3, game_number: 2, series: [1, 0], score: [14, 7], me: { abbrev: 'ATL' }, opp: { abbrev: 'PHI' }, opponent: { display_name: 'Mikel' } });
   assert.equal(c.head, 'Ranked · Game 2 of 3');
-  assert.equal(c.score, '14 – 7');
-  assert.equal(c.line, 'vs Mikel · Series 1–0');
+  assert.equal(c.score, '14-7');
+  assert.equal(c.line, 'vs Mikel · Series 1-0');
   assert.equal(c.href, 'live.html?match=m1');
   assert.deepEqual([c.me, c.opp], [{ abbrev: 'ATL' }, { abbrev: 'PHI' }]);
   const one = liveCard({ match_id: 'm2', queue: 'casual', best_of: 1, game_number: 1, series: [0, 0], score: null, opponent: null });
@@ -61,7 +61,7 @@ test('Elo overview: value, change, peak and start; the peak from history when th
   assert.equal(e.points.line.split(' ').length, 4);
   const old = eloOverview({ rating: 1184, last_delta: -18, history: [{ rating: 1202, delta: 2 }, { rating: 1184, delta: -18 }] });
   assert.equal(old.sub, 'Peak 1,202 · started at 1,200');
-  assert.deepEqual(old.change, { text: '−18', kind: 'down' });
+  assert.deepEqual(old.change, { text: '-18', kind: 'down' });
   assert.equal(eloOverview({ rating: null }), null);
   assert.equal(eloOverview(undefined), null);
 });
@@ -123,7 +123,7 @@ test('last 10 games: record, average margin, points; nothing from an older serve
   assert.deepEqual(lastTenOverview({ games: 10, wins: 6, losses: 4, avg_margin: 6.4, pts_for_pg: 31.4, pts_against_pg: 25 }),
     { value: '6-4', margin: { text: '+6.4', kind: 'up' }, scored: '31.4', allowed: '25.0' });
   assert.deepEqual(lastTenOverview({ games: 3, wins: 1, losses: 2, avg_margin: -3, pts_for_pg: null, pts_against_pg: 8 }),
-    { value: '1-2', margin: { text: '−3.0', kind: 'down' }, scored: '—', allowed: '8.0' });
+    { value: '1-2', margin: { text: '-3.0', kind: 'down' }, scored: '—', allowed: '8.0' });
   assert.equal(lastTenOverview(null), null);
   assert.equal(lastTenOverview({ games: 0, wins: 0, losses: 0 }), null);
   assert.equal(lastTenOverview({ results: ['W'] }), null, 'the dashboard shape is not the profile block');

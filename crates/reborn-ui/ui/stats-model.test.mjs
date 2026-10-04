@@ -18,8 +18,8 @@ test('gameRowModel: ranked Elo, offline tag, CPU', () => {
   const base = { id: 'g', at: '2026-09-27T01:18:00Z', mode: 'online', score: [36, 14], result: 'win', opponent: { display_name: 'Playz', avatar_url: 'https://cdn.discordapp.com/avatars/1/a.png?size=64' }, opponent_kind: 'human',
     me: { name: 'Falcons', logo_url: '/live-assets/r/v/teams/14-256.png' }, opp: { name: 'Eagles', logo_url: null } };
   const r = gameRowModel({ ...base, elo_delta: 16 });
-  assert.equal(r.score, '36–14'); assert.equal(r.result, 'W'); assert.equal(r.tag, '+16 Elo'); assert.equal(r.tagKind, 'up'); assert.equal(r.opponent, 'Playz');
-  assert.equal(gameRowModel({ ...base, elo_delta: -18 }).tag, '−18 Elo');
+  assert.equal(r.score, '36-14'); assert.equal(r.result, 'W'); assert.equal(r.tag, '+16 Elo'); assert.equal(r.tagKind, 'up'); assert.equal(r.opponent, 'Playz');
+  assert.equal(gameRowModel({ ...base, elo_delta: -18 }).tag, '-18 Elo');
   const off = gameRowModel({ ...base, mode: 'offline', opponent: null, opponent_kind: 'cpu', elo_delta: null });
   assert.equal(off.tag, 'Offline'); assert.equal(off.tagKind, 'offline'); assert.equal(off.opponent, 'CPU');
   assert.equal(gameRowModel({ ...base, score: null, result: null }).score, '—');
@@ -27,16 +27,16 @@ test('gameRowModel: ranked Elo, offline tag, CPU', () => {
   assert.equal(guest.opponent, 'Guest');
 });
 
-test('matchRowModel: a series shows 2–1 and expands; one game shows its score and opens it', () => {
+test('matchRowModel: a series shows 2-1 and expands; one game shows its score and opens it', () => {
   const g1 = { id: 'a', at: '2026-09-27T01:00:00Z', mode: 'online', score: [14, 10], result: 'win', elo_delta: 16, opponent: { display_name: 'Playz' }, opponent_kind: 'human', me: {}, opp: {} };
   const m = matchRowModel({ id: 'm1', at: '2026-09-27T02:00:00Z', mode: 'online', series: [2, 1], score: [42, 52], result: 'win', elo_delta: 16,
     opponent: { display_name: 'Playz' }, opponent_kind: 'human', me: {}, opp: {}, games: [g1, { ...g1, id: 'b' }, { ...g1, id: 'c' }] });
-  assert.equal(m.score, '2–1'); assert.equal(m.expandable, true); assert.equal(m.onlyGame, null);
+  assert.equal(m.score, '2-1'); assert.equal(m.expandable, true); assert.equal(m.onlyGame, null);
   assert.equal(m.tag, '+16 Elo'); assert.equal(m.result, 'W');
   assert.equal(m.games.length, 3); assert.equal(m.games[0].tag, '', 'Elo shows once, on the match');
   const one = matchRowModel({ id: 'g:a', at: g1.at, mode: 'offline', series: null, score: [36, 14], result: 'win', elo_delta: null,
     opponent: null, opponent_kind: 'cpu', me: {}, opp: {}, games: [{ ...g1, mode: 'offline' }] });
-  assert.equal(one.score, '36–14'); assert.equal(one.expandable, false); assert.equal(one.onlyGame, 'a'); assert.equal(one.tag, 'Offline');
+  assert.equal(one.score, '36-14'); assert.equal(one.expandable, false); assert.equal(one.onlyGame, 'a'); assert.equal(one.tag, 'Offline');
   const guest = matchRowModel({ id: 'g:b', at: g1.at, mode: 'online', series: null, score: [28, 21], result: 'win', elo_delta: null,
     opponent: null, opponent_kind: 'guest', me: {}, opp: {}, games: [{ ...g1, id: 'b', opponent_kind: 'guest' }] });
   assert.equal(guest.opponent, 'Guest');
@@ -81,9 +81,9 @@ test('result letters are W and L only: ties do not exist', () => {
   assert.equal(gameRowModel({ ...g, result: null }).result, '');
 });
 
-test('eloChange: +16, −18, or nothing', () => {
+test('eloChange: +16, -18, or nothing', () => {
   assert.deepEqual(eloChange(16), { text: '+16', kind: 'up' });
-  assert.deepEqual(eloChange(-18), { text: '−18', kind: 'down' });
+  assert.deepEqual(eloChange(-18), { text: '-18', kind: 'down' });
   for (const x of [0, null, undefined, NaN]) assert.deepEqual(eloChange(x), { text: '', kind: '' });
 });
 
@@ -284,7 +284,7 @@ test('eloCard: rated, unranked, off; nothing invented', () => {
   assert.deepEqual(e.labels.map((l) => l.text), ['Sep 12', 'Sep 12', 'Sep 14']);
   const bare = V2.eloCard({ rating: 1184, rank: 7, last_delta: 16 });
   assert.deepEqual([bare.week, bare.rankOf, bare.peak, bare.values], [null, '#7', null, []], 'no week_delta, total or history: nothing made up');
-  assert.equal(V2.eloCard({ rating: 990, week_delta: -9 }).week.text, '−9');
+  assert.equal(V2.eloCard({ rating: 990, week_delta: -9 }).week.text, '-9');
   assert.deepEqual(V2.eloCard({ rating: null, rank: null, total: 0, history: [] }), { state: 'off', title: 'Unranked', note: 'Rankings start soon.' });
   assert.equal(V2.eloCard(undefined).state, 'off');
   assert.equal(V2.eloCard({ rating: null, total: 38 }).state, 'unranked');

@@ -94,7 +94,7 @@ try {
     assert.equal(await rows.count(), 8);
     assert.equal(await page.locator('#st-matches .m-pager span').textContent(), 'Page 1 of 2');
     const row = (id) => page.locator(`[data-key="match-${id}"]`);
-    assert.equal(await row('m-01').locator('.m-res').textContent(), 'W2–1');
+    assert.equal(await row('m-01').locator('.m-res').textContent(), 'W2-1');
     assert.equal(await row('m-01').locator('.qm').textContent(), 'Ranked');
     assert.match(await row('m-01').locator('.qm').getAttribute('class'), /\branked\b/);
     assert.equal(await row('m-01').locator('.m-elo').textContent(), '+16');
@@ -103,7 +103,7 @@ try {
     assert.equal(await row('g:g-031').locator('.qm').textContent(), 'Offline');
     assert.equal(await row('g:g-031').locator('.m-opp-n').textContent(), 'CPU');
     assert.equal(await page.locator('#st-matches small').count(), 0, 'no second line under a name: the queue is its own column');
-    assert.equal(await row('m-04').locator('.m-elo').textContent(), '−18');
+    assert.equal(await row('m-04').locator('.m-elo').textContent(), '-18');
     assert.equal(await row('m-05').count(), 0, 'a private room is dropped from the list');
     assert.equal(await page.locator('#st-matches .chip, #st-matches [class*="chip"]').count(), 0, 'no chips');
     // Your players: five box-score numbers per role (Adam 10-03: C/ATT, CAR); Most played its role's own four

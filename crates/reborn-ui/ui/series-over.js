@@ -7,7 +7,7 @@
 import { modeLine } from './online-model.js';
 
 const OVER = new Set(['win', 'forfeit', 'split']);
-const DASH = '–';
+const DASH = '-'; // scores: a plain hyphen, "36-12" (owner ruling, launch audit M11)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const int = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
 

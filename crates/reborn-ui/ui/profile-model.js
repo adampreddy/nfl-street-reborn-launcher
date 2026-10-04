@@ -5,7 +5,8 @@
 import { eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
 
 // Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
-const DASH = '—', EN = '–', MINUS = '−', REC = '-';
+// Scores, series and records all use a plain hyphen (owner ruling, launch audit M11): "14-7", "Series 1-0", "8-5", "-3".
+const DASH = '—', EN = '-', MINUS = '-', REC = '-';
 const num = (n) => typeof n === 'number' && Number.isFinite(n);
 const one = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const sum = (...xs) => (xs.some(num) ? xs.reduce((a, x) => a + (num(x) ? x : 0), 0) : null);
@@ -49,13 +50,13 @@ export function summaryFacts(p) {
   return out;
 }
 
-/** The live card (`header.live`, backend §7): "Ranked · Game 2 of 3", "14 – 7", "vs Mikel · Series 1–0". No halves. */
+/** The live card (`header.live`, backend §7): "Ranked · Game 2 of 3", "14-7", "vs Mikel · Series 1-0". No halves. */
 export function liveCard(live) {
   if (!live || typeof live !== 'object' || live.queue === 'private' || !live.match_id) return null;
   const queue = live.queue === 'ranked' ? 'Ranked' : live.queue === 'casual' ? 'Casual' : 'Online';
   const bo = num(live.best_of) ? live.best_of : 1;
   const head = bo > 1 && num(live.game_number) ? `${queue} · Game ${live.game_number} of ${bo}` : queue;
-  const score = Array.isArray(live.score) && num(live.score[0]) && num(live.score[1]) ? `${live.score[0]} ${EN} ${live.score[1]}` : null;
+  const score = Array.isArray(live.score) && num(live.score[0]) && num(live.score[1]) ? `${live.score[0]}${EN}${live.score[1]}` : null;
   const parts = [];
   if (live.opponent?.display_name) parts.push(`vs ${live.opponent.display_name}`);
   if (bo > 1 && Array.isArray(live.series) && num(live.series[0]) && num(live.series[1])) parts.push(`Series ${live.series[0]}${EN}${live.series[1]}`);

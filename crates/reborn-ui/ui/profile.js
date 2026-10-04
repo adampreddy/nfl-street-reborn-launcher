@@ -30,7 +30,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SHOWN = 5;     // a long table shows five rows; "Show all N" shows every row in place
 const HPAGE = 10;    // Match history rows per page
 const RECENT = 7;    // Recent matches on the profile
-const DASH = '—', EN = '–';
+const DASH = '—', EN = '-'; // scores: a plain hyphen (owner ruling, launch audit M11)
 const HISTORY_TABS = [['all', 'All'], ['ranked', 'Ranked'], ['casual', 'Casual']];
 const PAGER_OTHER = { older: 'newer', newer: 'older' };
 // The empty states never say a player has never played: private rooms count on the server but never show here.
@@ -684,7 +684,7 @@ function h2hSection(p) {
         ? el('a', { class: 'who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'who' }, ...inner);
       const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
       return [cell, recordOf(h), int(h.pts_for), int(h.pts_against), h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH,
-        num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `−${h.biggest_loss.margin}` : DASH];
+        num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}` : DASH, num(h.biggest_loss?.margin) ? `-${h.biggest_loss.margin}` : DASH];
     }), { id: 'h2h', what: 'opponents' }), { wide: true, aside: 'Online' }), 12]]));
 }
 

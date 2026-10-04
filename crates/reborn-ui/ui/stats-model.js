@@ -5,9 +5,9 @@
 
 // Dash characters (exact Unicode required by tests)
 const EM_DASH = '—'; // U+2014 for missing values
-const EN_DASH = '–'; // U+2013 for score and series separators
+const EN_DASH = '-'; // scores and series: a plain hyphen too, "36-12", "2-1" (owner ruling, launch audit M11)
 const HYPHEN = '-'; // ASCII hyphen-minus for win-loss records (owner ruling: "14-9", never "14–9")
-const MINUS = '−'; // U+2212 for Elo changes
+const MINUS = '-'; // Elo changes: "-18", ASCII like everything else (launch audit M11)
 
 /**
  * Format integer with thousands separator, or em dash for anything that is not a number.
@@ -96,7 +96,7 @@ function getAvatar(row) {
 }
 
 /**
- * Format score as "X–Y" or em dash.
+ * Format score as "X-Y" or em dash.
  * @param {Array|null} score
  * @returns {string}
  */
@@ -427,7 +427,7 @@ export function trendPoints(history, w = 160, h = 50) {
 // ---- the redesign (spec §8.6, §8.7) ----
 
 /**
- * A row's Elo change: "+16" (up), "−18" (down), or nothing (unranked, offline, zero).
+ * A row's Elo change: "+16" (up), "-18" (down), or nothing (unranked, offline, zero).
  * @param {number|null|undefined} delta
  * @returns {{text: string, kind: string}}
  */

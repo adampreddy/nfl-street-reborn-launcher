@@ -445,9 +445,9 @@ const EXPECT = {
       return p;
     },
   },
-  'online-playing': { text: ['In play', 'Game 2 · Series 1–0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
+  'online-playing': { text: ['In play', 'Game 2 · Series 1-0', 'Ranked · first to two wins', 'gg'], absent: [' to accept', 'Your game opens', 'Game on'] },
   // Ruling P9: intermission is still "In play", with the series line.
-  'online-intermission': { text: ['In play', 'Between games', 'Game 2 · Series 1–0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
+  'online-intermission': { text: ['In play', 'Between games', 'Game 2 · Series 1-0', 'Ranked · first to two wins'], absent: ['Game on', ' to accept'] },
   'online-playing-casual': { text: ['In play', 'Casual'], absent: ['Series', 'Game on', 'one game'] },
   'online-match-bare': {
     text: ['Opponent'], absent: ['undefined', 'NaN', 'null', ' to accept', ' · Elo'],
@@ -857,19 +857,19 @@ const EXPECT = {
   },
   // The post-game screen (2026-10-04 redesign): the finished matchup card and one action row.
   'online-over-win': {
-    text: ['Series over', '2–1', 'You won the series', 'Winner', 'adamknowsball', 'Playz', 'G1', '2–36', 'G2', '36–0', 'G3', '36–12',
+    text: ['Series over', '2-1', 'You won the series', 'Winner', 'adamknowsball', 'Playz', 'G1', '2-36', 'G2', '36-0', 'G3', '36-12',
       'Ranked · first to two wins', 'Play again', 'Box score ›', 'Rematch', 'Back to Online'],
     absent: ['Unofficial', 'Full game', 'Find another game', 'null', 'undefined', 'Not on our servers?'],
     check: async (page) => [...(/Elo/.test(await page.locator('section.mm').innerText()) ? ['an Elo change shows when the server sent none'] : []),
       ...await overLayout(page, { winner: 0 })],
   },
   'online-over-loss': {
-    text: ['1–2', 'Playz won the series', 'Winner', 'G1', '36–2'],
+    text: ['1-2', 'Playz won the series', 'Winner', 'G1', '36-2'],
     check: (page) => overLayout(page, { winner: 1 }),
   },
   'online-over-elo': { text: ['▲ 18 Elo', '▼ 18 Elo', 'You won the series'] },
   'online-over-casual': {
-    text: ['2–1', 'You won the series', 'Unofficial', 'Casual · first to two wins', 'Play again'],
+    text: ['2-1', 'You won the series', 'Unofficial', 'Casual · first to two wins', 'Play again'],
     check: async (page) => {
       const p = [];
       await page.locator('[data-key="over-again"]').click();
@@ -878,14 +878,14 @@ const EXPECT = {
       return p;
     },
   },
-  'online-over-forfeit': { text: ['1–1', 'You win by forfeit', 'Playz left the series', 'G1', 'G2'], absent: ['G3'] },
-  'online-over-split': { text: ['1–1', 'Series split', 'Casual'], absent: ['Winner'] },
+  'online-over-forfeit': { text: ['1-1', 'You win by forfeit', 'Playz left the series', 'G1', 'G2'], absent: ['G3'] },
+  'online-over-split': { text: ['1-1', 'Series split', 'Casual'], absent: ['Winner'] },
   'online-over-bare': {
-    text: ['2–1', 'You won the series', 'adamknowsball', 'Playz', 'Box score ›', 'Back to Online'],
+    text: ['2-1', 'You won the series', 'adamknowsball', 'Playz', 'Box score ›', 'Back to Online'],
     absent: ['G1', 'null', 'undefined'],
   },
   'online-over-small': {
-    text: ['2–1', 'Play again', 'Back to Online'],
+    text: ['2-1', 'Play again', 'Back to Online'],
     check: async (page) => {
       const p = [];
       await page.locator('[data-key="over-back"]').scrollIntoViewIfNeeded();

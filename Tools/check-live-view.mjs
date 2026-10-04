@@ -6,7 +6,7 @@
 //
 // Covers: the header (teams, seats, score, Live, Game N of M, series, the situation of the newest NON-disputed
 // play); picking game 1 (Final, its score, "Final box score"); a disputed play (badge, no score highlight); a
-// snapshot with no teams or sides (seat names, "Side 1 x – y Side 2", no <img> at a missing URL); a long or HTML
+// snapshot with no teams or sides (seat names, "Side 1 x-y Side 2", no <img> at a missing URL); a long or HTML
 // name stays literal; a match that turns `complete` shows Final and stops polling; an invalid ?match= shows the
 // not-found line and never asks for a snapshot; Watch on web and Back; polling every 3 s only while visible.
 //
@@ -186,7 +186,7 @@ const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";")
   check("the header names both seats", h.includes("Adam") && h.includes("Jock"), h.slice(0, 400));
   check("the header says Live", byClass(header, "lv-status").some((n) => n.textContent === "Live"), h);
   check("the header says Game 2 of 3", h.includes("Game 2 of 3"), h);
-  check("the header shows the series", h.includes("Series 1–0"), h);
+  check("the header shows the series", h.includes("Series 1-0"), h);
   const pts = byClass(header, "lv-points").map((n) => n.textContent);
   check("the header shows the running score (the disputed TD does not count)", pts.join(",") === "0,0", pts.join(","));
   const sit = byClass(header, "lv-situation").map((n) => n.textContent);
@@ -306,7 +306,7 @@ const styleOf = (n) => Object.fromEntries(String(n.attrs.style || "").split(";")
   const h = text(byClass(s, "lv-header")[0]);
   check("with no sides, the header still names both seats", h.includes("Adam") && h.includes("Jock"), h.slice(0, 300));
   const side = byClass(s, "lv-side-score").map((n) => n.textContent);
-  check("with no sides, the score is labelled by side", side.length === 1 && side[0] === "Side 1 0 – 0 Side 2", side.join("|"));
+  check("with no sides, the score is labelled by side", side.length === 1 && side[0] === "Side 1 0-0 Side 2", side.join("|"));
   check("with no teams, no logo <img> is drawn", byClass(s, "lv-logo").length === 0);
   check("with no teams, no <img> points at a missing URL", imgsOf(s).every((i) => ALLOWED(i.attrs.src)), imgsOf(s).map((i) => i.attrs.src).join(", "));
   check("with no teams, no team names are invented", !h.includes("Giants") && !h.includes("undefined") && !h.includes("null"), h.slice(0, 300));

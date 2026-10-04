@@ -10,7 +10,8 @@ import { inkFor } from './live-color.js';
 import { assetUrl, avatarSrc, sideOfSeats } from './live-common.js';
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
-const DASH = '–';
+const DASH = '–'; // a box-score cell with no number
+const SEP = '-'; // scores and series: a plain hyphen, "36-12", "Series 2-1" (owner ruling, launch audit M11)
 const BIG_YARDS = 20;
 const NOT_FOUND = "That game couldn't be found.";
 const STATUS_WORD = { running: 'Live', complete: 'Final', held: 'Under review', abandoned: 'Abandoned', void: 'Void', pairing: 'Starting', lobby: 'Starting' };
@@ -168,11 +169,11 @@ export function header(snap, game) {
   const root = el('div', { class: 'lv-header' });
   root.append(el('div', { class: 'lv-scoreboard' },
     seatCard(0, seats[seatOfCard[0]], teamOf(game, cardSide[0]), pointsOf(0), hasSides && seatOfCard[0] === null),
-    el('span', { class: 'lv-vs', 'aria-hidden': 'true', text: anySeatKnown ? DASH : 'vs' }),
+    el('span', { class: 'lv-vs', 'aria-hidden': 'true', text: anySeatKnown ? SEP : 'vs' }),
     seatCard(1, seats[seatOfCard[1]], teamOf(game, cardSide[1]), pointsOf(1), hasSides && seatOfCard[1] === null)));
   if (!anySeatKnown && sideScore && hasAny) {
     const label = (side) => teamOf(game, side)?.name ?? `Side ${side + 1}`;
-    root.append(el('p', { class: 'lv-side-score', text: `${label(0)} ${sideScore[0]} ${DASH} ${sideScore[1]} ${label(1)}` }));
+    root.append(el('p', { class: 'lv-side-score', text: `${label(0)} ${sideScore[0]}${SEP}${sideScore[1]} ${label(1)}` }));
   }
 
   const st = gameStatus(snap, game);
@@ -182,7 +183,7 @@ export function header(snap, game) {
     el('span', { class: 'lv-game-no', text: `Game ${game?.game_seq ?? 1} of ${bestOf}` }));
   if (bestOf > 1) {
     const series = Array.isArray(match.series) ? match.series : [0, 0];
-    meta.append(el('span', { class: 'lv-series', text: `Series ${num(series[0])}${DASH}${num(series[1])}` }));
+    meta.append(el('span', { class: 'lv-series', text: `Series ${num(series[0])}${SEP}${num(series[1])}` }));
   }
   if (match.mode === 'ranked' || match.mode === 'casual') meta.append(el('span', { class: 'lv-mode', text: match.mode === 'ranked' ? 'Ranked' : 'Casual' }));
   root.append(meta);
@@ -237,7 +238,7 @@ export function playsTab(snap, game) {
     const top = el('div', { class: 'lv-play-top' }, el('span', { class: 'lv-play-seq', text: `#${seqOf(p)}` }));
     if (str(p.situation)) top.append(el('span', { class: 'lv-play-sit', text: p.situation }));
     const after = seatScore(p.score_after, game?.sides);
-    if (after) top.append(el('span', { class: 'lv-play-after', text: `${after[0]}${DASH}${after[1]}` }));
+    if (after) top.append(el('span', { class: 'lv-play-after', text: `${after[0]}${SEP}${after[1]}` }));
     if (disputed) top.append(el('span', { class: 'lv-badge disputed', text: 'Disputed' }));
     else if (turnover) top.append(el('span', { class: 'lv-badge turnover', text: 'Turnover' }));
     const words = str(s.text) || str(s.kind) || 'Play';

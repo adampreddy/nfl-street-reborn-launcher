@@ -9,7 +9,7 @@
 //     never gets a score or turnover highlight and never gets a portrait: only its own card and badge.
 //   - The header follows the game the viewer picked (the newest by default).
 //   - When the sides are unknown (an older runtime sends no ports), no seat can be credited with a score,
-//     so the header adds the score by SIDE: "Side 1 x – y Side 2" (team names when those are known).
+//     so the header adds the score by SIDE: "Side 1 x-y Side 2" (team names when those are known).
 //
 // Everything the backend returns is untrusted player-typed data (display names, team names, play text)
 // and is drawn with `el()`'s `text` (textContent) only. An image `src` is set only from our own

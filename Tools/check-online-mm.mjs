@@ -69,7 +69,7 @@ const EXPECT = {
   lobby: { text: ['Your room · Quick game', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'yo', 'running it back', 'ready when you are'],
     buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link', 'Quick game', 'Pickup'], absent: ['field pick'], counts: { '.on-rd': 1, '.on-nr': 1, '.mm-chat li': 3 } },
   pairing: { text: ['Jock', 'Game on', 'VS', 'Casual'], buttons: ['Accept', 'Decline', 'Leave match'], absent: ['one game'] },
-  running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1–0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
+  running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1-0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
 };

@@ -23,12 +23,12 @@ export function modeLine(mode, bestOf) {
   return words ? `Casual · first to ${words} wins` : 'Casual';
 }
 
-/** "Game 2 · Series 1–0" while a series runs (best_of > 1), counted from this seat; null otherwise. */
+/** "Game 2 · Series 1-0" while a series runs (best_of > 1), counted from this seat; null otherwise. */
 export function seriesLine(m) {
   if (!m || !(int(m.best_of) > 1) || !Array.isArray(m.series)) return null;
   const seat = m.seat === 1 ? 1 : 0;
   const mine = int(m.series[seat]) ?? 0, theirs = int(m.series[1 - seat]) ?? 0;
-  return `Game ${mine + theirs + 1} · Series ${mine}–${theirs}`;
+  return `Game ${mine + theirs + 1} · Series ${mine}-${theirs}`;
 }
 
 /** "Accept within 0:14" from the server's relay_deadline; null when there is none, it does not read as a time or it

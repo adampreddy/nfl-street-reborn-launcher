@@ -201,11 +201,12 @@ pub fn payload(activity: &Activity) -> Payload {
         Activity::InMatch { mode, opponent, field, series, score, start_unix } => {
             let (large_image, large_text) = field_asset(field.as_deref());
             let details = match score {
-                Some((us, them)) => format!("{mode} — {us}\u{2013}{them} vs {opponent}"),
+                // Scores and series: a plain hyphen, as everywhere in the launcher ("14-7", "1-0"; launch audit M11).
+                Some((us, them)) => format!("{mode} — {us}-{them} vs {opponent}"),
                 None => format!("{mode} — vs {opponent}"),
             };
             let state = match series {
-                Some(s) => format!("Game {} of {} ({}\u{2013}{})", s.game, s.best_of, s.wins_self, s.wins_opponent),
+                Some(s) => format!("Game {} of {} ({}-{})", s.game, s.best_of, s.wins_self, s.wins_opponent),
                 None => field.clone().unwrap_or_default(),
             };
             Payload {
@@ -330,7 +331,7 @@ mod tests {
             score: Some((28, 21)),
             start_unix: 5,
         });
-        assert!(with.details.contains("28"), "{}", with.details);
+        assert!(with.details.contains("28-21"), "{}", with.details);
         assert!(with.details.contains("21"), "{}", with.details);
         assert!(with.details.contains("Jock"), "{}", with.details);
 
@@ -344,7 +345,7 @@ mod tests {
             start_unix: 5,
         });
         assert_eq!(without.details, "Ranked — vs Jock");
-        assert!(!without.details.contains("–"), "an absent score must not leave a dash: {}", without.details);
+        assert!(!without.details.contains('-'), "an absent score must not leave a dash: {}", without.details);
     }
 
     #[test]
@@ -357,7 +358,7 @@ mod tests {
             score: Some((14, 6)),
             start_unix: 5,
         });
-        assert_eq!(got.state, "Game 2 of 3 (1–0)");
+        assert_eq!(got.state, "Game 2 of 3 (1-0)");
     }
 
     #[test]

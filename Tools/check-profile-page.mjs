@@ -96,8 +96,8 @@ try {
     { const e = await rect(page, '.pf-elo'), c = await rect(page, '.pf-card'); assert.ok(Math.abs(e.right - c.right) < 2 && Math.abs(e.top - c.top) < 2, 'the Elo panel fills the hero\'s right'); }
     // the live card, under Share / View on web
     assert.equal(await page.locator('.pf-live .q').textContent(), 'Ranked · Game 2 of 3');
-    assert.equal(await page.locator('.pf-live strong').textContent(), '14 – 7');
-    assert.equal(await page.locator('.pf-live-bot > span').textContent(), 'vs Mikel · Series 1–0');
+    assert.equal(await page.locator('.pf-live strong').textContent(), '14-7');
+    assert.equal(await page.locator('.pf-live-bot > span').textContent(), 'vs Mikel · Series 1-0');
     assert.ok((await rect(page, '.pf-live')).top > (await rect(page, '.pf-acts')).bottom, 'the live card sits under the buttons');
     // no tabs: one short scroll of the v2 grid
     assert.equal(await page.locator('.pf-tabbar, #full-stats, #history').count(), 0, 'no tabs; the fuller views are not drawn');
@@ -134,9 +134,9 @@ try {
     // Recent matches: Result · Opponent · Queue · Date, seven rows
     assert.deepEqual(await texts(page, '#recent .vc-th span'), ['Result', 'Opponent', 'Queue', 'Date']);
     assert.equal(await page.locator('#recent .vc-tr').count(), 7);
-    assert.deepEqual(await page.locator('[data-key="recent-m-01"] > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W 2–1', 'Playz', 'Ranked', 'Sep 26']);
+    assert.deepEqual(await page.locator('[data-key="recent-m-01"] > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W 2-1', 'Playz', 'Ranked', 'Sep 26']);
     // Head to head and Win rate by team (in place of Top connections, Adam 10-03)
-    assert.deepEqual(await page.locator('#h2h-card .vc-tr').first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Playz', '5-3', '212–180', 'W Sep 26', '+21']);
+    assert.deepEqual(await page.locator('#h2h-card .vc-tr').first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Playz', '5-3', '212-180', 'W Sep 26', '+21']);
     assert.equal(await page.locator('#pf-teams h2').textContent(), 'Win rate by team');
     assert.ok(await page.locator('#pf-teams .vc-tr').count() > 0, 'a team row');
     assert.equal(await page.locator('#connections').count(), 0, 'Top connections is gone');
@@ -375,7 +375,7 @@ try {
     const bgs = await page.locator('#h2h span.avatar').evaluateAll((ns) => ns.map((n) => getComputedStyle(n).backgroundImage));
     assert.ok(new Set(bgs).size >= 2, `letter avatars vary per player: ${bgs}`);
     await check('h2h', 7, 'opponents');
-    assert.equal(await page.locator('#h2h tbody tr').nth(0).locator('td').nth(3).textContent(), 'W 35–14', 'a one-game match shows its score');
+    assert.equal(await page.locator('#h2h tbody tr').nth(0).locator('td').nth(3).textContent(), 'W 35-14', 'a one-game match shows its score');
     assert.equal(await page.locator('#h2h tbody tr').nth(1).locator('td').nth(3).textContent(), 'W Sep 26', 'a series shows its date');
     await page.screenshot({ path: path.join(out, 'profile-1280-h2h.png') });
     await go(page, 'stats');

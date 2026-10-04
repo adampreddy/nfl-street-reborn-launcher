@@ -20,9 +20,9 @@ test('the mode line never says best of', () => {
 });
 
 test('the series line is from this seat, only in a series', () => {
-  assert.equal(seriesLine({ best_of: 3, series: [1, 0], seat: 0 }), 'Game 2 · Series 1–0');
-  assert.equal(seriesLine({ best_of: 3, series: [0, 1], seat: 1 }), 'Game 2 · Series 1–0');
-  assert.equal(seriesLine({ best_of: 3, series: [1, 1], seat: 0 }), 'Game 3 · Series 1–1');
+  assert.equal(seriesLine({ best_of: 3, series: [1, 0], seat: 0 }), 'Game 2 · Series 1-0');
+  assert.equal(seriesLine({ best_of: 3, series: [0, 1], seat: 1 }), 'Game 2 · Series 1-0');
+  assert.equal(seriesLine({ best_of: 3, series: [1, 1], seat: 0 }), 'Game 3 · Series 1-1');
   assert.equal(seriesLine({ best_of: 1, series: [0, 0], seat: 0 }), null);
   assert.equal(seriesLine({ best_of: null, series: null }), null);
   assert.equal(seriesLine(null), null);

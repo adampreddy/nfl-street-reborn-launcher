@@ -20,7 +20,7 @@ test('a loss: who won, the final series from my side, each decided game with W/L
   const m = seriesOverModel(match({ kind: 'win', winner_seat: 0, official: false, left_seat: null }), live);
   assert.equal(m.title, 'Series over');
   assert.equal(m.headline, 'Playz won the series');
-  assert.equal(m.score, '0–2');
+  assert.equal(m.score, '0-2');
   assert.equal(m.winner, 'them');
   assert.deepEqual(m.games, [{ n: 1, mine: 8, theirs: 36, won: false }, { n: 2, mine: 6, theirs: 36, won: false }]);
   assert.equal(m.you.name, 'Adam');
@@ -32,7 +32,7 @@ test('a loss: who won, the final series from my side, each decided game with W/L
   assert.equal(m.boxHref, `match.html?match=${ID}&from=online.html`);
   const won = seriesOverModel(match({ kind: 'win', winner_seat: 0, official: true }, 0), live);
   assert.equal(won.headline, 'You won the series');
-  assert.equal(won.score, '2–0');
+  assert.equal(won.score, '2-0');
   assert.equal(won.winner, 'you');
   assert.equal(won.games[0].won, true);
 });
@@ -40,7 +40,7 @@ test('a loss: who won, the final series from my side, each decided game with W/L
 test('a split and a forfeit', () => {
   const s = seriesOverModel(match({ kind: 'split', winner_seat: null, official: true }, 1, { series_live: [1, 1] }), live);
   assert.equal(s.headline, 'Series split');
-  assert.equal(s.score, '1–1');
+  assert.equal(s.score, '1-1');
   assert.equal(s.winner, null, 'nobody is marked the winner of a split');
   assert.equal(s.unofficial, false);
   const f = seriesOverModel(match({ kind: 'forfeit', winner_seat: 1, official: false, left_seat: 0 }, 1, { series_live: [1, 0] }), live);
@@ -95,7 +95,7 @@ test('the screen: both faces, the winner tagged, the games, and Play again / Box
   assert.deepEqual(faces.map((f) => f.attrs.class), ['on-p won', 'on-p lost']);
   assert.equal(made.filter((n) => n.attrs.class === 'on-win').length, 1, 'one Winner tag');
   assert.deepEqual(made.filter((n) => /team-logo/.test(n.attrs.class)).map((n) => n.attrs['data-team']), ['BUF', 'PHI']);
-  assert.ok(made.some((n) => n.attrs.class === 'on-final num you' && n.attrs.text === '2–0'));
+  assert.ok(made.some((n) => n.attrs.class === 'on-final num you' && n.attrs.text === '2-0'));
   assert.equal(made.filter((n) => n.tag === 'li').length, 2, 'one chip per decided game');
   assert.ok(made.some((n) => n.attrs.class === 'on-unoff'), 'Unofficial until the server confirms');
   const noBox = [];
