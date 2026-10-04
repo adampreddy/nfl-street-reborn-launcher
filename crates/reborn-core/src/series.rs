@@ -126,8 +126,10 @@ pub fn series_best_of(m: &crate::matchmaking::MatchView) -> u8 {
     ranked.filter(|b| *b >= 1).unwrap_or(m.best_of.max(1))
 }
 
-/// Wins that take the series: ceil(best_of / 2) of [`series_best_of`].
+/// Wins that take the series: the match's own `wins_needed` when the server sends it (casual best of 3 sends 2), else
+/// ceil(best_of / 2) of [`series_best_of`].
 pub fn wins_needed(m: &crate::matchmaking::MatchView) -> u32 {
+    if m.wins_needed > 0 { return m.wins_needed as u32; }
     (series_best_of(m) as u32).div_ceil(2)
 }
 
@@ -419,6 +421,29 @@ mod tests {
         assert!(!closes_at_decider(&MatchView { mode: "casual".into(), ..Default::default() }));
         // Ranked is unchanged: it always closes at its decider, by the rules' best of.
         assert!(closes_at_decider(&MatchView { mode: "ranked".into(), best_of: 1, ..Default::default() }));
+    }
+
+    #[test]
+    fn the_servers_casual_best_of_three_closes_at_two_wins_and_an_open_casual_never_closes() {
+        use crate::matchmaking::{MatchView, Outcome};
+        // The backend's casual series (10-04): best_of 3, wins_needed 2, outcome open -> win.
+        let mut m = MatchView { mode: "casual".into(), best_of: 3, wins_needed: 2, ..Default::default() };
+        m.outcome = Some(Outcome { kind: "open".into(), ..Default::default() });
+        assert!(closes_at_decider(&m));
+        assert_eq!(wins_needed(&m), 2);
+        assert!(!series_over([1, 1], wins_needed(&m), Some("open")));
+        assert!(series_over([2, 1], wins_needed(&m), Some("open")), "the deciding win closes Dolphin");
+        assert!(series_over([1, 1], wins_needed(&m), Some("win")), "the server's close closes it too");
+        assert!(decided_for_exit(closes_at_decider(&m), [0, 0], wins_needed(&m), Some("win")), "an exit after the server's win is no leave");
+        assert!(!decided_for_exit(closes_at_decider(&m), [1, 1], wins_needed(&m), Some("open")));
+        // An open casual match (best_of 1 / wins_needed 1) is never closed by the launcher.
+        let open = MatchView { mode: "casual".into(), best_of: 1, wins_needed: 1, ..Default::default() };
+        assert!(!closes_at_decider(&open));
+        assert!(!decided_for_exit(closes_at_decider(&open), [1, 0], wins_needed(&open), Some("win")));
+        // Ranked: the server's wins_needed when sent, the rules' best of when not.
+        let ranked = MatchView { mode: "ranked".into(), best_of: 3, wins_needed: 2, ..Default::default() };
+        assert!(closes_at_decider(&ranked));
+        assert_eq!(wins_needed(&ranked), 2);
     }
 
     fn fixture(name: &str) -> Value {
