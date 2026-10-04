@@ -123,16 +123,24 @@ function renderHints() {
   document.body.classList.toggle('controller-connected', !!pad);
   if (!hints) return;
   if (!pad) { hints.replaceChildren(); delete hints.dataset.layout; return; }
+  // The words on the buttons (launch audit H5). The browser's standard mapping is positional: button 0 is the bottom
+  // face button, 1 the right one. On a Switch pad (vendor 057e) the bottom one is printed B and the right one A, so
+  // Select is "B" and Back is "A" there, the opposite of an Xbox pad's letters.
   const ps = /playstation|dualsense|dualshock|054c/i.test(pad.id);
+  // (057e is Nintendo's vendor id; its product 0337 is the GameCube adapter, not a Switch pad.)
+  const ns = !ps && (/nintendo|pro controller|joy-con/i.test(pad.id) || (/057e/i.test(pad.id) && !/0337/.test(pad.id)));
+  const L = ps ? { ok: '✕', back: '○', hold: 'Hold Circle / Esc', pages: 'L1 / R1', finish: 'Share + Options' }
+    : ns ? { ok: 'B', back: 'A', hold: 'Hold A / Esc', pages: 'L / R', finish: 'Minus + Plus' }
+    : { ok: 'A', back: 'B', hold: 'Hold B / Esc', pages: 'LB / RB', finish: 'View + Menu' };
   const testing = !!document.body.dataset.controllerTesting;
   const needsSetup = pad.mapping !== 'standard' && !readLayout(pad);
   // Prompts are for whoever is holding the controller (spec §6.3). A pad the launcher
   // cannot read yet still says how to set it up, or it could never be set up.
   if (!controllerMode && !testing && !needsSetup) { hints.replaceChildren(); delete hints.dataset.layout; return; }
   const items = needsSetup && !testing ? [['Setup','Set up launcher controls']] : testing
-    ? [[document.body.classList.contains('page-controls') ? (ps ? 'Hold Circle / Esc' : 'Hold B / Esc') : ps ? 'Share + Options' : 'View + Menu', 'Finish test']]
-    : selectEdit ? [['D-pad','Choose'],[ps?'✕':'A','Apply'],[ps?'○':'B','Cancel']]
-    : [['D-pad','Navigate'],[ps?'✕':'A','Select'],[ps?'○':'B','Back'],...(document.body.classList.contains('page-setup') ? [] : [[ps?'L1 / R1':'LB / RB','Pages'],['Right stick','Scroll']])];
+    ? [[document.body.classList.contains('page-controls') ? L.hold : L.finish, 'Finish test']]
+    : selectEdit ? [['D-pad','Choose'],[L.ok,'Apply'],[L.back,'Cancel']]
+    : [['D-pad','Navigate'],[L.ok,'Select'],[L.back,'Back'],...(document.body.classList.contains('page-setup') ? [] : [[L.pages,'Pages'],['Right stick','Scroll']])];
   const key = JSON.stringify(items);
   if (hints.dataset.layout === key) return;
   hints.dataset.layout = key;

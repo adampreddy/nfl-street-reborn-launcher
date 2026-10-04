@@ -5,6 +5,8 @@
   if (/dualsense|0ce6|0df2|ps5/i.test(id)) return ['dualsense','DualSense'];
   if (/xbox|xinput|045e/i.test(id)) return ['xbox','Xbox One layout'];
   if (/gamecube|game cube|wup-028/i.test(id)) return ['gamecube','GameCube'];
+  // Switch pads: named, no picture of our own yet (launch audit H5).
+  if (/nintendo|pro controller|joy-con/i.test(id) || (/057e/i.test(id) && !/0337/.test(id))) return ['switch',/joy-con/i.test(id)?'Joy-Con':'Switch Pro Controller'];
   if (/dualshock|playstation|054c|wireless controller|ps4/i.test(id) && !/dualsense|0ce6|ps5/i.test(id)) return ['playstation','DualShock 4'];
   return [null,'Controller model unavailable'];
  }
@@ -24,7 +26,7 @@
     const observer=new ResizeObserver(()=>{if(!host.isConnected){observer.disconnect();return;}resize();});observer.observe(host);resize();
     host.update=gamepad=>pad.querySelectorAll('[data-button]').forEach(n=>{const b=gamepad?.buttons?.[Number(n.dataset.button)];n.dataset.pressed=String(!!b?.pressed);n.dataset.value=String(b?.value||0);if(n.classList.contains('trigger'))n.style.clipPath=`inset(${100-(b?.value||0)*100}% 0 0 0)`;if(n.dataset.axisX)n.style.translate=`${(gamepad?.axes?.[Number(n.dataset.axisX)]||0)*20}px ${(gamepad?.axes?.[Number(n.dataset.axisY)]||0)*20}px`;});
    }).catch(()=>caption.textContent='Controller image unavailable');
-  } else if(kind) {
+  } else if(kind && kind!=='switch') {
    if(!cache.has(kind)) cache.set(kind,fetch(`art/controllers/${kind}.svg`).then(r=>{if(!r.ok)throw Error('art');return r.text();}));
    cache.get(kind).then(text=>{
     const parsed=new DOMParser().parseFromString(text,'image/svg+xml');

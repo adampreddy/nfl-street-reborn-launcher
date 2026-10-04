@@ -37,6 +37,13 @@ try{
  assert.match(await page.locator('#input-hints').innerText(),/Finish test/,'mouse-started test shows the exit hint');
  await page.evaluate(()=>{delete document.body.dataset.controllerTesting;window.dispatchEvent(new Event('gamepadconnected'));tick();});
  assert.equal(await hints(),0,'test over, mouse user: hints go again');
+ // Launch audit H5: the prompts name the button by what is printed on it. Standard mapping is positional, so on a
+ // Switch pad the bottom button (0, Select) says B and the right one (1, Back) says A; PlayStation keeps its symbols.
+ const promptsFor=async(id)=>{await page.evaluate((id)=>{pads[0].id=id;tick();tick();pads[0].buttons[13]={pressed:true,value:1};tick();pads[0].buttons[13]={pressed:false,value:0};tick();},id);return page.locator('#input-hints').innerText();};
+ assert.match(await promptsFor('Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)'),/A\s+Select[\s\S]*B\s+Back[\s\S]*LB \/ RB/,'Xbox prompts');
+ assert.match(await promptsFor('Pro Controller (STANDARD GAMEPAD Vendor: 057e Product: 2009)'),/B\s+Select[\s\S]*A\s+Back[\s\S]*L \/ R\s+Pages/,'Switch Pro prompts');
+ assert.match(await promptsFor('DualSense Wireless Controller (STANDARD GAMEPAD Vendor: 054c Product: 0ce6)'),/✕\s+Select[\s\S]*○\s+Back/,'PlayStation prompts');
+ await page.mouse.move(210,210);await page.mouse.move(250,250);
  // Review Focus 1: an unmapped pad must still say how to set it up
  await page.evaluate(()=>{pads[0].mapping='';pads[0].id='Unknown USB pad';window.dispatchEvent(new Event('gamepadconnected'));tick();});
  assert.match(await page.locator('#input-hints').innerText(),/Set up launcher controls/,'unmapped pad still offered setup');
