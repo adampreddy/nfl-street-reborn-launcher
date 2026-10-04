@@ -134,7 +134,7 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 .input-footer kbd{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 5px;border-radius:5px;background:var(--glass-3);border:1px solid var(--stroke-hi);color:var(--fg);font:700 10px Inter}
 
 /* save bar (savebar.js): its own lane, never over content, appears only when something changed */
-.save-lane{flex:none;overflow:hidden;max-height:0;transition:max-height var(--d3) var(--ease)}
+.save-lane{flex:none;overflow:hidden;scrollbar-gutter:stable both-edges;max-height:0;transition:max-height var(--d3) var(--ease)}
 .save-lane.open{max-height:180px} /* room for the bar with a two-line failure reason, at any window size */
 .save-bar{margin:10px 24px 18px;max-width:942px;display:flex;align-items:center;gap:16px;padding:12px 14px 12px 20px;border-radius:var(--r-lg);border:1px solid var(--stroke-hi);background:rgba(24,25,30,.78);backdrop-filter:blur(24px) saturate(1.3);box-shadow:var(--sheen),0 16px 40px -14px rgba(0,0,0,.75);opacity:0;transform:translateY(12px);transition:opacity var(--d3) var(--ease),transform var(--d3) var(--ease)}
 .save-lane.open .save-bar{opacity:1;transform:none}
