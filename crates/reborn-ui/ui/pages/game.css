@@ -26,6 +26,23 @@ body.page-game #main{padding:28px 36px 32px}
 #site-game nsr-body.site{max-width:none;margin:0;padding:0;background:transparent;overflow-x:visible}
 @media (max-width:600px){#site-game nsr-body.site{padding:0}}
 
+/* The score strip at the launcher's narrow widths (launch audit H2): the site's three-column strip only folds to one
+   column at 568px of page, but the launcher's 800x560 window gives the page ~570px, so the names squeezed to "S..." and
+   the Anton digits were cut in half just above that line. Here it folds at 640px instead (the site's own <=568 rules,
+   repeated), and a score never shrinks. The vendored live.css is untouched (Tools/sync-site-render.mjs --check). */
+#site-game .st-pts{flex:none}
+#site-game .st-nm{min-width:0}
+@container site-page (max-width:640px){
+  #site-game .strip{grid-template-columns:minmax(0,1fr);gap:10px;padding:14px 16px}
+  #site-game .st-team,#site-game .st-team.b{justify-content:flex-start;text-align:left;gap:12px}
+  #site-game .st-team.b{flex-direction:row-reverse}
+  #site-game .st-nm{flex:1 1 auto}
+  #site-game .st-team.b .st-nm{text-align:left}
+  #site-game .st-team .logo,#site-game .st-team .teambadge,#site-game .st-team .avatar{width:40px;height:40px}
+  #site-game .st-pts{margin:0;font-size:34px}
+  #site-game .st-mid{order:3;padding:0}
+}
+
 /* theme.css has classes of the same name for its own tables, tabs and avatars (.tbl, .tabs, .avatar); what the site's
    rules leave unset would leak in. These put the browser defaults back at (1,0,0), so every scoped site rule still wins. */
 #site-game :where(.tabs){position:static;max-width:none;border:0;border-radius:0;scrollbar-width:thin}
