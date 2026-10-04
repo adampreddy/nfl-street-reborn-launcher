@@ -231,7 +231,46 @@ function onlineStates() {
     N('online-focus-keep-chat', { mm_state: mm({ ...empty, room: { id: 'r1', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
       members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: false, field: null, you: false }] },
       chat: [say(1, 'Jock', 'ready when you are')] }) }),
+    // The post-game screen (series over): a real ranked best of 3 (MATCH_5C8, 49ers 2-1 Rams) as the live snapshot, the
+    // finished match in mm_state. OVER_ME puts adamknowsball (you) in seat 0, the 49ers' seat, so you won it.
+    ...overStates(N, mm, empty, match, PICK),
     // (redesign states are added above this line)
+  ];
+}
+
+/** The post-game screen's states (series-over.js): who won, the final series, each game, Elo when sent, Box score. */
+function overStates(N, mm, empty, match, PICK) {
+  const id = MATCH_5C8.match.id;
+  // You (adamknowsball) in seat 0 = the 49ers' seat, which won 2-1.
+  const youSeat0 = structuredClone(MATCH_5C8);
+  youSeat0.seats = [MATCH_5C8.seats[1], MATCH_5C8.seats[0]];
+  const done = (m) => match({ id, mode: 'ranked', status: 'complete', relay_state: 'complete', best_of: 3, wins_needed: 2, your_accepted: true, your_ready: true,
+    opponent: 'Playz', series: [2, 1], series_live: [2, 1], outcome: { kind: 'win', winner_seat: 0, official: true, left_seat: null }, seat: 0, ...m });
+  const withElo = structuredClone(youSeat0);
+  withElo.seats[0].elo_delta = 18;
+  withElo.seats[1].elo_delta = -18;
+  // A casual best of 3 (Adam 10-04: casual closes out after its decider too), unofficial until the server confirms.
+  const casual = structuredClone(youSeat0);
+  casual.match.mode = 'casual';
+  // Playz left after game 2 at 1-1: the two decided games are listed.
+  const forfeit = structuredClone(youSeat0);
+  forfeit.games = forfeit.games.slice(0, 2);
+  return [
+    N('online-over-win', { mm_state: mm({ ...empty, match: done({}) }), live_match: youSeat0 }, { init: PICK('ranked') }),
+    N('online-over-loss', { mm_state: mm({ ...empty, match: done({ seat: 1, opponent: 'Playz' }) }), live_match: MATCH_5C8 }, { init: PICK('ranked') }),
+    N('online-over-elo', { mm_state: mm({ ...empty, match: done({}) }), live_match: withElo }, { init: PICK('ranked') }),
+    N('online-over-casual', { mm_state: mm({ ...empty, match: done({ mode: 'casual', outcome: { kind: 'win', winner_seat: 0, official: false, left_seat: null } }) }),
+      live_match: casual }, { init: PICK('casual') }),
+    N('online-over-forfeit', { mm_state: mm({ ...empty, match: done({ series: [1, 1], series_live: [1, 1], outcome: { kind: 'forfeit', winner_seat: 0, official: true, left_seat: 1 } }) }),
+      live_match: forfeit }, { init: PICK('ranked') }),
+    N('online-over-split', { mm_state: mm({ ...empty, match: done({ mode: 'casual', best_of: 2, series: [1, 1], series_live: [1, 1], outcome: { kind: 'split', winner_seat: null, official: true, left_seat: null } }) }),
+      live_match: { ...casual, games: casual.games.slice(0, 2) } }, { init: PICK('casual') }),
+    // Before the live snapshot answers (or a server with none): the screen still says who won and the series.
+    N('online-over-bare', { mm_state: mm({ ...empty, match: done({}) }), live_match: null }, { init: PICK('ranked') }),
+    N('online-over-small', { mm_state: mm({ ...empty, match: done({}) }), live_match: youSeat0 }, { init: PICK('ranked'), viewport: { width: 800, height: 560 } }),
+    N('online-over-pad', { mm_state: mm({ ...empty, match: done({}) }), live_match: youSeat0 }, { init: PICK('ranked'), pad: true }),
+    // Back to Online: the idle tiles, and the screen does not come back on the next poll.
+    N('online-over-back', { mm_state: mm({ ...empty, match: done({}) }), live_match: youSeat0 }, { init: PICK('ranked'), click: '[data-key="over-back"]' }),
   ];
 }
 

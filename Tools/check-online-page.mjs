@@ -855,8 +855,117 @@ const EXPECT = {
   'online-focus-keep-chat': {
     check: async (page) => focusKeep(page, 'Chat message', 'chat', 'chat field'),
   },
+  // The post-game screen (2026-10-04 redesign): the finished matchup card and one action row.
+  'online-over-win': {
+    text: ['Series over', '2–1', 'You won the series', 'Winner', 'adamknowsball', 'Playz', 'G1', '2–36', 'G2', '36–0', 'G3', '36–12',
+      'Ranked · first to two wins', 'Play again', 'Box score ›', 'Rematch', 'Back to Online'],
+    absent: ['Unofficial', 'Full game', 'Find another game', 'null', 'undefined', 'Not on our servers?'],
+    check: async (page) => [...(/Elo/.test(await page.locator('section.mm').innerText()) ? ['an Elo change shows when the server sent none'] : []),
+      ...await overLayout(page, { winner: 0 })],
+  },
+  'online-over-loss': {
+    text: ['1–2', 'Playz won the series', 'Winner', 'G1', '36–2'],
+    check: (page) => overLayout(page, { winner: 1 }),
+  },
+  'online-over-elo': { text: ['▲ 18 Elo', '▼ 18 Elo', 'You won the series'] },
+  'online-over-casual': {
+    text: ['2–1', 'You won the series', 'Unofficial', 'Casual · first to two wins', 'Play again'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('[data-key="over-again"]').click();
+      await page.waitForFunction(() => window.__calls.some((c) => c.cmd === 'content_check'), null, { timeout: 3000 }).catch(() => p.push('Play again did not start a casual search'));
+      if (await page.evaluate(() => localStorage.getItem('mm:mode')) !== 'casual') p.push('Play again did not queue the match\'s own mode');
+      return p;
+    },
+  },
+  'online-over-forfeit': { text: ['1–1', 'You win by forfeit', 'Playz left the series', 'G1', 'G2'], absent: ['G3'] },
+  'online-over-split': { text: ['1–1', 'Series split', 'Casual'], absent: ['Winner'] },
+  'online-over-bare': {
+    text: ['2–1', 'You won the series', 'adamknowsball', 'Playz', 'Box score ›', 'Back to Online'],
+    absent: ['G1', 'null', 'undefined'],
+  },
+  'online-over-small': {
+    text: ['2–1', 'Play again', 'Back to Online'],
+    check: async (page) => {
+      const p = [];
+      await page.locator('[data-key="over-back"]').scrollIntoViewIfNeeded();
+      if (!(await page.locator('[data-key="over-back"]').isVisible())) p.push('Back to Online cannot be reached at 800x560');
+      await page.locator('#main').evaluate((m) => m.scrollTo(0, 0));
+      return [...p, ...await overLayout(page, { winner: 0, small: true })];
+    },
+  },
+  // A controller: lands on Play again; B is Back to Online, and the screen does not come back on the next polls.
+  'online-over-pad': {
+    check: async (page) => {
+      const p = [];
+      await page.evaluate(() => document.body.classList.add('gamepad-input'));
+      const keys = await page.locator('section.mm button').evaluateAll((bs) => bs.map((b) => b.dataset.key));
+      for (const k of ['over-again', 'over-box', 'over-rematch', 'over-back']) if (!keys.includes(k)) p.push(`${k} is not a button a controller can reach`);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(2500);
+      if (await page.locator('.on-over').count()) p.push('B / Esc did not go back to Online');
+      if (!(await page.locator('[data-key="mode-ranked"]').count())) p.push('B / Esc did not draw the mode tiles');
+      return p;
+    },
+  },
+  'online-over-back': {
+    text: ['Ranked', 'Casual', 'Private Room', 'Find a ranked game'],
+    absent: ['Series over', 'Play again', 'Back to Online'],
+    check: async (page) => {
+      const p = [];
+      // Several 1 s polls later the server still shows the finished match: the screen stays put away.
+      await page.waitForTimeout(2500);
+      if (await page.locator('.on-over').count()) p.push('the post-game screen came back on a later poll');
+      if (!(await page.locator('[data-key="mode-ranked"]').isVisible())) p.push('the mode tiles are not shown after Back to Online');
+      // A reload in the same session keeps it put away too.
+      await page.reload();
+      await page.waitForTimeout(1500);
+      if (await page.locator('.on-over').count()) p.push('the post-game screen came back after a reload');
+      return p;
+    },
+  },
   // (states are added above this line)
 };
+
+/** The post-game card: two level faces, the winner's tagged, the final score between them, the games under them, the
+ *  action row under the card; Box score opens the match page with Back to Online. */
+async function overLayout(page, { winner, small = false }) {
+  const p = [];
+  const faces = await page.locator('.on-over .on-p').evaluateAll((xs) => xs.map((x) => ({ cls: x.className, top: x.querySelector('.on-avw').getBoundingClientRect().top, r: x.getBoundingClientRect() })));
+  if (faces.length !== 2) return [`the card has ${faces.length} faces`];
+  if (Math.abs(faces[0].top - faces[1].top) > 1) p.push('the two faces are not level');
+  if (!faces[winner].cls.includes('won') || !faces[1 - winner].cls.includes('lost')) p.push(`the winner is not marked: ${faces.map((f) => f.cls).join(' | ')}`);
+  const fin = await page.locator('.on-final').boundingBox();
+  if (!fin || fin.x < faces[0].r.right || fin.x + fin.width > faces[1].r.left) p.push('the final score is not between the two faces');
+  if (fin && parseFloat(await page.locator('.on-final').evaluate((n) => getComputedStyle(n).fontSize)) < (small ? 56 : 64)) p.push('the final score is not the biggest thing on the card');
+  const names = await page.locator('.on-over .on-pname').evaluateAll((xs) => xs.map((x) => x.scrollWidth > x.clientWidth + 1));
+  if (!small && names.some(Boolean)) p.push('a name is cut off at 1280');
+  const card = await page.locator('.on-over').boundingBox(), row = await page.locator('.on-over-row').boundingBox();
+  const games = await page.locator('.on-games').boundingBox();
+  if (games && card && (games.y < Math.max(...faces.map((f) => f.r.bottom)) || games.y + games.height > card.y + card.height)) p.push('the games strip is not under the faces inside the card');
+  if (!row || !card || row.y < card.y + card.height) p.push('the action row is not under the card');
+  if (!small) {
+    const again = await page.locator('[data-key="over-again"]').boundingBox();
+    if (!again || Math.round(again.height) !== 52) p.push(`Play again is ${again?.height}px tall, not 52`);
+    const btns = await page.locator('.on-over-row .btn').evaluateAll((bs) => bs.map((b) => b.getBoundingClientRect().top));
+    if (new Set(btns.map(Math.round)).size !== 1) p.push('the action row wraps at 1280');
+  }
+  await page.locator('[data-key="over-box"]').click();
+  await page.waitForURL(/match\.html/, { timeout: 3000 }).catch(() => {});
+  const url = new URL(page.url());
+  if (!url.pathname.endsWith('/match.html') || url.searchParams.get('match') !== '5c8d58ca-4eea-4686-a887-68968e929112' || url.searchParams.get('from') !== 'online.html') p.push(`Box score opened ${page.url()}`);
+  else {
+    await page.waitForTimeout(800);
+    const href = await page.locator('#back').getAttribute('href').catch(() => null);
+    if (href !== 'online.html') p.push(`Back on the match page goes to ${href}, not Online`);
+    // Back from the box score: the post-game screen again (it was not put away).
+    await page.locator('#back').click();
+    await page.waitForURL(/online\.html/, { timeout: 3000 }).catch(() => {});
+    await page.locator('.on-over').waitFor({ timeout: 4000 }).catch(() => p.push('Back from the box score did not return to the post-game screen'));
+    await page.waitForTimeout(600);
+  }
+  return p;
+}
 
 const byName = Object.fromEntries((STATES.online || []).map((s) => [s.name, s]));
 if (Object.keys(EXPECT).length) {
