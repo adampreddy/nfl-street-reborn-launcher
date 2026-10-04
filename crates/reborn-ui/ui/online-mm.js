@@ -535,6 +535,14 @@ function drawRoom(r, chat) {
       el('b', {}, m.name, m.you ? el('small', { text: 'you' }) : null),
       el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
   }
+  // A 2v2 room takes four (an older launcher's room, or an older server's, takes two): the spots still open show.
+  const capacity = Math.max(2, Math.min(4, Number(r.capacity) || 2));
+  for (let i = r.members.length; i < capacity; i++) {
+    members.append(el('li', { class: 'on-open' },
+      el('span', { class: 'on-mav on-mav-open', 'aria-hidden': 'true' }),
+      el('b', { text: 'Open spot' }),
+      el('span', { class: 'on-nr', text: 'Send the code' })));
+  }
   // The game the room plays (the snapshot's seed_kind; an older server sends none: Quick game). Everyone reads it in the
   // title; the host can switch it until the game starts (the server un-readies everyone, so the crew re-confirms).
   const kind = kindName(r.seed_kind);
@@ -549,7 +557,7 @@ function drawRoom(r, chat) {
     el('div', { class: 'on-coderow' },
       el('strong', { class: 'on-codebig', text: r.code }),
       el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
-    el('span', { class: 'k-label', text: 'Your crew' }),
+    el('span', { class: 'k-label', text: capacity > 2 ? `Your crew · ${r.members.length} of ${capacity}` : 'Your crew' }),
     members);
   const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
     el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
@@ -561,7 +569,10 @@ function drawRoom(r, chat) {
       onclick: () => act('mm_room_action', { roomId: r.id, action: 'ready', value: !ready }) }),
     el('button', { type: 'button', class: 'btn quiet', 'data-key': 'room-leave', text: 'Leave room',
       onclick: () => act('mm_room_action', { roomId: r.id, action: 'leave', value: null }) }));
-  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: 'Both ready, then the host kicks it off.' })];
+  const note = capacity > 2
+    ? 'Up to 4 players. 2v2 works. Everyone ready, then the host kicks it off.'
+    : 'Both ready, then the host kicks it off.';
+  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: note })];
 }
 
 // The host switches the room's game. A server without the route (before the backend update) refuses it: one quiet
@@ -594,6 +605,14 @@ function face({ url, name, sub, team, tick = false }) {
     team ? teamLogo(team, 'on-plogo') : null);
 }
 
+// A 3-4 player private room's match: who else is in the game, under the VS. Null for two players (the faces say it).
+function crewLine(m) {
+  const party = Array.isArray(m.party) ? m.party : [];
+  if (party.length < 3) return null;
+  const others = party.filter((p) => !p.you).map((p) => p.name || 'Player');
+  return el('span', { class: 'on-crew', text: `${party.length} players · with ${others.join(', ')}` });
+}
+
 // The matchup card (spec §3.3–§3.6). Only called for a match that is not over (complete, void, abandoned, held).
 function drawMatch(m, chat, relayError, snap) {
   const words = RELAY[m.relay_state] ?? 'Starting the game';
@@ -606,7 +625,8 @@ function drawMatch(m, chat, relayError, snap) {
     el('span', { class: 'k-label on-found', text: playing ? 'In play' : 'Game on' }),
     el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
     series ? el('span', { class: 'on-ser num', text: series }) : null,
-    el('span', { class: 'on-mode-line', text: modeLine(m.mode, m.best_of) }));
+    el('span', { class: 'on-mode-line', text: modeLine(m.mode, m.best_of) }),
+    crewLine(m));
   // Accept/Decline and the timer sit in their own grid cell under the VS (launch audit H1): beside the faces at full
   // size, on a row of their own under both faces below 1000 px, so they never cover anyone's Elo line.
   let foot = null;
@@ -634,7 +654,8 @@ function drawMatch(m, chat, relayError, snap) {
         team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
       mid,
       // On the card itself a nameless opponent is "Opponent" (letter O); sentences keep "your opponent".
-      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
+      // A 3rd or 4th player's card faces the room's host (the crew line under the VS names everyone else).
+      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: m.seat >= 2 ? 'Host' : standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
       foot),
     MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
   // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).

@@ -119,7 +119,14 @@ pub struct Room {
     pub you_host: bool,
     /// The game the host picked: `regular` (Quick game) or `pickup`. Absent from an older server.
     pub seed_kind: Option<String>,
+    /// How many players the room takes: 4 for a room this launcher opened (it asks for [`ROOM_MAX_PLAYERS`]), 2 for
+    /// one an older launcher opened. 0 = an older server that does not say, which is a room for two.
+    pub capacity: u8,
 }
+
+/// The most players a private room can hold (2v2, Adam 10-04). Sent as `max_players` when this launcher opens or
+/// joins a room: it is how the server knows this launcher can drive a 3-4 player game. Matchmaking stays 1v1.
+pub const ROOM_MAX_PLAYERS: u8 = 4;
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -178,6 +185,52 @@ pub struct MatchView {
     pub hold_reason: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
+    /// Every player of a 3-4 player private room's match, by seat (0 host, 1 first joiner, 2 and 3 the others). Empty
+    /// for a two-player match and from an older server: the relay then does exactly what it always did.
+    pub party: Vec<PartySeat>,
+}
+
+/// One player of a 3-4 player match (the server's `party.js`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PartySeat {
+    pub seat: u8,
+    pub display_name: Option<String>,
+    /// Their NetPlay nickname in the Dolphin room: how the host maps them to a pad.
+    pub nsr_tag: String,
+    pub ready: bool,
+    /// Still in the match (false once they left it).
+    pub active: bool,
+    pub you: bool,
+}
+
+impl MatchView {
+    /// The NetPlay tags of everyone still in this match, in seat order: `[seat0, seat1]` for two players, plus the
+    /// extra players of a 3-4 player room. `None` until the server has named the two seats.
+    pub fn seat_tags(&self) -> Option<Vec<String>> {
+        if !self.party.is_empty() {
+            let mut seats: Vec<&PartySeat> = self.party.iter().filter(|p| p.active && !p.nsr_tag.is_empty()).collect();
+            seats.sort_by_key(|p| p.seat);
+            let tags: Vec<String> = seats.iter().map(|p| p.nsr_tag.clone()).collect();
+            return (tags.len() >= 2).then_some(tags);
+        }
+        let (mine, theirs) = (self.nsr_tag.clone()?, self.opponent_nsr_tag.clone()?);
+        Some(if self.seat == 0 { vec![mine, theirs] } else { vec![theirs, mine] })
+    }
+
+    /// Every tag this match ever gave out, left players included: a player who left is not a stranger in the room.
+    pub fn known_tags(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.party.iter().map(|p| p.nsr_tag.clone()).filter(|t| !t.is_empty()).collect();
+        all.extend(self.nsr_tag.clone());
+        all.extend(self.opponent_nsr_tag.clone());
+        all
+    }
+
+    /// A 3rd or 4th player: a NetPlay joiner with no series role, whose launcher neither streams plays nor files
+    /// results under the match (the server takes those from seats 0 and 1 only).
+    pub fn extra_player(&self) -> bool {
+        self.seat >= 2
+    }
 }
 
 /// The series outcome the server publishes (series spec §1). `kind`: open | win | forfeit | split | held | abandoned.
@@ -387,12 +440,13 @@ impl<'a> Client<'a> {
         let best_of = if mode == "ranked" { 3 } else { 1 };
         self.post(
             "/v1/mm/rooms",
-            serde_json::json!({ "mode": mode, "visibility": "code", "best_of": best_of, "seed_kind": known_seed_kind(seed_kind) }),
+            serde_json::json!({ "mode": mode, "visibility": "code", "best_of": best_of, "seed_kind": known_seed_kind(seed_kind), "max_players": ROOM_MAX_PLAYERS }),
         )
     }
 
     pub fn join_room(&self, code: &str) -> Result<serde_json::Value, MmError> {
-        self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), serde_json::json!({}))
+        // `max_players`: this launcher can be the 3rd or 4th player of a room (an older one is refused with a sentence).
+        self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), serde_json::json!({ "max_players": ROOM_MAX_PLAYERS }))
     }
 
     /// Who invited the player (launcher spec 2026-10-02 §3.10). `None` on a 404: no such open room, or a server
@@ -659,6 +713,37 @@ mod tests {
         let b = body(&http);
         assert_eq!(b["seed_kind"], "regular", "only the two known kinds reach the server");
         assert_eq!(b["visibility"], "code", "no public lobbies: every room is joined by its code");
+    }
+
+    #[test]
+    fn opening_and_joining_a_room_say_this_launcher_can_be_one_of_four() {
+        let http = FakeHttp::default()
+            .reply("https://api.test/v1/mm/rooms", 200, r#"{"ok":true,"room":{"id":"r","code":"K7QP2M"}}"#)
+            .reply("https://api.test/v1/mm/rooms/K7QP2M/join", 200, r#"{"ok":true,"room":{"id":"r","code":"K7QP2M","capacity":4}}"#);
+        let c = Client::new(&http, ORIGIN, "tok");
+        let body = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
+        c.create_room(Mode::Casual, "regular").unwrap();
+        assert_eq!(body(&http)["max_players"], 4);
+        c.join_room("K7QP2M").unwrap();
+        assert_eq!(body(&http)["max_players"], 4);
+    }
+
+    #[test]
+    fn a_party_match_names_every_seat_in_order_and_a_two_player_match_reads_as_before() {
+        let two = snap(r#"{"ok":true,"match":{"id":"m","seat":1,"nsr_tag":"nsr:11111111","opponent_nsr_tag":"nsr:00000000"}}"#);
+        let m = two.matched.unwrap();
+        assert!(m.party.is_empty());
+        assert_eq!(m.seat_tags().unwrap(), vec!["nsr:00000000", "nsr:11111111"]);
+        assert!(!m.extra_player());
+
+        let four = snap(r#"{"ok":true,"room":{"id":"r","capacity":4},"match":{"id":"m","seat":2,"nsr_tag":"nsr:22222222","opponent_nsr_tag":"nsr:00000000",
+            "party":[{"seat":1,"nsr_tag":"nsr:11111111","active":true},{"seat":0,"nsr_tag":"nsr:00000000","active":true},
+                     {"seat":3,"nsr_tag":"nsr:33333333","active":false},{"seat":2,"nsr_tag":"nsr:22222222","active":true,"you":true}]}}"#);
+        assert_eq!(four.room.unwrap().capacity, 4);
+        let m = four.matched.unwrap();
+        assert!(m.extra_player());
+        assert_eq!(m.seat_tags().unwrap(), vec!["nsr:00000000", "nsr:11111111", "nsr:22222222"], "seat order, players who left out");
+        assert!(m.known_tags().contains(&"nsr:33333333".to_string()), "a player who left is not a stranger");
     }
 
     #[test]

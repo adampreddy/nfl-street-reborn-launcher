@@ -232,7 +232,8 @@ pub struct MatchCtx {
 
 /// The live feed runs only while the server says the match is being played.
 pub fn match_ctx(m: &crate::matchmaking::MatchView) -> Option<MatchCtx> {
-    (m.status == "running").then(|| MatchCtx {
+    // The 3rd and 4th player of a private room stream nothing: the server takes plays from seats 0 and 1 only.
+    (m.status == "running" && !m.extra_player()).then(|| MatchCtx {
         match_id: m.id.clone(),
         best_of: m.best_of,
         games_before: m.series.iter().map(|w| *w as u32).sum(),
@@ -631,6 +632,10 @@ mod tests {
             m.status = s.into();
             assert_eq!(match_ctx(&m), None, "{s}");
         }
+        // A private room's 3rd or 4th player streams nothing (the server takes plays from seats 0 and 1 only).
+        m.status = "running".into();
+        m.seat = 2;
+        assert_eq!(match_ctx(&m), None);
     }
 
     #[test]

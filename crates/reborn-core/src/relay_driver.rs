@@ -12,7 +12,8 @@
 //! go             host: POST host-launched, THEN open the room (the server wants the POST first)
 //! host_launching host: relay the 8-character traversal code once the fork shows it
 //! code_ready     host: relay a NEW code after a relaunch; joiner: POST joiner-launched, join by code
-//! joining        host: map seat 0 -> pad 1, seat 1 -> pad 2; both: report who is in the room
+//! joining        host: map seat 0 -> pad 1, seat 1 -> pad 2 (a 3-4 player room: seats 2, 3 -> pads 3, 4);
+//!                everyone: report who is in the room
 //! running        host: start the game (the SERVER decided the series began, not either launcher)
 //! ```
 //!
@@ -104,7 +105,8 @@ pub enum Step {
     OpenRoom { host: bool, nickname: String, code: Option<String> },
     PostHostCode(String),
     PostJoinerLaunched,
-    /// Host only: set pad mapping. Always `[seat0 pid, seat1 pid, 0, 0]`.
+    /// Host only: set pad mapping, one pad per seat in seat order: `[seat0 pid, seat1 pid, 0, 0]` for two players,
+    /// and the 3rd and 4th player of a private room on pads 3 and 4.
     AssignPorts([u8; 4]),
     PostObserved { ports: [u8; 4], players: Vec<(String, Option<u32>)> },
     /// Host only: press Start in the room.
@@ -200,8 +202,10 @@ pub fn plan(m: Option<&MatchView>, room: &Room, mem: &mut Memory) -> Vec<Step> {
     if relay == "go" && PAST_GO.contains(&mem.last_relay.as_str()) { mem.forget_launch(); }
     mem.last_relay = relay.to_string();
 
-    let (Some(mine), Some(theirs)) = (m.nsr_tag.clone(), m.opponent_nsr_tag.clone()) else { return steps };
-    let (tag0, tag1) = if m.seat == 0 { (mine.clone(), theirs) } else { (theirs, mine.clone()) };
+    // Everyone's NetPlay tag in seat order (two, or three or four in a private room), and every tag the match ever
+    // gave out (a player who left the match is not a stranger in the room).
+    let (Some(mine), Some(tags)) = (m.nsr_tag.clone(), m.seat_tags()) else { return steps };
+    let known = m.known_tags();
     let host = m.you_host;
 
     match relay {
@@ -247,7 +251,7 @@ pub fn plan(m: Option<&MatchView>, room: &Room, mem: &mut Memory) -> Vec<Step> {
                 steps.push(Step::PostRoomLost(format!("room-{}", room.phase)));
                 return steps;
             }
-            if relay == "joining" || relay == "room_formed" { observe(&tag0, &tag1, host, room, mem, &mut steps); }
+            if relay == "joining" || relay == "room_formed" { observe(&tags, &known, host, room, mem, &mut steps); }
         }
         "running" => {
             if room.phase == "running" { mem.ran = true; }
@@ -266,7 +270,7 @@ pub fn plan(m: Option<&MatchView>, room: &Room, mem: &mut Memory) -> Vec<Step> {
                 let again = mem.started && room.can_start
                     && mem.ticks_since_start >= START_RETRY_TICKS && mem.start_attempts < START_ATTEMPTS;
                 if !mem.started || again {
-                    if let Some(want) = desired_ports(&tag0, &tag1, room) {
+                    if let Some(want) = desired_ports(&tags, room) {
                         if room.ports != want { steps.push(Step::AssignPorts(want)); }
                         steps.push(Step::StartGame);
                     }
@@ -282,15 +286,19 @@ pub fn plan(m: Option<&MatchView>, room: &Room, mem: &mut Memory) -> Vec<Step> {
     steps
 }
 
-fn desired_ports(tag0: &str, tag1: &str, room: &Room) -> Option<[u8; 4]> {
-    Some([room.pid_of(tag0)?, room.pid_of(tag1)?, 0, 0])
+/// One pad per seat, in seat order, once every seat is in the room: `[seat0, seat1, 0, 0]`, or with a private room's
+/// 3rd and 4th player on pads 3 and 4. NFL Street picks sides on its own team-select screen, so 2v2 is four mapped pads.
+fn desired_ports(tags: &[String], room: &Room) -> Option<[u8; 4]> {
+    let mut ports = [0u8; 4];
+    for (slot, tag) in ports.iter_mut().zip(tags.iter()) { *slot = room.pid_of(tag)?; }
+    Some(ports)
 }
 
-/// Report the room once it holds both seats, or at once when it holds anyone else.
-fn observe(tag0: &str, tag1: &str, host: bool, room: &Room, mem: &Memory, steps: &mut Vec<Step>) {
+/// Report the room once it holds every seat, or at once when it holds anyone else.
+fn observe(tags: &[String], known: &[String], host: bool, room: &Room, mem: &Memory, steps: &mut Vec<Step>) {
     if room.phase != "lobby" { return; }
-    let stranger = room.players.iter().any(|p| p.name != tag0 && p.name != tag1);
-    let desired = desired_ports(tag0, tag1, room);
+    let stranger = room.players.iter().any(|p| !known.iter().any(|k| *k == p.name));
+    let desired = desired_ports(tags, room);
     let ports: [u8; 4] = match (stranger, desired) {
         (false, Some(want)) => {
             if room.ports != want {
@@ -305,7 +313,7 @@ fn observe(tag0: &str, tag1: &str, host: bool, room: &Room, mem: &Memory, steps:
             for (slot, v) in p.iter_mut().zip(room.ports.iter()) { *slot = (*v).min(4); }
             p
         }
-        (false, None) => return, // the other seat has not arrived yet
+        (false, None) => return, // a seat has not arrived yet
     };
     let players: Vec<(String, Option<u32>)> = room.players.iter().map(|p| (p.name.clone(), p.ping_ms)).collect();
     if mem.observed_sent.as_deref() != Some(signature(&ports, &players).as_str()) {
@@ -528,6 +536,72 @@ mod tests {
         let others: std::collections::BTreeSet<u32> =
             (0..1000).map(|i| rng_seed_for(&format!("match-{i}"))).collect();
         assert_eq!(others.len(), 1000, "a thousand matches, a thousand different starts");
+    }
+
+    const T2: &str = "nsr:cccc2222";
+    const T3: &str = "nsr:dddd3333";
+
+    /// A 3-4 player private room's match as seat `seat` sees it: the server's `party` names every seat.
+    fn party_view(relay: &str, seat: u8, players: u8) -> MatchView {
+        let tags = [T0, T1, T2, T3];
+        let mut v = view(relay, seat);
+        v.nsr_tag = Some(tags[seat as usize].into());
+        v.opponent_nsr_tag = Some(if seat == 0 { T1 } else { T0 }.into());
+        v.party = (0..players).map(|s| crate::matchmaking::PartySeat {
+            seat: s, nsr_tag: tags[s as usize].into(), active: true, you: s == seat, ..Default::default()
+        }).collect();
+        v
+    }
+
+    #[test]
+    fn a_third_and_fourth_player_join_by_the_relayed_code_like_seat_one() {
+        for seat in [2u8, 3] {
+            let mut v = party_view("code_ready", seat, 4);
+            v.host_code = Some("AbCd1234".into());
+            let nick = if seat == 2 { T2 } else { T3 };
+            assert_eq!(run(&v, &Room::default(), &mut Memory::default()), vec![
+                Step::PostJoinerLaunched,
+                Step::OpenRoom { host: false, nickname: nick.into(), code: Some("AbCd1234".into()) },
+            ]);
+        }
+        assert_eq!(run(&party_view("ready", 3, 4), &Room::default(), &mut Memory::default()), vec![Step::Ready]);
+    }
+
+    #[test]
+    fn the_host_of_a_four_player_room_maps_one_pad_per_seat_and_waits_for_all_four() {
+        let mut mem = Memory::default();
+        run(&party_view("go", 0, 4), &Room::default(), &mut mem);
+        mem.record(&Step::PostHostCode("AbCd1234".into()));
+        // Three of four in: nobody is a stranger, nothing is mapped or reported yet.
+        let three = room("lobby", &[(1, T0), (3, T2), (2, T1)], [1, 0, 0, 0]);
+        assert!(run(&party_view("joining", 0, 4), &three, &mut mem).is_empty());
+        // All four, in any order in the fork's list: mapped by TAG, seat order onto pads 1-4.
+        let four = room("lobby", &[(4, T3), (1, T0), (3, T2), (2, T1)], [1, 0, 0, 0]);
+        assert_eq!(run(&party_view("joining", 0, 4), &four, &mut mem), vec![Step::AssignPorts([1, 2, 3, 4])]);
+        let mapped = room("lobby", &[(4, T3), (1, T0), (3, T2), (2, T1)], [1, 2, 3, 4]);
+        assert!(matches!(&run(&party_view("joining", 0, 4), &mapped, &mut mem)[..], [Step::PostObserved { ports: [1, 2, 3, 4], .. }]));
+        // An extra player waits for the host's mapping, then reports the same room.
+        let mut xm = Memory::default();
+        assert!(run(&party_view("joining", 3, 4), &four, &mut xm).is_empty());
+        assert!(matches!(&run(&party_view("joining", 3, 4), &mapped, &mut xm)[..], [Step::PostObserved { ports: [1, 2, 3, 4], .. }]));
+        // Running: the host starts with all four on their pads; nobody else does.
+        assert_eq!(run(&party_view("running", 0, 4), &mapped, &mut Memory::default()), vec![Step::StartGame]);
+        assert!(run(&party_view("running", 2, 4), &mapped, &mut Memory::default()).is_empty());
+        // Three players: pads 1-3.
+        let trio = room("lobby", &[(1, T0), (2, T1), (5, T2)], [1, 2, 0, 0]);
+        assert_eq!(run(&party_view("running", 0, 3), &trio, &mut Memory::default()), vec![Step::AssignPorts([1, 2, 5, 0]), Step::StartGame]);
+    }
+
+    #[test]
+    fn a_player_who_left_the_match_is_not_a_stranger_and_is_not_waited_for() {
+        let mut v = party_view("joining", 0, 4);
+        v.party[3].active = false;
+        let mut mem = Memory::default();
+        mem.record(&Step::OpenRoom { host: true, nickname: T0.into(), code: None });
+        let r = room("lobby", &[(1, T0), (2, T1), (3, T2), (4, T3)], [1, 0, 0, 0]);
+        assert_eq!(run(&v, &r, &mut mem), vec![Step::AssignPorts([1, 2, 3, 0])]);
+        let strangers = room("lobby", &[(1, T0), (2, T1), (3, T2), (5, "Randy")], [1, 2, 3, 0]);
+        assert!(matches!(&run(&v, &strangers, &mut Memory::default())[..], [Step::PostObserved { .. }]), "Randy is reported");
     }
 
     #[test]

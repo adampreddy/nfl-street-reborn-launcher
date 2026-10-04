@@ -796,10 +796,13 @@ fn parse_mode(mode: &str) -> Result<Mode, String> {
 
 /// The matchmade match the relay is opening Dolphin for right now, if any. The NetPlay session records it in its
 /// intent, so every result from that Dolphin names the match (series spec §3.1). None for Play and private rooms.
+/// None for the 3rd and 4th player of a private room too: they have no seat in the series, so their results are
+/// filed like a Direct connection game's and their Dolphin's exit reports nothing (they press Leave match to go).
 pub fn current_match_id() -> Option<String> {
     let s = lock(&STATE);
     s.snapshot.as_ref()?.matched.as_ref()
         .filter(|m| !matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held"))
+        .filter(|m| !m.extra_player())
         .map(|m| m.id.clone())
 }
 
@@ -829,6 +832,8 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
         })),
         "room": s.room.as_ref().map(|r| serde_json::json!({
             "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
+            // 4 for a 2v2 room, 2 for a room an older launcher opened (or an older server: it sends 0).
+            "capacity": r.capacity.max(2),
             "seed_kind": crate::dolphin_settings::seed_kind_or_default(r.seed_kind.as_deref()),
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
@@ -850,6 +855,10 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
             "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
             // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
             "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
+            // A 3-4 player room's match: everyone in it, by seat ([] for two players). Names only; tags stay here.
+            "party": m.party.iter().filter(|p| p.active).map(|p| serde_json::json!({
+                "seat": p.seat, "name": p.display_name, "you": p.you,
+            })).collect::<Vec<_>>(),
         })),
         "chat": chat.iter().map(|c| serde_json::json!({
             // The line under both names: `body` (what the page always read) and `text` (the server's own name).
@@ -1177,6 +1186,28 @@ mod tests {
         let old: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m" } })).unwrap();
         let v = snapshot_json(&old, &[]);
         assert!(v["match"]["outcome"].is_null() && v["match"]["rules"].is_null(), "an older server sends neither");
+    }
+
+    #[test]
+    fn a_two_v_two_room_and_match_reach_the_page_with_their_size_and_players() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "capacity": 4 },
+            "match": { "id": "m", "seat": 2, "party": [
+                { "seat": 0, "display_name": "Host", "nsr_tag": "nsr:00000000", "active": true },
+                { "seat": 1, "display_name": "Guest", "nsr_tag": "nsr:11111111", "active": true },
+                { "seat": 2, "display_name": "Me", "nsr_tag": "nsr:22222222", "active": true, "you": true },
+                { "seat": 3, "display_name": "Gone", "nsr_tag": "nsr:33333333", "active": false } ] } })).unwrap();
+        let v = snapshot_json(&s, &[]);
+        assert_eq!(v["room"]["capacity"], 4);
+        let party = v["match"]["party"].as_array().unwrap();
+        assert_eq!(party.len(), 3, "a player who left is not drawn");
+        assert_eq!(party[2]["name"], "Me");
+        assert_eq!(party[2]["you"], true);
+        assert!(party.iter().all(|p| p.get("nsr_tag").is_none()), "tags never reach the page");
+        let old: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r" }, "match": { "id": "m" } })).unwrap();
+        let v = snapshot_json(&old, &[]);
+        assert_eq!(v["room"]["capacity"], 2, "an older server's room is a room for two");
+        assert_eq!(v["match"]["party"], serde_json::json!([]));
     }
 
     #[test]

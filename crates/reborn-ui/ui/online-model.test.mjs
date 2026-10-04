@@ -82,6 +82,9 @@ test('everyone ready needs two players, all ready', () => {
   assert.equal(everyoneReady({ members: [{ ready: true }, { ready: false }] }), false);
   assert.equal(everyoneReady({ members: [{ ready: true }] }), false);
   assert.equal(everyoneReady(null), false);
+  // 2v2 rooms: three or four players, Start only when every one of them is ready.
+  assert.equal(everyoneReady({ members: [{ ready: true }, { ready: true }, { ready: true }, { ready: true }] }), true);
+  assert.equal(everyoneReady({ members: [{ ready: true }, { ready: true }, { ready: false }] }), false);
 });
 
 test('invite link and line', () => {

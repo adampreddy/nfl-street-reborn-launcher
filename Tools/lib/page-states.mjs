@@ -178,6 +178,16 @@ function onlineStates() {
     N('online-room-kind-old', { mm_state: mm(ROOM({})), mm_room_action: { __reject: 'Not found' } }),
     // The game is starting: the host's switch is shown but cannot be used.
     N('online-room-started', { mm_state: mm(ROOM({ status: 'starting', members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false }] })) }),
+    // 2v2 private rooms (Adam 10-04): a room this launcher opened takes four. Three in, and four in at the minimum window.
+    N('online-room-three', { mm_state: mm(ROOM({ capacity: 4, members: [{ name: 'Adam', ready: true, field: null, you: true },
+      { name: 'Jock', ready: true, field: null, you: false }, { name: 'Tuna', ready: false, field: null, you: false }] })) }),
+    N('online-room-four-small', { mm_state: mm(ROOM({ capacity: 4, you_host: false, members: [{ name: 'Adam', ready: true, field: null, you: false },
+      { name: 'Jock', ready: true, field: null, you: false }, { name: 'Tuna', ready: true, field: null, you: true }, { name: 'Mack', ready: false, field: null, you: false }] },
+      [say(1, 'Mack', 'me and tuna vs you two')])) }, { viewport: { width: 800, height: 560 } }),
+    // A four-player match as its third player sees it: the host's face, and everyone else under the VS.
+    N('online-match-four', { mm_state: mm({ ...empty, match: match({ id: 'm9', status: 'starting', relay_state: 'joining', your_accepted: true, your_ready: true,
+      opponent: 'Adam', seat: 2, you_host: false, party: [{ seat: 0, name: 'Adam', you: false }, { seat: 1, name: 'Jock', you: false },
+        { seat: 2, name: 'Tuna', you: true }, { seat: 3, name: 'Mack', you: false }] }) }) }),
     // A room with a conversation (the chat keeps every line, 2026-10-03).
     N('online-room-chat', { mm_state: mm(ROOM({}, [say(1, 'Jock', 'yo, you up?'), say(2, 'Adam', 'running it back'), say(3, 'Jock', 'Pickup this time'),
       say(4, 'Adam', 'bet. switching it'), say(5, 'Jock', 'ready when you are')])) }),

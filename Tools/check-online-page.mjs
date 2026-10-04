@@ -542,6 +542,29 @@ const EXPECT = {
       return n === 2 && off ? [] : [`the switch is ${n === 2 ? 'still usable' : 'missing'} once the game is starting`];
     },
   },
+  // 2v2 (Adam 10-04): the crew counts up to four, the open spot shows, and Start waits for all of them.
+  'online-room-three': {
+    text: ['Your crew · 3 of 4', 'Tuna', 'Open spot', 'Up to 4 players. 2v2 works.'], absent: ['Both ready'],
+    check: async (page) => {
+      const p = [];
+      const rows = await page.locator('.on-members li').count(), open = await page.locator('.on-members li.on-open').count();
+      if (rows !== 4 || open !== 1) p.push(`crew rows: ${rows} (${open} open), want 4 (1 open)`);
+      if (!(await page.getByRole('button', { name: 'Start', exact: true }).isDisabled())) p.push('Start is enabled while Tuna is not ready');
+      return p;
+    },
+  },
+  'online-room-four-small': {
+    text: ['Your crew · 4 of 4', 'Mack', 'me and tuna vs you two', 'Up to 4 players. 2v2 works.'], absent: ['Open spot'],
+    check: async (page) => {
+      const p = [];
+      if ((await page.locator('.on-members li').count()) !== 4) p.push('four players are not all listed');
+      const cut = await page.locator('.on-members b').evaluateAll((xs) => xs.some((x) => x.getBoundingClientRect().width < 40));
+      if (cut) p.push('a crew name is squeezed at 800 px');
+      if (await page.getByRole('button', { name: 'Start', exact: true }).count()) p.push('a guest is offered Start');
+      return p;
+    },
+  },
+  'online-match-four': { text: ['4 players · with Adam, Jock, Mack', 'Host', 'Game on'], absent: [' to accept', 'Accept'] },
   // Every line of the conversation shows, in order.
   'online-room-chat': {
     text: ['yo, you up?', 'running it back', 'Pickup this time', 'bet. switching it', 'ready when you are'],
