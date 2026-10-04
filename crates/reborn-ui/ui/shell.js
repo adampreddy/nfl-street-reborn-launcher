@@ -94,6 +94,15 @@ export function fact(name, value, cls) {
   return el("tr", {}, el("th", { text: name }), cell);
 }
 
+// The launcher's version as a player reads it (Settings > Updates, Help): "3.0.31 · stable", from the `paths`
+// answer. A beta's version already says beta, so the channel is not repeated. Null when nothing was read.
+export function versionLine(paths) {
+  const v = paths && !paths.error && typeof paths.version === "string" ? paths.version : null;
+  if (!v) return null;
+  const ch = typeof paths.channel === "string" && !v.includes(paths.channel) ? paths.channel : null;
+  return ch ? `${v} · ${ch}` : v;
+}
+
 export function facts(rows) {
   const table = el("table", { class: "facts" });
   for (const r of rows) table.append(r);

@@ -6,7 +6,7 @@
 // exception is live audio: while a game is running, volume and mute reach it at once, which is what
 // they have always done.
 
-import { bridge, call, cleanPath, el, get, icon, markCurrent, partial, reason, refusal, set, wireCoreFold } from "./shell.js";
+import { bridge, call, cleanPath, el, get, icon, markCurrent, partial, reason, refusal, set, versionLine, wireCoreFold } from "./shell.js";
 import { applyLook, refreshLookResult } from "./look.js";
 import { mountSaveBar } from "./savebar.js";
 import { tabs } from "./tabs.js";
@@ -487,7 +487,9 @@ function updatesBlock() {
     uninstall.dataset.armed = "true"; uninstall.textContent = "Press again to remove";
     setTimeout(() => { if (!uninstall.isConnected) return; delete uninstall.dataset.armed; uninstall.textContent = "Uninstall…"; }, 8000);
   } });
+  const version = versionLine(state.paths);
   parts.push(section("Launcher", null,
+    version ? row("Version", { value: `NFL Street Reborn ${version}` }) : null,
     row(downloaded?.path ? "Ready to install" : update?.state === "available" ? `Version ${update.latest} available` : "Launcher updates", { control: actions,
       help: downloaded?.path ? `Downloaded and verified · ${mb(downloaded.bytes)} MB. Restart the launcher to install.` : update?.note || "Check for a new launcher version. Your games and saves are preserved." }),
     row("Remove NFL Street Reborn", { control: uninstall, help: "Removes the launcher and the game from this PC. Your saves stay." })));

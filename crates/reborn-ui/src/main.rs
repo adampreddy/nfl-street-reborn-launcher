@@ -88,6 +88,8 @@ struct Paths {
     /// never writes where the real launcher reads.
     channel: &'static str,
     channel_note: String,
+    /// This launcher's version (`launcher_version`), shown in Settings and on Help: support's first question.
+    version: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +159,7 @@ fn paths() -> Result<Paths, String> {
         directories,
         channel: channel.channel.name(),
         channel_note: channel.explain(),
+        version: launcher_version(),
     })
 }
 

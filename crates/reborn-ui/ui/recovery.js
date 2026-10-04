@@ -4,7 +4,7 @@
 // disabled, start with Performance graphics, open the emulator itself,
 // verify and repair, and a diagnostic bundle. Nothing restarts by itself.
 
-import { bridge, call, el, fact, facts, get, markCurrent, minutes, partial, reason, refusal, wireCoreFold } from "./shell.js";
+import { bridge, call, el, fact, facts, get, markCurrent, minutes, partial, reason, refusal, versionLine, wireCoreFold } from "./shell.js";
 
 const state = {};
 let busy = false;
@@ -19,6 +19,7 @@ function ok(x) {
 async function load() {
   const reads = {
     sessions: call("sessions"),
+    paths: call("paths"),
     check: call("launch_check", { runtime: get("runtime"), game: get("game"), userDir: get("userDir") }),
   };
   const keys = Object.keys(reads);
@@ -133,6 +134,9 @@ function draw() {
   const parts = [];
   if (problem) parts.push(refusal(problem));
   parts.push(lastSessionBlock(), actionsBlock());
+  // The version support asks for first (launch audit H4), in the same facts style as Last session.
+  const version = versionLine(state.paths);
+  if (version) parts.push(el("section", { class: "block" }, el("h2", { text: "About" }), facts([fact("Launcher", `NFL Street Reborn ${version}`)])));
   screen.replaceChildren(...parts);
 }
 

@@ -57,7 +57,7 @@ const FULL = {
   controls_options: [{ slug: "xbox", label: "Xbox", describes: "d", pack: "p", suggested: true }],
   home_state: { sessions_played: 3, minutes_played: 12, last_played: "id", last_played_ms: 1756800000000, controllers: 1, mods_installed: 9, mods_applied: 2, runtime_set: true },
   onboarding_progress: { complete: true, summary: { graphics: "balanced" } },
-  paths: { install_root: "i", data_root: "d", saves_survive_uninstall: true, directories: [{ relative: "mods", exists: true, class: "managed" }], channel: "stable", channel_note: "stable channel." },
+  paths: { install_root: "i", data_root: "d", saves_survive_uninstall: true, directories: [{ relative: "mods", exists: true, class: "managed" }], channel: "stable", channel_note: "stable channel.", version: "3.0.31" },
   identity_status: { signed_in: true, display_name: "Adam", player_id: "p1", show_offline: false },
   stats_queue: { dir: "q", depth: 2, quarantined: 0, stalled: 0, accepted: 0, held: 0, rejected: 0, total: 2, orphaned_payloads: 0, entries: [] },
   content_status: { phase: "available", origin: "https://files.test/", release: "3.0.0 sequence 3", components: [{ component: "textures", state: "available", installed: "1.0.0", offered: "1.0.1", files: 3, bytes: 4194304, repair: false, message: null }], download_bytes: 4194304, download_files: 3, repair_only: false, note: "Update available: 4 MB across 3 file(s).", installed: null },
@@ -213,6 +213,15 @@ for (const [file, name] of PAGES) {
   const t = text(screen);
   check("Recovery shows the last session", t.includes("Terminated") || t.includes("Session status"));
   check("Recovery advises mods-disabled after three bad endings", t.includes("Try starting with mods disabled"));
+  // Support's first question (launch audit H4): Help says which launcher this is.
+  check("Help shows the launcher version", t.includes("NFL Street Reborn 3.0.31 · stable"), t.slice(-300));
+}
+// Settings > Updates names the version too, without a newer one on offer.
+{
+ global.location = { pathname: "/settings.html", hash: "#updates" };
+ const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",FULL,"full");const t=text(screen);
+ check("Settings shows the launcher version", t.includes("NFL Street Reborn 3.0.31 · stable"), t.slice(0,400));
+ global.location = { pathname: "/index.html" };
 }
 // Settings starts with everyday options; file and update controls have their own sections.
 {
