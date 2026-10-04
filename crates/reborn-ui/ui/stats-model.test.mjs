@@ -65,9 +65,10 @@ test('backHref: only stats.html or a profile of a real player id, each with a sh
   assert.equal(backHref('stats.html#records'), 'stats.html#records');
   assert.equal(backHref(`profile.html?player=${id}`), `profile.html?player=${id}`);
   assert.equal(backHref(`profile.html?player=${id}#matches`), `profile.html?player=${id}#matches`);
+  assert.equal(backHref('online.html'), 'online.html', 'the post-game screen opens the box score from Online');
   for (const bad of [undefined, null, 42, '', 'profile.html', 'profile.html?player=nope', `profile.html?player=${id}&x=1`,
     `profile.html?player=${id.toUpperCase()}`, 'https://evil.example/', 'javascript:alert(1)', '//evil.example/stats.html',
-    'game.html?game=' + id, 'stats.html#X', 'stats.html#a b', `stats.html#${'x'.repeat(30)}`, ` stats.html`, `profile.html?player=${id}#<b>`])
+    'game.html?game=' + id, 'stats.html#X', 'stats.html#a b', `stats.html#${'x'.repeat(30)}`, ` stats.html`, `profile.html?player=${id}#<b>`, 'online.html#x', 'online.html?x=1'])
     assert.equal(backHref(bad), 'stats.html', String(bad));
 });
 

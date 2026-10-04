@@ -299,16 +299,18 @@ export function totalLine(table, kind) {
 
 const BACK_PROFILE_RE = /^profile\.html\?player=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(#[a-z0-9-]{1,24})?$/;
 const BACK_STATS_RE = /^stats\.html(#[a-z0-9-]{1,24})?$/;
+// The post-game screen's Box score opens the match from Online, and Back returns there (2026-10-04).
+const BACK_ONLINE_RE = /^online\.html$/;
 
 /**
  * Where the game view's "← Back" (and B / Esc) goes: the page that opened it (its `from` address parameter), accepted
  * only as 'stats.html' or 'profile.html?player=<lowercase uuid>', each with an optional short #view (the tab the player
- * was on); anything else is Stats.
+ * was on), or 'online.html' (the post-game screen's Box score); anything else is Stats.
  * @param {unknown} from
  * @returns {string}
  */
 export function backHref(from) {
-  return typeof from === 'string' && (BACK_STATS_RE.test(from) || BACK_PROFILE_RE.test(from)) ? from : 'stats.html';
+  return typeof from === 'string' && (BACK_STATS_RE.test(from) || BACK_PROFILE_RE.test(from) || BACK_ONLINE_RE.test(from)) ? from : 'stats.html';
 }
 
 const GAME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
