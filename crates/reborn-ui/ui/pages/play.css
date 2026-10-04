@@ -1,7 +1,8 @@
 /* Play (spec §8.1; mockup "PLAY"). Layout only: every colour, radius and duration comes from theme.css.
    The art covers the page; the launch group sits bottom-left over it; the strip runs along the bottom. */
-/* position:relative: #menu-pad-setup (a child of #main) anchors inside the content, never over the sidebar */
-body.page-home #main{position:relative;padding:0;overflow-x:hidden;overflow-y:auto}
+/* position:relative: #menu-pad-setup (a child of #main) anchors inside the content, never over the sidebar. No scrollbar gutter: the art is
+   full bleed and the account chip sits 24px from the window edge (theme.css gives every other #main a stable gutter) */
+body.page-home #main{position:relative;padding:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:auto}
 body.page-home #screen{position:relative;display:flex;flex-direction:column;min-height:100%;isolation:isolate}
 .page-home .loading{padding:24px 42px}
 .page-home #menu-pad-setup{position:absolute;top:24px;left:42px;z-index:2}
