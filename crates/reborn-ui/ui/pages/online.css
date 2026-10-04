@@ -153,6 +153,25 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-x{font:700 56px/1 Inter,system-ui,sans-serif;letter-spacing:-.04em;color:var(--red-ink)}
 .on-mode-line{font-size:13px;color:var(--fg-2)}
 .on-ser{font:700 15px Inter,system-ui,sans-serif}
+/* the match card (online-mm.js drawMatch): faces span both rows, the VS block sits over Accept/Decline in the middle */
+.on-vs-match{grid-template-rows:auto auto;align-content:center;row-gap:0}
+.on-vs-match>.on-p{grid-row:1/3}
+.on-vs-match>.on-p{grid-column:1}
+.on-vs-match>.on-mid+.on-p{grid-column:3}
+.on-vs-match>.on-mid{grid-row:1;grid-column:2}
+.on-vs-foot{grid-row:2;grid-column:2;display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:8px}
+/* below 1000 px the middle column is too narrow for two 140 px buttons: they take a row of their own under both faces,
+   and the card grows with what it holds (the page scrolls) instead of clipping it */
+@media (max-width:1000px){
+  .on-vs:has(.on-vs-match){min-height:0}
+  .on-vs-in.on-vs-match{position:relative;inset:auto;padding:52px 24px 22px;row-gap:12px}
+  .on-vs-match>.on-p{grid-row:1}
+  .on-vs-match>.on-mid{grid-row:1}
+  .on-vs-foot{grid-row:2;grid-column:1/-1;margin-top:0}
+  .on-vs-match .on-p{grid-template-rows:88px 28px 18px 40px}
+  .on-vs-match .avatar.on-av{width:88px;height:88px;font-size:36px}
+  .on-vs-match .team-logo.on-plogo{width:40px;height:40px}
+}
 .on-acts{margin-top:12px;display:flex;justify-content:center;gap:10px}
 .on-acts .btn{height:48px;min-width:140px}
 .on-tm{font-size:12px;color:var(--fg-3)}

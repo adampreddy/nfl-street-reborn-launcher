@@ -607,13 +607,17 @@ function drawMatch(m, chat, relayError, snap) {
     el('span', { class: 'on-x', 'aria-hidden': 'true', text: 'VS' }),
     series ? el('span', { class: 'on-ser num', text: series }) : null,
     el('span', { class: 'on-mode-line', text: modeLine(m.mode, m.best_of) }));
+  // Accept/Decline and the timer sit in their own grid cell under the VS (launch audit H1): beside the faces at full
+  // size, on a row of their own under both faces below 1000 px, so they never cover anyone's Elo line.
+  let foot = null;
   if (pairing && !m.your_accepted) {
-    mid.append(el('div', { class: 'on-acts' },
+    foot = el('div', { class: 'on-vs-foot' });
+    foot.append(el('div', { class: 'on-acts' },
       el('button', { type: 'button', class: 'btn primary', 'data-key': 'accept', 'data-primary': 'true', text: 'Accept', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: true }) }),
       // Ruling P8: Decline is the quiet button (spec §3.3).
       el('button', { type: 'button', class: 'btn quiet', 'data-key': 'decline', text: 'Decline', onclick: () => act('mm_match_action', { matchId: m.id, action: 'accept', value: false }) })));
     const left = acceptWithin(m.relay_deadline, Date.now());
-    if (left) mid.append(el('span', { class: 'on-tm num', 'data-deadline': m.relay_deadline, text: left }));
+    if (left) foot.append(el('span', { class: 'on-tm num', 'data-deadline': m.relay_deadline, text: left }));
   } else if (pairing) {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `You're in. Waiting on ${opp}…`));
   } else if (m.relay_state !== 'running') {
@@ -625,12 +629,13 @@ function drawMatch(m, chat, relayError, snap) {
   const card = el('section', { class: 'on-vs', 'aria-label': `${modeLine(m.mode, m.best_of)} against ${opp}` },
     el('span', { class: 'on-art', 'aria-hidden': 'true' }),
     el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
-    el('div', { class: 'on-vs-in' },
+    el('div', { class: 'on-vs-in on-vs-match' },
       face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
         team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
       mid,
       // On the card itself a nameless opponent is "Opponent" (letter O); sentences keep "your opponent".
-      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null })),
+      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
+      foot),
     MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
   // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).
   return [card, chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];
