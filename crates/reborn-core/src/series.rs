@@ -1,4 +1,4 @@
-//! The series, launcher side (series spec 2026-10-02 §3): the local live tally that triggers the ranked close, the
+//! The series, launcher side (series spec 2026-10-02 §3): the local live tally that triggers the series close, the
 //! close's timing, and why the launcher left. Everything here is pure except `newest_capture_ms` (one folder read).
 
 use std::collections::BTreeMap;
@@ -119,10 +119,23 @@ impl LocalTally {
     }
 }
 
-/// Wins that take a ranked series: ceil(best_of / 2), from the match's rules when the server sent them.
+/// How many games the series is a best of. Ranked: the match's rules when the server sent them, else its `best_of`.
+/// Anything else (casual, a private room): the match's own `best_of` (`rules` carries only ranked's figure).
+pub fn series_best_of(m: &crate::matchmaking::MatchView) -> u8 {
+    let ranked = (m.mode == "ranked").then(|| m.rules.as_ref().map(|r| r.ranked_best_of)).flatten();
+    ranked.filter(|b| *b >= 1).unwrap_or(m.best_of.max(1))
+}
+
+/// Wins that take the series: ceil(best_of / 2) of [`series_best_of`].
 pub fn wins_needed(m: &crate::matchmaking::MatchView) -> u32 {
-    let best = m.rules.as_ref().map(|r| r.ranked_best_of).filter(|b| *b >= 1).unwrap_or(m.best_of.max(1));
-    (best as u32).div_ceil(2)
+    (series_best_of(m) as u32).div_ceil(2)
+}
+
+/// Does the launcher close Dolphin when this match's series is decided (the series close, spec §3.2)? Ranked always,
+/// as before; any other match when the server says it is a series, a best of more than one (Adam 10-04: casual is a
+/// best of 3 too and closes out the same way). A single game has no decider.
+pub fn closes_at_decider(m: &crate::matchmaking::MatchView) -> bool {
+    m.mode == "ranked" || series_best_of(m) > 1
 }
 
 /// How long the close waits for the deciding game's capture file (spec §3.2: "at most 30 s").
@@ -203,12 +216,13 @@ impl LeaveReason {
     }
 }
 
-/// Is this ranked series already decided when its Dolphin exits: this launcher's tally reached `need`, or the server
+/// Is this series already decided when its Dolphin exits: this launcher's tally reached `need`, or the server
 /// says win/forfeit. An exit then is not a leave, even before the launcher's own close fired (Task 18 review I1).
 /// Unlike [`series_over`], a held or abandoned series is NOT decided (review L1): its exit is reported as usual.
-/// Casual has no decider (any leave resolves it now), so it is never decided here.
-pub fn decided_for_exit(mode: &str, local: [u32; 2], need: u32, server_kind: Option<&str>) -> bool {
-    if mode != "ranked" { return false; }
+/// `series`: the match closes at its decider ([`closes_at_decider`]); a single game has no decider, so it is never
+/// decided here.
+pub fn decided_for_exit(series: bool, local: [u32; 2], need: u32, server_kind: Option<&str>) -> bool {
+    if !series { return false; }
     match server_kind {
         Some("win" | "forfeit") => true,
         Some("held" | "abandoned") => false,
@@ -371,20 +385,40 @@ mod tests {
     }
 
     #[test]
-    fn a_ranked_series_already_won_is_decided_for_an_exit_but_a_held_or_abandoned_one_is_not() {
+    fn a_series_already_won_is_decided_for_an_exit_but_a_held_or_abandoned_one_is_not() {
         // I1: closed by the player between the deciding play and the launcher's own stop.
-        assert!(decided_for_exit("ranked", [2, 0], 2, None));
-        assert!(decided_for_exit("ranked", [1, 2], 2, Some("open")));
-        assert!(decided_for_exit("ranked", [0, 0], 2, Some("win")));
-        assert!(decided_for_exit("ranked", [0, 0], 2, Some("forfeit")));
+        assert!(decided_for_exit(true, [2, 0], 2, None));
+        assert!(decided_for_exit(true, [1, 2], 2, Some("open")));
+        assert!(decided_for_exit(true, [0, 0], 2, Some("win")));
+        assert!(decided_for_exit(true, [0, 0], 2, Some("forfeit")));
         // L1: series_over is true for these, but they are not a decided series: the exit is reported.
-        assert!(!decided_for_exit("ranked", [0, 0], 2, Some("held")));
-        assert!(!decided_for_exit("ranked", [2, 0], 2, Some("held")));
-        assert!(!decided_for_exit("ranked", [0, 0], 2, Some("abandoned")));
-        assert!(!decided_for_exit("ranked", [1, 1], 2, Some("open")));
-        assert!(!decided_for_exit("ranked", [1, 0], 2, None));
-        // Casual has no decider: every leave resolves it now.
-        assert!(!decided_for_exit("casual", [2, 0], 1, Some("win")));
+        assert!(!decided_for_exit(true, [0, 0], 2, Some("held")));
+        assert!(!decided_for_exit(true, [2, 0], 2, Some("held")));
+        assert!(!decided_for_exit(true, [0, 0], 2, Some("abandoned")));
+        assert!(!decided_for_exit(true, [1, 1], 2, Some("open")));
+        assert!(!decided_for_exit(true, [1, 0], 2, None));
+        // A single game has no decider.
+        assert!(!decided_for_exit(false, [2, 0], 1, Some("win")));
+    }
+
+    #[test]
+    fn a_casual_best_of_three_closes_at_its_decider_like_ranked_and_a_single_game_does_not() {
+        use crate::matchmaking::{MatchView, SeriesRules};
+        let rules = Some(SeriesRules { ranked_best_of: 5, casual_max_games: 20, ..Default::default() });
+        let casual = MatchView { mode: "casual".into(), best_of: 3, rules: rules.clone(), ..Default::default() };
+        assert!(closes_at_decider(&casual));
+        assert_eq!(series_best_of(&casual), 3, "casual follows its own best_of, never ranked's rule");
+        assert_eq!(wins_needed(&casual), 2);
+        assert!(decided_for_exit(closes_at_decider(&casual), [0, 2], wins_needed(&casual), Some("open")));
+        assert!(series_over([2, 1], wins_needed(&casual), Some("open")));
+        assert!(!series_over([1, 1], wins_needed(&casual), Some("open")));
+        let single = MatchView { mode: "casual".into(), best_of: 1, rules, ..Default::default() };
+        assert!(!closes_at_decider(&single), "one game: nothing to close at");
+        assert!(!decided_for_exit(closes_at_decider(&single), [1, 0], wins_needed(&single), Some("win")));
+        // An older server's casual match with no best_of at all is a single game.
+        assert!(!closes_at_decider(&MatchView { mode: "casual".into(), ..Default::default() }));
+        // Ranked is unchanged: it always closes at its decider, by the rules' best of.
+        assert!(closes_at_decider(&MatchView { mode: "ranked".into(), best_of: 1, ..Default::default() }));
     }
 
     fn fixture(name: &str) -> Value {
@@ -468,6 +502,8 @@ mod tests {
         assert_eq!(wins_needed(&m), 2);
         m.rules = Some(crate::matchmaking::SeriesRules { ranked_best_of: 5, ..Default::default() });
         assert_eq!(wins_needed(&m), 3);
+        m.mode = "casual".into();
+        assert_eq!(wins_needed(&m), 2, "ranked_best_of is ranked's rule only");
     }
 
     #[test]

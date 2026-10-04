@@ -459,7 +459,7 @@ impl LivePoster {
         LivePoster { ctx, live, cursor_path, cursor, fails: 0, not_before_ms: 0, stopped: None, dirty, tally: Default::default() }
     }
 
-    /// Every play this poster decided to send for the match, by game (the ranked close reads it).
+    /// Every play this poster decided to send for the match, by game (the series close reads it).
     pub fn tally(&self) -> &crate::series::LocalTally {
         &self.tally
     }

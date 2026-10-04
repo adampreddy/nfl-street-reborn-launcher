@@ -127,7 +127,7 @@ static POLLER: AtomicBool = AtomicBool::new(false);
 /// The live loop writes it every second (including the plays it has not sent yet), the relay loop reads it for the
 /// ranked close, and the exit report waits for a reading taken after Dolphin exited.
 static LOCAL_WINS: Mutex<Option<(String, [u32; 2], u64)>> = Mutex::new(None);
-/// The match whose Dolphin the launcher is closing on purpose because the ranked series is decided. Its exit is not a
+/// The match whose Dolphin the launcher is closing on purpose because the series is decided. Its exit is not a
 /// leave (Task 19 reads this).
 pub(crate) static SERIES_CLOSING: Mutex<Option<String>> = Mutex::new(None);
 /// The game being played right now, by seat: (match id, [seat0, seat1]). The live loop writes it from the plays it
@@ -203,7 +203,7 @@ fn series_running(m: &MatchView) -> bool {
 
 /// The NetPlay Dolphin exited (dolphin_settings' exit thread, on a thread of its own so filing the captures never
 /// waits on this request, R-P9). Mid-series, tell the server why (spec §3.4, R13). Nothing is reported while the
-/// launcher closes a decided ranked series, nor when it is already decided but the close had not fired yet (I1).
+/// launcher closes a decided series, nor when it is already decided but the close had not fired yet (I1).
 /// `session_match` is the match id this Dolphin session started with (its SessionIntent): the report is about that
 /// match only, never whichever match is current now (final fix L-I3), and never to a backend without series (L-I2).
 pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>, session_match: Option<String>) {
@@ -231,7 +231,7 @@ pub fn dolphin_exited(exit: Option<&reborn_core::platform::ExitKind>, session_ma
         let m = matched().filter(|m| m.id == first.id).unwrap_or_else(|| first.clone());
         let (local, read_at) = local_wins(&m.id);
         let decided = reborn_core::series::decided_for_exit(
-            &m.mode, local, reborn_core::series::wins_needed(&m), m.outcome.as_ref().map(|o| o.kind.as_str()));
+            reborn_core::series::closes_at_decider(&m), local, reborn_core::series::wins_needed(&m), m.outcome.as_ref().map(|o| o.kind.as_str()));
         let last = decided || !series_running(&m) || read_at >= exited_at;
         ((m, decided), last)
     });
@@ -422,7 +422,7 @@ fn live_plays_loop(platform: Platform) {
                 }
             }
             let Some((id, poster)) = current.as_mut() else { return };
-            // Every second, unsent plays included (review I1): the ranked close and the exit report read it.
+            // Every second, unsent plays included (review I1): the series close and the exit report read it.
             let read_at = now_ms();
             *lock(&LOCAL_WINS) = Some((id.clone(), poster.projected_wins(), read_at));
             if let Some(by) = poster.tally().current_score_by_seat() {
@@ -570,9 +570,10 @@ fn drive() {
                 }
             }
         }
-        // The ranked close (series spec §3.2; ruling R11): at 2 wins, wait for the deciding capture (30 s at most),
-        // then close the room ~3 s later. Each launcher does this on its own.
-        if let Some(m) = matched.as_ref().filter(|m| m.mode == "ranked") {
+        // The series close (series spec §3.2; ruling R11): at the deciding win, wait for the deciding capture (30 s at
+        // most), then close the room ~3 s later. Each launcher does this on its own. Ranked, and any other series the
+        // server says is a best of more than one (casual is a best of 3 too, Adam 10-04).
+        if let Some(m) = matched.as_ref().filter(|m| reborn_core::series::closes_at_decider(m)) {
             if close.0 != m.id { close = (m.id.clone(), Default::default()); }
             let (local, _) = local_wins(&m.id);
             let over = reborn_core::series::series_over(local, reborn_core::series::wins_needed(m), m.outcome.as_ref().map(|o| o.kind.as_str()));
@@ -1176,5 +1177,17 @@ mod tests {
         let old: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m" } })).unwrap();
         let v = snapshot_json(&old, &[]);
         assert!(v["match"]["outcome"].is_null() && v["match"]["rules"].is_null(), "an older server sends neither");
+    }
+
+    #[test]
+    fn the_series_close_and_the_exit_report_are_for_any_series_not_ranked_only() {
+        // Adam 10-04: casual is a best of 3 too and must close out at its decider like ranked. Both gates go through
+        // series::closes_at_decider (best_of from the server), never a `mode == "ranked"` test.
+        let src = include_str!("online_mm.rs");
+        let drive = &src[src.find("\nfn drive()").unwrap()..src.find("\nfn run_step(").unwrap()];
+        assert!(drive.contains(".filter(|m| reborn_core::series::closes_at_decider(m))"), "the close follows the series");
+        assert!(!drive.contains("m.mode == \"ranked\""), "no ranked-only close");
+        let exit = &src[src.find("\npub fn dolphin_exited(").unwrap()..src.find("\npub(crate) fn mm_log(").unwrap()];
+        assert!(exit.contains("decided_for_exit(\n            reborn_core::series::closes_at_decider(&m)"), "the exit report follows the series");
     }
 }
