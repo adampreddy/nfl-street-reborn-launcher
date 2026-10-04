@@ -339,6 +339,15 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // signed in, but the stats server failed (launch audit M3): never "when you sign in", and a way to ask again
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { __reject: 'The server did not answer.' } } });
+    await page.getByText('2 games will upload when the stats server answers.', { exact: true }).waitFor();
+    assert.equal(await page.getByText(/when you sign in/).count(), 0, 'a signed-in player is never told to sign in');
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.filter((c) => c.cmd === 'stats_dashboard').length >= 2);
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // signed out: the way in, never an empty grid
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { signed_in: false }, identity_status: { signed_in: false },
       identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 60 } } });

@@ -343,8 +343,14 @@ function paint(accountOpen) {
     // Signed out: no rows, only the way in (and what is waiting locally). Never answered at all: only the error.
     const n = unsentCount(state.queue);
     const waiting = n ? `${n} ${n === 1 ? 'game' : 'games'} will upload when you sign in.` : null;
-    // The account is signed in but the stats server says otherwise: keep Profile & sync (sign out, send results).
-    if (ok(state.identity) && state.identity.signed_in) { screen.replaceChildren(...parts, foot(waiting)); return; }
+    // The account is signed in but the stats server failed or says otherwise: keep Profile & sync (sign out, send
+    // results), say what is really holding the games back (launch audit M3) and offer to ask again.
+    if (ok(state.identity) && state.identity.signed_in) {
+      const held = n ? `${n} ${n === 1 ? 'game' : 'games'} will upload when the stats server answers.` : null;
+      parts.push(el('button', { type: 'button', class: 'btn sm st-retry', 'data-key': 'stats-retry', text: 'Try again', disabled: busy, onclick: () => load() }));
+      screen.replaceChildren(...parts, foot(held));
+      return;
+    }
     // No account yet: only the sign-in card, no Profile & sync. What is waiting locally goes in the card.
     if (state.answered) parts.push(signInCard(waiting));
     screen.replaceChildren(...parts);
