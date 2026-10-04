@@ -24,7 +24,8 @@ function openUpdates(){
  location.assign(to.href);
 }
 function later(kind){put(updateKey(kind,version(kind)),{until:Date.now()+LATER_MS});}
-function dismissDialog(){if(dialog){dialog.close();dialog.remove();dialog=null;}}
+// While an update dialog is open the dock is hidden: the dialog already says what the card would.
+function dismissDialog(){if(dialog){dialog.close();dialog.remove();dialog=null;}const h=document.getElementById('update-center');if(h)h.hidden=false;}
 function showDialog(kind){
  if(dialog||document.querySelector('dialog[open]'))return;
  const name=kind==='launcher'?'Launcher update':'Game content update';
@@ -43,7 +44,7 @@ function showDialog(kind){
  skip.onclick=()=>{later(kind);dismissDialog();render();};
  go.onclick=()=>{put(updateKey(kind,version(kind)),{accepted:true});dismissDialog();tick();};
  d.addEventListener('cancel',e=>{e.preventDefault();skip.click();});
- actions.append(skip,go);d.append(heading,intro,changes,countdown,actions);document.body.append(d);d.showModal();skip.focus();
+ actions.append(skip,go);d.append(heading,intro,changes,countdown,actions);document.body.append(d);host().hidden=true;d.showModal();skip.focus();
  let seconds=15;
  if(policy.automatic) {
   countdown.textContent='Starts automatically in '+seconds+' seconds.';
@@ -66,15 +67,32 @@ function card(kind,title,message,progress,buttonLabel,action){
  const button=c.children[3];button.hidden=!buttonLabel;button.textContent=buttonLabel||'';button.onclick=action;c.classList.toggle('downloading',progress!==undefined);
 }
 function removeCard(kind){cards.get(kind)?.remove();cards.delete(kind);}
+// Play: the dock sits under the account block and stops above the launch group, so no notice ever covers
+// Play now (at 800x560 two stacked bottom-right cards did). Every other page keeps the bottom-right dock.
+function place(){
+ const h=document.getElementById('update-center');if(!h)return;
+ const account=document.querySelector('.page-home .play-account'),actions=document.querySelector('.page-home .play-actions');
+ if(!account||!actions){h.classList.remove('on-play');h.style.top=h.style.bottom=h.style.maxHeight='';return;}
+ const top=Math.round(account.getBoundingClientRect().bottom+12),room=Math.round(actions.getBoundingClientRect().top-12-top);
+ h.classList.add('on-play');h.style.top=top+'px';h.style.bottom='auto';h.style.maxHeight=Math.max(72,room)+'px';
+}
+window.addEventListener('resize',place);
 function render(){
- if(launcher?.state==='available'||activity.downloading||activity.ready?.path){
+ const launcherOffer=launcher?.state==='available'&&!activity.downloading&&!activity.ready?.path;
+ // Both offered and neither moving yet: one card, not two stacked ones saying "available" twice.
+ if(launcherOffer&&content?.phase==='available'){
+  removeCard('launcher');removeCard('content');
+  const first=!deferred('launcher')||deferred('content')?'launcher':'content';
+  card('both','Updates available','Reborn '+launcher.latest+' and a game update ('+size(content.download_bytes)+').',undefined,'View update',()=>showDialog(first));
+ }else removeCard('both');
+ if(!cards.has('both')&&(launcher?.state==='available'||activity.downloading||activity.ready?.path)){
   const pending=activity.ready?.path;
   card('launcher',activity.downloading?'Downloading launcher':pending?'Launcher update ready':'Launcher update available',
    activity.downloading?'Your download continues while you use the launcher.':pending?'Installs when your game and other changes are finished.':'Reborn '+launcher?.latest+(deferred('launcher')?' · Reminder postponed':''),
    activity.downloading?null:undefined,activity.downloading?null:pending?'View updates':'View update',
    ()=>pending?openUpdates():showDialog('launcher'));
  }else removeCard('launcher');
- if(content&&['available','fetching','staged','installing','installed','problem'].includes(content.phase)){
+ if(!cards.has('both')&&content&&['available','fetching','staged','installing','installed','problem'].includes(content.phase)){
   const phase=content.phase;
   let progress;
   if(phase==='fetching')progress=content.download_bytes?Math.min(99,Math.floor((content.fetched_bytes||0)*100/content.download_bytes)):null;
@@ -93,6 +111,7 @@ function render(){
   const release=content.release;
   card('whatsnew',"What's new",content.notes,undefined,'Got it',()=>{notesSeen(release);removeCard('whatsnew');});
  }else if(content&&!['idle','checking','up_to_date'].includes(content.phase))removeCard('whatsnew');
+ if(cards.size)place();
 }
 function seenNotes(){try{return localStorage.getItem('updates:notes-seen');}catch(_){return null;}}
 function notesSeen(release){try{if(release)localStorage.setItem('updates:notes-seen',release);}catch(_){}}

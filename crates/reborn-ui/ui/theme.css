@@ -278,6 +278,12 @@ body.themed:has(#input-hints:not(:empty)) .update-center{bottom:58px}
 /* an open save bar sits in the bottom-right too: the dock rises above it (the lane is at most ~132px with a
    two-line failure), so an update notice never covers Save changes */
 body.themed:has(#save-lane.open) .update-center{bottom:calc(var(--hint-height,0px) + 144px)}
+body.themed .update-center[hidden]{display:none}
+/* Play (update-notice.js place()): under the account block, compact cards with the button beside the words */
+body.themed .update-center.on-play .update-card{grid-template-columns:minmax(0,1fr) auto;column-gap:16px;row-gap:4px;align-items:center;padding:12px 12px 12px 16px}
+body.themed .update-center.on-play .update-card>*{grid-column:1}
+body.themed .update-center.on-play .update-card>progress{grid-column:1/-1}
+body.themed .update-center.on-play .update-card>button{grid-column:2;grid-row:1/span 2}
 body.themed .update-card{display:grid;gap:8px;padding:16px;border:1px solid var(--stroke-hi);border-radius:var(--r-lg);box-shadow:var(--sheen),var(--shadow)}
 body.themed .update-card .notice-headline{font-size:14px;font-weight:600}
 body.themed .update-card .update-message{font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere;white-space:pre-line}

@@ -304,13 +304,13 @@ await page.addInitScript(()=>{
 });
 await page.setViewportSize({width:800,height:560});
 await page.goto(url+'/index.html?notice-test');
-await page.waitForFunction(()=>document.querySelectorAll('#update-center .update-card').length===2);
+// Both offered: ONE card (launch audit B2), under the account block and above Play now.
+await page.waitForFunction(()=>document.querySelectorAll('#update-center .update-card').length===1&&document.querySelector('#update-center .notice-headline')?.textContent==='Updates available');
 await page.getByRole('button',{name:'Remind me later',exact:true}).click();
 await page.getByRole('button',{name:'Remind me later',exact:true}).waitFor();
 await page.getByRole('button',{name:'Remind me later',exact:true}).click();
-const notices=await page.locator('#update-center .update-card').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom};}));
-assert.ok(notices[0].bottom<=notices[1].top,'update cards do not overlap');
-assert.ok(notices[1].bottom<=560,'update cards stay inside the window');
+const notice=await page.locator('#update-center .update-card').evaluate(n=>{const r=n.getBoundingClientRect(),play=document.querySelector('.play-actions').getBoundingClientRect();return {bottom:r.bottom,play:play.top};});
+assert.ok(notice.bottom<=notice.play,'the update card never covers Play now');
 await page.screenshot({path:path.join(out,'reborn-play-updates-800.png')});
 assert.equal(await page.evaluate(()=>window.__calls.some(c=>['update_download','content_fetch','content_promote'].includes(c.cmd))),false,'postponed updates do not download or install');
 await page.getByRole('button',{name:'View update',exact:true}).first().click();
