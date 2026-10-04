@@ -743,7 +743,9 @@ async function draw() {
   } else if (state.link === 'offline' && !snap) {
     body = [lockPanel("Can't reach the Reborn servers right now.", 'Trying again.', false)];
   } else if (!snap) {
-    body = [el('p', { class: 'loading', text: 'Connecting…' })];
+    // The same blurred tiles as signed out, with one quiet pill (launch audit M5): never a bare line over empty space.
+    body = [el('div', { class: 'on-locked on-connecting' }, tiles(null, { locked: true }),
+      el('div', { class: 'on-lock', role: 'status' }, el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), 'Connecting…')))];
   } else if (liveMatch) {
     body = drawMatch(snap.match, snap.chat ?? [], state.relay_error, snap);
   } else if (snap.room) {

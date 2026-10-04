@@ -14,6 +14,8 @@ body.page-online #main{display:flex;flex-direction:column;padding:32px 36px 24px
 /* never shrunk below its content: a taller action row (the room code, the lobby list) pushes the links line and Live
    now down instead of drawing over them */
 #mode-slot{flex:1 0 auto;min-height:340px;display:flex;flex-direction:column}
+/* matchmaking off: the slot is as tall as the one tile and its row, so Live now follows straight on */
+#mode-slot:has(.on-modes.solo){flex:0 0 auto;min-height:0}
 .page-online section.mm{flex:1;display:flex;flex-direction:column;gap:16px;min-height:0}
 .on-links{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0;font-size:12.5px;color:var(--fg-2)}
 body[data-mm-busy="true"] .on-links{display:none}
@@ -63,6 +65,8 @@ body[data-mm-busy="true"] .on-links{display:none}
    stroke, all three the same colour strength; searching = the others dark (§3.2). */
 .on-modes{flex:1;min-height:260px;display:grid;grid-template-columns:1.75fr 1fr;grid-template-rows:1fr 1fr;gap:10px}
 .on-modes.solo{grid-template-columns:1fr;grid-template-rows:1fr}
+/* matchmaking off: the one Private room tile is a card, not a 400px slab of colour (launch audit M5) */
+.on-modes.solo{flex:0 0 auto;min-height:0;height:clamp(160px,30vh,240px)}
 .on-tile{all:unset;box-sizing:border-box;position:relative;overflow:hidden;display:block;min-height:0;border-radius:var(--r-lg);background:var(--team-fallback);box-shadow:var(--shadow);cursor:pointer;isolation:isolate}
 .on-tile-ranked{grid-row:1/3}
 .on-modes.solo .on-tile{grid-row:auto}
@@ -219,6 +223,8 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-lock b{font:700 26px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;color:var(--fg)}
 .on-lock p{margin:0;max-width:360px;font-size:14px;color:var(--fg-2)}
 .on-lock .btn.on-go{flex:none;min-width:280px}
+.on-connecting .on-lock .on-st{margin:0;color:var(--fg)}
+.on-connecting .on-lock .on-st i{animation:live-pulse 1.6s ease-in-out infinite}
 /* a held match (spec §3.8): .partial is theme.css's amber message */
 .on-notice{display:flex;align-items:flex-start;gap:16px}
 .on-notice b{display:block;margin-bottom:4px;font-weight:600}
