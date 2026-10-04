@@ -1693,6 +1693,32 @@ pub fn pack_status(platform: &Platform, user_dir: &Path, game: &GameId) -> PackS
     }
 }
 
+/// Will the pack load once Play runs, given the texture policy Play will
+/// apply? [`pack_status`] reads the folder as it is now, but Play composes
+/// that folder just before it boots (`sync_mods_for_launch`), so a fresh
+/// install, a changed user folder, an unapply or a repaired disc all read
+/// "not loading" on the Play page while the game itself loads every texture
+/// (2026-10-04). This is the Play page's answer instead.
+pub fn pack_loads_at_play(platform: &Platform, user_dir: &Path, game: &GameId, policy: TexturePolicy) -> bool {
+    let pristine = pristine_root(platform, game).ok();
+    pack_loads_at_play_with(pristine.as_deref(), user_dir, game, policy)
+}
+
+/// [`pack_loads_at_play`] with the shipped pack's root given (a test passes
+/// its fixture). `Manage`: Play composes the shipped pack, so it loads when
+/// the folder already has it or the shipped pack is there to compose.
+/// `LeaveAlone`: the folder is used exactly as it is. `Withhold`: Play
+/// removes it.
+pub fn pack_loads_at_play_with(pristine: Option<&Path>, user_dir: &Path, game: &GameId, policy: TexturePolicy) -> bool {
+    let has_entry = |dir: &Path| std::fs::read_dir(dir).map(|mut e| e.next().is_some()).unwrap_or(false);
+    let now = has_entry(&composed_root(user_dir, game));
+    match policy {
+        TexturePolicy::Withhold => false,
+        TexturePolicy::LeaveAlone => now,
+        TexturePolicy::Manage => now || pristine.is_some_and(has_entry),
+    }
+}
+
 /// `mods/packages/`, the validated payloads.
 pub fn packages_root(platform: &Platform) -> Result<PathBuf> {
     platform.data_dir(DataDir::ModsPackages)
@@ -4864,6 +4890,26 @@ mod tests {
             active_override: None,
             texture_policy: TexturePolicy::Manage,
         }
+    }
+
+    #[test]
+    fn a_fresh_user_dir_is_not_a_missing_pack_when_play_will_compose_it() {
+        // 2026-10-04: every fresh install showed "Texture pack not loading" on Play, because the folder Dolphin reads
+        // is only composed when Play starts.
+        let fx = fixture();
+        let user = fx.run.parent().unwrap().join("dolphin-users").join("fresh-1");
+        std::fs::create_dir_all(&user).unwrap();
+        let p = Some(fx.pristine.as_path());
+        assert!(!std::fs::read_dir(composed_root(&user, &game())).map(|mut e| e.next().is_some()).unwrap_or(false), "nothing composed yet");
+        assert!(pack_loads_at_play_with(p, &user, &game(), TexturePolicy::Manage), "fresh folder + shipped pack: Play composes it");
+        assert!(!pack_loads_at_play_with(p, &user, &game(), TexturePolicy::Withhold), "a withheld image: Play removes the pack");
+        assert!(!pack_loads_at_play_with(p, &user, &game(), TexturePolicy::LeaveAlone), "an empty folder the player manages loads nothing");
+        write(&composed_root(&user, &game()).join(BALL), b"an author's football");
+        assert!(pack_loads_at_play_with(p, &user, &game(), TexturePolicy::LeaveAlone), "the player's own folder, used as it is");
+        std::fs::remove_dir_all(composed_root(&user, &game())).unwrap();
+        std::fs::remove_dir_all(&fx.pristine).unwrap();
+        assert!(!pack_loads_at_play_with(p, &user, &game(), TexturePolicy::Manage), "no shipped pack: nothing to compose");
+        assert!(!pack_loads_at_play_with(None, &user, &game(), TexturePolicy::Manage));
     }
 
     /// What the emulator would load: read from the user directory, which is

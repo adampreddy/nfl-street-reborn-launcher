@@ -828,10 +828,30 @@ async fn launch_check(runtime: Option<String>, game: Option<String>, user_dir: O
                     // is answered against the same directory the launch will
                     // actually pass with `-u`, never a freshly re-resolved
                     // one.
+                    //
+                    // "Will Play load it", not "is the folder filled now":
+                    // Play composes the folder just before it boots, so a
+                    // fresh install (or a changed user folder, an unapply, a
+                    // repaired disc) used to read "Texture pack not loading"
+                    // while the game loaded every texture (2026-10-04). The
+                    // policy is the launch's own rule, from the verdict above.
                     pack: GameId::parse(GameBuild::Offline.game_id()).ok().and_then(|g| {
                         resolved_user_dir.as_ref().map(|dir| {
                             let status = reborn_core::mods::pack_status(&p, dir.path(), &g);
-                            PackView { reachable: status.reachable, version: status.version }
+                            let standing = if verdict.is_reborn() {
+                                reborn_core::game_identity::ImageStanding::Reborn
+                            } else if matches!(verdict, reborn_core::game_identity::Verdict::Unreadable { .. }) {
+                                reborn_core::game_identity::ImageStanding::Unknown
+                            } else {
+                                reborn_core::game_identity::ImageStanding::NotReborn
+                            };
+                            let managed = reborn_core::settings::settings_path(&p)
+                                .ok()
+                                .and_then(|f| reborn_core::settings::Settings::load(&f).ok())
+                                .and_then(|s| s.manage_texture_folder)
+                                .unwrap_or(true);
+                            let policy = reborn_core::session::texture_policy_for_launch(standing, managed);
+                            PackView { reachable: reborn_core::mods::pack_loads_at_play(&p, dir.path(), &g, policy), version: status.version }
                         })
                     }),
                     problem: None,
@@ -7583,6 +7603,16 @@ mod tests {
             home.contains("check?.pack") || home.contains("check.pack"),
             "the Play page does not show the pack's state"
         );
+    }
+
+    /// 2026-10-04: the Play page said "Texture pack not loading" on every
+    /// fresh install, because it read the folder before Play composed it. It
+    /// must answer what Play will do, by the launch's own texture rule.
+    #[test]
+    fn the_play_page_answers_whether_play_will_load_the_pack_by_the_launch_rule() {
+        let body = code_only(command_body(include_str!("main.rs"), "async fn launch_check"));
+        assert!(body.contains("pack_loads_at_play"), "launch_check reads the folder as it is, not as Play will compose it");
+        assert!(body.contains("texture_policy_for_launch"), "launch_check must apply the launch's own texture rule");
     }
 
     /// `open_runtime` is deliberately unrestricted: it hands the player
