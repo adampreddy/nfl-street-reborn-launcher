@@ -280,3 +280,32 @@ body.themed .section-tabs button{height:32px;padding:0 14px;border:0;border-radi
 body.themed .section-tabs button:hover:not([aria-pressed="true"]){background:var(--glass-1);color:var(--fg)}
 body.themed .section-tabs button[aria-pressed="true"]{background:var(--glass-3);color:var(--fg);box-shadow:var(--sheen),0 0 0 1px var(--stroke)}
 .on-direct .settings-status{margin:0;font-size:13px;font-weight:400;color:var(--fg-2)}
+
+/* the post-game screen (series-over.js, 2026-10-04): the matchup card finished. The winner's face carries a green ring
+   and a Winner tag, the loser's goes quiet; the final series is the biggest thing on the card; each game is a small
+   chip read from your side (W green, L red ink). Then one action row: Play again, Box score, Rematch, Back to Online. */
+.on-over .on-vs-in{grid-template-rows:minmax(0,1fr) auto;padding:36px 48px 26px}
+.on-over .on-p.won .avatar.on-av{box-shadow:0 0 0 3px var(--ok)}
+.on-over .on-p.lost .avatar.on-av{opacity:.55;filter:saturate(.4)}
+.on-over .on-p.lost .on-pname{color:var(--fg-2)}
+.on-win{position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);padding:3px 9px;border-radius:999px;background:var(--ok);color:var(--badge-bg);font:700 10.5px/1.2 Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.on-elo.up{color:var(--ok);font-weight:600}
+.on-elo.down{color:var(--red-ink);font-weight:600}
+.on-over-mid{gap:6px}
+.on-over-top{display:inline-flex;align-items:center;gap:8px}
+.on-unoff{padding:2px 8px;border-radius:999px;border:1px solid var(--stroke-hi);background:var(--pill-bg);font-size:11px;font-weight:500;color:var(--fg-2)}
+.on-final{margin-top:2px;font:700 72px/1 Inter,system-ui,sans-serif;letter-spacing:-.04em;color:var(--fg);font-variant-numeric:tabular-nums}
+.on-over-head{font:600 17px/1.25 Inter,system-ui,sans-serif;color:var(--fg)}
+.on-over-note{font-size:12.5px;color:var(--fg-2)}
+.on-games{grid-column:1/-1;justify-self:stretch;list-style:none;margin:0;padding:16px 0 0;border-top:1px solid var(--stroke);display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
+.on-games li{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:var(--r-sm);background:var(--glass-1);border:1px solid var(--stroke);box-shadow:var(--sheen);font-size:12px;color:var(--fg-3)}
+.on-games b{font:600 14px Inter,system-ui,sans-serif;color:var(--fg);font-variant-numeric:tabular-nums}
+.on-gn{font-weight:600;letter-spacing:.04em}
+.on-wl{font-weight:700}
+.on-games li.w .on-wl{color:var(--ok)}
+.on-games li.l .on-wl{color:var(--red-ink)}
+.on-games li.l b{color:var(--fg-2)}
+.on-over-row{flex-wrap:nowrap;gap:12px}
+.on-over-row .btn{height:52px;white-space:nowrap}
+.on-over-row .btn.on-go{flex:1 1 auto;min-width:0}
+@media (max-width:1000px){.on-over-row{flex-wrap:wrap}.on-over-row .btn.on-go{flex-basis:240px}.on-over .on-vs-in{padding:32px 24px 22px}.on-over .on-pname{font-size:19px}.on-final{font-size:60px}}

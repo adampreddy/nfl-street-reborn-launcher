@@ -74,6 +74,24 @@ function loadOverLive(id) {
 }
 const status = el('p', { class: 'settings-status on-status', role: 'status' });
 
+// The post-game screens put away with Back to Online (or left by Play again / Rematch), by match id, so the server
+// still showing that finished match on every poll never brings the screen back (Adam, 2026-10-04: "go back to general
+// online screen from the post game screen"). Kept for this session, so another tab and back stays on Online; a box score
+// opened from the screen and closed again comes back to it, as nothing was put away.
+const overDone = {
+  has(id) { try { return JSON.parse(sessionStorage.getItem('mm:over-done') || '[]').includes(id); } catch { return overMemo.has(id); } },
+  add(id) { overMemo.add(id); try { const v = JSON.parse(sessionStorage.getItem('mm:over-done') || '[]'); if (!v.includes(id)) sessionStorage.setItem('mm:over-done', JSON.stringify([...v, id].slice(-20))); } catch { /* memo holds it */ } },
+};
+const overMemo = new Set();
+function leaveOver(id) {
+  overDone.add(id);
+  overShown = null;
+  lastDrawn = '';
+  draw();
+}
+// The match whose screen is up, so the first draw of it can put a controller on Play again.
+let overShown = null;
+
 function mode() { return store.get('mm:mode', 'casual'); }
 
 const links = document.getElementById('on-links');
@@ -108,9 +126,10 @@ section.addEventListener('focusin', (e) => {
   const key = tile?.dataset.key?.replace(/^mode-/, '');
   if (key && !tile.disabled && key !== picked()) pick(key);
 });
-// B / Esc: Cancel while searching, Decline on Match found; anywhere else B goes on to the sidebar as always.
+// B / Esc: Cancel while searching, Decline on Match found, Back to Online on the post-game screen; anywhere else B goes
+// on to the sidebar as always.
 document.addEventListener('pad-back', (e) => {
-  const target = section.querySelector('[data-key="cancel"], [data-key="decline"]');
+  const target = section.querySelector('[data-key="cancel"], [data-key="decline"], [data-key="over-back"]');
   if (target && !target.disabled && !busy) { e.preventDefault(); target.click(); }
 });
 
@@ -726,17 +745,26 @@ async function draw() {
     body = drawRoom(snap.room, snap.chat ?? []);
   } else if (snap.ticket) {
     body = drawQueued(snap.ticket);
-  } else if (snap.match?.relay_state === 'complete' && seriesOverModel(snap.match, null)) {
-    // The series-over screen (series spec 2026-10-02 §3.3). After the room and the queue, so a new search wins.
+  } else if (snap.match?.relay_state === 'complete' && !overDone.has(snap.match.id) && seriesOverModel(snap.match, null)) {
+    // The post-game screen (series spec 2026-10-02 §3.3). After the room and the queue, so a new search wins; gone for
+    // good once put away (overDone).
     const m = snap.match;
     loadOverLive(m.id);
-    const model = seriesOverModel(m, overLive.id === m.id ? overLive.snap : null);
+    const model = seriesOverModel(m, overLive.id === m.id ? overLive.snap : null, { name: snap.player?.name || me?.name, avatar: myAvatarUrl() });
     body = drawSeriesOver(model, {
-      el,
-      onFull: () => call('open_website', { url: model.fullUrl }).catch((e) => { status.textContent = reason(e); }),
-      onFind: () => queueWhenCurrent(),
-      onRematch: () => act('mm_match_action', { matchId: m.id, action: 'rematch', value: null }),
+      el, avatar, teamLogo,
+      // The same queue as the mode the match was (ranked keeps its rules notice), and the screen is put away.
+      onAgain: () => {
+        if (m.mode === 'ranked' || m.mode === 'casual') { privatePicked = false; store.set('mm:mode', m.mode); }
+        overDone.add(m.id);
+        overShown = null;
+        if (mode() === 'ranked') findRanked(); else queueWhenCurrent();
+      },
+      onBox: () => { if (model.boxHref) location.href = model.boxHref; },
+      onRematch: async () => { if (await act('mm_match_action', { matchId: m.id, action: 'rematch', value: null })) leaveOver(m.id); },
+      onBack: () => leaveOver(m.id),
     });
+    showLinks = false;
   } else {
     body = drawIdle(snap);
     showLinks = picked() === 'private';
@@ -753,6 +781,12 @@ async function draw() {
   const focusKey = had && section.contains(had) ? had.getAttribute('data-key') : null;
   section.replaceChildren(...body, status);
   if (focusKey) section.querySelector(`[data-key="${focusKey}"]`)?.focus({ preventScroll: true });
+  // A controller arriving on the post-game screen lands on Play again (B is Back to Online).
+  const over = section.querySelector('[data-key="over-again"]');
+  if (over && overShown !== snap?.match?.id) {
+    overShown = snap.match.id;
+    if (!focusKey && document.body.classList.contains('gamepad-input')) over.focus({ preventScroll: true });
+  } else if (!over) overShown = null;
 }
 
 draw();
