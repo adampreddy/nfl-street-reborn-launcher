@@ -20,9 +20,12 @@ export const PAGE_ORIGIN = 'https://online.nflstreetreborn.com';
 export const AVATAR_PREFIX = 'https://cdn.discordapp.com/avatars/';
 export const ASSET_RE = /^\/live-assets\/[A-Za-z0-9._/-]+\.png$/;
 
-/** A `/live-assets/...png` path as an absolute URL under the default origin, or null. */
+/** A `/live-assets/...png` path as an absolute URL under the default origin, or null. The same path already written
+ *  under that origin (`https://api.nflstreetreborn.com/live-assets/...png`) is the same image and is kept too: a
+ *  valid portrait_url or logo_url must never be dropped for its spelling (2026-10-04). Any other host is refused. */
 export function assetUrl(path) {
-  return typeof path === 'string' && ASSET_RE.test(path) && !path.includes('..') ? LIVE_ORIGIN + path : null;
+  const rel = typeof path === 'string' && path.startsWith(`${LIVE_ORIGIN}/`) ? path.slice(LIVE_ORIGIN.length) : path;
+  return typeof rel === 'string' && ASSET_RE.test(rel) && !rel.includes('..') ? LIVE_ORIGIN + rel : null;
 }
 
 /** A seat's Discord avatar URL, only when it is already exactly that CDN's prefix. */
