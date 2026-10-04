@@ -143,8 +143,11 @@ body.shell:not(.gamepad-input) .input-footer #input-hints:empty{display:none}
 .save-bar .btn:first-of-type{margin-left:auto}
 
 /* onboarding action bar: sticky at the bottom, content scrolls UNDER it, so it keeps its own surface */
-body.shell.page-setup #nav{background:#0d0e11!important}
-html[data-glass="on"] body.shell.page-setup #nav{background:rgba(24,25,30,.78)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+/* ...but only while content really is under it (onboarding.js marks .over-content): with nothing to cover, a darker
+   band behind Continue read as a leftover box (launch audit M12) */
+body.shell.page-setup #nav{background:transparent!important}
+body.shell.page-setup #nav.over-content{background:#0d0e11!important}
+html[data-glass="on"] body.shell.page-setup #nav.over-content{background:rgba(24,25,30,.78)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
 
 /* onboarding (.page-setup): inset fills on its tabs, override fields and selects.
    The controls page draws its own opaque .binding-editor popover (pages/controls.css, --surface-solid). */

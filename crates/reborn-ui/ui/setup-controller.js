@@ -41,7 +41,9 @@
   const needs=make('section','controller-needs-setup');needs.setAttribute('role','alert');needs.hidden=true;
   const needsText=make('p'),needsStart=make('button','primary','Set up this controller');needsStart.type='button';needs.append(make('strong',null,'This controller needs a one-time setup'),needsText,needsStart);
   let guiding=false;
-  const mappingNote=make('p','mapping-guidance','B maps to B. X maps to X. Older reversed mappings need to be corrected.');
+  // Only for a mapping that really has B and X reversed (an older install's): a first-run player never had one
+  // (launch audit M12). renderRows shows it with the Correct button, and opens Customize controls to reach it.
+  const mappingNote=make('p','mapping-guidance','B and X are reversed on this controller. Open Customize controls and choose Correct reversed B / X.');mappingNote.hidden=true;
   // First run: the standard layout is right for nearly everyone, so the
   // grid of bindings hides behind one line until someone asks for it.
   // Adam, 2026-09-11: "The initial controller remapping sucks and is a PIA."
@@ -88,6 +90,7 @@
   function renderRows(){
    const b=rows.find(r=>r.key==='Buttons/B'),x=rows.find(r=>r.key==='Buttons/X');
    swap.hidden=!(b?.binding==='`Button X`'&&x?.binding==='`Button B`');
+   mappingNote.hidden=swap.hidden;
    const visible=group==='Sticks'?['Up','Down','Left','Right'].flatMap(d=>['Main Stick','C-Stick'].map(g=>rows.find(r=>r.key===g+'/'+d))).filter(Boolean):rows.filter(belongs);
    const button=(row,displayLabel=row.label)=>{const b=make('button','mapping-key');b.type='button';b.disabled=!!capture||saving;b.append(make('span',null,displayLabel),make('small',null,row.dead?'Not set up':row.binding.replaceAll('`','')));if(row.dead)b.dataset.dead='true';b.setAttribute('aria-label',`Assign ${row.label}`);b.onclick=()=>assign(row);return b;};
    if(layout==='players'){

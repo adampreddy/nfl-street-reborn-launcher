@@ -435,8 +435,8 @@ html:not(#_) .page-setup .choice:has(input:checked){border-top-color:var(--strok
 html:not(#_) .page-setup .choice .what{font-size:14px;font-weight:600;letter-spacing:0px;text-transform:none}
 html:not(#_) .page-setup .choice .why{font-size:12px;color:var(--fg-2);line-height:1.5}
 html:not(#_) .page-setup #nav{background-color:transparent;margin-top:24px;padding-top:18px;padding-right:0px;padding-bottom:20px;padding-left:0px;position:sticky;z-index:2}
-html:not(#_) .page-setup #next{min-width:144px;background-color:var(--fg);color:var(--surface-solid);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-image:none}
-html:not(#_) .page-setup #next:hover{background-color:var(--fg);background-image:none}
+/* Continue / Finish is the shell's red primary (theme.css button.primary), not a white button (launch audit M12) */
+html:not(#_) .page-setup #next{min-width:144px}
 html:not(#_) .page-setup #next:disabled{opacity:0.4}
 html:not(#_) .page-setup #back:disabled{visibility:hidden}
 html:not(#_) .page-setup .recommendation-badge{position:absolute;right:16px;top:14px;font-size:10px;color:var(--fg-2);background-color:var(--glass-3);border-top-width:1px;border-right-width:1px;border-bottom-width:1px;border-left-width:1px;border-top-style:solid;border-right-style:solid;border-bottom-style:solid;border-left-style:solid;border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);padding-top:3px;padding-right:7px;padding-bottom:3px;padding-left:7px;border-top-left-radius:4px;border-top-right-radius:4px;border-bottom-right-radius:4px;border-bottom-left-radius:4px}
@@ -711,8 +711,9 @@ html:not(#_) body.shell.page-setup{background-color:transparent;color:var(--fg)}
 html:not(#_) body.shell.page-setup main,html:not(#_) body.shell.page-setup #nav{background-color:transparent}
 html:not(#_) body.shell.page-setup button:not(.btn):not(.look-switch){background-color:var(--glass-2);border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);color:var(--fg)}
 html:not(#_) body.shell.page-setup button:not(.btn):not(.look-switch):hover:not(:disabled){background-color:var(--glass-3);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi)}
-html:not(#_) body.shell.page-setup button.primary:not(.btn):not(.look-switch),html:not(#_) body.shell.page-setup #next{background-color:var(--fg);color:var(--surface-solid);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-image:none}
-html:not(#_) body.shell.page-setup button.primary:not(.btn):not(.look-switch):hover:not(:disabled),html:not(#_) body.shell.page-setup #next:hover:not(:disabled){background-color:var(--fg);color:var(--surface-solid);background-image:none}
+/* the shell's red primary (theme.css .btn.primary), not white (launch audit M12) */
+html:not(#_) body.shell.page-setup button.primary:not(.btn):not(.look-switch),html:not(#_) body.shell.page-setup #next{background-color:var(--red);color:var(--fg);border-top-color:var(--stroke-hi);border-right-color:var(--stroke-hi);border-bottom-color:var(--stroke-hi);border-left-color:var(--stroke-hi);background-image:linear-gradient(180deg,var(--red-hi),var(--red-deep))}
+html:not(#_) body.shell.page-setup button.primary:not(.btn):not(.look-switch):hover:not(:disabled),html:not(#_) body.shell.page-setup #next:hover:not(:disabled){background-color:var(--red-hi);color:var(--fg);background-image:linear-gradient(180deg,var(--red-hi),var(--red))}
 html:not(#_) body.shell.page-setup input:not([type="radio"]):not([type="checkbox"]):not([type="range"]),html:not(#_) body.shell.page-setup select{background-color:var(--glass-3);border-top-color:var(--stroke);border-right-color:var(--stroke);border-bottom-color:var(--stroke);border-left-color:var(--stroke);color:var(--fg)}
 html:not(#_) body.shell.page-setup .choice:hover{background-color:var(--glass-3)}
 html:not(#_) body.shell.page-setup .choice .what,html:not(#_) body.shell.page-setup h1,html:not(#_) body.shell.page-setup h2{color:var(--fg)}

@@ -588,7 +588,8 @@ const SCREENS = {
     toolbar.append(select,scan);nodes.push(toolbar);
     let workspace=null;const pad=pending.port!==undefined&&pending.port!=='none'?pads[Number(pending.port)]:null;
     if(pad&&window.createSetupController){workspace=window.createSetupController({device:pad.device_string,runtime:pending.runtime||null,onBusy:value=>{moving=value;updateNav();}});nodes.push(workspace);}
-    else nodes.push(el('div','controller-empty',pending.port==='none'?'You can connect a controller from the Controllers page whenever you’re ready.':pending.pads?.error||'Connect your controller, press a button to wake it, then scan again.'));
+    // Pads found but none picked yet: say so, never "connect your controller" (launch audit M13).
+    else nodes.push(el('div','controller-empty',pending.port==='none'?'You can connect a controller from the Controllers page whenever you’re ready.':pending.pads?.error||(pads.length?'Choose a controller above to test it.':'Connect your controller, press a button to wake it, then scan again.')));
     return {nodes,dispose:()=>workspace?.dispose(),ready:()=>pending.port!==undefined,
       answer:()=>pending.port==='none'?call('onboarding_decline_controller',{because:'controller setup deferred'}):call('onboarding_choose_controller',{port:Number(pending.port),expectedDevice:pad?.device_string||null,runtime:pending.runtime||null})};
   },
@@ -932,3 +933,16 @@ if(typeof document.addEventListener === "function") document.addEventListener("r
  if(state?.next?.stage!=="controller_setup"||moving||document.body.dataset.controllerTesting)return;
  moving=true;updateNav();await scanPads();if(pending.pads?.list?.length===1)pending.port='0';moving=false;draw();
 });
+
+// The sticky action bar keeps its own surface only while content is really scrolled under it (theme.css
+// #nav.over-content); with nothing under it, it is transparent (launch audit M12).
+(() => {
+ if (typeof document.getElementById !== "function" || typeof window === "undefined") return;
+ const bar = document.getElementById("nav"), area = document.getElementById("main"), screenEl = document.getElementById("screen");
+ if (!bar || !area || typeof area.addEventListener !== "function" || typeof bar.classList?.toggle !== "function") return;
+ const mark = () => bar.classList.toggle("over-content", area.scrollHeight - area.scrollTop - area.clientHeight > 1);
+ area.addEventListener("scroll", mark, { passive: true });
+ window.addEventListener?.("resize", mark);
+ if (typeof ResizeObserver === "function" && screenEl) new ResizeObserver(mark).observe(screenEl);
+ mark();
+})();
