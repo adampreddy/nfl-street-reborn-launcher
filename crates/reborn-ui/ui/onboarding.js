@@ -87,7 +87,7 @@ async function scanPads() {
   // Indices belong to one scan. Never reuse a selection after devices change.
   delete pending.port;
   try {
-    const report = await call("devices", { runtime: pending.runtime || null });
+    const report = await call("devices", { runtime: pending.runtime || null, fresh: true });
     pending.pads = {list: report.pads || [], searched_everywhere: report.complete, unsearched: report.unsearched || [], source: report.source};
   } catch (e) { pending.pads = {error: String(e.message || e)}; }
 }

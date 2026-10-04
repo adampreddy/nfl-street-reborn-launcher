@@ -43,6 +43,7 @@ if (bridge) {
 // Each read settles on its own: a failed pad scan must not blank the page.
 const state = {};
 let busy = false;
+let freshDevices = false; // the next devices call asks the runtime again (a pad came or went)
 let playing = false;
 let result = null;
 let problem = null;
@@ -99,7 +100,10 @@ async function load() {
   // The device scan starts the runtime and takes about 1.5 s (everything else answers in milliseconds), so Play
   // never waits for it: it draws with the last scan (or "Checking…") and redraws when the fresh one arrives.
   if (state.devices === undefined) state.devices = cachedDevices();
-  const scan = call("devices", { runtime: get("runtime") });
+  // The core keeps the last scan (launch audit H6), so a visit does not start the emulator; a pad arriving or leaving
+  // (app-shell's refresh-devices) asks it to look again.
+  const scan = call("devices", { runtime: get("runtime"), fresh: freshDevices });
+  freshDevices = false;
   scan.then((v) => { state.devices = v; cacheDevices(v); draw(); }, (e) => { state.devices = { error: reason(e) }; draw(); });
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -571,5 +575,5 @@ if (typeof document.addEventListener === "function") {
     state.active = externalSession = e.detail;
     if (changed && !busy) refresh();
   });
-  document.addEventListener("refresh-devices", () => { if (!busy) refresh(); });
+  document.addEventListener("refresh-devices", () => { if (!busy) { freshDevices = true; refresh(); } });
 }

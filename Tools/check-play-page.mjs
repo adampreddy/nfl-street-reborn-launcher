@@ -103,6 +103,10 @@ try {
     await page.evaluate(() => document.dispatchEvent(new Event('refresh-devices')));
     await page.waitForTimeout(200);
     assert.equal(await page.locator('dialog.menu[open]').count(), 1, 'the menu survives a redraw');
+    // Launch audit H6: a visit reuses the core's last device scan; a pad coming or going asks for a fresh one.
+    const scans = await page.evaluate(() => calls.filter((c) => c.cmd === 'devices').map((c) => !!c.args.fresh));
+    assert.equal(scans[0], false, 'opening Play does not ask for a fresh device scan');
+    assert.equal(scans[scans.length - 1], true, 'refresh-devices asks for a fresh scan');
     await page.getByRole('menuitemradio', { name: 'All-Out' }).click();
     await page.waitForFunction(() => localStorage.getItem('h:preset') === 'quality');
     assert.deepEqual(await page.evaluate(() => calls.find((c) => c.cmd === 'setup_save_graphics_options')?.args), { mode: 'preset', resolution: 3, msaa: 1, ssaa: false });

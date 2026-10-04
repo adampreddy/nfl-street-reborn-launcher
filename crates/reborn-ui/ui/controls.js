@@ -39,7 +39,7 @@ async function refresh(){
   const checking=call('launch_check',{runtime:stored,game:get('game'),userDir:get('userDir')}).catch(()=>null);
   const check=stored?null:await checking;
   state.runtime=stored||check?.runtime||null;
-  const [devices,assigned,current,options]=await Promise.allSettled([call('devices',{runtime:state.runtime}),call('controller_slots'),call('controls_current'),call('controls_options',{runtime:state.runtime})]);
+  const [devices,assigned,current,options]=await Promise.allSettled([call('devices',{runtime:state.runtime,fresh:true}),call('controller_slots'),call('controls_current'),call('controls_options',{runtime:state.runtime})]);
   if(devices.status==='rejected')throw devices.reason;if(assigned.status==='rejected')throw assigned.reason;
   state.pads=devices.value?.pads||[];state.partial=devices.value?.complete===false;
   const slots=assigned.value?.slots;

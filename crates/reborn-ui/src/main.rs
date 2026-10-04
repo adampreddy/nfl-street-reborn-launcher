@@ -200,29 +200,118 @@ fn to_report(scan: &Enumeration, source: &'static str) -> DeviceReport {
     }
 }
 
+/// `fresh`: true asks the runtime again whatever the cache holds (Scan again, the Controllers page, a pad the window
+/// saw arrive or leave). Without it a recent answer is reused, so visiting Play does not start the emulator.
 #[tauri::command]
-async fn devices(runtime: Option<String>) -> Result<DeviceReport, String> {
-    tauri::async_runtime::spawn_blocking(move || read_devices(runtime))
+async fn devices(runtime: Option<String>, fresh: Option<bool>) -> Result<DeviceReport, String> {
+    tauri::async_runtime::spawn_blocking(move || read_devices(runtime, fresh.unwrap_or(false)))
         .await.map_err(|e| e.to_string())?
 }
 
-fn read_devices(runtime: Option<String>) -> Result<DeviceReport, String> {
+/// What the last runtime device scan was taken against (launch audit H6). The scan starts `Dolphin.exe
+/// --list-input-devices` (about 1.5 s, and a second Dolphin process while a game is open), and Play asked for it on
+/// every visit. A cached answer stands while the same runtime build is asked and the XInput pads (a cheap read that
+/// starts nothing) are the same, for at most DEVICE_SCAN_FOR; while a game is running it stands regardless, so the
+/// launcher never starts a second emulator beside the game unless the player asks for a rescan.
+#[derive(Debug, Clone, PartialEq)]
+struct DeviceScanKey {
+    exe: std::path::PathBuf,
+    modified: Option<std::time::SystemTime>,
+    xinput: Vec<reborn_core::devices::DetectedDevice>,
+}
+
+struct DeviceScanCache {
+    key: DeviceScanKey,
+    at: std::time::Instant,
+    scan: Enumeration,
+}
+
+const DEVICE_SCAN_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+static DEVICE_SCAN: std::sync::Mutex<Option<DeviceScanCache>> = std::sync::Mutex::new(None);
+
+fn device_cache_holds(cache: &DeviceScanCache, key: &DeviceScanKey, now: std::time::Instant, game_active: bool) -> bool {
+    cache.key.exe == key.exe
+        && cache.key.modified == key.modified
+        && (game_active || (cache.key.xinput == key.xinput && now.saturating_duration_since(cache.at) < DEVICE_SCAN_FOR))
+}
+
+#[cfg(test)]
+mod device_scan_cache_tests {
+    use super::*;
+    use reborn_core::devices::{Backend, DetectedDevice};
+    use std::time::{Duration, Instant, SystemTime};
+
+    fn pad(id: u8) -> DetectedDevice {
+        DetectedDevice { backend: Backend::XInput, id, name: "Gamepad".into(), family: reborn_core::controller::DeviceFamily::Xbox }
+    }
+    fn key(modified: u64, pads: &[u8]) -> DeviceScanKey {
+        DeviceScanKey { exe: "C:/R/Dolphin.exe".into(), modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified)), xinput: pads.iter().map(|&i| pad(i)).collect() }
+    }
+    fn cache(at: Instant) -> DeviceScanCache {
+        DeviceScanCache { key: key(1, &[0]), at, scan: Enumeration { devices: vec![], not_searched: vec![] } }
+    }
+
+    #[test]
+    fn a_recent_scan_of_the_same_runtime_and_pads_is_reused() {
+        let now = Instant::now();
+        assert!(device_cache_holds(&cache(now), &key(1, &[0]), now + Duration::from_secs(60), false));
+    }
+
+    #[test]
+    fn a_new_runtime_build_a_changed_pad_or_an_old_scan_asks_again() {
+        let now = Instant::now();
+        assert!(!device_cache_holds(&cache(now), &key(2, &[0]), now, false), "runtime replaced");
+        assert!(!device_cache_holds(&cache(now), &key(1, &[0, 1]), now, false), "an XInput pad arrived");
+        assert!(!device_cache_holds(&cache(now), &key(1, &[0]), now + DEVICE_SCAN_FOR, false), "too old");
+    }
+
+    #[test]
+    fn while_a_game_runs_the_last_scan_stands() {
+        let now = Instant::now();
+        assert!(device_cache_holds(&cache(now), &key(1, &[0, 1]), now + DEVICE_SCAN_FOR * 4, true));
+        assert!(!device_cache_holds(&cache(now), &key(2, &[0]), now, true), "never another runtime's list");
+    }
+}
+
+fn read_devices(runtime: Option<String>, fresh: bool) -> Result<DeviceReport, String> {
     let p = Platform::detect();
 
     // Asking the runtime is the only authoritative answer. The built in scan
     // sees XInput and nothing else, which on a real machine misses the WGInput
     // backend entirely and would miss every PlayStation pad.
     if let Some(exe) = runtime {
+        let exe = std::path::PathBuf::from(exe);
+        let builtin = DeviceScanner::scan();
+        let key = DeviceScanKey {
+            modified: std::fs::metadata(&exe).and_then(|m| m.modified()).ok(),
+            exe: exe.clone(),
+            xinput: builtin.devices.clone(),
+        };
+        let game_active = session_active();
+        if !fresh {
+            let cache = DEVICE_SCAN.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = cache.as_ref().filter(|c| device_cache_holds(c, &key, std::time::Instant::now(), game_active)) {
+                return Ok(to_report(&c.scan, "runtime"));
+            }
+            // A game is running and nothing was scanned for this runtime yet: the XInput read, not a second emulator.
+            if game_active {
+                return Ok(to_report(&builtin, "fallback"));
+            }
+        }
         let scratch = p
             .paths
             .data_root()
             .map_err(|e| e.player_message().to_string())?
             .join(DataDir::Cache.relative());
-        match reborn_core::devices::scan_via_runtime(&p, std::path::Path::new(&exe), &scratch) {
-            Ok(scan) => return Ok(to_report(&scan, "runtime")),
+        match reborn_core::devices::scan_via_runtime(&p, &exe, &scratch) {
+            Ok(scan) => {
+                let report = to_report(&scan, "runtime");
+                *DEVICE_SCAN.lock().unwrap_or_else(|e| e.into_inner()) = Some(DeviceScanCache { key, at: std::time::Instant::now(), scan });
+                return Ok(report);
+            }
             // Fall through rather than fail. A missing runtime should not leave
             // the page blank, but the interface is told which answer it got.
-            Err(_) => return Ok(to_report(&DeviceScanner::scan(), "fallback")),
+            Err(_) => return Ok(to_report(&builtin, "fallback")),
         }
     }
     Ok(to_report(&DeviceScanner::scan(), "fallback"))
