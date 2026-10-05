@@ -585,12 +585,16 @@ pub fn activity_for(snap: &Snapshot, now_unix: i64) -> Option<Activity> {
         }
         if m.relay_state == "running" || m.relay_state == "intermission" {
             let seat = m.seat as usize;
-            let (mine, theirs) = (
-                m.series.get(seat).copied().unwrap_or(0),
-                m.series.get(1 - seat.min(1)).copied().unwrap_or(0),
-            );
-            let series = (m.best_of > 1).then(|| Series {
-                game: mine + theirs + 1,
+            // The live tally (games the live feed decided) leads the official one by a whole ruling, so a player
+            // who won game 1 reads "Game 2 of 3 (1-0)" while game 2 is on, not "Game 1 of 3 (0-0)". Per seat, the
+            // larger of the two: an older server sends no live tally, and an official ruling never runs behind.
+            let wins = |s: usize| {
+                m.series.get(s).copied().unwrap_or(0).max(m.series_live.get(s).copied().unwrap_or(0))
+            };
+            let (mine, theirs) = (wins(seat), wins(1 - seat.min(1)));
+            // A 3rd or 4th player has no side in the 1v1 tally.
+            let series = (m.best_of > 1 && seat <= 1).then(|| Series {
+                game: (mine + theirs + 1).min(m.best_of),
                 best_of: m.best_of,
                 wins_self: mine,
                 wins_opponent: theirs,
@@ -860,6 +864,45 @@ mod tests {
         let s1 = Snapshot { matched: Some(m), ..Default::default() };
         match activity_for(&s1, 0) {
             Some(Activity::InMatch { series: Some(s), .. }) => assert_eq!((s.wins_self, s.wins_opponent), (0, 1)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn presence_reads_the_live_tally_before_the_official_ruling_lands() {
+        // Adam 10-05: "Discord Activity is still not showing series results properly". Game 1 is decided on the
+        // live feed but not yet ruled: the official tally is still 0-0 while game 2 is being played.
+        let mut m = snap(MATCHED).matched.unwrap();
+        m.relay_state = "running".into();
+        m.best_of = 3;
+        m.series = vec![0, 0];
+        m.series_live = vec![1, 0];
+        let at = |m: &MatchView| activity_for(&Snapshot { matched: Some(m.clone()), ..Default::default() }, 0);
+        match at(&m) {
+            Some(Activity::InMatch { series: Some(s), .. }) => assert_eq!((s.game, s.wins_self, s.wins_opponent), (2, 1, 0)),
+            other => panic!("{other:?}"),
+        }
+        m.seat = 1;
+        match at(&m) {
+            Some(Activity::InMatch { series: Some(s), .. }) => assert_eq!((s.game, s.wins_self, s.wins_opponent), (2, 0, 1)),
+            other => panic!("{other:?}"),
+        }
+        // Official ahead of a stale live tally: the official count stands. The game number never passes best_of.
+        m.series = vec![1, 1];
+        m.series_live = vec![1, 0];
+        match at(&m) {
+            Some(Activity::InMatch { series: Some(s), .. }) => assert_eq!((s.game, s.wins_self, s.wins_opponent), (3, 1, 1)),
+            other => panic!("{other:?}"),
+        }
+        m.series_live = vec![2, 1];
+        match at(&m) {
+            Some(Activity::InMatch { series: Some(s), .. }) => assert_eq!(s.game, 3),
+            other => panic!("{other:?}"),
+        }
+        // A 3rd or 4th player in a 2v2 room has no side in the 1v1 tally.
+        m.seat = 2;
+        match at(&m) {
+            Some(Activity::InMatch { series: None, .. }) => {}
             other => panic!("{other:?}"),
         }
     }
