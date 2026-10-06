@@ -1,4 +1,4 @@
-/* Vendored from Reborn Backend src/web/live.css @ca3fdf5, do not edit: run Tools/sync-site-render.mjs. */
+/* Vendored from Reborn Backend src/web/live.css @daf8b3a, do not edit: run Tools/sync-site-render.mjs. */
 /* Scoped under #site-game (the site's body is <nsr-body class="site">), breakpoints on the page width, the launcher's fonts. */
 @font-face { font-family: "Inter NSR"; src: url("../fonts/InterVariable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Anton NSR"; src: url("../fonts/Anton.woff2") format("woff2"); font-weight: 400; font-display: swap; }
@@ -487,3 +487,50 @@
 #site-game nsr-body footer.site-ft a:focus-visible { outline: 2px solid var(--focus, #ffffff); outline-offset: 2px; }
 #site-game nsr-body.site .conn { margin: 0; padding: 0 22px 14px; font: 500 12px "Inter NSR", system-ui, sans-serif; color: var(--ink-4); }
 #site-game nsr-body.site .conn:empty { display: none; }
+#site-game .lb-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; padding: 22px 22px 6px; }
+#site-game .lb-title { margin: 0; font: 400 34px/1 "Anton NSR", Impact, sans-serif; font-synthesis: none; letter-spacing: .01em; text-transform: uppercase; }
+#site-game .lb-sub { margin: 0; font: 600 12px "Inter NSR", system-ui, sans-serif; color: var(--ink-3); }
+#site-game .lb-board { padding: 8px 22px 22px; }
+#site-game .lb-empty { margin: 0; padding: 40px 16px; border-radius: 12px; background: var(--panel); text-align: center; font: 600 15px "Inter NSR", system-ui, sans-serif; color: var(--ink-2); }
+#site-game .lb-table { width: 100%; border-collapse: separate; border-spacing: 0 6px; font: 500 14px "Inter NSR", system-ui, sans-serif; }
+#site-game .lb-table th { padding: 4px 12px; font: 700 11px "Inter NSR", system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-4); text-align: left; }
+#site-game .lb-table th.lb-rec, #site-game .lb-table th.lb-elo, #site-game .lb-table th.lb-week, #site-game .lb-table td.lb-rec, #site-game .lb-table td.lb-elo, #site-game .lb-table td.lb-week { text-align: right; }
+#site-game .lb-row td { padding: 10px 12px; background: var(--panel); white-space: nowrap; }
+#site-game .lb-row td:first-child { border-radius: 10px 0 0 10px; box-shadow: inset 4px 0 var(--tc, var(--neutral)); }
+#site-game .lb-row td:last-child { border-radius: 0 10px 10px 0; }
+#site-game .lb-row.you td { background: color-mix(in srgb, var(--tc, #3a3c42) 18%, var(--panel)); }
+#site-game .lb-rank { width: 3.2em; padding-left: 18px !important; font: 400 22px/1 "Anton NSR", Impact, sans-serif; font-synthesis: none; color: var(--ink-2); }
+#site-game .lb-row.top .lb-rank { color: #e6b84c; }
+#site-game td.lb-who > * { vertical-align: middle; }
+#site-game .lb-avatar, #site-game .lb-initial { width: 36px; height: 36px; border-radius: 50%; flex: none; margin-right: 12px; }
+#site-game .lb-avatar { object-fit: cover; background: var(--hair-2); }
+#site-game .lb-initial { display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: var(--ink-3); border: 1px solid var(--hair-3); }
+#site-game .lb-name { display: inline-block; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; font-weight: 700; color: #ffffff; text-decoration: none; }
+#site-game a.lb-name:hover { text-decoration: underline; }
+#site-game a.lb-name:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#site-game td.lb-team > * { vertical-align: middle; }
+#site-game .lb-logo { width: 28px; height: 28px; object-fit: contain; margin-right: 8px; }
+#site-game .lb-badge { display: inline-grid; place-items: center; width: 28px; height: 28px; margin-right: 8px; border-radius: 50%; font-size: 9px; font-weight: 800; color: #ffffff; background: var(--tc, var(--neutral)); }
+#site-game .lb-abbrev { font-weight: 700; color: var(--ink-2); letter-spacing: .03em; }
+#site-game .lb-noteam { color: var(--ink-5); }
+#site-game .lb-rec { color: var(--ink-2); }
+#site-game .lb-elo { font: 400 20px/1 "Anton NSR", Impact, sans-serif; font-synthesis: none; }
+#site-game .lb-week { font-weight: 700; }
+#site-game .lb-week.up { color: #5ad17a; }
+#site-game .lb-week.down { color: #ff6b61; }
+#site-game .lb-week.flat { color: var(--ink-4); }
+@container site-page (max-width: 568px) {
+  #site-game .lb-head { padding: 16px 16px 4px; }
+  #site-game .lb-title { font-size: 28px; }
+  #site-game .lb-board { padding: 6px 10px 16px; }
+  #site-game .lb-row td, #site-game .lb-table th { padding-left: 6px; padding-right: 6px; }
+  #site-game .lb-rank { width: 2.2em; padding-left: 12px !important; font-size: 18px; }
+  #site-game .lb-avatar, #site-game .lb-initial { width: 28px; height: 28px; margin-right: 8px; }
+  #site-game .lb-name { max-width: 12ch; }
+  #site-game .lb-table th { white-space: nowrap; font-size: 10px; letter-spacing: .04em; }
+  #site-game .lb-table th.lb-team, #site-game .lb-table td.lb-team { display: none; }
+  #site-game .lb-elo { font-size: 17px; }
+}
+@container site-page (max-width: 308px) {
+  #site-game .lb-table th.lb-week, #site-game .lb-table td.lb-week { display: none; }
+}

@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/site-model.js @dbc8c8d, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/site-model.js @daf8b3a, do not edit: run Tools/sync-site-render.mjs.
 // The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.
 // Pure data for the restyled site pages (spec 2026-10-02 site restyle): who sits where, the strip's status and line
 // score, the series pill's words, drives, box score columns and team stats. No DOM, no I/O, no clocks. Web-only: the
