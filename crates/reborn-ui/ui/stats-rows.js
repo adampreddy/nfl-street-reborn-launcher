@@ -1,5 +1,6 @@
 // The Stats tab's row model: pure, no DOM, so it is testable under node. Everything here is data the
 // server returned (player-typed team names among it); the page draws it with textContent only.
+import { shownName } from './names.js';
 const RESULT = { win: 'W', loss: 'L', tie: 'T' };
 // The local results queue's states (main.rs `stats_queue`) that mean "not on the server yet": waiting to be
 // sent, or sending keeps failing. Accepted and held are uploaded; quarantined and rejected never will be.
@@ -121,7 +122,8 @@ export function participantSeats(participants, team = [0, 1]) {
   const sides = [0, 1].map((side) => {
     const p = list.find((x) => x && x.kind === 'human' && x.player_id && bit(x.team_index) && x.team_index === team[side]);
     if (!p) return { seat: null };
-    seats.push({ display_name: typeof p.display_name === 'string' ? p.display_name : '', avatar_url: typeof p.avatar_url === 'string' ? p.avatar_url : null });
+    // `display_name` is what the site's renderer draws: the name the player is shown by (their nickname when set).
+    seats.push({ display_name: shownName(p), avatar_url: typeof p.avatar_url === 'string' ? p.avatar_url : null });
     return { seat: seats.length - 1 };
   });
   return seats.length ? { seats, sides } : { seats: [], sides: [] };

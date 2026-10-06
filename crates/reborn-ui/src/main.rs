@@ -4875,9 +4875,16 @@ async fn settings_set_path(
 #[derive(Debug, Serialize)]
 struct IdentityView {
     signed_in: bool,
+    /// The Discord name. Unchanged meaning; pages that show the player use `name`.
     display_name: Option<String>,
     player_id: Option<String>,
     show_offline: Option<bool>,
+    /// The nickname the player set (Settings), or null for none / an identity file from before nicknames.
+    nickname: Option<String>,
+    /// What the player is shown as: the nickname, else the Discord name.
+    name: Option<String>,
+    /// When the server takes the next nickname change (ISO), or null = now.
+    nickname_next_change_at: Option<String>,
 }
 #[derive(Debug, Serialize)]
 struct SignInStartView {
@@ -4901,8 +4908,16 @@ struct SignInPollView {
 
 fn identity_view(file: Option<&reborn_core::identity::IdentityFile>) -> IdentityView {
     match file {
-        Some(f) => IdentityView { signed_in: true, display_name: Some(f.player.display_name.clone()), player_id: Some(f.player.id.clone()), show_offline: Some(f.player.show_offline) },
-        None => IdentityView { signed_in: false, display_name: None, player_id: None, show_offline: None },
+        Some(f) => IdentityView {
+            signed_in: true,
+            display_name: Some(f.player.display_name.clone()),
+            player_id: Some(f.player.id.clone()),
+            show_offline: Some(f.player.show_offline),
+            nickname: f.player.nickname.clone().filter(|n| !n.trim().is_empty()),
+            name: Some(reborn_core::matchmaking::shown_name(f.player.nickname.as_deref(), &f.player.display_name)),
+            nickname_next_change_at: f.player.nickname_next_change_at.clone(),
+        },
+        None => IdentityView { signed_in: false, display_name: None, player_id: None, show_offline: None, nickname: None, name: None, nickname_next_change_at: None },
     }
 }
 
@@ -5032,6 +5047,22 @@ async fn identity_set_show_offline(show: bool) -> Result<IdentityView, String> {
         reborn_core::identity::set_show_offline(&p, &http, &origin, show).map_err(|e| e.to_string())?;
         let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
         Ok(identity_view(file.as_ref()))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Set the player's nickname ("" clears it, back to the Discord name). A refusal is the server's own sentence
+/// ("That nickname is taken."), passed through unchanged so Settings shows it verbatim.
+#[tauri::command]
+async fn identity_set_nickname(nickname: String) -> Result<IdentityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = backend_origin(&p)?;
+        let http = http_client();
+        let player = reborn_core::identity::set_nickname(&p, &http, &origin, &nickname).map_err(|e| e.to_string())?;
+        // From the server's reply, so the view is right even when the facts file could not be rewritten.
+        let file = reborn_core::identity::status(&p).map_err(|e| e.to_string())?;
+        let signed_in_at_ms = file.as_ref().map_or(0, |f| f.signed_in_at_ms);
+        Ok(identity_view(Some(&reborn_core::identity::IdentityFile { player, signed_in_at_ms })))
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -6643,6 +6674,7 @@ fn main() {
             identity_sign_in_poll,
             identity_sign_out,
             identity_set_show_offline,
+            identity_set_nickname,
             // Captured results.
             stats_queue,
             stats_ingest,
@@ -8242,7 +8274,7 @@ struct StatsSubmitView {"),
     #[test]
     fn identity_view_from_a_file_and_from_nothing() {
         let file = reborn_core::identity::IdentityFile {
-            player: reborn_core::identity::PlayerFacts { id: "p1".into(), display_name: "Adam".into(), avatar_hash: None, show_offline: true },
+            player: reborn_core::identity::PlayerFacts { id: "p1".into(), display_name: "Adam".into(), avatar_hash: None, show_offline: true, nickname: None, nickname_next_change_at: None },
             signed_in_at_ms: 1,
         };
         let v = identity_view(Some(&file));
@@ -8251,6 +8283,12 @@ struct StatsSubmitView {"),
         assert_eq!(v.show_offline, Some(true));
         let none = identity_view(None);
         assert!(!none.signed_in && none.player_id.is_none());
+        // No nickname: shown by the Discord name. With one: shown by it, the Discord name still under display_name.
+        assert_eq!((v.nickname.as_deref(), v.name.as_deref()), (None, Some("Adam")));
+        let mut nick = file.clone();
+        nick.player.nickname = Some("Slick".into());
+        let n = identity_view(Some(&nick));
+        assert_eq!((n.nickname.as_deref(), n.name.as_deref(), n.display_name.as_deref()), (Some("Slick"), Some("Slick"), Some("Adam")));
     }
 
     #[test]

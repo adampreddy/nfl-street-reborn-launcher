@@ -2,6 +2,7 @@
 // the words and numbers online-mm.js and leaderboard.js draw. No DOM, no commands. Every value comes from an answer;
 // a missing one is null (or "") and the page hides its spot. Nothing here invents a number.
 
+import { shownName, discordName } from './names.js';
 /** A finite number, or null. */
 export const int = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
 export const fmtInt = (n) => n.toLocaleString('en-US');
@@ -99,7 +100,8 @@ function change(d) {
 function lbRow(r) {
   const wins = int(r?.wins), losses = int(r?.losses), elo = int(r?.elo);
   return {
-    rank: int(r?.rank), name: typeof r?.display_name === 'string' ? r.display_name : '', avatar: typeof r?.avatar_url === 'string' ? r.avatar_url : null,
+    // The nickname when the player set one (names.js), the Discord name beside it for a tooltip.
+    rank: int(r?.rank), name: shownName(r), discord: discordName(r), avatar: typeof r?.avatar_url === 'string' ? r.avatar_url : null,
     team: r?.team && typeof r.team === 'object' ? r.team : null,
     record: wins !== null && losses !== null ? `${wins}-${losses}` : null,
     elo: elo !== null ? fmtInt(elo) : null, change: change(r?.delta_week), you: r?.you === true,

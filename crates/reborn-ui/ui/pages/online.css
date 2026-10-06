@@ -216,6 +216,11 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 /* under the matchup card the chat takes only its own height (the card keeps the room), long logs scroll */
 .on-vs+.on-chat{flex:0 0 auto}
 .on-vs+.on-chat .mm-chat{max-height:96px}
+/* The room's chat card is as tall as the room card beside it (contain:size: its lines never grow the row) and its list
+   scrolls inside; under 1000 px, stacked, it gets a height of its own. A list that grew the page instead put every new
+   line below the fold. */
+.on-room>.on-talk{contain:size;min-height:280px}
+@media (max-width:1000px){.on-room>.on-talk{height:320px}}
 .on-roomrow{flex-wrap:nowrap;align-items:stretch}
 .on-roomrow .btn{white-space:nowrap;height:52px}
 .on-roomrow .btn.on-go{flex:1;min-width:0}
@@ -339,3 +344,4 @@ body.themed .section-tabs button[aria-pressed="true"]{background:var(--glass-3);
 .on-over-row .btn{height:52px;white-space:nowrap}
 .on-over-row .btn.on-go{flex:1 1 auto;min-width:0}
 @media (max-width:1000px){.on-over-row{flex-wrap:wrap}.on-over-row .btn.on-go{flex-basis:240px}.on-over .on-vs-in{padding:32px 24px 22px}.on-over .on-pname{font-size:19px}.on-final{font-size:60px}}
+.on-members b small.on-discord{font-weight:400}

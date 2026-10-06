@@ -5,6 +5,7 @@
 // says the result is official; under it Play again, Box score, Rematch and Back to Online.
 // PURE: only online-model.js (itself pure), so node --test can load it; the page hands in `el`, `avatar` and `teamLogo`.
 import { modeLine } from './online-model.js';
+import { shownName } from './names.js';
 
 const OVER = new Set(['win', 'forfeit', 'split']);
 const DASH = '-'; // scores: a plain hyphen, "36-12" (owner ruling, launch audit M11)
@@ -28,7 +29,7 @@ export function seriesOverModel(match, live, self = {}) {
   const wins = Array.isArray(match.series_live) && match.series_live.length === 2 ? match.series_live
     : Array.isArray(match.series) ? match.series : [0, 0];
   const seats = Array.isArray(live?.seats) ? live.seats : [];
-  const names = [seats[0]?.display_name, seats[1]?.display_name];
+  const names = [shownName(seats[0]), shownName(seats[1])];
   const you = names[me] || (typeof self.name === 'string' && self.name) || 'You';
   const them = names[1 - me] || match.opponent || 'Your opponent';
   const mine = int(wins[me]) ?? 0, theirs = int(wins[1 - me]) ?? 0;

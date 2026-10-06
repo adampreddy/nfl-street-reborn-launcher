@@ -1,3 +1,4 @@
+import { shownName } from './names.js';
 /**
  * Pure view models for the stats dashboard and profile pages.
  * No dependencies, vanilla ES modules, formatter utilities for numbers, Elo, records, etc.
@@ -83,7 +84,7 @@ function getOpponentName(row) {
     if (row.opponent_kind === 'guest') return 'Guest';
     return '—';
   }
-  return row.opponent.display_name || '—';
+  return shownName(row.opponent) || '—';
 }
 
 /**

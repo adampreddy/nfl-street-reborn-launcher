@@ -8,6 +8,7 @@
 import { el } from './shell.js';
 import { inkFor } from './live-color.js';
 import { assetUrl, avatarSrc, sideOfSeats } from './live-common.js';
+import { shownName, discordName } from './names.js';
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 const DASH = '–'; // a box-score cell with no number
@@ -56,7 +57,7 @@ export function sideLabel(game, seats, side) {
   const team = teamOf(game, side);
   if (team) return team.name;
   const seat = Array.isArray(game?.sides) ? game.sides[side]?.seat : null;
-  const name = (seat === 0 || seat === 1) ? str(seats?.[seat]?.display_name) : '';
+  const name = (seat === 0 || seat === 1) ? shownName(seats?.[seat]) : '';
   return name || (side === 0 || side === 1 ? `Side ${side + 1}` : 'Unknown');
 }
 
@@ -92,7 +93,7 @@ export function teamLogo(team) {
 }
 
 export function seatAvatar(seat) {
-  const badge = el('span', { class: 'lv-avatar-badge', text: initialOf(seat?.display_name) });
+  const badge = el('span', { class: 'lv-avatar-badge', text: initialOf(shownName(seat)) });
   const url = avatarSrc(seat);
   if (!url) return badge;
   return withFallback(el('img', { class: 'lv-avatar', src: url, width: 32, height: 32, alt: '' }), badge);
@@ -115,7 +116,7 @@ export function teamName(team) {
 // A seat's name; a link to the player's profile when the seat carries their player id.
 const PLAYER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function seatName(seat) {
-  const attrs = { class: 'lv-player-name', text: str(seat?.display_name) || 'Unknown player' };
+  const attrs = { class: 'lv-player-name', text: shownName(seat) || 'Unknown player', title: discordName(seat) ? `@${discordName(seat)}` : null };
   const id = str(seat?.player_id);
   return PLAYER_ID_RE.test(id) ? el('a', { ...attrs, href: `profile.html?player=${encodeURIComponent(id.toLowerCase())}` }) : el('span', attrs);
 }

@@ -22,7 +22,7 @@ function row(r) {
   return el('li', { class: `on-lb-row${r.rank !== null && r.rank <= 3 ? ' top' : ''}${r.you ? ' you' : ''}` },
     el('span', { class: 'on-lb-rank', text: r.rank === null ? '' : String(r.rank) }),
     el('span', { class: 'on-lb-face' }, avatar(r.avatar, r.name), r.team ? teamLogo(r.team) : null),
-    el('span', { class: 'on-lb-who' }, el('span', { class: 'on-lb-name', text: r.name }), r.record ? el('small', { class: 'num', text: r.record }) : null),
+    el('span', { class: 'on-lb-who' }, el('span', { class: 'on-lb-name', text: r.name, title: r.discord ? `@${r.discord}` : null }), r.record ? el('small', { class: 'num', text: r.record }) : null),
     el('span', { class: 'on-lb-elo' }, r.elo ? el('b', { text: r.elo }) : null, r.change ? el('small', { class: r.change.dir, text: r.change.text }) : null));
 }
 

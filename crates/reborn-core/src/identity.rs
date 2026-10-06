@@ -51,6 +51,13 @@ pub struct PlayerFacts {
     pub avatar_hash: Option<String>,
     #[serde(default)]
     pub show_offline: bool,
+    /// The name the player chose to be shown by online (backend migration 026). `None` = unset, or an older server,
+    /// or an identity file written before nicknames: the Discord name (`display_name`) is used then.
+    #[serde(default)]
+    pub nickname: Option<String>,
+    /// When the server will take the next nickname change (ISO time), or `None` = now.
+    #[serde(default)]
+    pub nickname_next_change_at: Option<String>,
 }
 
 /// The non-secret half of a sign-in, kept beside settings so pages can say who is signed in
@@ -428,6 +435,91 @@ pub fn set_show_offline(platform: &Platform, http: &dyn Http, origin: &str, show
     Ok(player)
 }
 
+/// Why a nickname was not saved.
+///
+/// Not an [`Error::PlayerMessage`]: the server's refusal names a rule the player's own text broke ("That nickname is
+/// taken."), so it is a sentence the SERVER wrote for the player and is passed through verbatim, which is exactly
+/// what `Error::player`'s `&'static str` rule exists to keep out of that variant. Its own type keeps the two apart.
+#[derive(Debug)]
+pub enum NicknameError {
+    /// The server refused the name (400 invalid, 409 taken, 429 too soon): its `error` sentence, unchanged.
+    Refused(String),
+    /// Anything else: unreachable, signed out, a 5xx, a reply not understood. This file's own wording.
+    Failed(Error),
+}
+
+impl std::fmt::Display for NicknameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NicknameError::Refused(m) => f.write_str(m),
+            NicknameError::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<Error> for NicknameError {
+    fn from(e: Error) -> Self { NicknameError::Failed(e) }
+}
+
+/// Set (or, with "", clear) the player's nickname: POST /v1/me/nickname (the Http trait has no PUT).
+///
+/// The server's refusal (`{"ok":false,"error":"..."}` on 400 invalid, 409 taken, 429 too soon) is returned VERBATIM
+/// as [`NicknameError::Refused`], so the player reads exactly which rule the name broke.
+pub fn set_nickname(platform: &Platform, http: &dyn Http, origin: &str, nickname: &str) -> std::result::Result<PlayerFacts, NicknameError> {
+    let vault = token(platform).map_err(|e| {
+        tracing::warn!("the credential vault could not be read: {e}");
+        Error::player(SAVE_UNAVAILABLE)
+    })?;
+    let tok = vault.ok_or_else(|| Error::player(MUST_BE_SIGNED_IN))?;
+    let url = origin_url(origin, "/v1/me/nickname");
+    let r = post_nickname(http, &url, &tok, nickname)?;
+    if r.status == 401 { clear_token(platform)?; return Err(Error::player(SESSION_EXPIRED).into()); }
+    let player = parse_nickname_reply(&r, &url)?;
+    // The facts file follows the server's answer. A file that will not read or write only costs the Settings field
+    // its pre-filled value, never the change the server already made.
+    match identity_path(platform).map(|path| (read_identity(&path), path)) {
+        Ok((Ok(Some(mut file)), path)) => {
+            file.player = player.clone();
+            if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("a serializable identity file")) {
+                tracing::warn!("the identity file could not be written at {}: {e}", path.display());
+            }
+        }
+        _ => tracing::warn!("nickname: the identity file was not updated"),
+    }
+    Ok(player)
+}
+
+fn post_nickname(http: &dyn Http, url: &str, tok: &str, nickname: &str) -> Result<crate::net::HttpResponse> {
+    let body = serde_json::to_vec(&serde_json::json!({ "nickname": nickname })).expect("a serializable request body");
+    http.post_json(url, &body, Some(tok)).map_err(|e| {
+        tracing::warn!("nickname: could not reach {url}: {e}");
+        Error::player(SAVE_UNREACHABLE)
+    })
+}
+
+/// The longest server sentence passed through; a longer one is not a message written for a player.
+const SERVER_MESSAGE_MAX: usize = 240;
+
+fn parse_nickname_reply(r: &crate::net::HttpResponse, url: &str) -> std::result::Result<PlayerFacts, NicknameError> {
+    #[derive(Deserialize)]
+    struct Reply { #[serde(default)] player: Option<PlayerFacts>, #[serde(default)] error: Option<String> }
+    let reply: Option<Reply> = serde_json::from_str(&r.body).ok();
+    if !r.is_success() {
+        tracing::warn!("nickname: {url} answered {}", r.status);
+        if (400..500).contains(&r.status) {
+            if let Some(msg) = reply.and_then(|x| x.error).map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty() && m.chars().count() <= SERVER_MESSAGE_MAX) {
+                return Err(NicknameError::Refused(msg));
+            }
+        }
+        return Err(Error::player(SAVE_UNAVAILABLE).into());
+    }
+    reply.and_then(|x| x.player).ok_or_else(|| {
+        tracing::warn!("nickname: the reply was not understood");
+        Error::player(SAVE_UNAVAILABLE).into()
+    })
+}
+
 /// Open a URL in the player's default browser, through the operating system's own shell.
 ///
 /// This used to run `explorer.exe <url>`, and it never worked for a sign-in link. Explorer
@@ -466,6 +558,29 @@ pub fn machine_label() -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_nickname_refusal_reaches_the_player_verbatim_and_a_server_fault_does_not() {
+        use crate::net::HttpResponse;
+        let url = "https://b/v1/me/nickname";
+        let taken = HttpResponse { status: 409, body: r#"{"ok":false,"error":"That nickname is taken."}"#.into() };
+        assert_eq!(parse_nickname_reply(&taken, url).unwrap_err().to_string(), "That nickname is taken.");
+        let soon = HttpResponse { status: 429, body: r#"{"ok":false,"error":"You can change your nickname again in 23 hours.","retry_at":"2026-10-07T12:00:00.000Z"}"#.into() };
+        assert!(matches!(parse_nickname_reply(&soon, url), Err(NicknameError::Refused(m)) if m.starts_with("You can change")));
+        let down = HttpResponse { status: 500, body: r#"{"ok":false,"error":"stack trace here"}"#.into() };
+        assert_eq!(parse_nickname_reply(&down, url).unwrap_err().to_string(), SAVE_UNAVAILABLE);
+        let ok = HttpResponse { status: 200, body: r#"{"ok":true,"player":{"id":"p1","display_name":"adam_discord","nickname":"Slick","name":"Slick","show_offline":false,"nickname_next_change_at":"2026-10-07T12:00:00.000Z"}}"#.into() };
+        let p = parse_nickname_reply(&ok, url).unwrap();
+        assert_eq!((p.display_name.as_str(), p.nickname.as_deref()), ("adam_discord", Some("Slick")));
+        assert_eq!(p.nickname_next_change_at.as_deref(), Some("2026-10-07T12:00:00.000Z"));
+    }
+
+    #[test]
+    fn player_facts_from_an_older_server_or_file_have_no_nickname() {
+        let p: PlayerFacts = serde_json::from_str(r#"{"id":"p1","display_name":"Adam","avatar_hash":null,"show_offline":false}"#).unwrap();
+        assert_eq!(p.nickname, None);
+        assert_eq!(p.nickname_next_change_at, None);
+    }
     use super::*;
     use crate::net::fake::FakeHttp;
 
@@ -663,7 +778,7 @@ mod tests {
 
     #[test]
     fn a_debug_print_of_a_poll_result_never_shows_the_token() {
-        let p = Poll::Done { token: "s3cr3t".into(), player: PlayerFacts { id: "p".into(), display_name: "A".into(), avatar_hash: None, show_offline: false } };
+        let p = Poll::Done { token: "s3cr3t".into(), player: PlayerFacts { id: "p".into(), display_name: "A".into(), avatar_hash: None, show_offline: false, nickname: None, nickname_next_change_at: None } };
         assert!(!format!("{p:?}").contains("s3cr3t"));
     }
 

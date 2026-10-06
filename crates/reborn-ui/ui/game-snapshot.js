@@ -10,6 +10,7 @@
 //     game), never `single` (the site's /games/<id> layout this replaces).
 // Only a game the server verified gets its plays, box lines and drives; the others are totals only (`totalsOnly`).
 import { fieldFromBody, gameSnapshot, rescore, sideTeams } from './site/live-render.js';
+import { shownName } from './names.js';
 
 const list = (v) => (Array.isArray(v) ? v : []);
 const str = (v) => (typeof v === 'string' && v ? v : null);
@@ -27,7 +28,8 @@ export function matchSnapshot(id, records) {
     if (i < 0) {
       if (seats.length >= 2) return null;
       who.push(p.player_id);
-      seats.push({ display_name: typeof p.display_name === 'string' ? p.display_name : '', avatar_url: str(p.avatar_url), player_id: p.player_id });
+      // `display_name` is what the site's renderer draws: the name the player is shown by (their nickname when set).
+      seats.push({ display_name: shownName(p), avatar_url: str(p.avatar_url), player_id: p.player_id });
       i = seats.length - 1;
     }
     return i;

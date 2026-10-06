@@ -34,6 +34,15 @@ const STATES = {
     members: [{ name: 'Jock', ready: true, field: 'city_limits', you: false }, { name: 'Adam', ready: false, field: 'the_pit', you: true }] },
     chat: [{ seq: 1, name: 'Jock', text: 'yo', at: '2026-09-22T20:39:00Z' }, { seq: 2, name: 'Adam', text: 'running it back', at: '2026-09-22T20:39:30Z' },
       { seq: 3, name: 'Jock', text: 'ready when you are', at: '2026-09-22T20:40:00Z' }] } },
+  // Nicknames (backend migration 026): `name` is the nickname, `discord` the Discord name beside it (null without one).
+  lobby_nick: { ...base, snapshot: { ...empty, player: { name: 'Slick', discord: 'adam_discord', region: 'na-east' },
+    room: { id: 'r9', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+      members: [{ name: 'Slick', discord: 'adam_discord', ready: false, field: null, you: true }, { name: 'Jock', discord: null, ready: true, field: null, you: false }] },
+    chat: [{ seq: 1, name: 'Slick', discord: 'adam_discord', text: 'call me Slick', at: '2026-10-06T20:39:00Z' }] } },
+  pairing_nick: { ...base, snapshot: { ...empty, player: { name: 'Slick', discord: 'adam_discord', region: 'na-east' },
+    match: { id: 'm9', mode: 'casual', status: 'pairing', relay_state: 'pairing', relay_deadline: null, best_of: 1, you_host: true,
+      opponent: 'Joker', opponent_discord: 'jock_discord', field: null, your_field_pick: null, your_accepted: false, your_ready: false,
+      series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0 } } },
   // 2v2 private rooms (Adam 10-04): a room this launcher opened takes four. Three in (one open spot), and full.
   lobby_three: { ...base, snapshot: { ...empty, room: { id: 'r2', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true, capacity: 4,
     members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false },
@@ -86,6 +95,9 @@ const EXPECT = {
     counts: { '.on-members li': 4, '.on-open': 1, '.on-rd': 2 }, disabled: ['Start'] },
   lobby_four: { text: ['Your crew · 4 of 4', 'Mack', 'me and tuna vs you two', 'Up to 4 players. 2v2 works.'], buttons: ['Hold up', 'Leave room'],
     absent: ['Open spot'], counts: { '.on-members li': 4, '.on-open': 0, '.on-rd': 4 } },
+  // The nickname is the name; the Discord name sits small beside it (members) or under it (the matchup faces).
+  lobby_nick: { text: ['Slick', '@adam_discord', 'Jock', 'call me Slick'], absent: ['@Jock', '@null'], counts: { '.on-discord': 1, '.mm-chat li': 1 } },
+  pairing_nick: { text: ['Slick', '@adam_discord', 'Joker', '@jock_discord'], buttons: ['Accept', 'Decline'], absent: ['@null'] },
   match_four: { text: ['4 players · with Adam, Jock, Mack', 'Game on', 'Tuna', 'Host'], buttons: ['Leave match'], absent: ['Accept'] },
   pairing: { text: ['Jock', 'Game on', 'VS', 'Casual'], buttons: ['Accept', 'Decline', 'Leave match'], absent: ['one game', 'players ·'] },
   running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1-0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
@@ -165,7 +177,7 @@ try {
 
     // The private-room section must be hidden exactly while matchmaking has the player busy, and
     // visible otherwise - including while a match is HELD, because a held match's seats are released.
-    const busy = ['queued', 'lobby', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed'].includes(name);
+    const busy = ['queued', 'lobby', 'lobby_nick', 'pairing_nick', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed'].includes(name);
     const shown = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).display !== 'none');
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');

@@ -77,6 +77,7 @@ try {
     await page.screenshot({ path: path.join(out, 'profile-1280.png') });
     assert.equal(await page.locator('#screen > :first-child').getAttribute('id'), 'back', 'Back comes first');
     assert.equal(await page.locator('.pf-name').textContent(), 'adamknowsball');
+    assert.equal(await page.locator('.pf-discord').count(), 0, 'no nickname: no Discord line under the name');
     assert.equal(await page.locator('.pf-status').textContent(), '● In a match');
     assert.equal(await page.locator('.pf-pic .presence-dot').count(), 1);
     // status | Plays as | Joined; Share profile and View on web, never a Challenge button
@@ -186,6 +187,24 @@ try {
     await page.waitForURL(/match\.html\?/);
     const u = new URL(page.url());
     assert.deepEqual([u.searchParams.get('game'), u.searchParams.get('games'), u.searchParams.get('from')], ['g-013', 'g-011,g-012,g-013', `profile.html?player=${F.ME}`]);
+    await close();
+  }
+  { // a nickname (backend migration 026): big in the header, the Discord name small under it; a rival's nickname in
+    // head to head carries their Discord name on hover.
+    const p = F.profile();
+    p.header.nickname = 'Slick';
+    for (const h of p.head_to_head ?? []) { h.nickname = 'Joker'; }
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { player_profile: p } });
+    await page.locator('.pf-card').waitFor();
+    assert.equal(await page.locator('.pf-name').textContent(), 'Slick');
+    assert.equal(await page.locator('.pf-discord').textContent(), '@adamknowsball');
+    if ((p.head_to_head ?? []).length) {
+      const who = page.locator('#h2h-card .pf-who b').first();
+      assert.equal(await who.textContent(), 'Joker');
+      assert.match(await who.getAttribute('title'), /^@/);
+    }
+    await page.locator('.pf-card').screenshot({ path: path.join(out, 'profile-1280-nickname.png') });
+    assert.deepEqual(errors, []);
     await close();
   }
   { // Live feed opens the native live view

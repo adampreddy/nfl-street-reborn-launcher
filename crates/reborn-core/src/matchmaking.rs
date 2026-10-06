@@ -87,6 +87,9 @@ pub struct Snapshot {
 pub struct PlayerView {
     pub id: String,
     pub display_name: String,
+    /// The name the player chose for themselves (backend migration 026); `None` from an older server or when unset.
+    /// `display_name` stays the Discord name. See [`shown_name`].
+    pub nickname: Option<String>,
     pub region: Option<String>,
     pub presence_hidden: bool,
 }
@@ -133,6 +136,7 @@ pub const ROOM_MAX_PLAYERS: u8 = 4;
 pub struct RoomMember {
     pub player_id: String,
     pub display_name: String,
+    pub nickname: Option<String>,
     pub ready: bool,
     pub field_pick: Option<String>,
 }
@@ -142,6 +146,7 @@ pub struct RoomMember {
 pub struct Opponent {
     pub id: String,
     pub display_name: String,
+    pub nickname: Option<String>,
     /// Elo, rank on the leaderboard, plays-as team and Discord picture: display only (the Online page's matchup card,
     /// spec 2026-10-02 §3.3). Each is absent while the server does not send it (Elo off: no rating, no rank).
     pub rating: Option<i64>,
@@ -196,6 +201,7 @@ pub struct MatchView {
 pub struct PartySeat {
     pub seat: u8,
     pub display_name: Option<String>,
+    pub nickname: Option<String>,
     /// Their NetPlay nickname in the Dolphin room: how the host maps them to a pad.
     pub nsr_tag: String,
     pub ready: bool,
@@ -273,6 +279,7 @@ pub struct ChatMessage {
     pub seq: u64,
     pub player_id: String,
     pub display_name: String,
+    pub nickname: Option<String>,
     /// The line. The server sends it as `text` (snapshot.js, match.js); `body` is the launcher's own name for it.
     /// Before this read `text`, the wire's line decoded to "" and every chat line drew as an empty message
     /// (2026-10-03). Not a `#[serde(alias)]`: the backend is adding `body` beside `text` for older betas, and an
@@ -288,6 +295,7 @@ struct ChatWire {
     seq: u64,
     player_id: String,
     display_name: String,
+    nickname: Option<String>,
     text: Option<String>,
     body: Option<String>,
     at: String,
@@ -296,7 +304,7 @@ struct ChatWire {
 impl From<ChatWire> for ChatMessage {
     fn from(w: ChatWire) -> Self {
         let body = w.text.filter(|t| !t.is_empty()).or(w.body).unwrap_or_default();
-        ChatMessage { seq: w.seq, player_id: w.player_id, display_name: w.display_name, body, at: w.at }
+        ChatMessage { seq: w.seq, player_id: w.player_id, display_name: w.display_name, nickname: w.nickname, body, at: w.at }
     }
 }
 
@@ -319,6 +327,7 @@ pub struct Online {
 pub struct OnlinePlayer {
     pub id: String,
     pub display_name: String,
+    pub nickname: Option<String>,
     pub activity: String,
 }
 
@@ -563,6 +572,24 @@ pub fn field_title(id: &str) -> String {
         .join(" ")
 }
 
+/// The name a player is shown by: their nickname when they set one, else their Discord name (`display_name`).
+/// Worked out here from the two raw fields rather than read from the server's `name`, so an older server (no
+/// nickname at all) and a newer one draw through the same rule.
+pub fn shown_name(nickname: Option<&str>, display_name: &str) -> String {
+    match nickname.map(str::trim) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => display_name.to_string(),
+    }
+}
+
+/// The Discord name to show beside a nickname (a subtitle or tooltip), or `None` when there is no nickname or it
+/// already reads the same.
+pub fn discord_aside(nickname: Option<&str>, display_name: &str) -> Option<String> {
+    let n = nickname.map(str::trim).filter(|n| !n.is_empty())?;
+    let d = display_name.trim();
+    (!d.is_empty() && !n.eq_ignore_ascii_case(d)).then(|| d.to_string())
+}
+
 /// Pre-game relay states: matched, but the game is not running yet.
 const PREGAME: &[&str] = &[
     "pairing", "accepted", "field", "ready", "go", "host_launching", "code_ready", "joining", "room_formed",
@@ -573,11 +600,9 @@ const PREGAME: &[&str] = &[
 pub fn activity_for(snap: &Snapshot, now_unix: i64) -> Option<Activity> {
     if let Some(m) = &snap.matched {
         let mode = mode_of(&m.mode);
-        let opponent = if m.opponent.display_name.trim().is_empty() {
-            "an opponent".to_string()
-        } else {
-            m.opponent.display_name.clone()
-        };
+        // The opponent's nickname when they set one (what they chose to be called), else their Discord name.
+        let shown = shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name);
+        let opponent = if shown.trim().is_empty() { "an opponent".to_string() } else { shown };
         let field = m.field.as_deref().map(field_title);
 
         if PREGAME.contains(&m.relay_state.as_str()) {
@@ -650,6 +675,21 @@ pub fn iso_to_unix(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presence_says_vs_the_opponents_nickname_and_falls_back_to_the_discord_name() {
+        let nick: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "mode": "casual", "relay_state": "pairing",
+            "opponent": { "id": "o", "display_name": "jock_discord", "nickname": "Jock" } } })).unwrap();
+        let plain: Snapshot = serde_json::from_value(serde_json::json!({ "match": { "id": "m", "mode": "casual", "relay_state": "pairing",
+            "opponent": { "id": "o", "display_name": "jock_discord" } } })).unwrap();
+        let opp = |s: &Snapshot| match activity_for(s, 0) { Some(Activity::Preparing { opponent, .. }) => opponent, other => panic!("{other:?}") };
+        assert_eq!(opp(&nick), "Jock");
+        assert_eq!(opp(&plain), "jock_discord");
+        assert_eq!(shown_name(Some("  "), "Adam"), "Adam");
+        assert_eq!(discord_aside(Some("Slick"), "Adam").as_deref(), Some("Adam"));
+        assert_eq!(discord_aside(Some("adam"), "Adam"), None);
+        assert_eq!(discord_aside(None, "Adam"), None);
+    }
+
     #[test]
     fn a_chat_line_reads_the_servers_text_field_and_an_old_body_field() {
         // The exact shape snapshot.js (and match.js) sends: the line is `text`. Before the alias it decoded to "".

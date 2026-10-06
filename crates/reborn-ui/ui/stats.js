@@ -22,6 +22,7 @@ import { recordsView } from './records-view.js';
 import { card, cellGrid, cols, dayColumns, donut, eloLine, pointsBars, playerRows, share, teamRatesCard, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
+import { NICKNAME_HINT } from './names.js';
 
 const PAGE_SIZE = 8;
 const signIn = createSignIn({ onChange: () => draw(), onDone: () => load() });
@@ -218,12 +219,60 @@ async function act(label, command, args, after) {
   draw();
 }
 
+// ---- Nickname: the name the player is shown by online (backend migration 026); blank = their Discord name ----
+
+// What is typed survives the 30 s refresh (the page redraws everything); null = show the saved nickname.
+let nickDraft = null, nickMsg = null, nickBusy = false;
+
+/** When the server takes the next change, in words, or null when it would take one now. */
+function nextChangeLine(iso) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t) || t <= Date.now()) return null;
+  const when = new Date(t).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  return `You can change it again ${when}.`;
+}
+
+async function saveNickname(value) {
+  if (busy || nickBusy) return;
+  nickBusy = true; nickMsg = null; draw();
+  try {
+    const view = await call('identity_set_nickname', { nickname: value });
+    // The server's answer is the truth: it trims and tidies spaces, and blank means back to the Discord name.
+    if (view && typeof view === 'object') state.identity = view;
+    nickDraft = null;
+    nickMsg = { ok: true, text: view?.nickname ? `Nickname saved. You show up as ${view.nickname}.` : 'Nickname cleared. You show up by your Discord name.' };
+  } catch (e) {
+    // The server's own sentence, word for word ("That nickname is taken."): the field keeps what was typed.
+    nickMsg = { ok: false, text: reason(e) };
+  }
+  nickBusy = false;
+  draw();
+}
+
+function nicknameBlock(identity) {
+  const saved = typeof identity.nickname === 'string' ? identity.nickname : '';
+  const input = el('input', { type: 'text', id: 'nickname', maxlength: 20, autocomplete: 'off', spellcheck: 'false', value: nickDraft ?? saved,
+    placeholder: identity.display_name || 'Your Discord name', 'aria-describedby': 'nickname-hint', disabled: busy || nickBusy,
+    oninput: (e) => { nickDraft = e.target.value; } });
+  const form = el('form', { class: 'st-nick' },
+    el('label', { for: 'nickname', class: 'st-nick-label', text: 'Nickname' }),
+    el('div', { class: 'st-nick-row' }, input,
+      el('button', { type: 'submit', class: 'btn sm', id: 'nickname-save', text: nickBusy ? 'Saving…' : 'Save', disabled: busy || nickBusy })),
+    el('p', { id: 'nickname-hint', class: 'st-nick-hint', text: NICKNAME_HINT }),
+    nextChangeLine(identity.nickname_next_change_at) ? el('p', { class: 'st-nick-hint', text: nextChangeLine(identity.nickname_next_change_at) }) : null,
+    nickMsg ? el('p', { class: nickMsg.ok ? 'said' : 'refusal', role: nickMsg.ok ? 'status' : 'alert', id: 'nickname-said', text: nickMsg.text }) : null);
+  form.addEventListener('submit', (e) => { e.preventDefault(); saveNickname(input.value.trim()); });
+  return form;
+}
+
 function accountBlock() {
   const identity = state.identity, queue = state.queueView;
+  // Signed in as the DISCORD account (that is what signing in is); the nickname is the name shown to other players.
   const status = !ok(identity) ? 'Account unavailable' : identity.signed_in ? `Signed in as ${identity.display_name || 'your Discord account'}` : 'Not signed in';
   const profile = el('div', {}, el('h3', { text: 'Profile' }), el('p', { text: status }));
   if (!ok(identity)) profile.append(partial('Your account could not be loaded. Try refreshing.'));
   else if (identity.signed_in) {
+    profile.append(nicknameBlock(identity));
     profile.append(el('label', { for: 'show-offline' },
       el('input', { type: 'checkbox', id: 'show-offline', checked: !!identity.show_offline, disabled: busy,
         onchange: (event) => act('Offline visibility', 'identity_set_show_offline', { show: !!event.target.checked }, () => { said = 'Profile settings saved.'; }) }),

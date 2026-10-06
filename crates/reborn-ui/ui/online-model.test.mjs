@@ -99,6 +99,15 @@ test('invite link and line', () => {
   assert.deepEqual(inviteLine('', 'K7QP2M'), { who: null, rest: "You've got a room invite · K7QP2M" });
 });
 
+test('a leaderboard row shows the nickname, the Discord name beside it', () => {
+  const v = leaderboardView({ enabled: true, total: 1, rows: [{ rank: 1, display_name: 'adam_discord', nickname: 'Slick', wins: 1, losses: 0, elo: 1210 }] });
+  assert.equal(v.rows[0].name, 'Slick');
+  assert.equal(v.rows[0].discord, 'adam_discord');
+  const old = leaderboardView({ enabled: true, total: 1, rows: [{ rank: 1, display_name: 'Adam', wins: 1, losses: 0, elo: 1210 }] });
+  assert.equal(old.rows[0].name, 'Adam', 'an older server (no nickname) still names the row');
+  assert.equal(old.rows[0].discord, null);
+});
+
 test('the leaderboard model', () => {
   assert.deepEqual(leaderboardView(null), { soon: true });
   assert.deepEqual(leaderboardView({ enabled: false, rows: [] }), { soon: true });
@@ -106,7 +115,7 @@ test('the leaderboard model', () => {
   const rows = Array.from({ length: 12 }, (_, i) => ({ rank: i + 1, display_name: `P${i}`, avatar_url: null, team: null, wins: 5, losses: 2, elo: 1300 - i, delta_week: i === 0 ? 16 : i === 1 ? -9 : 0, you: false }));
   const v = leaderboardView({ enabled: true, total: 38, rows, you: { rank: 14, display_name: 'Me', wins: 1, losses: 1, elo: 1001, delta_week: 0 } });
   assert.equal(v.soon, false); assert.equal(v.total, 38); assert.equal(v.rows.length, 10, 'top 10 only');
-  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', avatar: null, team: null, record: '5-2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false });
+  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', discord: null, avatar: null, team: null, record: '5-2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false });
   assert.deepEqual(v.rows[1].change, { dir: 'down', text: '▼ 9' });
   assert.equal(v.rows[2].change, null);
   assert.equal(v.you.rank, 14); assert.equal(v.you.you, true);
@@ -115,7 +124,7 @@ test('the leaderboard model', () => {
   const unflagged = leaderboardView({ enabled: true, total: 12, rows, you: { rank: 7, display_name: 'P6', elo: 1294 } });
   assert.equal(unflagged.you, null, 'your rank is on the card even without the you flag: you are not drawn twice');
   const bare = leaderboardView({ enabled: true, rows: [{ rank: null, display_name: null, wins: null, losses: 2, elo: null, delta_week: null }] });
-  assert.deepEqual(bare.rows[0], { rank: null, name: '', avatar: null, team: null, record: null, elo: null, change: null, you: false });
+  assert.deepEqual(bare.rows[0], { rank: null, name: '', discord: null, avatar: null, team: null, record: null, elo: null, change: null, you: false });
 });
 
 test('your standing comes from the leaderboard answer, in the shape eloBits reads', () => {

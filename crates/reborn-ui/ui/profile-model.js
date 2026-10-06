@@ -3,6 +3,7 @@
 // the page leaves that piece out: nothing is invented (spec §8.7, "Degrades gracefully until the backend work ships").
 // An older server's shapes are handled here too: private rooms (backend §1) and rushing `yac` for YCO (backend §9).
 import { eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
+import { shownName } from './names.js';
 
 // Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
 // Scores, series and records all use a plain hyphen (owner ruling, launch audit M11): "14-7", "Series 1-0", "8-5", "-3".
@@ -58,7 +59,7 @@ export function liveCard(live) {
   const head = bo > 1 && num(live.game_number) ? `${queue} · Game ${live.game_number} of ${bo}` : queue;
   const score = Array.isArray(live.score) && num(live.score[0]) && num(live.score[1]) ? `${live.score[0]}${EN}${live.score[1]}` : null;
   const parts = [];
-  if (live.opponent?.display_name) parts.push(`vs ${live.opponent.display_name}`);
+  if (shownName(live.opponent)) parts.push(`vs ${shownName(live.opponent)}`);
   if (bo > 1 && Array.isArray(live.series) && num(live.series[0]) && num(live.series[1])) parts.push(`Series ${live.series[0]}${EN}${live.series[1]}`);
   return { head, me: live.me || null, opp: live.opp || null, score, line: parts.join(' · '), href: `live.html?match=${encodeURIComponent(live.match_id)}` };
 }
@@ -181,7 +182,7 @@ function opponentsByGame(matches) {
   const out = new Map();
   for (const m of Array.isArray(matches) ? matches : []) {
     if (!m || m.queue === 'private') continue;
-    const name = m.opponent?.display_name || (m.opponent_kind === 'cpu' ? 'CPU' : null);
+    const name = shownName(m.opponent) || (m.opponent_kind === 'cpu' ? 'CPU' : null);
     if (!name) continue;
     for (const g of Array.isArray(m.games) ? m.games : []) if (g && typeof g.id === 'string') out.set(g.id, name);
     if (typeof m.id === 'string' && m.id.startsWith('g:')) out.set(m.id.slice(2), name);
@@ -198,7 +199,7 @@ function opponentsByGame(matches) {
 export function singleGameRecords(records, matches) {
   const opp = opponentsByGame(matches);
   return (Array.isArray(records) ? records : []).filter((r) => r && r.label).map((r) => {
-    const vs = (typeof r.opponent === 'string' ? r.opponent : r.opponent?.display_name) || opp.get(r.game_id) || null;
+    const vs = (typeof r.opponent === 'string' ? r.opponent : shownName(r.opponent)) || opp.get(r.game_id) || null;
     return { key: String(r.key ?? r.label), label: spellYards(r.label), name: r.name || null,
       team: r.name ? { name: r.team ?? null, logo_url: r.logo_url ?? null, abbrev: r.abbrev ?? null } : null,
       value: whole(r.value), game: vs ? `vs ${vs}` : DASH, date: dayOf(r.at), game_id: typeof r.game_id === 'string' ? r.game_id : null };
@@ -267,9 +268,9 @@ export const playerRecords = (records, matches) => singleGameRecords(records, ma
  *  viewer is that player. */
 export function leaderboardRows(around, { self = false } = {}) {
   return (Array.isArray(around) ? around : []).filter((r) => r && num(r.rank)).map((r) => ({
-    rank: `#${r.rank}`, name: r.is_player && self ? 'You' : String(r.display_name || 'Player'), elo: num(r.rating) ? fmtInt(r.rating) : DASH,
+    rank: `#${r.rank}`, name: r.is_player && self ? 'You' : (shownName(r) || 'Player'), elo: num(r.rating) ? fmtInt(r.rating) : DASH,
     me: Boolean(r.is_player), avatar_url: r.avatar_url ?? null, player_id: typeof r.player_id === 'string' ? r.player_id : null,
-    letterOf: String(r.display_name || 'Player'),
+    letterOf: shownName(r) || 'Player',
   }));
 }
 

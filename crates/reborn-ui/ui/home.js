@@ -4,6 +4,7 @@
 import { bridge, call, el, fact, facts, get, icon, markCurrent, minutes, reason, set, wireCoreFold } from "./shell.js";
 import { openMenu } from "./menu.js";
 import { avatarSrc } from "./live-common.js";
+import { shownName } from "./names.js";
 
 // Opened from a friend's invite link (a Netplay `join/` or a lobby `room/`):
 // straight on to Online, which fills in the room or offers Join. Play is the
@@ -245,7 +246,7 @@ function accountBlock() {
       signIn.verifyUrl ? el("p", { text: `Go to ${signIn.verifyUrl} to approve it.` }) : null,
       el("button", { type: "button", class: "btn sm", text: "Cancel", onclick: () => { stopSignIn(); draw(); } })));
   } else if (ok(id) && id.signed_in) {
-    const name = id.display_name || "Player";
+    const name = shownName(id) || "Player";
     const played = ok(state.home) && state.home.sessions_played ? `${minutes(state.home.minutes_played)} played` : "No games played yet";
     box.append(el("a", { class: "play-account-chip", href: "stats.html", "aria-label": `Signed in as ${name}` },
       avatarPic(name),

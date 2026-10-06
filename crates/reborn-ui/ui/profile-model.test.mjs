@@ -232,3 +232,11 @@ test('withCareerLines: each best player takes its own career row by key; most pl
   assert.deepEqual(withCareerLines({ passer: { key: 'qb', value: 1, unit: 'pass_yds' } }, undefined), { passer: { key: 'qb', value: 1, unit: 'pass_yds' } });
   assert.deepEqual(withCareerLines(null, career), {});
 });
+
+test('nicknames: the leaderboard and the live card name a player by their nickname, an older server by the Discord name', () => {
+  const rows = leaderboardRows([{ rank: 1, display_name: 'adam_discord', nickname: 'Slick', rating: 1210 }, { rank: 2, display_name: 'Jock', rating: 1200 }]);
+  assert.deepEqual(rows.map((r) => r.name), ['Slick', 'Jock']);
+  const card = liveCard({ match_id: 'm1', queue: 'casual', opponent: { display_name: 'jock_discord', nickname: 'Joker' } });
+  assert.equal(card.line, 'vs Joker');
+  assert.equal(liveCard({ match_id: 'm1', queue: 'casual', opponent: { display_name: 'Jock' } }).line, 'vs Jock');
+});

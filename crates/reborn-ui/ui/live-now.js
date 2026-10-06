@@ -11,6 +11,7 @@
 // this feature.
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN, assetUrl, makePoller } from './live-common.js';
+import { shownName } from './names.js';
 
 // The list changes slowly (a match starts or a score moves); 10 s keeps a LAN party of launchers
 // behind one address well inside the backend's rate limit.
@@ -40,7 +41,7 @@ function teamLogo(team) {
 /** The player under a team, muted beside its name; a side with no controller is the CPU. */
 function playerLine(seat, cpu) {
   if (cpu) return el('em', { class: 'live-player-name live-cpu', text: 'CPU' });
-  const name = seat && typeof seat.display_name === 'string' && seat.display_name ? seat.display_name : 'Unknown player';
+  const name = shownName(seat) || 'Unknown player';
   return el('em', { class: 'live-player-name', text: name });
 }
 

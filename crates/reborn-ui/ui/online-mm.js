@@ -12,6 +12,7 @@ import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, in
 import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
+import { shownName } from './names.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
 // graphics preset the page's own Play and private rooms use. Those live in page storage, so they are
@@ -136,7 +137,7 @@ document.addEventListener('pad-back', (e) => {
 // Who you are, for your own picture on the matchup card: Play caches the Discord picture under `reborn:avatar`
 // (home.js) keyed by player id; any other id or no cache draws your letter.
 let me = null;
-if (bridge) call('identity_status').then((v) => { if (v?.signed_in) { me = { id: v.player_id, name: v.display_name }; lastDrawn = ''; } }).catch(() => {});
+if (bridge) call('identity_status').then((v) => { if (v?.signed_in) { me = { id: v.player_id, name: shownName(v) }; lastDrawn = ''; } }).catch(() => {});
 
 // The team you play most, shown while you search (Adam, 2026-10-03: "tells the user what team the user uses the most
 // but make sure it's not like its their favorite team"). From your public profile's `most_used_team` (online games),
@@ -237,13 +238,114 @@ new MutationObserver(() => {
   if (find && busy && status.textContent) find.textContent = status.textContent;
 }).observe(status, { childList: true, characterData: true, subtree: true });
 
-function chatBox(messages, send) {
-  const log = el('ol', { class: 'mm-chat', 'aria-label': 'Chat', 'aria-live': 'polite' });
-  for (const m of messages.slice(-30)) log.append(el('li', {}, el('strong', { text: `${m.name}: ` }), String(m.body ?? m.text ?? '')));
-  const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something…', 'aria-label': 'Chat message', 'data-key': 'chat' });
-  const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', class: 'btn quiet sm', text: 'Send' }));
-  form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { send(t); input.value = ''; } });
-  return el('div', { class: 'on-chat' }, log, form);
+// THE CHAT IS ONE ELEMENT PER ROOM OR MATCH, kept across redraws (Adam 10-06: "text chat resets to the top every
+// time someone types something, requiring you to scroll down"). Every new line changes the snapshot, and the page used
+// to answer every change by building a brand-new chat list (and replaceChildren() detaching the old one), which starts
+// scrolled to the top. Now the list, the input and the form live here, keyed by the room or match; a redraw appends
+// only the lines it has not drawn yet (by seq), follows the newest line only when the player was already at (or near)
+// the bottom, and otherwise leaves their place alone. placeChildren() keeps the box attached through the redraw where
+// it can; where its card is rebuilt around it (the room), settleChat() puts the scroll position, the input's focus
+// and its caret back. The text being typed is in the same input element, so it always survives.
+const CHAT_LINES = 30;
+const NEAR_BOTTOM_PX = 24;
+const chatUi = { key: null, root: null, log: null, input: null, lastSeq: -Infinity, send: null, following: true, atBottom: true, top: null, caret: null };
+const chatGap = (log) => log.scrollHeight - log.scrollTop - log.clientHeight;
+/** Scroll the chat to its newest line, remembering where that landed so the scroll event it causes is not read as the
+ *  player scrolling (the box can still shrink under it before that event arrives). */
+function chatToBottom(log) {
+  log.scrollTop = log.scrollHeight;
+  chatUi.setTop = log.scrollTop;
+}
+
+function chatLine(m) {
+  const who = el('strong', { text: `${m.name || 'Player'}: ` });
+  // A nickname's Discord name, on hover (m.discord is null without a nickname).
+  if (m.discord) who.title = `@${m.discord}`;
+  const li = el('li', { 'data-seq': Number.isFinite(m.seq) ? String(m.seq) : null }, who, String(m.body ?? m.text ?? ''));
+  chatUi.resize?.observe(li);
+  return li;
+}
+
+function chatBox(key, messages, send) {
+  if (chatUi.key !== key || !chatUi.root) {
+    // A new room or match: a new conversation. Whatever was being typed carries over (a room that became a match).
+    const typed = chatUi.input?.value ?? '';
+    const log = el('ol', { class: 'mm-chat', 'aria-label': 'Chat', 'aria-live': 'polite' });
+    const input = el('input', { type: 'text', maxlength: 300, placeholder: 'Say something…', 'aria-label': 'Chat message', 'data-key': 'chat', value: typed });
+    const form = el('form', { class: 'mm-chat-form' }, input, el('button', { type: 'submit', class: 'btn quiet sm', text: 'Send' }));
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const t = input.value.trim();
+      if (t) { chatUi.send?.(t); input.value = ''; }
+      // Your own line always brings you to the bottom, where it is about to land.
+      chatUi.following = true;
+    });
+    // Whether the player is following the conversation is decided by THEIR scrolling (a scroll event), not measured at
+    // redraw time: a line that re-wraps once the font loads must not count as the player scrolling up.
+    log.addEventListener('scroll', () => {
+      if (!log.isConnected || !log.clientHeight || log.scrollTop === chatUi.setTop) return;
+      chatUi.setTop = null;
+      chatUi.following = chatGap(log) <= NEAR_BOTTOM_PX;
+    });
+    chatUi.resize?.disconnect();
+    Object.assign(chatUi, { key, root: el('div', { class: 'on-chat' }, log, form), log, input, lastSeq: -Infinity, following: true });
+    // A player following the conversation stays at the newest line when the lines re-wrap after a draw (the font
+    // arriving, the page's scrollbar appearing, the window resized): every line and the box itself are watched.
+    chatUi.resize = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => { if (chatUi.log === log && chatUi.following && log.isConnected) chatToBottom(log); }) : null;
+    chatUi.resize?.observe(log);
+  }
+  chatUi.send = send;
+  const log = chatUi.log;
+  const lines = messages.slice(-CHAT_LINES);
+  const seqs = lines.map((m) => m.seq);
+  const numbered = seqs.every((q) => Number.isFinite(q));
+  const newest = numbered && seqs.length ? Math.max(...seqs) : -Infinity;
+  // Was the player reading the newest line? Decided before anything is added.
+  const atBottom = chatUi.following;
+  if (!numbered || newest < chatUi.lastSeq) {
+    // The conversation restarted under the same key (the server re-sent it), or lines without a seq: draw it again.
+    log.replaceChildren(...lines.map(chatLine));
+  } else {
+    for (const m of lines) if (m.seq > chatUi.lastSeq) log.append(chatLine(m));
+    // Only the last CHAT_LINES stay. Lines leaving the top would pull a reader's place up by their height: put it back.
+    const before = log.scrollHeight;
+    while (log.children.length > CHAT_LINES) log.firstElementChild.remove();
+    if (!atBottom && before !== log.scrollHeight) log.scrollTop -= before - log.scrollHeight;
+  }
+  chatUi.lastSeq = numbered ? Math.max(chatUi.lastSeq, newest) : -Infinity;
+  chatUi.atBottom = atBottom;
+  // Measured now, while the box is still where the player left it (a detached box reads 0).
+  chatUi.top = log.isConnected ? log.scrollTop : null;
+  const typing = document.activeElement === chatUi.input;
+  chatUi.caret = typing ? [chatUi.input.selectionStart, chatUi.input.selectionEnd] : null;
+  return chatUi.root;
+}
+
+/** After the chat box is on screen: follow the newest line if the player was at the bottom. */
+function settleChat() {
+  if (!chatUi.log?.isConnected) return;
+  if (chatUi.atBottom) chatToBottom(chatUi.log);
+  else if (chatUi.top !== null && chatUi.log.scrollTop !== chatUi.top) chatUi.log.scrollTop = chatUi.top;
+  chatUi.following = chatUi.atBottom;
+  // The player was typing: the input has the focus and the caret where they were.
+  if (chatUi.caret && document.activeElement !== chatUi.input) {
+    chatUi.input.focus({ preventScroll: true });
+    try { chatUi.input.setSelectionRange(...chatUi.caret); } catch { /* a caret is a convenience */ }
+  }
+}
+
+/** Put `nodes` in `parent` in order, MOVING only what is out of place: a node already there in the right order (the
+ *  chat box, the status line) is never detached, so it keeps its scroll position and focus. replaceChildren() detaches
+ *  everything, which is what scrolled the chat back to the top. */
+function placeChildren(parent, nodes) {
+  const keep = new Set(nodes);
+  for (const c of [...parent.childNodes]) if (!keep.has(c)) c.remove();
+  let ref = parent.firstChild;
+  for (const n of nodes) {
+    if (n === ref) { ref = ref.nextSibling; continue; }
+    parent.insertBefore(n, ref);
+  }
 }
 
 // ---- the mode area (spec §3.1) ----
@@ -532,7 +634,9 @@ function drawRoom(r, chat) {
   for (const m of r.members) {
     members.append(el('li', {},
       avatar(null, m.name, 'on-mav'),
-      el('b', {}, m.name, m.you ? el('small', { text: 'you' }) : null),
+      // A nickname's Discord name beside it, small (null without a nickname).
+      el('b', { title: m.discord ? `@${m.discord}` : null }, m.name, m.you ? el('small', { text: 'you' }) : null,
+        m.discord ? el('small', { class: 'on-discord', text: `@${m.discord}` }) : null),
       el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
   }
   // A 2v2 room takes four (an older launcher's room, or an older server's, takes two): the spots still open show.
@@ -559,9 +663,10 @@ function drawRoom(r, chat) {
       el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
     el('span', { class: 'k-label', text: capacity > 2 ? `Your crew · ${r.members.length} of ${capacity}` : 'Your crew' }),
     members);
-  const talk = el('section', { class: 'glass on-card', 'aria-label': 'Chat' },
+  // on-talk: the chat card takes the room card's height and scrolls inside it (pages/online.css), never the page.
+  const talk = el('section', { class: 'glass on-card on-talk', 'aria-label': 'Chat' },
     el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
-    chatBox(chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
+    chatBox(`room:${r.id}`, chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
   const row = el('div', { class: 'on-row on-roomrow' },
     r.you_host === true ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'room-start', 'data-primary': 'true', text: 'Start',
       disabled: !everyoneReady(r), onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }) : null,
@@ -597,11 +702,13 @@ async function changeKind(roomId, seedKind) {
   }
 }
 
-function face({ url, name, sub, team, tick = false }) {
+function face({ url, name, discord = null, sub, team, tick = false }) {
   return el('div', { class: 'on-p' },
     el('span', { class: 'on-avw' }, avatar(url, name, 'on-av'), tick ? el('span', { class: 'on-ok', role: 'img', 'aria-label': 'Accepted', text: '✓' }) : null),
-    el('span', { class: 'on-pname', text: name }),
-    sub ? el('span', { class: 'on-psub num', text: sub }) : null,
+    // The nickname; when the player set one, its Discord name leads the small line under it (the face's rows are
+    // fixed, so it shares the standing's row rather than adding one) and shows on hover.
+    el('span', { class: 'on-pname', text: name, title: discord ? `@${discord}` : null }),
+    sub || discord ? el('span', { class: 'on-psub num', text: [discord ? `@${discord}` : null, sub].filter(Boolean).join(' · ') }) : null,
     team ? teamLogo(team, 'on-plogo') : null);
 }
 
@@ -650,16 +757,16 @@ function drawMatch(m, chat, relayError, snap) {
     el('span', { class: 'on-art', 'aria-hidden': 'true' }),
     el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
     el('div', { class: 'on-vs-in on-vs-match' },
-      face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
+      face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', discord: snap?.player?.discord ?? null, sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
         team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
       mid,
       // On the card itself a nameless opponent is "Opponent" (letter O); sentences keep "your opponent".
       // A 3rd or 4th player's card faces the room's host (the crew line under the VS names everyone else).
-      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', sub: m.seat >= 2 ? 'Host' : standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
+      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', discord: m.opponent_discord ?? null, sub: m.seat >= 2 ? 'Host' : standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
       foot),
     MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
   // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).
-  return [card, chatBox(chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];
+  return [card, chatBox(`match:${m.id}`, chat, (t) => act('mm_match_action', { matchId: m.id, action: 'chat', value: t }))];
 }
 
 // ---- players online and the presence switch, in the heading (spec §2) ----
@@ -703,7 +810,7 @@ function hideOnline() {
 function presencePanel() {
   const list = el('ul', { class: 'on-who' });
   for (const p of lastOnline.players.slice(0, 12)) {
-    list.append(el('li', {}, el('span', { text: String(p?.name ?? '') }), ACTIVITY[p?.activity] ? el('small', { text: ACTIVITY[p.activity] }) : null));
+    list.append(el('li', {}, el('span', { text: String(p?.name ?? ''), title: p?.discord ? `@${p.discord}` : null }), ACTIVITY[p?.activity] ? el('small', { text: ACTIVITY[p.activity] }) : null));
   }
   const sw = el('button', { type: 'button', class: 'look-switch', id: 'mm-presence', role: 'switch', 'aria-checked': String(presenceOn), 'aria-labelledby': 'mm-presence-label' });
   sw.addEventListener('click', async () => {
@@ -747,7 +854,10 @@ async function draw() {
   // Only a text field being typed in (the chat, the room code) holds a redraw. The presence switch is a button, and
   // focus left on a control must never freeze the page (09-26).
   const active = document.activeElement;
-  const focused = section.contains(active) && active.tagName === 'INPUT' && ['text', 'search', 'url', 'email'].includes(active.type) && active.value !== '';
+  // The chat input is exempt: its box stays attached through a redraw (placeChildren), so typing is never interrupted
+  // and new lines still arrive while a reply is half-written.
+  const focused = section.contains(active) && active.tagName === 'INPUT' && ['text', 'search', 'url', 'email'].includes(active.type) && active.value !== ''
+    && active.getAttribute('data-key') !== 'chat';
   if (focused) return;
   lastDrawn = signature;
 
@@ -807,8 +917,10 @@ async function draw() {
   // state change, which left a controller nowhere.
   const had = document.activeElement;
   const focusKey = had && section.contains(had) ? had.getAttribute('data-key') : null;
-  section.replaceChildren(...body, status);
-  if (focusKey) section.querySelector(`[data-key="${focusKey}"]`)?.focus({ preventScroll: true });
+  placeChildren(section, [...body, status].filter(Boolean));
+  settleChat();
+  const back = focusKey ? section.querySelector(`[data-key="${focusKey}"]`) : null;
+  if (back && document.activeElement !== back) back.focus({ preventScroll: true });
   // A controller arriving on the post-game screen lands on Play again (B is Back to Online).
   const over = section.querySelector('[data-key="over-again"]');
   if (over && overShown !== snap?.match?.id) {

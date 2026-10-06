@@ -348,6 +348,42 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
+  { // Nickname (backend migration 026), in Profile & sync: the saved nickname pre-filled, the rule under it, the
+    // server's refusal shown word for word (never prefixed), a success that says how the player now shows up.
+    const who = { signed_in: true, display_name: 'adamknowsball', nickname: 'Slick', name: 'Slick', player_id: F.ME, show_offline: false, nickname_next_change_at: null };
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { ...FULL, identity_status: who,
+      identity_set_nickname: { __reject: 'That nickname is taken.' } } });
+    await page.locator('.st-account > summary').click();
+    const input = page.locator('#nickname');
+    await input.waitFor();
+    assert.equal(await input.inputValue(), 'Slick', 'the saved nickname is pre-filled');
+    assert.equal(await input.getAttribute('placeholder'), 'adamknowsball', 'blank shows the Discord name it falls back to');
+    await page.getByText('Signed in as adamknowsball', { exact: true }).waitFor();
+    await page.getByText(/^2-20 characters: letters, numbers, spaces/).waitFor();
+    await input.fill('Jock');
+    await page.locator('#nickname-save').click();
+    await page.locator('#nickname-said').waitFor();
+    assert.equal(await page.locator('#nickname-said').textContent(), 'That nickname is taken.', 'the server sentence, verbatim');
+    assert.equal(await page.locator('#nickname').inputValue(), 'Jock', 'a refused name stays in the field to fix');
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'identity_set_nickname').map((c) => c.args)), [{ nickname: 'Jock' }]);
+    await page.locator('.st-account').screenshot({ path: path.join(out, 'stats-nickname-refused.png') });
+    assert.deepEqual(errors, []);
+    await close();
+  }
+  { // ...and a nickname the server takes
+    const who = { signed_in: true, display_name: 'adamknowsball', nickname: null, name: 'adamknowsball', player_id: F.ME, show_offline: false, nickname_next_change_at: null };
+    const saved = { ...who, nickname: 'Slick', name: 'Slick', nickname_next_change_at: '2099-01-01T12:00:00.000Z' };
+    const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { ...FULL, identity_status: who, identity_set_nickname: saved } });
+    await page.locator('.st-account > summary').click();
+    await page.locator('#nickname').fill('  Slick ');
+    await page.locator('#nickname').press('Enter');
+    await page.getByText('Nickname saved. You show up as Slick.', { exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'identity_set_nickname').map((c) => c.args)), [{ nickname: 'Slick' }], 'trimmed before it is sent');
+    await page.getByText(/^You can change it again /).waitFor();
+    await page.locator('.st-account').screenshot({ path: path.join(out, 'stats-nickname-saved.png') });
+    assert.deepEqual(errors, []);
+    await close();
+  }
   { // signed out: the way in, never an empty grid
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { stats_dashboard: { signed_in: false }, identity_status: { signed_in: false },
       identity_sign_in_start: { device_code: 'dev-1', user_code: 'ABCD-1234', verify_url: 'https://discord.com/activate', interval: 60 } } });

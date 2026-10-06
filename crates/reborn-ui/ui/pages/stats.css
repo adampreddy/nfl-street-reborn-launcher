@@ -70,6 +70,13 @@ body.page-stats #main{padding:28px 28px 28px}
 .st-account-body p{margin:0 0 8px;font-size:12.5px;color:var(--fg-2)}
 .st-account-body label{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12.5px;color:var(--fg-2)}
 .st-account-body>.said{grid-column:1/-1;margin:0}
+/* Nickname (the name other players see): label over a text field + Save, the rule under it, the server's answer last */
+.st-nick{margin:0 0 14px}
+.st-account-body .st-nick-label{display:block;margin:0 0 6px;font-weight:600;color:var(--fg)}
+.st-nick-row{display:flex;gap:8px}
+.st-nick-row input{flex:1;min-width:0;height:36px}
+.st-account-body .st-nick-hint{margin:6px 0 0;font-size:12px;color:var(--fg-3)}
+.st-nick .said,.st-nick .refusal{margin:6px 0 0}
 @media (max-width:1000px){body.page-stats #main{padding:24px 24px 16px}}
 @media (max-width:720px){
   .st-rec{grid-template-columns:minmax(0,1fr)}

@@ -180,3 +180,10 @@ test('snapshotOf: capture order == side order is unchanged', () => {
   assert.deepEqual(snap.games[0].sides, [{ seat: 0 }, { seat: null }]);
   assert.equal(snap.games[0].box.lines[0].team_index, 1);
 });
+
+test('a seat on the game page is named by the nickname, else the Discord name', () => {
+  const { seats } = participantSeats([
+    { kind: 'human', player_id: 'p1', team_index: 0, display_name: 'adam_discord', nickname: 'Slick' },
+    { kind: 'human', player_id: 'p2', team_index: 1, display_name: 'Jock' }]);
+  assert.deepEqual(seats.map((s) => s.display_name), ['Slick', 'Jock']);
+});

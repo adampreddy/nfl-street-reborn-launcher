@@ -25,6 +25,7 @@ import { FULL_STATS, careerRecords, careerTiles, cellValue, isPublic, lastTenOve
 import { recordsView } from './records-view.js';
 import { ROLES, card, cellGrid, cols, eloLine, playerRows, tableHead, teamRatesCard, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
+import { shownName, discordName } from './names.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHOWN = 5;     // a long table shows five rows; "Show all N" shows every row in place
@@ -175,7 +176,9 @@ let updateHeader = null;
 
 function hero(p, ownerId) {
   const h = p.header || {};
-  const name = h.display_name || 'Player';
+  // The nickname big, the Discord name small under it (only when the player set a nickname that reads differently).
+  const name = shownName(h) || 'Player';
+  const discord = discordName(h);
   const dot = el('span', { class: 'presence-dot', 'aria-hidden': 'true' });
   const pic = el('div', { class: 'pf-pic cover-pic' }, avatar(h.avatar_url, name, 'pf-avatar'));
   const meta = el('p', { class: 'pf-meta' });
@@ -204,7 +207,8 @@ function hero(p, ownerId) {
     try { await call('open_website', { url: webUrl() }); } catch (e) { said.textContent = reason(e); }
   });
   const acts = el('div', { class: 'pf-acts' }, shareBtn, web, said);
-  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }), meta, acts);
+  const id = el('div', { class: 'pf-id' }, el('h2', { class: 'pf-name', text: name }),
+    discord ? el('p', { class: 'pf-discord', 'aria-label': `Discord: ${discord}`, text: `@${discord}` }) : null, meta, acts);
   // data-nav="rows" (Back and the hero only): Down reads the hero row by row; data-nav-seq: Share profile, View on web,
   // Plays as, Live feed in reading order. The rest of the page keeps column moves.
   const row = el('div', { class: 'pf-row', 'data-nav-seq': '' }, pic, id);
@@ -391,8 +395,8 @@ function lastOf(last) {
 const recordOf = (r) => `${num(r?.wins) ? r.wins : 0}-${num(r?.losses) ? r.losses : 0}`;
 
 function opponentCell(h) {
-  const name = h.display_name || 'Player';
-  const inner = [avatar(h.avatar_url, name), el('b', { text: name })];
+  const name = shownName(h) || 'Player';
+  const inner = [avatar(h.avatar_url, name), el('b', { text: name, title: discordName(h) ? `@${discordName(h)}` : null })];
   return h.player_id && UUID_RE.test(String(h.player_id).toLowerCase())
     ? el('a', { class: 'pf-who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'pf-who' }, ...inner);
 }
@@ -404,7 +408,7 @@ function h2hCard(p) {
   const rows = all.slice(0, SHOWN).map((h) => {
     const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';
     const best = num(h.biggest_win?.margin) ? `+${h.biggest_win.margin}${h.biggest_win.at ? ` ${day(h.biggest_win.at)}` : ''}` : DASH;
-    return cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${h.display_name || 'Player'}: ${recordOf(h)}` }, opponentCell(h),
+    return cols(el('div', { class: 'vc-tr', role: 'group', 'aria-label': `${shownName(h) || 'Player'}: ${recordOf(h)}` }, opponentCell(h),
       el('b', { class: 'r num', text: recordOf(h) }), el('span', { class: 'r num pf-mut', text: `${int(h.pts_for)}${EN}${int(h.pts_against)}` }),
       el('span', { class: `r num pf-res ${letter}`, text: h.last ? `${letter} ${lastOf(h.last)}`.trim() : DASH }), el('span', { class: 'r num pf-date', text: best })), H2H_COLS);
   });
@@ -678,8 +682,8 @@ function h2hSection(p) {
   const h2h = list(p.head_to_head).filter(Boolean);
   return el('section', { id: 'h2h-tab', class: 'pf-view', 'aria-label': 'Head to head' }, gridRow([[tableCard('h2h', 'Head to head', smallTable('Record against every opponent',
     ['Opponent', 'Record', 'PTS', 'Allowed', 'Last', 'Best win', 'Worst loss'], h2h.map((h) => {
-      const name = h.display_name || 'Player';
-      const inner = [avatar(h.avatar_url, name), el('span', { text: name })];
+      const name = shownName(h) || 'Player';
+      const inner = [avatar(h.avatar_url, name), el('span', { text: name, title: discordName(h) ? `@${discordName(h)}` : null })];
       const cell = h.player_id && UUID_RE.test(String(h.player_id).toLowerCase())
         ? el('a', { class: 'who', href: profileHref(h.player_id), 'data-key': `h2h-${h.player_id}` }, ...inner) : el('span', { class: 'who' }, ...inner);
       const letter = h.last?.result === 'win' ? 'W' : h.last?.result === 'loss' ? 'L' : '';

@@ -16,6 +16,7 @@ body.page-profile #main{padding:24px 28px 28px}
 .pf-pic>.pf-avatar{width:96px;height:96px;font-size:40px;background:transparent}
 .pf-id{min-width:0}
 .pf-name{font:700 28px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
+.pf-discord{margin:4px 0 0;font-size:14px;font-weight:500;color:var(--fg-3)}
 .pf-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--fg-2)}
 .pf-meta b{font-weight:600;color:var(--fg)}
 .pf-dot{color:var(--fg-3)}
