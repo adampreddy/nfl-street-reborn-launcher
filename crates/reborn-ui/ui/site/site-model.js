@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/site-model.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/site-model.js @dbc8c8d, do not edit: run Tools/sync-site-render.mjs.
 // The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.
 // Pure data for the restyled site pages (spec 2026-10-02 site restyle): who sits where, the strip's status and line
 // score, the series pill's words, drives, box score columns and team stats. No DOM, no I/O, no clocks. Web-only: the
@@ -50,7 +50,7 @@ export function seatTeams(input, game = null) {
     const side = g ? sideOfSeat(g, seat) : seat;
     const t = g ? teamFor(g.teams, side) : null;
     const team = t && typeof t.name === "string" && t.name ? t : null;
-    const typed = clean(seats[seat]?.display_name);
+    const typed = clean(seats[seat]?.name || seats[seat]?.display_name);
     const player = typed || (!seats.length ? "" : seat >= seats.length ? "CPU" : `Seat ${seat + 1}`);
     const abbrev = clean(team?.abbrev).toUpperCase();
     const label = ABBREV.test(abbrev) ? abbrev : cut(player || team?.name || `Side ${side + 1}`, 14);

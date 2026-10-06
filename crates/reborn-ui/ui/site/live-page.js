@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/live-page.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/live-page.js @dbc8c8d, do not edit: run Tools/sync-site-render.mjs.
 // The launcher match page (match.js) runs it unchanged, answering its fetch and stream itself.
 // The live game page's controller (/live/<match>, site restyle spec 2026-10-02). Reads the match id from
 // <meta name="nsr-match">, fetches the snapshot, then follows the play stream. Everything on screen is built by

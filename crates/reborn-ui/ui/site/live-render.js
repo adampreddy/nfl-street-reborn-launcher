@@ -1,4 +1,4 @@
-// Vendored from Reborn Backend src/web/live-render.js @ca3fdf5, do not edit: run Tools/sync-site-render.mjs.
+// Vendored from Reborn Backend src/web/live-render.js @dbc8c8d, do not edit: run Tools/sync-site-render.mjs.
 // The launcher match page (match.js, game-snapshot.js) draws with it exactly as the site does.
 // Pure render helpers for the live game page (/live/<match>). Plain data in, DOM nodes out -- built ONLY with
 // doc.createElement, textContent, className, setAttribute and appendChild. Never markup strings: every name and every
@@ -92,7 +92,8 @@ export function participantSeats(participants, team = [0, 1]) {
   const sides = [0, 1].map((side) => {
     const p = list.find((x) => x && x.kind === "human" && x.player_id && bit(x.team_index) && x.team_index === team[side]);
     if (!p) return { seat: null };
-    seats.push({ display_name: typeof p.display_name === "string" ? p.display_name : "", avatar_url: typeof p.avatar_url === "string" ? p.avatar_url : null });
+    seats.push({ display_name: typeof p.display_name === "string" ? p.display_name : "",
+      name: typeof p.name === "string" && p.name ? p.name : typeof p.display_name === "string" ? p.display_name : "", avatar_url: typeof p.avatar_url === "string" ? p.avatar_url : null });
     return { seat: seats.length - 1 };
   });
   return seats.length ? { seats, sides } : { seats: [], sides: [] };
@@ -282,7 +283,7 @@ export function seatScore(score, sides) {
 /** The display name of whoever has `side`, or "Side N". */
 function sideName(side, seats, sides) {
   const seat = Array.isArray(sides) ? sides[side]?.seat : null;
-  const name = (seat === 0 || seat === 1) ? seats?.[seat]?.display_name : null;
+  const name = (seat === 0 || seat === 1) ? seats?.[seat]?.name || seats?.[seat]?.display_name : null;
   return name || (side === 0 || side === 1 ? `Side ${side + 1}` : "Unknown");
 }
 
@@ -301,7 +302,7 @@ export function letterBadge(doc, initial) {
  */
 function avatar(doc, seat, badAvatars) {
   const url = typeof seat?.avatar_url === "string" ? seat.avatar_url : "";
-  const initial = initialOf(seat?.display_name);
+  const initial = initialOf(seat?.name || seat?.display_name);
   if (url.startsWith(AVATAR_PREFIX) && !badAvatars?.has(url)) {
     const img = el(doc, "img", "avatar");
     img.setAttribute("src", url);
@@ -392,7 +393,7 @@ export function renderHeader(snapshot, doc, { badAvatars = null, badImages = nul
     const seatBox = el(doc, "div", "seat-id");
     if (seatIdx === 0 || seatIdx === 1) {
       seatBox.appendChild(avatar(doc, seats[seatIdx], badAvatars));
-      seatBox.appendChild(el(doc, "span", "name", seats[seatIdx]?.display_name ?? ""));
+      seatBox.appendChild(el(doc, "span", "name", seats[seatIdx]?.name || seats[seatIdx]?.display_name || ""));
     } else {
       seatBox.appendChild(el(doc, "span", "name cpu", "CPU"));
     }
@@ -975,7 +976,7 @@ export function feedMoreLabel(n) {
 }
 
 const plainName = (seats, seat) => {
-  const n = seats?.[seat]?.display_name;
+  const n = seats?.[seat]?.name || seats?.[seat]?.display_name;
   return typeof n === "string" && n.trim() ? n.replace(/\s+/g, " ").trim().slice(0, 60) : `Seat ${seat + 1}`;
 };
 
@@ -1005,7 +1006,7 @@ export function namesLine(snapshot) {
 /** A seat's mark in the strip: its team's logo (or abbrev badge), else the player's avatar (Pick-Up has no team). */
 function seatMark(doc, snapshot, s, badImages, badAvatars) {
   if (s.team) return cardLogo(doc, s.team.logo_url, s.team.abbrev ?? s.label, badImages);
-  return avatar(doc, { ...(snapshot?.seats?.[s.seat] ?? {}), display_name: s.player || s.label }, badAvatars);
+  return avatar(doc, { ...(snapshot?.seats?.[s.seat] ?? {}), display_name: s.player || s.label, name: s.player || s.label }, badAvatars);
 }
 
 /** The line score table (spec §3): G1..Gn by seat; the picked game's column bold, a game not played greyed "-". */
