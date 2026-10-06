@@ -95,13 +95,10 @@ pub fn may_play(verdict: &Verdict, acknowledged: bool) -> Result<ImageStanding, 
 /// directories the caller knows about (its own program folder, usually).
 pub fn find_tool(platform: &crate::platform::Platform, extra: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
     let name = format!("DolphinTool{}", platform.paths.exe_suffix());
-    let mut dirs = Vec::new();
-    if let Ok(install) = platform.paths.install_root() {
-        dirs.push(install.join(crate::game_patch::BUNDLE_DIR));
-        dirs.push(install);
-    }
-    dirs.extend(extra.iter().cloned());
-    dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file())
+    crate::game_patch::tool_dirs(platform, extra)
+        .iter()
+        .map(|d| d.join(&name))
+        .find(|p| p.is_file())
 }
 
 pub fn classify(chain: Option<&Chain>, game_id: &str, sha256: &str) -> Verdict {

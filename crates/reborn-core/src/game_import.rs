@@ -44,6 +44,13 @@ pub fn import(bundle:&Path,source:&Path,data:&Path,progress:impl Fn(&str))->Resu
     import_with_progress(bundle,source,data,|p|progress(&p.stage))
 }
 pub fn import_with_progress(bundle:&Path,source:&Path,data:&Path,progress:impl Fn(ImportProgress))->Result<PathBuf,String> {
+    import_with_tools(bundle,bundle,source,data,progress)
+}
+/// `bundle` holds the patch manifest and `reborn.xdelta`; `tools` holds
+/// DolphinTool and xdelta3. One folder on Windows (the installer's
+/// `game-import`), two on Linux (the content component, and the AppImage's
+/// own `usr/bin`).
+pub fn import_with_tools(bundle:&Path,tools:&Path,source:&Path,data:&Path,progress:impl Fn(ImportProgress))->Result<PathBuf,String> {
     let last=std::cell::RefCell::new(None);
     let report=|stage:&str,percent:Option<u8>| {
         let update=ImportProgress{stage:stage.into(),percent};
@@ -66,7 +73,7 @@ pub fn import_with_progress(bundle:&Path,source:&Path,data:&Path,progress:impl F
     let _scratch=Scratch(work.clone());
     let extracted=work.join("disc");
     report("Reading your disc…",None);
-    run(&bundle.join("DolphinTool.exe"),&["extract".as_ref(),"-i".as_ref(),source.as_os_str(),"-o".as_ref(),extracted.as_os_str(),"-q".as_ref()],&work.join("extract.log"),||{
+    run(&tools.join(format!("DolphinTool{}",std::env::consts::EXE_SUFFIX)),&["extract".as_ref(),"-i".as_ref(),source.as_os_str(),"-o".as_ref(),extracted.as_os_str(),"-q".as_ref()],&work.join("extract.log"),||{
         let total=manifest.source_files.iter().map(|f|f.bytes).sum::<u64>().max(1);
         let read=manifest.source_files.iter().map(|f|std::fs::metadata(extracted.join(&f.path)).map(|m|m.len().min(f.bytes)).unwrap_or(0)).sum::<u64>();
         if read>0{report("Reading your disc…",Some((19*read/total) as u8));}
@@ -90,7 +97,7 @@ pub fn import_with_progress(bundle:&Path,source:&Path,data:&Path,progress:impl F
     if hash_progress(&canonical,|n|report("Preparing the patch…",Some((55+10*n/total) as u8)))?!=manifest.source_sha256{return Err("The verified source could not be prepared.".into());}
     report("Applying patch...",Some(65));
     let output=work.join("NSR.iso");
-    run(&bundle.join("xdelta3.exe"),&["-d".as_ref(),"-s".as_ref(),canonical.as_os_str(),patch.as_os_str(),output.as_os_str()],&work.join("patch.log"),||{
+    run(&tools.join(format!("xdelta3{}",std::env::consts::EXE_SUFFIX)),&["-d".as_ref(),"-s".as_ref(),canonical.as_os_str(),patch.as_os_str(),output.as_os_str()],&work.join("patch.log"),||{
         let bytes=std::fs::metadata(&output).map(|m|m.len().min(manifest.output_bytes)).unwrap_or(0);
         report("Applying patch...",Some((65+14*bytes/manifest.output_bytes.max(1)) as u8));
     })?;
@@ -109,5 +116,10 @@ pub fn import_with_progress(bundle:&Path,source:&Path,data:&Path,progress:impl F
 
 #[cfg(test)]mod tests {
     use super::*;
-    #[test]fn patch_paths_cannot_escape(){for path in ["../save.raw","C:/save.raw","/absolute"]{assert!(contained(Path::new("bundle"),path).is_err());}}
+    #[test]fn patch_paths_cannot_escape(){
+        for path in ["../save.raw","/absolute"]{assert!(contained(Path::new("bundle"),path).is_err());}
+        // A drive letter is only a root on Windows. On Linux `C:/save.raw` is a
+        // relative path into a folder called `C:`, which stays inside the bundle.
+        if cfg!(windows){assert!(contained(Path::new("bundle"),"C:/save.raw").is_err());}
+    }
 }

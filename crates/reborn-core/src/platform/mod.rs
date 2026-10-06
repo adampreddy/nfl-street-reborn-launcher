@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 pub mod imp;
 #[cfg(windows)]
 pub(crate) mod runtime_process;
+pub(crate) mod runtime_process_unix;
 
 /// Errors a platform seam can produce.
 #[derive(Debug, thiserror::Error)]
@@ -195,6 +196,22 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gamescope announces itself three ways; any one is Game Mode. A Deck in
+    /// Desktop Mode (KDE) and every PC have none of them.
+    #[test]
+    fn game_mode_is_recognised_by_any_of_gamescope_s_three_signs() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        let linux = cfg!(target_os = "linux");
+        assert_eq!(game_mode_from(env(&[("GAMESCOPE_WAYLAND_DISPLAY", "gamescope-0")])), linux);
+        assert_eq!(game_mode_from(env(&[("XDG_CURRENT_DESKTOP", "gamescope")])), linux);
+        assert_eq!(game_mode_from(env(&[("SteamGamepadUI", "1")])), linux);
+        assert!(!game_mode_from(env(&[("XDG_CURRENT_DESKTOP", "KDE")])), "Desktop Mode");
+        assert!(!game_mode_from(env(&[("GAMESCOPE_WAYLAND_DISPLAY", "")])), "set but empty");
+        assert!(!game_mode_from(env(&[])), "a PC");
+    }
 
     /// Every shape [`Error`] can take reads as a plain sentence through
     /// [`Error::player_message`], mechanically rather than as a list of
@@ -419,6 +436,31 @@ pub(crate) fn not_implemented<T>(operation: &'static str) -> Result<T> {
     })
 }
 
+/// Whether the launcher is running inside Steam Deck's Game Mode.
+///
+/// Game Mode is gamescope, a compositor that shows ONE window at a time,
+/// fullscreen, with no title bars and no desktop behind it. A launcher that
+/// starts a game and stays visible can hide the game behind itself, so in
+/// Game Mode the launcher steps aside while the game runs. Desktop Mode on
+/// a Deck, and every PC, answers false and nothing changes.
+pub fn in_game_mode() -> bool {
+    game_mode_from(|key| std::env::var(key).ok())
+}
+
+/// [`in_game_mode`] over any source of environment variables, so the rule
+/// is testable. gamescope announces itself three ways and any one counts:
+/// its own Wayland display name, the desktop name it sets, and Steam's flag
+/// for the gamepad UI it runs.
+pub fn game_mode_from(var: impl Fn(&str) -> Option<String>) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    set("GAMESCOPE_WAYLAND_DISPLAY")
+        || var("XDG_CURRENT_DESKTOP").is_some_and(|v| v.to_ascii_lowercase().contains("gamescope"))
+        || var("SteamGamepadUI").as_deref() == Some("1")
+}
+
 /// The platform this binary was compiled for.
 pub const CURRENT_PLATFORM: &str = if cfg!(windows) {
     "Windows"
@@ -622,6 +664,9 @@ pub enum DataDir {
     /// is neither of those until something promotes it, so its landing spot
     /// must collide with neither.
     LibraryGameFull,
+    /// The game-import bundle (patch manifest + reborn.xdelta) as content:
+    /// what the setup wizard patches a player's own disc with.
+    LibraryGameImport,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -654,6 +699,7 @@ impl DataDir {
             DataDir::LibraryRoster => "library/roster",
             DataDir::LibraryGamePatch => "library/game-patch",
             DataDir::LibraryGameFull => "library/game-full",
+            DataDir::LibraryGameImport => "library/game-import",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -683,6 +729,7 @@ impl DataDir {
         DataDir::LibraryRoster,
         DataDir::LibraryGamePatch,
         DataDir::LibraryGameFull,
+        DataDir::LibraryGameImport,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,

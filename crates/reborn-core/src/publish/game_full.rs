@@ -10,7 +10,7 @@
 //! always so: the pin was once skipped in the carry-forward loop, on the
 //! theory that it kept 1.36 GB away from a normal install. It did not. A pin
 //! is a line of JSON; what decides who downloads the full disc is
-//! [`crate::content::pipeline::UPDATABLE`], which does not list `game-full`,
+//! [`crate::content::pipeline::updatable`], which does not list `game-full`,
 //! so the launcher's automatic check/fetch/promote loop never asks for it
 //! however many releases pin it. Only the recovery command names it, and
 //! only when a player presses the button. See
@@ -113,7 +113,7 @@ pub fn refuse_if_not_chain_head(iso_sha: &str, chain_head: &str) -> std::result:
 /// forward into later releases like every other, so recovery stays available
 /// to a player long after the release that published it. Keeping the full
 /// disc away from a normal install is
-/// [`crate::content::pipeline::UPDATABLE`]'s job, not this one's.
+/// [`crate::content::pipeline::updatable`]'s job, not this one's.
 pub fn stage(req: &GameFullRequest<'_>, observer: &dyn ScanObserver, sink: Sink<'_>) -> Result<Outcome<Push>> {
     let (iso, version, origin, apply) = (req.iso, req.version, req.origin, req.apply);
 

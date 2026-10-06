@@ -15,7 +15,7 @@ import path from "node:path";
 // ---- a DOM that records structure ------------------------------------------
 function fakeEl(tag) {
   return {
-    tagName: tag, children: [], className: "", textContent: "", attrs: {}, listeners: {},
+    tagName: tag, children: [], className: "", textContent: "", attrs: {}, listeners: {}, dataset: {},
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     contains() { return false; },
     focus() {},
@@ -25,6 +25,14 @@ function fakeEl(tag) {
     addEventListener(k, f) { (this.listeners[k] ||= []).push(f); },
     setAttribute(k, v) { this.attrs[k] = v; },
     querySelectorAll() { return []; },
+    querySelector() { return null; },
+    // Enough for the Settings controls, which the checks below render.
+    insertBefore(c, ref) { const i = this.children.indexOf(ref); this.children.splice(i < 0 ? this.children.length : i, 0, c); return c; },
+    prepend(...c) { this.children.unshift(...c); },
+    remove() {},
+    focus() {},
+    style: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   };
 }
 const byId = {};
@@ -242,6 +250,28 @@ for (const [file, name] of PAGES) {
  const answers={...FULL,dolphin_preferences:{...FULL.dolphin_preferences,editable:false,readonly_reason:message}};
  const {screen}=await loadPage("crates/reborn-ui/ui/settings.js",answers,"full");
  check("Settings explains why editing is unavailable",text(screen).includes(message));
+}
+
+// The graphics and audio choices are the platform's, sent by the launcher.
+// Direct3D and WASAPI exist only on Windows; a Linux page offering them would
+// write a backend Dolphin there cannot run. A launcher that sends no choices
+// is a Windows one and keeps the Windows list.
+{
+ global.location = { pathname: "/index.html", hash: "#graphics" };
+ const values={video_backend:"Vulkan",internal_resolution:"3",msaa:"1",sync_gpu:"False",vsync:"False",show_fps:"False"};
+ const linux={...FULL,dolphin_preferences:{values,editable:true,os:"linux",choices:{video_backend:["Vulkan","OGL"],audio_backend:["Cubeb"]}}};
+ let t=text((await loadPage("crates/reborn-ui/ui/settings.js",linux,"full")).screen);
+ check("Linux offers Vulkan as the Reborn default", t.includes("Vulkan (Reborn default)") && t.includes("OpenGL"), t.slice(0,600));
+ check("Linux never offers Direct3D or promises ReShade", !t.includes("Direct3D") && !t.includes("ReShade") && !t.includes("Visual effects"), t.slice(0,600));
+ const windows={...FULL,dolphin_preferences:{values:{...values,video_backend:"D3D"},editable:true}};
+ t=text((await loadPage("crates/reborn-ui/ui/settings.js",windows,"full")).screen);
+ check("Windows keeps its four backends", t.includes("Direct3D 11 (Reborn default)") && t.includes("Direct3D 12") && t.includes("Vulkan") && t.includes("OpenGL"), t.slice(0,600));
+ check("Windows keeps the visual effects presets", t.includes("Visual effects"), t.slice(0,600));
+ global.location = { pathname: "/index.html", hash: "#audio" };
+ const audio={volume:"100",muted:"False",audio_stretch:"False",audio_latency:"20",audio_backend:"Cubeb"};
+ t=text((await loadPage("crates/reborn-ui/ui/settings.js",{...FULL,dolphin_preferences:{values:audio,editable:true,os:"linux",choices:{video_backend:["Vulkan","OGL"],audio_backend:["Cubeb"]}}},"full")).screen);
+ check("Linux does not offer Windows exclusive audio", t.includes("Default (shared audio)") && !t.includes("Windows exclusive"), t.slice(0,600));
+ global.location = { pathname: "/index.html" };
 }
 
 // Files & storage is where the launch refusal and the Play badge both send a

@@ -79,7 +79,15 @@ fn pairs(install_root: &Path, data_root: &Path, game_id: &str) -> Vec<(Component
         p
     };
     vec![
-        (ComponentId::Runtime, install_root.join("runtime"), data(DataDir::Runtime)),
+        (ComponentId::runtime_here(), install_root.join("runtime"), data(DataDir::Runtime)),
+        // The game-import bundle the Windows installer puts beside the
+        // launcher. Adopted into the data root so every OS reads the bundle
+        // from one place; a one-file launcher gets it as content instead.
+        (
+            ComponentId::GameImport,
+            install_root.join(crate::game_patch::BUNDLE_DIR),
+            data(DataDir::LibraryGameImport),
+        ),
         (
             ComponentId::Textures,
             install_root.join(SHIPPED_CONTENT_DIR).join("textures").join(game_id),
@@ -229,6 +237,8 @@ mod tests {
         put(install, "content/textures/GN7E69/sub/b.png", b"b");
         put(install, "content/mods/packages/jsgme.aqua-football/1.0.0/package.json", b"{}");
         put(install, "content/game-patch/chain.json", b"{}");
+        // The game-import bundle the Windows installer puts beside the launcher.
+        put(install, "game-import/manifest.json", b"{}");
     }
 
     #[test]
@@ -240,8 +250,9 @@ mod tests {
         install_with_both(&install);
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.len(), 4, "{r:?}");
-        assert_eq!(r.files(), 6);
+        assert_eq!(r.seeded.len(), 5, "{r:?}");
+        assert_eq!(r.files(), 7);
+        assert_eq!(std::fs::read(data.join("library/game-import/manifest.json")).unwrap(), b"{}");
         assert_eq!(std::fs::read(data.join("library/game-patch/chain.json")).unwrap(), b"{}");
         assert_eq!(std::fs::read(data.join("runtime/Sys/GC/font.bin")).unwrap(), b"font");
         assert_eq!(std::fs::read(data.join("library/textures/GN7E69/sub/b.png")).unwrap(), b"b");
@@ -264,7 +275,7 @@ mod tests {
         put(&data, "library/textures/GN7E69/mine.png", b"mine");
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
-        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::Runtime, ComponentId::Mods, ComponentId::GamePatch]);
+        assert_eq!(r.seeded.iter().map(|s| s.component).collect::<Vec<_>>(), vec![ComponentId::runtime_here(), ComponentId::GameImport, ComponentId::Mods, ComponentId::GamePatch]);
         assert!(!data.join("library/textures/GN7E69/a.png").exists(), "the player's tree was left alone");
         assert!(data.join("library/textures/GN7E69/mine.png").exists());
     }
@@ -276,15 +287,16 @@ mod tests {
         let install = dir.path().join("install");
         let data = dir.path().join("data");
         put(&install, "runtime/Dolphin.exe", b"dolphin");
-        // A pointer says an update installed the runtime already.
-        let pointer = crate::content::ContentLayout::new(&data).pointer_path("runtime");
+        // A pointer says an update installed the runtime already: this OS's
+        // runtime, which is the one the seeding pairs name.
+        let pointer = crate::content::ContentLayout::new(&data).pointer_path(ComponentId::runtime_here().as_str());
         std::fs::create_dir_all(pointer.parent().unwrap()).unwrap();
         std::fs::write(&pointer, b"{}").unwrap();
 
         let r = seed_from_install(&platform, &data, &install, "GN7E69").unwrap();
         assert!(r.seeded.is_empty(), "{r:?}");
         let reasons: Vec<(ComponentId, SkipReason)> = r.skipped.iter().map(|s| (s.component, s.reason.clone())).collect();
-        assert!(reasons.contains(&(ComponentId::Runtime, SkipReason::Delivered)));
+        assert!(reasons.contains(&(ComponentId::runtime_here(), SkipReason::Delivered)));
         assert!(reasons.contains(&(ComponentId::Textures, SkipReason::NothingShipped)));
         assert!(!data.join("runtime").exists());
     }

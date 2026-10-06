@@ -72,15 +72,21 @@ pub fn open_website(url: String) -> Result<(), String> {
     if !allowed(&url) {
         return Err("Only pages on nflstreetreborn.com open from here.".into());
     }
-    let mut cmd = std::process::Command::new("rundll32.exe");
-    cmd.args(["url.dll,FileProtocolHandler", &url]);
     #[cfg(windows)]
     {
+        let mut cmd = std::process::Command::new("rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler", &url]);
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
     }
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    // `xdg-open` on Linux, `open` on macOS; rundll32 exists only on Windows.
+    #[cfg(not(windows))]
+    {
+        reborn_core::platform::imp::open_url(&reborn_core::Platform::detect(), &url)
+            .map_err(|_| "The page could not be opened in your browser.".to_string())
+    }
 }
 
 /// Start the uninstaller beside the launcher and quit, so it finds the
@@ -97,7 +103,11 @@ pub fn uninstall_launcher(app: tauri::AppHandle, confirm: bool) -> Result<(), St
         .map(|d| d.join("unins000.exe"))
         .ok_or_else(|| "The launcher's own folder could not be found.".to_string())?;
     if !uninstaller.is_file() {
-        return Err("No uninstaller was found beside the launcher. Use Windows Settings, then Apps.".into());
+        return Err(if cfg!(windows) {
+            "No uninstaller was found beside the launcher. Use Windows Settings, then Apps."
+        } else {
+            "Remove Reborn the same way you installed it."
+        }.into());
     }
     std::process::Command::new(&uninstaller).spawn().map_err(|e| e.to_string())?;
     app.exit(0);

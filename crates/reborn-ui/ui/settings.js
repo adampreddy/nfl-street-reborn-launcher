@@ -502,7 +502,7 @@ function updatesBlock() {
 const BOXES = [
   { key: "game", setting: "game", name: "Game image", hint: "Your game image. Reset to find it automatically." },
   { key: "legacyRoot", setting: "legacy_root", name: "Existing install", hint: "Your earlier Reborn installation, containing the User and MODS folders." },
-  { key: "runtime", setting: "runtime", name: "Emulator", hint: "The bundled Reborn Dolphin is selected automatically on Windows." },
+  { key: "runtime", setting: "runtime", name: "Emulator", hint: "The bundled Reborn Dolphin is selected automatically." },
   { key: "userDir", setting: "user_dir", name: "User folder", hint: "Contains your saves and Dolphin settings. Reset to use the detected folder." },
 ];
 
