@@ -246,12 +246,29 @@ async function saveLive(key, label, value, focusId) {
   document.getElementById(focusId)?.focus({ preventScroll: true });
 }
 
+// The graphics and audio backends come from the launcher, per platform:
+// Direct3D and WASAPI exist only on Windows, and a Mac plays on Metal. The
+// lists here are the Windows answer, for a launcher that sends none.
+const BACKEND_NAMES = { D3D: "Direct3D 11", D3D12: "Direct3D 12", Vulkan: "Vulkan", OGL: "OpenGL", Metal: "Metal" };
+const AUDIO_NAMES = { Cubeb: "Default (shared audio)", "WASAPI (Exclusive Mode)": "Windows exclusive" };
+function choicesFor(key, fallback) { const list = state.dolphin?.choices?.[key]; return Array.isArray(list) && list.length ? list : fallback; }
+// ReShade and Windows exclusive audio exist only on Windows, so the Windows
+// wording would promise another platform something it does not have.
+function platformNote(key, description) {
+  const os = state.dolphin?.os;
+  if (!os || os === "windows") return description;
+  if (key === "video_backend") return os === "macos" ? "Metal is the only graphics backend that loads the Reborn HD textures on a Mac." : "Vulkan is the Reborn default. OpenGL can run better on some drivers.";
+  if (key === "msaa") return "Smooths edges. Off is the Reborn default and is what the game has always run at; raising it costs frame rate.";
+  if (key === "audio_backend") return "Dolphin shares audio with other apps.";
+  return description;
+}
+
 function selectFor(type, id, current, disabled) {
   const choices = {
-    backend: [["Cubeb", "Default (shared audio)"], ["WASAPI (Exclusive Mode)", "Windows exclusive"]],
+    backend: choicesFor("audio_backend", ["Cubeb", "WASAPI (Exclusive Mode)"]).map((v) => [v, AUDIO_NAMES[v] || v]),
     slot: [["8", "GCI folder"], ["1", "Memory card"], ["255", "Nothing"]],
     resolution: [["1", "1× native (640×528)"], ["2", "2×"], ["3", "3× (Reborn default)"], ["4", "4×"], ["5", "5×"], ["6", "6×"]],
-    video_backend: [["D3D", "Direct3D 11 (Reborn default)"], ["D3D12", "Direct3D 12"], ["Vulkan", "Vulkan"], ["OGL", "OpenGL"]],
+    video_backend: choicesFor("video_backend", ["D3D", "D3D12", "Vulkan", "OGL"]).map((v, i) => [v, (BACKEND_NAMES[v] || v) + (i === 0 ? " (Reborn default)" : "")]),
     msaa: [["1", "Off (Reborn default)"], ["2", "2×"], ["4", "4×"], ["8", "8×"]],
   }[type] || [];
   const v = type === "resolution" ? String(parseInt(current) || 3) : type === "msaa" ? String(parseInt(current) || 1) : current;
@@ -314,7 +331,7 @@ function dolphinBlock() {
   for (const [key, label, description, type, min, max] of preferenceGroups[settingsTab] || []) {
     if (key === "audio_latency" && !["WASAPI (Exclusive Mode)", "OpenAL"].includes(prefValue("audio_backend"))) continue;
     if (values[key] === undefined) { rows.push(el("p", { class: "partial", text: label + " is unavailable. Refresh settings to try again." })); continue; }
-    rows.push(prefRow(key, label, description, type, min, max, busy || !canEdit(key), live.includes(key)));
+    rows.push(prefRow(key, label, platformNote(key, description), type, min, max, busy || !canEdit(key), live.includes(key)));
   }
   if (settingsTab === "Saves") rows.push(row("Save folder", { control: el("button", { type: "button", class: "btn", text: "Open save folder", onclick: openSaves }) }));
   return el("section", { class: "glass pref-section" }, el("h2", { text: title }), lead, ...rows);
@@ -325,6 +342,8 @@ function dolphinBlock() {
 const GRAPHICS_PRESETS = [["performance", "Performance"], ["balanced", "Balanced"], ["quality", "All-Out"]];
 function graphicsBlock() {
   const parts = [];
+  // The presets choose ReShade's effects, and ReShade exists only on Windows.
+  if (state.dolphin?.os && state.dolphin.os !== "windows") return [dolphinBlock()];
   if (!ok(state.graphics)) parts.push(section("Visual effects", null, el("p", { class: "partial", text: state.graphics?.error || "Graphics settings are unavailable. Refresh settings to try again." })));
   else {
     const saved = get("preset") || state.progress?.summary?.graphics || "balanced";
