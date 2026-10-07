@@ -514,10 +514,13 @@ mod tests {
         http.reply(&bucket.url(RELEASE_FILE), 200, body).reply(&bucket.url(SIGNATURE_FILE), 200, sig)
     }
 
+    /// A hosted launcher manifest with one asset, filed under the platform
+    /// running the test, so every platform reads it as a hosted launcher.
     fn host_launcher(http: FakeHttp, url: &str, version: &str) -> FakeHttp {
         let body = format!(
-            r#"{{"schema":"{}","version":"{version}","windows":{{"url":"https://x/setup.exe","sha256":"{}","bytes":123,"file_name":"Setup.exe"}}}}"#,
+            r#"{{"schema":"{}","version":"{version}","{}":{{"url":"https://x/setup.exe","sha256":"{}","bytes":123,"file_name":"Setup.exe"}}}}"#,
             update::MANIFEST_SCHEMA,
+            update::THIS_PLATFORM_KEY,
             "c".repeat(64)
         );
         http.reply(url, 200, body)

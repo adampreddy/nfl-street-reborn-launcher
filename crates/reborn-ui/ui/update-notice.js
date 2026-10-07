@@ -130,7 +130,9 @@ async function check(force=false){
  if(checking||(!force&&Date.now()-(saved('updates:last-auto-check')||0)<CHECK_MS))return;
  checking=true;
  try{
-  const progress=await invoke('onboarding_progress',{legacyRoot:null});if(!progress.complete)return;
+  // Not gated on setup being complete: a player who chose Finish later got
+  // no textures at all, ever (Deck tester, 2026-10-03). Setup pages do not
+  // load this card, so it cannot race the setup download step.
   started=true;put('updates:last-auto-check',Date.now());
   const [l,c,p]=await Promise.allSettled([invoke('update_check',{source:null}),invoke('content_status'),invoke('update_policy')]);
   if(l.status==='fulfilled'){launcher=l.value;put('updates:latest',launcher);}
@@ -174,10 +176,10 @@ async function tick(){
 
 if(window.__TAURI__&&!document.body.classList.contains('page-setup')){
  // Page changes reattach to native download state, and never reset the check clock.
- invoke('onboarding_progress',{legacyRoot:null}).then(async p=>{
-  if(!p.complete)return;started=true;policy=await invoke('update_policy').catch(()=>({}));
+ (async()=>{
+  started=true;policy=await invoke('update_policy').catch(()=>({}));
   await check();await tick();
- }).catch(()=>{});
+ })().catch(()=>{});
  setInterval(()=>{check().catch(()=>{});tick();},1500);
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-(saved('updates:last-auto-check')||0)>STALE_MS)check(true).then(tick).catch(()=>{});});
  window.addEventListener('focus',()=>{if(Date.now()-(saved('updates:last-auto-check')||0)>STALE_MS)check(true).then(tick).catch(()=>{});});

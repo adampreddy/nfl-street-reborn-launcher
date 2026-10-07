@@ -1,6 +1,60 @@
 //! User-editable Dolphin settings. Compatibility-sensitive keys are deliberately absent.
 #[derive(Debug)]
 pub struct Field { pub id: &'static str, pub file: &'static str, pub section: &'static str, pub key: &'static str, pub default: &'static str, pub kind: &'static str }
+/// The graphics backends this platform's Reborn Dolphin can play the game on,
+/// the default first. Spelled as Dolphin spells them: `CONFIG_NAME` in
+/// `VideoBackends/*/VideoBackend.h`.
+///
+/// Direct3D exists only on Windows. The macOS build turns Vulkan (MoltenVK)
+/// off, and Dolphin's OpenGL on macOS has no BC7, so it would silently skip
+/// every DDS texture in the HD pack: Metal is the one backend that plays the
+/// game there. Linux, and so the Steam Deck, defaults to Vulkan.
+pub const VIDEO_BACKENDS: &[&str] = if cfg!(windows) {
+    &["D3D", "D3D12", "Vulkan", "OGL"]
+} else if cfg!(target_os = "macos") {
+    &["Metal"]
+} else {
+    &["Vulkan", "OGL"]
+};
+pub const DEFAULT_VIDEO_BACKEND: &str = VIDEO_BACKENDS[0];
+
+/// The audio outputs offered on this platform, the default first. WASAPI is
+/// Windows' own; Cubeb is Dolphin's portable output everywhere.
+pub const AUDIO_BACKENDS: &[&str] = if cfg!(windows) {
+    &["Cubeb", "WASAPI (Exclusive Mode)"]
+} else {
+    &["Cubeb"]
+};
+
+/// Values in `Dolphin.ini` that this platform's Dolphin cannot use, replaced
+/// with what it can, applied with `merge` at every launch.
+///
+/// On Windows this is always empty. Elsewhere the only way a Direct3D or
+/// WASAPI value lands in a player's file is a user template or a
+/// `Previous settings` import made on Windows, which is the launcher's doing,
+/// not a choice anyone made on this machine. Left alone, Dolphin falls back
+/// to its own default backend without a word, and the Settings page would
+/// show a backend that is not the one running.
+pub fn unusable_here(doc: &crate::ini::IniDocument) -> crate::ini::Overlay {
+    unusable_for(doc, VIDEO_BACKENDS, cfg!(windows))
+}
+
+fn unusable_for(doc: &crate::ini::IniDocument, video: &[&str], windows: bool) -> crate::ini::Overlay {
+    let mut repair = crate::ini::Overlay::new();
+    if windows {
+        return repair;
+    }
+    if let Some(value) = doc.get("Core", "GFXBackend") {
+        if !video.contains(&value) {
+            repair.entry("Core".into()).or_default().insert("GFXBackend".into(), video[0].into());
+        }
+    }
+    if doc.get("DSP", "Backend").is_some_and(|value| value.starts_with("WASAPI")) {
+        repair.entry("DSP".into()).or_default().insert("Backend".into(), "Cubeb".into());
+    }
+    repair
+}
+
 pub const FIELDS: &[Field] = &[
     Field{id:"audio_backend",file:"Dolphin.ini",section:"DSP",key:"Backend",default:"Cubeb",kind:"backend"},
     Field{id:"volume",file:"Dolphin.ini",section:"DSP",key:"Volume",default:"100",kind:"volume"},
@@ -35,7 +89,7 @@ pub const FIELDS: &[Field] = &[
     // could not: the launcher boots Dolphin with -u/-e, plus -b in fullscreen,
     // so Dolphin's own Graphics window is never on screen in an ordinary flow.
     // This page is the only surface a player has. See crate::settings_law.
-    Field{id:"video_backend",file:"Dolphin.ini",section:"Core",key:"GFXBackend",default:"D3D",kind:"video_backend"},
+    Field{id:"video_backend",file:"Dolphin.ini",section:"Core",key:"GFXBackend",default:DEFAULT_VIDEO_BACKEND,kind:"video_backend"},
     Field{id:"show_ping",file:"GFX.ini",section:"Settings",key:"ShowNetPlayPing",default:"False",kind:"bool"},
 // `borderless` was here. BorderlessFullscreen became a LOCKED key on
 // 2026-09-13 because exclusive fullscreen hard-hangs Windows when an outside
@@ -256,5 +310,41 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
   assert_eq!(doc.get("Core","SyncGPU"),Some("True"),"the player's, untouched");
   assert_eq!(doc.get("Settings","InternalResolution"),Some("4"),"the player's, untouched");
   assert_eq!(doc.get("Interface","ConfirmStop"),Some("True"),"seeded False, but theirs is already set");
+ }
+}
+
+#[cfg(test)] mod platform_value_tests {
+ use super::*;
+ fn doc(text:&str)->crate::ini::IniDocument{crate::ini::IniDocument::parse(text)}
+ const LINUX:&[&str]=&["Vulkan","OGL"];
+ const MACOS:&[&str]=&["Metal"];
+
+ /// A Linux user folder seeded from the Windows template says D3D. Dolphin
+ /// on Linux has no D3D and would fall back without a word.
+ #[test] fn a_windows_only_backend_becomes_this_platforms_default(){
+  let repair=unusable_for(&doc("[Core]\nGFXBackend = D3D\n[DSP]\nBackend = WASAPI (Exclusive Mode)\n"),LINUX,false);
+  assert_eq!(repair["Core"]["GFXBackend"],"Vulkan");
+  assert_eq!(repair["DSP"]["Backend"],"Cubeb");
+  assert_eq!(unusable_for(&doc("[Core]\nGFXBackend = OGL\n"),MACOS,false)["Core"]["GFXBackend"],"Metal","OpenGL on a Mac skips every BC7 texture");
+ }
+
+ /// What this platform can run is the player's and is left alone, and so is
+ /// an audio output Dolphin has here that the page does not list.
+ #[test] fn a_usable_choice_is_never_touched(){
+  assert!(unusable_for(&doc("[Core]\nGFXBackend = OGL\n[DSP]\nBackend = Pulse\n"),LINUX,false).is_empty());
+  assert!(unusable_for(&doc("[Core]\n"),LINUX,false).is_empty(),"absent is the seeded default's job");
+ }
+
+ /// Windows players see no change from the port.
+ #[test] fn windows_repairs_nothing(){
+  assert!(unusable_for(&doc("[Core]\nGFXBackend = Metal\n[DSP]\nBackend = WASAPI (Exclusive Mode)\n"),&["D3D","D3D12","Vulkan","OGL"],true).is_empty());
+  if cfg!(windows){assert_eq!(DEFAULT_VIDEO_BACKEND,"D3D");assert_eq!(AUDIO_BACKENDS,&["Cubeb","WASAPI (Exclusive Mode)"]);}
+ }
+
+ #[test] fn every_platform_offers_its_default(){
+  assert!(VIDEO_BACKENDS.contains(&DEFAULT_VIDEO_BACKEND));
+  let field=FIELDS.iter().find(|f|f.id=="video_backend").unwrap();
+  assert_eq!(field.default,DEFAULT_VIDEO_BACKEND);
+  assert_eq!(AUDIO_BACKENDS[0],"Cubeb");
  }
 }

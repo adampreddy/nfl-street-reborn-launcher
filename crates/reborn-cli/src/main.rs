@@ -848,7 +848,10 @@ fn update_check(
             reborn_core::Channel::Stable => reborn_core::update::DEFAULT_SOURCE.to_string(),
         },
     };
-    let current = env!("CARGO_PKG_VERSION");
+    // The published version, the one the launcher compares: see
+    // reborn_core::build_version. The crate version stays 3.1.0 across
+    // releases, so comparing it meant this command never saw an update.
+    let current = reborn_core::build_version();
     let http = reborn_core::net::UreqHttp::new(&format!("NFL Street Reborn Launcher/{current}"));
     println!("This build  {current}");
     println!("Source      {source}");

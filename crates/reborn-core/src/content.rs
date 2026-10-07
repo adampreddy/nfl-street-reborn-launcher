@@ -1112,6 +1112,31 @@ pub struct ContentService<'a> {
     layout: ContentLayout,
 }
 
+
+/// Unix only: a downloaded program must be executable to run.
+///
+/// Blobs carry bytes, not permission bits (the component manifest was
+/// designed on Windows, which has none to carry), so a Linux runtime's
+/// `dolphin-emu` would go live as a plain file and the Deck could not start
+/// it. A file that begins with the ELF signature, every Linux program and
+/// library, is made 0755 as it goes live; everything else keeps the default.
+/// Nothing on Windows changes.
+fn mark_if_program(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let mut magic = [0u8; 4];
+        let elf = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"ELF";
+        if elf {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 impl<'a> ContentService<'a> {
     pub fn new(platform: &'a Platform, data_root: &Path) -> Self {
         Self {
@@ -1299,10 +1324,18 @@ impl<'a> ContentService<'a> {
 
             let staged = resolve_under(&staging, &fetch.path)?;
             if staged.exists() {
-                report
-                    .results
-                    .insert(fetch.path.clone(), FetchState::Staged);
-                continue;
+                // Trusted only while it still matches. A staged file that had
+                // gone bad was skipped here on every attempt and then refused
+                // by verify_staged, so "Download again" could never finish
+                // and nothing in that update installed (a Deck tester's
+                // runtime-linux, "0 missing, 1 wrong", 2026-10-03).
+                if file_len(&staged)? == file.bytes && hash_file(&staged)? == file.sha256 {
+                    report
+                        .results
+                        .insert(fetch.path.clone(), FetchState::Staged);
+                    continue;
+                }
+                remove_file(&staged)?;
             }
 
             report
@@ -1570,7 +1603,9 @@ impl<'a> ContentService<'a> {
                 }
                 moved_aside = Some(prior);
             }
-            if let Err(e) = ensure_parent(&live)
+            if let Err(e) = mark_if_program(&staged)
+                .map_err(|source| crate::platform::Error::Io { path: staged.clone(), source })
+                .and_then(|()| ensure_parent(&live))
                 .and_then(|()| self.platform.files.atomic_replace(&staged, &live))
             {
                 // Record the aside even though the replacement never landed, or
@@ -2031,6 +2066,27 @@ fn relative_files(root: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Linux program arrives as bytes and must go live executable; data
+    /// files are left as they are. On Windows nothing is touched.
+    #[test]
+    fn a_downloaded_program_goes_live_executable_and_data_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("dolphin-emu");
+        let data = dir.path().join("Dolphin.ini");
+        std::fs::write(&program, b"ELFrest of the program").unwrap();
+        std::fs::write(&data, b"[Core]
+").unwrap();
+        mark_if_program(&program).unwrap();
+        mark_if_program(&data).unwrap();
+        mark_if_program(&dir.path().join("short")).unwrap_or(());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&program).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(std::fs::metadata(&data).unwrap().permissions().mode() & 0o111, 0, "data stays non-executable");
+        }
+    }
     use crate::manifest::COMPONENT_SCHEMA;
     use crate::platform::{FileOps, LockGuard};
     use std::sync::Mutex;
@@ -2381,6 +2437,34 @@ mod tests {
             other => panic!("a changed staged file must not be promoted, got {other:?}"),
         }
         assert!(!live_root(dir.path()).join("NSR.iso").exists());
+    }
+
+    /// The other half: a bad staged file is fetched again, not trusted on the
+    /// next attempt. Trusted, it was refused at promotion forever (a Deck
+    /// tester's runtime-linux, "0 missing, 1 wrong", 2026-10-03).
+    #[test]
+    fn a_bad_staged_file_is_fetched_again_on_the_next_download() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+
+        let good = b"the offline image, release 2.4.0";
+        let bytes = manifest("2.4.0", 8, false, vec![file_of("NSR.iso", good)]);
+        let release = signed(&bytes, 12);
+        let plan = expect_plan(
+            service
+                .plan(&release, "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        let source = Blobs::new(Serving::Whole).with("NSR.iso", good);
+        assert!(service.download(&plan, &source).expect("download").is_complete());
+
+        let staged = service.layout().staging_dir("offline-content", "2.4.0").join("NSR.iso");
+        std::fs::write(&staged, b"the offline image, tampered wi").expect("edit staged file");
+
+        assert!(service.download(&plan, &source).expect("second download").is_complete());
+        assert_eq!(std::fs::read(&staged).expect("staged"), good);
+        assert!(matches!(service.promote(&plan).expect("promotion runs"), Promoted::Applied(_)));
     }
 
     // -----------------------------------------------------------------------

@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use reborn_core::content::pipeline::{
     CheckRequest, ComponentCheck, ComponentState, ContentCheck, Depth, FetchOutcomeState, GamePatchResult,
-    ImageHook, PromoteOutcome, PromoteState, RosterResult, Updater, UPDATABLE,
+    updatable, ImageHook, PromoteOutcome, PromoteState, RosterResult, Updater,
 };
 use reborn_core::origin::{Origin, DEFAULT_ORIGIN};
 use reborn_core::signing::Ed25519Verifier;
@@ -292,6 +292,179 @@ pub(crate) fn origin_url(settings: &reborn_core::settings::Settings) -> String {
         .to_string()
 }
 
+/// Shown when the patch a one-file launcher needs before it can import a
+/// disc could not be downloaded.
+pub(crate) const IMPORT_BUNDLE_UNAVAILABLE: &str =
+    "The game patch could not be downloaded. Check your internet connection, then try again.";
+
+/// Make sure what a disc import needs is on disk before a disc is imported:
+/// the game-import bundle (patch manifest + reborn.xdelta) and the game-patch
+/// chain, downloading the `game-import` and `game-patch` components when
+/// either is missing.
+///
+/// The Windows installer carries both beside the launcher, so there this
+/// finds them and returns at once. A Linux launcher is one AppImage file and
+/// both are content; first-run setup imports the disc BEFORE any content
+/// check runs. Without the bundle the first import on a Steam Deck had
+/// nothing to patch with; without the chain the imported disc could not be
+/// recognised as a Reborn build and setup said "Your game file isn't NFL
+/// Street Reborn" (a Deck tester's first run, 2026-10-02).
+pub(crate) fn ensure_import_bundle(p: &Platform) -> Result<PathBuf, String> {
+    let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+    let bundle = reborn_core::game_patch::bundle_dir(p, &data_root);
+    let chain = reborn_core::game_patch::component_root(&data_root).join(reborn_core::game_patch::CHAIN_FILE);
+    if bundle.join("manifest.json").is_file() && chain.is_file() {
+        return Ok(bundle);
+    }
+    let settings = load_settings(p)?;
+    let origin = Origin::new(&origin_url(&settings));
+    let verifier = verifier()?;
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    // Promoting game-patch with no disc yet only records it; setup's own
+    // patch step moves the imported disc to the newest build with it.
+    let wanted = [reborn_core::inventory::ComponentId::GameImport, reborn_core::inventory::ComponentId::GamePatch];
+    let request = CheckRequest { components: &wanted, depth: Depth::Verify };
+    if let Err(e) = updater.run(&request, &ImageHook::default()) {
+        eprintln!("downloading the game-import bundle failed: {e}");
+        return Err(IMPORT_BUNDLE_UNAVAILABLE.to_string());
+    }
+    let bundle = reborn_core::game_patch::bundle_dir(p, &data_root);
+    if bundle.join("manifest.json").is_file() && chain.is_file() {
+        Ok(bundle)
+    } else {
+        Err(IMPORT_BUNDLE_UNAVAILABLE.to_string())
+    }
+}
+
+/// Make sure the game-patch chain is on disk, downloading the `game-patch`
+/// component when it is not. The chain is how a disc is recognised as a
+/// Reborn build at all: with none, `game_identity` answers "not Reborn" even
+/// for Reborn's own downloaded game (the Deck tester's second screen,
+/// 2026-10-02: "The downloaded game is not a Reborn build"). The Windows
+/// installer ships it; a one-file Linux launcher gets it here.
+pub(crate) fn ensure_patch_chain(p: &Platform) -> Result<(), String> {
+    let data_root = p.paths.data_root().map_err(|e| e.to_string())?;
+    let chain = reborn_core::game_patch::component_root(&data_root).join(reborn_core::game_patch::CHAIN_FILE);
+    if chain.is_file() {
+        return Ok(());
+    }
+    let settings = load_settings(p)?;
+    let origin = Origin::new(&origin_url(&settings));
+    let verifier = verifier()?;
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::GamePatch], depth: Depth::Verify };
+    if let Err(e) = updater.run(&request, &ImageHook::default()) {
+        eprintln!("downloading the game-patch chain failed: {e}");
+    }
+    if chain.is_file() { Ok(()) } else { Err(IMPORT_BUNDLE_UNAVAILABLE.to_string()) }
+}
+
+/// A one-file launcher (Linux AppImage) has no emulator until it downloads
+/// one: fetch this OS's runtime component when none can be found.
+///
+/// The Windows installer lays Dolphin beside the launcher and seeding mirrors
+/// it into the data root, so on Windows this returns at once and changes
+/// nothing. On a Deck, first-run setup asked for the emulator before any
+/// content check had run and stopped with "No Reborn emulator was found"
+/// (the tester's third screen, 2026-10-02). Called before every place the
+/// launcher looks for the emulator. A failure is logged, not returned: the
+/// search that follows then reports where it looked, as it always has.
+pub(crate) fn ensure_runtime(p: &Platform) -> Option<String> {
+    if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return None;
+    }
+    // One download at a time: the background start below and any command that
+    // needs the emulator meanwhile share it, the command waiting for it to end
+    // rather than starting a second copy of the same 119 MB.
+    let _one = RUNTIME_DOWNLOAD.lock().unwrap_or_else(|e| e.into_inner());
+    if reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return None;
+    }
+    let fail = |why: String| {
+        // WARN reaches launcher.log; a Deck tester's report is that file.
+        tracing::warn!("downloading the emulator failed: {why}");
+        *LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.clone());
+        Some(why)
+    };
+    let data_root = match p.paths.data_root() { Ok(d) => d, Err(e) => return fail(e.to_string()) };
+    let settings = match load_settings(p) { Ok(s) => s, Err(e) => return fail(e) };
+    let verifier = match verifier() { Ok(v) => v, Err(e) => return fail(e) };
+    let origin = Origin::new(&origin_url(&settings));
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    // Verify, not Quick: this runs only when the files are missing, and a
+    // Deck that had half-installed it under an earlier build kept a record
+    // saying it was there, so Quick found nothing to do and the tester got
+    // "the download finished but no emulator was installed" (2026-10-03).
+    let request = CheckRequest { components: &[reborn_core::inventory::ComponentId::runtime_here()], depth: Depth::Verify };
+    tracing::warn!("no emulator on disk: downloading {}", reborn_core::inventory::ComponentId::runtime_here().as_str());
+    match updater.run(&request, &ImageHook::default()) {
+        Err(e) => fail(e.to_string()),
+        Ok(out) => {
+            // A run can return without error and still not have installed it
+            // (a refused plan, a problem the check reported): say what it said.
+            if reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+                tracing::warn!("emulator downloaded");
+                *LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                None
+            } else {
+                let problems = out.check.problems();
+                fail(if problems.is_empty() { "the download finished but no emulator was installed".to_string() } else { problems.join("; ") })
+            }
+        }
+    }
+}
+
+static RUNTIME_DOWNLOAD: Mutex<()> = Mutex::new(());
+static LAST_RUNTIME_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Where the emulator stands, for a page that must not wait for it.
+pub(crate) enum RuntimeNow {
+    Ready,
+    Downloading,
+    Failed(String),
+}
+
+/// The emulator's state without waiting for its download.
+///
+/// -5 still held Welcome on "Loading…" for the whole download: the page's
+/// launch_check looked for the emulator through ensure_runtime, which waited
+/// on the background download's lock (e2e run, 2026-10-03). Pages ask here
+/// instead; only Play and confirming the game wait (ensure_runtime). With no
+/// download running and no emulator, one is started again, so a failed
+/// first attempt is retried the next time a page looks.
+pub(crate) fn runtime_now(p: &Platform) -> RuntimeNow {
+    if cfg!(windows) || reborn_core::session::resolve_runtime(p, None, None).is_ok() {
+        return RuntimeNow::Ready;
+    }
+    match RUNTIME_DOWNLOAD.try_lock() {
+        Err(std::sync::TryLockError::WouldBlock) => RuntimeNow::Downloading,
+        _ => {
+            let last = LAST_RUNTIME_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            start_runtime_download();
+            match last {
+                Some(why) => RuntimeNow::Failed(why),
+                None => RuntimeNow::Downloading,
+            }
+        }
+    }
+}
+
+/// Start the emulator download as the launcher opens, off every page's path.
+///
+/// Run from inside a page's command, the 119 MB download held that page on
+/// "Loading…" for its whole length (57 s here; minutes on a Deck's Wi-Fi), and
+/// a Deck tester reported the launcher "stuck all the time" (2026-10-02). Here
+/// it runs on its own thread from the moment the window opens; a command that
+/// truly needs the emulator waits on the same download in ensure_runtime.
+pub(crate) fn start_runtime_download() {
+    if cfg!(windows) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let _ = ensure_runtime(&Platform::detect());
+    });
+}
+
 pub(crate) fn load_settings(p: &Platform) -> Result<reborn_core::settings::Settings, String> {
     let file = reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?;
     reborn_core::settings::Settings::load(&file).map_err(|e| e.to_string())
@@ -361,7 +534,7 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
     let updater = Updater::new(&p, &data_root, &origin, &verifier);
     let mut check = updater
         .check(&CheckRequest {
-            components: &UPDATABLE,
+            components: updatable(),
             depth,
         })
         .map_err(|e| e.to_string())?;
@@ -416,7 +589,7 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
             // a byte hashed, and the pending ones are reported as before.
             check = updater
                 .check(&CheckRequest {
-                    components: &UPDATABLE,
+                    components: updatable(),
                     depth: Depth::Quick,
                 })
                 .map_err(|e| e.to_string())?;
