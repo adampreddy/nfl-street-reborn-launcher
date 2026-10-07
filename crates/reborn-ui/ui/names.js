@@ -27,4 +27,4 @@ export function nameWithDiscord(p, fallback = 'Player') {
 }
 
 /** The rule the Settings field shows under it, word for word what the server enforces. */
-export const NICKNAME_HINT = "2-20 characters: letters, numbers, spaces and _ - . ' . Leave blank to use your Discord name. You can change it once a day.";
+export const NICKNAME_HINT = "2-20 characters, any name you like. Change it any time. Leave blank to use your Discord name.";

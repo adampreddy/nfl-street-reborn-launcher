@@ -352,34 +352,34 @@ try {
     // server's refusal shown word for word (never prefixed), a success that says how the player now shows up.
     const who = { signed_in: true, display_name: 'adamknowsball', nickname: 'Slick', name: 'Slick', player_id: F.ME, show_offline: false, nickname_next_change_at: null };
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { ...FULL, identity_status: who,
-      identity_set_nickname: { __reject: 'That nickname is taken.' } } });
+      identity_set_nickname: { __reject: 'Nickname must be 2 to 20 characters.' } } });
     await page.locator('.st-account > summary').click();
     const input = page.locator('#nickname');
     await input.waitFor();
     assert.equal(await input.inputValue(), 'Slick', 'the saved nickname is pre-filled');
     assert.equal(await input.getAttribute('placeholder'), 'adamknowsball', 'blank shows the Discord name it falls back to');
     await page.getByText('Signed in as adamknowsball', { exact: true }).waitFor();
-    await page.getByText(/^2-20 characters: letters, numbers, spaces/).waitFor();
-    await input.fill('Jock');
+    await page.getByText(/^2-20 characters, any name you like\. Change it any time\./).waitFor();
+    await input.fill('J');
     await page.locator('#nickname-save').click();
     await page.locator('#nickname-said').waitFor();
-    assert.equal(await page.locator('#nickname-said').textContent(), 'That nickname is taken.', 'the server sentence, verbatim');
-    assert.equal(await page.locator('#nickname').inputValue(), 'Jock', 'a refused name stays in the field to fix');
-    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'identity_set_nickname').map((c) => c.args)), [{ nickname: 'Jock' }]);
+    assert.equal(await page.locator('#nickname-said').textContent(), 'Nickname must be 2 to 20 characters.', 'the server sentence, verbatim');
+    assert.equal(await page.locator('#nickname').inputValue(), 'J', 'a refused name stays in the field to fix');
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'identity_set_nickname').map((c) => c.args)), [{ nickname: 'J' }]);
     await page.locator('.st-account').screenshot({ path: path.join(out, 'stats-nickname-refused.png') });
     assert.deepEqual(errors, []);
     await close();
   }
   { // ...and a nickname the server takes
     const who = { signed_in: true, display_name: 'adamknowsball', nickname: null, name: 'adamknowsball', player_id: F.ME, show_offline: false, nickname_next_change_at: null };
-    const saved = { ...who, nickname: 'Slick', name: 'Slick', nickname_next_change_at: '2099-01-01T12:00:00.000Z' };
+    const saved = { ...who, nickname: 'Slick', name: 'Slick', nickname_next_change_at: null };
     const { page, errors, close } = await openState(browser, srv.base, STATE, { data: { ...FULL, identity_status: who, identity_set_nickname: saved } });
     await page.locator('.st-account > summary').click();
     await page.locator('#nickname').fill('  Slick ');
     await page.locator('#nickname').press('Enter');
     await page.getByText('Nickname saved. You show up as Slick.', { exact: true }).waitFor();
     assert.deepEqual(await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'identity_set_nickname').map((c) => c.args)), [{ nickname: 'Slick' }], 'trimmed before it is sent');
-    await page.getByText(/^You can change it again /).waitFor();
+    assert.equal(await page.getByText(/^You can change it again /).count(), 0, 'no cooldown line: names change any time (Adam 10-07)');
     await page.locator('.st-account').screenshot({ path: path.join(out, 'stats-nickname-saved.png') });
     assert.deepEqual(errors, []);
     await close();
