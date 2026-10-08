@@ -1210,6 +1210,9 @@ async fn launch(
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
         // Play is worth waiting for: let a running emulator download finish.
         content_updates::ensure_runtime(&p);
+        // A game image left on an older build the chain knows goes to the
+        // newest first (once; quiet when current). See walk_image_to_head.
+        let _ = content_updates::walk_image_to_head(&p);
         let (found, game_path) = find_runtime_and_game_for(
             &p,
             runtime.as_deref(),

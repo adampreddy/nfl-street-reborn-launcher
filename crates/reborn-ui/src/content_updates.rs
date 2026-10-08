@@ -482,6 +482,49 @@ pub(crate) fn verifier() -> Result<Ed25519Verifier, String> {
 }
 
 /// The tools the image is rebuilt with, and where portraits go.
+/// Walk a pristine image the chain knows, but that is behind its head, to
+/// the head, then re-apply the roster; quiet and fast when it is current.
+///
+/// Before 2026-10 a disc imported through the bundle stopped at the bundle's
+/// build (9a6fde…) and only moved forward when a game-patch update arrived,
+/// so a player could play an old build with the newest one on disk. Called
+/// before a launch for the players already in that state; the folder name
+/// is the hash the importer verified, so the check reads no disc. The
+/// caller holds the launch guard.
+pub(crate) fn walk_image_to_head(p: &Platform) -> Option<String> {
+    use reborn_core::game_patch::{component_root, Chain, Route, CHAIN_FILE};
+    let data_root = p.paths.data_root().ok()?;
+    let chain = Chain::load(&component_root(&data_root).join(CHAIN_FILE)).ok()??;
+    let pristine = reborn_core::game_image::find_pristine(&data_root)?;
+    if chain.head() == Some(pristine.folder_sha256.as_str()) {
+        return None;
+    }
+    if !matches!(chain.route(&pristine.folder_sha256), Route::Steps(_)) {
+        return None;
+    }
+    let settings = load_settings(p).ok()?;
+    let verifier = verifier().ok()?;
+    let origin = Origin::new(&origin_url(&settings));
+    let updater = Updater::new(p, &data_root, &origin, &verifier);
+    let hook = image_hook(p, &settings);
+    tracing::warn!("game image {} is behind the newest build: updating it before the launch", &pristine.folder_sha256[..12]);
+    let gp = match updater.apply_current_game_patch(&hook) {
+        Ok(gp) => gp,
+        Err(e) => return Some(format!("The game could not be updated to the newest build: {e}")),
+    };
+    let mut notes = vec![gp.message()];
+    if matches!(gp, GamePatchResult::Applied(_)) {
+        match updater.apply_current_roster(&hook) {
+            Ok(r) => notes.push(r.message()),
+            Err(e) => notes.push(format!("The roster could not be re-applied: {e}")),
+        }
+        notes.extend(sync_cards(p, &settings, &data_root));
+    }
+    let said = notes.join(" ");
+    tracing::warn!("{said}");
+    Some(said)
+}
+
 pub(crate) fn image_hook(p: &Platform, settings: &reborn_core::settings::Settings) -> ImageHook {
     let mut extra_dirs: Vec<PathBuf> = Vec::new();
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
@@ -917,7 +960,7 @@ pub async fn content_promote(confirm: bool) -> Result<ContentStatusView, String>
 /// way back short of importing the disc again. Returns whether the image is current now and
 /// the pipeline's own sentence about it.
 #[tauri::command]
-pub async fn content_repair_image() -> Result<serde_json::Value, String> {
+pub async fn content_repair_image(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let guard = LaunchGuard::acquire()?;
         let p = Platform::detect();
@@ -928,7 +971,21 @@ pub async fn content_repair_image() -> Result<serde_json::Value, String> {
             let origin = Origin::new(&origin_url(&settings));
             let updater = Updater::new(&p, &data_root, &origin, &verifier);
             let hook = image_hook(&p, &settings);
-            let gp = updater.apply_current_game_patch(&hook).map_err(|e| e.to_string())?;
+            let mut gp = updater.apply_current_game_patch(&hook).map_err(|e| e.to_string())?;
+            // A pristine image no game update knows (or none at all) used to end
+            // here with "import from your disc", which a player whose disc
+            // cannot be converted cannot do (a Deck, 2026-10: online refused
+            // for good). The Reborn game is downloaded instead, as setup does
+            // for such a disc, and walked to the newest build.
+            if matches!(
+                gp,
+                GamePatchResult::Refused(reborn_core::game_patch::Refusal::UnknownBase { .. })
+                    | GamePatchResult::Refused(reborn_core::game_patch::Refusal::NoPristine { .. })
+            ) {
+                tracing::warn!("repair: {} Downloading the Reborn game instead.", gp.message());
+                crate::setup_tools::download_reborn_game(&app)?;
+                gp = updater.apply_current_game_patch(&hook).map_err(|e| e.to_string())?;
+            }
             let mut notes = vec![gp.message()];
             if matches!(gp, GamePatchResult::Applied(_)) {
                 // A freshly patched image has no roster yet; the same step promote takes next.
