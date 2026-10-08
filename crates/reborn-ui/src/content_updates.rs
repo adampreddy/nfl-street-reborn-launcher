@@ -530,6 +530,20 @@ fn run_check(depth: Depth) -> Result<(String, ContentCheck), String> {
             Err(e) => eprintln!("seeding from the install root failed: {e}"),
         }
     }
+    // A Linux launcher's install root is the folder its AppImage sits in,
+    // which holds nothing; the emulator rides INSIDE the AppImage, at
+    // $APPDIR/usr/bin/runtime. Seeded from there too, or the first check
+    // downloaded the 111 MB runtime it already carries (Deck build, 2026-10).
+    #[cfg(target_os = "linux")]
+    if let Some(appdir) = std::env::var_os("APPDIR") {
+        let bundled = std::path::PathBuf::from(appdir).join("usr").join("bin");
+        match reborn_core::content::seed::seed_from_install(&p, &data_root, &bundled, "GN7E69") {
+            Ok(r) => for s in &r.seeded {
+                tracing::warn!("seeded {} from the AppImage ({} files)", s.component.as_str(), s.files);
+            },
+            Err(e) => tracing::warn!("seeding from the AppImage failed: {e}"),
+        }
+    }
     let origin = Origin::new(&url);
     let updater = Updater::new(&p, &data_root, &origin, &verifier);
     let mut check = updater
