@@ -36,7 +36,46 @@ pub const AUDIO_BACKENDS: &[&str] = if cfg!(windows) {
 /// to its own default backend without a word, and the Settings page would
 /// show a backend that is not the one running.
 pub fn unusable_here(doc: &crate::ini::IniDocument) -> crate::ini::Overlay {
-    unusable_for(doc, VIDEO_BACKENDS, cfg!(windows))
+    let mut repair = unusable_for(doc, VIDEO_BACKENDS, cfg!(windows));
+    // Vulkan with no Vulkan driver on the machine: Dolphin exits at once, exit
+    // code 0, nothing in its log, and the player sees the game close (found
+    // under a headless test X server, 2026-10-03). OpenGL runs there.
+    if cfg!(target_os = "linux") {
+        let backend = repair.get("Core").and_then(|c| c.get("GFXBackend")).cloned()
+            .or_else(|| doc.get("Core", "GFXBackend").map(str::to_string));
+        let manifest_in = |d: &str| std::fs::read_dir(d)
+            .map(|mut e| e.any(|f| f.is_ok_and(|f| f.path().extension().is_some_and(|x| x == "json"))))
+            .unwrap_or(false);
+        if backend.as_deref() == Some("Vulkan") && !vulkan_driver_present(|k| std::env::var_os(k), manifest_in) {
+            repair.entry("Core".into()).or_default().insert("GFXBackend".into(), "OGL".into());
+        }
+    }
+    repair
+}
+
+/// Whether a Vulkan driver (an ICD manifest) is installed where the Vulkan
+/// loader looks: the override variables, then the manifest folders under the
+/// XDG data and config dirs and the two fixed system ones.
+fn vulkan_driver_present(var: impl Fn(&str) -> Option<std::ffi::OsString>, has_manifest: impl Fn(&str) -> bool) -> bool {
+    for key in ["VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES"] {
+        if var(key).is_some_and(|v| !v.is_empty()) {
+            return true;
+        }
+    }
+    let list = |key: &str, fallback: &str| -> Vec<String> {
+        var(key).map(|v| v.to_string_lossy().into_owned()).filter(|v| !v.is_empty())
+            .unwrap_or_else(|| fallback.to_string()).split(':').filter(|p| !p.is_empty()).map(str::to_string).collect()
+    };
+    let mut dirs: Vec<String> = Vec::new();
+    match var("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        Some(d) => dirs.push(format!("{}/vulkan/icd.d", d.to_string_lossy())),
+        None => if let Some(h) = var("HOME") { dirs.push(format!("{}/.local/share/vulkan/icd.d", h.to_string_lossy())) },
+    }
+    dirs.extend(list("XDG_DATA_DIRS", "/usr/local/share:/usr/share").into_iter().map(|d| format!("{d}/vulkan/icd.d")));
+    dirs.extend(list("XDG_CONFIG_DIRS", "/etc/xdg").into_iter().map(|d| format!("{d}/vulkan/icd.d")));
+    dirs.push("/etc/vulkan/icd.d".into());
+    dirs.push("/usr/share/vulkan/icd.d".into());
+    dirs.iter().any(|d| has_manifest(d))
 }
 
 fn unusable_for(doc: &crate::ini::IniDocument, video: &[&str], windows: bool) -> crate::ini::Overlay {
@@ -321,6 +360,16 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
 
  /// A Linux user folder seeded from the Windows template says D3D. Dolphin
  /// on Linux has no D3D and would fall back without a word.
+ /// Vulkan is chosen only where a Vulkan driver is installed (2026-10-03).
+ #[test] fn a_vulkan_driver_is_found_where_the_loader_looks_and_only_there(){
+  use std::ffi::OsString;
+  fn env(pairs:&'static [(&'static str,&'static str)])->impl Fn(&str)->Option<OsString>{move |k|pairs.iter().find(|(n,_)|*n==k).map(|(_,v)|OsString::from(*v))}
+  assert!(vulkan_driver_present(env(&[("HOME","/home/deck")]),|d|d=="/usr/share/vulkan/icd.d"),"the Deck: RADV in /usr/share");
+  assert!(!vulkan_driver_present(env(&[("HOME","/home/deck")]),|_|false),"no manifest anywhere");
+  assert!(vulkan_driver_present(env(&[("VK_ICD_FILENAMES","/opt/x.json")]),|_|false),"an override names a driver");
+  assert!(vulkan_driver_present(env(&[("HOME","/home/deck")]),|d|d=="/home/deck/.local/share/vulkan/icd.d"),"a user-installed driver");
+ }
+
  #[test] fn a_windows_only_backend_becomes_this_platforms_default(){
   let repair=unusable_for(&doc("[Core]\nGFXBackend = D3D\n[DSP]\nBackend = WASAPI (Exclusive Mode)\n"),LINUX,false);
   assert_eq!(repair["Core"]["GFXBackend"],"Vulkan");
