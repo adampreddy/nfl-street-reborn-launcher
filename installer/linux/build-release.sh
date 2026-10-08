@@ -112,6 +112,25 @@ cp build-release/Binaries/dolphin-tool /src/launcher/crates/reborn-ui/binaries/D
 cp /usr/bin/xdelta3 /src/launcher/crates/reborn-ui/binaries/xdelta3-x86_64-unknown-linux-gnu
 '
 
+# --- 2b. The roster Builder ----------------------------------------------------
+# reborn-builder-cli, frozen for Linux from the game tree's own source (pure
+# standard-library Python), so a Deck applies roster updates to its game the
+# way Windows does. Before it, every roster release reached a Deck only as
+# "the roster is live but the image does not carry it yet". Measured
+# 2026-10-08: on the same disc and roster, this build and the shipped Windows
+# Builder write a byte-identical image and identical portrait textures.
+BUILDER_SRC=${REBORN_BUILDER_SRC:-/mnt/c/Users/Adam/nflstreet2_clean/tools/reborn_builder}
+[ -f "$BUILDER_SRC/reborn-builder-cli.spec" ] || { echo "no Builder source at $BUILDER_SRC (set REBORN_BUILDER_SRC)"; exit 1; }
+rm -rf "$SRC/reborn_builder"; mkdir -p "$SRC/reborn_builder"
+cp -r "$BUILDER_SRC/reborn_builder" "$BUILDER_SRC/reborn-builder-cli.spec" "$SRC/reborn_builder/"
+BUILDER_HASH=$(cd "$SRC/reborn_builder" && find reborn_builder -name '*.py' | sort | xargs sha256sum | sha256sum | cut -c1-16)
+"$HERE/in-builder.sh" bash -euxc '
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-pip libpython3.10 >/dev/null
+python3 -m pip install -q "pyinstaller==6.*"
+cd /src/reborn_builder && python3 -m PyInstaller --noconfirm --clean reborn-builder-cli.spec > /dev/null
+./dist/reborn-builder-cli --help > /dev/null
+'
+
 # --- 3. The launcher AppImage -------------------------------------------------
 cp -a "$OUT/runtime-linux" "$SRC/release-runtime-copy"
 "$HERE/in-builder.sh" env REBORN_BUILD_VERSION="$BUILD_VERSION" bash -euxc '
@@ -128,6 +147,7 @@ A=$(ls /src/launcher/target-jammy/release/bundle/appimage/*.AppImage)
 W=$(mktemp -d); cd "$W"
 "$A" --appimage-extract > /dev/null
 cp -a /src/release-runtime-copy squashfs-root/usr/bin/runtime
+cp /src/reborn_builder/dist/reborn-builder-cli squashfs-root/usr/bin/reborn-builder-cli
 OFF=$("$A" --appimage-offset)
 COMP=$(unsquashfs -s -o "$OFF" "$A" | sed -n "s/^Compression //p")
 mksquashfs squashfs-root fs.sqfs -root-owned -noappend -comp "$COMP" -quiet
@@ -146,6 +166,7 @@ EX=$(mktemp -d); (cd "$EX" && "$OUT"/*.AppImage --appimage-extract >/dev/null)
   echo "launcher commit   $LAUNCHER_COMMIT"
   echo "runtime commit    $FORK_COMMIT  (Reborn Dolphin fork)"
   echo "dolphin-tool      upstream $UPSTREAM_COMMIT"
+  echo "roster Builder    source $BUILDER_HASH from $BUILDER_SRC"
   echo "Sys/Languages/User from $WIN_RUNTIME"
   echo "glibc floor       runtime $(glibc_floor "$OUT/runtime-linux")  AppImage $(glibc_floor "$EX/squashfs-root")"
   echo "sizes             $(du -sh "$OUT"/*.AppImage | cut -f1) AppImage, $(du -sh "$OUT/runtime-linux" | cut -f1) runtime"
