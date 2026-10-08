@@ -79,6 +79,29 @@ fn game_build_check(origin: &Path, pins: &[Pin]) -> Result<(Vec<String>, Vec<Str
     let pinned = |id: ComponentId| pins.iter().find(|p| p.id == id);
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
+    // Every edition runs the same emulator version. A Windows runtime pinned
+    // without its Linux build (or at a different version) leaves Decks on
+    // another emulator: netplay between them is then a version mismatch.
+    let runtimes: Vec<(&str, &str)> = [ComponentId::Runtime, ComponentId::RuntimeLinux]
+        .iter()
+        .filter_map(|id| pinned(*id).map(|p| (id.as_str(), p.version.as_str())))
+        .collect();
+    // The Linux edition exists once its runtime has ever been published here.
+    let linux_edition = std::fs::read_dir(origin.join("components"))
+        .map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("runtime-linux-")))
+        .unwrap_or(false);
+    if !runtimes.is_empty() {
+        let first = runtimes[0].1;
+        let missing_linux = linux_edition && runtimes.len() < 2;
+        if missing_linux || runtimes.iter().any(|(_, v)| *v != first) {
+            refusals.push(format!(
+                "Every edition must run the same emulator: pinned {}. Pin runtime and runtime-linux at one version.",
+                runtimes.iter().map(|(n, v)| format!("{n} {v}")).collect::<Vec<_>>().join(", ")
+            ));
+        } else {
+            notes.push(format!("emulator {first} on Windows and Linux"));
+        }
+    }
     let Some(gp) = pinned(ComponentId::GamePatch) else { return Ok((refusals, notes)) };
     let file_of = |id: ComponentId, version: &str, name: &str| -> Result<Option<PathBuf>> {
         let bytes = std::fs::read(manifest_path(origin, id, version)).map_err(|e| io_err(&manifest_path(origin, id, version), e))?;
@@ -490,6 +513,23 @@ mod tests {
         assert!(outcome.refused().is_some(), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("is not a build game-patch 1 knows")), "{lines:?}");
         assert!(!w.origin.join(RELEASE_FILE).exists(), "a refused release writes nothing");
+    }
+
+    /// Windows and Linux are pinned at one emulator version, or not signed.
+    #[test]
+    fn every_edition_runs_the_same_emulator() {
+        let w = world();
+        publish(&w, ComponentId::Runtime, "1.2.12", 1, &[("dolphin.exe", b"win")]);
+        publish(&w, ComponentId::RuntimeLinux, "1.2.12", 1, &[("dolphin-emu", b"linux")]);
+        publish(&w, ComponentId::RuntimeLinux, "1.2.11", 2, &[("dolphin-emu", b"old linux")]);
+        let both = [pin(ComponentId::Runtime, "1.2.12"), pin(ComponentId::RuntimeLinux, "1.2.12")];
+        let (o, lines) = sign(&w, "3.0.0", 1, &both, false);
+        assert!(o.refused().is_none(), "{lines:?}");
+        let apart = [pin(ComponentId::Runtime, "1.2.12"), pin(ComponentId::RuntimeLinux, "1.2.11")];
+        let (o, lines) = sign(&w, "3.0.0", 1, &apart, false);
+        assert!(o.refused().is_some() && lines.iter().any(|l| l.contains("same emulator")), "{lines:?}");
+        let (o, _) = sign(&w, "3.0.0", 1, &[pin(ComponentId::Runtime, "1.2.12")], false);
+        assert!(o.refused().is_some(), "Windows alone leaves Decks behind");
     }
 
     #[test]

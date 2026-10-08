@@ -89,7 +89,11 @@ param(
     # Setup <version>.exe", into dist. It is never on the bucket, never in the
     # launcher's own installer, and never in the player zip: none of the
     # launcher-only options below apply to it and all are rejected alongside it.
-    [switch]$Publisher
+    [switch]$Publisher,
+    # Where release-deck.sh stages the Steam Deck AppImage for a version. A
+    # stable launcher release ships Windows and Linux together, at the same
+    # version, from the same commit; see the manifest block at the end.
+    [string]$LinuxStage = "C:\Reborn Origin-stage\launcher-linux"
 )
 
 $ErrorActionPreference = "Stop"
@@ -833,6 +837,30 @@ if ($Publisher) {
         $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
         $base = $UpdateBase.TrimEnd("/") + "/"
         $assetUrl = $base + [uri]::EscapeDataString($setup.Name)
+        # EVERY EDITION, ONE VERSION. A stable release names the Steam Deck
+        # AppImage of this same version, built from this same commit, or it is
+        # not written: 3.0.33 went out Windows-only and Decks were offered
+        # nothing, and an AppImage stamped older than the manifest downloads
+        # itself again forever. Build it first:
+        #   installer/linux/release-deck.sh build <version>   (Git Bash)
+        $linux = $null
+        if ($Channel -eq "stable") {
+            $appName = "NFL Street Reborn $Version.AppImage"
+            $appPath = Join-Path $LinuxStage $appName
+            $infoPath = Join-Path $LinuxStage "BUILD-INFO-$Version.txt"
+            if (-not (Test-Path $appPath) -or -not (Test-Path $infoPath)) {
+                throw "No Steam Deck build of $Version at $appPath. Every edition ships at one version: run installer/linux/release-deck.sh build $Version first."
+            }
+            $head = (git -C $root rev-parse HEAD).Trim()
+            $built = ((Get-Content $infoPath | Where-Object { $_ -like "launcher commit*" }) -split "\s+")[-1]
+            if ($built -ne $head) {
+                throw "The Steam Deck build of $Version is from $built, this build is $head. Rebuild the Deck AppImage from this commit."
+            }
+            $appItem = Get-Item $appPath
+            $appHash = (Get-FileHash $appPath -Algorithm SHA256).Hash.ToLower()
+            $linux = [ordered]@{ url = $base + [uri]::EscapeDataString($appName) + "?v=" + $appHash.Substring(0, 8); sha256 = $appHash; bytes = $appItem.Length; file_name = $appName }
+            Write-Host ("Steam Deck build {0}: sha256 {1}... from commit {2}" -f $appName, $appHash.Substring(0, 12), $head.Substring(0, 12))
+        }
         $manifest = [ordered]@{
             schema   = "nsr.launcher-release.v1"
             version  = $Version
@@ -840,7 +868,7 @@ if ($Publisher) {
             notes    = $null
             windows  = [ordered]@{ url = $assetUrl; sha256 = $hash; bytes = $setup.Length; file_name = $setup.Name }
             macos    = $null
-            linux    = $null
+            linux    = $linux
         }
         $manifestName = if ($Channel -eq "beta") { "latest-beta.json" } else { "latest.json" }
         $manifestPath = Join-Path $dist $manifestName

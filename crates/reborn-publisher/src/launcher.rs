@@ -412,6 +412,30 @@ pub fn launcher_run(version: String, dry_run: bool) -> Result<Value, String> {
             let mut plan = UploadPlan::new();
             let exe_key = format!("launcher/{setup_name}");
             plan.blob(exe_key.clone(), exe_path.clone(), our_len, our_hash.clone());
+
+            // Every edition, one version: the Steam Deck AppImage this
+            // manifest names goes up with the exe, checked the same way, or
+            // nothing does. (3.0.33 went live Windows-only; Decks were
+            // offered nothing.) build.ps1 refuses to write a stable manifest
+            // without it; this is the second lock.
+            let Some(linux) = manifest.linux.clone() else {
+                return Ok(refuse(sink, &[format!(
+                    "{} names no Steam Deck build. Every edition ships at one version: run \
+                     installer/linux/release-deck.sh build {version}, then build again. Nothing was uploaded.",
+                    manifest_path.display()
+                )]));
+            };
+            let app_path = PathBuf::from(r"C:\Reborn Origin-stage\launcher-linux").join(&linux.file_name);
+            let app_bytes = std::fs::metadata(&app_path).map(|m| m.len()).unwrap_or(0);
+            let app_hash = reborn_core::library::hash_file(&app_path).map_err(|e| plain_err(format!("{}: {e}", app_path.display())))?;
+            if app_hash.as_str() != linux.sha256.as_str() || app_bytes != linux.bytes {
+                return Ok(refuse(sink, &[format!(
+                    "{} is sha256 {} ({app_bytes} byte(s)) but latest.json names {} ({} byte(s)). Nothing was uploaded.",
+                    app_path.display(), app_hash.as_str(), linux.sha256.as_str(), linux.bytes
+                )]));
+            }
+            out!(sink, "Confirmed     {} matches latest.json independently: {app_bytes} byte(s), sha256 {}", app_path.display(), app_hash.as_str());
+            plan.blob(format!("launcher/{}", linux.file_name), app_path.clone(), app_bytes, app_hash.clone());
             let manifest_key = "launcher/latest.json".to_string();
             let manifest_sha = Sha256Hex::from_bytes(&manifest_bytes);
             plan.release_file(
