@@ -787,7 +787,8 @@ const CREDENTIAL_STORE_NAME: &str = if cfg!(windows) {
 
 /// Secrets in the operating system's store, and nowhere else.
 ///
-/// There is no fallback, on purpose. If the platform store cannot be reached,
+/// There is no fallback, on purpose, except one: Linux with no Secret Service
+/// (a Steam Deck in Game Mode), see `linux_file_vault`. Elsewhere, if the platform store cannot be reached,
 /// every method fails and says so. The tempting alternative, a file under the
 /// data root, would turn a Discord token into something any process running as
 /// the user can read, and it would pass every test in this file.
@@ -811,6 +812,74 @@ impl OsCredentialVault {
     }
 }
 
+/// Where secrets go on Linux when no Secret Service answers, or None when one
+/// does (then the platform store is used, as everywhere else).
+///
+/// The one exception to "the operating system's store, and nowhere else". A
+/// Steam Deck in Game Mode runs no desktop session, so neither KWallet nor
+/// gnome-keyring is there to answer, and every sign-in and stats upload failed
+/// ("results could not be sent", Deck build, 2026-10). Steam keeps its own
+/// login in a file on the same machine. So here, and only here: one file per
+/// account under `<data root>/credentials/`, the folder 0700 and the file 0600
+/// from the moment they are created, written whole and read back.
+#[cfg(target_os = "linux")]
+fn linux_file_vault() -> Option<PathBuf> {
+    if keyring::Entry::store_status().is_ok() {
+        return None;
+    }
+    RealPaths { channel: Channel::detect().channel }.data_root().ok().map(|d| d.join("credentials"))
+}
+
+#[cfg(target_os = "linux")]
+fn file_vault_path(dir: &Path, account: &str) -> Result<PathBuf> {
+    if account.is_empty() || !account.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return Err(Error::CredentialStore(format!("{account:?} cannot name a credential file")));
+    }
+    Ok(dir.join(account))
+}
+
+#[cfg(target_os = "linux")]
+fn file_vault_store(dir: &Path, account: &str, secret: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    let io = |path: &Path, source: std::io::Error| Error::Io { path: path.to_path_buf(), source };
+    let path = file_vault_path(dir, account)?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| io(dir, e))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| io(dir, e))?;
+    let tmp = dir.join(format!(".{account}.tmp"));
+    let _ = std::fs::remove_file(&tmp);
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| io(&tmp, e))?;
+        f.write_all(secret.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| io(&tmp, e))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| io(&path, e))?;
+    match std::fs::read_to_string(&path) {
+        Ok(back) if back == secret => Ok(()),
+        Ok(_) => Err(Error::CredentialStore(format!("the credential file for {account:?} read back different"))),
+        Err(e) => Err(io(&path, e)),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn file_vault_retrieve(dir: &Path, account: &str) -> Result<Option<String>> {
+    let path = file_vault_path(dir, account)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Io { path, source }),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn file_vault_delete(dir: &Path, account: &str) -> Result<()> {
+    let path = file_vault_path(dir, account)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io { path, source }),
+    }
+}
+
 impl CredentialVault for OsCredentialVault {
     /// Store a secret, then read it straight back before reporting success.
     ///
@@ -824,6 +893,10 @@ impl CredentialVault for OsCredentialVault {
     /// and the user signs in twice. The other way round is a user who is told
     /// they are signed in and is not.
     fn store(&self, account: &str, secret: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(dir) = linux_file_vault() {
+            return file_vault_store(&dir, account, secret);
+        }
         let entry = Self::entry(account)?;
         entry
             .set_password(secret)
@@ -851,6 +924,10 @@ impl CredentialVault for OsCredentialVault {
     /// them a store failure sends them hunting for a problem that does not
     /// exist.
     fn retrieve(&self, account: &str) -> Result<Option<String>> {
+        #[cfg(target_os = "linux")]
+        if let Some(dir) = linux_file_vault() {
+            return file_vault_retrieve(&dir, account);
+        }
         let entry = Self::entry(account)?;
         match entry.get_password() {
             Ok(secret) => Ok(Some(secret)),
@@ -865,6 +942,10 @@ impl CredentialVault for OsCredentialVault {
     /// caller forced to special-case "it was already gone" will eventually leave
     /// a token behind instead.
     fn delete(&self, account: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(dir) = linux_file_vault() {
+            return file_vault_delete(&dir, account);
+        }
         let entry = Self::entry(account)?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
@@ -1208,6 +1289,26 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         format!("reborn-test-{tag}-{}-{nanos}", std::process::id())
+    }
+
+    /// The Linux file vault: owner-only, round trip, absent is None, delete is idempotent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_linux_file_vault_keeps_a_secret_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(probe_account("vault")).join("credentials");
+        assert_eq!(file_vault_retrieve(&dir, "discord").unwrap(), None);
+        file_vault_store(&dir, "discord", "tok-123").unwrap();
+        assert_eq!(file_vault_retrieve(&dir, "discord").unwrap().as_deref(), Some("tok-123"));
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("discord")), 0o600);
+        file_vault_store(&dir, "discord", "tok-456").unwrap();
+        assert_eq!(file_vault_retrieve(&dir, "discord").unwrap().as_deref(), Some("tok-456"));
+        file_vault_delete(&dir, "discord").unwrap();
+        file_vault_delete(&dir, "discord").unwrap();
+        assert_eq!(file_vault_retrieve(&dir, "discord").unwrap(), None);
+        assert!(file_vault_store(&dir, "../escape", "x").is_err());
     }
 
     /// Whether to stop before touching the credential store.
