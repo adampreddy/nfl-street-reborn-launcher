@@ -178,11 +178,32 @@ impl BlobSource for Origin {
         // uploaded, and the bare URL then fails every client's fetch (09-26, two seed files; the
         // same lever the launcher's own update URL has always carried).
         let url = format!("{}?v={}", self.url(&blob_path(&req.file.sha256)), &req.file.sha256.as_str()[..8]);
-        let mut request = self.agent.get(&url);
-        if req.offset > 0 {
-            request = request.set("Range", &format!("bytes={}-", req.offset));
+        let call = || {
+            let mut request = self.agent.get(&url);
+            if req.offset > 0 {
+                request = request.set("Range", &format!("bytes={}-", req.offset));
+            }
+            request.call()
+        };
+        // A host's passing error is asked again, not reported. One 500 out of
+        // 9,111 texture files stopped a whole 8 GB download until the player
+        // pressed Try again (Deck build test, 2026-10-06; the same file
+        // answered 200 straight after). 5xx, 429 and a failed connection are
+        // retried after 1, 2 and 4 s; anything else is an answer.
+        let mut outcome = call();
+        for wait in RETRY_WAITS {
+            let passing = match &outcome {
+                Err(ureq::Error::Status(status, _)) => *status >= 500 || *status == 429,
+                Err(ureq::Error::Transport(_)) => true,
+                Ok(_) => false,
+            };
+            if !passing {
+                break;
+            }
+            std::thread::sleep(wait);
+            outcome = call();
         }
-        match request.call() {
+        match outcome {
             Ok(resp) => {
                 if req.offset > 0 && resp.status() != 206 {
                     return Err(invalid(format!(
@@ -210,6 +231,14 @@ impl BlobSource for Origin {
         }
     }
 }
+
+/// The waits between asking a blob again after a passing error. Shortened
+/// under test so a retry test does not sleep for seven seconds.
+#[cfg(not(test))]
+const RETRY_WAITS: [std::time::Duration; 3] =
+    [std::time::Duration::from_secs(1), std::time::Duration::from_secs(2), std::time::Duration::from_secs(4)];
+#[cfg(test)]
+const RETRY_WAITS: [std::time::Duration; 3] = [std::time::Duration::from_millis(10); 3];
 
 fn invalid(msg: String) -> Error {
     Error::PlainIo(std::io::Error::new(std::io::ErrorKind::InvalidData, msg))
@@ -317,6 +346,62 @@ mod tests {
         }
         let o = Origin::new("http://h/x");
         assert_eq!(o.url("https://elsewhere/c.json"), "https://elsewhere/c.json");
+    }
+
+    /// A host that answers `failures` requests with `status` before serving `body`.
+    fn flaky(status: &'static str, failures: usize, body: Vec<u8>) -> (String, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let addr = listener.local_addr().expect("addr");
+        let seen = Arc::new(Mutex::new(0usize));
+        let count = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let _ = s.read(&mut [0u8; 8192]);
+                let n = { let mut c = count.lock().expect("count"); *c += 1; *c };
+                let (line, b) = if n <= failures { (status, Vec::new()) } else { ("200 OK", body.clone()) };
+                let _ = write!(s, "HTTP/1.1 {line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len());
+                let _ = s.write_all(&b);
+            }
+        });
+        (format!("http://{addr}/"), seen)
+    }
+
+    /// One 500 among 9,111 texture files stopped a whole download (2026-10-06).
+    #[test]
+    fn a_passing_server_error_is_asked_again_and_the_blob_arrives() {
+        let data = b"a texture".to_vec();
+        let (_, file) = blob(&data);
+        let (base, seen) = flaky("500 Internal Server Error", 2, data.clone());
+        let got = read_all(
+            Origin::new(&base)
+                .open(&BlobRequest { component: "textures", version: "1", file: &file, offset: 0 })
+                .expect("open after two 500s"),
+        );
+        assert_eq!(got, data);
+        assert_eq!(*seen.lock().expect("count"), 3, "two failures, then the blob");
+    }
+
+    #[test]
+    fn a_server_error_that_does_not_pass_is_still_reported() {
+        let (_, file) = blob(b"x");
+        let (base, seen) = flaky("503 Service Unavailable", 99, Vec::new());
+        let err = Origin::new(&base)
+            .open(&BlobRequest { component: "textures", version: "1", file: &file, offset: 0 })
+            .err()
+            .expect("an error");
+        assert!(err.to_string().contains("answered 503"), "{err}");
+        assert_eq!(*seen.lock().expect("count"), 4, "the first ask and three retries");
+    }
+
+    #[test]
+    fn a_missing_blob_is_not_asked_again() {
+        let (_, file) = blob(b"x");
+        let (base, seen) = flaky("404 Not Found", 99, Vec::new());
+        assert!(Origin::new(&base)
+            .open(&BlobRequest { component: "textures", version: "1", file: &file, offset: 0 })
+            .is_err());
+        assert_eq!(*seen.lock().expect("count"), 1, "a 404 is an answer");
     }
 
     #[test]

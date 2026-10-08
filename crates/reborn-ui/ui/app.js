@@ -56,6 +56,14 @@ function get(key) {
 
 // A path as a person pasted it, cleaned.
 //
+// A child of a folder the player typed, joined with the separator that folder
+// already uses: a backslash on Windows, a slash on Linux and macOS.
+function joinPath(root, name) {
+  const text = String(root || "");
+  const sep = text.includes("/") && !text.includes("\\") ? "/" : "\\";
+  return text.replace(/[\\/]+$/, "") + sep + name;
+}
+
 // Windows Explorer's Copy as path wraps the path in quotes. Pasted into a box
 // they are stored with it, and the result matches nothing while looking
 // perfect: the refusal prints the path back with the quotes, and they read as
@@ -217,7 +225,7 @@ const FEATURES = [
         cmd: "jsgme_library",
         desc: "Read the real JSGME mods on disk",
         inputs: [
-          { key: "modsRoot", placeholder: "MODS folder", derive: () => get("legacyRoot") + "\\MODS" },
+          { key: "modsRoot", placeholder: "MODS folder", derive: () => joinPath(get("legacyRoot"), "MODS") },
           { key: "games", placeholder: "game ids, comma separated", list: true },
         ],
       },
@@ -350,7 +358,7 @@ const FEATURES = [
         write: true,
         confirm: true,
         inputs: [
-          { key: "userDir", placeholder: "Dolphin user folder", derive: () => get("userDir") || get("legacyRoot") + "\\User" },
+          { key: "userDir", placeholder: "Dolphin user folder", derive: () => get("userDir") || joinPath(get("legacyRoot"), "User") },
           { key: "sessionId", placeholder: "session id, optional" },
         ],
       },

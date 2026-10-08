@@ -159,12 +159,24 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let _guard=LaunchGuard::acquire()?;
         let p=Platform::detect();
         let data=p.paths.data_root().map_err(|e|e.to_string())?;
-        let bundle=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().join("game-import");
+        // The bundle (manifest + reborn.xdelta) is the content component once
+        // it has arrived, else the installer's folder beside the launcher. The
+        // tools come from wherever this launcher carries them: the AppImage's
+        // usr/bin on Linux, the same game-import folder on Windows.
+        let exe_dir=std::env::current_exe().map_err(|e|e.to_string())?.parent().unwrap().to_path_buf();
+        // A one-file launcher (Linux AppImage) fetches the patch as content;
+        // first run reaches this step before any content check has run.
+        if !reborn_core::game_patch::bundle_dir(&p,&data).join("manifest.json").is_file()
+            || !reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE).is_file() {
+            let _=app.emit("game-import-progress",serde_json::json!({"stage":"Downloading the game patch…","percent":null}));
+        }
+        let bundle=crate::content_updates::ensure_import_bundle(&p)?;
+        let tools=reborn_core::game_patch::find_import_tools(&p,&[exe_dir.join(reborn_core::game_patch::BUNDLE_DIR)]).unwrap_or_else(||bundle.clone());
         let source=reborn_core::session::user_path(&image);
         // Game ID is the sole content acceptance gate. Patch compatibility is
         // separate: preserve an existing/modified image if it cannot use this delta.
         check_reborn_id(&source)?;
-        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_progress(&bundle,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
+        let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_tools(&bundle,&tools,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
             Ok(output)=>(output,true,None),
             Err(reason) => {
                 let _=app.emit("game-import-progress",serde_json::json!({"stage":"Importing your game file...","percent":null}));
@@ -184,7 +196,18 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         // the bundle patched an original disc ("bundle"), the chain moved an
         // older Reborn disc forward ("patched"), or the disc already was the
         // newest ("newest"). "unknown" is a disc nothing recognised.
-        let (outcome,label,note)=if patched {("bundle".to_string(),Some("NSRV3".to_string()),None)} else {
+        // ⛔ The bundle's output is the build the bundle was made for (9a6fde…),
+        // not the newest: the chain has moved on since (seven builds by
+        // 2026-10, GameBreaker persistence and port 3/4 uniforms among them),
+        // and nothing else walks a fresh import forward until a game-patch
+        // update happens to arrive. Found on the Deck port: a fresh install
+        // played 9a6fde… with the newest build already on disk. So the
+        // bundle's output is walked to the head here too; the wording stays
+        // "bundle" because the player imported an original disc.
+        let (outcome,label,note)=if patched {
+            let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
+            ("bundle".to_string(),Some(o.applied().map(String::from).unwrap_or_else(||"NSRV3".to_string())),o.note().map(String::from))
+        } else {
             let o=patch_to_newest(&p,&|stage|{let _=app.emit("game-import-progress",serde_json::json!({"stage":stage,"percent":null}));})?;
             (o.name().to_string(),o.applied().map(String::from),o.note().map(String::from))
         };
@@ -578,7 +601,11 @@ fn land_as_pristine(p:&Platform,data:&Path,landed:&Path,sha:&str)->Result<PathBu
     // already there holds this build. A different length means an earlier
     // run died part way through; that is the one case worth redoing.
     if target.is_file(){
-        if same_size(&target,landed){return Ok(target);}
+        // The bytes, not the size: a pristine file can be the same length and
+        // hold a different build (a Deck's read "1070822a…" in a folder named
+        // for another hash, 2026-10), and keeping it would undo the download.
+        let intact=same_size(&target,landed)&&reborn_core::library::hash_file(&target).map(|h|h.as_str()==sha).unwrap_or(false);
+        if intact{return Ok(target);}
         std::fs::remove_file(&target).map_err(|e|e.to_string())?;
     }
     std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
@@ -597,7 +624,7 @@ fn land_as_pristine(p:&Platform,data:&Path,landed:&Path,sha:&str)->Result<PathBu
 ///
 /// `game-full` is 1.36 GB that a normal install must never fetch, and one
 /// exclusion is what keeps that true, not a download stack of its own:
-/// `pipeline::UPDATABLE` does not list it, so the automatic
+/// `pipeline::updatable` does not list it, so the automatic
 /// check/fetch/promote loop never asks for it however many releases pin it.
 /// Naming it here, on a button press, is the only way it is fetched at all.
 ///
@@ -630,7 +657,7 @@ pub async fn setup_download_reborn_game(app: tauri::AppHandle) -> Result<String,
 /// is a plain function and not a call to the command: `LaunchGuard::acquire`
 /// is a compare_exchange, so a caller that already holds it would be told the
 /// launcher is busy by its own recovery step.
-fn download_reborn_game(app:&tauri::AppHandle)->Result<PathBuf,String>{
+pub(crate) fn download_reborn_game(app:&tauri::AppHandle)->Result<PathBuf,String>{
     use tauri::Emitter;
     use std::sync::atomic::{AtomicBool,Ordering};
     use reborn_core::content::pipeline::{CheckRequest,ComponentState,Depth,FetchOutcomeState,ImageHook,PromoteState,Updater};
@@ -642,6 +669,8 @@ fn download_reborn_game(app:&tauri::AppHandle)->Result<PathBuf,String>{
     // chain to consult, which would condemn the very build this command
     // downloads. Same reason `setup_import_game` seeds it.
     seed_game_patch(&p)?;
+    // A one-file launcher (Linux AppImage) ships no chain: download it.
+    crate::content_updates::ensure_patch_chain(&p)?;
 
     say("Looking for the Reborn game…",Some(0));
     let settings_file=reborn_core::settings::settings_path(&p).map_err(|e|e.to_string())?;
@@ -807,6 +836,7 @@ pub async fn setup_migrate_install(app:tauri::AppHandle,root:String,image:String
         // The bundled runtime by whichever name this build gave the emulator.
         // 3.1.0 renamed Dolphin.exe to NFL Street Reborn Dolphin.exe, and a
         // fixed file name here refused every import against that runtime.
+        let _=crate::content_updates::ensure_runtime(&p);
         let runtime=match reborn_core::session::resolve_runtime(&p,None,None){Ok(reborn_core::session::Runtime::Bundled(path))=>path,_=>return Err("The new launcher runtime is missing. Reinstall the complete package.".into())};
         let source=reborn_core::session::user_path(&image);check_reborn_id(&source)?;
         let data=p.paths.data_root().map_err(|e|e.to_string())?;

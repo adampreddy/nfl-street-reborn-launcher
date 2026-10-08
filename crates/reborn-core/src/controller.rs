@@ -131,6 +131,92 @@ impl GcInput {
 pub type PhysicalBinding = String;
 
 /// A complete set of bindings.
+/// A pad read through Linux Dolphin's evdev backend.
+///
+/// Every name in [`Mapping::candidates`] comes from Windows: XInput, Windows'
+/// own button labels, SDL. Linux Dolphin reads pads through evdev, which names
+/// buttons after the kernel's key codes (`SOUTH`, `START`, `TR`) and axes by
+/// position (`Axis 0+`), so a Steam Deck reported "20 of 20 controls cannot be
+/// set up automatically" on both its own controller and Steam's virtual pad
+/// (tester, 2026-10-03). Read out of the fork's evdev.cpp: a button is its key
+/// code name less `BTN_`; an axis is `Axis <n>±`, n counting only the absolute
+/// axes the device has, in code order.
+///
+/// Axis numbers mean different things on different devices, so these tables
+/// are used only when the names show an evdev gamepad, and never on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxPad {
+    /// Steam Input's virtual "Microsoft X-Box 360 pad", the only pad a game
+    /// sees in Game Mode, and the xpad driver's own layout: ABS_X Y Z RX RY RZ
+    /// HAT0X HAT0Y = Axis 0..7, analog triggers on Z and RZ.
+    SteamVirtual,
+    /// The Deck's own controller through hid-steam (desktop mode): sticks on
+    /// X Y RX RY (Axis 0..3), digital L2/R2 buttons, the d-pad as buttons.
+    DeckRaw,
+}
+
+impl LinuxPad {
+    /// Which layout these names are, if they are an evdev gamepad at all.
+    /// `START` in capitals is evdev's alone (XInput says `Start`).
+    pub fn from_names(available: &[String]) -> Option<Self> {
+        let has = |n: &str| available.iter().any(|a| Mapping::bare(a) == n);
+        if !(has("START") || has("SOUTH")) {
+            return None;
+        }
+        Some(if has("TL2") && has("TR2") && has("DPAD_UP") { Self::DeckRaw } else { Self::SteamVirtual })
+    }
+
+    pub fn candidates(self, input: GcInput) -> &'static [&'static str] {
+        use GcInput::*;
+        // Face buttons by kernel code: 0x130 SOUTH (Xbox A), 0x131 EAST (B),
+        // 0x133 NORTH, which xpad and Steam send for Xbox X, 0x134 WEST for
+        // Xbox Y. Older libevdev spells the same codes A, B, X, Y.
+        match (self, input) {
+            (_, ButtonA) => &["SOUTH", "A"],
+            (_, ButtonB) => &["EAST", "B"],
+            (_, ButtonX) => &["NORTH", "X"],
+            (_, ButtonY) => &["WEST", "Y"],
+            (_, ButtonZ) => &["TR"],
+            (_, Start) => &["START"],
+            // Y+ is down on evdev.
+            (_, MainStickUp) => &["Axis 1-"],
+            (_, MainStickDown) => &["Axis 1+"],
+            (_, MainStickLeft) => &["Axis 0-"],
+            (_, MainStickRight) => &["Axis 0+"],
+            (Self::SteamVirtual, CStickUp) => &["Axis 4-"],
+            (Self::SteamVirtual, CStickDown) => &["Axis 4+"],
+            (Self::SteamVirtual, CStickLeft) => &["Axis 3-"],
+            (Self::SteamVirtual, CStickRight) => &["Axis 3+"],
+            (Self::SteamVirtual, TriggerL) => &["Axis 2+"],
+            (Self::SteamVirtual, TriggerR) => &["Axis 5+"],
+            (Self::SteamVirtual, DPadUp) => &["Axis 7-", "DPAD_UP"],
+            (Self::SteamVirtual, DPadDown) => &["Axis 7+", "DPAD_DOWN"],
+            (Self::SteamVirtual, DPadLeft) => &["Axis 6-", "DPAD_LEFT"],
+            (Self::SteamVirtual, DPadRight) => &["Axis 6+", "DPAD_RIGHT"],
+            (Self::DeckRaw, CStickUp) => &["Axis 3-"],
+            (Self::DeckRaw, CStickDown) => &["Axis 3+"],
+            (Self::DeckRaw, CStickLeft) => &["Axis 2-"],
+            (Self::DeckRaw, CStickRight) => &["Axis 2+"],
+            (Self::DeckRaw, TriggerL) => &["TL2"],
+            (Self::DeckRaw, TriggerR) => &["TR2"],
+            (Self::DeckRaw, DPadUp) => &["DPAD_UP"],
+            (Self::DeckRaw, DPadDown) => &["DPAD_DOWN"],
+            (Self::DeckRaw, DPadLeft) => &["DPAD_LEFT"],
+            (Self::DeckRaw, DPadRight) => &["DPAD_RIGHT"],
+        }
+    }
+
+    pub fn extra_candidates(self, extra: Extra) -> &'static [&'static str] {
+        match (self, extra) {
+            (Self::SteamVirtual, Extra::AnalogTriggerL) => &["Axis 2+"],
+            (Self::SteamVirtual, Extra::AnalogTriggerR) => &["Axis 5+"],
+            (Self::DeckRaw, Extra::AnalogTriggerL) => &["TL2"],
+            (Self::DeckRaw, Extra::AnalogTriggerR) => &["TR2"],
+            (_, Extra::RumbleMotor) => &["Strong"],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mapping(BTreeMap<GcInput, PhysicalBinding>);
 
@@ -315,11 +401,15 @@ impl Mapping {
     /// (`Circle` on A, `Trigger R` on Z) is the player's.
     pub fn is_own_vocabulary(input: GcInput, value: &str) -> bool {
         Self::names_are_all_in(value, Self::candidates(input))
+            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.candidates(input))
+            || Self::names_are_all_in(value, LinuxPad::DeckRaw.candidates(input))
     }
 
     /// [`Mapping::is_own_vocabulary`] for the three non-GameCube bindings.
     pub fn extra_is_own_vocabulary(extra: Extra, value: &str) -> bool {
         Self::names_are_all_in(value, Self::extra_candidates(extra))
+            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.extra_candidates(extra))
+            || Self::names_are_all_in(value, LinuxPad::DeckRaw.extra_candidates(extra))
     }
 
     fn names_are_all_in(value: &str, names: &[&str]) -> bool {
@@ -359,9 +449,13 @@ impl Mapping {
     pub fn auto_from(available: &[String]) -> (Self, Vec<GcInput>) {
         let mut mapping = Mapping(BTreeMap::new());
         let mut unmatched = Vec::new();
+        let linux = LinuxPad::from_names(available);
         for input in GcInput::ALL {
-            let found = Self::candidates(*input)
+            let found = linux
+                .map(|pad| pad.candidates(*input))
+                .unwrap_or(&[])
                 .iter()
+                .chain(Self::candidates(*input))
                 .find(|candidate| available.iter().any(|a| Self::bare(a) == **candidate));
             match found {
                 Some(name) => {
@@ -548,9 +642,13 @@ impl Extras {
     /// indistinguishable from a bug while reading the file.
     pub fn from_device(available: &[String]) -> Self {
         let mut out = Self::default();
+        let linux = LinuxPad::from_names(available);
         for extra in Extra::ALL {
-            let found = Mapping::extra_candidates(*extra)
+            let found = linux
+                .map(|pad| pad.extra_candidates(*extra))
+                .unwrap_or(&[])
                 .iter()
+                .chain(Mapping::extra_candidates(*extra))
                 .find(|c| available.iter().any(|a| Mapping::bare(a) == **c));
             out.set(
                 *extra,

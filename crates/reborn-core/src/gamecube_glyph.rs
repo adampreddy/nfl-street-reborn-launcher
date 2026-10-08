@@ -191,19 +191,38 @@ pub fn apply(image: &Path, wanted: bool) -> std::io::Result<Outcome> {
         return Ok(Outcome::Unrecognised);
     }
 
-    file.seek(SeekFrom::Start(off))?;
-    file.write_all(want_bytes)?;
-    file.flush()?;
-
-    // Read it back: a short write into a 1.4 GB image must not pass silently.
-    file.seek(SeekFrom::Start(off))?;
-    let mut back = vec![0u8; len as usize];
-    file.read_exact(&mut back)?;
-    if hex(&Sha256::digest(&back)) != want_sha {
-        return Err(std::io::Error::other(format!(
-            "{FILE_NAME} did not read back as {want_sha} after writing"
-        )));
+    // Never in place. The booted image is a HARDLINK of the pristine image
+    // (game_image::establish_booted, the common case), so a write into it was
+    // a write into the pristine build the game updates patch from: the
+    // pristine stopped being a build the chain knows, and online refused the
+    // player with "is not a build this update knows" (a Deck, 2026-10). A
+    // private copy is written and swapped in, which leaves the pristine's
+    // bytes alone. It costs one image copy, and only when the profile changes.
+    drop(file);
+    let tmp = image.with_extension("glyph.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::copy(image, &tmp)?;
+    let written = (|| -> std::io::Result<()> {
+        let mut copy = std::fs::OpenOptions::new().read(true).write(true).open(&tmp)?;
+        copy.seek(SeekFrom::Start(off))?;
+        copy.write_all(want_bytes)?;
+        copy.flush()?;
+        // Read it back: a short write into a 1.4 GB image must not pass silently.
+        copy.seek(SeekFrom::Start(off))?;
+        let mut back = vec![0u8; len as usize];
+        copy.read_exact(&mut back)?;
+        if hex(&Sha256::digest(&back)) != want_sha {
+            return Err(std::io::Error::other(format!(
+                "{FILE_NAME} did not read back as {want_sha} after writing"
+            )));
+        }
+        copy.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
+    std::fs::rename(&tmp, image)?;
     Ok(if wanted { Outcome::WroteVariant } else { Outcome::WroteShipped })
 }
 
@@ -273,6 +292,20 @@ mod tests {
     /// come out of this byte-identical to the disc they downloaded. Their image
     /// already holds the shipped copy, so nothing is written at all: not a
     /// rewrite of the same bytes, no write.
+    /// The booted image is a hardlink of the pristine one. Writing the
+    /// variant must leave the pristine's bytes alone, or the game updates
+    /// stop recognising it (a Deck, 2026-10).
+    #[test]
+    fn writing_the_variant_never_touches_a_hardlinked_pristine() {
+        let (dir, booted) = disc_with(SHIPPED);
+        let pristine = dir.path().join("pristine.iso");
+        std::fs::hard_link(&booted, &pristine).expect("hardlink");
+        let before = std::fs::read(&pristine).unwrap();
+        assert_eq!(apply(&booted, true).unwrap(), Outcome::WroteVariant);
+        assert_eq!(std::fs::read(&pristine).unwrap(), before, "the pristine changed with the booted image");
+        assert_eq!(apply(&booted, true).unwrap(), Outcome::AlreadyRight);
+    }
+
     #[test]
     fn a_disc_outside_the_gamecube_profile_is_never_written() {
         let (_d, iso) = disc_with(SHIPPED);

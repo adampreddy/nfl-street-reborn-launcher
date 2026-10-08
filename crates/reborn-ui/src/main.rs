@@ -638,8 +638,18 @@ fn find_runtime_and_game_for(
     // nothing is dropped, so the search is not poisoned by a dead path.
     let live_hint = cleaned_runtime.as_deref().filter(|path| path.is_file());
 
-    let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root)
-        .map_err(|looked| reborn_core::session::no_runtime_message(&looked))?;
+    // A Linux launcher fetches its emulator as content, in the background;
+    // a page never waits for it here (see content_updates::runtime_now).
+    let found = reborn_core::session::resolve_runtime(platform, live_hint, legacy_root).map_err(|looked| {
+        let message = reborn_core::session::no_runtime_message(&looked);
+        match content_updates::runtime_now(platform) {
+            content_updates::RuntimeNow::Downloading => {
+                "Reborn is still downloading its emulator. This takes a minute or two the first time.".to_string()
+            }
+            content_updates::RuntimeNow::Failed(why) => format!("Reborn could not download its emulator: {why}. {message}"),
+            content_updates::RuntimeNow::Ready => message,
+        }
+    })?;
 
     let game = match game_hint
         .map(reborn_core::session::user_path)
@@ -676,6 +686,8 @@ fn runtime_for(platform: &Platform, hint: Option<&str>) -> Option<PathBuf> {
     let cleaned = hint.map(reborn_core::session::user_path);
     let live = cleaned.as_deref().filter(|p| p.is_file());
     let legacy = default_legacy_root(platform);
+    // Tolerant lookups (which user folder the mods link, and so on) never wait
+    // for the emulator download: the background start fetches it.
     reborn_core::session::resolve_runtime(platform, live, legacy.as_deref())
         .ok()
         .map(|r| r.path().to_path_buf())
@@ -1179,6 +1191,7 @@ fn may_play_before_boot(p: &Platform, game_path: &Path) -> Result<reborn_core::g
 /// thread drawing the window.
 #[tauri::command]
 async fn launch(
+    app: tauri::AppHandle,
     runtime: Option<String>,
     game: Option<String>,
     preset: String,
@@ -1195,6 +1208,11 @@ async fn launch(
         let p = Platform::detect();
         let legacy = default_legacy_root(&p);
         let chosen_user = selected_user_dir(&p, user_dir.as_deref())?;
+        // Play is worth waiting for: let a running emulator download finish.
+        content_updates::ensure_runtime(&p);
+        // A game image left on an older build the chain knows goes to the
+        // newest first (once; quiet when current). See walk_image_to_head.
+        let _ = content_updates::walk_image_to_head(&p);
         let (found, game_path) = find_runtime_and_game_for(
             &p,
             runtime.as_deref(),
@@ -1219,7 +1237,18 @@ async fn launch(
             textures: standing,
         };
 
-        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string())?;
+        // Game Mode shows one window at a time. The launcher steps aside so
+        // the game is the window gamescope shows, and comes back when it ends.
+        let step_aside = reborn_core::platform::in_game_mode();
+        let window = tauri::Manager::get_webview_window(&app, "main");
+        if step_aside {
+            if let Some(w) = &window { let _ = w.hide(); }
+        }
+        let launched = Session::run(&p, &req).map_err(|e| e.player_message().to_string());
+        if step_aside {
+            if let Some(w) = &window { let _ = w.show(); let _ = w.set_focus(); }
+        }
+        let launched = launched?;
 
         // The guard, back, before anything reaches the network. `Session::run`
         // has already given the single-instance lock back; this is the other
@@ -3294,6 +3323,8 @@ async fn onboarding_confirm_game(
             checked_setup_image(&reborn_core::session::user_path(chosen))?;
         }
         let user = selected_user_dir(&p, None)?;
+        // The game search reads the emulator's folders: wait for its download.
+        content_updates::ensure_runtime(&p);
         let (_, game) = find_runtime_and_game_for(&p, None, image.as_deref(), legacy.as_deref(), user.as_deref())?;
         let total_bytes = Some(checked_setup_image(&game)?);
         let file = reborn_core::settings::settings_path(&p).map_err(|e| e.to_string())?;
@@ -4737,6 +4768,14 @@ async fn settings_paths() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn pick_path(kind: String) -> Result<Option<String>, String> {
+    // The Linux first-run test (installer/linux/e2e_first_run.py) cannot click
+    // a native file dialog, and the page's invoke cannot be swapped (Tauri
+    // freezes it). Set only by that test; a player never has it.
+    if kind == "game" {
+        if let Some(path) = std::env::var_os("REBORN_E2E_PICK_GAME") {
+            return Ok(Some(PathBuf::from(path).display().to_string()));
+        }
+    }
     let dialog = rfd::AsyncFileDialog::new().set_title("Choose a location for NFL Street Reborn");
     let picked = match kind.as_str() {
         "folder" => dialog.pick_folder().await,
@@ -5213,7 +5252,12 @@ async fn update_apply(path: String, confirm: bool) -> Result<UpdateApplyView, St
         Ok(UpdateApplyView {
             started: true,
             installer: installer.display().to_string(),
-            note: "The installer is running. The launcher closes now and the installer opens it again when it is done.".to_string(),
+            note: if cfg!(windows) {
+                "The installer is running. The launcher closes now and the installer opens it again when it is done."
+            } else {
+                "The update is in place. The launcher closes now and opens again updated."
+            }
+            .to_string(),
         })
     })
     .await
@@ -6323,6 +6367,7 @@ fn open_game_folder(platform: &Platform) -> Result<PathBuf, String> {
     let saved = saved_paths(platform)?;
     let legacy = default_legacy_root(platform);
     let hint = saved.runtime_exe.as_deref().filter(|p| p.is_file());
+    let _ = content_updates::ensure_runtime(platform);
     let exe = reborn_core::session::resolve_runtime(platform, hint, legacy.as_deref())
         .ok()
         .map(|r| r.path().to_path_buf());
@@ -6496,7 +6541,29 @@ fn main() {
         Mode::Window => {}
     }
 
+    // Steam Deck Game Mode (gamescope). The window is fullscreen there:
+    // gamescope has no title bar or desktop to fit a window into.
+    //
+    // No WEBKIT_DISABLE_DMABUF_RENDERER. It was set here as the usual remedy
+    // for a blank WebKit window under gamescope, and it was the crash: with
+    // it, every page after the first killed the web process ("every panel
+    // besides Play crashes", Deck tester 2026-10-03). Reproduced with
+    // XDG_CURRENT_DESKTOP=gamescope: flag set, Settings crashes; flag off,
+    // every page opens. Desktop Mode never had it and works.
+    let game_mode = reborn_core::platform::in_game_mode();
+
     tauri::Builder::default()
+        .setup(move |app| {
+            // A one-file Linux launcher fetches its emulator now, in the
+            // background, so no page waits for it.
+            content_updates::start_runtime_download();
+            if game_mode {
+                if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                    let _ = w.set_fullscreen(true);
+                }
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. }=event {
                 let content=content_updates::close_state();

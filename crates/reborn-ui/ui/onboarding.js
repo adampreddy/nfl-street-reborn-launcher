@@ -689,11 +689,144 @@ const SCREENS = {
       }};
   },
 
-  completion: () => ({
-    nodes:[el('div','setup-success','✓'),el('p','setup-intro',"Your settings are applied. You're ready to hit the streets!")],
-    ready:()=>!!installation?.ready,hint:installation?.ready?'':'Your installation needs attention. Reopen setup or check Settings.',nextLabel:'Finish',answer:async()=>{const result=await call('onboarding_finish',{confirm:true});if(result?.outcome!=='refused')window.location.replace('index.html');return result;},
-  }),
+  // The game content (HD textures, roster, mods...) downloads here, as one
+  // screen with one bar, before the player is told they are set. Before this
+  // it came after setup as a small card on the Play page, and a Deck player
+  // went into the game without textures (Adam, 2026-10-03: "a full downloading
+  // game content screen apart of the onboarding").
+  completion: () => {
+    const dl=contentDownload();
+    const broken='Your installation needs attention. Reopen setup or check Settings.';
+    return {
+      nodes:[dl.node],
+      ready:()=>!!installation?.ready&&dl.finished(),
+      get hint(){return installation?.ready?dl.hint():broken;},
+      nextLabel:'Finish',
+      dispose:()=>dl.dispose(),
+      answer:async()=>{const result=await call('onboarding_finish',{confirm:true});if(result?.outcome!=='refused')window.location.replace('index.html');return result;},
+    };
+  },
 };
+
+const CONTENT_NAMES={textures:'HD textures',roster:'Roster',mods:'Mods','online-content':'Online content',runtime:'Emulator','runtime-linux':'Emulator','runtime-macos':'Emulator','game-patch':'Game update','game-import':'Game patch tools'};
+
+function contentSize(bytes){
+  const mb=(bytes||0)/1048576;
+  return mb>=1024?`${(mb/1024).toFixed(2)} GB`:`${Math.max(0,Math.round(mb))} MB`;
+}
+
+function contentEta(seconds){
+  if(!isFinite(seconds)||seconds<=0)return '';
+  if(seconds<60)return 'less than a minute left';
+  const m=Math.round(seconds/60);
+  return m<60?`about ${m} min left`:`about ${Math.floor(m/60)} h ${m%60} min left`;
+}
+
+// One download, start to finish, drawn in place. Uses the same commands as
+// the Play page's update card (content_check / content_fetch /
+// content_promote), so a download that is already running is followed, not
+// started twice.
+function contentDownload(){
+  let phase='checking',note='',alive=true,timer=null,samples=[],view=null;
+  const root=el('div','content-download');
+  const success=el('div','setup-success','✓');
+  const lead=el('p','setup-intro','Checking for game content…');
+  const bar=document.createElement('progress');bar.className='content-download-bar';bar.max=100;
+  const amount=el('p','content-download-amount','');
+  const rate=el('p','content-download-rate','');
+  const list=el('ul','content-download-list');
+  const problem=el('p','refusal','');problem.hidden=true;
+  const actions=el('div','content-download-actions');
+  const retry=el('button','primary','Try again');retry.type='button';retry.hidden=true;
+  const later=el('button',null,'Download later');later.type='button';later.hidden=true;
+  actions.append(retry,later);
+  root.append(success,lead,bar,amount,rate,list,problem,actions);
+
+  const title=t=>{const h=document.querySelector('#screen h1');if(h)h.textContent=t;};
+  const rows=new Map();
+  function drawList(components){
+    list.replaceChildren();rows.clear();
+    for(const c of components){
+      const row=el('li','content-download-item');
+      row.append(el('span','content-download-name',CONTENT_NAMES[c.component]||c.component),el('span','content-download-size',contentSize(c.bytes)),el('span','content-download-state','Waiting'));
+      rows.set(c.component,row);list.append(row);
+    }
+  }
+  function setRows(word,cls){for(const row of rows.values()){row.lastChild.textContent=word;row.className='content-download-item'+(cls?' '+cls:'');}}
+  function render(){
+    if(!alive)return;
+    success.hidden=phase!=='done';
+    bar.hidden=!(phase==='downloading'||phase==='installing'||phase==='checking');
+    amount.hidden=rate.hidden=phase!=='downloading';
+    list.hidden=!rows.size;
+    problem.hidden=phase!=='problem';problem.textContent=note;
+    retry.hidden=phase!=='problem';
+    later.hidden=!(phase==='downloading'||phase==='problem');
+    if(phase==='done'){title("You're all set");lead.textContent=rows.size?"Game content installed. Your settings are applied. You're ready to hit the streets!":"Your settings are applied. You're ready to hit the streets!";}
+    else if(phase==='skipped'){title("You're all set");lead.textContent='Your settings are applied. The game content keeps downloading in the background; the Play page shows its progress.';}
+    else {title('Downloading game content');lead.textContent=phase==='checking'?'Checking for game content…':phase==='installing'?'Installing…':phase==='problem'?'The download stopped.':'Keep the launcher open. This is a large download.';}
+    if(phase==='checking'||phase==='installing')bar.removeAttribute('value');
+    updateNav();
+  }
+  function track(s){
+    view=s;
+    const total=s.download_bytes||0,got=Math.min(total,s.fetched_bytes||0),now=performance.now();
+    samples.push([now,got]);while(samples.length>2&&now-samples[0][0]>8000)samples.shift();
+    const [t0,b0]=samples[0];const speed=now>t0?(got-b0)*1000/(now-t0):0;
+    bar.value=total?Math.min(99,got*100/total):0;
+    amount.textContent=`${contentSize(got)} of ${contentSize(total)} · ${total?Math.floor(got*100/total):0}%`;
+    // The first seconds fetch the emulator's 2,300 small files, which read as
+    // "0.0 MB/s · about 158 h left" (-9 test): no estimate until it means something.
+    const measured=now-t0>=5000&&speed>=102400;
+    rate.textContent=measured?`${(speed/1048576).toFixed(1)} MB/s · ${contentEta((total-got)/speed)}`:'Measuring speed…';
+  }
+  async function poll(){
+    if(!alive||phase!=='downloading')return;
+    try{const s=await call('content_status');if(s.phase==='fetching')track(s);}catch(_){}
+    timer=setTimeout(poll,1000);
+  }
+  async function run(){
+    phase='checking';note='';render();
+    try{
+      let s=await call('content_status');
+      if(['idle','up_to_date','problem','installed'].includes(s.phase))s=await call('content_check',{depth:null});
+      const wanted=(s.components||[]).filter(c=>c.state==='available');
+      if(['available','fetching','staged','installing'].includes(s.phase)&&wanted.length)drawList(wanted);
+      if(s.phase==='available'||s.phase==='fetching'){
+        phase='downloading';samples=[];setRows('Downloading','active');render();track(s);timer=setTimeout(poll,1000);
+        s=s.phase==='available'?await call('content_fetch'):s;
+        while(alive&&s.phase==='fetching'){await new Promise(r=>setTimeout(r,1000));s=await call('content_status');}
+        clearTimeout(timer);
+      }
+      if(!alive||phase==='skipped')return;
+      if(s.phase==='staged'||s.phase==='installing'){
+        phase='installing';bar.value=100;setRows('Installing','active');render();
+        s=s.phase==='staged'?await call('content_promote',{confirm:true}):s;
+        while(alive&&s.phase==='installing'){await new Promise(r=>setTimeout(r,1000));s=await call('content_status');}
+      }
+      if(!alive||phase==='skipped')return;
+      if(s.phase==='installed'||s.phase==='up_to_date'||!wanted.length&&s.phase!=='available'){
+        // Build the texture folder Dolphin reads now, not at the first Play:
+        // until then the Play page said "Texture pack not loading" right
+        // after the pack had installed (-9 test, 2026-10-03).
+        lead.textContent='Preparing textures…';
+        await call('mods_sync',{runtime:pending.runtime||null}).catch(()=>{});
+        phase='done';setRows('Installed','done');
+      }
+      else {phase='problem';note=s.note||'The download did not finish. Try again; it resumes where it stopped.';}
+    }catch(e){phase='problem';note=String(e?.message||e)+' Try again; it resumes where it stopped.';}
+    render();
+  }
+  retry.onclick=()=>{if(phase==='problem')run();};
+  later.onclick=()=>{phase='skipped';clearTimeout(timer);rows.clear();list.replaceChildren();render();};
+  queueMicrotask(run);
+  return {
+    node:root,
+    finished:()=>phase==='done'||phase==='skipped',
+    hint:()=>phase==='downloading'?'Finish unlocks when the download is done, or choose Download later.':phase==='problem'?'Try again, or choose Download later.':'',
+    dispose:()=>{alive=false;clearTimeout(timer);},
+  };
+}
 
 function pathBox(key, placeholder) {
   const box = document.createElement("input");
