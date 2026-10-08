@@ -65,7 +65,55 @@ try {
     check('bye has no opponent', array_key_exists('opponent', $c['matchup']) && $c['matchup']['opponent'] === null);
     check('bye has no fixture', $c['matchup']['fixture_id'] === null);
 
-    // --- payload checks (Task 3) ---
+    /* ---- the week's scoreboard ---- */
+    $wg = $a['week_games'] ?? [];
+    check('one fixture in week 2', count($wg) === 1);
+    check('scoreboard fixture id', ($wg[0]['fixture_id'] ?? null) === $g['wk2ba']);
+    check('scoreboard home is B', ($wg[0]['home']['team_id'] ?? null) === $t['B']);
+    check('scoreboard status', ($wg[0]['status'] ?? null) === 'scheduled');
+    check('scoreboard forfeit flag', ($wg[0]['forfeit'] ?? null) === false);
+    check('club with no logo has a null logo_url', array_key_exists('logo_url', $wg[0]['home']) && $wg[0]['home']['logo_url'] === null);
+    check('non-ASCII club name survives', ($wg[0]['home']['name'] ?? '') === 'Señor B');
+
+    /* ---- standings ---- */
+    $sd = $a['standings'] ?? [];
+    check('four clubs in the table', count($sd) === 4);
+    check('ranks run 1..4', array_column($sd, 'rank') === [1, 2, 3, 4]);
+    $rowA = array_values(array_filter($sd, function ($r) use ($t) { return $r['team_id'] === $t['A']; }))[0] ?? [];
+    check('A in table at 1-0', ($rowA['record'] ?? null) === '1-0');
+
+    /* ---- recent results ---- */
+    $rc = $a['recent'] ?? [];
+    check('A has one result', count($rc) === 1);
+    check('recent fixture', ($rc[0]['fixture_id'] ?? null) === $g['wk1ab']);
+    check('recent opponent', ($rc[0]['opponent_abbr'] ?? null) === 'THB');
+    check('recent home flag', ($rc[0]['home'] ?? null) === true);
+    check('recent W', ($rc[0]['result'] ?? null) === 'W');
+    check('recent points from A side', ($rc[0]['score'] ?? null) === '49-21');
+    check('recent series from A side', ($rc[0]['series'] ?? null) === '2-0');
+
+    $d = nsr_team_home($pdo, $did['D']);
+    $rd = $d['recent'][0] ?? [];
+    check('winner-only series: D result W', ($rd['result'] ?? null) === 'W');
+    check('winner-only series: no score', array_key_exists('score', $rd) && $rd['score'] === null);
+
+    /* ---- leaders: A's own players, touchdowns ---- */
+    $ld = $a['leaders'] ?? [];
+    check('leaders unit', ($a['leaders_unit'] ?? null) === 'TD');
+    check('pass leader is poid1 with 3', ($ld['pass'][0]['poid'] ?? null) === $fx['poid'][1] && ($ld['pass'][0]['value'] ?? null) === 3);
+    check('pass leader has a name', ($ld['pass'][0]['name'] ?? '') !== '');
+    check('rush leader value 1', ($ld['rush'][0]['value'] ?? null) === 1);
+    check('B receiver not in A leaders', ($ld['rec'] ?? null) === []);
+
+    /* ---- roster ---- */
+    $ro = $a['roster'] ?? [];
+    check('three rostered', count($ro) === 3);
+    check('roster names', count(array_filter($ro, function ($p) { return $p['name'] !== ''; })) === 3);
+    check('roster numbers are int or null', count(array_filter($ro, function ($p) {
+        return $p['number'] === null || is_int($p['number']); })) === 3);
+    check('roster has position key', array_key_exists('position', $ro[0] ?? []));
+
+    check('site url', ($a['site_url'] ?? '') === "https://nflstreetreborn.com/league/team.php?league_id=$lid&team_id={$t['A']}");
 
     /* ---- game 1 of week 2 played: B won 14-10, game 2 still to come ----
        The game-2 row matters: nsr_series() treats a fixture whose ONLY row is one

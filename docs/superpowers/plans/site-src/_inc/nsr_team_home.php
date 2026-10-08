@@ -104,6 +104,121 @@ function nsr_th_owners(PDO $pdo, int $leagueId): array {
     return $out;
 }
 
+/** poid => jersey number (pool field PJEN), for the league's pinned pool. */
+function nsr_th_numbers(PDO $pdo, int $leagueId): array {
+    $st = $pdo->prepare("SELECT pool_version_id FROM leagues WHERE id = ?");
+    $st->execute([$leagueId]);
+    $vid = (int)$st->fetchColumn();
+    if ($vid <= 0) return [];
+    $q = $pdo->prepare("SELECT poid, JSON_UNQUOTE(JSON_EXTRACT(row_json, '$.PJEN')) AS n
+                          FROM pool_csv_rows WHERE version_id = ?");
+    $q->execute([$vid]);
+    $out = [];
+    foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        if ($r['n'] !== null && $r['n'] !== '' && is_numeric($r['n'])) $out[(int)$r['poid']] = (int)$r['n'];
+    }
+    return $out;
+}
+
+/** The rest of the page: scoreboard, table, results, leaders, roster. */
+function nsr_th_page(PDO $pdo, int $lid, int $teamId, array $teams, array $records, int $week): array {
+    $weekGames = [];
+    foreach (nsr_series($pdo, $lid, $week) as $s) {
+        $h = $teams[$s['home_team_id']] ?? null;
+        $a = $teams[$s['away_team_id']] ?? null;
+        if (!$h || !$a) continue;
+        $weekGames[] = [
+            'fixture_id'     => (int)$s['game_id'],
+            'home'           => nsr_th_side($h, $records),
+            'away'           => nsr_th_side($a, $records),
+            'status'         => nsr_th_status($s),
+            'forfeit'        => !empty($s['forfeit']),
+            'score'          => nsr_th_score($s),
+            'series'         => nsr_th_series($s),
+            'winner_team_id' => nsr_series_winner($s),
+            'when'           => null,
+        ];
+    }
+
+    $standings = [];
+    foreach (nsr_standings_rows($pdo, $lid)['rows'] as $i => $r) {
+        $t = $teams[(int)$r['id']] ?? null;
+        if (!$t) continue;
+        $standings[] = [
+            'rank'     => $i + 1,
+            'team_id'  => (int)$t['id'],
+            'name'     => (string)$t['name'],
+            'abbr'     => (string)($t['abbrev'] ?? ''),
+            'logo_url' => nsr_th_url($t['logo_path'] ?? null),
+            'record'   => (int)$r['w'] . '-' . (int)$r['l'],
+        ];
+    }
+
+    $done = array_values(array_filter(nsr_series($pdo, $lid), function ($s) use ($teamId) {
+        return $s['complete']
+            && ((int)$s['home_team_id'] === $teamId || (int)$s['away_team_id'] === $teamId);
+    }));
+    usort($done, function ($x, $y) {
+        return [$y['week_num'], $y['game_id']] <=> [$x['week_num'], $x['game_id']];
+    });
+    $recent = [];
+    foreach (array_slice($done, 0, 5) as $s) {
+        $isHome = (int)$s['home_team_id'] === $teamId;
+        $oppId  = $isHome ? (int)$s['away_team_id'] : (int)$s['home_team_id'];
+        $won    = nsr_series_winner($s);
+        $played = (int)$s['played'] > 0;
+        $recent[] = [
+            'fixture_id'    => (int)$s['game_id'],
+            'week'          => (int)$s['week_num'],
+            'opponent_abbr' => (string)($teams[$oppId]['abbrev'] ?? ''),
+            'home'          => $isHome,
+            'result'        => $won === null ? null : ($won === $teamId ? 'W' : 'L'),
+            'score'         => $played
+                ? ($isHome ? $s['home_points'] . '-' . $s['away_points'] : $s['away_points'] . '-' . $s['home_points'])
+                : null,
+            'series'        => $played
+                ? ($isHome ? $s['home_wins'] . '-' . $s['away_wins'] : $s['away_wins'] . '-' . $s['home_wins'])
+                : null,
+        ];
+    }
+
+    $names = nsr_player_names($pdo, $lid);
+    $rows  = array_filter(nsr_player_stat_rows($pdo, $lid), function ($r) use ($teamId) {
+        return (int)$r['team_id'] === $teamId;
+    });
+    $leaders = [];
+    foreach (['pass' => 'pass_td', 'rush' => 'rush_td', 'rec' => 'rec_td'] as $label => $key) {
+        $leaders[$label] = [];
+        foreach (nsr_rank_rows($rows, $key, 3) as $e) {
+            $p = (int)$e['row']['poid'];
+            $leaders[$label][] = ['poid' => $p, 'name' => (string)($names[$p] ?? ('Player #' . $p)),
+                                  'value' => (int)$e['row'][$key]];
+        }
+    }
+
+    $pos = nsr_player_positions($pdo, $lid);
+    $num = nsr_th_numbers($pdo, $lid);
+    $roster = [];
+    foreach ((nsr_rosters($pdo, $lid)[$teamId] ?? []) as $p) {
+        $roster[] = ['poid' => $p, 'name' => (string)($names[$p] ?? ('Player #' . $p)),
+                     'position' => $pos[$p] ?? null, 'number' => $num[$p] ?? null];
+    }
+    $order = array_flip(['QB', 'RB', 'WR', 'OL', 'DL', 'LB', 'DB']);
+    usort($roster, function ($x, $y) use ($order) {
+        return [$order[$x['position']] ?? 9, $x['name']] <=> [$order[$y['position']] ?? 9, $y['name']];
+    });
+
+    return [
+        'week_games'   => $weekGames,
+        'standings'    => $standings,
+        'recent'       => $recent,
+        'leaders'      => $leaders,
+        'leaders_unit' => 'TD',
+        'roster'       => $roster,
+        'site_url'     => NSR_PUBLIC_ORIGIN . '/league/team.php?league_id=' . $lid . '&team_id=' . $teamId,
+    ];
+}
+
 function nsr_team_home(PDO $pdo, string $discordUserId): array {
     $did = trim($discordUserId);
     if (!preg_match('/^\d{15,22}$/', $did)) {
@@ -186,5 +301,5 @@ function nsr_team_home(PDO $pdo, string $discordUserId): array {
             'standing' => $rankOf[$teamId] ?? null,
         ],
         'matchup' => $matchup,
-    ];
+    ] + nsr_th_page($pdo, $lid, $teamId, $teams, $records, $week);
 }

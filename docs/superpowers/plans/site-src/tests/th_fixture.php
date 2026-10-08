@@ -73,7 +73,7 @@ function th_fixture(PDO $pdo): array {
     $insE->execute([$lid, $g['wk1ab'], 1, $t['A'], $poids[1], 'rush_td', 1]);
     $insE->execute([$lid, $g['wk1ab'], 1, $t['B'], $poids[3], 'rec_td', 5]);
 
-    return ['lid' => $lid, 't' => $t, 'did' => $did, 'g' => $g,
+    return ['lid' => $lid, 'old_team' => $oldTeam, 't' => $t, 'did' => $did, 'g' => $g,
             'poid' => [1 => $poids[0], 2 => $poids[1], 3 => $poids[2], 4 => $poids[3]]];
 }
 
@@ -87,7 +87,7 @@ function th_cleanup(PDO $pdo, ?array $fx): void {
     if ($pdo->inTransaction()) { $pdo->rollBack(); return; }
     if ($fx === null) return;
     $lid = (int)$fx['lid'];
-    $old = (int)$pdo->query("SELECT id FROM teams WHERE abbrev = 'THOLD'")->fetchColumn();
+    $old = (int)($fx['old_team'] ?? 0);
     foreach (['stat_events', 'league_player_rights', 'game_series_scores', 'owner_teams', 'games', 'teams'] as $tb) {
         $pdo->exec("DELETE FROM $tb WHERE league_id = $lid");
     }
