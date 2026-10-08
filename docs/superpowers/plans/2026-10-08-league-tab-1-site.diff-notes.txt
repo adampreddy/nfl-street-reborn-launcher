@@ -1,0 +1,8 @@
+﻿One line per file vs replica:
+api/bot.php: same as live
+_inc/nsr_standings.php: same
+_inc/nsr_hidden.php: same (NSR_HIDDEN_LEAGUES = 6, 8; 36 not hidden)
+_inc/nsr_owners.php: same
+_inc/nsr_data.php: DIFFERS - replica was AHEAD of live (hidden-league filtering in nsr_season_slots/nsr_player_leagues, simple nsr_leagues); live has league phases (NSR_PREPUBLIC_PHASES, nsr_viewer_inside, nsr_league_rows) and nsr_week_meta/league_weeks labels in nsr_week_label. Replica overwritten with live; old copies in replica-before.
+All 13 required function signatures present in live nsr_data.php, unchanged. bot.php has out()/fail() and ends with fail('Unknown action: ' . $action).
+
