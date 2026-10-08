@@ -1,7 +1,7 @@
 // node --test crates/reborn-ui/ui/online-model.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { int, fmtInt, clock, modeLine, seriesLine, acceptWithin, eloBits, standing, seekLine, heldNotice, everyoneReady, inviteLink, inviteLine, leaderboardView, boardStanding } from './online-model.js';
+import { int, fmtInt, clock, modeLine, seriesLine, acceptWithin, eloBits, standing, seekLine, heldNotice, everyoneReady, inviteLink, inviteLine, leaderboardView, boardStanding, boardPage, pageOfRank, BOARD_PAGE } from './online-model.js';
 
 test('numbers and the clock', () => {
   assert.equal(int(3), 3); assert.equal(int('3'), null); assert.equal(int(NaN), null); assert.equal(int(null), null);
@@ -115,7 +115,7 @@ test('the leaderboard model', () => {
   const rows = Array.from({ length: 12 }, (_, i) => ({ rank: i + 1, display_name: `P${i}`, avatar_url: null, team: null, wins: 5, losses: 2, elo: 1300 - i, delta_week: i === 0 ? 16 : i === 1 ? -9 : 0, you: false }));
   const v = leaderboardView({ enabled: true, total: 38, rows, you: { rank: 14, display_name: 'Me', wins: 1, losses: 1, elo: 1001, delta_week: 0 } });
   assert.equal(v.soon, false); assert.equal(v.total, 38); assert.equal(v.rows.length, 10, 'top 10 only');
-  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', discord: null, avatar: null, team: null, record: '5-2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false });
+  assert.deepEqual(v.rows[0], { rank: 1, name: 'P0', discord: null, avatar: null, team: null, record: '5-2', elo: '1,300', change: { dir: 'up', text: '▲ 16' }, you: false, player_id: null });
   assert.deepEqual(v.rows[1].change, { dir: 'down', text: '▼ 9' });
   assert.equal(v.rows[2].change, null);
   assert.equal(v.you.rank, 14); assert.equal(v.you.you, true);
@@ -124,7 +124,28 @@ test('the leaderboard model', () => {
   const unflagged = leaderboardView({ enabled: true, total: 12, rows, you: { rank: 7, display_name: 'P6', elo: 1294 } });
   assert.equal(unflagged.you, null, 'your rank is on the card even without the you flag: you are not drawn twice');
   const bare = leaderboardView({ enabled: true, rows: [{ rank: null, display_name: null, wins: null, losses: 2, elo: null, delta_week: null }] });
-  assert.deepEqual(bare.rows[0], { rank: null, name: '', discord: null, avatar: null, team: null, record: null, elo: null, change: null, you: false });
+  assert.deepEqual(bare.rows[0], { rank: null, name: '', discord: null, avatar: null, team: null, record: null, elo: null, change: null, you: false, player_id: null });
+});
+
+test('the full leaderboard pages 50 at a time; a server that does not page shows its top as one page', () => {
+  const P = (rank, extra = {}) => ({ rank, player_id: `00000000-0000-4000-8000-${String(rank).padStart(12, '0')}`, display_name: `P${rank}`, wins: 1, losses: 1, elo: 1500 - rank, delta_week: 0, you: false, ...extra });
+  const rows = Array.from({ length: 50 }, (_, i) => P(51 + i));
+  const v = boardPage({ enabled: true, total: 130, offset: 50, rows, you: P(7, { you: true }) }, 50);
+  assert.deepEqual([v.soon, v.page, v.pages, v.paged, v.rows.length, v.rows[0].rank], [false, 1, 3, true, 50, 51]);
+  assert.equal(v.rows[0].player_id, '00000000-0000-4000-8000-000000000051', 'a row knows whose profile it opens');
+  assert.equal(v.you.rank, 7, 'you are on page 1: pinned, with your rank');
+  const mine = boardPage({ enabled: true, total: 130, offset: 50, rows: rows.map((r) => (r.rank === 60 ? { ...r, you: true } : r)), you: null }, 50);
+  assert.equal(mine.you, null);
+  assert.equal(mine.rows.find((r) => r.you).rank, 60);
+  const old = boardPage({ enabled: true, total: 130, rows: Array.from({ length: 50 }, (_, i) => P(i + 1)), you: null }, 100);
+  assert.deepEqual([old.paged, old.page, old.pages, old.rows[0].rank], [false, 0, 1, 1], 'no offset in the answer: the top, one page');
+  assert.deepEqual(boardPage(null), { soon: true });
+  assert.deepEqual(boardPage({ enabled: false, rows: [] }), { soon: true });
+  assert.deepEqual(boardPage({ enabled: true, total: 0, offset: 0, rows: [] }), { soon: true });
+  const past = boardPage({ enabled: true, total: 12, offset: 50, rows: [] }, 50);
+  assert.deepEqual([past.soon, past.pages, past.page, past.rows.length], [false, 1, 0, 0], 'past the end: an empty page, not "soon"');
+  assert.equal(BOARD_PAGE, 50);
+  assert.deepEqual([pageOfRank(1), pageOfRank(50), pageOfRank(51), pageOfRank(130), pageOfRank(null), pageOfRank(0)], [0, 0, 1, 2, null, null]);
 });
 
 test('your standing comes from the leaderboard answer, in the shape eloBits reads', () => {

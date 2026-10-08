@@ -14,9 +14,14 @@
 //     the backend, so that one request is answered by the `live_match` command (Rust makes the request; the snapshot is
 //     the backend's own JSON, carrying team names, seats, portraits, box lines and drives -- nothing else to fetch).
 //     Every other fetch goes through untouched;
-//   - the stream: the site follows a running match with an EventSource. Here the stream stays "connecting" and never
-//     opens, which the controller already handles: it refetches the snapshot on its 30-second tick (refetchOnTick)
-//     until the match ends;
+//   - the stream: the site follows a running match with an EventSource of `play` frames. The launcher cannot open one
+//     (no connect-src), so a live match's stream is PollingStream: every 3 s it reads the snapshot with `live_match`
+//     and hands the controller each play newer than the last it handed over, as the `play` events the site's stream
+//     sends (same frame, same rev), so the page follows a live game play by play exactly as the site does (owner
+//     10-08: a live game opens here, in the site's style). When the match ends the stream closes, and the controller
+//     reads the final snapshot. A finished match never opens a stream (the controller only opens one while it runs);
+//     a game's page (below) keeps the stream that never opens;
+//   - player names: each seat's name in the strip opens that player's profile in the launcher (player-link.js);
 //   - images: the renderers only ever set an <img> src that passed their own rules (a root-relative /live-assets/r/...
 //     catalog path, or Discord's avatar CDN). The launcher is not that origin, so an <img> created on this page loads a
 //     /live-assets/ path from the backend origin the CSP img-src allows (LIVE_ORIGIN). The site's value stays what the
@@ -35,6 +40,7 @@ import { LIVE_ORIGIN, PAGE_ORIGIN } from './live-common.js';
 import { backHref, readMatchAddress } from './stats-model.js';
 import { webLinkShown } from './stats-rows.js';
 import { matchSnapshot } from './game-snapshot.js';
+import { playerIdOf, profileHref } from './player-link.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NOT_FOUND = 'No such match.';   // the site's words (live-page.js) for a match the server does not have
@@ -70,7 +76,8 @@ export async function liveMatchResponse(id, ask = quietCall) {
 }
 
 /** The site's stream, which never opens in the launcher (no connect-src): readyState stays CONNECTING, so the
- *  controller neither shows "Reconnecting" nor opens another, and its 30-second tick refetches the snapshot. */
+ *  controller neither shows "Reconnecting" nor opens another, and its 30-second tick refetches the snapshot. A game's
+ *  page (no live match behind it) uses this one. */
 export class LauncherStream extends EventTarget {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -78,6 +85,116 @@ export class LauncherStream extends EventTarget {
   constructor(url) { super(); this.url = String(url); this.readyState = LauncherStream.CONNECTING; }
   close() { this.readyState = LauncherStream.CLOSED; }
 }
+
+const ENDED = new Set(['complete', 'abandoned', 'void']);
+/** A snapshot whose match will never change again (the controller's own rule: an outcome, else the status). */
+export function snapshotEnded(snap) {
+  const kind = snap?.match?.outcome?.kind;
+  return typeof kind === 'string' && kind ? kind !== 'open' : ENDED.has(snap?.match?.status);
+}
+
+/** Every play of `snap` newer than `since`, as the site's stream frames them ({ game_seq, seq, status, body,
+ *  situation, field, score_after } with the play's rev as its event id), oldest rev first. */
+export function framesSince(snap, since) {
+  const out = [];
+  for (const g of Array.isArray(snap?.games) ? snap.games : []) {
+    if (!Number.isInteger(g?.game_seq)) continue;
+    for (const p of Array.isArray(g.plays) ? g.plays : []) {
+      const rev = Number(p?.rev);
+      const seq = Number.isInteger(p?.seq) ? p.seq : p?.body?.seq;
+      if (!Number.isFinite(rev) || rev <= since || !Number.isInteger(seq)) continue;
+      out.push({ rev, frame: { game_seq: g.game_seq, seq, status: p.status, body: p.body, situation: p.situation ?? null,
+        field: p.field ?? null, score_after: p.score_after ?? null } });
+    }
+  }
+  return out.sort((a, b) => a.rev - b.rev);
+}
+
+const POLL_MS = 3000;   // the old live view's pace: a play shows within a few seconds of being played
+const POLL_BACKOFF_MAX_MS = 30000;
+
+/**
+ * A live match's stream in the launcher: `live_match` read every 3 s, each new play handed to the controller as the
+ * site's `play` event. OPEN after the first good read; a failed read is an `error` while CONNECTING (the controller
+ * says "Reconnecting…") and the next read waits longer (up to 30 s); the match gone or over CLOSES it with an `error`
+ * (the controller then reads the final snapshot). Paused while the window is hidden or a game is running on this PC.
+ */
+export class PollingStream extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+  constructor(url, { ask = quietCall, schedule = (f, ms) => setTimeout(f, ms), cancel = (t) => clearTimeout(t), paused = () => false } = {}) {
+    super();
+    this.url = String(url);
+    this.readyState = PollingStream.CONNECTING;
+    const u = new URL(this.url, 'https://launcher.invalid/');
+    this.matchId = decodeURIComponent((/^\/v1\/live\/([^/]+)\/stream$/.exec(u.pathname) || [])[1] || '');
+    this.since = Number(u.searchParams.get('since')) || 0;
+    this.ask = ask; this.schedule = schedule; this.cancel = cancel; this.paused = paused;
+    this.failures = 0; this.timer = null; this.busy = false;
+    PollingStream.live.add(this);
+    this.arm(0);
+  }
+  arm(ms) {
+    if (this.readyState === PollingStream.CLOSED) return;
+    if (this.timer !== null) this.cancel(this.timer);
+    this.timer = this.schedule(() => { this.timer = null; this.tick(); }, ms);
+  }
+  /** Read now if nothing is out and the page is not paused (the window shown again, a game ended). */
+  wake() { if (!this.busy && this.readyState !== PollingStream.CLOSED) this.arm(0); }
+  async tick() {
+    if (this.readyState === PollingStream.CLOSED) return;
+    if (this.paused()) return;          // wake() re-arms it when the page can read again
+    this.busy = true;
+    let snap;
+    try {
+      snap = await this.ask('live_match', { matchId: this.matchId });
+    } catch {
+      this.busy = false;
+      if (this.readyState === PollingStream.CLOSED) return;
+      this.failures++;
+      this.readyState = PollingStream.CONNECTING;
+      this.dispatchEvent(new Event('error'));
+      this.arm(Math.min(POLL_BACKOFF_MAX_MS, POLL_MS * 2 ** this.failures));
+      return;
+    }
+    this.busy = false;
+    if (this.readyState === PollingStream.CLOSED) return;
+    this.failures = 0;
+    if (!snap || typeof snap !== 'object' || !Array.isArray(snap.games)) { this.finish(); return; }
+    if (this.readyState !== PollingStream.OPEN) { this.readyState = PollingStream.OPEN; this.dispatchEvent(new Event('open')); }
+    for (const { rev, frame } of framesSince(snap, this.since)) {
+      this.since = Math.max(this.since, rev);
+      if (this.readyState === PollingStream.CLOSED) return;
+      this.dispatchEvent(new MessageEvent('play', { data: JSON.stringify(frame), lastEventId: String(rev) }));
+    }
+    if (snapshotEnded(snap)) { this.finish(); return; }
+    this.arm(POLL_MS);
+  }
+  /** Over (or gone): CLOSED, then the `error` the site's stream gives when it ends for good. */
+  finish() {
+    this.close();
+    this.dispatchEvent(new Event('error'));
+  }
+  close() {
+    this.readyState = PollingStream.CLOSED;
+    if (this.timer !== null) { this.cancel(this.timer); this.timer = null; }
+    PollingStream.live.delete(this);
+  }
+}
+PollingStream.live = new Set();
+
+// Nothing reads while the window is hidden or while a game runs on this PC (app-shell.js's `session-state`): a
+// match in progress needs the network and the CPU. Showing again (or the game ending) reads at once.
+let sessionActive = false;
+const streamPaused = () => sessionActive || document.visibilityState === 'hidden';
+function wakeStreams() { if (!streamPaused()) for (const s of PollingStream.live) s.wake(); }
+document.addEventListener('visibilitychange', wakeStreams);
+document.addEventListener('session-state', (e) => { sessionActive = Boolean(e?.detail); wakeStreams(); });
+window.addEventListener('pagehide', () => { for (const s of [...PollingStream.live]) s.close(); });
+
+/** The latest snapshot the page was given (the controller's read, or the game's): whose seat is whose, for the names. */
+let shownSnap = null;
 
 function installDataSource() {
   const realFetch = window.fetch.bind(window);
@@ -87,10 +204,44 @@ function installDataSource() {
     const m = SNAPSHOT.exec(url);
     if (!m) return realFetch(input, init);
     const id = decodeURIComponent(m[1]);
-    if (gameSnap) return Promise.resolve(id === gameSnap.match.id ? new Response(JSON.stringify(gameSnap), { status: 200, headers: { 'content-type': 'application/json' } }) : new Response('', { status: 404 }));
-    return UUID_RE.test(id) ? liveMatchResponse(id) : Promise.resolve(new Response('', { status: 404 }));
+    if (gameSnap) { shownSnap = gameSnap; return Promise.resolve(id === gameSnap.match.id ? new Response(JSON.stringify(gameSnap), { status: 200, headers: { 'content-type': 'application/json' } }) : new Response('', { status: 404 })); }
+    return UUID_RE.test(id) ? liveMatchResponse(id, (cmd, args) => quietCall(cmd, args).then((snap) => { if (snap && typeof snap === 'object') shownSnap = snap; return snap; }))
+      : Promise.resolve(new Response('', { status: 404 }));
   };
-  window.EventSource = LauncherStream;
+  // A game's page has no live match to follow; a match's page follows it while it runs.
+  window.EventSource = gameSnap ? LauncherStream
+    : class extends PollingStream { constructor(url) { super(url, { paused: streamPaused }); } };
+}
+
+/** Each seat's player name in the site's strip opens their profile (seat 0 is the strip's left team, seat 1 its
+ *  right, as the site lays it out): the name element becomes a link with the same class and words. Run after every
+ *  render of the strip (the controller rebuilds it), so the names are always links. */
+function linkStripNames() {
+  const strip = $('strip');
+  if (!strip) return;
+  const seats = Array.isArray(shownSnap?.seats) ? shownSnap.seats : [];
+  [['a', 0], ['b', 1]].forEach(([cls, seat]) => {
+    const box = strip.querySelector(`.st-team.${cls}`);
+    if (!box) return;
+    // The player's name: under the team (.st-player), or the strip's big name when the seat has no team (an avatar).
+    const name = box.querySelector('.st-player') || (box.querySelector('.avatar') ? box.querySelector('.st-name') : null);
+    const id = playerIdOf(seats[seat]?.player_id);
+    if (!name || !id || name.tagName === 'A') return;
+    const a = document.createElement('a');
+    a.className = `${name.className} player-link`;
+    a.href = profileHref(id);
+    a.setAttribute('data-key', `strip-player-${seat}`);
+    a.textContent = name.textContent;
+    a.setAttribute('aria-label', `${name.textContent}, profile`);
+    name.replaceWith(a);
+  });
+}
+
+function watchStrip() {
+  const strip = $('strip');
+  if (!strip) return;
+  new MutationObserver(linkStripNames).observe(strip, { childList: true });
+  linkStripNames();
 }
 
 /** Every <img> this page creates loads a /live-assets/ path from the backend origin; getAttribute('src') still answers
@@ -162,7 +313,19 @@ function drawGone(text, alert = false) {
   for (const t of ['feed', 'box', 'team']) $(`tab-${t}`).hidden = true;
 }
 
+/** The sidebar marks the page the match was opened from: Online for a live game (Live now, the post-game screen),
+ *  Stats otherwise (match.html's own markup). */
+function markNav() {
+  if (!BACK.startsWith('online.html')) return;
+  for (const a of document.querySelectorAll('.shell-nav a')) {
+    const on = a.getAttribute('href') === 'online.html';
+    a.classList.toggle('current', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  }
+}
+
 async function start() {
+  markNav();
   drawBar();
   const id = games ? games.game : matchId;
   if (!UUID_RE.test(id)) { drawGone(games ? GAME_NOT_FOUND : NOT_FOUND); return; }
@@ -180,6 +343,7 @@ async function start() {
   installDataSource();
   installImageOrigin();
   keepTabsReachable();
+  watchStrip();
   await import('./site/live-page.js');
 }
 

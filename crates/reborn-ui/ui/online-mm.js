@@ -13,6 +13,7 @@ import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
 import { shownName } from './names.js';
+import { playerLink } from './player-link.js';
 
 // The relay opens Dolphin by itself when a match is ready, and must open the same runtime, game and
 // graphics preset the page's own Play and private rooms use. Those live in page storage, so they are
@@ -258,9 +259,8 @@ function chatToBottom(log) {
 }
 
 function chatLine(m) {
-  const who = el('strong', { text: `${m.name || 'Player'}: ` });
-  // A nickname's Discord name, on hover (m.discord is null without a nickname).
-  if (m.discord) who.title = `@${m.discord}`;
+  // The author's name opens their profile (owner 10-08); a nickname's Discord name shows on hover (null without one).
+  const who = el('strong', {}, playerLink(m.player_id, m.name || 'Player', { key: `chat-${m.seq}`, title: m.discord ? `@${m.discord}` : null }), ': ');
   const li = el('li', { 'data-seq': Number.isFinite(m.seq) ? String(m.seq) : null }, who, String(m.body ?? m.text ?? ''));
   chatUi.resize?.observe(li);
   return li;
@@ -635,7 +635,7 @@ function drawRoom(r, chat) {
     members.append(el('li', {},
       avatar(null, m.name, 'on-mav'),
       // A nickname's Discord name beside it, small (null without a nickname).
-      el('b', { title: m.discord ? `@${m.discord}` : null }, m.name, m.you ? el('small', { text: 'you' }) : null,
+      el('b', { title: m.discord ? `@${m.discord}` : null }, playerLink(m.player_id, m.name, { key: `member-${m.player_id || m.name}` }), m.you ? el('small', { text: 'you' }) : null,
         m.discord ? el('small', { class: 'on-discord', text: `@${m.discord}` }) : null),
       el('span', { class: m.ready ? 'on-rd' : 'on-nr', text: m.ready ? 'Ready' : 'Not ready' })));
   }
@@ -702,12 +702,12 @@ async function changeKind(roomId, seedKind) {
   }
 }
 
-function face({ url, name, discord = null, sub, team, tick = false }) {
+function face({ url, name, discord = null, sub, team, tick = false, id = null, key = null }) {
   return el('div', { class: 'on-p' },
     el('span', { class: 'on-avw' }, avatar(url, name, 'on-av'), tick ? el('span', { class: 'on-ok', role: 'img', 'aria-label': 'Accepted', text: '✓' }) : null),
-    // The nickname; when the player set one, its Discord name leads the small line under it (the face's rows are
-    // fixed, so it shares the standing's row rather than adding one) and shows on hover.
-    el('span', { class: 'on-pname', text: name, title: discord ? `@${discord}` : null }),
+    // The nickname (a link to their profile, owner 10-08); when the player set one, its Discord name leads the small
+    // line under it (the face's rows are fixed, so it shares the standing's row rather than adding one) and shows on hover.
+    playerLink(id, name, { cls: 'on-pname', key, title: discord ? `@${discord}` : null }),
     sub || discord ? el('span', { class: 'on-psub num', text: [discord ? `@${discord}` : null, sub].filter(Boolean).join(' · ') }) : null,
     team ? teamLogo(team, 'on-plogo') : null);
 }
@@ -758,11 +758,13 @@ function drawMatch(m, chat, relayError, snap) {
     el('button', { type: 'button', class: 'btn quiet sm on-leave', 'data-key': 'leave-match', text: 'Leave match', onclick: () => act('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }),
     el('div', { class: 'on-vs-in on-vs-match' },
       face({ url: myAvatarUrl(), name: snap?.player?.name || me?.name || 'You', discord: snap?.player?.discord ?? null, sub: [mine.rank, mine.elo].filter(Boolean).join(' · '),
+        id: snap?.player?.player_id ?? me?.id ?? null, key: 'vs-you',
         team: rankInfo?.playsAs ?? null, tick: !!m.your_accepted && !playing }),
       mid,
       // On the card itself a nameless opponent is "Opponent" (letter O); sentences keep "your opponent".
       // A 3rd or 4th player's card faces the room's host (the crew line under the VS names everyone else).
-      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', discord: m.opponent_discord ?? null, sub: m.seat >= 2 ? 'Host' : standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null }),
+      face({ url: m.opponent_avatar_url ?? null, name: m.opponent || 'Opponent', discord: m.opponent_discord ?? null, sub: m.seat >= 2 ? 'Host' : standing(m.opponent_rank, m.opponent_elo), team: m.opponent_team ?? null,
+        id: m.opponent_id ?? null, key: 'vs-opponent' }),
       foot),
     MOVING.has(m.relay_state) ? el('span', { class: 'sweep', 'aria-hidden': 'true' }) : null);
   // Match chat stays, under the card (nothing that exists is removed; plan ruling 15).
@@ -810,7 +812,7 @@ function hideOnline() {
 function presencePanel() {
   const list = el('ul', { class: 'on-who' });
   for (const p of lastOnline.players.slice(0, 12)) {
-    list.append(el('li', {}, el('span', { text: String(p?.name ?? ''), title: p?.discord ? `@${p.discord}` : null }), ACTIVITY[p?.activity] ? el('small', { text: ACTIVITY[p.activity] }) : null));
+    list.append(el('li', {}, playerLink(p?.player_id, String(p?.name ?? ''), { key: `online-${p?.player_id}`, title: p?.discord ? `@${p.discord}` : null }), ACTIVITY[p?.activity] ? el('small', { text: ACTIVITY[p.activity] }) : null));
   }
   const sw = el('button', { type: 'button', class: 'look-switch', id: 'mm-presence', role: 'switch', 'aria-checked': String(presenceOn), 'aria-labelledby': 'mm-presence-label' });
   sw.addEventListener('click', async () => {
@@ -888,9 +890,9 @@ async function draw() {
     // good once put away (overDone).
     const m = snap.match;
     loadOverLive(m.id);
-    const model = seriesOverModel(m, overLive.id === m.id ? overLive.snap : null, { name: snap.player?.name || me?.name, avatar: myAvatarUrl() });
+    const model = seriesOverModel(m, overLive.id === m.id ? overLive.snap : null, { name: snap.player?.name || me?.name, id: snap.player?.player_id ?? me?.id ?? null, avatar: myAvatarUrl() });
     body = drawSeriesOver(model, {
-      el, avatar, teamLogo,
+      el, avatar, teamLogo, playerLink,
       // The same queue as the mode the match was (ranked keeps its rules notice), and the screen is put away.
       onAgain: () => {
         if (m.mode === 'ranked' || m.mode === 'casual') { privatePicked = false; store.set('mm:mode', m.mode); }

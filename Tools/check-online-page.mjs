@@ -655,14 +655,15 @@ const EXPECT = {
     },
   },
   'online-live': {
-    text: ['Live now', 'See all', 'Ranked · Game 1', 'Casual', 'Watch', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
-    absent: ['Game 1 of 3'],
+    text: ['Live now', 'See all', 'Ranked · Game 1', 'Casual', 'Live feed', 'Giants', 'Colts', 'Adam', 'Jock', '2 live games'],
+    absent: ['Game 1 of 3', 'Watch'],
     check: async (page) => {
       const p = [];
       if ((await page.locator('.live-row').count()) !== 2) p.push(`${await page.locator('.live-row').count()} live cards`);
       if ((await page.locator('.live-row').first().locator('.live-side').count()) !== 2) p.push('a card does not have two team rows');
       const href = await page.locator('.live-watch').first().getAttribute('href');
-      if (!/^live\.html\?match=/.test(href || '')) p.push(`Watch goes to ${href}`);
+      // Owner 10-08: Live feed opens the site-styled match page, following the match; Back returns to Online.
+      if (!/^match\.html\?match=[0-9a-f-]{36}&from=online\.html$/.test(href || '')) p.push(`Live feed goes to ${href}`);
       const live = await page.locator('#live-slot').boundingBox(), mode = await page.locator('#mode-slot').boundingBox();
       if (!live || !mode || live.y < mode.y + mode.height) p.push('Live now is not under the mode area');
       await page.getByRole('button', { name: 'See all ›', exact: true }).click();
@@ -699,10 +700,14 @@ const EXPECT = {
       for (const s of srcs) if (!/^https:\/\/(api\.nflstreetreborn\.com\/live-assets\/|cdn\.discordapp\.com\/avatars\/)/.test(s)) p.push(`image from ${s}`);
       const card = await page.locator('#leaderboard-slot').boundingBox(), main = await page.locator('#main').boundingBox();
       if (!card || card.y + card.height > main.y + main.height + 1) p.push('the leaderboard card runs off the window');
+      // Owner 10-08: every name is a link to that player's profile in the launcher.
+      const links = await page.locator('#leaderboard-slot a.player-link').evaluateAll((n) => n.map((x) => [x.textContent, x.getAttribute('href')]));
+      if (links.length !== 10 || !links.every(([, h]) => /^profile\.html\?player=[0-9a-f-]{36}$/.test(h))) p.push(`leaderboard name links: ${JSON.stringify(links)}`);
+      // ...and Full leaderboard is the launcher's own page, not the website.
       await page.getByRole('button', { name: 'Full leaderboard ›', exact: true }).click();
-      await page.waitForTimeout(200);
-      const o = await calls(page, 'open_website');
-      if (JSON.stringify(o.at(-1)) !== '{"url":"https://online.nflstreetreborn.com/leaderboard"}') p.push(`Full leaderboard opened ${JSON.stringify(o.at(-1))}`);
+      await page.waitForURL(/leaderboard\.html$/, { timeout: 3000 }).catch(() => {});
+      if (!page.url().endsWith('/leaderboard.html')) p.push(`Full leaderboard opened ${page.url()}`);
+      if ((await calls(page, 'open_website')).length) p.push('Full leaderboard opened the website');
       return p;
     },
   },

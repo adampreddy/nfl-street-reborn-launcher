@@ -55,8 +55,9 @@ export function seriesOverModel(match, live, self = {}) {
     kind: o.kind, title: 'Series over', headline, note, games, unofficial: o.official !== true,
     score: `${mine}${DASH}${theirs}`, mine, theirs,
     winner: winner === null || o.kind === 'split' ? null : winner === me ? 'you' : 'them',
-    you: { name: you, avatar: seats[me]?.avatar_url ?? self.avatar ?? null, team: myTeam, elo: seatDelta(me) ?? eloChange(match.elo_delta) },
-    them: { name: them, avatar: seats[1 - me]?.avatar_url ?? match.opponent_avatar_url ?? null, team: theirTeam ?? team(match.opponent_team), elo: seatDelta(1 - me) },
+    // `id`: whose profile the name opens (owner 10-08); null when neither the live snapshot nor the match names one.
+    you: { name: you, id: seats[me]?.player_id ?? self.id ?? null, avatar: seats[me]?.avatar_url ?? self.avatar ?? null, team: myTeam, elo: seatDelta(me) ?? eloChange(match.elo_delta) },
+    them: { name: them, id: seats[1 - me]?.player_id ?? match.opponent_id ?? null, avatar: seats[1 - me]?.avatar_url ?? match.opponent_avatar_url ?? null, team: theirTeam ?? team(match.opponent_team), elo: seatDelta(1 - me) },
     mode: modeLine(match.mode, match.best_of),
     // The whole match on the launcher's own match page; Back there returns to Online.
     boxHref: typeof match.id === 'string' && UUID_RE.test(match.id) ? `match.html?${new URLSearchParams({ match: match.id, from: 'online.html' })}` : null,
@@ -64,13 +65,14 @@ export function seriesOverModel(match, live, self = {}) {
 }
 
 /** The screen's nodes: the finished matchup card and its action row. `el` is shell.js's; `avatar` and `teamLogo` are
- *  match-rows.js's (Discord pictures and catalog logos only, each with its letter / abbreviation fallback). */
-export function drawSeriesOver(m, { el, avatar, teamLogo, onAgain, onBox, onRematch, onBack }) {
+ *  match-rows.js's (Discord pictures and catalog logos only, each with its letter / abbreviation fallback); `playerLink`
+ *  (player-link.js) makes each name a link to that player's profile, and without it the names are plain. */
+export function drawSeriesOver(m, { el, avatar, teamLogo, playerLink = null, onAgain, onBox, onRematch, onBack }) {
   const face = (p, who) => {
     const won = m.winner === who, lost = m.winner && !won;
     return el('div', { class: `on-p${won ? ' won' : lost ? ' lost' : ''}` },
       el('span', { class: 'on-avw' }, avatar(p.avatar, p.name, 'on-av'), won ? el('span', { class: 'on-win', text: 'Winner' }) : null),
-      el('span', { class: 'on-pname', text: p.name }),
+      playerLink ? playerLink(p.id, p.name, { cls: 'on-pname', key: `over-${who}` }) : el('span', { class: 'on-pname', text: p.name }),
       p.elo ? el('span', { class: `on-psub num on-elo ${p.elo.dir}`, text: p.elo.text }) : el('span', { class: 'on-psub', text: who === 'you' && p.name !== 'You' ? 'You' : '' }),
       p.team ? teamLogo(p.team, 'on-plogo') : null);
   };

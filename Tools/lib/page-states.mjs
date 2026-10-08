@@ -87,7 +87,11 @@ export const STATES = {
     { name: 'match-team', url: MATCH_PAGE_URL, scope: 'main', data: { live_match: MATCH_5C8 }, click: '[data-key="tab-team"]' },
     { name: 'match-missing', url: 'match.html?match=nope', scope: 'main' },
   ],
-  live: [{ name: 'live', url: `live.html?match=${SNAP.match.id}`, scope: 'main' }, { name: 'live-missing', url: 'live.html?match=nope', scope: 'main' }],
+  // A live game from Online's Live now (owner 10-08): the match page (the old live.html view is retired), Back to Online.
+  live: [{ name: 'live-feed', url: `match.html?match=${MATCH_5C8.match.id}&from=online.html`, scope: 'main', data: { live_match: MATCH_5C8 } }],
+  // The full leaderboard (owner 10-08), from Online's "Full leaderboard ›". Tools/check-live-feed.mjs pages it.
+  leaderboard: [{ name: 'leaderboard', url: 'leaderboard.html', scope: 'main', data: { leaderboard: { ...LEADERBOARD, offset: 0 } } },
+    { name: 'leaderboard-soon', url: 'leaderboard.html', scope: 'main', data: { leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null } } }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
   onboarding: [
     ...STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),

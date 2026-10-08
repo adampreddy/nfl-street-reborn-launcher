@@ -105,7 +105,40 @@ function lbRow(r) {
     team: r?.team && typeof r.team === 'object' ? r.team : null,
     record: wins !== null && losses !== null ? `${wins}-${losses}` : null,
     elo: elo !== null ? fmtInt(elo) : null, change: change(r?.delta_week), you: r?.you === true,
+    // Whose row: their name opens their profile (player-link.js; null draws the name plain).
+    player_id: typeof r?.player_id === 'string' && r.player_id ? r.player_id : null,
   };
+}
+
+/** Rows on one page of the full leaderboard (and the most the server sends at once). */
+export const BOARD_PAGE = 50;
+
+/**
+ * One page of the full leaderboard (owner 10-08), from the `leaderboard` answer to `{ limit: BOARD_PAGE, offset }`:
+ * `soon` while there is no leaderboard (no answer, Elo off, nobody ranked); otherwise the page's rows, your own row
+ * when it is not on this page (`you`, its rank tells "Jump to me" where to go), the page number and count, and
+ * `paged` = whether the server pages at all. A server without paging ignores `offset` and answers the top (its answer
+ * has no `offset`): then there is one page, the top, whatever was asked.
+ */
+export function boardPage(answer, askedOffset = 0) {
+  if (!answer || answer.enabled === false || !Array.isArray(answer.rows)) return { soon: true };
+  const total = int(answer.total);
+  const paged = Number.isInteger(answer.offset);
+  if (!answer.rows.length && (!paged || !total)) return { soon: true };
+  const offset = paged ? answer.offset : 0;
+  const rows = answer.rows.slice(0, BOARD_PAGE).map(lbRow);
+  const youRank = int(answer.you?.rank);
+  const shown = rows.some((r) => r.you) || (youRank !== null && rows.some((r) => r.rank === youRank));
+  const you = answer.you && youRank !== null && !shown ? { ...lbRow(answer.you), you: true } : null;
+  const pages = paged && total ? Math.max(1, Math.ceil(total / BOARD_PAGE)) : 1;
+  const page = Math.min(pages - 1, Math.floor(offset / BOARD_PAGE));
+  return { soon: false, total, rows, you, page, pages, paged, asked: Math.floor((Number(askedOffset) || 0) / BOARD_PAGE) };
+}
+
+/** The page (0-based) that holds rank `rank`, or null. */
+export function pageOfRank(rank) {
+  const n = int(rank);
+  return n !== null && n >= 1 ? Math.floor((n - 1) / BOARD_PAGE) : null;
 }
 
 /** The Leaderboard card (spec §4, §7): "Rankings start soon." (soon) while there is no leaderboard, Elo is off or nobody

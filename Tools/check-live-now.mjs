@@ -6,7 +6,10 @@
 // elements (keyed by match id, so it never flickers), and that polling stops while the page is
 // hidden and resumes at once when it becomes visible again.
 //
-// Final-review fixes (plan 4c): an unchanged list touches nothing and a focused Watch link keeps
+// Owner 10-08: the card's link says "Live feed" and opens the site-styled match page (match.html?match=<id>&from=
+// online.html); a player's name opens their profile when the list names their account.
+//
+// Final-review fixes (plan 4c): an unchanged list touches nothing and a focused Live feed link keeps
 // focus across a changed one (I1); the error alert is replaced only when its words change (I1);
 // one request at a time, 10 s polling, exponential backoff with jitter from 5 s to 60 s on errors,
 // at least 60 s after a 429, last good rows kept on error (I2); players ordered by side (I3);
@@ -58,9 +61,11 @@ const imgsOf = (root) => findAll(root, (n) => n.tagName === "img");
 // data: URL module cannot resolve a relative import, so each shared module's exports become plain
 // declarations.
 const SHELL = readFileSync("crates/reborn-ui/ui/shell.js", "utf8").replaceAll("export ", "");
-const LIVE_COLOR = readFileSync("crates/reborn-ui/ui/live-color.js", "utf8").replaceAll("export ", "");
+const NAMES = readFileSync("crates/reborn-ui/ui/names.js", "utf8").replaceAll("export ", "");
+const IMPORTS = /^import .*from ['"]\.\/(?:shell|names|player-link|live-common)\.js['"];\r?\n/gm;
+const PLAYER_LINK = readFileSync("crates/reborn-ui/ui/player-link.js", "utf8").replace(IMPORTS, "").replaceAll("export ", "");
 const LIVE_COMMON = readFileSync("crates/reborn-ui/ui/live-common.js", "utf8").replaceAll("export ", "");
-const IMPORT_LINE = /^import .*from ['"]\.\/(?:shell|live-color|live-common)\.js['"];\r?\n/gm;
+const IMPORT_LINE = IMPORTS;
 const LIVE_NOW_RAW = readFileSync("crates/reborn-ui/ui/live-now.js", "utf8");
 const LIVE_NOW_SRC = LIVE_NOW_RAW.replace(IMPORT_LINE, "");
 
@@ -106,7 +111,7 @@ async function loadLive(invoke) {
   global.setTimeout = (fn, ms) => { timers.push({ fn, ms, alive: true }); return timers.length; };
   global.clearTimeout = (id) => { if (id && timers[id - 1]) timers[id - 1].alive = false; };
 
-  const mod = SHELL + "\n" + LIVE_COLOR + "\n" + LIVE_COMMON + "\n" + LIVE_NOW_SRC + `\n// live-now check ${Math.random()}`;
+  const mod = SHELL + "\n" + NAMES + "\n" + PLAYER_LINK + "\n" + LIVE_COMMON + "\n" + LIVE_NOW_SRC + `\n// live-now check ${Math.random()}`;
   await import("data:text/javascript;base64," + Buffer.from(mod).toString("base64"));
   await tick(); await tick(); await tick();
 
@@ -142,7 +147,7 @@ function check(what, ok, detail = "") {
   console.log(`${ok ? "ok  " : "FAIL"}  ${what}${ok ? "" : `: ${detail}`}`);
 }
 
-// ---- 1: the real fixture, two rows, teams, score, Watch ----
+// ---- 1: the real fixture, two rows, teams, score, Live feed ----
 {
   const invoke = async (cmd) => {
     if (cmd === "settings_paths") return {};
@@ -161,9 +166,10 @@ function check(what, ok, detail = "") {
   const rows = byClass(section, "live-row");
   check("renders one row per match", rows.length === FIXTURE.matches.length, `${rows.length} row(s)`);
   const watch = findAll(section, (n) => n.tagName === "a" && String(n.className || "").includes("live-watch"));
-  check("every row has a Watch link", watch.length === FIXTURE.matches.length && watch.every((w) => w.textContent === "Watch"));
-  check("Watch opens live.html?match=<id>",
-    watch.every((w) => FIXTURE.matches.some((m) => w.attrs.href === `live.html?match=${encodeURIComponent(m.id)}`)),
+  check("every row has a Live feed link", watch.length === FIXTURE.matches.length && watch.every((w) => w.textContent === "Live feed"));
+  check("no card says Watch any more", !text(section).includes("Watch"));
+  check("Live feed opens the match page, following the match, Back to Online",
+    watch.every((w) => FIXTURE.matches.some((m) => w.attrs.href === `match.html?match=${encodeURIComponent(m.id)}&from=online.html`)),
     watch.map((w) => w.attrs.href).join(", "));
   const sides = byClass(section, "live-side");
   check("each side's fade is its own team's validated primary colour (--tc)",
@@ -318,20 +324,20 @@ function check(what, ok, detail = "") {
   page.done();
 }
 
-// ---- 9 (I1): an unchanged list touches nothing; a changed one keeps a focused Watch link focused ----
+// ---- 9 (I1): an unchanged list touches nothing; a changed one keeps a focused Live feed link focused ----
 {
   let answer = FIXTURE.matches;
   const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? answer : Promise.reject(new Error(`no fake answer for ${cmd}`)));
   const page = await loadLive(invoke);
   const watchOf = () => findAll(page.section(), (n) => n.tagName === "a" && String(n.className || "").includes("live-watch"));
   const first = watchOf();
-  check("every Watch link has a data-key naming its match",
-    first.length === FIXTURE.matches.length && first.every((w, i) => w.attrs["data-key"] === `watch-${FIXTURE.matches[i].id}`),
+  check("every Live feed link has a data-key naming its match",
+    first.length === FIXTURE.matches.length && first.every((w, i) => w.attrs["data-key"] === `feed-${FIXTURE.matches[i].id}`),
     first.map((w) => w.attrs["data-key"]).join(", "));
   first[1].focus();
   await page.fireTimers();
   const same = watchOf();
-  check("an unchanged list redraws nothing (the very same Watch links stay)", same.every((w, i) => w === first[i]));
+  check("an unchanged list redraws nothing (the very same Live feed links stay)", same.every((w, i) => w === first[i]));
   check("focus is untouched by an unchanged poll", page.doc.activeElement === first[1]);
   answer = JSON.parse(JSON.stringify(FIXTURE.matches));
   answer[0].score = [7, 0];
@@ -339,7 +345,7 @@ function check(what, ok, detail = "") {
   await page.fireTimers();
   const changed = watchOf();
   check("a changed list redraws its rows", text(page.section()).includes("7") && changed[1] !== first[1]);
-  check("the Watch link that had focus keeps it across the redraw (the new link with the same data-key)",
+  check("the Live feed link that had focus keeps it across the redraw (the new link with the same data-key)",
     page.doc.activeElement === changed[1] && changed[1].attrs["data-key"] === first[1].attrs["data-key"],
     `active: ${page.doc.activeElement && page.doc.activeElement.attrs && page.doc.activeElement.attrs["data-key"]}`);
   page.done();
@@ -457,6 +463,22 @@ function check(what, ok, detail = "") {
     names.join(",") === "CPU,Adam", names.join(","));
   check("Jock's name never appears (seat 1 is not part of this game)", !text(row).includes("Jock"), text(row));
   check("the CPU side still shows its own team and score", text(row).includes("Giants") && text(row).includes("Colts"), text(row).slice(0, 300));
+  page.done();
+}
+
+// ---- 13c (owner 10-08): a player with an account id is a link to their profile; one without stays plain ----
+{
+  const named = JSON.parse(JSON.stringify(FIXTURE.matches[0]));
+  named.seats[0].player_id = "0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D"; // the server's case does not matter
+  const invoke = async (cmd) => (cmd === "settings_paths" ? {} : cmd === "live_matches" ? [named] : Promise.reject(new Error(`no fake answer for ${cmd}`)));
+  const page = await loadLive(invoke);
+  const [row] = byClass(page.section(), "live-row");
+  const links = findAll(row, (n) => n.tagName === "a" && String(n.className || "").includes("player-link"));
+  check("Adam's name is a link to his profile in the launcher",
+    links.length === 1 && links[0].textContent === "Adam" && links[0].attrs.href === "profile.html?player=0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    links.map((l) => `${l.textContent} ${l.attrs.href}`).join(", "));
+  const plain = byClass(row, "live-player-name").filter((n) => n.tagName === "em");
+  check("Jock (no account id in the answer) stays plain text", plain.length === 1 && plain[0].textContent === "Jock", plain.map((n) => n.textContent).join(","));
   page.done();
 }
 

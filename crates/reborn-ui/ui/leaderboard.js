@@ -7,10 +7,11 @@
 // team from one `player_profile` read per page load, as Play reads it (home.js).
 // Server text only through el()'s `text`; images only through match-rows.js's avatar() and teamLogo() (the CSP's two
 // image prefixes). Polling stops while the page is hidden or a game runs, like Live now.
-import { bridge, call, el, quietCall, reason } from './shell.js';
+import { bridge, el, quietCall, reason } from './shell.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { PAGE_ORIGIN, makePoller } from './live-common.js';
+import { makePoller } from './live-common.js';
 import { boardStanding, leaderboardView } from './online-model.js';
+import { playerIdOf, playerLink, profileHref } from './player-link.js';
 
 const POLL_MS = 60000;
 const slot = document.getElementById('leaderboard-slot');
@@ -18,11 +19,14 @@ const card = el('section', { class: 'glass on-lb', 'aria-label': 'Leaderboard' }
 slot?.append(card);
 const head = () => el('div', { class: 'sec-head' }, el('h2', { text: 'Leaderboard' }));
 
+/** A row; the name is the link to the player's profile (owner 10-08), and a click anywhere on the row opens it too. */
 function row(r) {
-  return el('li', { class: `on-lb-row${r.rank !== null && r.rank <= 3 ? ' top' : ''}${r.you ? ' you' : ''}` },
+  const id = playerIdOf(r.player_id);
+  return el('li', { class: `on-lb-row${r.rank !== null && r.rank <= 3 ? ' top' : ''}${r.you ? ' you' : ''}${id ? ' linked' : ''}`,
+    onclick: id ? (e) => { if (!e.target?.closest?.('a')) location.href = profileHref(id); } : null },
     el('span', { class: 'on-lb-rank', text: r.rank === null ? '' : String(r.rank) }),
     el('span', { class: 'on-lb-face' }, avatar(r.avatar, r.name), r.team ? teamLogo(r.team) : null),
-    el('span', { class: 'on-lb-who' }, el('span', { class: 'on-lb-name', text: r.name, title: r.discord ? `@${r.discord}` : null }), r.record ? el('small', { class: 'num', text: r.record }) : null),
+    el('span', { class: 'on-lb-who' }, playerLink(id, r.name, { cls: 'on-lb-name', key: `lb-card-${id}`, title: r.discord ? `@${r.discord}` : null }), r.record ? el('small', { class: 'num', text: r.record }) : null),
     el('span', { class: 'on-lb-elo' }, r.elo ? el('b', { text: r.elo }) : null, r.change ? el('small', { class: r.change.dir, text: r.change.text }) : null));
 }
 
@@ -40,8 +44,9 @@ function draw(answer) {
   card.replaceChildren(h,
     el('div', { class: 'on-lb-hd', 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'Player' }), el('span', { text: 'Elo' })),
     list,
+    // The whole ladder in the launcher (owner 10-08), not the website.
     el('button', { type: 'button', class: 'sec-link on-lb-more', 'data-key': 'full-leaderboard', text: 'Full leaderboard ›',
-      onclick: () => call('open_website', { url: `${PAGE_ORIGIN}/leaderboard` }).catch(() => {}) }));
+      onclick: () => { location.href = 'leaderboard.html'; } }));
 }
 
 /** A failed read: the last good card stays; with none yet, the header and the failure's own sentence. */

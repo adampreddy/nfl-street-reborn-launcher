@@ -2,7 +2,7 @@
 // answer as it is and returns strings ready to draw, or null / [] when the server did not send what a piece needs, so
 // the page leaves that piece out: nothing is invented (spec §8.7, "Degrades gracefully until the backend work ships").
 // An older server's shapes are handled here too: private rooms (backend §1) and rushing `yac` for YCO (backend §9).
-import { eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
+import { backHref, eloChange, fmtInt, fmtPct, playerKind } from './stats-model.js';
 import { shownName } from './names.js';
 
 // Win-loss records use the ASCII hyphen ("14-9"); scores and series keep the en dash.
@@ -51,8 +51,10 @@ export function summaryFacts(p) {
   return out;
 }
 
-/** The live card (`header.live`, backend §7): "Ranked · Game 2 of 3", "14-7", "vs Mikel · Series 1-0". No halves. */
-export function liveCard(live) {
+/** The live card (`header.live`, backend §7): "Ranked · Game 2 of 3", "14-7", "vs Mikel · Series 1-0". No halves.
+ *  Its Live feed opens the match page following the match (owner 10-08), Back returning to `from` (stats-model.js
+ *  backHref: the profile it was opened from). */
+export function liveCard(live, from = 'stats.html') {
   if (!live || typeof live !== 'object' || live.queue === 'private' || !live.match_id) return null;
   const queue = live.queue === 'ranked' ? 'Ranked' : live.queue === 'casual' ? 'Casual' : 'Online';
   const bo = num(live.best_of) ? live.best_of : 1;
@@ -61,7 +63,8 @@ export function liveCard(live) {
   const parts = [];
   if (shownName(live.opponent)) parts.push(`vs ${shownName(live.opponent)}`);
   if (bo > 1 && Array.isArray(live.series) && num(live.series[0]) && num(live.series[1])) parts.push(`Series ${live.series[0]}${EN}${live.series[1]}`);
-  return { head, me: live.me || null, opp: live.opp || null, score, line: parts.join(' · '), href: `live.html?match=${encodeURIComponent(live.match_id)}` };
+  return { head, me: live.me || null, opp: live.opp || null, score, line: parts.join(' · '),
+    href: `match.html?${new URLSearchParams({ match: String(live.match_id), from: backHref(from) })}` };
 }
 
 /** "● In a match" while a (public) match runs, "● Online now" when online, else nothing. */

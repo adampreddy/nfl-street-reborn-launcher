@@ -247,7 +247,7 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-panel{display:flex;flex-direction:column;gap:10px}
 .on-who{list-style:none;margin:0;padding:0;max-height:260px;overflow:auto}
 .on-who li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;font-size:13px}
-.on-who li>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.on-who li>span,.on-who li>a{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .on-who small{flex:none;font-size:12px;color:var(--fg-3)}
 .on-switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px;border-top:1px solid var(--stroke);font-size:13px;color:var(--fg-2)}
 /* Live now (spec §5): up to three cards */
@@ -264,9 +264,9 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .live-player-name{font-style:normal;font-weight:500;font-size:12px;color:var(--fg-3)}
 .live-score-num{font:700 20px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .live-side.lose .live-team-name,.live-side.lose .live-score-num{color:var(--fg-2)}
-.live-foot{display:flex;align-items:center;gap:8px;padding:7px 10px 7px 14px;border-top:1px solid var(--stroke);font-size:11.5px;color:var(--fg-3)}
+.live-foot{display:flex;align-items:center;gap:6px;padding:7px 8px 7px 12px;border-top:1px solid var(--stroke);font-size:11.5px;color:var(--fg-3)}
 .live-mode-line{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.btn.sm.live-watch{height:26px;padding:0 10px;font-size:11.5px}
+.btn.sm.live-watch{flex:none;height:26px;padding:0 8px;font-size:11.5px}
 .live-empty{margin:0;font-size:13px;color:var(--fg-2)}
 .live-error{margin:0 0 8px}
 @media (max-width:1000px){.live-rows{grid-template-columns:1fr}}

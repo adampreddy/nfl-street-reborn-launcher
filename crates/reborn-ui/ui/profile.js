@@ -16,7 +16,6 @@
 // through the CSSOM, never a style attribute.
 import { bridge, call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
 import { PAGE_ORIGIN, avatarSrc } from './live-common.js';
-import { notFound } from './live-game-render.js';
 import { dominantColors } from './cover-color.js';
 import { eloCard, fmtInt, fmtPct, lastTenGames, matchHref, matchRowModel, queueMark, rowSpans, streakOf, winsLosses } from './stats-model.js';
 import { avatar, matchHeader, matchRows, pager, teamLogo } from './match-rows.js';
@@ -26,6 +25,7 @@ import { recordsView } from './records-view.js';
 import { ROLES, card, cellGrid, cols, eloLine, playerRows, tableHead, teamRatesCard, wlStrip } from './stats-cards.js';
 import { tabs } from './tabs.js';
 import { shownName, discordName } from './names.js';
+import { playerLink } from './player-link.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHOWN = 5;     // a long table shows five rows; "Show all N" shows every row in place
@@ -142,7 +142,7 @@ function coverColours(target, url) {
 // Adam 10-04): an older server's open-ended casual match (20 games) reads as one game.
 const casualSeries = (bo) => Number.isInteger(bo) && bo > 1 && bo <= 7;
 function liveBlock(raw) {
-  const c = liveCard(raw && raw.queue !== 'ranked' && !casualSeries(raw.best_of) ? { ...raw, best_of: 1 } : raw);
+  const c = liveCard(raw && raw.queue !== 'ranked' && !casualSeries(raw.best_of) ? { ...raw, best_of: 1 } : raw, here('overview'));
   if (!c) return null;
   const side = (t, right) => el('span', { class: `t${right ? ' r' : ''}` },
     ...(right ? [el('b', { text: t?.abbrev || '' }), teamLogo(t)] : [teamLogo(t), el('b', { text: t?.abbrev || '' })]));
@@ -374,10 +374,14 @@ function recentCard() {
     const q = queueMark(m);
     const href = matchHref(m, here('overview'));
     const cells = [el('span', { class: `pf-res ${r.result || ''}`, text: `${r.result} ${r.score}`.trim() }),
-      el('span', { class: 'pf-who' }, avatar(m.opponent_kind === 'cpu' || !m.opponent ? null : r.avatar, r.opponent, '', { cpu: m.opponent_kind === 'cpu' }), el('b', { text: r.opponent })),
+      el('span', { class: 'pf-who' }, avatar(m.opponent_kind === 'cpu' || !m.opponent ? null : r.avatar, r.opponent, '', { cpu: m.opponent_kind === 'cpu' }),
+        // The opponent's name opens their profile (owner 10-08).
+        playerLink(m.opponent_kind === 'cpu' ? null : m.opponent?.player_id, el('b', { text: r.opponent }), { key: `recent-opp-${r.id}` })),
       el('span', { class: `qm ${q.kind}`, text: q.text }), el('span', { class: 'r num pf-date', text: r.date })];
     const label = `${r.date}. ${r.result === 'W' ? 'Win' : r.result === 'L' ? 'Loss' : ''} ${r.score} against ${r.opponent}${q.text ? `, ${q.text}` : ''}.`;
-    return cols(href ? el('button', { type: 'button', class: 'vc-tr', 'data-key': `recent-${r.id}`, 'aria-label': label, onclick: () => { location.href = href; } }, ...cells)
+    // The row's own button under the cells (theme.css .m-open): the name's link sits above it, never inside it.
+    return cols(href ? el('div', { class: 'vc-tr m-open-row', 'data-row': `recent-${r.id}` },
+      el('button', { type: 'button', class: 'm-open', 'data-key': `recent-${r.id}`, 'aria-label': label, onclick: () => { location.href = href; } }), ...cells)
       : el('div', { class: 'vc-tr', role: 'group', 'aria-label': label }, ...cells), RECENT_COLS);
   });
   return card('recent', 'Recent matches', [tableHead(['Result', 'Opponent', 'Queue', 'Date'], RECENT_COLS, [3]),
@@ -751,9 +755,8 @@ function draw(p, ownerId) {
 }
 
 function missing() {
-  const nodes = notFound('stats.html', 'Back to Stats');
-  nodes[0].textContent = "That profile couldn't be found.";
-  screen.replaceChildren(...nodes);
+  screen.replaceChildren(el('p', { class: 'lv-empty', role: 'alert', text: "That profile couldn't be found." }),
+    el('a', { class: 'button', id: 'back', 'data-key': 'back', href: 'stats.html', text: 'Back to Stats' }));
 }
 
 async function load() {

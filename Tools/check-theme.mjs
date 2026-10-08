@@ -3,11 +3,11 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import assert from "node:assert/strict";
 const ui = "crates/reborn-ui/ui/";
-const PAGES = ["index","controls","match","live","mods","music","onboarding","online","profile","recovery","settings","stats"];
+const PAGES = ["index","controls","match","leaderboard","mods","music","onboarding","online","profile","recovery","settings","stats"];
 // Pages moved onto the design system load exactly theme.css + their own page file (spec §11) and say so
 // with body.themed. Later tasks add pages here as they move.
 const THEMED = { index: "pages/play.css", settings: "pages/settings.css", mods: "pages/mods.css", music: "pages/music.css", controls: "pages/controls.css", stats: "pages/stats.css", profile: "pages/profile.css",
-  recovery: "pages/recovery.css", match: "pages/game.css", live: "pages/live.css", online: "pages/online.css",
+  recovery: "pages/recovery.css", match: "pages/game.css", leaderboard: "pages/leaderboard.css", online: "pages/online.css",
   onboarding: "onboarding.css",
 };
 for (const p of PAGES) {
@@ -36,7 +36,9 @@ for (const m of theme.matchAll(/font-weight:\s*(\d+)|font:\s*(\d{3})\s/g)) asser
 assert.doesNotMatch(theme, /box-shadow:[^;]*(rgba\(224,\s*39,\s*46|var\(--red\))/, "no red glow");
 // Spec §11: the old stylesheets are retired once no page loads them. Every shell page is on the design system; the
 // developer harness (spec §9, untouched) keeps its own sheet, renamed from styles.css.
-const RETIRED = ["styles.css", "launcher.css", "product-ui.css", "finish.css", "shell.css", "play.css", "players.css", "stats.css", "onboarding-polish.css", "live-view.css", "music.css", "profile.css"];
+const RETIRED = ["styles.css", "launcher.css", "product-ui.css", "finish.css", "shell.css", "play.css", "players.css", "stats.css", "onboarding-polish.css", "live-view.css", "music.css", "profile.css",
+  // The old native match view (live.html), retired 10-08: a live game opens the site-styled match page (match.html).
+  "live.html", "live.js", "live-game-render.js", "pages/live.css"];
 for (const p of PAGES) assert.ok(THEMED[p], `${p} must load only theme.css + its page file (spec §11)`);
 for (const f of RETIRED) assert.ok(!existsSync(ui + f), `ui/${f} is retired (spec §11) and must be gone`);
 for (const f of readdirSync(ui).filter((x) => x.endsWith(".html"))) {

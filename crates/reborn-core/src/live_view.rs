@@ -222,12 +222,17 @@ pub fn dashboard(http: &dyn Http, origin: &str, token: &str) -> Result<Value, Li
     get_json(http, &format!("{}/v1/me/dashboard", origin.trim_end_matches('/')), Some(token))
 }
 
-/// `GET {origin}/v1/leaderboard?limit={limit}`: the ranked leaderboard's top rows (the Online page's card, launcher
-/// spec 2026-10-02 §4) and, with a token, the viewer's own row. `limit` is clamped to `1..=50`. A `404` is `Ok(None)`:
-/// a backend without the route (or with matchmaking off) has no leaderboard to show, which the card reads as
-/// "Rankings start soon."
-pub fn leaderboard(http: &dyn Http, origin: &str, token: Option<&str>, limit: u32) -> Result<Option<Value>, LiveError> {
-    let url = format!("{}/v1/leaderboard?limit={}", origin.trim_end_matches('/'), limit.clamp(1, 50));
+/// `GET {origin}/v1/leaderboard?limit={limit}[&offset={offset}]`: the ranked leaderboard's rows from rank `offset + 1`
+/// (the Online page's card reads the top, launcher spec 2026-10-02 §4; the full leaderboard pages, 10-08) and, with a
+/// token, the viewer's own row. `limit` is clamped to `1..=50`; an `offset` of 0 is not sent, so the card's request is
+/// exactly what it always was. A server that does not page ignores `offset` and answers the top (its answer then has no
+/// `offset`). A `404` is `Ok(None)`: a backend without the route (or with matchmaking off) has no leaderboard to show,
+/// which the card reads as "Rankings start soon."
+pub fn leaderboard(http: &dyn Http, origin: &str, token: Option<&str>, limit: u32, offset: u32) -> Result<Option<Value>, LiveError> {
+    let mut url = format!("{}/v1/leaderboard?limit={}", origin.trim_end_matches('/'), limit.clamp(1, 50));
+    if offset > 0 {
+        url.push_str(&format!("&offset={}", offset.min(1_000_000)));
+    }
     get_json_opt(http, &url, token)
 }
 
@@ -460,16 +465,24 @@ mod tests {
     fn leaderboard_reads_the_board_sends_the_token_when_there_is_one_and_404_is_none() {
         let url = "https://api.test/v1/leaderboard?limit=10";
         let http = FakeHttp::default().reply(url, 200, r#"{"ok":true,"enabled":true,"total":2,"rows":[{"rank":1}],"you":null}"#);
-        let got = leaderboard(&http, ORIGIN, Some("tok"), 10).unwrap().unwrap();
+        let got = leaderboard(&http, ORIGIN, Some("tok"), 10, 0).unwrap().unwrap();
         assert_eq!(got["total"], 2);
         assert_eq!(http.last_bearer().as_deref(), Some("tok"));
         // No such route yet (an older backend, matchmaking off): nothing to show, not an error.
         let none = FakeHttp::default().reply(url, 404, "");
-        assert_eq!(leaderboard(&none, ORIGIN, None, 10).unwrap(), None);
+        assert_eq!(leaderboard(&none, ORIGIN, None, 10, 0).unwrap(), None);
         let clamped = FakeHttp::default().reply("https://api.test/v1/leaderboard?limit=50", 200, "{}");
-        assert!(leaderboard(&clamped, ORIGIN, None, 500).unwrap().is_some(), "a silly limit is clamped, not refused");
+        assert!(leaderboard(&clamped, ORIGIN, None, 500, 0).unwrap().is_some(), "a silly limit is clamped, not refused");
         let broken = FakeHttp::default().reply(url, 500, "");
-        assert_eq!(leaderboard(&broken, ORIGIN, None, 10).unwrap_err(), LiveError::Server(500));
+        assert_eq!(leaderboard(&broken, ORIGIN, None, 10, 0).unwrap_err(), LiveError::Server(500));
+    }
+
+    #[test]
+    fn leaderboard_pages_with_an_offset_and_leaves_the_cards_request_unchanged() {
+        let paged = FakeHttp::default().reply("https://api.test/v1/leaderboard?limit=50&offset=100", 200, r#"{"ok":true,"offset":100}"#);
+        assert_eq!(leaderboard(&paged, ORIGIN, None, 50, 100).unwrap().unwrap()["offset"], 100);
+        let far = FakeHttp::default().reply("https://api.test/v1/leaderboard?limit=50&offset=1000000", 200, "{}");
+        assert!(leaderboard(&far, ORIGIN, None, 50, u32::MAX).unwrap().is_some(), "a silly offset is clamped, not refused");
     }
 
     #[test]

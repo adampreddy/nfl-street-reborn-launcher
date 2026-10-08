@@ -2,6 +2,10 @@
 // backend's public `GET /v1/live` (no sign-in). Inserted above the private-room section the same
 // way online-mm.js inserts its own panel: a fresh <section> placed right before #screen.
 //
+// A card's "Live feed" (owner 10-08: "u can't actually watch games") -- or a click anywhere on the card -- opens the
+// match page (match.html, the site's /live/<match> page in the launcher, following the match as it is played), and
+// Back returns here. Each player's name opens their profile (player-link.js). "See all ›" shows every live game here.
+//
 // Everything the backend returns is untrusted player-typed data (a display name, a team name) and
 // is drawn with `el()`'s `text` (textContent), never innerHTML -- see shell.js. An image `src` is
 // set only from a URL under our own live-assets catalog or Discord's avatar CDN (the CSP `img-src`
@@ -12,10 +16,12 @@
 import { bridge, call, el, quietCall, reason } from './shell.js';
 import { PAGE_ORIGIN, assetUrl, makePoller } from './live-common.js';
 import { shownName } from './names.js';
+import { playerLink } from './player-link.js';
 
 // The list changes slowly (a match starts or a score moves); 10 s keeps a LAN party of launchers
 // behind one address well inside the backend's rate limit.
 const POLL_MS = 10000;
+const SHOWN = 3; // cards before "See all ›" (spec 2026-10-02 §5)
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 /** Shows `img`; swaps to `badge` if the image never loads (wrong origin, 404, offline). */
@@ -38,21 +44,23 @@ function teamLogo(team) {
   return withImageFallback(img, badge);
 }
 
-/** The player under a team, muted beside its name; a side with no controller is the CPU. */
-function playerLine(seat, cpu) {
+/** The player under a team, muted beside its name (a link to their profile); a side with no controller is the CPU. */
+function playerLine(seat, cpu, key) {
   if (cpu) return el('em', { class: 'live-player-name live-cpu', text: 'CPU' });
   const name = shownName(seat) || 'Unknown player';
-  return el('em', { class: 'live-player-name', text: name });
+  const node = playerLink(seat?.player_id, name, { cls: 'live-player-name', key, tag: 'em', label: `${name}, profile` });
+  if (String(node.tagName).toLowerCase() === 'a') keyed.set(key, node);
+  return node;
 }
 
 /** One team row of a card (spec 2026-10-02 §5): crest (or its badge), team name with the player muted, score, on a faint
     fade of the team's own primary (validated, never trusted as is). The losing side is dimmed. */
-function sideRow(team, score, seat, cpu, losing) {
+function sideRow(team, score, seat, cpu, losing, key) {
   const attrs = { class: `live-side${losing ? ' lose' : ''}` };
   if (team && HEX_RE.test(team.primary)) attrs.style = `--tc:${team.primary}`;
   return el('div', attrs,
     teamLogo(team),
-    el('span', { class: 'live-team-name' }, team && team.name ? String(team.name) : 'Team TBD', ' ', playerLine(seat, cpu)),
+    el('span', { class: 'live-team-name' }, team && team.name ? String(team.name) : 'Team TBD', ' ', playerLine(seat, cpu, key)),
     el('b', { class: 'live-score-num', text: String(Number.isFinite(score) ? score : 0) }));
 }
 
@@ -68,15 +76,20 @@ function seatOfSide(seats, sides, side) {
   return (idx === 0 || idx === 1) ? { seat: seats[idx], cpu: false } : { seat: null, cpu: true };
 }
 
-function watchLink(match) {
+/** Where a card goes: the match page, following this match live; Back there returns to Online. */
+export function feedHref(id) {
+  return `match.html?${new URLSearchParams({ match: String(id), from: 'online.html' })}`;
+}
+
+function feedLink(match) {
   const id = typeof match.id === 'string' ? match.id : '';
   const teams = Array.isArray(match.teams) ? match.teams : [null, null];
   const label = (t) => (t && t.name ? t.name : 'a team');
   const link = el('a', {
-    class: 'btn sm live-watch', href: `live.html?match=${encodeURIComponent(id)}`, 'data-key': `watch-${id}`,
-    'aria-label': `Watch ${label(teams[0])} vs ${label(teams[1])}`, text: 'Watch',
+    class: 'btn sm live-watch', href: feedHref(id), 'data-key': `feed-${id}`,
+    'aria-label': `Live feed: ${label(teams[0])} vs ${label(teams[1])}`, text: 'Live feed',
   });
-  watchLinks.set(`watch-${id}`, link);
+  keyed.set(`feed-${id}`, link);
   return link;
 }
 
@@ -92,13 +105,14 @@ function rowContent(match) {
   const s1 = seatOfSide(seats, sides, 1);
   const a = Number.isFinite(score[0]) ? score[0] : 0, b = Number.isFinite(score[1]) ? score[1] : 0;
   const gameNo = Number.isInteger(match.game_seq) ? match.game_seq : 1;
+  const id = String(match.id);
   return [
-    sideRow(teams[0], score[0], s0.seat, s0.cpu, a < b),
-    sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a),
+    sideRow(teams[0], score[0], s0.seat, s0.cpu, a < b, `player-${id}-0`),
+    sideRow(teams[1], score[1], s1.seat, s1.cpu, b < a, `player-${id}-1`),
     el('div', { class: 'live-foot' },
       el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
       el('span', { class: 'live-mode-line', text: modeGame(match, gameNo) }),
-      watchLink(match)),
+      feedLink(match)),
   ];
 }
 
@@ -113,13 +127,21 @@ function modeGame(match, gameNo) {
 // ---- the section, its keyed rows, and polling ----
 
 const rows = new Map(); // match id -> <li>, reused across polls so a refresh never flickers
-const watchLinks = new Map(); // data-key -> the Watch link drawn last, to keep its focus across a redraw
+const keyed = new Map(); // data-key -> each link drawn last (Live feed, a player's name), to keep its focus across a redraw
+
+/** A click on the card itself (not on one of its links) opens the match, as its Live feed link does. */
+function cardClick(e) {
+  const t = e?.target;
+  if (t && typeof t.closest === 'function' && t.closest('a, button')) return;
+  const id = e?.currentTarget?.getAttribute?.('data-match-id');
+  if (id) location.href = feedHref(id);
+}
 
 function rowFor(match) {
   const id = String(match.id);
   let li = rows.get(id);
   if (!li) {
-    li = el('li', { class: 'live-row glass', 'data-match-id': id });
+    li = el('li', { class: 'live-row glass', 'data-match-id': id, onclick: cardClick });
     rows.set(id, li);
   }
   li.replaceChildren(...rowContent(match));
@@ -137,13 +159,23 @@ if (liveSlot) liveSlot.append(section); else screen?.parentNode?.insertBefore(se
 // poll, and the section stays empty, the same way online-mm.js stays out of the way without one.
 if (bridge) {
   // Two fixed parts: the error line (if any) and the rows. A failed poll only ever touches the
-  // first, so the last good rows -- and a Watch link that has focus -- stay exactly as they were.
+  // first, so the last good rows -- and a link that has focus -- stay exactly as they were.
   const note = el('div', { class: 'live-now-note' });
   const content = el('div', { class: 'live-now-rows' });
   const body = el('div', { class: 'live-now-body' }, note, content);
-  section.append(el('div', { class: 'sec-head live-now-heading' }, el('h2', { text: 'Live now' }),
-    el('button', { type: 'button', class: 'sec-link', 'data-key': 'live-all', text: 'See all ›',
-      onclick: () => call('open_website', { url: `${PAGE_ORIGIN}/live` }).catch(() => {}) })), body);
+  // "See all ›" shows every live game right here (owner 10-08: a live game stays in the launcher), "Show fewer" the
+  // first three again. With three or fewer games every one already shows: it opens the website's live index, as before.
+  let showAll = false;
+  let lastMatches = [];
+  const allButton = el('button', { type: 'button', class: 'sec-link', 'data-key': 'live-all', text: 'See all ›',
+    onclick: () => {
+      if (lastMatches.length <= SHOWN) { call('open_website', { url: `${PAGE_ORIGIN}/live` }).catch(() => {}); return; }
+      showAll = !showAll;
+      allButton.textContent = showAll ? 'Show fewer' : 'See all ›';
+      lastJson = null;
+      showMatches(lastMatches);
+    } });
+  section.append(el('div', { class: 'sec-head live-now-heading' }, el('h2', { text: 'Live now' }), allButton), body);
   // The heading's "● {n} live games" (spec §2); hidden until the first good answer, and hidden again whenever the
   // list is empty (no "0 live games").
   const countBox = document.getElementById('on-live-count');
@@ -159,13 +191,13 @@ if (bridge) {
   let alertText = null; // the error line on screen, replaced only when its words change
 
   function drawRows(matches) {
-    const focusKey = [...watchLinks].find(([, n]) => n === document.activeElement)?.[0] ?? null;
+    const focusKey = [...keyed].find(([, n]) => n === document.activeElement)?.[0] ?? null;
     const ids = new Set(matches.map((m) => String(m?.id)));
     for (const id of [...rows.keys()]) if (!ids.has(id)) rows.delete(id);
-    watchLinks.clear();
+    keyed.clear();
     list.replaceChildren(...matches.map((m) => rowFor(m)));
     content.replaceChildren(list);
-    if (focusKey) watchLinks.get(focusKey)?.focus();
+    if (focusKey) keyed.get(focusKey)?.focus();
   }
 
   /** A good answer: clear the error line, and redraw the rows only when the list itself changed. */
@@ -174,11 +206,13 @@ if (bridge) {
     const json = JSON.stringify(matches);
     if (json === lastJson) return;
     lastJson = json;
+    lastMatches = matches;
     setCount(matches.length);
-    // Up to three cards (spec §5); "See all ›" opens the rest on the web.
-    if (matches.length) { drawRows(matches.slice(0, 3)); return; }
+    // Up to three cards (spec §5); "See all ›" shows the rest here.
+    if (matches.length <= SHOWN && showAll) { showAll = false; allButton.textContent = 'See all ›'; }
+    if (matches.length) { drawRows(showAll ? matches : matches.slice(0, SHOWN)); return; }
     rows.clear();
-    watchLinks.clear();
+    keyed.clear();
     content.replaceChildren(el('p', { class: 'live-empty', text: 'Streets are quiet right now.' }));
   }
 

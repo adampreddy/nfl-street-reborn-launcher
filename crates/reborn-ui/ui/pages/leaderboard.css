@@ -1,0 +1,53 @@
+/* The full leaderboard (owner 10-08): the Online page's Leaderboard card, full width. Layout only: every colour is a
+   theme.css token (Tools/check-theme-tokens.mjs). */
+body.page-leaderboard #main{padding:24px 28px 28px;display:flex;flex-direction:column;gap:16px}
+@media (max-width:1000px){body.page-leaderboard #main{padding:18px 20px 16px;gap:12px}}
+.lb-bar{display:flex;align-items:center}
+.lb-back{all:unset;border-radius:var(--r-md);display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);cursor:pointer}
+.lb-back:hover{color:var(--fg)}
+.lb-back .chev{margin:0;transform:rotate(135deg)}
+.lb-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.lb-head-end{display:flex;align-items:center;gap:12px}
+.lb-total{font-size:13px;color:var(--fg-3)}
+
+.lb-card{padding:14px 18px 12px;min-width:0}
+.lb-hd,.lb-row{display:grid;grid-template-columns:44px 40px minmax(0,1fr) 84px 76px 64px;align-items:center;gap:12px}
+.lb-hd{padding:2px 8px 10px;font:600 11px Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3);border-bottom:1px solid var(--stroke)}
+.lb-hd span:nth-child(2){grid-column:2/4}
+.lb-hd span:nth-child(n+3){text-align:right}
+.lb-rows{list-style:none;margin:0;padding:0}
+.lb-rows>li+li{border-top:1px solid var(--stroke)}
+.lb-row{min-height:52px;padding:0 8px;border-radius:var(--r-sm);font-size:13.5px;color:var(--fg-2);text-decoration:none}
+a.lb-row{cursor:pointer}
+a.lb-row:hover{background:var(--glass-2)}
+.lb-rank{text-align:center;font:600 14px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--fg-3)}
+.lb-row.top .lb-rank{color:var(--fg)}
+.lb-row.you{padding-left:5px;border-left:3px solid var(--red);background:var(--red-wash)}
+.lb-row.you .lb-rank{color:var(--red-ink)}
+.lb-row.you .lb-name{font-weight:700}
+.lb-face{position:relative;width:36px;height:36px}
+.lb-face .avatar{width:36px;height:36px}
+.lb-face .team-logo{position:absolute;right:-5px;bottom:-4px;width:18px;height:18px;padding:2px;border-radius:50%;background:var(--badge-bg);box-shadow:0 0 0 1px var(--stroke-hi)}
+.lb-who{display:flex;flex-direction:column;min-width:0}
+.lb-name{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--fg)}
+.lb-you{font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--red-ink)}
+.lb-discord{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:var(--fg-3)}
+.lb-rec,.lb-elo,.lb-week{text-align:right;font-variant-numeric:tabular-nums}
+.lb-elo{font:700 14.5px Inter,system-ui,sans-serif;color:var(--fg)}
+.lb-week{font-size:12px;font-weight:600;color:var(--fg-3)}
+.lb-week.up{color:var(--ok)}
+.lb-week.down{color:var(--red-ink)}
+.lb-gap{height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;letter-spacing:.3em;color:var(--fg-3)}
+.lb-rows>li.lb-gap+li{border-top:0}
+.lb-empty{padding:18px 8px;color:var(--fg-2)}
+.lb-soon{margin:40px 0;text-align:center;color:var(--fg-2)}
+.lb-note{margin:10px 8px 0;font-size:12.5px;color:var(--fg-3)}
+.lb-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;padding:10px 8px 2px;border-top:1px solid var(--stroke);font-size:12.5px;color:var(--fg-2)}
+
+/* The 800x560 window: the week's change column goes, so a name keeps its room. */
+@media (max-width:860px){
+  .lb-hd,.lb-row{grid-template-columns:34px 36px minmax(0,1fr) 72px 60px;gap:10px}
+  .lb-hd span:nth-child(5),.lb-row .lb-week{display:none}
+  .lb-face,.lb-face .avatar{width:32px;height:32px}
+  .lb-row{min-height:46px}
+}

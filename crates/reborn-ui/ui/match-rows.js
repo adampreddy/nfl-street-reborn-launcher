@@ -7,6 +7,7 @@
 import { el } from './shell.js';
 import { assetUrl, avatarSrc } from './live-common.js';
 import { eloChange, matchHref, matchRowModel, matchSubline, queueMark } from './stats-model.js';
+import { playerLink } from './player-link.js';
 
 const RESULT_WORD = { W: 'win', L: 'loss' };
 
@@ -86,17 +87,22 @@ export function matchRows(m, { where, from, queue = false }) {
     matchup(r.me, r.opp),
     // The CPU (or an unknown opponent) gets the same circle with its first letter, so every name starts on one line.
     el('span', { class: 'm-opp' }, avatar(m?.opponent_kind === 'cpu' || !m?.opponent ? null : r.avatar, r.opponent, '', { cpu: m?.opponent_kind === 'cpu' }),
-      el('span', { class: 'm-opp-tx' }, el('span', { class: 'm-opp-n', text: r.opponent }), sub ? el('small', { text: sub }) : null)),
+      // The opponent's name opens their profile (owner 10-08); the CPU, a guest or an older server's row stays plain.
+      el('span', { class: 'm-opp-tx' }, playerLink(m?.opponent_kind === 'cpu' ? null : m?.opponent?.player_id, r.opponent, { cls: 'm-opp-n', key: `opp-${r.id}` }),
+        sub ? el('small', { text: sub }) : null)),
     ...(queue ? [queueCell(m)] : []),
     el('span', { class: `m-elo${elo.kind ? ` ${elo.kind}` : queue ? ' none' : ''}`, text: elo.text || (queue ? '—' : '') }),
     el('span', { class: 'm-date', text: r.date }),
     ...(queue ? [] : [el('span', { 'aria-hidden': 'true' })]),
   ];
   const q = queue ? queueMark(m).text : '';
-  const attrs = { class: 'm-row', 'data-key': `match-${r.id}`, 'aria-label': label(m, r, sub || q, elo) };
+  const aria = label(m, r, sub || q, elo);
   const href = matchHref(m, from);
-  if (!href) return [el('div', { ...attrs, class: 'm-row m-static', role: 'group' }, ...kids)];
-  return [el('button', { ...attrs, type: 'button', onclick: () => { location.href = href; } }, ...kids)];
+  if (!href) return [el('div', { class: 'm-row m-static', 'data-row': `match-${r.id}`, 'aria-label': aria, role: 'group' }, ...kids)];
+  // The row opens the match with its own button laid over the whole row (theme.css .m-open), the opponent's name a
+  // link above it: a link may not sit inside a button, and both must be reachable by keyboard and controller.
+  const open = el('button', { type: 'button', class: 'm-open', 'data-key': `match-${r.id}`, 'aria-label': aria, onclick: () => { location.href = href; } });
+  return [el('div', { class: 'm-row m-open-row', 'data-row': `match-${r.id}` }, open, ...kids)];
 }
 
 /** Newer / "Page N of M" / Older, inside the card as its last row. `pages` null draws "Page N" (the total is not known). */

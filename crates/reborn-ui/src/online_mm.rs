@@ -825,10 +825,14 @@ pub fn mm_state() -> serde_json::Value {
 ///
 /// Every `name` is the name the player is SHOWN by (`shown_name`: their nickname, else their Discord name), and
 /// `discord` is their Discord name beside it when they set a nickname (null otherwise), for a subtitle or tooltip.
+/// Every player also carries their account id (`player_id`, the match's `opponent_id`; null when the server sent
+/// none), so the page can open their profile from their name (10-08).
 fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
     use reborn_core::matchmaking::{discord_aside, shown_name};
+    let id = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
     serde_json::json!({
         "player": s.player.as_ref().map(|p| serde_json::json!({
+            "player_id": id(&p.id),
             "name": shown_name(p.nickname.as_deref(), &p.display_name),
             "discord": discord_aside(p.nickname.as_deref(), &p.display_name),
             "region": p.region,
@@ -846,6 +850,7 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
             "members": r.members.iter().map(|m| serde_json::json!({
+                "player_id": id(&m.player_id),
                 "name": shown_name(m.nickname.as_deref(), &m.display_name),
                 "discord": discord_aside(m.nickname.as_deref(), &m.display_name),
                 "ready": m.ready, "field": m.field_pick,
@@ -857,6 +862,7 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
             "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
             "opponent": shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name),
             "opponent_discord": discord_aside(m.opponent.nickname.as_deref(), &m.opponent.display_name),
+            "opponent_id": id(&m.opponent.id),
             "field": m.field.as_deref().map(reborn_core::matchmaking::field_title),
             // Display only (spec 2026-10-02 §3.3): null until the server sends them, and the page then hides each spot.
             "opponent_elo": m.opponent.rating, "opponent_rank": m.opponent.rank,
@@ -876,11 +882,12 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
         })),
         "chat": chat.iter().map(|c| serde_json::json!({
             // The line under both names: `body` (what the page always read) and `text` (the server's own name).
-            "seq": c.seq, "name": shown_name(c.nickname.as_deref(), &c.display_name),
+            "seq": c.seq, "player_id": id(&c.player_id), "name": shown_name(c.nickname.as_deref(), &c.display_name),
             "discord": discord_aside(c.nickname.as_deref(), &c.display_name), "body": c.body, "text": c.body, "at": c.at,
         })).collect::<Vec<_>>(),
         "queue_depth": { "ranked": s.queue_depth.ranked, "casual": s.queue_depth.casual },
         "online": { "count": s.online.count, "players": s.online.players.iter().map(|p| serde_json::json!({
+            "player_id": id(&p.id),
             "name": shown_name(p.nickname.as_deref(), &p.display_name),
             "discord": discord_aside(p.nickname.as_deref(), &p.display_name), "activity": p.activity,
         })).collect::<Vec<_>>() },
@@ -1022,6 +1029,24 @@ mod tests {
         assert_eq!(v["match"]["party"][0]["name"], "Host");
         assert_eq!(v["online"]["players"][0]["name"], "Jock");
         assert_eq!((v["chat"][0]["name"].as_str(), v["chat"][0]["discord"].as_str()), (Some("Jock"), Some("jock_discord")));
+    }
+
+    #[test]
+    fn every_player_on_the_page_carries_their_account_id_for_their_profile() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "player": { "id": "me", "display_name": "Adam" },
+            "room": { "id": "r", "code": "K7QP2M", "members": [ { "player_id": "me", "display_name": "Adam" }, { "display_name": "NoId" } ] },
+            "match": { "id": "m", "opponent": { "id": "o", "display_name": "Jock" } },
+            "online": { "count": 1, "players": [ { "id": "o", "display_name": "Jock", "activity": "idle" } ] },
+            "chat": { "messages": [ { "seq": 1, "player_id": "o", "display_name": "Jock", "text": "gg" } ] } })).unwrap();
+        let chat = s.chat.messages.clone();
+        let v = snapshot_json(&s, &chat);
+        assert_eq!(v["player"]["player_id"], "me");
+        assert_eq!(v["room"]["members"][0]["player_id"], "me");
+        assert!(v["room"]["members"][1]["player_id"].is_null(), "no id from the server: null, never an empty string");
+        assert_eq!(v["match"]["opponent_id"], "o");
+        assert_eq!(v["online"]["players"][0]["player_id"], "o");
+        assert_eq!(v["chat"][0]["player_id"], "o");
     }
 
     #[test]

@@ -140,14 +140,16 @@ pub async fn stats_dashboard() -> Result<serde_json::Value, LiveCommandError> {
 
 /// The Online page's Leaderboard card (spec 2026-10-02 §4): the top ten, with the player's token when signed in so the
 /// server can add their own row. `None` while the server has no leaderboard. Signed out is simply anonymous.
+/// The full leaderboard page (10-08) asks for `limit` rows (at most 50) from rank `offset + 1`; the card sends neither.
 #[tauri::command]
-pub async fn leaderboard() -> Result<Option<serde_json::Value>, LiveCommandError> {
+pub async fn leaderboard(limit: Option<u32>, offset: Option<u32>) -> Result<Option<serde_json::Value>, LiveCommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let signed_in = identity::status(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?.is_some();
         let token = if signed_in { identity::token(&p).unwrap_or(None) } else { None };
         let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
-        reborn_core::live_view::leaderboard(&crate::http_client(), &origin, token.as_deref(), 10).map_err(LiveCommandError::from)
+        reborn_core::live_view::leaderboard(&crate::http_client(), &origin, token.as_deref(), limit.unwrap_or(10), offset.unwrap_or(0))
+            .map_err(LiveCommandError::from)
     })
     .await
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
@@ -240,7 +242,7 @@ mod tests {
         assert!(compact.contains(".map_err(|_|LiveCommandError::unavailable(NOT_LOADED))"), "a JoinError is not worded for a player");
     }
 
-    /// The live pages build image and "Watch on web" URLs against the backend origin, and the CSP
+    /// The live pages build image and "Open on web" URLs against the backend origin, and the CSP
     /// pins `img-src` to it; none of them can read `identity::DEFAULT_ORIGIN` at runtime, so this
     /// holds all three to the same string. The origin lives in one shared module (live-common.js)
     /// that both pages import, and neither page spells a backend origin of its own.
@@ -251,7 +253,10 @@ mod tests {
         let conf = include_str!("../tauri.conf.json");
         assert!(common.contains(&format!("'{origin}'")), "live-common.js no longer uses {origin}");
         assert!(conf.contains(&format!("{origin}/live-assets/")), "tauri.conf.json's CSP no longer allows {origin}");
-        for (name, page) in [("live.js", include_str!("../ui/live.js")), ("live-now.js", include_str!("../ui/live-now.js"))] {
+        for (name, page) in [
+            ("match.js", include_str!("../ui/match.js")),
+            ("live-now.js", include_str!("../ui/live-now.js")),
+        ] {
             assert!(page.contains("from './live-common.js'"), "{name} no longer imports the shared origin");
             assert!(!page.contains("https://api."), "{name} spells a backend origin of its own");
         }

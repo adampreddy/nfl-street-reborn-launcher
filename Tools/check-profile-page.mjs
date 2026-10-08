@@ -135,7 +135,10 @@ try {
     // Recent matches: Result · Opponent · Queue · Date, seven rows
     assert.deepEqual(await texts(page, '#recent .vc-th span'), ['Result', 'Opponent', 'Queue', 'Date']);
     assert.equal(await page.locator('#recent .vc-tr').count(), 7);
-    assert.deepEqual(await page.locator('[data-key="recent-m-01"] > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W 2-1', 'Playz', 'Ranked', 'Sep 26']);
+    assert.deepEqual(await page.locator('[data-row="recent-m-01"] > :not(.m-open)').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['W 2-1', 'Playz', 'Ranked', 'Sep 26']);
+    // Owner 10-08: an opponent's name opens their profile (a link beside the row's own button, never inside it).
+    assert.equal(await page.locator('[data-row="recent-m-01"] a.player-link').getAttribute('href'), 'profile.html?player=1b2c3d4e-5f60-4b7c-8d9e-0f1a2b3c4d5e', 'the opponent is a link to their profile');
+    assert.equal(await page.locator('[data-row="recent-m-01"] button a').count(), 0, 'no link inside a button');
     // Head to head and Win rate by team (in place of Top connections, Adam 10-03)
     assert.deepEqual(await page.locator('#h2h-card .vc-tr').first().locator(':scope > *').evaluateAll((ns) => ns.map((n) => n.textContent.trim())), ['Playz', '5-3', '212-180', 'W Sep 26', '+21']);
     assert.equal(await page.locator('#pf-teams h2').textContent(), 'Win rate by team');
@@ -207,10 +210,10 @@ try {
     assert.deepEqual(errors, []);
     await close();
   }
-  { // Live feed opens the native live view
+  { // Live feed opens the site-styled match page following the match (owner 10-08), Back returning to this profile
     const { page, errors, close } = await openState(browser, srv.base, STATE);
     await page.getByRole('button', { name: 'Live feed', exact: true }).click();
-    await page.waitForURL(/live\.html\?match=dc5226af-d3b8-4c0b-89e8-1c53b2972a30$/);
+    await page.waitForURL(/match\.html\?match=dc5226af-d3b8-4c0b-89e8-1c53b2972a30&from=profile\.html%3Fplayer%3D0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d$/);
     assert.deepEqual(errors, []);
     await close();
   }
@@ -221,8 +224,8 @@ try {
     const rows = page.locator('#history .m-list > .m-row:not(.m-hd)');
     assert.equal(await rows.count(), 10);
     await rowsNatural(page, 'ten rows');
-    assert.equal(await page.locator('[data-key="match-m-01"] small').textContent(), 'Ranked');
-    assert.equal(await page.locator('[data-key="match-m-02"] small').textContent(), 'Casual');
+    assert.equal(await page.locator('[data-row="match-m-01"] small').textContent(), 'Ranked');
+    assert.equal(await page.locator('[data-row="match-m-02"] small').textContent(), 'Casual');
     assert.equal(await page.locator('#history [aria-expanded]').count(), 0, 'nothing opens in place');
     // letter avatars (no Discord picture) are coloured per player, the same player always the same colour (mockup)
     const letters = await page.locator('span.avatar').evaluateAll((ns) => ns.map((n) => ({ who: n.textContent, bg: getComputedStyle(n).backgroundImage })));
@@ -237,7 +240,7 @@ try {
     await page.locator('#history [data-key="newer"]').click();
     await page.getByRole('button', { name: 'Ranked', exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('#history .m-list > .m-row:not(.m-hd)').length === 2);
-    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.key)), ['match-m-01', 'match-m-04']);
+    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.row)), ['match-m-01', 'match-m-04']);
     assert.equal(await page.locator('#history .m-pager').count(), 0, 'one page: no pager');
     await rowsNatural(page, 'the Ranked filter');
     await page.screenshot({ path: path.join(out, 'profile-1280-ranked.png') });
@@ -661,7 +664,7 @@ try {
     const room = F.allMatches().find((m) => m.queue === 'private');
     const rooms = (n) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(room), id: `p-0${i}`, match_id: `p-0${i}`, at: `2026-09-27T${String(19 - i).padStart(2, '0')}:00:00.000Z` }));
     const pub = F.publicMatches();
-    const rowKeys = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.dataset.key));
+    const rowKeys = (page) => page.locator('#history .m-list > .m-row:not(.m-hd)').evaluateAll((ns) => ns.map((n) => n.dataset.row));
     for (const [what, first, total, all, want] of [
       ['mostly private', [...rooms(8), ...pub.slice(0, 2)], 20, pub, pub.slice(0, 10).map((m) => `match-${m.id}`)],
       ['entirely private, more pages', rooms(10), 22, pub, pub.slice(0, 10).map((m) => `match-${m.id}`)],
@@ -803,7 +806,7 @@ try {
     await press(0);
     assert.equal(await tabOn(page), 'matches');
     await page.locator('[data-key="match-m-01"]').focus();
-    const lastRow = page.locator('#history .m-list > .m-row:not(.m-hd)').last();
+    const lastRow = page.locator('#history .m-list > .m-row:not(.m-hd) .m-open').last();
     await lastRow.focus();
     await press(13);
     assert.equal(await key(), 'older', 'the last row goes down to the pager');

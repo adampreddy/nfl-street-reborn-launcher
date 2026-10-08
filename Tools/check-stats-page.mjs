@@ -93,7 +93,7 @@ try {
     const rows = page.locator('#st-matches .m-list > .m-row:not(.m-hd)');
     assert.equal(await rows.count(), 8);
     assert.equal(await page.locator('#st-matches .m-pager span').textContent(), 'Page 1 of 2');
-    const row = (id) => page.locator(`[data-key="match-${id}"]`);
+    const row = (id) => page.locator(`[data-row="match-${id}"]`);
     assert.equal(await row('m-01').locator('.m-res').textContent(), 'W2-1');
     assert.equal(await row('m-01').locator('.qm').textContent(), 'Ranked');
     assert.match(await row('m-01').locator('.qm').getAttribute('class'), /\branked\b/);
@@ -143,7 +143,7 @@ try {
     await page.screenshot({ path: path.join(out, 'stats-1280-lower.png') });
     await page.evaluate(() => { document.getElementById('main').scrollTop = 0; });
     // a refresh (the 30 s timer, or a game ending) keeps the focus on the same row
-    await row('m-02').focus();
+    await row('m-02').locator('.m-open').focus();
     const before = await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'stats_dashboard').length);
     await page.evaluate(() => { document.dispatchEvent(new CustomEvent('session-state', { detail: true })); document.dispatchEvent(new CustomEvent('session-state', { detail: false })); });
     await page.waitForFunction((n) => window.__calls.filter((c) => c.cmd === 'stats_dashboard').length > n, before);
@@ -158,10 +158,10 @@ try {
     // filters: Ranked, Casual, Offline (no chips; a plain segmented control)
     assert.deepEqual(await texts(page, '#st-matches .tabs .tab'), ['All', 'Ranked', 'Casual', 'Offline']);
     await page.locator('[data-key="filter-ranked"]').click();
-    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.key)), ['match-m-01', 'match-m-04']);
+    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.row)), ['match-m-01', 'match-m-04']);
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-key')), 'filter-ranked', 'focus stays on the filter');
     await page.locator('[data-key="filter-offline"]').click();
-    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.key)), ['match-g:g-031']);
+    assert.deepEqual(await rows.evaluateAll((ns) => ns.map((n) => n.dataset.row)), ['match-g:g-031']);
     await page.locator('[data-key="filter-casual"]').click();
     assert.equal(await rows.count(), 8);
     assert.deepEqual(await rowsAligned(page), [], 'a short page keeps the row aligned');
@@ -311,7 +311,7 @@ try {
     await page.locator('#st-record').waitFor();
     await noSideways(page);
     assert.ok((await rect(page, '#st-elo')).top > (await rect(page, '#st-record')).bottom - 1, 'one column in a small window');
-    await page.evaluate(() => { document.querySelector('[data-key="match-m-01"] .m-opp-n').textContent = 'A player with an unusually long display name that goes on'; });
+    await page.evaluate(() => { document.querySelector('[data-row="match-m-01"] .m-opp-n').textContent = 'A player with an unusually long display name that goes on'; });
     await noSideways(page);
     await page.screenshot({ path: path.join(out, 'stats-800.png') });
     assert.deepEqual(errors, []);
@@ -330,7 +330,7 @@ try {
     await page.locator('[data-key="match-m-01"]').focus();
     await press(12);
     assert.match(String(await key()), /^filter-/, 'Up from the first match reaches the filters');
-    await page.locator('#st-matches .m-list > .m-row').last().focus();
+    await page.locator('#st-matches .m-list > .m-row .m-open').last().focus();
     await press(13);
     assert.equal(await key(), 'older', 'the last row goes down to the pager');
     await page.locator('[data-key="match-m-01"]').focus();

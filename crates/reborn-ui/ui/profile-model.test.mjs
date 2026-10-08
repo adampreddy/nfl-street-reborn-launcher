@@ -28,7 +28,9 @@ test('live card: game N of 3 and the series for a best of 3; never a private roo
   assert.equal(c.head, 'Ranked · Game 2 of 3');
   assert.equal(c.score, '14-7');
   assert.equal(c.line, 'vs Mikel · Series 1-0');
-  assert.equal(c.href, 'live.html?match=m1');
+  assert.equal(c.href, 'match.html?match=m1&from=stats.html', 'the match page, following the match; Back to the page given');
+  assert.equal(liveCard({ match_id: 'm1', queue: 'ranked' }, 'profile.html?player=0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d').href,
+    'match.html?match=m1&from=profile.html%3Fplayer%3D0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d');
   assert.deepEqual([c.me, c.opp], [{ abbrev: 'ATL' }, { abbrev: 'PHI' }]);
   const one = liveCard({ match_id: 'm2', queue: 'casual', best_of: 1, game_number: 1, series: [0, 0], score: null, opponent: null });
   assert.equal(one.head, 'Casual');
