@@ -57,6 +57,15 @@ pub struct Asset {
     pub sha256: Sha256Hex,
     pub bytes: u64,
     pub file_name: String,
+    /// This platform's own version, when it differs from the release's.
+    ///
+    /// The release has one version for every platform, so a fix for one of
+    /// them (the Steam Deck's, 2026-10) could not reach players already on
+    /// that number: same version, "up to date". A platform's asset may carry
+    /// its own, which its launchers compare instead. Absent, the release's
+    /// version is the platform's. Launchers before this field ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// What a release publishes.
@@ -159,13 +168,17 @@ pub fn check(http: &dyn Http, source: &str, current: &str) -> UpdateCheck {
             why: format!("schema is {:?}, this launcher reads {MANIFEST_SCHEMA}", manifest.schema),
         };
     }
-    if !newer(&manifest.version, current) {
-        return UpdateCheck::UpToDate { current: current.to_string(), latest: manifest.version };
+    let latest = manifest
+        .asset_for_this_platform()
+        .and_then(|a| a.version.clone())
+        .unwrap_or_else(|| manifest.version.clone());
+    if !newer(&latest, current) {
+        return UpdateCheck::UpToDate { current: current.to_string(), latest };
     }
     match manifest.asset_for_this_platform() {
         Some(asset) => UpdateCheck::Available {
             current: current.to_string(),
-            latest: manifest.version.clone(),
+            latest: latest.clone(),
             asset: asset.clone(),
             notes: manifest.notes.clone(),
         },
@@ -550,6 +563,28 @@ mod tests {
         assert!(!newer("garbage", "3.0.0"), "unparseable is never an update");
     }
 
+    /// A platform's own version wins over the release's, both ways: a Deck-only
+    /// fix (3.0.35.1) reaches Decks on 3.0.35, and a release the platform has
+    /// no newer build for does not offer it one (2026-10).
+    #[test]
+    fn a_platforms_own_version_is_what_its_launchers_compare() {
+        let sha = Sha256Hex::from_bytes(b"hello");
+        let with = |release: &str, platform: &str| {
+            let asset = format!(r#"{{"url":"https://x/a","sha256":"{}","bytes":5,"file_name":"a","version":"{platform}"}}"#, sha.as_str());
+            format!(r#"{{"schema":"{MANIFEST_SCHEMA}","version":"{release}","windows":{asset},"macos":{asset},"linux":{asset}}}"#)
+        };
+        let http = FakeHttp::default()
+            .reply("https://s/fix.json", 200, with("3.0.35", "3.0.35.1"))
+            .reply("https://s/behind.json", 200, with("3.0.36", "3.0.35"));
+        let got = check(&http, "https://s/fix.json", "3.0.35");
+        assert!(matches!(&got, UpdateCheck::Available { latest, .. } if latest == "3.0.35.1"), "{got:?}");
+        let got = check(&http, "https://s/behind.json", "3.0.35");
+        assert!(matches!(&got, UpdateCheck::UpToDate { latest, .. } if latest == "3.0.35"), "{got:?}");
+        // A manifest without the field reads as before.
+        let plain = FakeHttp::default().reply("https://s/p.json", 200, manifest("3.0.35", sha.as_str()));
+        assert!(matches!(check(&plain, "https://s/p.json", "3.0.35"), UpdateCheck::UpToDate { .. }));
+    }
+
     #[test]
     fn check_reports_every_state_and_never_errors() {
         let sha = Sha256Hex::from_bytes(b"hello");
@@ -580,7 +615,7 @@ mod tests {
         let good = Sha256Hex::from_bytes(b"hello");
         let http = FakeHttp::default().reply("https://x/setup.exe", 200, b"hello");
 
-        let asset = Asset { url: "https://x/setup.exe".into(), sha256: good.clone(), bytes: 5, file_name: "../evil/Setup.exe".into() };
+        let asset = Asset { url: "https://x/setup.exe".into(), sha256: good.clone(), bytes: 5, file_name: "../evil/Setup.exe".into(), version: None };
         let got = download(&http, &asset, dir.path()).unwrap();
         assert_eq!(got.path, dir.path().join("Setup.exe"), "the path in the name is stripped");
         assert_eq!(got.bytes, 5);
