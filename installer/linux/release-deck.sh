@@ -45,7 +45,9 @@ su - reborn -c 'cd ~/src/launcher && git checkout -q -- . && git fetch -q origin
 cp /home/reborn/src/launcher/installer/linux/*.sh /home/reborn/src/launcher/installer/linux/*.py /opt/reborn-build/ && chmod +x /opt/reborn-build/*.sh
 REBORN_BUILD_VERSION="$DECK" /opt/reborn-build/build-release.sh '$WIN_RUNTIME' > /root/release.log 2>&1 || { echo FAILED-BUILD; tail -20 /root/release.log; exit 1; }
 E2E_PHASE2=0 /opt/reborn-build/e2e-first-run.sh "/home/reborn/release/$DECK" /home/reborn/src/e2e/game.iso > /root/e2e-deck.log 2>&1
-grep -aq '^=== reached the Play page' /home/reborn/src/e2e/out/steps.log && echo PASSED || { echo FAILED-E2E; grep -aE '^!!!|^text:' /home/reborn/src/e2e/out/steps.log | tail -3; exit 1; }
+# Passed = reached the Play page, the game is the newest build, nothing failed.
+if grep -aq '^=== reached the Play page' /home/reborn/src/e2e/out/steps.log    && grep -aq '^=== game image is the newest build' /home/reborn/src/e2e/out/steps.log    && ! grep -aq '^!!!' /home/reborn/src/e2e/out/steps.log; then echo PASSED
+else echo FAILED-E2E; grep -aE '^!!!|^text:|^=== game image' /home/reborn/src/e2e/out/steps.log | tail -4; exit 1; fi
 EOF
 sed -i 's/\r$//' "$JOB"
 wsl bash -c "cp '$(cygpath -u "$JOB" | sed 's|^/c/|/mnt/c/|')' /root/release-deck.sh && chmod +x /root/release-deck.sh && rm -f /root/release-deck.log && setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null &"

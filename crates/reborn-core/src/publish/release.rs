@@ -72,6 +72,54 @@ pub struct CarryForward<'a> {
 /// sign it, and read the signed file back to prove it verifies before saying
 /// so. Without `req.apply` everything is checked and described, nothing is
 /// written.
+/// Whether the pinned game patch can carry every pinned starting point (the
+/// downloadable game, the disc-conversion output) to its newest build.
+/// Returns (refusals, notes); both empty when no game patch is pinned.
+fn game_build_check(origin: &Path, pins: &[Pin]) -> Result<(Vec<String>, Vec<String>)> {
+    let pinned = |id: ComponentId| pins.iter().find(|p| p.id == id);
+    let mut refusals = Vec::new();
+    let mut notes = Vec::new();
+    let Some(gp) = pinned(ComponentId::GamePatch) else { return Ok((refusals, notes)) };
+    let file_of = |id: ComponentId, version: &str, name: &str| -> Result<Option<PathBuf>> {
+        let bytes = std::fs::read(manifest_path(origin, id, version)).map_err(|e| io_err(&manifest_path(origin, id, version), e))?;
+        let parsed = Component::parse(&bytes).map_err(|e| Error::PlainIo(std::io::Error::other(e.to_string())))?;
+        Ok(parsed.files.iter().find(|f| f.path == name).map(|f| origin.join(blob_path(&f.sha256))))
+    };
+    let Some(chain_blob) = file_of(ComponentId::GamePatch, &gp.version, crate::game_patch::CHAIN_FILE)? else {
+        refusals.push(format!("game-patch {} has no {}.", gp.version, crate::game_patch::CHAIN_FILE));
+        return Ok((refusals, notes));
+    };
+    let chain_bytes = std::fs::read(&chain_blob).map_err(|e| io_err(&chain_blob, e))?;
+    let chain = crate::game_patch::Chain::parse(&chain_bytes)?;
+    let head = chain.head().unwrap_or("").to_string();
+    notes.push(format!("newest build {}", &head[..head.len().min(12)]));
+    let mut judge = |what: String, sha: &str| match chain.route(sha) {
+        crate::game_patch::Route::Current => notes.push(format!("{what} {} is the newest build", &sha[..12])),
+        crate::game_patch::Route::Steps(steps) => notes.push(format!(
+            "{what} {} reaches it in {} update(s)", &sha[..12], steps.len()
+        )),
+        crate::game_patch::Route::Unknown => refusals.push(format!(
+            "{what} {} is not a build game-patch {} knows: players who start from it can never              reach the newest build ({}).", &sha[..sha.len().min(12)], gp.version, &head[..head.len().min(12)]
+        )),
+    };
+    if let Some(gf) = pinned(ComponentId::GameFull) {
+        if let Some(iso) = file_of(ComponentId::GameFull, &gf.version, crate::game_image::IMAGE_FILE)? {
+            // The blob is named by its hash: blobs/by-hash/xx/<sha>.
+            let sha = iso.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            judge(format!("game-full {}", gf.version), &sha);
+        }
+    }
+    if let Some(gi) = pinned(ComponentId::GameImport) {
+        if let Some(manifest) = file_of(ComponentId::GameImport, &gi.version, "manifest.json")? {
+            let text = std::fs::read(&manifest).map_err(|e| io_err(&manifest, e))?;
+            let m: crate::game_import::PatchManifest = serde_json::from_slice(&text)
+                .map_err(|e| Error::PlainIo(std::io::Error::other(format!("game-import manifest: {e}"))))?;
+            judge(format!("game-import {} output", gi.version), &m.output_sha256);
+        }
+    }
+    Ok((refusals, notes))
+}
+
 pub fn release(req: &ReleaseRequest<'_>, sink: Sink<'_>) -> Result<Outcome<Signed>> {
     let (origin, version, sequence, key, apply) = (req.origin, req.version, req.sequence, req.key, req.apply);
 
@@ -202,6 +250,20 @@ pub fn release(req: &ReleaseRequest<'_>, sink: Sink<'_>) -> Result<Outcome<Signe
             serialized.sha256()
         );
         builder = builder.pin(&manifest_url(id, ver), &serialized)?;
+    }
+    // Every way a player starts must reach the newest game build. A release
+    // whose downloadable game or whose disc-conversion output the pinned
+    // chain does not know leaves those players on a build no update can move
+    // (a Deck, 2026-10: "is not a build this update knows"). Refused here,
+    // before anything is signed.
+    let (refusals, notes) = game_build_check(origin, req.pins)?;
+    for note in &notes {
+        out!(sink, "Game build    {note}");
+    }
+    if !refusals.is_empty() {
+        let mut lines = refusals;
+        lines.push("Nothing was signed.".to_string());
+        return Ok(refuse(sink, &lines));
     }
     let unsigned = builder.build()?;
     let signature = publisher::sign(&secret, unsigned.bytes_to_sign());
@@ -403,6 +465,31 @@ mod tests {
 
     fn pin(id: ComponentId, version: &str) -> Pin {
         Pin { id, version: version.to_string() }
+    }
+
+    /// A release whose downloadable game the pinned chain cannot carry to its
+    /// newest build is not signed; one whose game is on the chain is (2026-10).
+    #[test]
+    fn a_game_no_update_can_move_is_refused_before_signing() {
+        let w = world();
+        let on_chain: &[u8] = b"a game build the chain knows";
+        let a = Sha256Hex::from_bytes(on_chain);
+        let b = Sha256Hex::from_bytes(b"the newest build");
+        let chain = format!(
+            r#"{{"schema":"nsr.game-patch-chain.v1","disc_id":"GN7E69","steps":[{{"from_sha256":"{a}","to_sha256":"{b}","to_bytes":16,"patch":"patches/a-b.xdelta","label":"newest"}}]}}"#
+        );
+        publish(&w, ComponentId::GamePatch, "1", 1, &[("chain.json", chain.as_bytes()), ("patches/a-b.xdelta", b"delta")]);
+        publish(&w, ComponentId::GameFull, "good", 1, &[("NSR.iso", on_chain)]);
+        publish(&w, ComponentId::GameFull, "stray", 2, &[("NSR.iso", b"a build nobody published")]);
+
+        let (outcome, lines) = sign(&w, "3.0.0", 1, &[pin(ComponentId::GamePatch, "1"), pin(ComponentId::GameFull, "good")], false);
+        assert!(outcome.refused().is_none(), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("reaches it in 1 update")), "{lines:?}");
+
+        let (outcome, lines) = sign(&w, "3.0.0", 1, &[pin(ComponentId::GamePatch, "1"), pin(ComponentId::GameFull, "stray")], true);
+        assert!(outcome.refused().is_some(), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("is not a build game-patch 1 knows")), "{lines:?}");
+        assert!(!w.origin.join(RELEASE_FILE).exists(), "a refused release writes nothing");
     }
 
     #[test]

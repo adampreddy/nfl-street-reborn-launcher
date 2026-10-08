@@ -84,6 +84,38 @@ const r = document.querySelector('input[type=radio]:not(:disabled)');
 if (!r) return false; r.click(); return true;
 """
 
+def check_game_build():
+    """The player's game must be the newest build of the chain on disk.
+
+    A fresh install once played a build seven updates old with the newest on
+    disk (2026-10). The pristine image (newest folder under library/imported)
+    must be the chain's head by folder name AND by bytes; a release stops here
+    otherwise (release-deck.sh ships only without a '!!!' line)."""
+    import glob, hashlib
+    data = os.path.join(os.environ.get("HOME", ""), ".local/share/NFL Street Reborn")
+    try:
+        chain = json.load(open(os.path.join(data, "library/game-patch/chain.json")))
+        steps = chain["steps"]
+        froms = {s["from_sha256"] for s in steps}
+        heads = [s["to_sha256"] for s in steps if s["to_sha256"] not in froms]
+        head = heads[-1] if heads else ""
+        images = sorted(glob.glob(os.path.join(data, "library/imported/*/NSR.iso")), key=os.path.getmtime)
+        if not images:
+            log("!!! game image: no imported game"); return
+        newest = images[-1]
+        folder = os.path.basename(os.path.dirname(newest))
+        h = hashlib.sha256()
+        with open(newest, "rb") as f:
+            for block in iter(lambda: f.read(1 << 22), b""):
+                h.update(block)
+        if folder == head and h.hexdigest() == head:
+            log(f"=== game image is the newest build {head[:12]}")
+        else:
+            log(f"!!! game image is not the newest build: folder {folder[:12]}, bytes {h.hexdigest()[:12]}, newest {head[:12]}")
+    except Exception as e:
+        log(f"!!! game image check failed: {e}")
+
+
 used = set()
 last_key, same_since, step = None, time.time(), 0
 deadline = time.time() + 60 * 60
@@ -100,7 +132,8 @@ while time.time() < deadline:
     if "couldn't be completed" in st["text"] or "could not" in st["text"].lower() and "Reborn could not convert" not in st["text"]:
         log("!!! ERROR ON SCREEN"); shot(f"{step:02d}-error")
     if st["url"].endswith("index.html") and "Play" in st["text"] and "onboarding" not in st["url"]:
-        log("=== reached the Play page"); shot("play-page"); break
+        log("=== reached the Play page"); shot("play-page")
+        check_game_build(); break
     # Choices, once each: Start fresh; the game file.
     acted = False
     for r in st["radios"]:
