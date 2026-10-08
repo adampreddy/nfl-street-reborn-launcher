@@ -73,7 +73,7 @@ Response (member):
 
 Queries reuse the ones `index.php` / `team.php` already run (this week's games, standings, leaders, recent results) — extract into `_inc/nsr_team_home.php` rather than duplicate SQL.
 
-Pre-flight data check: count Season 4 owners with `discord_user_id` filled; commissioners fill the gaps before launch.
+Data: every Season 4 owner already has `discord_user_id` mapped (confirmed by Adam 10-08). The site deploy step still runs a one-line count as a sanity check; no backfill is planned.
 
 ## 2. Backend
 
@@ -192,6 +192,6 @@ Style: existing `theme.css` glass tokens; panel treatment borrowed from the Madd
 
 ## Rollout
 
-1. Site action deployed (pull live first, WinSCP single files) + Discord IDs backfilled.
+1. Site action deployed (pull live first, WinSCP single files).
 2. Backend deployed (dark: no launcher calls it yet).
 3. Launcher shipped to beta channel; league members test; then stable.
