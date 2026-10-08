@@ -40,12 +40,13 @@ Member:
 {
   "ok": true,
   "member": true,
+  "schedule_published": true,
   "league":  {"id": 36, "name": "Reborn Season 4", "season": 4, "week": 6, "week_label": "Week 6"},
   "team":    {"id": 493, "name": "Subway Surfers", "abbr": "ADAM",
               "logo_url": "https://nflstreetreborn.com/league/uploads/...png", "color": "#00A3FF",
               "record": "4-1", "standing": 2},
   "matchup": {"fixture_id": 1234, "week": 6, "home": true,
-              "status": "scheduled",
+              "status": "scheduled", "forfeit": false,
               "score": null, "series": null, "winner_team_id": null, "when": null,
               "opponent": {"team_id": 486, "name": "Football Furies", "abbr": "BLONDE",
                            "logo_url": null, "color": "#FF0000", "record": "3-2",
@@ -60,7 +61,7 @@ Member:
   ],
   "standings": [{"rank": 1, "team_id": 482, "name": "...", "abbr": "...", "logo_url": null, "record": "5-0"}],
   "recent":    [{"fixture_id": 1200, "week": 5, "opponent_abbr": "JOCK", "home": false,
-                 "result": "W", "score": "28-21", "series": "2-1"}],
+                 "result": "W", "score": "28-21", "series": "2-1", "forfeit": false}],
   "leaders":   {"pass": [{"poid": 12, "name": "...", "value": 14}], "rush": [], "rec": []},
   "leaders_unit": "TD",
   "roster":    [{"poid": 12, "name": "...", "position": "QB", "number": 7}],
@@ -72,7 +73,14 @@ Field rules:
 - `status` ∈ `scheduled | in_progress | final` for games; `matchup.status` may also be `bye` (then `fixture_id`, `home`, `score`, `series`, `winner_team_id`, `opponent` are `null`).
 - `score` = summed game points `{home, away}` once any game is played, else `null`. `series` = games won `{home, away}` once any game is played or a winner is recorded, else `null`.
 - `when` is always `null`: the schema stores no kickoff time (`games.played_at` is dead). Kept so the client has one place to read it if it is ever added.
-- `league.week` is the week the tab is about (see `nsr_th_week`): the site's current week, advanced to the next scheduled week once every series in it is settled.
+- `league.week` is the week the tab (scoreboard, `week_games`) is about (see `nsr_th_week`): the site's current week, advanced to the next scheduled week once every series in it is settled.
+- `matchup` is chosen **per club**, not from `league.week`: the club's earliest series that is not complete in any week >= the site's current week (`nsr_current_week`); else its series in `league.week` (may be `final`); else a bye with `week` = `league.week`. `matchup.week` is that series' own week, so it can differ from `league.week` (one postponed fixture no longer freezes every other club's card).
+- `forfeit` (bool) is on `week_games[]`, on `matchup` (`false` for a bye) and on each `recent[]` entry, all from `nsr_series()`'s `forfeit` (games.status = `forfeit`).
+- `schedule_published` (bool, top level, members only): `true` when the current league has any fixture at all. When `false`, `matchup` is a bye only because no schedule exists yet, not because the club sits the week out.
+- `matchup.opponent.discord_user_id` is `string|null` (null when the opponent's owner has no linked Discord id); `owner_display` is a string and may be `''` (club with no owner row). Should a club ever have several owner rows, a row with a Discord id wins (deterministic ORDER BY in `nsr_th_owners`).
+- `winner_team_id` follows the site's `nsr_series_winner()`: mid-series (`in_progress`) it is the club currently leading the series, not a settled winner; read it as final only when `status` is `final`.
+- `league.season` is the first number in `season_label`, falling back to the league `name` when the label is empty; `null` when neither has a number.
+- `recent` is at most 5 entries, newest first (week desc, then fixture id desc).
 - `logo_url` is absolute or `null` (Season 4 logos are still placeholders).
 - `recent.result` is `W`/`L`, or `null` for a forfeit with no recorded winner; `recent.score`/`series` are from this team's side ("mine-theirs") or `null` when only the series winner was recorded.
 
@@ -84,6 +92,7 @@ Field rules:
 | `leaders` values in yards (`1204`) | touchdowns, plus `"leaders_unit":"TD"` | the schema has no yardage at all (`nsr_data.php:23-29`) |
 | `matchup.status` `scheduled\|final\|bye` | adds `in_progress` | a best-of-3 with game 1 recorded is neither |
 | (none) | `series`, `winner_team_id`, `forfeit`, `week_label`, `color` on sides, `poid` on players | the scoreboard needs series scores; playoff weeks have names; additive |
+| (none) | `schedule_published`; `forfeit` on `matchup` and `recent[]` (final-review fix, 2026-10-08) | tell "no schedule" from a real bye; show forfeits on the card and results; additive |
 | `roster[].number` | from pool field `PJEN` | verified: Barry Sanders 20, Ray Lewis 52, Randy Moss 84 |
 
 ## Review Focus

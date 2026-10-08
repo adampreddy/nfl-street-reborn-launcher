@@ -127,8 +127,72 @@ try {
     check('series 1-0 to home', ($a2['matchup']['series'] ?? null) === ['home' => 1, 'away' => 0]);
     check('score 14-10', ($a2['matchup']['score'] ?? null) === ['home' => 14, 'away' => 10]);
     check('still week 2', ($a2['league']['week'] ?? null) === 2);
+    $wg2 = $a2['week_games'][0] ?? [];
+    check('scoreboard entry in_progress', ($wg2['status'] ?? null) === 'in_progress');
+    check('scoreboard entry score 14-10', ($wg2['score'] ?? null) === ['home' => 14, 'away' => 10]);
+    check('scoreboard entry series 1-0', ($wg2['series'] ?? null) === ['home' => 1, 'away' => 0]);
+    // Site semantics (nsr_series_winner): mid-series this is the series LEADER, not a settled winner.
+    check('scoreboard entry winner_team_id = series leader mid-series', ($wg2['winner_team_id'] ?? null) === $t['B']);
+
+    /* ---- additive fields: forfeit, schedule_published ---- */
+    check('schedule_published true', ($a2['schedule_published'] ?? null) === true);
+    check('matchup forfeit false', ($a2['matchup']['forfeit'] ?? null) === false);
+    check('bye forfeit false', ($c['matchup']['forfeit'] ?? null) === false);
+    check('recent forfeit false', ($a2['recent'][0]['forfeit'] ?? null) === false);
 
     check('payload encodes as JSON', json_encode($a2, JSON_THROW_ON_ERROR) !== '');
+
+    /* ---- postponed fixture: week 1 C-D never played ----
+       Clear the C-D result so week 1 has one open fixture while A-B is final.
+       The league's week stays on 1, but A's card must move on to its own next
+       open series (week 2 B-A), and C's card is the open week-1 C-D. */
+    $pdo->prepare("DELETE FROM game_series_scores WHERE league_id = ? AND game_id = ?")->execute([$lid, $g['wk1cd']]);
+    $a3 = nsr_team_home($pdo, $did['A']);
+    check('postponed: league week held on 1', ($a3['league']['week'] ?? null) === 1);
+    check('postponed: A matchup is week-2 B-A', ($a3['matchup']['fixture_id'] ?? null) === $g['wk2ba']);
+    check('postponed: A matchup week 2', ($a3['matchup']['week'] ?? null) === 2);
+    check('postponed: A matchup still in_progress', ($a3['matchup']['status'] ?? null) === 'in_progress');
+    $c3 = nsr_team_home($pdo, $did['C']);
+    check('postponed: C matchup is open week-1 C-D', ($c3['matchup']['fixture_id'] ?? null) === $g['wk1cd']);
+    check('postponed: C matchup week 1', ($c3['matchup']['week'] ?? null) === 1);
+    check('postponed: C matchup scheduled', ($c3['matchup']['status'] ?? null) === 'scheduled');
+    check('postponed: C opponent is D', ($c3['matchup']['opponent']['team_id'] ?? null) === $t['D']);
+    check('postponed: week games = week 1', array_column($a3['week_games'] ?? [], 'fixture_id') === [$g['wk1ab'], $g['wk1cd']]);
+
+    /* ---- recent: capped at 5, newest first; a forfeit flagged ----
+       Six more settled A-C series in weeks 3..8 (winner row only); week 8 is a
+       forfeit. A then has seven results; recent keeps weeks 8..4. */
+    $insG = $pdo->prepare("INSERT INTO games (league_id, week_num, week_no, series_game_no, home_team_id, away_team_id, status)
+                           VALUES (?,?,?,1,?,?,?)");
+    $insW = $pdo->prepare("INSERT INTO game_series_scores (league_id, game_id, series_game_no, winner_team_id, status)
+                           VALUES (?,?,0,?,'complete')");
+    for ($w = 3; $w <= 8; $w++) {
+        $insG->execute([$lid, $w, $w, $t['A'], $t['C'], $w === 8 ? 'forfeit' : 'played']);
+        $insW->execute([$lid, (int)$pdo->lastInsertId(), $t['A']]);
+    }
+    $a4 = nsr_team_home($pdo, $did['A']);
+    $rc4 = $a4['recent'] ?? [];
+    check('recent capped at 5', count($rc4) === 5);
+    check('recent newest first (weeks 8..4)', array_column($rc4, 'week') === [8, 7, 6, 5, 4]);
+    check('recent forfeit flagged on week 8', ($rc4[0]['forfeit'] ?? null) === true);
+    check('recent non-forfeit not flagged', ($rc4[1]['forfeit'] ?? null) === false);
+    check('recent forfeit still a W', ($rc4[0]['result'] ?? null) === 'W');
+
+    /* ---- no schedule at all: a newer league with a club but no fixtures ---- */
+    $pdo->prepare("INSERT INTO leagues (name, season_label, pool_version_id, weeks_regular_season)
+                   SELECT 'TH Empty League 7', '', pool_version_id, 2 FROM leagues WHERE id = ?")->execute([$lid]);
+    $fx['lid2'] = (int)$pdo->lastInsertId();
+    $pdo->prepare("INSERT INTO teams (league_id, name, abbrev) VALUES (?, 'TH Empty Club', 'THE')")->execute([$fx['lid2']]);
+    $emptyTeam = (int)$pdo->lastInsertId();
+    $pdo->prepare("INSERT INTO league_owners (handle, display_name, discord_user_id) VALUES ('THOWNERZ', NULL, '900000000000000077')")->execute();
+    $pdo->prepare("INSERT INTO owner_teams (owner_id, league_id, team_id) VALUES (?,?,?)")
+        ->execute([(int)$pdo->lastInsertId(), $fx['lid2'], $emptyTeam]);
+    $z = nsr_team_home($pdo, '900000000000000077');
+    check('empty league: member', ($z['member'] ?? null) === true && ($z['league']['id'] ?? null) === $fx['lid2']);
+    check('empty league: schedule_published false', ($z['schedule_published'] ?? null) === false);
+    check('empty league: matchup is a bye', ($z['matchup']['status'] ?? null) === 'bye' && ($z['matchup']['forfeit'] ?? null) === false);
+    check('empty league: no week games', ($z['week_games'] ?? null) === []);
+    check('empty season_label falls back to the league name', ($z['league']['season'] ?? null) === 7);
 } finally {
     th_cleanup($pdo, $fx);
 }

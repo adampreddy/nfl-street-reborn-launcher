@@ -86,16 +86,18 @@ function th_fixture(PDO $pdo): array {
 function th_cleanup(PDO $pdo, ?array $fx): void {
     if ($pdo->inTransaction()) { $pdo->rollBack(); return; }
     if ($fx === null) return;
-    $lid = (int)$fx['lid'];
     $old = (int)($fx['old_team'] ?? 0);
-    foreach (['stat_events', 'league_player_rights', 'game_series_scores', 'owner_teams', 'games', 'teams'] as $tb) {
-        $pdo->exec("DELETE FROM $tb WHERE league_id = $lid");
-    }
     if ($old > 0) {
         $pdo->exec("DELETE FROM owner_teams WHERE team_id = $old");
         $pdo->exec("DELETE FROM teams WHERE id = $old");
     }
+    /* 'lid2' is an optional second (empty) league a test may add on top. */
+    foreach (array_filter([(int)$fx['lid'], (int)($fx['lid2'] ?? 0)]) as $lid) {
+        foreach (['stat_events', 'league_player_rights', 'game_series_scores', 'owner_teams', 'games', 'teams'] as $tb) {
+            $pdo->exec("DELETE FROM $tb WHERE league_id = $lid");
+        }
+        $pdo->exec("DELETE FROM league_playoff_config WHERE league_id = $lid");
+        $pdo->exec("DELETE FROM leagues WHERE id = $lid");
+    }
     $pdo->exec("DELETE FROM league_owners WHERE handle LIKE 'THOWNER%'");
-    $pdo->exec("DELETE FROM league_playoff_config WHERE league_id = $lid");
-    $pdo->exec("DELETE FROM leagues WHERE id = $lid");
 }

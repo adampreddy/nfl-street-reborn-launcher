@@ -56,6 +56,27 @@ function nsr_th_week(PDO $pdo, int $leagueId): int {
     return $w;
 }
 
+/**
+ * The fixture a club's matchup card is about, chosen per club.
+ *
+ * One league-wide week is wrong for this: one postponed fixture holds the whole
+ * league's week back and freezes everyone else's card on a game they already
+ * finished. So each club gets its own earliest series that is NOT complete, in
+ * any week from the site's current week on; failing that, its series in the
+ * tab's week (which may be final); failing that, null = a bye.
+ *
+ * $all is nsr_series() for the whole league (ordered by week, then id).
+ */
+function nsr_th_pick_matchup(array $all, int $teamId, int $floor, int $week): ?array {
+    $inWeek = null;
+    foreach ($all as $s) {
+        if ((int)$s['home_team_id'] !== $teamId && (int)$s['away_team_id'] !== $teamId) continue;
+        if (!$s['complete'] && (int)$s['week_num'] >= $floor) return $s;
+        if ($inWeek === null && (int)$s['week_num'] === $week) $inWeek = $s;
+    }
+    return $inWeek;
+}
+
 /** One side of a fixture, as the scoreboard draws it. */
 function nsr_th_side(array $t, array $records): array {
     return [
@@ -86,15 +107,22 @@ function nsr_th_series(array $s): ?array {
     return ['home' => (int)$s['home_wins'], 'away' => (int)$s['away_wins']];
 }
 
-/** team_id => owner display name and Discord id, for one league. */
+/**
+ * team_id => owner display name and Discord id, for one league.
+ *
+ * Should a club ever carry more than one owner row, the answer must not depend
+ * on row order: owners with no Discord id sort first and linked owners last, and
+ * the loop keeps the LAST row per club, so a linked owner always wins.
+ */
 function nsr_th_owners(PDO $pdo, int $leagueId): array {
     $st = $pdo->prepare(
         "SELECT ot.team_id, o.handle, o.display_name, o.discord_user_id
            FROM owner_teams ot JOIN league_owners o ON o.id = ot.owner_id
-          WHERE ot.league_id = ?");
+          WHERE ot.league_id = ?
+          ORDER BY (o.discord_user_id IS NULL OR o.discord_user_id = '') DESC, o.id DESC");
     $st->execute([$leagueId]);
     $out = [];
-    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {   // last row per club wins
         $d = trim((string)($r['discord_user_id'] ?? ''));
         $out[(int)$r['team_id']] = [
             'display' => (string)($r['display_name'] ?: $r['handle']),
@@ -179,6 +207,7 @@ function nsr_th_page(PDO $pdo, int $lid, int $teamId, array $teams, array $recor
             'series'        => $played
                 ? ($isHome ? $s['home_wins'] . '-' . $s['away_wins'] : $s['away_wins'] . '-' . $s['home_wins'])
                 : null,
+            'forfeit'       => !empty($s['forfeit']),
         ];
     }
 
@@ -205,7 +234,7 @@ function nsr_th_page(PDO $pdo, int $lid, int $teamId, array $teams, array $recor
     }
     $order = array_flip(['QB', 'RB', 'WR', 'OL', 'DL', 'LB', 'DB']);
     usort($roster, function ($x, $y) use ($order) {
-        return [$order[$x['position']] ?? 9, $x['name']] <=> [$order[$y['position']] ?? 9, $y['name']];
+        return [$order[$x['position'] ?? ''] ?? 9, $x['name']] <=> [$order[$y['position'] ?? ''] ?? 9, $y['name']];
     });
 
     return [
@@ -246,20 +275,19 @@ function nsr_team_home(PDO $pdo, string $discordUserId): array {
     $L = $pdo->prepare('SELECT name, season_label FROM leagues WHERE id = ?');
     $L->execute([$lid]);
     $lg = $L->fetch(PDO::FETCH_ASSOC) ?: ['name' => '', 'season_label' => null];
-    $season = preg_match('/(\d+)/', (string)($lg['season_label'] ?? $lg['name']), $sm) ? (int)$sm[1] : null;
+    $season = preg_match('/(\d+)/', (string)($lg['season_label'] ?: $lg['name']), $sm) ? (int)$sm[1] : null;
 
     $week    = nsr_th_week($pdo, $lid);
     $records = nsr_team_records($pdo, $lid);
     $rankOf  = nsr_team_standing($pdo, $lid);
     $owners  = nsr_th_owners($pdo, $lid);
 
-    $mine = null;
-    foreach (nsr_series($pdo, $lid, $week) as $s) {
-        if ((int)$s['home_team_id'] === $teamId || (int)$s['away_team_id'] === $teamId) { $mine = $s; break; }
-    }
+    $all  = nsr_series($pdo, $lid);
+    $mine = nsr_th_pick_matchup($all, $teamId, nsr_current_week($pdo, $lid), $week);
 
     if ($mine === null) {
         $matchup = ['fixture_id' => null, 'week' => $week, 'home' => null, 'status' => 'bye',
+                    'forfeit' => false,
                     'score' => null, 'series' => null, 'winner_team_id' => null, 'when' => null,
                     'opponent' => null];
     } else {
@@ -268,9 +296,10 @@ function nsr_team_home(PDO $pdo, string $discordUserId): array {
         $opp    = $teams[$oppId] ?? ['id' => $oppId, 'name' => '', 'abbrev' => ''];
         $matchup = [
             'fixture_id'     => (int)$mine['game_id'],
-            'week'           => $week,
+            'week'           => (int)$mine['week_num'],
             'home'           => $isHome,
             'status'         => nsr_th_status($mine),
+            'forfeit'        => !empty($mine['forfeit']),
             'score'          => nsr_th_score($mine),
             'series'         => nsr_th_series($mine),
             'winner_team_id' => nsr_series_winner($mine),
@@ -284,6 +313,9 @@ function nsr_team_home(PDO $pdo, string $discordUserId): array {
 
     return [
         'member' => true,
+        // false = the league has no fixtures at all yet, so a bye means "no
+        // schedule", not "this club sits the week out".
+        'schedule_published' => count($all) > 0,
         'league' => [
             'id'         => $lid,
             'name'       => (string)$lg['name'],
