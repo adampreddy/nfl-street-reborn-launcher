@@ -306,6 +306,10 @@ function leagueStates() {
     L('league-not-installed', { league_edition_status: { ...LEAGUE_EDITION, installed: false, version: null } }),
     L('league-update', { league_edition_status: { ...LEAGUE_EDITION, latest: '2026.10.09', update_available: true, size_bytes: 268435456 } }),
     L('league-stale', { league_home: home({ stale: true }) }),
+    // The league server goes away after a good load: Cancel leaves the room, the reload fails, the old page stays with
+    // the refresh-failed line.
+    L('league-refresh-failed', { league_home: { __first: home({ matchup: matchup({ room: { room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111' } }) }),
+      __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }, { click: '[data-key="league-cancel"]' }),
     L('league-controller', { league_play_offline: { __reject: { kind: 'controller_setup', message: 'Your controller is not set up for this game yet. Set it up so it can press Start.' } } }, { click: '[data-key="league-offline"]' }),
     L('league-update-required', { league_room_open: { __reject: { kind: 'league_update_required', message: 'Update league files to play.', required: '2026.10.09' } } }, { click: '[data-key="league-primary"]' }),
     L('league-error', { league_home: { __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }),
@@ -445,7 +449,9 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       if (cmd === 'player_profile' && args.before) return { ok: true, matches: (data.player_profile_all || []).filter((m) => m.at < args.before).slice(0, 10) };
       if (cmd === 'launch') return new Promise(() => {});
       // `{ __reject: 'why' }`: the command fails with that sentence (a server that refuses, or lacks the route).
-      if (cmd in data) { const v = data[cmd]; if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
+      // `{ __first: answer, __reject: 'why' }`: the first call answers, every later one fails (a server lost after a good load).
+      if (cmd in data) { const v = data[cmd]; if (v && typeof v === 'object' && '__first' in v) { if (!v.__used) { v.__used = true; return v.__first; } throw v.__reject; }
+        if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
       if (/^onboarding_/.test(cmd)) return { outcome: 'recorded' };
       return null;
     } } };

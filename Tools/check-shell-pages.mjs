@@ -334,6 +334,41 @@ for (const [file, name] of PAGES) {
   await p.press(findByText(p.screen(), "Play league game"));
   check("An opponent on an older build is told to update", text(p.screen()).includes("Your opponent needs to update their league files."), text(p.screen()).slice(0, 600));
 
+  // Fix round 1: the install's no-space sentence, a version refusal on the join path, Cancel's leave and a reload that
+  // fails after it, and the friendly's ruleset before and after the switch.
+  p = await leaguePage({ league_edition_status: { ...FULL.league_edition_status, installed: false, version: null },
+    league_edition_install: reject({ kind: "no_space", message: "League files need 2.1 GB free on D:. Free up space or move Reborn to another drive." }) });
+  await p.press(findByAttr(p.screen(), "data-key", "league-install"));
+  check("An install refused for space says so", text(p.screen()).includes("League files need 2.1 GB free on D:"), text(p.screen()).slice(0, 400));
+
+  const withRoom = (room) => ({ ...FULL.league_home, matchup: { ...FULL.league_home.matchup, room } });
+  const oppId = FULL.league_home.matchup.opponent.discord_user_id;
+  p = await leaguePage({ league_home: withRoom({ room_id: "r2", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: oppId }),
+    mm_room_join: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.09" }) });
+  const joinBtn = findByText(p.screen(), "Join @BLONDE's game");
+  if (joinBtn) await p.press(joinBtn);
+  check("A join refused for the league build asks for the update", !!joinBtn && text(p.screen()).includes("Update league files to play.") && p.seen.some(([c, a]) => c === "mm_room_join" && a.code === "K7QP2M"), text(p.screen()).slice(0, 600));
+
+  let homeCalls = 0;
+  const mineWaiting = withRoom({ room_id: "r7", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: "111" });
+  p = await leaguePage({ league_home: () => { homeCalls++; if (homeCalls > 1) throw { kind: "unavailable", message: "The league couldn't be loaded." }; return mineWaiting; } });
+  const cancelBtn = findByText(p.screen(), "Cancel");
+  if (cancelBtn) await p.press(cancelBtn);
+  t = text(p.screen());
+  check("Cancel leaves the room by its id", p.seen.some(([c, a]) => c === "mm_room_action" && a.roomId === "r7" && a.action === "leave"), JSON.stringify(p.seen.filter(([c]) => c === "mm_room_action")));
+  check("A reload that fails after a good load says the data is old and room buttons may not work", t.includes("Showing the last league data we have") && t.includes("may not work"), t.slice(0, 400));
+  check("A successful Cancel is not reported as a failure", !t.includes("couldn't be loaded"), t.slice(0, 400));
+
+  const store = new Map(), realStorage = global.localStorage;
+  global.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  p = await leaguePage();
+  await p.press(findByText(p.screen(), "Host friendly"));
+  await p.press(findByAttr(p.screen(), "data-key", "league-settings"));
+  await p.press(findByText(p.screen(), "Host friendly"));
+  const rulesets = p.seen.filter(([c]) => c === "league_host_friendly").map(([, a]) => a.ruleset);
+  check("Friendlies use league settings by default, the raw game after the switch", JSON.stringify(rulesets) === '["league","raw"]', JSON.stringify(rulesets));
+  global.localStorage = realStorage;
+
   p = await leaguePage({ league_home: { ok: true, signed_in: true, member: false } });
   check("A non-member is sent to Play", p.replaced() === "index.html", String(p.replaced()));
   p = await leaguePage({ league_home: { signed_in: false } });

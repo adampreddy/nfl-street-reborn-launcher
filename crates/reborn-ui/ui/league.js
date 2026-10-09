@@ -18,6 +18,7 @@ import {
 
 const REFRESH_MS = 60000;
 const FRIENDLY_KEY = 'league-friendly-league-settings';
+const REFRESH_FAILED = "Can't reach the league right now. Showing the last league data we have and retrying. Joining or leaving a room may not work until it's back.";
 const screen = document.getElementById('screen');
 // busy: which control is working ('primary', 'cancel', 'offline', 'friendly'), or null.
 // controllerSetup: the controller check's sentence after Play offline, until the player answers it.
@@ -34,7 +35,19 @@ async function loadEdition() {
   catch (_) { state.edition = null; }
 }
 
-async function load() {
+// One load at a time: a load asked for while one runs (a refresh during the post-Cancel reload, say) runs once more
+// after it, so the page always ends on an answer read after the latest change. Every caller shares the same promise.
+let loading = null, again = false;
+function load() {
+  if (loading) { again = true; return loading; }
+  loading = (async () => {
+    try { do { again = false; await loadOnce(); } while (again); }
+    finally { loading = null; }
+  })();
+  return loading;
+}
+
+async function loadOnce() {
   try {
     const home = await quietCall('league_home');
     state.home = home;
@@ -102,7 +115,10 @@ const play = () => act('primary', async () => {
   go('online.html');
 });
 const join = (room) => act('primary', async () => { await joinLeagueRoom(room.code); go('online.html'); });
-const cancel = (room) => act('cancel', async () => { await call('mm_room_action', { roomId: room.room_id ?? room.id, action: 'leave' }); await load(); });
+const cancel = (room) => act('cancel', async () => { await call('mm_room_action', { roomId: room.room_id ?? room.id, action: 'leave' });
+  // The leave went through. A reload that fails now is a refresh problem (the banner), never Cancel's.
+  await load().catch(() => {});
+});
 const offline = (playAnyway = false) => act('offline', async () => { await call('league_play_offline', playAnyway ? { playAnyway: true } : {}); });
 const friendly = () => act('friendly', async () => { await call('league_host_friendly', { ruleset: friendlyRuleset(leagueSettingsOn()) }); go('online.html'); });
 
@@ -331,7 +347,8 @@ function view() {
   const mode = pageMode(home);
   if (mode === 'signed_out') return [signInCard()];
   if (mode !== 'member') return [el('p', { class: 'loading', text: 'The League tab is for league members. Taking you to Play…' })];
-  const banner = bannerLine(home);
+  // A refresh that failed after a good load: the old answer stays on screen, said so plainly, room buttons included.
+  const banner = state.error ? REFRESH_FAILED : bannerLine(home);
   return [
     teamHeader(home),
     state.installError ? el('p', { class: 'refusal', role: 'alert', text: state.installError }) : null,
