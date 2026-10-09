@@ -920,7 +920,9 @@ impl Session {
         // ⛔ Gated on the image path, for the reason spelled out above: a
         // build check would rewrite the very disc netplay must keep identical
         // between players.
-        if on_booted_offline {
+        // ⛔ And only for a build the player may customize: the league image is shared byte for byte between members
+        // in netplay (GameBuild::League is not customizable), so it is never rewritten, offline either.
+        if on_booted_offline && req.build.is_customizable() {
             let wanted =
                 crate::gamecube_controls::wanted_for(written.controls.as_ref().map(|c| c.profile));
             match crate::gamecube_glyph::apply(&req.game_path, wanted) {
@@ -1270,7 +1272,10 @@ impl Session {
         // builds the tree that list describes and points the emulator at it.
         // Before this call existed every profile switch wrote the list
         // correctly and the game never saw it.
-        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, req.textures);
+        // The league disc is never judged by the retail verdict: see `standing_for_build`.
+        let data_root = platform.paths.data_root().ok();
+        let textures = standing_for_build(req.build, &req.game_path, data_root.as_deref(), req.textures);
+        let mods = sync_mods_for_launch(platform, &supervisor, req.build, written.user_dir.path(), req.mods_disabled, textures);
 
         // The memory cards, brought up to date with the installed roster
         // before the game opens them, under the lock and with the game not
@@ -1553,6 +1558,45 @@ pub fn texture_policy_for_launch(
         // not cost the player the texture pack they already have. Leaving it
         // alone keeps whatever is composed exactly as it is.
         ImageStanding::Unknown => TexturePolicy::LeaveAlone,
+    }
+}
+
+/// The standing the texture sync acts on for this build.
+///
+/// Every build but the league passes the caller's standing straight through: the retail law
+/// ([`texture_policy_for_launch`], `game_identity::may_play`) is unchanged.
+///
+/// ⛔ The league disc is not a retail disc. The retail verdict, asked about it, answers "not Reborn", and NotReborn
+/// withholds, which DELETES the composed tree. So a league launch never takes the caller's standing: the installed
+/// league image (`library/league/game/league.iso`, with a `league.json` that names [`LEAGUE_GAME_ID`]) is the
+/// league's own and composes, and anything else is left alone. It is never judged NotReborn, so a league launch
+/// never selects Withhold. The sync itself is keyed by the build's game ID, so only `Load/Textures/NSRS04` is ever
+/// in play, never `GN7E69`.
+///
+/// [`LEAGUE_GAME_ID`]: crate::league_edition::LEAGUE_GAME_ID
+pub fn standing_for_build(
+    build: GameBuild,
+    game_path: &Path,
+    data_root: Option<&Path>,
+    caller: crate::game_identity::ImageStanding,
+) -> crate::game_identity::ImageStanding {
+    use crate::game_identity::ImageStanding;
+    if build != GameBuild::League {
+        return caller;
+    }
+    let installed = data_root.is_some_and(|root| {
+        let expected = crate::league_edition::league_image_path(root);
+        let same = game_path == expected
+            || matches!(
+                (std::fs::canonicalize(game_path), std::fs::canonicalize(&expected)),
+                (Ok(a), Ok(b)) if a == b
+            );
+        same && crate::league_edition::read_league_info(root).is_ok()
+    });
+    if installed {
+        ImageStanding::Reborn
+    } else {
+        ImageStanding::Unknown
     }
 }
 
@@ -2308,6 +2352,99 @@ mod tests {
                 "an author's folder must never be touched, whatever the disc is: {standing:?}"
             );
         }
+    }
+
+    /// Review Focus 1. Two members boot the same league bytes in lockstep: an offline league boot must never write a
+    /// customization into the league image.
+    #[test]
+    fn the_league_image_is_never_customized() {
+        let src = include_str!("session.rs");
+        let production = &src[..src.find("\n#[cfg(test)]").expect("the test module moved")];
+        assert!(
+            production.contains("if on_booted_offline && req.build.is_customizable() {"),
+            "the Gamebreaker glyph is written into the booted image; it must be gated on a customizable build"
+        );
+        assert!(!crate::runtime::GameBuild::League.is_customizable());
+    }
+
+    fn installed_league(root: &std::path::Path) -> PathBuf {
+        let iso = crate::league_edition::league_image_path(root);
+        std::fs::create_dir_all(iso.parent().unwrap()).unwrap();
+        std::fs::write(&iso, b"NSRS04").unwrap();
+        std::fs::write(
+            crate::league_edition::league_info_path(root),
+            r#"{"schema":"nsr.league-game.v1","game_id":"NSRS04","iso":"game/league.iso","textures":"textures/NSRS04"}"#,
+        )
+        .unwrap();
+        iso
+    }
+
+    /// The retail verdict judges retail discs. Asked about the league disc it says "not Reborn", and NotReborn
+    /// withholds, which DELETES a composed tree. A league launch must never select Withhold, whatever the caller's
+    /// retail standing says: the installed league image composes, anything else is left alone.
+    #[test]
+    fn a_league_launch_never_withholds_its_textures() {
+        use crate::game_identity::ImageStanding;
+        use crate::mods::TexturePolicy;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let installed = installed_league(root);
+        let elsewhere = root.join("somewhere").join("league.iso");
+        for caller in [ImageStanding::NotReborn, ImageStanding::Reborn, ImageStanding::Unknown] {
+            for (path, data_root) in [(&installed, Some(root)), (&elsewhere, Some(root)), (&installed, None)] {
+                let standing = standing_for_build(GameBuild::League, path, data_root, caller);
+                assert_ne!(standing, ImageStanding::NotReborn, "{caller:?} {}", path.display());
+                assert_ne!(
+                    texture_policy_for_launch(standing, true),
+                    TexturePolicy::Withhold,
+                    "a league launch withheld for {caller:?} at {}",
+                    path.display()
+                );
+            }
+            assert_eq!(
+                standing_for_build(GameBuild::League, &installed, Some(root), caller),
+                ImageStanding::Reborn,
+                "the installed league image is the league's own"
+            );
+        }
+        // An installed image whose league.json names another build is not vouched for, and still not deleted.
+        std::fs::write(
+            crate::league_edition::league_info_path(root),
+            r#"{"schema":"nsr.league-game.v1","game_id":"NSRS05","iso":"game/league.iso","textures":"textures/NSRS05"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            standing_for_build(GameBuild::League, &installed, Some(root), ImageStanding::NotReborn),
+            ImageStanding::Unknown
+        );
+    }
+
+    /// The retail standing logic is unchanged: every other build passes the caller's standing straight through.
+    #[test]
+    fn retail_standing_passes_through_unchanged() {
+        use crate::game_identity::ImageStanding;
+        let dir = tempfile::tempdir().unwrap();
+        let installed = installed_league(dir.path());
+        for build in [GameBuild::Offline, GameBuild::Online] {
+            for caller in [ImageStanding::NotReborn, ImageStanding::Reborn, ImageStanding::Unknown] {
+                assert_eq!(standing_for_build(build, &installed, Some(dir.path()), caller), caller);
+            }
+        }
+    }
+
+    /// The league tree is the only one a league launch composes: the sync is keyed by the build's game ID, so
+    /// `Load/Textures/GN7E69` is never touched, and the run path routes the standing through the league rule.
+    #[test]
+    fn a_league_launch_syncs_nsrs04_and_routes_its_standing() {
+        assert_eq!(GameBuild::League.game_id(), "NSRS04");
+        assert_ne!(GameBuild::League.game_id(), "GN7E69");
+        let src = include_str!("session.rs");
+        let production = &src[..src.find("\n#[cfg(test)]").expect("the test module moved")];
+        assert!(production.contains("let game = crate::mods::GameId::parse(build.game_id())?;"));
+        assert!(
+            production.contains("standing_for_build(req.build, &req.game_path, data_root.as_deref(), req.textures)"),
+            "the launch must pass the league rule's standing to the texture sync, not the caller's retail one"
+        );
     }
 
     #[test]
