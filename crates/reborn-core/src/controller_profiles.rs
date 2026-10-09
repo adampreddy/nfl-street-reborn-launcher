@@ -39,6 +39,27 @@ pub fn save(file: &Path, mut profile: ControllerProfile) -> Result<()> {
     Ok(())
 }
 
+/// Replace the whole store with `profiles`. Used when a profile's key itself
+/// changed (a pad Windows renumbered): `save` keys by the new identity and
+/// would leave the old entry behind beside it.
+pub fn save_all(file: &Path, profiles: &[ControllerProfile]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<ControllerProfile> = Vec::new();
+    // The last copy of a key wins, as with `save`.
+    for profile in profiles.iter().rev() {
+        let mut profile = profile.clone();
+        if let Some(key) = legacy_runtime_key(&profile) { profile.identity.guid = key; }
+        if seen.insert(profile.identity.profile_key()) { out.push(profile); }
+    }
+    out.reverse();
+    std::fs::create_dir_all(file.parent().unwrap())?;
+    let bytes=serde_json::to_vec_pretty(&out).map_err(std::io::Error::other)?;
+    let temporary=file.with_extension("json.tmp");
+    std::fs::write(&temporary,bytes)?;
+    std::fs::rename(temporary,file)?;
+    Ok(())
+}
+
 /// Old launcher releases keyed raw devices by backend:index, even though
 /// Dolphin assigns indices separately for each device name. The profile's
 /// recorded name identifies its owner; the current enumeration order does

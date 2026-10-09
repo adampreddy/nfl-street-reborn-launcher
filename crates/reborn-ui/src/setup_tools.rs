@@ -328,11 +328,13 @@ pub async fn controller_assign_player(player:u8, device:Option<String>, runtime:
         pads.sort_by_key(|pad|Some(pad.device_string()).as_ref()!=saved.primary_controller.as_ref());
         let mut slots=saved.controller_slots.unwrap_or_else(||std::array::from_fn(|i|pads.get(i).map(|p|p.device_string())));
         if let Some(device)=&device {for slot in &mut slots {if slot.as_ref()==Some(device){*slot=None;}}}
+        let edited=device.clone();
         slots[usize::from(player-1)]=device;
         saved.primary_controller=slots[0].clone();saved.controller_slots=Some(slots.clone());
         let profiles=reborn_core::controller_profiles::load(&reborn_core::controller_profiles::path(&p).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
         saved.save(&file).map_err(|e|e.to_string())?;
+        take_back_from_dolphin(&p,runtime.as_deref(),&scan,edited.as_deref(),Some(player));
         Ok(serde_json::json!({"slots":slots}))
     }).await.map_err(|e|e.to_string())?
 }
@@ -358,6 +360,20 @@ pub async fn setup_controller_mapping(runtime: Option<String>, device: String) -
     }).await.map_err(|e|e.to_string())?
 }
 
+/// A choice made on the Controllers page takes the pad back from a setup the
+/// player made in Dolphin's own window, which Play otherwise keeps exactly as
+/// written (`reborn_core::session::player_sections`). Without this the page
+/// would save a mapping the game never sees.
+fn take_back_from_dolphin(p:&Platform,runtime:Option<&str>,scan:&reborn_core::devices::Enumeration,device:Option<&str>,port:Option<u8>){
+    let Ok((_,user))=crate::dolphin_settings::config_user(p,runtime) else {return};
+    let config=user.join("Config");
+    match reborn_core::session::release_player_sections(&config.join("GCPadNew.ini"),&config.join("Dolphin.ini"),scan,device,port){
+        Ok(true)=>tracing::info!("controller: the Controllers page took {} back from a setup made in Dolphin",device.unwrap_or("a port")),
+        Ok(false)=>{}
+        Err(e)=>tracing::warn!("controller: a setup made in Dolphin could not be released: {e}"),
+    }
+}
+
 #[tauri::command]
 pub async fn setup_save_mapping(runtime: Option<String>, device: String, bindings: BTreeMap<String,String>, reset: bool) -> Result<(),String> {
     tauri::async_runtime::spawn_blocking(move|| {
@@ -380,7 +396,9 @@ pub async fn setup_save_mapping(runtime: Option<String>, device: String, binding
         profiles.retain(|p|p.identity.profile_key()!=profile.identity.profile_key());profiles.push(profile.clone());
         let scan=runtime.as_deref().and_then(|exe|reborn_core::devices::scan_via_runtime(&p,Path::new(exe),&p.paths.data_root().ok()?.join("cache")).ok()).unwrap_or_else(DeviceScanner::scan);
         crate::live_settings::controllers(&p,runtime.as_deref(),&saved,&profiles,&scan)?;
-        reborn_core::controller_profiles::save(&file,profile).map_err(|e|e.to_string())
+        reborn_core::controller_profiles::save(&file,profile).map_err(|e|e.to_string())?;
+        take_back_from_dolphin(&p,runtime.as_deref(),&scan,Some(&device),None);
+        Ok(())
     }).await.map_err(|e|e.to_string())?
 }
 

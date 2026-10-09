@@ -965,186 +965,39 @@ impl Session {
         written.pads_authoritative = authoritative;
 
         crate::controller_profiles::adopt_migrated(platform, &scan)?;
-        let mut saved_profiles = crate::controller_profiles::load(&crate::controller_profiles::path(platform)?)?;
+        let saved_profiles = crate::controller_profiles::load(&crate::controller_profiles::path(platform)?)?;
 
-        // Bind every pad by the names IT reports.
-        //
-        // This is the fix for a PlayStation 5 pad being unusable. The shipping
-        // default is XInput vocabulary (`Button A`, `Shoulder R`, `Start`,
-        // `Pad N`). A PS5 pad on Windows never reaches XInput; it arrives on
-        // WGInput reporting `Cross`, `Bumper R`, `Menu`, `Switch 0 N`. Every
-        // button and the whole d-pad therefore resolved to nothing, in silence,
-        // which is why the workaround going around was DS4Windows: it
-        // manufactures a virtual Xbox pad, and an Xbox pad was the only thing
-        // this could bind.
-        //
-        // Seeding a profile for every connected pad also means the builders
-        // below never fall back to their own `ControllerProfile::new`, which
-        // still carries the XInput default.
-        let mut profiles_changed = false;
-        {
-            for pad in scan.playable_pads() {
-                // Ask the runtime first. Fall back to a recorded device only
-                // when it could not be asked, which is any runtime older than
-                // --dump-device-inputs. See `devices::known_inputs`.
-                let available = match device_inputs
-                    .iter()
-                    .find(|d| d.device == pad.device_string())
-                {
-                    Some(reported) => reported.all_names(),
-                    // The runtime is too old to list controls. Do NOT try to
-                    // guess the pad from its name: Windows names a DualSense
-                    // from its HID product string, which differs between
-                    // machines, and a pad whose name we failed to recognise
-                    // got dead bindings, which is the original bug again.
-                    //
-                    // A profile seeded here already carries the universal
-                    // mapping, which binds every vocabulary at once and needs
-                    // no identification at all. Leave it alone.
-                    None => {
-                        tracing::info!(
-                            "{}: the runtime cannot list controls, so the pad keeps the universal mapping",
-                            pad.device_string()
-                        );
-                        Vec::new()
-                    }
-                };
-                let key = pad.identity().profile_key();
-                match saved_profiles
-                    .iter_mut()
-                    .find(|p| p.identity.profile_key() == key)
-                {
-                    Some(existing) => {
-                        let before = existing.clone();
-                        // Widen first, repair second. A saved profile can
-                        // still carry the XInput-only default: written by a
-                        // build before 3.0.6, or adopted out of the old pad
-                        // file by the first 3.0.6 launch as twenty
-                        // "overrides". On a PlayStation pad that is dead, and
-                        // when the runtime cannot list the pad's controls
-                        // `repair_for` has no evidence to act on, so it never
-                        // reached those players. The universal binding needs
-                        // no evidence; the repair narrows it back to exact
-                        // names whenever it can.
-                        let widened = existing.widen_stale_defaults();
-                        if !widened.is_empty() {
-                            tracing::info!(
-                                "{}: {} binding(s) were the launcher's own older vocabulary and were widened to bind every pad: {:?}",
-                                pad.device_string(),
-                                widened.len(),
-                                widened
-                            );
-                        }
-                        let repaired = existing.repair_for(&available);
-                        if !repaired.is_empty() {
-                            tracing::info!(
-                                "{}: repaired {} binding(s) that named controls this pad does not have: {:?}",
-                                pad.device_string(),
-                                repaired.len(),
-                                repaired
-                            );
-                        }
-                        if *existing != before {
-                            profiles_changed = true;
-                        }
-                    }
-                    None => {
-                        let seeded = crate::controller::ControllerProfile::from_device(
-                            pad.identity(),
-                            1,
-                            &available,
-                        );
-                        let dead = seeded.mapping.unresolvable(&available);
-                        if dead.is_empty() {
-                            tracing::info!(
-                                "{}: mapped from the pad's own input names",
-                                pad.device_string()
-                            );
-                        } else {
-                            // Numeric-only pads (DirectInput, SDL) report
-                            // `Button 7`, which means nothing without being
-                            // measured. Never guess: the remap wizard asks.
-                            tracing::warn!(
-                                "{}: {} control(s) could not be mapped from names alone and need the remap wizard: {:?}",
-                                pad.device_string(),
-                                dead.len(),
-                                dead
-                            );
-                        }
-                        saved_profiles.push(seeded);
-                    }
-                }
-            }
-        }
-        // Adopt whatever the player changed in Dolphin's own Controller
-        // Settings before regenerating. The launcher keeps owning the Device
-        // line and the port layout, because a remembered device string that no
-        // longer matches binds nothing and Dolphin says nothing about it. It
-        // stops owning the bindings, the tuning and the calibration.
-        //
-        // The sidecar holds exactly the bytes the launcher wrote last time, so
-        // "what did somebody else change" is answerable without guessing.
+        // Everything about the pads is decided in one place, from what the
+        // runtime reported and what is on disk; see [`plan_pads`].
         let pad_path = config_dir.join("GCPadNew.ini");
         let sidecar = pad_path.with_extension("ini.launcher-wrote");
-        let mut saved_profiles = saved_profiles;
-        if let Ok(live) = std::fs::read_to_string(&pad_path) {
-            let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
-            // Which device each saved pad is THIS session. A section of the
-            // file is only ever adopted into the pad its Device line names.
-            let connected: std::collections::BTreeMap<String, String> = scan
-                .playable_pads()
-                .iter()
-                .map(|pad| (pad.identity().profile_key(), pad.device_string()))
-                .collect();
-            let adopted = crate::controller::adopt_external_edits(&live, &ours, &mut saved_profiles, |identity| {
-                connected.get(&identity.profile_key()).cloned()
-            });
-            if !adopted.is_empty() {
-                tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
-                profiles_changed = true;
-            }
-        }
-        // Assess the final bindings, including edits just adopted from Dolphin.
-        // Say which pads will start the game with controls that do nothing.
-        //
-        // The warning above never fired for the pads that need it: it asks
-        // `Mapping::unresolvable`, which skips every binding containing `|`,
-        // and since 3.0.6 every default binding is an OR. A pad Windows has no
-        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
-        // reports `Button 3` and `Axis 1-`, nothing in the default binding
-        // exists on it, and this log said nothing. At WARN, because that is
-        // the level a player's launcher.log keeps.
-        let mut dead_by_device: std::collections::BTreeMap<String, Vec<crate::controller::GcInput>> = Default::default();
-        for pad in scan.playable_pads() {
-            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
-            let key = pad.identity().profile_key();
-            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
-            let dead = profile.dead_controls(&reported.all_names());
-            if !dead.is_empty() {
-                tracing::warn!(
-                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
-                    pad.device_string(),
-                    dead.len(),
-                    dead
-                );
-                written.pads_needing_setup.push((pad.device_string(), dead.len()));
-                dead_by_device.insert(pad.device_string(), dead);
-            }
-        }
-        // Persist what changed: an adoption, a widening, or a repair. A
-        // widened or repaired profile left unsaved would show its dead
-        // bindings on the Controllers page as the player's own choices.
-        if profiles_changed {
+        let live = std::fs::read_to_string(&pad_path).ok();
+        let ours = std::fs::read_to_string(&sidecar).unwrap_or_default();
+        let enabled = enabled_ports(&std::fs::read_to_string(config_dir.join("Dolphin.ini")).unwrap_or_default());
+        let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
+        let plan = plan_pads(&PadInputs {
+            scan: &scan,
+            device_inputs: &device_inputs,
+            live: live.as_deref(),
+            last_written: &ours,
+            enabled_ports: enabled,
+            primary: preferences.primary_controller.as_deref(),
+            slots: preferences.controller_slots.as_ref(),
+        }, saved_profiles);
+        // Persist what changed: an adoption, a widening, a repair, a pad that
+        // came back under a new number. A widened or repaired profile left
+        // unsaved would show its dead bindings on the Controllers page as the
+        // player's own choices.
+        if plan.profiles_changed {
             if let Ok(file) = crate::controller_profiles::path(platform) {
-                for profile in &saved_profiles {
-                    let _ = crate::controller_profiles::save(&file, profile.clone());
+                if let Err(e) = crate::controller_profiles::save_all(&file, &plan.profiles) {
+                    tracing::warn!("controller: profiles could not be saved: {e}");
                 }
             }
         }
-        let saved_profiles = saved_profiles;
-        let preferences = crate::settings::Settings::load(&crate::settings::settings_path(platform)?)?;
-        match build_gcpad_for_slots(&scan, &saved_profiles, preferences.primary_controller.as_deref(), preferences.controller_slots.as_ref()) {
-            Some((ini, assignment)) => {
+        written.pads_needing_setup = plan.pads_needing_setup.clone();
+        match plan.ini {
+            Some(ini) => {
                 let path = pad_path;
                 // Recorded once before the launcher's first overwrite, for
                 // evidence. Never restored from automatically.
@@ -1162,10 +1015,14 @@ impl Session {
                 // from theirs.
                 let _ = std::fs::write(&sidecar, &ini);
                 written.files.push(path);
-                written.pads = assignment;
-                written.no_controller = written.pads.is_empty();
+                // Only the ports the launcher bound are switched on; a setup
+                // of the player's is on already or it would not have been kept.
+                written.pads = plan.assignment;
+                written.no_controller = written.pads.is_empty() && plan.kept.is_empty();
                 // Decided here, once the ports are known: only player one's pad counts.
-                written.player_one_blocked = player_one_blocked(&written.pads, &dead_by_device);
+                let mut every_port = written.pads.clone();
+                every_port.extend(plan.kept.iter().cloned());
+                written.player_one_blocked = player_one_blocked(&every_port, &plan.dead_by_device);
             }
             None => {
                 written.no_controller = true;
@@ -1636,12 +1493,18 @@ pub fn leave_standing_pad_file(pad_path: &Path) -> std::io::Result<bool> {
 /// Explicit player slots stay fixed even when a controller disconnects.
 pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], primary: Option<&str>, slots: Option<&[Option<String>;4]>) -> Option<(String, Vec<(u8,String)>)> {
     let Some(slots)=slots else { return build_gcpad_for_player(scan,4,saved,primary); };
-    let pads=scan.playable_pads();let mut used=std::collections::HashSet::new();
+    let pads=scan.playable_pads();let mut used:std::collections::HashSet<String>=std::collections::HashSet::new();
     let mut profiles=Vec::new();let mut assignment=Vec::new();
-    for (index,device) in slots.iter().enumerate(){
-        let Some(device)=device else {continue};
-        if !used.insert(device){continue;}
-        let Some(pad)=pads.iter().find(|p|p.device_string()==*device) else {continue};
+    for (index,wanted) in slots.iter().enumerate(){
+        let Some(wanted)=wanted else {continue};
+        // The pad the slot names, or the same pad under the number Windows
+        // gave it this time, unless another slot names that number itself.
+        let Some(pad)=pads.iter().find(|p|p.device_string()==*wanted).or_else(||pads.iter().find(|p|{
+            let here=p.device_string();
+            renumbered(wanted,&here) && !slots.iter().flatten().any(|s|*s==here)
+        })) else {continue};
+        let device=pad.device_string();
+        if !used.insert(device.clone()){continue;}
         let mut profile=saved.iter().find(|p|p.identity.profile_key()==pad.identity().profile_key()).cloned().unwrap_or_else(||ControllerProfile::new(pad.identity(),index as u8+1));
         profile.port=index as u8+1;profiles.push(profile);assignment.push((index as u8+1,device.clone()));
     }
@@ -1660,6 +1523,505 @@ pub fn build_gcpad_for_slots(scan: &Enumeration, saved: &[ControllerProfile], pr
     // that player's bindings for good. An omitted section leaves whatever
     // Dolphin already has; an empty Device line destroys it.
     Some((ini,assignment))
+}
+
+/// What [`plan_pads`] reads. Nothing here touches the disk.
+#[derive(Debug)]
+pub struct PadInputs<'a> {
+    pub scan: &'a Enumeration,
+    /// What the runtime said each device's controls are called; empty when it
+    /// could not be asked.
+    pub device_inputs: &'a [crate::devices::DeviceInputs],
+    /// `GCPadNew.ini` as it is now, if there is one.
+    pub live: Option<&'a str>,
+    /// What the launcher wrote there last time (the sidecar).
+    pub last_written: &'a str,
+    /// Which of Dolphin's four ports are switched on; see [`enabled_ports`].
+    pub enabled_ports: [bool; 4],
+    pub primary: Option<&'a str>,
+    pub slots: Option<&'a [Option<String>; 4]>,
+}
+
+/// Everything Play decides about the pads.
+#[derive(Debug, Default)]
+pub struct PadPlan {
+    /// The `GCPadNew.ini` to write. `None` when no pad was seen and nothing
+    /// of the player's own is connected either.
+    pub ini: Option<String>,
+    /// Ports the launcher bound, to be switched on.
+    pub assignment: Vec<(u8, String)>,
+    /// Ports kept exactly as the player set them up in Dolphin.
+    pub kept: Vec<(u8, String)>,
+    pub dead_by_device: std::collections::BTreeMap<String, Vec<crate::controller::GcInput>>,
+    pub pads_needing_setup: Vec<(String, usize)>,
+    pub profiles: Vec<ControllerProfile>,
+    pub profiles_changed: bool,
+}
+
+/// One `[GCPadN]` section of the player's file the launcher must not rewrite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerSection {
+    pub port: u8,
+    pub device: String,
+    /// The section exactly as it is on disk, header included.
+    pub text: String,
+}
+
+/// Which ports Dolphin has switched on, from `Dolphin.ini` text. Dolphin's own
+/// default is a standard controller in port 1 and nothing in the others.
+pub fn enabled_ports(dolphin_ini: &str) -> [bool; 4] {
+    let doc = IniDocument::parse(dolphin_ini);
+    let mut on = [false; 4];
+    for (index, slot) in on.iter_mut().enumerate() {
+        *slot = match doc.get("Core", &format!("SIDevice{index}")).map(str::trim) {
+            None | Some("") => index == 0,
+            Some(value) => value != "0",
+        };
+    }
+    on
+}
+
+/// The `[GCPadN]` sections of a pad file, each exactly as written.
+fn raw_pad_sections(text: &str) -> Vec<(u8, String)> {
+    let mut out: Vec<(u8, String)> = Vec::new();
+    let mut current: Option<usize> = None;
+    for raw in text.split_inclusive('\n') {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            current = line[1..line.len() - 1]
+                .strip_prefix("GCPad")
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=4).contains(n))
+                .map(|port| {
+                    out.push((port, String::new()));
+                    out.len() - 1
+                });
+        }
+        if let Some(index) = current {
+            out[index].1.push_str(raw);
+        }
+    }
+    for (_, text) in &mut out {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    out
+}
+
+/// The player's own setups: a section on a switched-on port whose `Device`
+/// is a controller connected right now that the launcher does not offer.
+///
+/// # Why
+///
+/// The launcher offers each pad through ONE backend: a PlayStation pad is
+/// `WGInput/0/...`. Dolphin's own controller window lists the same pad again
+/// as `DInput/0/Wireless Controller` and `SDL/0/PS4 Controller`, and that is
+/// what most players pick when told to "map it in Dolphin". Bindings only
+/// mean something on the device they were made for, so adoption refuses to
+/// carry them onto the launcher's device, and every Play then rewrote the
+/// file: the setup vanished, the launcher's own dead default came back, and
+/// "set up your controller" came back with it (2026-10-08).
+///
+/// The launcher never writes such a device itself, so a section naming one
+/// is the player's by construction, and it stays theirs until they set the
+/// pad up on the Controllers page ([`release_player_sections`]).
+///
+/// Never a keyboard (a stray keyboard section would take a port from a pad),
+/// and never a port Dolphin has switched off (an old section left behind
+/// there must not become a second player).
+pub fn player_sections(live: &str, scan: &Enumeration, enabled_ports: [bool; 4]) -> Vec<PlayerSection> {
+    let offered: Vec<String> = scan.playable_pads().iter().map(|d| d.device_string()).collect();
+    let parsed = crate::controller::parse_gcpad(live);
+    raw_pad_sections(live)
+        .into_iter()
+        .filter_map(|(port, text)| {
+            let device = parsed.get(&port)?.get("Device")?.trim().to_string();
+            let connected = scan.devices.iter().find(|d| d.device_string() == device)?;
+            let theirs = enabled_ports[port as usize - 1]
+                && connected.is_controller()
+                && connected.family != crate::controller::DeviceFamily::Keyboard
+                && !offered.contains(&device);
+            theirs.then_some(PlayerSection { port, device, text })
+        })
+        .collect()
+}
+
+/// Whether `pad`, which the launcher offers, may be the same plastic as `kept`,
+/// which the player picked in Dolphin. Backends name one pad differently
+/// (`WGInput/0/Wireless Controller`, `SDL/0/PS4 Controller`), so the name is
+/// not enough; the family is the best evidence the device list carries.
+fn may_be_the_same_pad(kept: &crate::devices::DetectedDevice, pad: &crate::devices::DetectedDevice) -> bool {
+    let family = |d: &crate::devices::DetectedDevice| {
+        if d.backend == crate::devices::Backend::XInput { crate::controller::DeviceFamily::Xbox } else { d.family }
+    };
+    pad.name.eq_ignore_ascii_case(&kept.name) || family(pad) == family(kept)
+}
+
+/// The scan without each pad the player set up in Dolphin, so one pad never
+/// drives two players: the device they chose is never offered, and neither is
+/// the launcher's copy of it (one copy per kept section, the same name first)
+/// nor any listing that was only hidden behind that copy (an Xbox pad's
+/// WGInput twin behind its XInput entry, an SDL listing behind WGInput).
+fn without_their_pads(scan: &Enumeration, kept: &[PlayerSection]) -> Enumeration {
+    let mut out = scan.clone();
+    for section in kept {
+        let Some(theirs) = scan.devices.iter().find(|d| d.device_string() == section.device).cloned() else { continue };
+        let offered: Vec<String> = out.playable_pads().iter().map(|d| d.device_string()).collect();
+        let pick = |exact: bool| {
+            out.devices.iter().find(|d| {
+                offered.contains(&d.device_string())
+                    && if exact { d.name.eq_ignore_ascii_case(&theirs.name) } else { may_be_the_same_pad(&theirs, d) }
+            }).cloned()
+        };
+        let copy = pick(true).or_else(|| pick(false));
+        out.devices.retain(|d| {
+            if d.device_string() == section.device {
+                return false;
+            }
+            match &copy {
+                Some(copy) => {
+                    let hidden = !offered.contains(&d.device_string());
+                    d.device_string() != copy.device_string() && !(hidden && d.is_controller() && may_be_the_same_pad(copy, d))
+                }
+                None => true,
+            }
+        });
+    }
+    out
+}
+
+/// Two device strings for one pad that Windows numbered differently this
+/// time: same backend, same name, another index.
+fn renumbered(a: &str, b: &str) -> bool {
+    let split = |s: &str| {
+        let mut it = s.splitn(3, '/');
+        (it.next().unwrap_or("").to_string(), it.next().is_some(), it.next().unwrap_or("").to_string())
+    };
+    let ((sa, _, na), (sb, _, nb)) = (split(a), split(b));
+    a != b && !sa.is_empty() && sa == sb && na == nb && sa != "XInput"
+}
+
+/// A saved profile follows its pad when Windows gives the pad another number
+/// (`WGInput/1/...` where it was `WGInput/0/...`). The profile key carries the
+/// number, so without this the player's setup was orphaned and a fresh
+/// default, dead on a pad without labels, took its place.
+///
+/// Only while the old number is not itself connected, so two identical pads
+/// keep their own setups.
+fn follow_renumbered_pads(scan: &Enumeration, profiles: &mut [ControllerProfile]) -> bool {
+    let pads = scan.playable_pads();
+    let connected: Vec<String> = pads.iter().map(|p| p.identity().profile_key()).collect();
+    let mut changed = false;
+    for pad in &pads {
+        let key = pad.identity().profile_key();
+        if profiles.iter().any(|p| p.identity.profile_key() == key) {
+            continue;
+        }
+        if let Some(profile) = profiles
+            .iter_mut()
+            .find(|p| !connected.contains(&p.identity.profile_key()) && renumbered(&p.identity.profile_key(), &key))
+        {
+            tracing::info!("controller: {} is the pad saved as {}; its setup follows it", key, profile.identity.profile_key());
+            profile.identity = pad.identity();
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Put the player's sections back beside the launcher's, moving a launcher
+/// pad off a port the player holds.
+fn with_player_sections(
+    launcher: Option<(String, Vec<(u8, String)>)>,
+    kept: &[PlayerSection],
+) -> Option<(String, Vec<(u8, String)>)> {
+    if kept.is_empty() {
+        return launcher;
+    }
+    let mut taken: Vec<u8> = kept.iter().map(|k| k.port).collect();
+    let mut sections: Vec<(u8, String)> = kept.iter().map(|k| (k.port, k.text.clone())).collect();
+    let mut assignment = Vec::new();
+    if let Some((ini, assigned)) = launcher {
+        let raw = raw_pad_sections(&ini);
+        for (port, device) in assigned {
+            let Some((_, text)) = raw.iter().find(|(p, _)| *p == port) else { continue };
+            let Some(free) = (!taken.contains(&port)).then_some(port).or_else(|| (1..=4).find(|p| !taken.contains(p))) else {
+                tracing::warn!("controller: no free port left for {device}");
+                continue;
+            };
+            taken.push(free);
+            let body = text.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+            sections.push((free, format!("[GCPad{free}]\n{body}")));
+            assignment.push((free, device));
+        }
+    }
+    sections.sort_by_key(|(port, _)| *port);
+    Some((sections.into_iter().map(|(_, text)| text).collect(), assignment))
+}
+
+/// Decide the whole pad file for a launch: which pad on which port, with
+/// what bindings, and which controls cannot be pressed.
+pub fn plan_pads(inputs: &PadInputs, mut saved_profiles: Vec<ControllerProfile>) -> PadPlan {
+    let mut plan = PadPlan::default();
+    let device_inputs = inputs.device_inputs;
+
+    // A setup the player made in Dolphin on a device the launcher does not
+    // offer stays exactly as they made it. See [`player_sections`].
+    let kept = inputs
+        .live
+        .map(|live| player_sections(live, inputs.scan, inputs.enabled_ports))
+        .unwrap_or_default();
+    for section in &kept {
+        tracing::info!("controller: port {} keeps the player's own setup for {}", section.port, section.device);
+    }
+    let scan = &without_their_pads(inputs.scan, &kept);
+
+    plan.profiles_changed |= follow_renumbered_pads(scan, &mut saved_profiles);
+
+        // Bind every pad by the names IT reports.
+        //
+        // This is the fix for a PlayStation 5 pad being unusable. The shipping
+        // default is XInput vocabulary (`Button A`, `Shoulder R`, `Start`,
+        // `Pad N`). A PS5 pad on Windows never reaches XInput; it arrives on
+        // WGInput reporting `Cross`, `Bumper R`, `Menu`, `Switch 0 N`. Every
+        // button and the whole d-pad therefore resolved to nothing, in silence,
+        // which is why the workaround going around was DS4Windows: it
+        // manufactures a virtual Xbox pad, and an Xbox pad was the only thing
+        // this could bind.
+        //
+        // Seeding a profile for every connected pad also means the builders
+        // below never fall back to their own `ControllerProfile::new`, which
+        // still carries the XInput default.
+        {
+            for pad in scan.playable_pads() {
+                // Ask the runtime first. Fall back to a recorded device only
+                // when it could not be asked, which is any runtime older than
+                // --dump-device-inputs. See `devices::known_inputs`.
+                let available = match device_inputs
+                    .iter()
+                    .find(|d| d.device == pad.device_string())
+                {
+                    Some(reported) => reported.all_names(),
+                    // The runtime is too old to list controls. Do NOT try to
+                    // guess the pad from its name: Windows names a DualSense
+                    // from its HID product string, which differs between
+                    // machines, and a pad whose name we failed to recognise
+                    // got dead bindings, which is the original bug again.
+                    //
+                    // A profile seeded here already carries the universal
+                    // mapping, which binds every vocabulary at once and needs
+                    // no identification at all. Leave it alone.
+                    None => {
+                        tracing::info!(
+                            "{}: the runtime cannot list controls, so the pad keeps the universal mapping",
+                            pad.device_string()
+                        );
+                        Vec::new()
+                    }
+                };
+                let key = pad.identity().profile_key();
+                match saved_profiles
+                    .iter_mut()
+                    .find(|p| p.identity.profile_key() == key)
+                {
+                    Some(existing) => {
+                        let before = existing.clone();
+                        // Widen first, repair second. A saved profile can
+                        // still carry the XInput-only default: written by a
+                        // build before 3.0.6, or adopted out of the old pad
+                        // file by the first 3.0.6 launch as twenty
+                        // "overrides". On a PlayStation pad that is dead, and
+                        // when the runtime cannot list the pad's controls
+                        // `repair_for` has no evidence to act on, so it never
+                        // reached those players. The universal binding needs
+                        // no evidence; the repair narrows it back to exact
+                        // names whenever it can.
+                        let widened = existing.widen_stale_defaults();
+                        if !widened.is_empty() {
+                            tracing::info!(
+                                "{}: {} binding(s) were the launcher's own older vocabulary and were widened to bind every pad: {:?}",
+                                pad.device_string(),
+                                widened.len(),
+                                widened
+                            );
+                        }
+                        let repaired = existing.repair_for(&available);
+                        if !repaired.is_empty() {
+                            tracing::info!(
+                                "{}: repaired {} binding(s) that named controls this pad does not have: {:?}",
+                                pad.device_string(),
+                                repaired.len(),
+                                repaired
+                            );
+                        }
+                        if *existing != before {
+                            plan.profiles_changed = true;
+                        }
+                    }
+                    None => {
+                        let seeded = crate::controller::ControllerProfile::from_device(
+                            pad.identity(),
+                            1,
+                            &available,
+                        );
+                        let dead = seeded.mapping.unresolvable(&available);
+                        if dead.is_empty() {
+                            tracing::info!(
+                                "{}: mapped from the pad's own input names",
+                                pad.device_string()
+                            );
+                        } else {
+                            // Numeric-only pads (DirectInput, SDL) report
+                            // `Button 7`, which means nothing without being
+                            // measured. Never guess: the remap wizard asks.
+                            tracing::warn!(
+                                "{}: {} control(s) could not be mapped from names alone and need the remap wizard: {:?}",
+                                pad.device_string(),
+                                dead.len(),
+                                dead
+                            );
+                        }
+                        saved_profiles.push(seeded);
+                    }
+                }
+            }
+        }
+        // Adopt whatever the player changed in Dolphin's own Controller
+        // Settings before regenerating. The launcher keeps owning the Device
+        // line and the port layout, because a remembered device string that no
+        // longer matches binds nothing and Dolphin says nothing about it. It
+        // stops owning the bindings, the tuning and the calibration.
+        //
+        // The sidecar holds exactly the bytes the launcher wrote last time, so
+        // "what did somebody else change" is answerable without guessing.
+        if let Some(live) = inputs.live {
+            let ours = inputs.last_written;
+            // Which device each saved pad is THIS session. A section of the
+            // file is only ever adopted into the pad its Device line names.
+            let connected: std::collections::BTreeMap<String, String> = scan
+                .playable_pads()
+                .iter()
+                .map(|pad| (pad.identity().profile_key(), pad.device_string()))
+                .collect();
+            let adopted = crate::controller::adopt_external_edits(live, ours, &mut saved_profiles, |identity| {
+                connected.get(&identity.profile_key()).cloned()
+            });
+            if !adopted.is_empty() {
+                tracing::info!("controller: adopted {} change(s) made in Dolphin: {:?}", adopted.len(), adopted);
+                plan.profiles_changed = true;
+            }
+        }
+        // Assess the final bindings, including edits just adopted from Dolphin.
+        // Say which pads will start the game with controls that do nothing.
+        //
+        // The warning above never fired for the pads that need it: it asks
+        // `Mapping::unresolvable`, which skips every binding containing `|`,
+        // and since 3.0.6 every default binding is an OR. A pad Windows has no
+        // gamepad mapping for (a USB GameCube-style pad, a generic HID pad)
+        // reports `Button 3` and `Axis 1-`, nothing in the default binding
+        // exists on it, and this log said nothing. At WARN, because that is
+        // the level a player's launcher.log keeps.
+        for pad in scan.playable_pads() {
+            let Some(reported) = device_inputs.iter().find(|d| d.device == pad.device_string()) else { continue };
+            let key = pad.identity().profile_key();
+            let Some(profile) = saved_profiles.iter().find(|p| p.identity.profile_key() == key) else { continue };
+            let dead = profile.dead_controls(&reported.all_names());
+            if !dead.is_empty() {
+                tracing::warn!(
+                    "controller: {} has {} control(s) that cannot be pressed on it and will do nothing in the game until it is set up under Controllers: {:?}",
+                    pad.device_string(),
+                    dead.len(),
+                    dead
+                );
+                plan.pads_needing_setup.push((pad.device_string(), dead.len()));
+                plan.dead_by_device.insert(pad.device_string(), dead);
+            }
+        }
+
+    let launcher = build_gcpad_for_slots(scan, &saved_profiles, inputs.primary, inputs.slots);
+    // Port 1 never ends up empty because of a setup on another port: if the
+    // player's own section is elsewhere and dropping its copy left the
+    // launcher nothing, the launcher binds what it would have bound.
+    let launcher = if launcher.is_none() && !kept.is_empty() && !kept.iter().any(|k| k.port == 1) {
+        build_gcpad_for_slots(inputs.scan, &saved_profiles, inputs.primary, inputs.slots)
+    } else {
+        launcher
+    };
+
+    // The player's own sections are judged as written, on the device they name.
+    for section in &kept {
+        let Some(reported) = device_inputs.iter().find(|d| d.device == section.device) else { continue };
+        let Some(identity) = inputs.scan.devices.iter().find(|d| d.device_string() == section.device).map(|d| d.identity()) else { continue };
+        let mut theirs = ControllerProfile::new(identity, section.port);
+        let parsed = crate::controller::parse_gcpad(&section.text);
+        for input in crate::controller::GcInput::ALL {
+            let value = parsed.get(&section.port).and_then(|s| s.get(input.ini_key())).cloned().unwrap_or_default();
+            theirs.mapping.set(*input, value);
+        }
+        let dead = theirs.dead_controls(&reported.all_names());
+        if !dead.is_empty() {
+            tracing::warn!(
+                "controller: {} as set up in Dolphin has {} control(s) that cannot be pressed: {:?}",
+                section.device,
+                dead.len(),
+                dead
+            );
+            plan.pads_needing_setup.push((section.device.clone(), dead.len()));
+            plan.dead_by_device.insert(section.device.clone(), dead);
+        }
+    }
+
+    plan.kept = kept.iter().map(|k| (k.port, k.device.clone())).collect();
+    if let Some((ini, assignment)) = with_player_sections(launcher, &kept) {
+        let kept_ports: Vec<u8> = kept.iter().map(|k| k.port).collect();
+        plan.assignment = assignment.into_iter().filter(|(port, _)| !kept_ports.contains(port)).collect();
+        plan.ini = Some(ini);
+    }
+    plan.profiles = saved_profiles;
+    plan
+}
+
+/// The Controllers page is where a player takes a pad back from a setup they
+/// made in Dolphin: once they save, reset or assign a pad there, the sections
+/// [`player_sections`] would keep for that pad (or on that port) are dropped
+/// from `GCPadNew.ini`, and the next Play writes the launcher's setup.
+/// Returns true when the file changed.
+pub fn release_player_sections(
+    pad_path: &Path,
+    dolphin_ini: &Path,
+    scan: &Enumeration,
+    device: Option<&str>,
+    port: Option<u8>,
+) -> std::io::Result<bool> {
+    let live = match std::fs::read_to_string(pad_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let enabled = enabled_ports(&std::fs::read_to_string(dolphin_ini).unwrap_or_default());
+    let kept = player_sections(&live, scan, enabled);
+    let edited = device.and_then(|d| scan.devices.iter().find(|x| x.device_string() == d));
+    let release: Vec<u8> = kept
+        .iter()
+        .filter(|k| {
+            Some(k.port) == port
+                || edited.is_some_and(|pad| {
+                    scan.devices.iter().find(|d| d.device_string() == k.device).is_some_and(|theirs| may_be_the_same_pad(theirs, pad))
+                })
+        })
+        .map(|k| k.port)
+        .collect();
+    if release.is_empty() {
+        return Ok(false);
+    }
+    let rest: String = raw_pad_sections(&live)
+        .into_iter()
+        .filter(|(p, _)| !release.contains(p))
+        .map(|(_, text)| text)
+        .collect();
+    std::fs::write(pad_path, rest)?;
+    Ok(true)
 }
 
 /// The memory card the game saves to. A fresh user folder seeded from the
