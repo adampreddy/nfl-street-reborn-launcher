@@ -739,14 +739,9 @@ struct Target {
     read_back: Option<String>,
 }
 
-/// A bucket name goes straight into the path-style request path, so only a
-/// canonical S3 name is allowed: lowercase letters, digits and hyphens, 3 to
-/// 63 characters, no slash, dot or whitespace. Nothing is trimmed.
-fn valid_bucket_name(name: &str) -> bool {
-    let b = name.as_bytes();
-    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
-    (3..=63).contains(&b.len()) && edge(b[0]) && edge(b[b.len() - 1]) && b.iter().all(|&c| edge(c) || c == b'-')
-}
+/// The canonical-name rule lives in the core, shared with the Publisher's
+/// League files page.
+use reborn_core::publish::upload::{check_private_bucket, valid_bucket_name};
 
 /// Decide the bucket, the plan and the read-back from the flags. The public
 /// bucket is refused for a private upload by name, so a typo can never send
@@ -767,9 +762,7 @@ fn upload_target(private: bool, bucket: Option<&str>, public_base: Option<&str>)
     if public_base.is_some() {
         return Err("--private never reads back through a public host; drop --public-base.".to_string());
     }
-    if name == reborn_core::publish::vault::PRODUCTION_BUCKET {
-        return Err(format!("{name} is the PUBLIC bucket. Members-only blobs never go there."));
-    }
+    check_private_bucket(name, &[])?;
     Ok(Target { bucket: Some(name.to_string()), plan: PlanKind::Private, read_back: None })
 }
 

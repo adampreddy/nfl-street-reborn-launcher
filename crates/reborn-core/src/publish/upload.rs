@@ -51,6 +51,11 @@ type HmacSha256 = Hmac<Sha256>;
 /// request path from the object key alone; nothing here inserts `bucket`
 /// into it (a later task's caller decides whether the key it passes already
 /// carries a bucket path segment).
+///
+/// `Clone` so a caller can derive the private league bucket from the public
+/// one (same endpoint and credentials, another name). The hand-written
+/// `Debug` below still keeps the secret out of every print.
+#[derive(Clone)]
 pub struct Bucket {
     pub endpoint: String,
     pub bucket: String,
@@ -612,6 +617,35 @@ pub fn plan_origin(origin: &Path, already: &dyn Fn(&str) -> Option<u64>) -> Resu
     }
 
     Ok(plan)
+}
+
+/// A bucket name goes straight into the path-style request path, so only a
+/// canonical S3 name is allowed: lowercase letters, digits and hyphens, 3 to
+/// 63 characters, starting and ending with a letter or digit, no slash, dot
+/// or whitespace. Nothing is trimmed. The one rule `rebornctl publish
+/// upload` and the Publisher's League files page both use.
+pub fn valid_bucket_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    (3..=63).contains(&b.len()) && edge(b[0]) && edge(b[b.len() - 1]) && b.iter().all(|&c| edge(c) || c == b'-')
+}
+
+/// May members-only blobs go to `name`? Only a canonical bucket name
+/// ([`valid_bucket_name`]) that is neither the production bucket
+/// ([`crate::publish::vault::PRODUCTION_BUCKET`]) nor any of `public`, the
+/// public buckets the caller knows it publishes to. The reason names the
+/// bucket, so a typo can never quietly send league blobs where the CDN
+/// serves them.
+pub fn check_private_bucket(name: &str, public: &[&str]) -> std::result::Result<(), String> {
+    if !valid_bucket_name(name) {
+        return Err(format!(
+            "{name:?} is not a bucket name (lowercase letters, digits and hyphens, 3 to 63 characters)."
+        ));
+    }
+    if name == crate::publish::vault::PRODUCTION_BUCKET || public.contains(&name) {
+        return Err(format!("{name} is the PUBLIC bucket. Members-only blobs never go there."));
+    }
+    Ok(())
 }
 
 /// The members-only blobs, for the PRIVATE bucket (`reborn-league`): every
@@ -2287,6 +2321,19 @@ mod listing_tests {
         }
         xml.push_str("</ListBucketResult>");
         Reply { status: 200, headers: vec![], body: xml.into_bytes() }
+    }
+
+    #[test]
+    fn a_private_bucket_is_canonical_and_never_a_public_one() {
+        assert!(check_private_bucket("reborn-league", &[]).is_ok());
+        assert!(check_private_bucket("reborn-league", &["reborn-content"]).is_ok());
+        assert!(check_private_bucket("reborn-content", &[]).is_err());
+        assert!(check_private_bucket("my-public", &["my-public"]).unwrap_err().contains("PUBLIC"));
+        for bad in ["", "ab", "-reborn", "reborn-", " reborn-league", "reborn-league ", "Reborn", "a/b", "../x", "reborn.league"] {
+            assert!(check_private_bucket(bad, &[]).is_err(), "{bad:?}");
+            assert!(!valid_bucket_name(bad), "{bad:?}");
+        }
+        assert!(valid_bucket_name("reborn-content"));
     }
 
     #[test]

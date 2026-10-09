@@ -100,6 +100,8 @@ export const THING_NAMES = {
   "controller-db": "Controller database",
   roster: "Roster",
   "game-patch": "Game patch",
+  "league-game": "League build",
+  "league-content": "League seed",
 };
 
 export function thingName(id) {

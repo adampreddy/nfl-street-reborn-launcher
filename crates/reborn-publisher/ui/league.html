@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>League files | Reborn Publisher</title>
+  <link rel="stylesheet" href="publisher.css">
+</head>
+<body>
+  <header class="pub-header"><span class="brand">Reborn Publisher</span></header>
+  <nav class="pub-nav" aria-label="Main navigation">
+    <a href="index.html">Home<small>What players get right now</small></a>
+    <a href="content.html">Textures, runtime, mods<small>Publish a folder</small></a>
+    <a href="launcher.html">Launcher update<small>Build and publish</small></a>
+    <a href="roster.html">Roster<small>Publish the site's export</small></a>
+    <a href="league.html">League files<small>Members-only build and seed</small></a>
+    <a href="history.html">Roll back<small>History, and undo</small></a>
+    <span class="nav-heading">Advanced</span>
+    <a href="game.html">Build an ISO<small>The Builder and the game patch</small></a>
+    <a href="set.html">Full installer set<small>What new players download</small></a>
+    <a href="keys.html">Keys and settings<small>Signing keys, vault, paths</small></a>
+  </nav>
+  <main id="main">
+    <div class="page-heading">
+      <h1>League files</h1>
+      <p class="purpose">Publish the league build (disc + textures) or the league seed. Members only.</p>
+      <details class="how"><summary>How this works</summary><p>Each one becomes a new members-only version and a new signed release carries every other thing forward. Its files go to the private league bucket first; only then do the manifest and the release go to the public server. League members download the files through short-lived links; the public CDN never serves them.</p></details>
+    </div>
+    <section id="screen"></section>
+  </main>
+  <script type="module" src="shell.js"></script>
+  <script type="module" src="league.js"></script>
+</body>
+</html>

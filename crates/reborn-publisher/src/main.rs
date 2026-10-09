@@ -1,7 +1,7 @@
 //! The Reborn Publisher window.
 //!
-//! Eight pages over `reborn_core::publish`: Status, Roster, Launcher, Game,
-//! Content, Set, History and Keys. Every operation a page can run, plan, run
+//! Nine pages over `reborn_core::publish`: Status, Roster, League files,
+//! Launcher, Game, Content, Set, History and Keys. Every operation a page can run, plan, run
 //! or verify, goes through [`ops::run_operation`], which is the one path from
 //! any page into the core and the one place a journal record gets written.
 //! Nothing here decides a sequence, computes a rule, or parses a tool's
@@ -39,6 +39,7 @@ mod game;
 mod history;
 mod keys;
 mod launcher;
+mod league;
 mod ops;
 mod pick;
 mod roster;
@@ -86,6 +87,10 @@ fn main() {
             content::content_run,
             content::content_verify,
             content::content_lint_runtime,
+            // League files: the members-only build and seed (private
+            // bucket first, then the public manifest and release).
+            league::league_game_run,
+            league::league_content_run,
             // Set: build, upload and point the download link at the full
             // first-run installer set.
             set::set_plan,
