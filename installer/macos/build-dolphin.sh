@@ -114,9 +114,32 @@ machos | while IFS= read -r -d '' bin; do
   case "$id" in /opt/homebrew/*) install_name_tool -id "@executable_path/../Frameworks/${id#*/lib/}" "$bin" ;; esac
 done
 
+# No symlinks: each Qt framework becomes a plain library file,
+# Contents/Frameworks/QtGui. A framework's Versions/Current links do not
+# survive the content system (it carries files) or a copy through Windows,
+# and codesign refuses a framework that has lost them ("bundle format
+# unrecognized"). Dyld never needed them: it loads Versions/A by path. Only
+# bundle-relative references move; /System frameworks stay as they are.
+# Measured 2026-10-08: the flattened bundle signs, verifies and renders the
+# game (447 frames in 30 s).
+for fw in "$FW"/*.framework; do
+  n=$(basename "$fw" .framework)
+  mv "$fw/Versions/A/$n" "$FW/$n.flat" && rm -rf "$fw" && mv "$FW/$n.flat" "$FW/$n"
+done
+machos | while IFS= read -r -d '' bin; do
+  otool -L "$bin" | awk '/^\t@[a-z_]+\/.*\.framework\/Versions\/A\// {print $1}' | while read -r dep; do
+    install_name_tool -change "$dep" "@executable_path/../Frameworks/$(basename "$dep")" "$bin"
+  done
+  id=$(otool -D "$bin" 2>/dev/null | tail -n +2)
+  case "$id" in @*.framework/*) install_name_tool -id "@executable_path/../Frameworks/$(basename "$id")" "$bin" ;; esac
+done
+LINKS=$(find "$APP" -type l)
+[ -z "$LINKS" ] || { echo "the bundle still holds symlinks:"; echo "$LINKS"; exit 1; }
+
 # install_name_tool voids signatures, and Apple Silicon refuses to run
 # unsigned code. Ad-hoc, as the launcher is: no Apple Developer account.
 codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 # Anything in the bundle still pointing into Homebrew would work here and
 # nowhere else. Collected into a variable first: `otool | grep -q` under
 # pipefail reads a match as a failure (grep exits, otool dies of SIGPIPE) and
