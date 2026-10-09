@@ -2109,7 +2109,20 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
         (if name.trim_end_matches(".exe") == "nfl street reborn dolphin" { 0 } else { 1 }, name)
     });
-    found.into_iter().next()
+    // A Mac runtime is a bundle, `<name>.app/Contents/MacOS/<name>`: Mac
+    // Dolphin finds Sys, and Qt its Cocoa plugin, only through it.
+    found.into_iter().next().or_else(|| {
+        let mut apps: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "app") && p.is_dir())
+            .filter_map(|app| {
+                let stem = app.file_stem()?.to_str()?.to_string();
+                stem.to_lowercase().contains("dolphin").then(|| app.join("Contents").join("MacOS").join(stem))
+            })
+            .filter(|exe| exe.is_file())
+            .collect();
+        apps.sort();
+        apps.into_iter().next()
+    })
 }
 
 /// Find the emulator, without asking anyone.
@@ -2786,6 +2799,18 @@ mod tests {
         assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "dolphin-emu");
         std::fs::write(dir.path().join("NFL Street Reborn Dolphin"), b"").unwrap();
         assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin");
+    }
+
+    /// The Mac runtime is a bundle: Mac Dolphin finds its Sys and Qt its
+    /// Cocoa plugin through it, so the emulator is the executable inside.
+    #[test]
+    fn a_mac_runtime_is_found_inside_its_app_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("NFL Street Reborn Dolphin.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        assert!(dolphin_in(dir.path()).is_none(), "a bundle with no executable is no emulator");
+        std::fs::write(macos.join("NFL Street Reborn Dolphin"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap(), macos.join("NFL Street Reborn Dolphin"));
     }
 
     #[test]
