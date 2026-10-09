@@ -58,10 +58,13 @@ if grep -aq '^=== reached the Play page' /home/reborn/src/e2e/out/steps.log    &
 else echo FAILED-E2E; grep -aE '^!!!|^text:|^=== game image' /home/reborn/src/e2e/out/steps.log | tail -4; exit 1; fi
 EOF
 sed -i 's/\r$//' "$JOB"
-wsl bash -c "rm -f /root/release-deck.log && cp '/mnt/c/Reborn Origin-stage/launcher-linux/release-deck-job.sh' /root/release-deck.sh && chmod +x /root/release-deck.sh && setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null &"
+# Only the job goes to the background: "a && b && c &" backgrounds the whole
+# chain, and WSL ended the session before the copy even ran. The sleep keeps
+# the session open while setsid detaches the job.
+wsl bash -c "rm -f /root/release-deck.log && cp '/mnt/c/Reborn Origin-stage/launcher-linux/release-deck-job.sh' /root/release-deck.sh && chmod +x /root/release-deck.sh && { setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null & } ; sleep 3"
 rm -f "$JOB"
-sleep 30
-wsl cat /root/release-deck.log | grep -q . || { echo "the WSL job did not start: refusing"; exit 1; }
+# Started = the job's log exists (cat's own "No such file" is not output).
+wsl bash -c "test -s /root/release-deck.log && echo JOB-STARTED" | grep -q JOB-STARTED || { echo "the WSL job did not start: refusing"; exit 1; }
 # The wsl wrapper keeps no exit code, so the log is read, not grep's status.
 until wsl cat /root/release-deck.log | grep -qE '^(PASSED|FAILED)'; do sleep 60; done
 wsl cat /root/release-deck.log
