@@ -23,6 +23,11 @@ fi
 echo "$PHASE2" > "$W/phase2"
 "$HERE/in-builder.sh" bash -uc '
 export HOME=/src/e2e/home XDG_RUNTIME_DIR=/tmp/xdg; mkdir -p $XDG_RUNTIME_DIR; chmod 700 $XDG_RUNTIME_DIR
+# Leftovers from a run that was stopped (a driver still on :4444, a stale
+# X lock for :51) failed the next run with "Connection refused" before it
+# began (3.0.38, 2026-10-09). Cleared first.
+pkill -f tauri-driver; pkill -f WebKitWebDriver; pkill -f reborn-launcher; pkill -x Xvfb; sleep 1
+rm -f /tmp/.X51-lock /tmp/.X11-unix/X51
 export DISPLAY=:51 GDK_BACKEND=x11
 export APPDIR=/src/e2e/app/squashfs-root APPIMAGE=/src/e2e/NFL-Street-Reborn.AppImage REBORN_E2E_PICK_GAME=/src/e2e/game.iso E2E_PHASE2=$(cat /src/e2e/phase2)
 Xvfb :51 -screen 0 1280x800x24 -nolisten tcp > /src/e2e/out/xvfb.log 2>&1 &

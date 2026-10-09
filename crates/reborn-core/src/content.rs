@@ -821,7 +821,10 @@ pub struct BlobRequest<'a> {
 /// A trait rather than an HTTP client because this module has no network stack
 /// and must not grow one. Every rule worth testing here is about what happens to
 /// bytes after they arrive, and a test that needs a server is a test nobody runs.
-pub trait BlobSource: std::fmt::Debug {
+/// How many files a download fetches at once. See ContentService::download.
+pub const PARALLEL_DOWNLOADS: usize = 6;
+
+pub trait BlobSource: std::fmt::Debug + Sync {
     /// Open a stream of the file's bytes starting at `req.offset`.
     fn open(&self, req: &BlobRequest<'_>) -> Result<Box<dyn Read>>;
 }
@@ -1305,6 +1308,9 @@ impl<'a> ContentService<'a> {
         let mut report = FetchReport::default();
         let preserved = plan.preserved_set();
 
+        // What to fetch, checked first and in order: a plan naming a file its
+        // manifest does not list is refused before any download starts.
+        let mut work: Vec<(&str, &ManifestFile)> = Vec::new();
         for fetch in &plan.fetches {
             // Belt and braces. A plan that both preserved and fetched a path
             // would be a contradiction, and the resolution that cannot destroy
@@ -1314,33 +1320,65 @@ impl<'a> ContentService<'a> {
             }
             let file = plan.manifest_file(&fetch.path).ok_or_else(|| {
                 refuse(format!(
-                    "the plan asks for {:?}, which the component manifest for \
-                     {} {} does not list. Rebuild the plan from the manifest",
+                    "the plan asks for {:?}, which the component manifest for                      {} {} does not list. Rebuild the plan from the manifest",
                     fetch.path,
                     plan.component(),
                     plan.version()
                 ))
             })?;
+            work.push((fetch.path.as_str(), file));
+        }
 
-            let staged = resolve_under(&staging, &fetch.path)?;
-            if staged.exists() {
-                // Trusted only while it still matches. A staged file that had
-                // gone bad was skipped here on every attempt and then refused
-                // by verify_staged, so "Download again" could never finish
-                // and nothing in that update installed (a Deck tester's
-                // runtime-linux, "0 missing, 1 wrong", 2026-10-03).
-                if file_len(&staged)? == file.bytes && hash_file(&staged)? == file.sha256 {
-                    report
-                        .results
-                        .insert(fetch.path.clone(), FetchState::Staged);
-                    continue;
-                }
-                remove_file(&staged)?;
+        // Several files at once. One at a time, the texture pack's 9,111
+        // files (0.85 MB on average) spent most of their time waiting between
+        // requests: 60 of them took 15.8 s one at a time and 4.3 s eight at a
+        // time against the live host (2026-10-09). Every file still lands
+        // through fetch_one (part file, resume, hash check, then staging), and
+        // the first error stops the rest and is reported, as before.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let results: std::sync::Mutex<Vec<(String, FetchState)>> = std::sync::Mutex::new(Vec::new());
+        let failure: std::sync::Mutex<Option<Error>> = std::sync::Mutex::new(None);
+        let workers = PARALLEL_DOWNLOADS.min(work.len()).max(1);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some((path, file)) = work.get(i).copied() else { return };
+                    let outcome = (|| -> Result<FetchState> {
+                        let staged = resolve_under(&staging, path)?;
+                        if staged.exists() {
+                            // Trusted only while it still matches. A staged file that had
+                            // gone bad was skipped here on every attempt and then refused
+                            // by verify_staged, so "Download again" could never finish
+                            // and nothing in that update installed (a Deck tester's
+                            // runtime-linux, "0 missing, 1 wrong", 2026-10-03).
+                            if file_len(&staged)? == file.bytes && hash_file(&staged)? == file.sha256 {
+                                return Ok(FetchState::Staged);
+                            }
+                            remove_file(&staged)?;
+                        }
+                        self.fetch_one_retrying(plan, file, source)
+                    })();
+                    match outcome {
+                        Ok(state) => results.lock().unwrap_or_else(|e| e.into_inner()).push((path.to_string(), state)),
+                        Err(e) => {
+                            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                            failure.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(e);
+                            return;
+                        }
+                    }
+                });
             }
-
-            report
-                .results
-                .insert(fetch.path.clone(), self.fetch_one_retrying(plan, file, source)?);
+        });
+        if let Some(e) = failure.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            return Err(e);
+        }
+        for (path, state) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            report.results.insert(path, state);
         }
 
         if report.is_complete() {
@@ -2190,6 +2228,55 @@ mod tests {
                 Serving::IgnoresOffset => all.clone(),
             };
             Ok(Box::new(std::io::Cursor::new(body)))
+        }
+    }
+
+    /// Counts how many files are being served at the same moment.
+    #[derive(Debug, Default)]
+    struct CountsAtOnce {
+        bytes: BTreeMap<String, Vec<u8>>,
+        now: std::sync::atomic::AtomicUsize,
+        most: std::sync::atomic::AtomicUsize,
+    }
+
+    impl BlobSource for CountsAtOnce {
+        fn open(&self, req: &BlobRequest<'_>) -> Result<Box<dyn Read>> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let n = self.now.fetch_add(1, SeqCst) + 1;
+            self.most.fetch_max(n, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            self.now.fetch_sub(1, SeqCst);
+            Ok(Box::new(std::io::Cursor::new(self.bytes[&req.file.path][req.offset as usize..].to_vec())))
+        }
+    }
+
+    /// A pack of many small files downloads several at once and every file
+    /// still lands verified (2026-10-09: one at a time spent most of its time
+    /// waiting between requests).
+    #[test]
+    fn many_files_download_several_at_once_and_all_land() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+        let names: Vec<String> = (0..24).map(|i| format!("tex{i:02}.dds")).collect();
+        let source = CountsAtOnce {
+            bytes: names.iter().map(|n| (n.clone(), format!("texture {n}").into_bytes())).collect(),
+            ..Default::default()
+        };
+        let files = names.iter().map(|n| file_of(n, &source.bytes[n])).collect();
+        let bytes = manifest("2.4.0", 8, false, files);
+        let release = signed(&bytes, 12);
+        let plan = expect_plan(
+            service
+                .plan(&release, "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        assert!(service.download(&plan, &source).expect("download").is_complete());
+        let most = source.most.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(most > 1 && most <= PARALLEL_DOWNLOADS, "{most} at once");
+        for n in &names {
+            let staged = service.layout().staging_dir("offline-content", "2.4.0").join(n);
+            assert_eq!(std::fs::read(staged).unwrap(), source.bytes[n]);
         }
     }
 
