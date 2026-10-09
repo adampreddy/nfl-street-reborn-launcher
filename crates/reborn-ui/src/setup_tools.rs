@@ -179,6 +179,11 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
         let (output,patched,bundle_reason)=match reborn_core::game_import::import_with_tools(&bundle,&tools,&source,&data,|stage|{let _=app.emit("game-import-progress",stage);}) {
             Ok(output)=>(output,true,None),
             Err(reason) => {
+                // The why, in launcher.log: the wizard words it as "could not
+                // convert", and a tester's report is that file. A Mac test on
+                // 2026-10-08 failed on one altered file (loaddata.dat 4.8 MB,
+                // the original is 12.4 MB) and nothing anywhere said so.
+                tracing::warn!("import: the patch could not convert {}: {reason}", source.display());
                 let _=app.emit("game-import-progress",serde_json::json!({"stage":"Importing your game file...","percent":null}));
                 (import_existing(&p,&source)?,false,Some(reason))
             }

@@ -2207,6 +2207,20 @@ pub fn resolve_runtime(
         }
     }
 
+    // A Mac .app carries it in its install root, Contents/Resources/runtime,
+    // not beside the executable in Contents/MacOS. Without this a fresh Mac
+    // install went to download runtime-macos before the first check had
+    // seeded it, and said "No Reborn emulator was found" (2026-10-08).
+    if let Ok(install) = platform.paths.install_root() {
+        let candidate = install.join("runtime");
+        if !looked.contains(&candidate) {
+            looked.push(candidate.clone());
+            if let Some(found) = dolphin_in(&candidate) {
+                return Ok(Runtime::Bundled(found));
+            }
+        }
+    }
+
     // The 2.1 install. A Reborn build, so this is a correct answer and not a
     // fallback that merely happens to run.
     if let Some(root) = legacy_root {
