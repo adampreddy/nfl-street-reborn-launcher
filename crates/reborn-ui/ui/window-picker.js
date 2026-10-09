@@ -3,6 +3,11 @@
 // finished (Deck tester, 2026-10). The core asks with a `pick-path-request`
 // event (window_picker.rs) and waits for `pick_path_answer`; outside Game Mode
 // the core uses the native dialog and this never shows.
+//
+// It is driven by the controller too (Deck tester: only the trackpad mouse
+// moved through the folders): D-pad or left stick moves, A opens or chooses,
+// B goes up a folder. The arrow keys do the same, in case Steam maps the
+// D-pad to keys.
 import { bridge } from './shell.js';
 
 const ev = window.__TAURI__ && window.__TAURI__.event;
@@ -38,6 +43,7 @@ function style() {
 .wp-list .wp-dir::before{content:"\\1F4C1  "}
 .wp-size{color:#9a9c96;white-space:nowrap}
 .wp-none{color:#9a9c96;padding:12px 2px}
+.wp-hint{color:#9a9c96;font-size:12px;margin-right:auto;align-self:center}
 .wp-actions{justify-content:flex-end}
 .wp-actions .wp-primary{background:#eceee4;color:#16181c;border-color:#eceee4}`;
   document.head.append(s);
@@ -47,6 +53,7 @@ function finish(path) {
   if (!open) return;
   open.veil.remove();
   document.removeEventListener('keydown', open.onKey, true);
+  cancelAnimationFrame(open.frame);
   open = null;
   Promise.resolve(bridge.invoke('pick_path_answer', { path: path || null })).catch(() => {});
 }
@@ -71,19 +78,83 @@ async function show(req) {
   const choose = node('button', 'wp-primary', 'Choose this folder');
   choose.type = 'button';
   choose.hidden = !req.folder;
-  actions.append(cancel, choose);
+  const hint = node('span', 'wp-hint', 'Controller: D-pad to move · A to open · B to go up');
+  actions.append(hint, cancel, choose);
   box.append(title, where, places, list, actions);
   veil.append(box);
   document.body.append(veil);
-  const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); } };
+  let parent = null;
+  // Every button in reading order: places, the folder list, then the actions.
+  const buttons = () => [...box.querySelectorAll('button')].filter(b => !b.hidden);
+  function move(step) {
+    const all = buttons();
+    if (!all.length) return;
+    const at = all.indexOf(document.activeElement);
+    const next = all[at < 0 ? 0 : Math.max(0, Math.min(all.length - 1, at + step))];
+    next.focus();
+    next.scrollIntoView({ block: 'nearest' });
+  }
+  function back() {
+    if (parent) go(parent); else finish(null);
+  }
+  const onKey = e => {
+    let done = true;
+    if (e.key === 'Escape') finish(null);
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') move(1);
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') move(-1);
+    else if (e.key === 'Backspace') back();
+    else done = false;
+    if (done) { e.preventDefault(); e.stopPropagation(); }
+  };
   document.addEventListener('keydown', onKey, true);
-  open = { veil, onKey };
+  open = { veil, onKey, frame: 0 };
+
+  // The controller, read directly (standard mapping: 0 A, 1 B, 12-15 D-pad,
+  // axis 1 the left stick's up/down). A button held when the picker opened
+  // (the A that pressed "Browse") counts only after it is let go. Holding a
+  // direction repeats, like a keyboard.
+  const held = new Set();
+  let first = true;
+  let repeatAt = 0;
+  function poll(now) {
+    if (!open || open.veil !== veil) return;
+    let pads = [];
+    try { pads = [...(navigator.getGamepads?.() || [])].filter(p => p?.connected); } catch { pads = []; }
+    const down = new Set();
+    for (const p of pads) {
+      const b = i => !!(p.buttons[i] && p.buttons[i].pressed);
+      const y = p.axes[1] || 0;
+      const x = p.axes[0] || 0;
+      if (b(0)) down.add('a');
+      if (b(1)) down.add('b');
+      if (b(13) || b(15) || y > 0.6 || x > 0.6) down.add('next');
+      if (b(12) || b(14) || y < -0.6 || x < -0.6) down.add('prev');
+    }
+    if (first) { for (const k of down) held.add(k); first = false; }
+    for (const k of [...held]) if (!down.has(k)) held.delete(k);
+    for (const k of down) {
+      const dir = k === 'next' ? 1 : k === 'prev' ? -1 : 0;
+      if (!held.has(k)) {
+        held.add(k);
+        if (dir) { move(dir); repeatAt = now + 350; }
+        else if (k === 'a') { const f = document.activeElement; if (f && box.contains(f) && f.tagName === 'BUTTON') f.click(); else move(0); }
+        else if (k === 'b') back();
+        if (!open || open.veil !== veil) return;
+      } else if (dir && now >= repeatAt) {
+        move(dir);
+        repeatAt = now + 110;
+      }
+    }
+    open.frame = requestAnimationFrame(poll);
+  }
+  open.frame = requestAnimationFrame(poll);
 
   async function go(path) {
     let listing;
     try { listing = await bridge.invoke('browse_dir', { path: path || null }); }
     catch (e) { where.textContent = String(e && e.message || e); return; }
     where.textContent = listing.path;
+    parent = listing.parent || null;
     choose.onclick = () => finish(listing.path);
     places.replaceChildren(...listing.places.map(p => {
       const b = node('button', null, p.label);
