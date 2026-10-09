@@ -627,9 +627,16 @@ fn main() -> std::process::ExitCode {
             }
         }
     });
-    match worker.map(|w| w.join()) {
-        Ok(Ok(code)) => code,
-        _ => std::process::ExitCode::from(101),
+    match worker {
+        Ok(w) => match w.join() {
+            Ok(code) => code,
+            // The panic hook has already reported it.
+            Err(_) => std::process::ExitCode::from(101),
+        },
+        Err(e) => {
+            eprintln!("error: could not start the worker thread: {e}");
+            std::process::ExitCode::from(101)
+        }
     }
 }
 

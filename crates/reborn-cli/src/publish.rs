@@ -74,8 +74,12 @@ pub struct LeagueGameArgs {
     release_version: Option<String>,
     #[arg(long)]
     release_sequence: Option<u64>,
+    /// Release notes. The notes are shown to EVERY player, including
+    /// non-members, as a "What's new" card: normally leave empty.
     #[arg(long, conflicts_with = "notes_file")]
     notes: Option<String>,
+    /// Release notes from a file. The notes are shown to EVERY player,
+    /// including non-members, as a "What's new" card: normally leave empty.
     #[arg(long)]
     notes_file: Option<PathBuf>,
     /// Stage, publish and sign. Without this everything is checked and
@@ -111,8 +115,12 @@ pub struct LeagueContentArgs {
     release_version: Option<String>,
     #[arg(long)]
     release_sequence: Option<u64>,
+    /// Release notes. The notes are shown to EVERY player, including
+    /// non-members, as a "What's new" card: normally leave empty.
     #[arg(long, conflicts_with = "notes_file")]
     notes: Option<String>,
+    /// Release notes from a file. The notes are shown to EVERY player,
+    /// including non-members, as a "What's new" card: normally leave empty.
     #[arg(long)]
     notes_file: Option<PathBuf>,
     #[arg(long)]
@@ -487,6 +495,10 @@ fn run_with(cmd: PublishCommand, hint: &mut dyn FnMut(&str)) -> reborn_core::Res
                 }
                 return Ok(misuse());
             };
+            if let Some(why) = members_only_component_refusal(id.as_str()) {
+                eprintln!("{why}");
+                return Ok(misuse());
+            }
             let spec = match install_root.as_deref() {
                 Some(given) => ComponentSpec::with_install_root(id, &version, sequence, given),
                 None => ComponentSpec::new(id, &version, sequence),
@@ -766,6 +778,52 @@ fn upload_target(private: bool, bucket: Option<&str>, public_base: Option<&str>)
     Ok(Target { bucket: Some(name.to_string()), plan: PlanKind::Private, read_back: None })
 }
 
+/// `publish component` refuses the members-only components: their blobs
+/// belong in the PRIVATE store, which only the league commands write.
+fn members_only_component_refusal(name: &str) -> Option<String> {
+    ComponentId::parse(name).filter(|id| id.is_members_only())?;
+    Some(format!(
+        "--component {name} is members only and cannot be published with `publish component`: its blobs must go to \
+         the private store. Use `rebornctl publish {name}` instead."
+    ))
+}
+
+/// For a private upload, the final endpoint (vault or `--endpoint`) must be
+/// `https://<host>` with no bucket in the host: neither the private bucket,
+/// the vault's public bucket, nor the production bucket. A public upload is
+/// not checked here.
+fn check_target_endpoint(target: &Target, endpoint: &str, vault_public_bucket: &str) -> Result<(), String> {
+    if target.plan != PlanKind::Private {
+        return Ok(());
+    }
+    let private = target.bucket.as_deref().unwrap_or_default();
+    reborn_core::publish::upload::check_private_endpoint(endpoint, &[private, vault_public_bucket])
+}
+
+/// The warning a PUBLIC upload prints when the origin's release pins a
+/// members-only component: its blobs are only in the private store, so the
+/// private upload has to have run first. `None` when there is no readable
+/// release or it pins none.
+fn members_only_warning(origin: &Path) -> Option<String> {
+    let bytes = std::fs::read(origin.join(reborn_core::origin::RELEASE_FILE)).ok()?;
+    let release = reborn_core::manifest::Release::parse(&bytes).ok()?;
+    let pinned: Vec<&str> = release
+        .components
+        .keys()
+        .map(String::as_str)
+        .filter(|n| ComponentId::parse(n).is_some_and(|id| id.is_members_only()))
+        .collect();
+    if pinned.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Warning: this release pins members-only {}. Their blobs are not in this upload; make sure the private upload \
+         ran first: rebornctl publish upload --private --bucket reborn-league --origin \"{}\" --apply",
+        pinned.join(", "),
+        origin.display()
+    ))
+}
+
 /// Build the bucket to upload to (the vault's credentials, with `--endpoint`
 /// and `--bucket` overriding its address), plan the origin against what the
 /// bucket already holds, and upload it.
@@ -796,8 +854,17 @@ fn upload_command(
     if let Some(e) = endpoint {
         bucket.endpoint = e.to_string();
     }
+    if let Err(why) = check_target_endpoint(&target, &bucket.endpoint, &bucket.bucket) {
+        eprintln!("{why}");
+        return Ok(misuse());
+    }
     if let Some(b) = &target.bucket {
         bucket.bucket = b.clone();
+    }
+    if target.plan == PlanKind::Origin {
+        if let Some(w) = members_only_warning(origin) {
+            sink(Event::err(w));
+        }
     }
 
     let transport = UreqTransport::new();
@@ -1032,6 +1099,50 @@ mod private_upload_tests {
     }
 
     #[test]
+    fn a_private_upload_refuses_an_endpoint_that_is_not_https_host_only_or_names_a_bucket() {
+        let t = upload_target(true, Some("reborn-league"), None).unwrap();
+        assert!(super::check_target_endpoint(&t, "https://acct.r2.cloudflarestorage.com", "reborn-content").is_ok());
+        for bad in [
+            "http://acct.r2.cloudflarestorage.com",
+            "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "https://acct.r2.cloudflarestorage.com?x",
+            "https://me@acct.r2.cloudflarestorage.com",
+            "https://reborn-content.acct.r2.cloudflarestorage.com",
+            "https://reborn-league.acct.r2.cloudflarestorage.com",
+            "https://vault-public.acct.r2.cloudflarestorage.com",
+        ] {
+            assert!(super::check_target_endpoint(&t, bad, "vault-public").is_err(), "{bad:?}");
+        }
+        // A public upload is not this check's business.
+        let p = upload_target(false, None, None).unwrap();
+        assert!(super::check_target_endpoint(&p, "https://reborn-content.acct.r2.cloudflarestorage.com", "reborn-content").is_ok());
+    }
+
+    #[test]
+    fn a_public_upload_warns_when_the_release_pins_a_members_only_component() {
+        let dir = std::env::temp_dir().join(format!("rebornctl-warn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(super::members_only_warning(&dir), None, "no release, no warning");
+        let pin = r#"{"url":"https://x/c.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        let release = |names: &[&str]| {
+            let comps: Vec<String> = names.iter().map(|n| format!("\"{n}\":{pin}")).collect();
+            format!(r#"{{"schema":"nsr.release.v1","version":"3.0.0","sequence":9,"components":{{{}}}}}"#, comps.join(","))
+        };
+        std::fs::write(dir.join("release.json"), release(&["runtime", "textures"])).unwrap();
+        assert_eq!(super::members_only_warning(&dir), None);
+        std::fs::write(dir.join("release.json"), release(&["runtime", "league-game"])).unwrap();
+        let w = super::members_only_warning(&dir).expect("a warning");
+        assert!(w.contains("league-game"), "{w}");
+        assert!(!w.contains("  "), "no run of spaces: {w}");
+        assert!(
+            w.contains("make sure the private upload ran first: rebornctl publish upload --private --bucket reborn-league"),
+            "{w}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_plain_upload_also_refuses_a_path_injecting_bucket() {
         for bad in ["reborn-content/", "a/b", "../x", " reborn-content", "Reborn"] {
             assert!(upload_target(false, Some(bad), None).is_err(), "{bad:?}");
@@ -1133,6 +1244,43 @@ mod league_tests {
         assert!(help.contains("refus"), "{help}");
         for flag in ["--iso", "--textures", "--notes-file", "--origin", "--version", "--apply"] {
             assert!(help.contains(flag), "{flag} missing: {help}");
+        }
+    }
+
+    #[test]
+    fn publish_component_refuses_the_league_components_and_names_the_right_command() {
+        for (name, right) in [("league-game", "publish league-game"), ("league-content", "publish league-content")] {
+            let msg = super::members_only_component_refusal(name).unwrap_or_else(|| panic!("{name} not refused"));
+            assert!(msg.contains(right), "{msg}");
+            assert!(!msg.contains("  "), "no run of spaces: {msg}");
+            let t = Tmp::new(&format!("comp-{name}"));
+            let cmd = Cli::try_parse_from([
+                "x", "component", "--root", &t.0.display().to_string(), "--component", name,
+                "--version", "1.0.0", "--sequence", "1", "--origin", &t.0.join("origin").display().to_string(), "--apply",
+            ]).unwrap().cmd;
+            assert_eq!(code(run(cmd).unwrap()), code(super::misuse()), "{name}");
+            assert!(!t.0.join("origin").exists(), "{name}: nothing written");
+        }
+        assert_eq!(super::members_only_component_refusal("runtime"), None);
+    }
+
+    #[test]
+    fn league_notes_help_warns_they_reach_every_player() {
+        for name in ["league-game", "league-content"] {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let sub = cmd.find_subcommand_mut(name).unwrap();
+            let help = sub.render_long_help().to_string();
+            let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            for flag in ["--notes <NOTES>", "--notes-file <NOTES_FILE>"] {
+                let at = flat.find(flag).unwrap_or_else(|| panic!("{name}: {flag} missing: {help}"));
+                let after = &flat[at..];
+                let end = after[flag.len()..].find(" --").map_or(after.len(), |i| i + flag.len());
+                let text = &after[..end];
+                assert!(
+                    text.contains("notes are shown to EVERY player, including non-members") && text.contains("normally leave empty"),
+                    "{name} {flag}: {text}"
+                );
+            }
         }
     }
 
