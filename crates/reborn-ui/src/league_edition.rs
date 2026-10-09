@@ -30,6 +30,7 @@ const UNAVAILABLE: &str = "The league server couldn't be reached. Try again in a
 const NOT_PUBLISHED: &str = "League files aren't available yet. Check back after the commissioners publish them.";
 const INSTALL_FAILED: &str = "The league files didn't finish downloading. Press Install again to resume where it stopped.";
 const CLOSE_THE_GAME: &str = "Close the game, then press Install again to finish. Nothing downloaded is lost.";
+const NO_SPACE_LEFT: &str = "The drive the game is installed on is full. Free up some space, then press Install again.";
 const ALREADY_INSTALLING: &str = "The league files are already being installed.";
 pub(crate) const NO_GAME_NOW: &str = "There's no league game for you this week.";
 pub(crate) const ALREADY_FINAL: &str = "This week's series is already final.";
@@ -204,6 +205,39 @@ pub(crate) enum Attempt {
     Incomplete,
     /// The pass stopped; `expired` when the blob store refused a signed link (`league_edition::link_expired`).
     Failed { expired: bool },
+    /// The disk filled up. Pressing Install again would only fill it again.
+    NoSpace,
+}
+
+/// Whether a pipeline error is the disk filling up.
+pub(crate) fn is_storage_full(e: &reborn_core::Error) -> bool {
+    match e {
+        reborn_core::Error::Io { source, .. } => source.kind() == std::io::ErrorKind::StorageFull,
+        reborn_core::Error::PlainIo(io) => io.kind() == std::io::ErrorKind::StorageFull,
+        _ => false,
+    }
+}
+
+/// Free space an install still needs: what is left to download plus what the swap keeps (the plan's peak, minus the
+/// bytes an earlier attempt already left), plus the same 1 GB margin a drive move keeps.
+pub(crate) fn space_needed(peak: u64, already: u64) -> u64 {
+    peak.saturating_sub(already).saturating_add(reborn_core::relocate::MARGIN_BYTES)
+}
+
+fn no_space(needed: u64) -> LeagueCommandError {
+    let message = format!(
+        "There isn't enough free space for the league files. They need {:.1} GB free on the drive the game is installed on. Free up some space, then press Install again.",
+        needed as f64 / 1_073_741_824.0
+    );
+    LeagueCommandError { kind: "no_space", message, required: None }
+}
+
+/// `free`: the data root's drive's free bytes, `None` when it could not be read (then the download is not refused).
+pub(crate) fn space_check(free: Option<u64>, needed: u64) -> Result<(), LeagueCommandError> {
+    match free {
+        Some(free) if free < needed => Err(no_space(needed)),
+        _ => Ok(()),
+    }
 }
 
 /// Download, and when a pass fails on an expired link or after the links have aged past [`LINK_MAX_AGE`], ask the
@@ -218,6 +252,8 @@ pub(crate) fn fetch_with_fresh_links(
     loop {
         let expired = match fetch() {
             Attempt::Done => return Ok(()),
+            // The caller knows the size and words it (`no_space`); this sentence is the fallback.
+            Attempt::NoSpace => return Err(err("no_space", NO_SPACE_LEFT)),
             Attempt::Incomplete => false,
             Attempt::Failed { expired } => expired,
         };
@@ -322,7 +358,8 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
         };
 
         // 1. What the signed release offers, from the public origin. A Verify check hashes the installed tree too, so
-        //    Install also repairs a damaged build.
+        //    Install also repairs a damaged build. It takes a while on a 6 GB build: the bar says so from the start.
+        say("verify", 0, 1);
         let check = Updater::new(&p, &data, &origin, &verifier)
             .check(&CheckRequest { components: &COMPONENTS, depth: Depth::Verify })
             .map_err(|e| {
@@ -369,6 +406,11 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
                 )
             })
             .sum();
+        // Room for what is left to download plus what the swap keeps, before a link is asked for: a full disk would
+        // otherwise fail every press of Install the same way.
+        let peak: u64 = check.available().map(|(_, plan)| plan.peak_extra_bytes()).sum();
+        let needed = space_needed(peak, already);
+        space_check(reborn_core::platform::dir_move::volume_facts(&data).map(|f| f.free_bytes), needed)?;
         let done = Arc::new(AtomicU64::new(already.min(total)));
         let tick = {
             let done = done.clone();
@@ -396,7 +438,11 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
                     Err(e) => {
                         // The source strips every signature from its errors; this line never carries a link.
                         eprintln!("league: the download stopped: {e}");
-                        Attempt::Failed { expired: le::link_expired(&e) }
+                        if is_storage_full(&e) {
+                            Attempt::NoSpace
+                        } else {
+                            Attempt::Failed { expired: le::link_expired(&e) }
+                        }
                     }
                 }
             },
@@ -406,7 +452,8 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
                 issued.set(Instant::now());
                 Ok(())
             },
-        )?;
+        )
+        .map_err(|e| if e.kind == "no_space" { no_space(needed) } else { e })?;
         say("download", total, total);
 
         // 4. Verify and swap in (the pipeline hashes everything before the swap), with the game closed: the league
@@ -420,7 +467,7 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
             .promote(&check, &crate::content_updates::image_hook(&p, &settings))
             .map_err(|e| {
                 eprintln!("league: the swap failed: {e}");
-                err("unavailable", INSTALL_FAILED)
+                if is_storage_full(&e) { no_space(needed) } else { err("unavailable", INSTALL_FAILED) }
             })?;
         if !promoted.all_applied() {
             eprintln!("league: the swap did not apply: {promoted:?}");
@@ -447,21 +494,37 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
     .map_err(|_| err("unavailable", INSTALL_FAILED))?
 }
 
+/// `play_anyway` as `launch` takes it: absent asks first (the controller check runs), exactly like the Play page.
+pub(crate) fn play_anyway_arg(play_anyway: Option<bool>) -> Option<bool> {
+    Some(play_anyway.unwrap_or(false))
+}
+
+/// What `launch` answered, as this command's answer. A controller that needs setup is not a failure: it is
+/// `{kind: "controller_setup", message}` with the Play page's own sentence, and the League page offers "Set up
+/// controller" and "Play anyway" (contracts, ruling after the Task 8 review).
+pub(crate) fn offline_answer(result: crate::LaunchResult) -> Result<serde_json::Value, LeagueCommandError> {
+    if result.started {
+        Ok(serde_json::Value::Null)
+    } else if result.controller_setup.is_some() {
+        Err(LeagueCommandError { kind: "controller_setup", message: result.message, required: None })
+    } else {
+        Err(LeagueCommandError { kind: "unavailable", message: result.message, required: None })
+    }
+}
+
 /// Boot the league disc, raw, offline. Resolves `null` once the game has run; a refusal is a sentence.
+/// `play_anyway: true` is the player's choice to go on after the controller-setup answer (09-19: a PS5/Switch pad
+/// that cannot press Start must be offered setup first, never booted to a stuck title screen).
 #[tauri::command]
-pub async fn league_play_offline(app: tauri::AppHandle) -> Result<serde_json::Value, LeagueCommandError> {
+pub async fn league_play_offline(app: tauri::AppHandle, play_anyway: Option<bool>) -> Result<serde_json::Value, LeagueCommandError> {
     // The League page carries no graphics or window choices of its own: the ones the Play page last reported are
     // used (mm_launch_prefs), else Balanced, fullscreen.
     let (runtime, game, preset) = crate::online_mm::launch_prefs();
     let preset = if preset.is_empty() { "balanced".to_string() } else { preset };
-    let result = crate::launch(app, runtime, game, preset, true, None, false, Some(false), Some(true), Some("league".into()))
+    let result = crate::launch(app, runtime, game, preset, true, None, false, Some(false), play_anyway_arg(play_anyway), Some("league".into()))
         .await
         .map_err(image_error)?;
-    if result.started {
-        Ok(serde_json::Value::Null)
-    } else {
-        Err(err("unavailable", &result.message))
-    }
+    offline_answer(result)
 }
 
 /// A members-only friendly on the league build (`league` seed or `raw`). Resolves `{action: "created", room}`.
@@ -683,6 +746,73 @@ mod tests {
         for s in [SIGN_IN_FIRST, BUSY, UNAVAILABLE, NOT_PUBLISHED, INSTALL_FAILED, CLOSE_THE_GAME, NOT_A_MEMBER, ROOM_FAILED] {
             assert!(!s.contains("http") && !s.contains("://") && !s.chars().any(|c| c.is_ascii_digit()), "{s}");
         }
+    }
+
+    fn launched(started: bool, setup: bool) -> crate::LaunchResult {
+        crate::LaunchResult {
+            started,
+            user_dir_note: None,
+            message: if setup { "Your controller needs a one-time setup before it can be used in the game: Start would do nothing yet. Open Controllers and choose Set up this controller. It takes about a minute, and you only do it once.".into() } else { "Played.".into() },
+            minutes: None,
+            needs_recovery: false,
+            pads: Vec::new(),
+            pads_authoritative: false,
+            mods_note: None,
+            session_id: None,
+            stats_note: None,
+            cards_note: None,
+            controller_setup: setup.then(|| crate::ControllerSetupView { device: "SDL/0/PS5".into(), controls: vec!["Start".into()] }),
+        }
+    }
+
+    #[test]
+    fn offline_play_asks_about_the_controller_first_like_the_play_page() {
+        assert_eq!(play_anyway_arg(None), Some(false), "absent asks first");
+        assert_eq!(play_anyway_arg(Some(false)), Some(false));
+        assert_eq!(play_anyway_arg(Some(true)), Some(true), "the player's own choice to go on");
+        let ask = offline_answer(launched(false, true)).unwrap_err();
+        assert_eq!(ask.kind, "controller_setup");
+        assert!(ask.message.starts_with("Your controller needs a one-time setup"), "the Play page's sentence: {}", ask.message);
+        assert_eq!(offline_answer(launched(true, false)).unwrap(), serde_json::Value::Null, "play anyway goes through");
+        assert_eq!(offline_answer(launched(false, false)).unwrap_err().kind, "unavailable");
+        let body = &include_str!("league_edition.rs")[include_str!("league_edition.rs").find("pub async fn league_play_offline(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("play_anyway: Option<bool>") && body.contains("play_anyway_arg(play_anyway)"), "{body}");
+    }
+
+    #[test]
+    fn a_drive_without_room_refuses_before_any_download() {
+        let gb = 1u64 << 30;
+        assert!(space_check(Some(20 * gb), space_needed(6 * gb, 0)).is_ok());
+        let full = space_check(Some(6 * gb), space_needed(6 * gb, 0)).unwrap_err();
+        assert_eq!(full.kind, "no_space");
+        assert!(full.message.contains("7.0 GB"), "the size plus the 1 GB margin: {}", full.message);
+        assert!(space_check(None, 6 * gb).is_ok(), "a drive that could not be read is not a refusal");
+        assert_eq!(space_needed(6 * gb, 2 * gb), 4 * gb + reborn_core::relocate::MARGIN_BYTES, "bytes already on disk are not needed again");
+        assert_eq!(space_needed(gb, 5 * gb), reborn_core::relocate::MARGIN_BYTES);
+    }
+
+    #[test]
+    fn a_full_disk_while_downloading_is_no_space_never_press_install_again() {
+        let full = reborn_core::Error::Io { path: PathBuf::from("x"), source: std::io::Error::from(std::io::ErrorKind::StorageFull) };
+        assert!(is_storage_full(&full));
+        assert!(is_storage_full(&reborn_core::Error::PlainIo(std::io::Error::from(std::io::ErrorKind::StorageFull))));
+        assert!(!is_storage_full(&reborn_core::Error::PlainIo(std::io::Error::from(std::io::ErrorKind::PermissionDenied))));
+        let mut tries = vec![Attempt::NoSpace, Attempt::Done];
+        let mut refreshed = 0;
+        let out = fetch_with_fresh_links(|| LINK_MAX_AGE, || tries.remove(0), || { refreshed += 1; Ok(()) });
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, "no_space");
+        assert_eq!(refreshed, 0, "fresh links never fix a full disk");
+    }
+
+    #[test]
+    fn the_bar_shows_verify_before_the_first_slow_check() {
+        let src = include_str!("league_edition.rs");
+        let body = &src[src.find("pub async fn league_edition_install(").unwrap()..];
+        let first_say = body.find("say(\"verify\", 0, 1);").expect("verify 0/1 is said");
+        let check = body.find("depth: Depth::Verify").unwrap();
+        assert!(first_say < check, "the bar is never blank during the first check");
     }
 
     #[test]

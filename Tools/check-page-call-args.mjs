@@ -22,7 +22,13 @@
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
-const RUST = "crates/reborn-ui/src/main.rs";
+// main.rs and the command modules whose commands the pages call by name (the League page calls league_edition's,
+// the Online page online_mm's); each file's #[tauri::command] fns are read the same way.
+const RUST = [
+  "crates/reborn-ui/src/main.rs",
+  "crates/reborn-ui/src/league_edition.rs",
+  "crates/reborn-ui/src/online_mm.rs",
+];
 const UI_DIR = "crates/reborn-ui/ui";
 // app.js is the Advanced harness, covered in full by check-harness-args.mjs.
 const SKIP = new Set(["app.js"]);
@@ -35,7 +41,9 @@ const camel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 // ---------------------------------------------------------------------------
 function rustCommands(src) {
   const out = new Map();
-  const re = /#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*->/g;
+  // The parameter list ends at the ")" before the return type or, for a command that returns nothing
+  // (presence_page), before the body: requiring "->" let such a command run on into the next one's parameters.
+  const re = /#\[tauri::command\]\s*(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*(?:->|\{)/g;
   let m;
   while ((m = re.exec(src))) {
     const [, name, params] = m;
@@ -172,7 +180,7 @@ function helperReturns(src, name) {
 }
 
 // ---------------------------------------------------------------------------
-const declared = rustCommands(readFileSync(RUST, "utf8"));
+const declared = new Map(RUST.flatMap((f) => [...rustCommands(readFileSync(f, "utf8"))]));
 const files = readdirSync(UI_DIR).filter((f) => f.endsWith(".js") && !SKIP.has(f));
 
 const problems = [];
