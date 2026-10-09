@@ -183,6 +183,100 @@ pub fn request_download(
     Ok(parsed.files)
 }
 
+/// What a league room call decided: this player hosts (`Created`, the server's room view), the opponent's room is open
+/// (`Join`), the fixture's match is already running (`InSeries`), this player's league files are older than the room's
+/// (`UpdateRequired`, the version needed), or a stated refusal (`Refused`, the server's `error`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoomOpen {
+    Created(serde_json::Value),
+    Join(String),
+    InSeries(Option<String>),
+    UpdateRequired(String),
+    Refused(String),
+}
+
+fn post_room(
+    http: &dyn Http,
+    origin: &str,
+    token: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> std::result::Result<RoomOpen, LeagueError> {
+    let bytes = serde_json::to_vec(&body).map_err(|_| LeagueError::BadReply)?;
+    let reply = http.post_json(&league_url(origin, path), &bytes, Some(token)).map_err(|_| LeagueError::Unreachable)?;
+    if matches!(reply.status, 403 | 409) {
+        let v: serde_json::Value =
+            serde_json::from_str(&reply.body).map_err(|_| status_error(reply.status))?;
+        let why = v.get("error").and_then(|e| e.as_str()).ok_or_else(|| status_error(reply.status))?;
+        return match why {
+            "in_series" => Ok(RoomOpen::InSeries(v.get("match_id").and_then(|m| m.as_str()).map(str::to_string))),
+            "league_version_mismatch" => v
+                .get("required")
+                .and_then(|r| r.as_str())
+                .filter(|r| !r.is_empty())
+                .map(|r| RoomOpen::UpdateRequired(r.to_string()))
+                .ok_or(LeagueError::BadReply),
+            other => Ok(RoomOpen::Refused(other.to_string())),
+        };
+    }
+    if !(200..300).contains(&reply.status) {
+        return Err(status_error(reply.status));
+    }
+    let v: serde_json::Value = serde_json::from_str(&reply.body).map_err(|_| LeagueError::BadReply)?;
+    if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+        return Err(LeagueError::BadReply);
+    }
+    match v.get("action").and_then(|a| a.as_str()) {
+        Some("created") => v.get("room").filter(|r| r.is_object()).cloned().map(RoomOpen::Created).ok_or(LeagueError::BadReply),
+        Some("join") => v
+            .get("code")
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+            .map(|c| RoomOpen::Join(c.to_string()))
+            .ok_or(LeagueError::BadReply),
+        _ => Err(LeagueError::BadReply),
+    }
+}
+
+fn with_version(mut body: serde_json::Value, version: Option<&str>) -> serde_json::Value {
+    if let Some(v) = version {
+        body["league_game_version"] = serde_json::Value::from(v);
+    }
+    body
+}
+
+/// `POST /v1/league/room`: this week's league game. The server derives the fixture and the opponent from the bearer;
+/// the launcher says only which league build it has, so the server can refuse a mismatch before anyone boots.
+pub fn open_room(
+    http: &dyn Http,
+    origin: &str,
+    token: &str,
+    league_game_version: Option<&str>,
+) -> std::result::Result<RoomOpen, LeagueError> {
+    post_room(http, origin, token, "/v1/league/room", with_version(serde_json::json!({}), league_game_version))
+}
+
+/// `POST /v1/league/friendly`: a members-only private room on the league build. `ruleset` is `league` (the league
+/// seed) or `raw` (standard netplay, no seed); anything else is refused before a byte is sent.
+pub fn host_friendly(
+    http: &dyn Http,
+    origin: &str,
+    token: &str,
+    ruleset: &str,
+    league_game_version: Option<&str>,
+) -> std::result::Result<RoomOpen, LeagueError> {
+    if !matches!(ruleset, "league" | "raw") {
+        return Err(LeagueError::BadReply);
+    }
+    post_room(
+        http,
+        origin,
+        token,
+        "/v1/league/friendly",
+        with_version(serde_json::json!({ "ruleset": ruleset }), league_game_version),
+    )
+}
+
 /// The content pipeline's source for a members-only component: the release and the component manifests come from the
 /// public, signed origin exactly as for every other component; the blobs come only from the backend's signed links.
 /// A blob with no link is refused, never fetched from the public CDN (where it does not exist).
@@ -561,5 +655,66 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         crate::content::BlobSource::open(&src, &req).unwrap().read_to_end(&mut out).unwrap();
         assert_eq!(out, b"league");
+    }
+
+    const ROOM: &str = "https://api.test/v1/league/room";
+    const FRIENDLY: &str = "https://api.test/v1/league/friendly";
+
+    fn sent(http: &FakeHttp) -> serde_json::Value {
+        serde_json::from_slice(&http.posts.lock().unwrap()[0].1).unwrap()
+    }
+
+    #[test]
+    fn a_league_room_sends_only_the_installed_version() {
+        let http = FakeHttp::default().reply(ROOM, 200, r#"{"ok":true,"action":"created","room":{"room_id":"r1","code":"K7"}}"#);
+        assert_eq!(open_room(&http, ORIGIN, "tok", Some("2026.10.08")).unwrap(),
+            RoomOpen::Created(serde_json::json!({"room_id":"r1","code":"K7"})));
+        assert_eq!(sent(&http), serde_json::json!({"league_game_version":"2026.10.08"}), "the server derives the fixture");
+        assert_eq!(http.posts.lock().unwrap()[0].2.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn room_answers_map() {
+        let join = FakeHttp::default().reply(ROOM, 200, r#"{"ok":true,"action":"join","code":"K7QP2M","league_game_version":"2026.10.08"}"#);
+        assert_eq!(open_room(&join, ORIGIN, "t", None).unwrap(), RoomOpen::Join("K7QP2M".into()));
+        let series = FakeHttp::default().reply(ROOM, 409, r#"{"ok":false,"error":"in_series","match_id":"m-1"}"#);
+        assert_eq!(open_room(&series, ORIGIN, "t", None).unwrap(), RoomOpen::InSeries(Some("m-1".into())));
+        let old = FakeHttp::default().reply(ROOM, 409, r#"{"ok":false,"error":"league_version_mismatch","required":"2026.10.09"}"#);
+        assert_eq!(open_room(&old, ORIGIN, "t", Some("2026.10.08")).unwrap(), RoomOpen::UpdateRequired("2026.10.09".into()));
+        let nameless = FakeHttp::default().reply(ROOM, 409, r#"{"ok":false,"error":"league_version_mismatch"}"#);
+        assert_eq!(open_room(&nameless, ORIGIN, "t", None).unwrap_err(), LeagueError::BadReply, "required is typed data, never guessed");
+        for (status, body, why) in [
+            (403u16, r#"{"ok":false,"error":"not_member"}"#, "not_member"),
+            (409, r#"{"ok":false,"error":"opponent_unlinked"}"#, "opponent_unlinked"),
+            (409, r#"{"ok":false,"error":"no_game"}"#, "no_game"),
+            (409, r#"{"ok":false,"error":"already_final","match_id":"m-2"}"#, "already_final"),
+            (409, r#"{"ok":false,"error":"You are already in a lobby."}"#, "You are already in a lobby."),
+        ] {
+            let http = FakeHttp::default().reply(ROOM, status, body);
+            assert_eq!(open_room(&http, ORIGIN, "t", None).unwrap(), RoomOpen::Refused(why.into()), "{body}");
+        }
+        let odd = FakeHttp::default().reply(ROOM, 200, r#"{"ok":true,"action":"teleport"}"#);
+        assert_eq!(open_room(&odd, ORIGIN, "t", None).unwrap_err(), LeagueError::BadReply);
+        let not_ok = FakeHttp::default().reply(ROOM, 200, r#"{"ok":false,"action":"created","room":{}}"#);
+        assert_eq!(open_room(&not_ok, ORIGIN, "t", None).unwrap_err(), LeagueError::BadReply);
+        let junk409 = FakeHttp::default().reply(ROOM, 409, "<b>x</b>");
+        assert_eq!(open_room(&junk409, ORIGIN, "t", None).unwrap_err(), LeagueError::Unavailable);
+        let down = FakeHttp::default().reply(ROOM, 503, r#"{"ok":false,"error":"league_unavailable"}"#);
+        assert_eq!(open_room(&down, ORIGIN, "t", None).unwrap_err(), LeagueError::Unavailable);
+        let out = FakeHttp::default().reply(ROOM, 401, "{}");
+        assert_eq!(open_room(&out, ORIGIN, "t", None).unwrap_err(), LeagueError::SignedOut);
+        assert_eq!(open_room(&FakeHttp::default(), ORIGIN, "t", None).unwrap_err(), LeagueError::Unreachable);
+    }
+
+    #[test]
+    fn a_friendly_names_its_ruleset_and_version() {
+        let http = FakeHttp::default().reply(FRIENDLY, 200, r#"{"ok":true,"action":"created","room":{"room_id":"f1","code":"F1"}}"#);
+        assert_eq!(host_friendly(&http, ORIGIN, "tok", "raw", Some("2026.10.08")).unwrap(),
+            RoomOpen::Created(serde_json::json!({"room_id":"f1","code":"F1"})));
+        assert_eq!(sent(&http), serde_json::json!({"ruleset":"raw","league_game_version":"2026.10.08"}));
+        let bad = FakeHttp::default();
+        assert_eq!(host_friendly(&bad, ORIGIN, "tok", "ranked", None).unwrap_err(), LeagueError::BadReply,
+            "only league or raw, decided before anything is sent");
+        assert!(bad.posts.lock().unwrap().is_empty());
     }
 }
