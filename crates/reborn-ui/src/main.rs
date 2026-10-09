@@ -5517,7 +5517,7 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
 // Content and updates
 // ---------------------------------------------------------------------------
 
-/// Refuse a component name that is not one of the seven that exist.
+/// Refuse a component name that is not one of the components that exist.
 ///
 /// An unknown name is a typo or a tampered file, and answering it with "nothing
 /// is installed" would be a plausible-looking result for a component the
@@ -5528,7 +5528,8 @@ fn known_component(name: &str) -> Result<(), String> {
     }
     let known: Vec<&str> = ComponentId::ALL.iter().map(|id| id.as_str()).collect();
     Err(format!(
-        "{name:?} is not a component. The seven are: {}.",
+        "{name:?} is not a component. The {} are: {}.",
+        known.len(),
         known.join(", ")
     ))
 }
@@ -8711,8 +8712,9 @@ struct StatsSubmitView {"),
     #[test]
     fn an_unknown_component_name_is_refused_rather_than_answered() {
         let err = known_component("offline_content")
-            .expect_err("a name that is not one of the seven must not be answered");
+            .expect_err("a name that is not a component must not be answered");
         assert!(err.contains("offline-content"), "name the real ones: {err}");
+        assert!(err.contains(&format!("The {} are:", ComponentId::ALL.len())), "the real count: {err}");
         assert!(known_component("offline-content").is_ok());
         assert!(known_component("textures").is_ok());
     }
