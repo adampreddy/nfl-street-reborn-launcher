@@ -63,6 +63,10 @@ pub(crate) fn private_bucket_name(settings: &Settings) -> Result<String, String>
     Ok(name.to_string())
 }
 
+/// Shown with every failed private upload. Home -> Upload would push the
+/// public plan without the members-only blobs, so retry means a new version.
+const RETRY_ADVICE: &str = "Publish a new league version to retry; don't use Home \u{2192} Upload until then.";
+
 /// Private blobs first, then the public plan (manifest + release files).
 /// A refused or failed private upload returns before anything public is
 /// planned, listed or sent.
@@ -96,10 +100,17 @@ pub(crate) fn upload_private_then_public(
         public_base: None,
         apply: true,
     };
-    let private_done = match upload::upload(transport, http, &req, sink)? {
-        Outcome::Refused(r) => return Ok(Outcome::Refused(r)),
-        Outcome::Done(u) => u,
-        Outcome::Described => Default::default(),
+    let private_done = match upload::upload(transport, http, &req, sink) {
+        Err(e) => {
+            return Ok(refuse(sink, &[format!("The private league upload failed: {e}"), RETRY_ADVICE.to_string()]));
+        }
+        Ok(Outcome::Refused(mut r)) => {
+            sink(Event::out(RETRY_ADVICE.to_string()));
+            r.lines.push(RETRY_ADVICE.to_string());
+            return Ok(Outcome::Refused(r));
+        }
+        Ok(Outcome::Done(u)) => u,
+        Ok(Outcome::Described) => Default::default(),
     };
 
     let (already_public, how) = upload::already_on_bucket(transport, public)?;
@@ -404,7 +415,13 @@ mod tests {
         let edge = Edge(vec![]);
         let mut sink = |_e: Event| {};
         let out = upload_private_then_public(&t, &edge, &bucket("reborn-content"), &bucket("reborn-league"), dir.path(), "https://files.example.test/", &mut sink).unwrap();
-        assert!(matches!(out, Outcome::Refused(_)), "{out:?}");
+        match &out {
+            Outcome::Refused(r) => assert!(
+                r.lines.iter().any(|l| l.contains("Publish a new league version to retry; don't use Home \u{2192} Upload until then.")),
+                "{r:?}"
+            ),
+            other => panic!("{other:?}"),
+        }
         let calls = t.calls.lock().unwrap().clone();
         assert!(!calls.iter().any(|(_, u)| u.contains("/reborn-content/")), "nothing public, not even a listing: {calls:?}");
     }

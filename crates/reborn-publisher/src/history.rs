@@ -663,8 +663,10 @@ mod members_only_tests {
             assert!(plan.contains("publish a new league version instead"), "{name}: {plan}");
             let run = rollback_run(name.to_string(), "1.0.0".to_string(), true).unwrap_err();
             assert!(run.contains("League files can't be rolled back here"), "{name}: {run}");
-            let run = rollback_run(name.to_string(), "1.0.0".to_string(), false).unwrap_err();
-            assert!(run.contains("League files can't be rolled back here"), "{name}: {run}");
+            // The real (non-dry) run is not called: it would read the real
+            // settings/vault. The guard it opens with is asserted directly.
+            let guard = rollback_component(name).unwrap_err();
+            assert!(guard.contains("League files can't be rolled back here"), "{name}: {guard}");
         }
     }
 
