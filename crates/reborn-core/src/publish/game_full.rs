@@ -53,7 +53,7 @@ use crate::library::hash_file;
 use crate::publish::component::{publish_component, ComponentRequest};
 use crate::publish::release::{republish_pinning, CarryForward};
 use crate::publish::roster::Push;
-use crate::publish::{io_err, next_sequence, out, refuse, thousands, Outcome, Sink};
+use crate::publish::{default_stage, io_err, next_sequence, out, refuse, thousands, Outcome, Sink};
 use crate::Result;
 
 /// The file name the disc is published under. Matches the name the booted
@@ -215,14 +215,6 @@ pub fn stage(req: &GameFullRequest<'_>, observer: &dyn ScanObserver, sink: Sink<
         Outcome::Described => Outcome::Done(Push { component, release: None }),
         Outcome::Refused(r) => Outcome::Refused(r),
     })
-}
-
-/// `<origin>-stage\<leaf>`, matching `publish_game_patch`'s own default so
-/// the two commands agree on where the chain lives without either one
-/// having to be told twice.
-fn default_stage(origin: &Path, leaf: &str) -> PathBuf {
-    let name = origin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "origin".to_string());
-    origin.with_file_name(format!("{name}-stage")).join(leaf)
 }
 
 #[cfg(test)]

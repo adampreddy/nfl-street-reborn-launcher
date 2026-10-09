@@ -25,6 +25,7 @@ pub mod vault;
 pub mod roster;
 pub mod game_patch;
 pub mod game_full;
+pub mod league;
 pub mod upload;
 pub mod journal;
 pub mod status;
@@ -166,6 +167,14 @@ pub fn stored_blob(origin: &Path, members_only: bool, sha256: &crate::manifest::
     } else {
         origin.join(crate::origin::blob_path(sha256))
     }
+}
+
+/// `<origin>-stage\<leaf>`, matching `publish_game_patch`'s own default so
+/// the two commands agree on where the chain lives without either one
+/// having to be told twice.
+pub(crate) fn default_stage(origin: &Path, leaf: &str) -> PathBuf {
+    let name = origin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "origin".to_string());
+    origin.with_file_name(format!("{name}-stage")).join(leaf)
 }
 
 /// The address a release pins a component manifest at, relative to the origin.
