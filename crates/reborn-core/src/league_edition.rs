@@ -185,7 +185,8 @@ pub fn request_download(
 
 /// What a league room call decided: this player hosts (`Created`, the server's room view), the opponent's room is open
 /// (`Join`), the fixture's match is already running (`InSeries`), this player's league files are older than the room's
-/// (`UpdateRequired`, the version needed), or a stated refusal (`Refused`, the server's `error`).
+/// (`UpdateRequired`, the version needed; empty when the room has none recorded), or a stated refusal (`Refused`, the
+/// server's `error`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoomOpen {
     Created(serde_json::Value),
@@ -210,12 +211,11 @@ fn post_room(
         let why = v.get("error").and_then(|e| e.as_str()).ok_or_else(|| status_error(reply.status))?;
         return match why {
             "in_series" => Ok(RoomOpen::InSeries(v.get("match_id").and_then(|m| m.as_str()).map(str::to_string))),
-            "league_version_mismatch" => v
-                .get("required")
-                .and_then(|r| r.as_str())
-                .filter(|r| !r.is_empty())
-                .map(|r| RoomOpen::UpdateRequired(r.to_string()))
-                .ok_or(LeagueError::BadReply),
+            // `required` may be null (the room has no recorded version): still a version refusal, with no version to
+            // compare, so empty. Never guessed from anything else in the reply.
+            "league_version_mismatch" => Ok(RoomOpen::UpdateRequired(
+                v.get("required").and_then(|r| r.as_str()).unwrap_or_default().to_string(),
+            )),
             other => Ok(RoomOpen::Refused(other.to_string())),
         };
     }
@@ -681,8 +681,13 @@ pub(crate) mod tests {
         assert_eq!(open_room(&series, ORIGIN, "t", None).unwrap(), RoomOpen::InSeries(Some("m-1".into())));
         let old = FakeHttp::default().reply(ROOM, 409, r#"{"ok":false,"error":"league_version_mismatch","required":"2026.10.09"}"#);
         assert_eq!(open_room(&old, ORIGIN, "t", Some("2026.10.08")).unwrap(), RoomOpen::UpdateRequired("2026.10.09".into()));
-        let nameless = FakeHttp::default().reply(ROOM, 409, r#"{"ok":false,"error":"league_version_mismatch"}"#);
-        assert_eq!(open_room(&nameless, ORIGIN, "t", None).unwrap_err(), LeagueError::BadReply, "required is typed data, never guessed");
+        // The room's version can be null (a room opened before versions were recorded, or a joiner who sent none:
+        // contracts, Plan 2 rulings). Still a version refusal, never a guess at the version: empty, and the page
+        // says "update" without comparing.
+        for body in [r#"{"ok":false,"error":"league_version_mismatch"}"#, r#"{"ok":false,"error":"league_version_mismatch","required":null}"#, r#"{"ok":false,"error":"league_version_mismatch","required":7}"#] {
+            let nameless = FakeHttp::default().reply(ROOM, 409, body);
+            assert_eq!(open_room(&nameless, ORIGIN, "t", None).unwrap(), RoomOpen::UpdateRequired(String::new()), "{body}");
+        }
         for (status, body, why) in [
             (403u16, r#"{"ok":false,"error":"not_member"}"#, "not_member"),
             (409, r#"{"ok":false,"error":"opponent_unlinked"}"#, "opponent_unlinked"),
