@@ -938,8 +938,10 @@ Both commands are a dry run (a check, nothing written) until you add `--apply`.
     rebornctl publish upload --origin "C:\Reborn Origin" --private --bucket reborn-league --apply   # FIRST
     rebornctl publish upload --origin "C:\Reborn Origin" --apply                                    # THEN
 
-Or in the Publisher: open League files, choose the files and a version, press Check
-(dry run), then Publish. The page uploads the private bucket first and the public bucket
+Or in the Publisher: open League files and, in the league build or league seed section,
+choose the files and type a version (until then the button reads "Type a version first").
+Press "Publish league build <version>" (or "Publish league seed <version>"). That runs the
+dry-run check and shows the plan; press "Yes, publish" to apply. The page uploads the private bucket first and the public bucket
 second, and never starts the public upload if the private one fails.
 
 What the commands refuse (read the message, fix the input):
