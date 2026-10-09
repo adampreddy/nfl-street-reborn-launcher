@@ -628,15 +628,18 @@ impl FileOps for RealFileOps {
     fn same_volume(&self, a: &Path, b: &Path) -> Result<bool> {
         #[cfg(windows)]
         {
-            // Compares the path prefix, which is the drive letter or UNC share.
-            //
-            // LIMITATION, stated rather than hidden: a volume mounted onto an
-            // empty NTFS folder shares the prefix of its parent, so this
-            // returns true when a rename would actually fail. Detecting that
-            // needs GetVolumeInformationByHandleW. Folder mount points are rare
-            // for the paths this launcher uses, and the failure mode is a
-            // rename error rather than a corrupted install, so the simple
-            // comparison ships first and the Win32 version is a follow-up.
+            // The volume each path really lands on, through any junction.
+            // Since "Move to another drive" the data root itself can be a
+            // junction to another drive, and a drive-letter comparison would
+            // then call C:\...\data (really D:) and C:\elsewhere one volume.
+            if let (Ok(ia), Ok(ib)) = (
+                super::file_identity::of_nearest(&absolute(a)?),
+                super::file_identity::of_nearest(&absolute(b)?),
+            ) {
+                return Ok(ia.volume == ib.volume);
+            }
+            // Neither could be opened: the path prefix, the drive letter or
+            // UNC share, is the best answer left.
             fn prefix(p: &Path) -> Option<std::ffi::OsString> {
                 use std::path::Component;
                 p.components().next().and_then(|c| match c {

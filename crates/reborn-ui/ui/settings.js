@@ -55,6 +55,8 @@ async function load() {
     policy: call("update_policy"),
     queue: call("stats_queue"),
     content: call("content_status"),
+    moveInfo: call("move_drive_info"),
+    moveStatus: call("move_drive_status"),
   };
   const keys = Object.keys(reads);
   const settled = await Promise.allSettled(Object.values(reads));
@@ -633,12 +635,116 @@ function whereBlock() {
   if (!ok(p)) return section("Storage", null, partial(`Could not read: ${p ? p.error : "not loaded"}`));
   const dirs = Array.isArray(p.directories) ? p.directories : [];
   const present = dirs.filter((d) => d.exists).map((d) => d.relative);
+  const info = ok(state.moveInfo) ? state.moveInfo : null;
   return section("Storage", null,
     row("Channel", { value: p.channel_note || p.channel }),
     row("Program files", { value: p.install_root }),
     row("Your data", { value: p.data_root }),
+    info?.moved ? row("Stored on", { value: info.stored_at, help: "Moved to another drive. The folder above leads here." }) : null,
+    info?.supported ? moveRow(info) : null,
     row("Save data", { value: p.saves_survive_uninstall ? "Kept separately from the application." : "Stored inside the application folder." }),
     row("Folders in use", { value: present.length ? present.join(", ") : "No data folders exist yet." }));
+}
+
+// ---- Move to another drive ---------------------------------------------------------------------------
+// The game, its textures, Dolphin's folders and the saves go to a folder on another drive, and a link is
+// left at the old place so every saved path still works. The copy runs in the launcher (with progress);
+// the launcher then closes for a moment while a helper swaps the folders, and opens again by itself.
+
+let moveCheck = null; // { folder, target, bytes, files } while the confirmation is open
+let movePoll = null;
+const gb = (b) => `${((b || 0) / 1073741824).toFixed(1)} GB`;
+
+function moveStatus() { return ok(state.moveStatus) ? state.moveStatus : { phase: "idle" }; }
+
+function watchMove() {
+  if (movePoll) return;
+  movePoll = setInterval(async () => {
+    let st;
+    try { st = await call("move_drive_status"); } catch { return; }
+    state.moveStatus = st;
+    if (st.phase === "copying" || st.phase === "restarting") {
+      const bar = document.getElementById("move-progress");
+      if (bar) { bar.max = String(st.total || 1); bar.value = String(Math.min(st.done || 0, st.total || 1)); }
+      const said = document.getElementById("move-said");
+      if (said) said.textContent = moveWords(st);
+      if (st.phase === "restarting") document.getElementById("move-cancel")?.setAttribute("disabled", "true");
+      return;
+    }
+    clearInterval(movePoll); movePoll = null;
+    if (st.phase === "failed") problem = `Move to another drive: ${st.message}`;
+    holdPage(false);
+    await load();
+    draw();
+  }, 500);
+}
+
+function moveWords(st) {
+  if (st.phase === "restarting") return "Copied. The launcher will close for a moment to finish, then open again by itself.";
+  return `Copying ${gb(st.done)} of ${gb(st.total)} to ${st.target}. Keep the launcher open.`;
+}
+
+async function pickMoveFolder() {
+  if (busy) return;
+  let folder;
+  try { folder = await call("pick_path", { kind: "folder" }); } catch (e) { problem = reason(e); draw(); return; }
+  if (!folder) return;
+  problem = null;
+  holdPage(true);
+  draw();
+  try {
+    const r = await call("move_drive_check", { folder });
+    moveCheck = { ...r, folder };
+  } catch (e) {
+    problem = `Move to another drive: ${reason(e)}`;
+  }
+  holdPage(false);
+  draw();
+  document.getElementById(moveCheck ? "move-confirm" : "move-start")?.focus({ preventScroll: true });
+}
+
+async function startMove() {
+  const check = moveCheck;
+  if (!check || busy) return;
+  moveCheck = null;
+  problem = null;
+  try {
+    await call("move_drive_start", { folder: check.folder, confirm: true });
+  } catch (e) {
+    problem = `Move to another drive: ${reason(e)}`;
+    draw();
+    return;
+  }
+  state.moveStatus = { phase: "copying", done: 0, total: check.bytes, target: check.target };
+  holdPage(true);
+  draw();
+  watchMove();
+}
+
+function moveRow(info) {
+  const st = moveStatus();
+  if (st.phase === "copying" || st.phase === "restarting") {
+    if (!busy) { holdPage(true); }
+    watchMove();
+    return row("Move to another drive", {
+      value: el("div", {},
+        el("progress", { id: "move-progress", class: "settings-progress", "aria-label": "Moving the game", value: String(Math.min(st.done || 0, st.total || 1)), max: String(st.total || 1) }),
+        el("p", { id: "move-said", class: "pref-help", role: "status", text: moveWords(st) })),
+      control: el("button", { type: "button", id: "move-cancel", class: "btn", text: "Cancel", disabled: st.phase === "restarting",
+        onclick: () => call("move_drive_cancel").catch(() => {}) }) });
+  }
+  if (moveCheck) {
+    return row("Move to another drive", {
+      value: el("p", { class: "pref-help", text: `Move ${gb(moveCheck.bytes)} to ${moveCheck.target}? Your saves, settings and game come too.` }),
+      control: [
+        el("button", { type: "button", id: "move-confirm", class: "btn primary", text: "Move now", disabled: busy, onclick: startMove }),
+        el("button", { type: "button", class: "btn quiet", text: "Cancel", disabled: busy, onclick: () => { moveCheck = null; draw(); } }),
+      ],
+      help: "The launcher closes for a moment at the end and opens again by itself. Don't start the game until it does." });
+  }
+  return row("Move to another drive", {
+    control: el("button", { type: "button", id: "move-start", class: "btn", text: "Move…", disabled: busy, onclick: pickMoveFolder }),
+    help: info.last_failure ? `The last move did not finish: ${info.last_failure}` : "Free up space on this drive. Choose a folder on another drive; the game, textures and saves all move there." });
 }
 
 function filesBlock() {

@@ -42,6 +42,8 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+pub mod dir_move;
+pub mod file_identity;
 pub mod imp;
 #[cfg(windows)]
 pub(crate) mod runtime_process;

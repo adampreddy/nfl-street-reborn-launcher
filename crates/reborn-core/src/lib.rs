@@ -86,6 +86,7 @@ pub mod publish;
 pub mod platform;
 pub mod roster;
 pub mod runtime;
+pub mod relocate;
 pub mod reshade;
 pub mod session;
 pub mod settings_law;

@@ -34,6 +34,7 @@ mod online_mm;
 mod live_settings;
 mod live_view;
 mod launcher_look;
+mod move_drive;
 
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -6488,6 +6489,17 @@ mod shortcut_tests {
 }
 
 fn main() {
+    // "Move to another drive" finishing, before anything else: this process is
+    // a temp copy of the launcher, and the data root must not be touched (no
+    // log, no layout pass) until the launcher it replaces has closed.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some(move_drive::FINISH_SWITCH) {
+            move_drive::finish_from_args(&args[2..]);
+            return;
+        }
+    }
+
     // The log, first, before anything can produce a warning worth keeping.
     //
     // Every module in the core answers a failure it will not show a player by
@@ -6581,6 +6593,8 @@ fn main() {
             // A one-file Linux launcher fetches its emulator now, in the
             // background, so no page waits for it.
             content_updates::start_runtime_download();
+            // An old folder a move could not delete at the time, if any.
+            move_drive::clean_leftovers();
             if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
                 if game_mode {
                     let _ = w.set_fullscreen(true);
@@ -6681,6 +6695,11 @@ fn main() {
             shell_tools::setup_window_lock,
             shell_tools::open_website,
             shell_tools::uninstall_launcher,
+            move_drive::move_drive_info,
+            move_drive::move_drive_check,
+            move_drive::move_drive_start,
+            move_drive::move_drive_status,
+            move_drive::move_drive_cancel,
             shell_tools::update_progress,
             shell_tools::notices_pending,
             shell_tools::notice_dismiss,

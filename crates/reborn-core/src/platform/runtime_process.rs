@@ -174,6 +174,12 @@ fn image_in_use(exe: &Path) -> io::Result<bool> {
     }
 }
 
+/// Whether the process `pid` is still running. Used by the "Move to another
+/// drive" helper to wait for the launcher it replaces to close.
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    matches!(image_path(pid), Ok(Some(_)))
+}
+
 pub(crate) fn is_running(exe: &Path) -> io::Result<bool> {
     let entries=entries_with_fallback(snapshot,tasklist)?;
     match matches_runtime(exe,&entries,image_path) {
