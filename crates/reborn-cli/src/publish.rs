@@ -251,6 +251,12 @@ pub enum PublishCommand {
         /// Defaults to the production CDN.
         #[arg(long)]
         public_base: Option<String>,
+        /// Upload the MEMBERS-ONLY blobs (`<origin>/private/blobs`) to the
+        /// private bucket named by --bucket, and nothing else. Run this
+        /// BEFORE the public upload that carries their manifests. Never
+        /// reads back through the public CDN.
+        #[arg(long)]
+        private: bool,
         /// Write. Without this, every object the plan would send is listed
         /// and its size is given, and nothing is uploaded.
         #[arg(long)]
@@ -506,8 +512,9 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             endpoint,
             bucket,
             public_base,
+            private,
             apply,
-        } => upload_command(&origin, endpoint.as_deref(), bucket.as_deref(), public_base.as_deref(), apply, &mut sink),
+        } => upload_command(&origin, endpoint.as_deref(), bucket.as_deref(), public_base.as_deref(), private, apply, &mut sink),
         PublishCommand::Status { origin, origin_base, launcher } => {
             status_command(origin.as_deref(), origin_base.as_deref(), launcher.as_deref())
         }
@@ -520,6 +527,22 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
     }
 }
 
+/// The bucket a private upload goes to, or why it cannot run. The public
+/// bucket is refused by name, so a typo can never send league blobs where
+/// the CDN serves them.
+fn private_target(bucket: Option<&str>, public_base: Option<&str>) -> Result<String, String> {
+    let Some(name) = bucket.map(str::trim).filter(|b| !b.is_empty()) else {
+        return Err("--private needs --bucket <private bucket>, for example --bucket reborn-league.".to_string());
+    };
+    if public_base.is_some() {
+        return Err("--private never reads back through a public host; drop --public-base.".to_string());
+    }
+    if name == reborn_core::publish::vault::PRODUCTION_BUCKET {
+        return Err(format!("{name} is the PUBLIC bucket. Members-only blobs never go there."));
+    }
+    Ok(name.to_string())
+}
+
 /// Build the bucket to upload to (the vault's credentials, with `--endpoint`
 /// and `--bucket` overriding its address), plan the origin against what the
 /// bucket already holds, and upload it.
@@ -528,6 +551,7 @@ fn upload_command(
     endpoint: Option<&str>,
     bucket_name: Option<&str>,
     public_base: Option<&str>,
+    private: bool,
     apply: bool,
     sink: Sink<'_>,
 ) -> reborn_core::Result<std::process::ExitCode> {
@@ -542,14 +566,26 @@ fn upload_command(
     if let Some(e) = endpoint {
         bucket.endpoint = e.to_string();
     }
-    if let Some(b) = bucket_name {
+    if private {
+        match private_target(bucket_name, public_base) {
+            Ok(name) => bucket.bucket = name,
+            Err(why) => {
+                eprintln!("{why}");
+                return Ok(misuse());
+            }
+        }
+    } else if let Some(b) = bucket_name {
         bucket.bucket = b.to_string();
     }
 
     let transport = UreqTransport::new();
     let (already, how) = reborn_core::publish::upload::already_on_bucket(&transport, &bucket)?;
     sink(Event::out(how));
-    let plan = plan_origin(origin, &*already)?;
+    let plan = if private {
+        reborn_core::publish::upload::plan_private(origin, &*already)?
+    } else {
+        plan_origin(origin, &*already)?
+    };
 
     let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
     let public_base = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
@@ -559,7 +595,7 @@ fn upload_command(
         multipart_threshold: DEFAULT_MULTIPART_THRESHOLD,
         part_size: DEFAULT_PART_SIZE,
         attempts: DEFAULT_ATTEMPTS,
-        public_base: Some(&public_base),
+        public_base: if private { None } else { Some(&public_base) },
         apply,
     };
     Ok(exit_of(&run_upload(&transport, &http, &req, sink)?))
@@ -722,5 +758,32 @@ fn read_notes(notes: Option<String>, file: Option<&std::path::Path>) -> reborn_c
             .map(Some)
             .map_err(|e| reborn_core::Error::Io { path: p.to_path_buf(), source: e }),
         None => Ok(notes),
+    }
+}
+
+#[cfg(test)]
+mod private_upload_tests {
+    use super::private_target;
+
+    #[test]
+    fn a_private_upload_needs_a_named_bucket() {
+        assert!(private_target(None, None).is_err());
+        assert!(private_target(Some("  "), None).is_err());
+    }
+
+    #[test]
+    fn a_private_upload_never_reads_back_through_the_public_cdn() {
+        assert!(private_target(Some("reborn-league"), Some("https://files.nflstreetreborn.com/")).is_err());
+    }
+
+    #[test]
+    fn a_private_upload_refuses_the_public_bucket() {
+        assert!(private_target(Some("reborn-content"), None).is_err());
+        assert!(private_target(Some(" reborn-content "), None).is_err());
+    }
+
+    #[test]
+    fn the_league_bucket_is_accepted() {
+        assert_eq!(private_target(Some("reborn-league"), None), Ok("reborn-league".to_string()));
     }
 }
