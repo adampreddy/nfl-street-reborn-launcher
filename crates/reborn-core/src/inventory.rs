@@ -1158,6 +1158,16 @@ impl SerializedComponent {
                 component.component
             )));
         }
+        if let Some(id) = ComponentId::parse(&component.component) {
+            if component.members_only != id.is_members_only() {
+                return Err(refuse(format!(
+                    "the manifest for {:?} says members_only = {} but that component                      is members_only = {}. A league build marked public would be                      published to the public CDN; a retail component marked                      members-only could never be downloaded",
+                    component.component,
+                    component.members_only,
+                    id.is_members_only()
+                )));
+            }
+        }
 
         let sha256 = Sha256Hex::from_bytes(&bytes);
         Ok(Self {
@@ -2463,6 +2473,41 @@ mod tests {
             };
             let ser = SerializedComponent::new(scan.component).unwrap();
             assert_eq!(ser.component().members_only, expected, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_publisher_refuses_a_league_manifest_marked_public_and_a_retail_one_marked_members_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"x").unwrap();
+        for (id, flag) in [(ComponentId::LeagueGame, false), (ComponentId::LeagueContent, false), (ComponentId::Runtime, true)] {
+            let spec = ComponentSpec::new(id, "1.0.0", 1).unwrap();
+            let ScanOutcome::Complete(mut scan) = scan_component(dir.path(), &spec, &RunToCompletion).unwrap() else {
+                panic!("cancelled")
+            };
+            scan.component.members_only = flag;
+            let err = SerializedComponent::new(scan.component).unwrap_err();
+            assert!(err.to_string().contains("members_only"), "{id:?}: {err}");
+        }
+    }
+
+    /// A public manifest from the real generator must survive parse and
+    /// re-serialize with identical bytes, or the new field would change the
+    /// hash of every manifest already pinned.
+    #[test]
+    fn public_manifests_round_trip_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"payload").unwrap();
+        for id in [ComponentId::Runtime, ComponentId::OfflineContent] {
+            let spec = ComponentSpec::new(id, "1.0.0", 1).unwrap();
+            let ScanOutcome::Complete(scan) = scan_component(dir.path(), &spec, &RunToCompletion).unwrap() else {
+                panic!("cancelled")
+            };
+            let ser = SerializedComponent::new(scan.component).unwrap();
+            assert!(!ser.component().members_only);
+            let parsed = Component::parse(ser.bytes()).unwrap();
+            let again = serde_json::to_vec_pretty(&parsed).unwrap();
+            assert_eq!(again, ser.bytes(), "{id:?}");
         }
     }
 }

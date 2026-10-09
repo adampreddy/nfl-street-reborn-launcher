@@ -115,6 +115,15 @@ pub enum ManifestError {
     #[error("component {0:?} does not declare the mandatory customizable field")]
     MissingCustomizable(String),
 
+    #[error(
+        "component {component:?} declares members_only = {declared} but that          component is members_only = {expected}"
+    )]
+    MembersOnlyMismatch {
+        component: String,
+        declared: bool,
+        expected: bool,
+    },
+
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -211,6 +220,17 @@ impl Release {
                 found: component.component,
                 requested: requested.to_string(),
             });
+        }
+        // The flag is derived from the identity, so a manifest that
+        // disagrees is wrong or hostile either way.
+        if let Some(id) = crate::inventory::ComponentId::parse(requested) {
+            if component.members_only != id.is_members_only() {
+                return Err(ManifestError::MembersOnlyMismatch {
+                    component: requested.to_string(),
+                    declared: component.members_only,
+                    expected: id.is_members_only(),
+                });
+            }
         }
         Ok(component)
     }
@@ -528,5 +548,49 @@ mod tests {
         assert!(c.members_only);
         let out = serde_json::to_string_pretty(&c).unwrap();
         assert!(out.contains("\"members_only\": true"), "{out}");
+    }
+
+    fn release_pinning(name: &str, json: &str) -> Release {
+        let pin = Sha256Hex::from_bytes(json.as_bytes());
+        Release::parse(
+            format!(
+                r#"{{"schema": "nsr.release.v1", "version": "2.4.0", "sequence": 12,
+                  "components": {{"{name}": {{"url": "https://example/x.json", "sha256": "{pin}"}}}}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn with_members_only(json: String) -> String {
+        json.replace("\"customizable\": false,", "\"customizable\": false,
+  \"members_only\": true,")
+    }
+
+    #[test]
+    fn a_league_manifest_marked_public_is_refused_on_load() {
+        let json = component_json("league-game", false);
+        let err = release_pinning("league-game", &json)
+            .accept_component("league-game", json.as_bytes())
+            .unwrap_err();
+        assert!(matches!(err, ManifestError::MembersOnlyMismatch { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_retail_manifest_marked_members_only_is_refused_on_load() {
+        let json = with_members_only(component_json("runtime", false));
+        let err = release_pinning("runtime", &json)
+            .accept_component("runtime", json.as_bytes())
+            .unwrap_err();
+        assert!(matches!(err, ManifestError::MembersOnlyMismatch { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_correctly_flagged_league_manifest_is_accepted_on_load() {
+        let json = with_members_only(component_json("league-game", false));
+        let c = release_pinning("league-game", &json)
+            .accept_component("league-game", json.as_bytes())
+            .unwrap();
+        assert!(c.members_only);
     }
 }
