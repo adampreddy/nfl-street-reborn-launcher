@@ -61,18 +61,18 @@ sed -i 's/\r$//' "$JOB"
 # Only the job goes to the background: "a && b && c &" backgrounds the whole
 # chain, and WSL ended the session before the copy even ran. The sleep keeps
 # the session open while setsid detaches the job.
-wsl bash -c "rm -f /root/release-deck.log && cp '/mnt/c/Reborn Origin-stage/launcher-linux/release-deck-job.sh' /root/release-deck.sh && chmod +x /root/release-deck.sh && { setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null & } ; sleep 3"
+wsl -u root bash -c "rm -f /root/release-deck.log && cp '/mnt/c/Reborn Origin-stage/launcher-linux/release-deck-job.sh' /root/release-deck.sh && chmod +x /root/release-deck.sh && { setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null & } ; sleep 3"
 rm -f "$JOB"
 # Started = the job's log exists (cat's own "No such file" is not output).
-wsl bash -c "test -e /root/release-deck.log && echo JOB-STARTED" | grep -q JOB-STARTED || { echo "the WSL job did not start: refusing"; exit 1; }
+wsl -u root bash -c "test -e /root/release-deck.log && echo JOB-STARTED" | grep -q JOB-STARTED || { echo "the WSL job did not start: refusing"; exit 1; }
 # The wsl wrapper keeps no exit code, so the log is read, not grep's status.
-until wsl cat /root/release-deck.log | grep -qE '^(PASSED|FAILED)'; do sleep 60; done
-wsl cat /root/release-deck.log
-wsl cat /root/release-deck.log | grep -q '^PASSED' || { echo "not shipped"; exit 1; }
+until wsl -u root cat /root/release-deck.log | grep -qE '^(PASSED|FAILED)'; do sleep 60; done
+wsl -u root cat /root/release-deck.log
+wsl -u root cat /root/release-deck.log | grep -q '^PASSED' || { echo "not shipped"; exit 1; }
 
 echo "== 3. stage"
-wsl cp "/home/reborn/release/$DECK/NFL Street Reborn $DECK.AppImage" "/mnt/c/Reborn Origin-stage/launcher-linux/$NAME"
-wsl cp "/home/reborn/release/$DECK/BUILD-INFO.txt" "/mnt/c/Reborn Origin-stage/launcher-linux/BUILD-INFO-$DECK.txt"
+wsl -u root cp "/home/reborn/release/$DECK/NFL Street Reborn $DECK.AppImage" "/mnt/c/Reborn Origin-stage/launcher-linux/$NAME"
+wsl -u root cp "/home/reborn/release/$DECK/BUILD-INFO.txt" "/mnt/c/Reborn Origin-stage/launcher-linux/BUILD-INFO-$DECK.txt"
 grep -q "launcher commit   $(git -C "$(dirname "$0")/../.." rev-parse "$REF")" "$STAGE/BUILD-INFO-$DECK.txt" || { echo "the staged build is not from $REF: refusing"; exit 1; }
 if [ "$MODE" = build ]; then
   echo "STAGED: $NAME from $REF. Now build the Windows launcher $VERSION from the same commit (Publisher > Launcher)."
