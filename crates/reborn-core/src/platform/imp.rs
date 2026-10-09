@@ -143,8 +143,13 @@ impl Paths for RealPaths {
         }
         #[cfg(target_os = "macos")]
         {
-            Ok(PathBuf::from("/Applications")
-                .join(format!("{PRODUCT}{}.app", self.channel.suffix())))
+            // The running bundle's Contents/Resources, wherever the player put
+            // the app: that is where the .app carries the emulator, the tools
+            // and anything to seed from, as an AppImage carries them in
+            // $APPDIR. A plain binary (cargo run, rebornctl) answers with its
+            // own folder. Read only once installed, like the AppImage mount.
+            let exe = std::env::current_exe()?;
+            Ok(crate::runtime::emulator_home(&exe).unwrap_or(exe))
         }
         #[cfg(target_os = "linux")]
         {
@@ -1584,15 +1589,15 @@ mod tests {
         // launcher's data, and uninstalling the beta would remove it.
         let stable = RealPaths { channel: Channel::Stable };
         let beta = RealPaths { channel: Channel::Beta };
-        // On Linux the install root is the running executable's own folder (an
-        // AppImage lives wherever the player put it), so two channels run from
-        // one test binary share it. The roots an uninstall could reach, data
-        // and cache, are the ones that must stay apart there.
+        // On Linux and macOS the install root is where the running app is (an
+        // AppImage or a .app lives wherever the player put it), so two
+        // channels run from one test binary share it. The roots an uninstall
+        // could reach, data and cache, are the ones that must stay apart there.
         let mut roots = vec![
             ("data", stable.data_root(), beta.data_root()),
             ("cache", stable.cache_root(), beta.cache_root()),
         ];
-        if !cfg!(target_os = "linux") {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
             roots.push(("install", stable.install_root(), beta.install_root()));
         }
         for (name, s, b) in roots {
