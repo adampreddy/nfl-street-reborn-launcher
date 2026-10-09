@@ -123,6 +123,16 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
     if cfg!(windows) && fs != "NTFS" && fs != "REFS" {
         return Err(format!("{} is formatted as {}. The game needs an NTFS drive.", facts.mount.display(), facts.filesystem));
     }
+    // A drive with its own letter only. A volume mounted onto a folder
+    // (C:\Mounts\Games) has a "root" with folders above it, and any of
+    // those that another account can rename reopens the swap this placement
+    // exists to prevent (security review, 2026-10-09).
+    if facts.mount.parent().is_some() {
+        return Err(format!(
+            "{} is a drive mounted inside a folder. Choose a drive with its own letter.",
+            facts.mount.display()
+        ));
+    }
     let (target, staged) = targets_on(&facts.mount, name);
     // Never a folder that is already there: one this move did not make
     // could belong to another account. The one exception is this account's

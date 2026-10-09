@@ -209,14 +209,17 @@ pub fn owned_by_me(path: &Path) -> io::Result<bool> {
 pub fn owned_by_me(path: &Path) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let uid = std::fs::symlink_metadata(path)?.uid();
-    let me = std::fs::symlink_metadata(std::env::temp_dir()).map(|_| ()).and_then(|_| {
-        let probe = std::env::temp_dir().join(format!("reborn-uid-{}", std::process::id()));
-        std::fs::write(&probe, b"")?;
-        let id = std::fs::metadata(&probe)?.uid();
-        let _ = std::fs::remove_file(&probe);
-        Ok(id)
-    })?;
-    Ok(uid == me)
+    // This process's own uid, read from a file it has just created itself.
+    // create_new refuses a name that is already there, so another account
+    // cannot plant the probe (or a link to its own file) ahead of it and
+    // answer for us.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let probe = std::env::temp_dir().join(format!("reborn-uid-{}-{nonce}", std::process::id()));
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?;
+    let me = file.metadata().map(|m| m.uid());
+    drop(file);
+    let _ = std::fs::remove_file(&probe);
+    Ok(uid == me?)
 }
 
 #[cfg(not(any(windows, unix)))]

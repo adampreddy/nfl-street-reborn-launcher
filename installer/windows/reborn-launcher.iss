@@ -580,14 +580,18 @@ begin
   Log('Top folder of ' + Drive + ' safe from other accounts: ' + IntToStr(Code));
 end;
 
-// ssInstall, before any file is copied. The program folder, when this
-// install creates it outside the profile, is made private; so is
-// <drive>\{#DataDir} above it, which is remembered (OwnRootMade) only when
-// this install made it, it is private, and the drive root is safe.
-procedure MakeNewFoldersPrivate();
+// Before installation (PrepareToInstall), so a failure stops Setup with a
+// message instead of installing into a folder other accounts can change
+// (security review, 2026-10-09: it used to carry on regardless). A program
+// folder this install creates outside the profile must be made private; so
+// must <drive>\{#DataDir} above it, and only on a drive whose top folder no
+// other account can empty or take over. Folders that already exist (an
+// upgrade, a self-update) are left as they are. Answers '' or the message.
+function PrepareNewFolders(): String;
 var
   App, Root: String;
 begin
+  Result := '';
   OwnRootMade := '';
   App := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
   Root := ExtractFileDir(App);
@@ -596,12 +600,30 @@ begin
   if not OutsideProfile(App) then
     exit;
   if (CompareText(App, OwnRootFor(App) + '\app') = 0) and not DirExists(Root) and not FileExists(Root) then
-    if CreateDir(Root) then
-      if MakePrivate(Root) and RootIsSafe(ExtractFileDrive(Root)) then
-        OwnRootMade := Root;
+  begin
+    if not RootIsSafe(ExtractFileDrive(Root)) then
+    begin
+      Result := 'Other accounts on this PC can change the top folder of drive ' + ExtractFileDrive(Root)
+        + ', so NFL Street Reborn would not be safe there.' + #13#10#13#10
+        + 'Go back and choose another drive. Nothing has been installed.';
+      exit;
+    end;
+    if not (CreateDir(Root) and MakePrivate(Root)) then
+    begin
+      RemoveDir(Root);
+      Result := 'The folder ' + Root + ' could not be made private to your account.' + #13#10#13#10
+        + 'Go back and choose another drive. Nothing has been installed.';
+      exit;
+    end;
+    OwnRootMade := Root;
+  end;
   if not DirExists(App) then
-    if ForceDirectories(App) then
-      MakePrivate(App);
+    if not (ForceDirectories(App) and MakePrivate(App)) then
+    begin
+      Result := 'The folder ' + App + ' could not be made private to your account.' + #13#10#13#10
+        + 'Go back and choose another folder. Nothing has been installed.';
+      exit;
+    end;
 end;
 
 // ssPostInstall, before [Run] can start the launcher (which makes the data
@@ -749,18 +771,6 @@ begin
   end;
 end;
 
-// Validate the final destination again at the write boundary, independently
-// of wizard navigation and any future changes to which pages are displayed.
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  Result := '';
-  if not InstallDirIsSafe(ExpandConstant('{app}')) then
-  begin
-    Result := UnsafeInstallDirMessage();
-    exit;
-  end;
-  RemovePreviousLauncherInstall();
-end;
 
 // WebView2 draws the launcher's window. It ships with Windows 11 and with any
 // updated Windows 10, but a stale image may not have it, and the failure without
@@ -824,13 +834,28 @@ end;
 
 #endif
 
+// Validate the final destination again at the write boundary, independently
+// of wizard navigation and any future changes to which pages are displayed.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if not InstallDirIsSafe(ExpandConstant('{app}')) then
+  begin
+    Result := UnsafeInstallDirMessage();
+    exit;
+  end;
+  Result := PrepareNewFolders();
+  if Result <> '' then
+    exit;
+  RemovePreviousLauncherInstall();
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // ssInstall fires before a single file is copied, so the WebView2 download
   // runs alongside the copy instead of after it.
   if CurStep = ssInstall then
   begin
-    MakeNewFoldersPrivate();
 #ifdef Redist
     StartWebView2;
 #endif
