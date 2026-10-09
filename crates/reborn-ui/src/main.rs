@@ -6721,6 +6721,7 @@ fn main() {
             online_mm::mm_room_create,
             online_mm::mm_room_join,
             league_edition::league_edition_status,
+            league_edition::league_edition_installed,
             league_edition::league_edition_install,
             league_edition::league_play_offline,
             league_edition::league_host_friendly,

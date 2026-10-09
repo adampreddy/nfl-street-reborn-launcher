@@ -785,11 +785,17 @@ fn set_link(link: Link, snap: Option<Snapshot>, err: Option<String>) {
 
 fn with_client_mm<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, MmError> {
     let p = Platform::detect();
-    let token = reborn_core::identity::token(&p).map_err(|e| MmError::Offline(e.to_string()))?.ok_or(MmError::SignedOut)?;
-    let origin = reborn_core::identity::origin(&p).map_err(|e| MmError::Offline(e.to_string()))?;
+    let token = reborn_core::identity::token(&p).map_err(local_error)?.ok_or(MmError::SignedOut)?;
+    let origin = reborn_core::identity::origin(&p).map_err(local_error)?;
     let http = crate::http_client();
     let client = Client::new(&http, origin, token);
     f(&client)
+}
+
+/// A failure on this PC (the credential vault, the settings file) before any request: shown in the identity error's
+/// own words, as it was before the league work, never as "can't reach the servers".
+fn local_error(e: reborn_core::Error) -> MmError {
+    MmError::Refused(e.to_string())
 }
 
 fn with_client<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, String> {
@@ -806,6 +812,8 @@ pub(crate) fn join_error(e: MmError) -> serde_json::Value {
             }
             v
         }
+        // The league join gate could not ask the league site (backend rooms.js): a fixed sentence, never the code.
+        MmError::Refused(code) if code == "league_unavailable" => serde_json::Value::String(crate::league_edition::UNAVAILABLE.into()),
         other => serde_json::Value::String(other.to_string()),
     }
 }
@@ -1452,6 +1460,21 @@ mod tests {
         assert_eq!(unnamed, serde_json::json!({"kind":"league_update_required","message":reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE}));
         let plain = join_error(reborn_core::matchmaking::MmError::Refused("No such lobby.".into()));
         assert_eq!(plain, serde_json::Value::String("No such lobby.".into()), "every other refusal stays the sentence it was");
+    }
+
+    #[test]
+    fn a_league_join_gate_outage_is_a_sentence_not_a_code() {
+        let down = join_error(reborn_core::matchmaking::MmError::Refused("league_unavailable".into()));
+        assert_eq!(down, serde_json::Value::String(crate::league_edition::UNAVAILABLE.into()));
+    }
+
+    #[test]
+    fn a_vault_or_settings_failure_keeps_its_own_words() {
+        // Before the league work these reached the page as the identity error's own player sentence; "Can't reach the
+        // Reborn servers" would send a player with a broken credential vault to check their network (final review #5).
+        let e = local_error(reborn_core::Error::player("The sign-in could not be read."));
+        assert_eq!(e.to_string(), "The sign-in could not be read.");
+        assert!(!matches!(e, MmError::Offline(_)));
     }
 
     #[test]

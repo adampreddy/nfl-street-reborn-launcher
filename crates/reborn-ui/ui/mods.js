@@ -271,7 +271,8 @@ for (const a of typeof document.querySelectorAll === "function" ? document.query
 if (bridge) {
   refresh();
   // One shared mod list (spec 2026-10-08 v2): a member with the league build installed is told mods reach it too.
-  quietCall("league_edition_status").then((s) => {
+  // The local answer (disk only): this runs on every Mods page load for every player, so never a network check.
+  quietCall("league_edition_installed").then((s) => {
     const note = document.getElementById("league-mods-note");
     if (note) note.hidden = !(s && s.installed === true);
   }).catch(() => {});

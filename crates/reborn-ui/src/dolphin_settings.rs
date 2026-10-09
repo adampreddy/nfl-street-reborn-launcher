@@ -117,7 +117,10 @@ mod tests {
         let body = &src[open..open + src[open..].find("\n}\n").unwrap()];
         assert!(body.contains("edition:Option<String>"));
         assert!(body.contains("let league=edition.as_deref()==Some(\"league\");"));
-        assert!(body.contains("crate::league_edition::ready_league_image(&p)?"));
+        // A room's league disc: installed and whole, but NOT the membership cache (the server already let this player
+        // into the room; the cache may be absent or signed-out-cleared mid-match). Final review #2.
+        assert!(body.contains("crate::league_edition::league_image_for_room(&p)?"));
+        assert!(!body.contains("ready_league_image"), "a room boot never asks the membership cache");
         assert!(body.contains("build:if league{GameBuild::League}else{GameBuild::Offline}"));
         // Only a matchmade (rng_seed) league room asks for a fixture: a Direct/private game never tags itself, even
         // with a held league fixture still in the snapshot (fix round 1).
@@ -128,6 +131,35 @@ mod tests {
         let pre = &src[src.find(&format!("{}{}", "pub(crate) fn mm_pre", "flight(")).unwrap()..open];
         assert!(pre.contains("\"seed_ok\":seed_ok,") && pre.contains("seed.is_some()||seed_kind.map(str::trim)==Some(\"raw\")"), "a raw room needs no seed");
         assert!(pre.contains("edition:Option<&str>") && pre.contains("\"league_game_version\":crate::league_edition::installed_league_version()"));
+        assert!(pre.contains("league_image_for_room(&p)") && !pre.contains("ready_league_image"), "preflight never asks the membership cache");
+        assert!(pre.contains("for_edition(") , "the preflight goes through the edition filter");
+    }
+
+    fn retail_preflight() -> serde_json::Value {
+        serde_json::json!({"runtime_ok":true,"image_ok":true,"seed_ok":true,"seed_sha256":"s","backend_ok":true,
+            "roster_version":"2026.10.01","game_patch_version":"2026.10.08","runtime_version":"1.2.12",
+            "pristine_sha256":"p","roster_sha256":"r","pristine_at_tip":false,"chain_head":"h",
+            "edition":null,"league_game_version":null,"traversal_ok":true})
+    }
+
+    #[test]
+    fn a_league_preflight_names_no_retail_image_and_carries_the_league_version() {
+        // Backend match.js compares these five for EVERY match: the retail disc says nothing about a league game, so a
+        // league preflight sends null for each (the server compares only what both sides sent).
+        let mut v = retail_preflight();
+        v["edition"] = serde_json::json!("league");
+        let out = for_edition(v, true, Some("2026.10.09".into()));
+        for k in ["pristine_at_tip", "game_patch_version", "roster_version", "pristine_sha256", "roster_sha256", "chain_head"] {
+            assert!(out[k].is_null(), "{k}: {}", out[k]);
+        }
+        assert_eq!(out["runtime_version"], "1.2.12", "both sides still run the same Dolphin");
+        assert_eq!(out["league_game_version"], "2026.10.09");
+        assert_eq!(out["seed_sha256"], "s");
+    }
+
+    #[test]
+    fn a_retail_preflight_is_unchanged() {
+        assert_eq!(for_edition(retail_preflight(), false, Some("2026.10.09".into())), retail_preflight());
     }
 
     /// The exact line runtime 1.2.6 wrote into the joiner's status when the
@@ -385,10 +417,11 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  let p=Platform::detect();let legacy=default_legacy_root(&p);
  let found=find_runtime_and_game(&p,runtime,game,legacy.as_deref());
  let runtime_ok=found.as_ref().map(|(f,_)|supports_launcher_netplay(f.path()).unwrap_or(false)).unwrap_or(false);
- // A league room boots the league disc, so that is the image that must be there. The retail pristine_*/chain_head
- // fields below still describe the retail disc; the server ignores them for an edition:"league" match (Plan 2).
+ // A league room boots the league disc, so that is the image that must be there (installed and whole; the server
+ // already gated membership, so not the cache). The retail image fields below describe the retail disc, and the
+ // server compares them for EVERY match (backend match.js), so `for_edition` sends null for each in a league room.
  let league=edition==Some("league");
- let image_ok=if league { crate::league_edition::ready_league_image(&p).is_ok() } else { found.is_ok() };
+ let image_ok=if league { crate::league_edition::league_image_for_room(&p).is_ok() } else { found.is_ok() };
  let seed=netplay_boot_state(&p,seed_kind).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
  // A raw league room boots the disc with no seed at all (standard netplay): nothing to be missing.
  let seed_ok=seed.is_some()||seed_kind.map(str::trim)==Some("raw");
@@ -411,12 +444,25 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  let pristine=data.as_ref().and_then(|d|reborn_core::game_image::find_pristine(d)).map(|x|x.folder_sha256);
  let chain_head=data.as_ref().and_then(|d|reborn_core::game_patch::Chain::load(&reborn_core::game_patch::component_root(d).join(reborn_core::game_patch::CHAIN_FILE)).ok().flatten()).and_then(|c|c.head().map(str::to_string));
  let pristine_at_tip=match (&pristine,&chain_head){(Some(a),Some(b))=>Some(a==b),_=>None};
- serde_json::json!({"runtime_ok":runtime_ok,"image_ok":image_ok,"seed_ok":seed_ok,"seed_sha256":seed,"backend_ok":true,
+ for_edition(serde_json::json!({"runtime_ok":runtime_ok,"image_ok":image_ok,"seed_ok":seed_ok,"seed_sha256":seed,"backend_ok":true,
   "roster_version":version("roster"),"game_patch_version":version("game-patch"),"runtime_version":version("runtime"),
   "pristine_sha256":source.as_ref().map(|s|s.pristine_sha256.clone()),"roster_sha256":source.as_ref().and_then(|s|s.roster_sha256.clone()),
   "pristine_at_tip":pristine_at_tip,"chain_head":chain_head,
   "edition":edition,"league_game_version":crate::league_edition::installed_league_version(),
-  "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
+  "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))}),
+  league,crate::league_edition::installed_league_version())
+}
+
+/// A league room's preflight names no retail image: the league disc is its own build, and the server compares
+/// pristine_at_tip, game_patch_version, roster_version, pristine_sha256 and roster_sha256 whenever both sides send
+/// them (match.js), so each is null. runtime_version stays (both sides run the same Dolphin) and league_game_version
+/// is the installed league build. A retail preflight is returned untouched.
+fn for_edition(mut v:serde_json::Value,league:bool,league_game_version:Option<String>)->serde_json::Value{
+ if league {
+  for k in ["pristine_at_tip","game_patch_version","roster_version","pristine_sha256","roster_sha256","chain_head"] { v[k]=serde_json::Value::Null; }
+  v["league_game_version"]=serde_json::Value::from(league_game_version);
+ }
+ v
 }
 
 /// online.
@@ -437,7 +483,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // or starts the emulator, so an unverified disc gets neither one here
   // either.
   // The league disc is not judged as a retail one (it would read NotReborn, and Withhold would take its pack off
-  // every launch); ready_league_image below is its gate: installed, league.json naming this launcher's game ID.
+  // every launch); league_image_for_room below is its gate: installed, league.json naming this launcher's game ID (the server gated membership).
   let chosen_disc=if league { reborn_core::game_identity::ImageStanding::Reborn } else { may_play_before_boot(&p,&game_path)? };
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
@@ -448,7 +494,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // Resolved BEFORE the texture sync, not after, because these are the bytes
   // the sync has to be judging. The gate above read the disc the player
   // chose; this is the file the emulator is actually handed.
-  let online=if league { Some(crate::league_edition::ready_league_image(&p)?) } else { match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)} };
+  let online=if league { Some(crate::league_edition::league_image_for_room(&p)?) } else { match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)} };
   // The file the emulator is handed, not the one the player picked. A netplay
   // copy that is not Reborn's own is a ruling on the bytes about to boot, so
   // it turns a verified disc into NotReborn. A chosen disc nobody could read

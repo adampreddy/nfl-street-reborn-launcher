@@ -26,7 +26,7 @@ pub(crate) const DAMAGED: &str = "The league files look damaged. Update league f
 
 const SIGN_IN_FIRST: &str = "Sign in with Discord on the Play page first.";
 const BUSY: &str = "The league server is busy. Try again in a minute.";
-const UNAVAILABLE: &str = "The league server couldn't be reached. Try again in a minute.";
+pub(crate) const UNAVAILABLE: &str = "The league server couldn't be reached. Try again in a minute.";
 const NOT_PUBLISHED: &str = "League files aren't available yet. Check back after the commissioners publish them.";
 const INSTALL_FAILED: &str = "The league files didn't finish downloading. Press Install again to resume where it stopped.";
 const CLOSE_THE_GAME: &str = "Close the game, then press Install again to finish. Nothing downloaded is lost.";
@@ -115,6 +115,18 @@ fn is_member_at(cache: &Path) -> bool {
 pub(crate) fn ready_league_image(p: &Platform) -> Result<PathBuf, String> {
     let data = p.paths.data_root().map_err(|_| NOT_INSTALLED.to_string())?;
     ready_league_image_in(&data, is_member(p))
+}
+
+/// The league disc for a room boot (netplay_open, mm_preflight): installed and whole, without the membership cache.
+/// The server already gated the room (it refuses non-members), and the cache may be absent or cleared by a sign-out
+/// while a fixture is live; refusing there would strand a member inside their match. Final review #2.
+pub(crate) fn league_image_for_room(p: &Platform) -> Result<PathBuf, String> {
+    let data = p.paths.data_root().map_err(|_| NOT_INSTALLED.to_string())?;
+    room_image_in(&data)
+}
+
+fn room_image_in(data: &Path) -> Result<PathBuf, String> {
+    ready_league_image_in(data, true)
 }
 
 fn ready_league_image_in(data: &Path, member: bool) -> Result<PathBuf, String> {
@@ -288,6 +300,15 @@ pub(crate) fn bytes_on_disk<'a>(downloads: &Path, staging: &Path, files: impl It
             staged.or_else(part).unwrap_or(0).min(bytes)
         })
         .sum()
+}
+
+/// Install state only, from disk (the pointer and `league.json`): no network, no release check. For pages that ask
+/// on every load (the Mods page's league note); `latest` is always null and `update_available` false.
+#[tauri::command]
+pub fn league_edition_installed() -> serde_json::Value {
+    let p = Platform::detect();
+    let info_ok = p.paths.data_root().map(|d| le::read_league_info(&d).is_ok()).unwrap_or(false);
+    status_view(installed_league_version().as_deref(), None, 0, info_ok)
 }
 
 /// Install state, and the newest version the signed release offers (network; absent offline).
@@ -583,6 +604,43 @@ mod tests {
         assert_eq!(ready_league_image_in(&dir, false), Err(NOT_A_MEMBER.to_string()), "membership lost: refused");
         assert!(image.is_file() && info.is_file(), "a refusal never removes the league files");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_room_boots_the_installed_disc_without_asking_the_membership_cache() {
+        // The server let this player into the room (it gates membership); the cache may be absent (nothing in this
+        // build writes it yet) or cleared by a sign-out mid-match. Final review #2.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(room_image_in(dir.path()), Err(NOT_INSTALLED.to_string()), "still needs the league build");
+        let info = le::league_info_path(dir.path());
+        std::fs::create_dir_all(info.parent().unwrap()).unwrap();
+        std::fs::write(&info, serde_json::json!({"schema":"nsr.league-game.v1","game_id":le::LEAGUE_GAME_ID,"iso":"game/league.iso","textures":format!("textures/{}", le::LEAGUE_GAME_ID)}).to_string()).unwrap();
+        let image = le::league_image_path(dir.path());
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        std::fs::write(&image, b"disc").unwrap();
+        assert_eq!(room_image_in(dir.path()), Ok(image.clone()), "no cache needed");
+        assert_eq!(ready_league_image_in(dir.path(), false), Err(NOT_A_MEMBER.to_string()), "offline play keeps the gate");
+        // The commands that start something from the League tab keep the cache gate.
+        let src = include_str!("league_edition.rs");
+        for c in ["pub async fn league_host_friendly(", "pub async fn league_room_open("] {
+            let body = &src[src.find(c).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(body.contains("ready_league_image(&p)"), "{c}");
+        }
+    }
+
+    #[test]
+    fn the_local_install_answer_needs_no_network() {
+        let src = include_str!("league_edition.rs");
+        let body = &src[src.find("pub fn league_edition_installed(").expect("league_edition_installed")..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        for net in ["Updater", "Origin", "http", "check("] {
+            assert!(!body.contains(net), "the Mods page asks on every load: no network ({net})");
+        }
+        assert!(body.contains("status_view(") && body.contains("read_league_info"));
+        assert!(include_str!("main.rs").contains("league_edition::league_edition_installed,"));
+        let mods = include_str!("../ui/mods.js");
+        assert!(mods.contains("\"league_edition_installed\"") && !mods.contains("league_edition_status"), "the Mods page asks the local answer");
     }
 
     #[test]

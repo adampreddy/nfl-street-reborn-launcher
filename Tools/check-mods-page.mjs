@@ -179,7 +179,7 @@ answers = {
   controls_current: current,
   mods_toggle: (args) => (args && String(args.id).startsWith("reborn.soundtrack.") ? { ...syncDone, soundtrack_note: "Your soundtrack is on the disc: 14 custom songs." } : syncDone),
   mods_sync: syncDone,
-  league_edition_status: { installed: true },
+  league_edition_installed: { installed: true },
   controls_set: { profile: "playstation", synced: null, sync_note: "Recorded. Applied at the next launch: Another launcher is running" },
 };
 
@@ -199,7 +199,7 @@ await tick();
 await tick();
 // The league note: shown only when the league build is installed (one shared mod list).
 check("league note is shown when the league build is installed", byId["league-mods-note"]?.hidden === false, String(byId["league-mods-note"]?.hidden));
-answers.league_edition_status = { installed: false };
+answers.league_edition_installed = { installed: false };
 await import("data:text/javascript;base64," + Buffer.from(mod + "\n// second load").toString("base64"));
 await tick();
 await tick();
