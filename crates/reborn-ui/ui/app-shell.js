@@ -2,6 +2,8 @@
 import { bridge } from './shell.js';
 import { MenuPadReader, readLayout } from './menu-pad.js';
 import { mountMenuPadSetup } from './menu-pad-setup.js';
+// Steam Deck Game Mode has no native file dialog; this draws one in the window.
+import './window-picker.js';
 
 // Tell Discord presence which page is open. Fire-and-forget and fully guarded: presence must never
 // be able to break a page, and the Playwright checkers run these pages against a stubbed bridge that

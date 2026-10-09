@@ -22,6 +22,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod window_picker;
 mod content_updates;
 mod music_page;
 mod remap;
@@ -4767,7 +4768,7 @@ async fn settings_paths() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn pick_path(kind: String) -> Result<Option<String>, String> {
+async fn pick_path(app: tauri::AppHandle, kind: String) -> Result<Option<String>, String> {
     // The Linux first-run test (installer/linux/e2e_first_run.py) cannot click
     // a native file dialog, and the page's invoke cannot be swapped (Tauri
     // freezes it). Set only by that test; a player never has it.
@@ -4775,6 +4776,23 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
         if let Some(path) = std::env::var_os("REBORN_E2E_PICK_GAME") {
             return Ok(Some(PathBuf::from(path).display().to_string()));
         }
+    }
+    // Game Mode draws no native dialog (see window_picker): the launcher's own.
+    if reborn_core::platform::in_game_mode() {
+        let audio = reborn_core::soundtrack::decode::EXTENSIONS;
+        return match kind.as_str() {
+            "folder" => window_picker::pick(&app, &kind, &[], true, "Choose a folder").await,
+            "game" => window_picker::pick(&app, &kind, &["iso", "gcm", "rvz", "ciso", "wbfs"], false, "Choose your NFL Street 2 game file").await,
+            "runtime" => window_picker::pick(&app, &kind, &[], false, "Choose the emulator").await,
+            "memory_card" => window_picker::pick(&app, &kind, &["raw", "gcp"], false, "Choose a GameCube memory card").await,
+            "manifest" => window_picker::pick(&app, &kind, &["json"], false, "Choose a component manifest").await,
+            "audio" => window_picker::pick(&app, &kind, audio, false, "Choose a song").await,
+            "pack" => window_picker::pick(&app, &kind, &["nsrmusic", "nsmp"], false, "Choose a soundtrack pack").await,
+            // A save: pick the folder, the file keeps its usual name.
+            "save_pack" => Ok(window_picker::pick(&app, &kind, &[], true, "Choose where to save the pack").await?
+                .map(|d| PathBuf::from(d).join("my-soundtrack.nsrmusic").display().to_string())),
+            _ => Err("Unknown file type".into()),
+        };
     }
     let dialog = rfd::AsyncFileDialog::new().set_title("Choose a location for NFL Street Reborn");
     let picked = match kind.as_str() {
@@ -4794,7 +4812,13 @@ async fn pick_path(kind: String) -> Result<Option<String>, String> {
 /// Several files at once, for adding a batch of songs to the soundtrack.
 /// Empty when the dialog was closed without a choice.
 #[tauri::command]
-async fn pick_paths(kind: String) -> Result<Vec<String>, String> {
+async fn pick_paths(app: tauri::AppHandle, kind: String) -> Result<Vec<String>, String> {
+    if reborn_core::platform::in_game_mode() {
+        return match kind.as_str() {
+            "audio" => Ok(window_picker::pick(&app, &kind, reborn_core::soundtrack::decode::EXTENSIONS, false, "Choose a song").await?.into_iter().collect()),
+            _ => Err("Unknown file type".into()),
+        };
+    }
     let dialog = rfd::AsyncFileDialog::new();
     let picked = match kind.as_str() {
         "audio" => dialog.set_title("Choose songs").add_filter("Audio", reborn_core::soundtrack::decode::EXTENSIONS).pick_files().await,
@@ -6557,9 +6581,19 @@ fn main() {
             // A one-file Linux launcher fetches its emulator now, in the
             // background, so no page waits for it.
             content_updates::start_runtime_download();
-            if game_mode {
-                if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+            if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                if game_mode {
                     let _ = w.set_fullscreen(true);
+                } else if let Ok(Some(m)) = w.current_monitor() {
+                    // A 1280x800 window plus its title bar and a taskbar is
+                    // taller than a 1280x800 screen (the Deck's, at 100%
+                    // scaling): the bottom, with Continue on it, was off
+                    // screen (Deck tester, 2026-10). Small screens start
+                    // maximized, which fits the window between the panels.
+                    let logical = m.size().to_logical::<f64>(m.scale_factor());
+                    if logical.height <= 900.0 || logical.width <= 1366.0 {
+                        let _ = w.maximize();
+                    }
                 }
             }
             Ok(())
@@ -6750,6 +6784,8 @@ fn main() {
             settings_paths,
             pick_path,
             pick_paths,
+            window_picker::pick_path_answer,
+            window_picker::browse_dir,
             update_check,
             update_download,
             update_activity,
