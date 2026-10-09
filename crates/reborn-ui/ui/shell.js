@@ -195,7 +195,8 @@ if (bridge) {
       if (saved && Object.prototype.hasOwnProperty.call(saved, key)) set(key, saved[key]);
     }
   } catch (_) { /* Pages surface their own read failures and keep existing values. */ }
-  try { if (await bridge.invoke("league_member") === true) addLeagueLink(document); } catch (_) { /* no tab is the safe answer */ }
+  // Not awaited: no page's startup waits on the League link. A failure leaves the tab out (the safe answer).
+  try { Promise.resolve(bridge.invoke("league_member")).then((m) => { if (m === true) addLeagueLink(document); }).catch(() => {}); } catch (_) { /* no tab */ }
 }
 
 import("./look.js").then(m => { m.refreshLook(); m.mountNavMarker(); }).catch(() => {});

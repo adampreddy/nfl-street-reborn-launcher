@@ -1,0 +1,149 @@
+/* The League tab (spec 2026-10-08 v2 §3-4). Layout only: every colour is a theme.css token (Tools/check-theme-tokens.mjs);
+   team colours arrive as --tc (yours) and --oc (the opponent's), set by league.js from an exact #RRGGBB, with
+   --team-fallback behind them. The bold part is the week scoreboard and the This week card; the rest stays quiet. */
+body.page-league #main{padding:28px}
+.page-league #screen{display:flex;flex-direction:column;gap:16px;min-width:0}
+.page-league #screen>.refusal,.page-league #screen>.partial{margin:0}
+
+/* team header: logo, league · team · season line, and the League files button on the right */
+.lg-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:18px;padding:18px 22px;
+  background:linear-gradient(100deg,color-mix(in srgb,var(--tc,var(--team-fallback)) 16%,transparent) 0,transparent 46%),var(--glass-1);
+  box-shadow:inset 4px 0 0 var(--tc,var(--team-fallback)),var(--sheen),var(--shadow)}
+.lg-head .team-logo.lg-head-logo{width:56px;height:56px}
+.lg-head-text{min-width:0}
+.lg-head h1{margin-top:4px;font:700 30px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em;overflow-wrap:anywhere}
+.lg-head-line{margin-top:6px;font-size:13px;color:var(--fg-2)}
+.lg-head-actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.lg-install{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.lg-install progress{width:220px;height:6px}
+.lg-install .btn.attention{box-shadow:var(--mine-edge),var(--sheen)}
+.lg-files{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--fg-3)}
+.lg-ok{display:inline-block;flex:none;width:7px;height:7px;border-radius:50%;background:var(--ok)}
+/* a team without a logo: its letters on its own colour */
+.page-league .team-logo.text{background:color-mix(in srgb,var(--tc,var(--team-fallback)) 45%,var(--glass-2));color:var(--fg)}
+.lg-head .team-logo.text,.lg-vs .team-logo.text{font-size:15px;font-weight:700}
+.lg-vs-team.opp .team-logo.text{background:color-mix(in srgb,var(--oc,var(--team-fallback)) 45%,var(--glass-2))}
+
+/* the week scoreboard: one strip of games, yours first with the red edge, ‹ › to page it */
+.lg-board{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:4px;padding:6px}
+.lg-board.fits{grid-template-columns:minmax(0,1fr)}
+.lg-board.fits .lg-step{display:none}
+.lg-step{width:32px;padding:0;font-size:18px}
+.lg-track{display:grid;grid-auto-flow:column;grid-auto-columns:var(--league-cell-w);gap:8px;margin:0;padding:4px;list-style:none;
+  overflow-x:auto;scroll-snap-type:x proximity;scroll-padding:4px;scrollbar-width:none}
+.lg-track::-webkit-scrollbar{display:none}
+.lg-track>li{display:flex;min-width:0;scroll-snap-align:start}
+.lg-cell{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;margin:0;padding:10px 12px;text-align:left;
+  font:inherit;color:var(--fg);border:1px solid var(--stroke);border-radius:var(--r-md);background:var(--glass-1)}
+button.lg-cell{cursor:pointer}
+.lg-cell.mine{background:var(--glass-2);border-color:var(--stroke-hi);box-shadow:var(--mine-edge)}
+button.lg-cell.mine:hover{background:var(--glass-3)}
+.lg-cell.live{border-color:color-mix(in srgb,var(--red) 45%,transparent)}
+.lg-status{display:flex;align-items:center;gap:6px;height:14px;font:600 10.5px/1 Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.lg-status.final{color:var(--fg-2)}
+.lg-status.live{color:var(--red-ink)}
+.lg-cell.mine .lg-status{color:var(--red-ink)}
+.lg-status .live-dot{width:6px;height:6px}
+.lg-side{display:grid;grid-template-columns:3px 20px minmax(0,1fr) auto 22px;align-items:center;gap:8px;font-size:13px;color:var(--fg-2)}
+.lg-cell.scheduled .lg-side,.lg-cell.in_progress .lg-side,.lg-cell.live .lg-side{color:var(--fg)}
+.lg-side.won{color:var(--fg)}
+.lg-side.won .lg-abbr,.lg-side.won .lg-pts{font-weight:700}
+.lg-chip{width:3px;height:18px;border-radius:2px;background:var(--tc,var(--team-fallback))}
+.lg-side .team-logo.lg-cell-logo{width:20px;height:20px}
+/* no logo: the abbreviation is already beside it, so the badge is just the team's colour */
+.lg-side .team-logo.lg-cell-logo.text{font-size:0}
+.lg-abbr{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-rec{font-size:11.5px;color:var(--fg-3)}
+.lg-pts{text-align:right;font:600 15px/1 Inter,system-ui,sans-serif}
+
+/* the page under the strip: your game and the results on the left, the league build and the table on the right */
+.lg-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.lg-col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.lg-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
+
+/* This week: both teams in their colours (a split bar along the top, a wash from each side), the one big button */
+.lg-week{background:linear-gradient(105deg,color-mix(in srgb,var(--tc,var(--team-fallback)) 24%,transparent) 0,transparent 44%),
+  linear-gradient(255deg,color-mix(in srgb,var(--oc,var(--team-fallback)) 18%,transparent) 0,transparent 44%),var(--glass-1)}
+.lg-week::before{content:"";flex:none;height:3px;background:linear-gradient(90deg,var(--tc,var(--team-fallback)) 0 50%,var(--oc,var(--team-fallback)) 50% 100%)}
+.lg-week.empty::before{background:var(--tc,var(--team-fallback))}
+.lg-week .vc-b{align-items:stretch;padding-bottom:22px}
+.lg-week.empty .vc-b{justify-content:center;min-height:180px}
+.lg-vs{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:start;gap:16px;padding-top:6px}
+.lg-vs-team{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0;text-align:center}
+.lg-vs .team-logo.lg-vs-logo{width:72px;height:72px;margin-bottom:4px}
+.lg-vs-name{max-width:100%;font:700 18px/1.2 Inter,system-ui,sans-serif;letter-spacing:-.01em;overflow-wrap:anywhere}
+.lg-vs-rec{font-size:12.5px;color:var(--fg-3)}
+.lg-vs-at{align-self:center;display:grid;place-items:center;width:40px;height:40px;margin-top:-28px;border:1px solid var(--stroke);border-radius:50%;
+  background:var(--glass-1);font:700 12px Inter,system-ui,sans-serif;text-transform:uppercase;color:var(--fg-2)}
+.lg-owner{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px 8px;margin-top:4px;font-size:12.5px;color:var(--fg-2)}
+.lg-owner .avatar.lg-av{width:22px;height:22px;font-size:10px}
+.lg-handle{font-weight:600;color:var(--fg)}
+.lg-online{display:inline-flex;align-items:center;gap:5px}
+.lg-line{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:18px;font:600 15px/1.3 Inter,system-ui,sans-serif;color:var(--fg);text-align:center}
+.lg-line.live{color:var(--red-ink)}
+.lg-line.final,.lg-line.unlinked{color:var(--fg-2)}
+.lg-week.empty .lg-line{margin-top:0;font-size:18px;color:var(--fg-2)}
+.lg-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:16px}
+.lg-week .btn.lg-go{height:44px;min-width:240px;padding:0 28px;font-size:14px}
+.lg-week .lg-actions .btn:not(.lg-go){height:44px}
+.lg-hint{margin-top:10px;font-size:12.5px;color:var(--fg-3);text-align:center}
+.lg-week .refusal{margin-top:14px}
+
+/* the league build: Play offline · Host friendly, the friendlies' rules switch, the controller answer */
+.lg-play-btns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.lg-play-btns .btn{width:100%}
+.lg-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--rule)}
+.lg-toggle-text{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:12px;color:var(--fg-3)}
+.lg-toggle-text b{font-size:13px;font-weight:600;color:var(--fg)}
+.lg-toggle .look-switch{flex:none}
+.lg-play .lg-hint{text-align:left}
+.lg-setup{margin-top:12px}
+.lg-setup p{margin-bottom:10px}
+.lg-row{display:flex;flex-wrap:wrap;gap:8px}
+
+/* the quiet lists: standings, results, roster */
+.lg-list{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.lg-list>li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:38px;padding:0 18px;border-top:1px solid var(--rule);font-size:13px}
+.lg-list>li.mine{background:var(--red-wash);box-shadow:var(--mine-edge);font-weight:600}
+.lg-list .r{text-align:right;color:var(--fg-2)}
+.lg-list>li.mine .r{color:var(--fg)}
+.lg-rank{color:var(--fg-3)}
+.lg-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-results>li{grid-template-columns:22px minmax(0,1fr)}
+.lg-res{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;font:700 11px Inter,system-ui,sans-serif;background:var(--glass-2);color:var(--fg-3)}
+.lg-res.w{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.lg-res.l{background:var(--red-wash);color:var(--red-ink)}
+.lg-results .lg-name{color:var(--fg-2)}
+.lg-leaders{display:flex;flex-direction:column;gap:14px}
+.lg-lcol{display:flex;flex-direction:column;gap:2px}
+.lg-lcol .k-label{margin-bottom:2px}
+.lg-leader{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px;font-size:13px}
+.lg-leader b{font-weight:600}
+.lg-lcol .vc-none{font-size:12.5px;color:var(--fg-3)}
+.lg-roster{overflow:hidden}
+.lg-roster summary{padding:14px 18px;font:600 15px/1.2 Inter,system-ui,sans-serif;cursor:pointer}
+.lg-roster summary:hover{background:var(--glass-1)}
+.lg-roster .lg-list>li{grid-template-columns:40px minmax(0,1fr) auto}
+.lg-pos{font-size:12px;font-weight:600;letter-spacing:.04em}
+
+/* signed out, and a first load that failed */
+.lg-signin{display:flex;flex-direction:column;align-items:flex-start;gap:12px;max-width:560px;padding:28px}
+.lg-signin h2{font:700 20px/1.2 Inter,system-ui,sans-serif}
+.lg-signin p{color:var(--fg-2)}
+.lg-error{display:flex;flex-direction:column;align-items:flex-start;gap:12px}
+
+@media (max-width:1100px){
+  /* one column: your game, then the league build, then the results and the table */
+  .lg-grid{grid-template-columns:minmax(0,1fr)}
+  .lg-col{display:contents}
+  .lg-week{order:1}.lg-play{order:2}.lg-pair{order:3}#lg-standings{order:4}
+  .lg-pair{grid-template-columns:minmax(0,1fr)}
+  .lg-head{grid-template-columns:auto minmax(0,1fr)}
+  .lg-head-actions{grid-column:1/-1;flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:space-between}
+  .lg-install{align-items:flex-start}
+}
+@media (max-width:1000px){
+  body.page-league #main{padding:20px 24px 16px}
+  .lg-head h1{font-size:24px}
+  .lg-week .btn.lg-go{min-width:0;width:100%}
+}

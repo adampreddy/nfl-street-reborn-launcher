@@ -94,8 +94,10 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--chart-grey` | `rgba(174,181,192,.45)` | a chart's second series: points allowed, the grey legend key |
 | `--chart-grid`, `--chart-base` | `rgba(255,255,255,.06)`, `.14` | a chart's grid lines and its zero line |
 | `--chart-hole` | `#0d0e11` | the hole a chart dot sits in (the window colour) |
+| `--league-cell-w` | `184px` | one week-scoreboard cell (League) |
+| `--mine-edge` | `inset 3px 0 0 var(--red)` | your game, your row and the Update attention mark: a 3px red left edge, never a glow (League) |
 
-Set per element, not on `:root`: `--tc` (portrait team colour, from the server), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
+Set per element, not on `:root`: `--tc` (portrait team colour, from the server; on the League tab your team's colour), `--oc` (the League tab's opponent colour; both only as an exact `#RRGGBB`), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
 
 Colour rules:
 
@@ -157,7 +159,7 @@ Never paint a transparent window unless `data-glass="on"` is set. Never use a fl
 ## 5. Shell
 
 - **Grid:** `body.shell` is a grid of the sidebar (`--rail`: 184px, 160px under 1000px wide, 68px under 650px) and the page. Each page scrolls inside `#main`; the sidebar never scrolls with it.
-- **Sidebar:** logo slot, then Play, Mods, Music, Controllers, Online, Stats, with Settings and Help pinned to the bottom. Hover is `--glass-1`; the current item is `--glass-3` with `--sheen`. **One** `.nav-marker` (3px, `--red`) glides to the current item (`look.js`, `mountNavMarker`); there is no per-item marker.
+- **Sidebar:** logo slot, then Play, Mods, Music, Controllers, Online, League (league members only, added by `shell.js` from `league_member`), Stats, with Settings and Help pinned to the bottom. Hover is `--glass-1`; the current item is `--glass-3` with `--sheen`. **One** `.nav-marker` (3px, `--red`) glides to the current item (`look.js`, `mountNavMarker`); there is no per-item marker.
 - **Focus ring:** 2px solid white, 3px offset, never a glow. It shows on `:focus-visible` and on `.pad-focus` while the pad drives.
 - **Controller mode** is `body.gamepad-input` (`app-shell.js`): on while the last input was a pad, off on any mouse move, click or key.
 - **Hint bar** (`.input-footer`, `#input-hints`): it exists only while there is a prompt. An empty `#input-hints` sets `--hint-height:0px` and hides the bar; a filled one sets `34px`. Every page ships `<span id="input-hints"></span>` empty. The hints come from `app-shell.js` and appear only in controller mode.
@@ -248,6 +250,7 @@ The guards (`app-shell.js`, `blocksLeave()`) are: a click on a link that leaves 
 | `stats.html`, `profile.html` | `pages/stats.css`, `pages/profile.css` |
 | `recovery.html` | `pages/recovery.css` |
 | `online.html` | `pages/online.css` |
+| `league.html` | `pages/league.css` |
 | `leaderboard.html` (the full leaderboard, from Online) | `pages/leaderboard.css` |
 | `match.html` (every match and game) | `pages/game.css` |
 | `onboarding.html` | `onboarding.css` |
@@ -320,6 +323,8 @@ node --test crates/reborn-ui/ui/*.test.mjs Tools/lib/*.test.mjs
 | `stats-model.test.mjs` | Stats' model: numbers, Elo, trend, role cards, private rooms dropped |
 | `stats-rows.test.mjs` | match row models, the results-queue line and unsent counts |
 | `online-model.test.mjs` | Online's words and numbers: mode and series lines, accept countdown, Elo bits (hidden with Elo off), held notice, invite link, leaderboard rows |
+| `league-model.test.mjs` | League's model: page mode, card states, install/play gate, scoreboard cells, rows |
+| `league-nav.test.mjs` | the League link: members only, after Online, never twice |
 | `cover-color.test.mjs` | the cover's two colours from an avatar |
 | `outcome-words.test.mjs` | onboarding's outcome words (a bad disc or a missing patch is never reported as success) |
 | `Tools/lib/colour-tokens.test.mjs` | the colour-to-token mapping `extract-layout-css` uses |
