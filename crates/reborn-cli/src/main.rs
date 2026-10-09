@@ -612,15 +612,29 @@ fn main() -> std::process::ExitCode {
     // moved Adam's 2.1 folder aside in the middle of a test run. A command
     // touches the real roots only when it is told to.
 
-    let cli = Cli::parse();
-    match run(cli) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::ExitCode::from(2)
+    // Parse and run on a thread with room to spare. clap's derived parser for
+    // this many subcommands needs more than the 1 MiB a Windows main thread
+    // gets in an unoptimized build (`rebornctl --help` overflowed it), and
+    // the commands themselves are deep. A panic on the worker has already
+    // been reported by the hook above; it exits 101 like a main-thread panic.
+    let worker = std::thread::Builder::new().stack_size(WORKER_STACK).spawn(|| {
+        let cli = Cli::parse();
+        match run(cli) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::ExitCode::from(2)
+            }
         }
+    });
+    match worker.map(|w| w.join()) {
+        Ok(Ok(code)) => code,
+        _ => std::process::ExitCode::from(101),
     }
 }
+
+/// Stack for the thread `main` parses and runs on: 16 MiB.
+const WORKER_STACK: usize = 16 * 1024 * 1024;
 
 fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
     let platform = Platform::detect();

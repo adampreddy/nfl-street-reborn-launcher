@@ -38,6 +38,87 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
+/// Publish the league build (members only): the league disc and its
+/// texture folder, staged with league.json, published to the PRIVATE
+/// blob store, then a release carrying every other pin forward. This
+/// publishes to the local origin only; upload afterwards with
+/// `publish upload --private --bucket reborn-league` FIRST, then
+/// `publish upload`. If the default stage `<origin>-stage\league-game-<v>`
+/// would overlap the disc, texture folder or origin (the iso or textures
+/// sit in the origin's parent), the publish is refused: pass `--stage`
+/// somewhere outside them.
+#[derive(clap::Args, Debug)]
+pub struct LeagueGameArgs {
+    /// The league disc: a plain GameCube image with a league game id.
+    #[arg(long)]
+    iso: PathBuf,
+    /// Named after the league game id, or holding a folder that is.
+    #[arg(long)]
+    textures: PathBuf,
+    #[arg(long)]
+    origin: PathBuf,
+    #[arg(long)]
+    version: String,
+    /// Where the component is staged. Defaults to
+    /// `<origin>-stage\league-game-<version>`; must not overlap the
+    /// origin, the disc folder or the texture folder.
+    #[arg(long)]
+    stage: Option<PathBuf>,
+    /// Defaults to one above the highest league-game sequence.
+    #[arg(long)]
+    sequence: Option<u64>,
+    /// The publisher.key file. Without it the release step is only described.
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    release_version: Option<String>,
+    #[arg(long)]
+    release_sequence: Option<u64>,
+    #[arg(long, conflicts_with = "notes_file")]
+    notes: Option<String>,
+    #[arg(long)]
+    notes_file: Option<PathBuf>,
+    /// Stage, publish and sign. Without this everything is checked and
+    /// nothing is written.
+    #[arg(long)]
+    apply: bool,
+}
+
+/// Publish the league seed (members only) as seed/league.s01. Local
+/// origin only; upload with `publish upload --private --bucket
+/// reborn-league` first, then `publish upload`.
+#[derive(clap::Args, Debug)]
+pub struct LeagueContentArgs {
+    /// The captured league seed (a .s01 save state, at least 1 MiB).
+    #[arg(long)]
+    seed: PathBuf,
+    /// make_seed.py's capture record, when there is one.
+    #[arg(long)]
+    seed_json: Option<PathBuf>,
+    #[arg(long)]
+    origin: PathBuf,
+    #[arg(long)]
+    version: String,
+    /// Defaults to `<origin>-stage\league-content-<version>`; must not
+    /// overlap the origin or the seed's folder (pass `--stage` if so).
+    #[arg(long)]
+    stage: Option<PathBuf>,
+    #[arg(long)]
+    sequence: Option<u64>,
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    release_version: Option<String>,
+    #[arg(long)]
+    release_sequence: Option<u64>,
+    #[arg(long, conflicts_with = "notes_file")]
+    notes: Option<String>,
+    #[arg(long)]
+    notes_file: Option<PathBuf>,
+    #[arg(long)]
+    apply: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum PublishCommand {
     /// Generate the publisher key and the rotation key, together, once.
@@ -241,74 +322,11 @@ pub enum PublishCommand {
     /// would overlap the disc, texture folder or origin (the iso or textures
     /// sit in the origin's parent), the publish is refused: pass `--stage`
     /// somewhere outside them.
-    LeagueGame {
-        /// The league disc: a plain GameCube image with a league game id.
-        #[arg(long)]
-        iso: PathBuf,
-        /// Named after the league game id, or holding a folder that is.
-        #[arg(long)]
-        textures: PathBuf,
-        #[arg(long)]
-        origin: PathBuf,
-        #[arg(long)]
-        version: String,
-        /// Where the component is staged. Defaults to
-        /// `<origin>-stage\league-game-<version>`; must not overlap the
-        /// origin, the disc folder or the texture folder.
-        #[arg(long)]
-        stage: Option<PathBuf>,
-        /// Defaults to one above the highest league-game sequence.
-        #[arg(long)]
-        sequence: Option<u64>,
-        /// The publisher.key file. Without it the release step is only described.
-        #[arg(long)]
-        key: Option<PathBuf>,
-        #[arg(long)]
-        release_version: Option<String>,
-        #[arg(long)]
-        release_sequence: Option<u64>,
-        #[arg(long, conflicts_with = "notes_file")]
-        notes: Option<String>,
-        #[arg(long)]
-        notes_file: Option<PathBuf>,
-        /// Stage, publish and sign. Without this everything is checked and
-        /// nothing is written.
-        #[arg(long)]
-        apply: bool,
-    },
+    LeagueGame(Box<LeagueGameArgs>),
     /// Publish the league seed (members only) as seed/league.s01. Local
     /// origin only; upload with `publish upload --private --bucket
     /// reborn-league` first, then `publish upload`.
-    LeagueContent {
-        /// The captured league seed (a .s01 save state, at least 1 MiB).
-        #[arg(long)]
-        seed: PathBuf,
-        /// make_seed.py's capture record, when there is one.
-        #[arg(long)]
-        seed_json: Option<PathBuf>,
-        #[arg(long)]
-        origin: PathBuf,
-        #[arg(long)]
-        version: String,
-        /// Defaults to `<origin>-stage\league-content-<version>`; must not
-        /// overlap the origin or the seed's folder (pass `--stage` if so).
-        #[arg(long)]
-        stage: Option<PathBuf>,
-        #[arg(long)]
-        sequence: Option<u64>,
-        #[arg(long)]
-        key: Option<PathBuf>,
-        #[arg(long)]
-        release_version: Option<String>,
-        #[arg(long)]
-        release_sequence: Option<u64>,
-        #[arg(long, conflicts_with = "notes_file")]
-        notes: Option<String>,
-        #[arg(long)]
-        notes_file: Option<PathBuf>,
-        #[arg(long)]
-        apply: bool,
-    },
+    LeagueContent(Box<LeagueContentArgs>),
     /// Upload the origin's plan to the bucket: every blob, then every
     /// component manifest, then the two release files, in that order, and
     /// read back what the public host serves once it is all up.
@@ -615,20 +633,21 @@ fn run_with(cmd: PublishCommand, hint: &mut dyn FnMut(&str)) -> reborn_core::Res
             let log = ScanLog::new();
             Ok(exit_of(&stage_game_full(&req, &log as &dyn ScanObserver, &mut sink)?))
         }
-        PublishCommand::LeagueGame {
-            iso,
-            textures,
-            origin,
-            version,
-            stage,
-            sequence,
-            key,
-            release_version,
-            release_sequence,
-            notes,
-            notes_file,
-            apply,
-        } => {
+        PublishCommand::LeagueGame(args) => {
+            let LeagueGameArgs {
+                iso,
+                textures,
+                origin,
+                version,
+                stage,
+                sequence,
+                key,
+                release_version,
+                release_sequence,
+                notes,
+                notes_file,
+                apply,
+            } = *args;
             let notes = read_notes(notes, notes_file.as_deref())?;
             let req = reborn_core::publish::league::LeagueGameRequest {
                 iso: &iso,
@@ -648,20 +667,21 @@ fn run_with(cmd: PublishCommand, hint: &mut dyn FnMut(&str)) -> reborn_core::Res
             league_next_step(&outcome, &origin, hint);
             Ok(exit_of(&outcome))
         }
-        PublishCommand::LeagueContent {
-            seed,
-            seed_json,
-            origin,
-            version,
-            stage,
-            sequence,
-            key,
-            release_version,
-            release_sequence,
-            notes,
-            notes_file,
-            apply,
-        } => {
+        PublishCommand::LeagueContent(args) => {
+            let LeagueContentArgs {
+                seed,
+                seed_json,
+                origin,
+                version,
+                stage,
+                sequence,
+                key,
+                release_version,
+                release_sequence,
+                notes,
+                notes_file,
+                apply,
+            } = *args;
             let notes = read_notes(notes, notes_file.as_deref())?;
             let req = reborn_core::publish::league::LeagueContentRequest {
                 seed: &seed,
