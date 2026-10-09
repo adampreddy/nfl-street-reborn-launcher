@@ -65,7 +65,7 @@ pub async fn remap_start(runtime: String) -> Result<serde_json::Value, String> {
             .filter(|d| !d.device.starts_with("DInput/") || !d.device.contains("Keyboard"))
             .map(|d| {
                 let available = d.all_names();
-                let (_, needs_pressing) = Mapping::auto_from(&available);
+                let (_, needs_pressing) = Mapping::auto_from_with(&available, d.sdl_layout().as_ref());
                 serde_json::json!({
                     "device": d.device,
                     "automatic": needs_pressing.is_empty(),

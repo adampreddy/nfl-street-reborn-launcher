@@ -993,10 +993,10 @@ impl Session {
                 // Ask the runtime first. Fall back to a recorded device only
                 // when it could not be asked, which is any runtime older than
                 // --dump-device-inputs. See `devices::known_inputs`.
-                let available = match device_inputs
-                    .iter()
-                    .find(|d| d.device == pad.device_string())
-                {
+                let reported_pad = device_inputs.iter().find(|d| d.device == pad.device_string());
+                // What SDL says this pad's numbered controls are, when it knows.
+                let sdl = reported_pad.and_then(|d| d.sdl_layout());
+                let available = match reported_pad {
                     Some(reported) => reported.all_names(),
                     // The runtime is too old to list controls. Do NOT try to
                     // guess the pad from its name: Windows names a DualSense
@@ -1041,7 +1041,7 @@ impl Session {
                                 widened
                             );
                         }
-                        let repaired = existing.repair_for(&available);
+                        let repaired = existing.repair_for_with(&available, sdl.as_ref());
                         if !repaired.is_empty() {
                             tracing::info!(
                                 "{}: repaired {} binding(s) that named controls this pad does not have: {:?}",
@@ -1055,10 +1055,11 @@ impl Session {
                         }
                     }
                     None => {
-                        let seeded = crate::controller::ControllerProfile::from_device(
+                        let seeded = crate::controller::ControllerProfile::from_device_with(
                             pad.identity(),
                             1,
                             &available,
+                            sdl.as_ref(),
                         );
                         let dead = seeded.mapping.unresolvable(&available);
                         if dead.is_empty() {
