@@ -2885,7 +2885,7 @@ fn mods_activation(
     }
 
     let (ordered, missing) = active_packages(&activation, &installed);
-    for conflict in detect_conflicts(&ordered, &game_id) {
+    for conflict in detect_conflicts(&ordered, &game_id, reborn_core::mods::payload_fallback_for(&game_id).as_ref()) {
         if conflict.is_hard() {
             println!();
             println!("{}", conflict.message());
