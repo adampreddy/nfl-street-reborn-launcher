@@ -2280,6 +2280,60 @@ mod tests {
         }
     }
 
+    /// A members-only component through the league's signed links, several files at once (3b Task 4). An expired
+    /// link fails the download and the part files stay; after the backend issues the links again, the second
+    /// download resumes each part file by `Range` and never starts one over.
+    #[test]
+    fn a_league_download_resumes_after_its_links_are_issued_again() {
+        use crate::league_edition::{link_expired, GatedFile, LeagueSource};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+        let names: Vec<String> = (0..8).map(|i| format!("lg{i}.bin")).collect();
+        let blobs: BTreeMap<String, Vec<u8>> =
+            names.iter().map(|n| (n.clone(), format!("league blob {n}").into_bytes())).collect();
+        let (base, log) = crate::league_edition::tests::blob_store(blobs.clone());
+        let bytes = manifest("2.4.0", 8, false, names.iter().map(|n| file_of(n, &blobs[n])).collect());
+        let release = signed(&bytes, 12);
+        let plan = expect_plan(
+            service
+                .plan(&release, "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        // An earlier attempt left five bytes of two files, one of them the file whose link has since expired.
+        let downloads = service.layout().downloads_dir("offline-content", "2.4.0");
+        std::fs::create_dir_all(&downloads).unwrap();
+        for n in ["lg0.bin", "lg7.bin"] {
+            std::fs::write(downloads.join(format!("{n}.part")), &blobs[n][..5]).unwrap();
+        }
+        let link = |n: &str, sig: &str| GatedFile {
+            path: n.to_string(),
+            url: format!("{base}/{n}?sig={sig}"),
+            sha256: Sha256Hex::from_bytes(&blobs[n]).as_str().to_string(),
+            size: blobs[n].len() as u64,
+        };
+        let issued: Vec<GatedFile> = names.iter().map(|n| link(n, if n == "lg7.bin" { "old" } else { "good" })).collect();
+        let mut source = LeagueSource::new(crate::origin::Origin::new("https://cdn.invalid/"), &issued);
+
+        let err = service.download(&plan, &source).expect_err("an expired link stops the download");
+        assert!(link_expired(&err), "{err}");
+        assert!(!err.to_string().contains("sig="), "never the signed link in a message: {err}");
+        assert_eq!(std::fs::read(downloads.join("lg7.bin.part")).unwrap(), &blobs["lg7.bin"][..5], "the part file stays");
+
+        source.refresh(&[link("lg7.bin", "good")]);
+        assert!(service.download(&plan, &source).expect("download").is_complete());
+        for n in &names {
+            let staged = service.layout().staging_dir("offline-content", "2.4.0").join(n);
+            assert_eq!(std::fs::read(staged).unwrap(), blobs[n]);
+        }
+        let log = log.lock().unwrap();
+        for n in ["lg0.bin", "lg7.bin"] {
+            let asked: Vec<&String> = log.iter().filter(|l| l.starts_with(&format!("/{n}?"))).collect();
+            assert!(!asked.is_empty() && asked.iter().all(|l| l.ends_with("range=Some(5)")), "{n} resumed, never restarted: {log:?}");
+        }
+        assert!(log.iter().any(|l| l == "/lg7.bin?sig=good range=Some(5)"), "{log:?}");
+    }
+
     /// Breaks the first connection part way with a read ERROR (the CDN closing
     /// the TLS stream), then serves honestly from the asked offset.
     #[derive(Debug)]
