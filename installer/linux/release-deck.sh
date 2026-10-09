@@ -43,7 +43,10 @@ if [ "$MODE" = ship ]; then
 fi
 
 echo "== 2. build $DECK from $REF in WSL (detached), then the full first-run test"
-JOB=$(mktemp); cat > "$JOB" <<EOF
+# The job file sits on C: at a fixed place WSL reaches as /mnt/c/... (a Git
+# Bash mktemp path under /tmp has no /mnt/c twin, and the job silently never
+# started on the first 3.0.37 run).
+JOB="$STAGE/release-deck-job.sh"; cat > "$JOB" <<EOF
 #!/bin/bash
 exec > /root/release-deck.log 2>&1
 su - reborn -c 'cd ~/src/launcher && git checkout -q -- . && git fetch -q origin "+refs/heads/*:refs/remotes/origin/*" && git checkout -q -B release-deck "$REF" && git log --oneline -1' || { echo FAILED-FETCH; exit 1; }
@@ -55,8 +58,10 @@ if grep -aq '^=== reached the Play page' /home/reborn/src/e2e/out/steps.log    &
 else echo FAILED-E2E; grep -aE '^!!!|^text:|^=== game image' /home/reborn/src/e2e/out/steps.log | tail -4; exit 1; fi
 EOF
 sed -i 's/\r$//' "$JOB"
-wsl bash -c "cp '$(cygpath -u "$JOB" | sed 's|^/c/|/mnt/c/|')' /root/release-deck.sh && chmod +x /root/release-deck.sh && rm -f /root/release-deck.log && setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null &"
+wsl bash -c "rm -f /root/release-deck.log && cp '/mnt/c/Reborn Origin-stage/launcher-linux/release-deck-job.sh' /root/release-deck.sh && chmod +x /root/release-deck.sh && setsid nohup /root/release-deck.sh >/dev/null 2>&1 </dev/null &"
 rm -f "$JOB"
+sleep 30
+wsl cat /root/release-deck.log | grep -q . || { echo "the WSL job did not start: refusing"; exit 1; }
 # The wsl wrapper keeps no exit code, so the log is read, not grep's status.
 until wsl cat /root/release-deck.log | grep -qE '^(PASSED|FAILED)'; do sleep 60; done
 wsl cat /root/release-deck.log
