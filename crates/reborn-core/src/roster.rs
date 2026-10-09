@@ -125,7 +125,7 @@ pub fn builder_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
         dirs.push(install.join("tools"));
         dirs.push(install);
     }
-    dirs.extend(extra.iter().cloned());
+    dirs.extend(crate::game_patch::with_mac_bundle(extra));
     dirs
 }
 
