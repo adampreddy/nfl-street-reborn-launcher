@@ -838,11 +838,13 @@ pub(crate) fn edition_of(m: &MatchView) -> Option<String> {
 }
 
 /// The running match's league fixture, when it is a league game: its results then go up with `intent.league = true`
-/// and the fixture, which forward.js needs. A league friendly has no fixture and is not a league game.
+/// and the fixture, which forward.js needs. A league friendly has no fixture and is not a league game. The same
+/// filters as [`current_match_id`]: a finished, void, abandoned or held match, or a 3rd/4th player's seat, tags nothing
+/// (a held fixture stays in the snapshot while the Direct section is open, and its next game is not that fixture).
 pub fn current_match_league() -> Option<u64> {
     let s = lock(&STATE);
     let m = s.snapshot.as_ref()?.matched.as_ref()?;
-    if edition_of(m).is_none() {
+    if matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held") || m.extra_player() || edition_of(m).is_none() {
         return None;
     }
     m.league.as_ref()?.get("fixture_id")?.as_u64()
@@ -1393,8 +1395,12 @@ mod tests {
         assert_eq!(production.matches("seed_for_match(m)").count(), 2, "ready's preflight and the room launch");
     }
 
+    /// The two tests below write the shared STATE snapshot; one at a time.
+    static SNAPSHOT_TESTS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_league_match_is_launched_as_one() {
+        let _one = lock(&SNAPSHOT_TESTS);
         let snap: reborn_core::matchmaking::Snapshot = serde_json::from_str(
             r#"{"match":{"id":"m1","relay_state":"launching","edition":"league","league":{"league_id":36,"fixture_id":1234,"week":6}}}"#).unwrap();
         lock(&STATE).snapshot = Some(snap);
@@ -1404,6 +1410,27 @@ mod tests {
         assert_eq!(current_match_league(), None, "a friendly is not a league game");
         lock(&STATE).snapshot = None;
         assert_eq!(current_match_league(), None);
+    }
+
+    /// Fix round 1: only a LIVE league fixture tags a session. A held or finished fixture still in the snapshot (the
+    /// Direct section is open while a match is held) must not turn the next game into a league result.
+    #[test]
+    fn only_a_live_league_match_tags_a_session() {
+        let _one = lock(&SNAPSHOT_TESTS);
+        let at = |state: &str, seat: u8| -> Option<u64> {
+            let snap: reborn_core::matchmaking::Snapshot = serde_json::from_value(serde_json::json!({"match":{"id":"m1",
+                "relay_state":state,"seat":seat,"edition":"league","league":{"league_id":36,"fixture_id":1234,"week":6}}})).unwrap();
+            lock(&STATE).snapshot = Some(snap);
+            let got = current_match_league();
+            lock(&STATE).snapshot = None;
+            got
+        };
+        for done in ["complete", "void", "abandoned", "held"] {
+            assert_eq!(at(done, 0), None, "a {done} fixture tags nothing");
+        }
+        assert_eq!(at("running", 2), None, "a third player has no seat in the fixture");
+        assert_eq!(at("launching", 0), Some(1234), "a live fixture is tagged");
+        assert_eq!(at("running", 1), Some(1234));
     }
 
     #[test]

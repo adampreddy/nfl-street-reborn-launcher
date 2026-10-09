@@ -119,7 +119,11 @@ mod tests {
         assert!(body.contains("let league=edition.as_deref()==Some(\"league\");"));
         assert!(body.contains("crate::league_edition::ready_league_image(&p)?"));
         assert!(body.contains("build:if league{GameBuild::League}else{GameBuild::Offline}"));
-        assert!(body.contains("let fixture=crate::online_mm::current_match_league();"));
+        // Only a matchmade (rng_seed) league room asks for a fixture: a Direct/private game never tags itself, even
+        // with a held league fixture still in the snapshot (fix round 1).
+        assert!(body.contains("let fixture=if league&&rng_seed.is_some(){crate::online_mm::current_match_league()}else{None};"));
+        assert_eq!(body.matches("current_match_league").count(), 1, "the fixture is asked for in one place only");
+        assert!(body.contains("league_match:fixture.is_some()"));
         assert!(body.contains("league_fixture_id:fixture"));
         let pre = &src[src.find(&format!("{}{}", "pub(crate) fn mm_pre", "flight(")).unwrap()..open];
         assert!(pre.contains("\"seed_ok\":seed_ok,") && pre.contains("seed.is_some()||seed_kind.map(str::trim)==Some(\"raw\")"), "a raw room needs no seed");
@@ -478,7 +482,9 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
   // A league fixture's game files its results as a league game (intent.league + the fixture forward.js needs); a
   // league friendly has no fixture and is not one.
-  let fixture=crate::online_mm::current_match_league();
+  // Only a matchmade league room (rng_seed is the relay's) may tag: a Direct/private game never claims a fixture,
+  // even while a held or finished league match is still in the snapshot.
+  let fixture=if league&&rng_seed.is_some(){crate::online_mm::current_match_league()}else{None};
   let req=LaunchRequest{play_with_unset_controller:true,runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:if league{GameBuild::League}else{GameBuild::Offline},mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:fixture.is_some(),textures:standing};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
