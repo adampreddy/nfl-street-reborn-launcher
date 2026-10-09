@@ -217,6 +217,11 @@ impl LinuxPad {
     }
 }
 
+/// Whether the [`LinuxPad`] tables are the launcher's own vocabulary here.
+/// Only Linux Dolphin speaks evdev; everywhere else those names (`Axis 1-`,
+/// `A`) belong to the player.
+const LINUX_NAMES_ARE_OURS: bool = cfg!(target_os = "linux");
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mapping(BTreeMap<GcInput, PhysicalBinding>);
 
@@ -399,17 +404,25 @@ impl Mapping {
     /// wrote. None of those is a player's choice, and none says anything the
     /// universal binding does not already say. A value naming anything else
     /// (`Circle` on A, `Trigger R` on Z) is the player's.
+    ///
+    /// The evdev tables count only on Linux. On Windows `Axis 1-` is what a
+    /// pad with no button labels calls its left stick, so a stick the player
+    /// set up by pressing it read as the launcher's own and was widened back
+    /// to `Left Y+` on the next Play: dead again, and "set up your controller"
+    /// again (3.0.37, 2026-10-08).
     pub fn is_own_vocabulary(input: GcInput, value: &str) -> bool {
         Self::names_are_all_in(value, Self::candidates(input))
-            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.candidates(input))
-            || Self::names_are_all_in(value, LinuxPad::DeckRaw.candidates(input))
+            || (LINUX_NAMES_ARE_OURS
+                && (Self::names_are_all_in(value, LinuxPad::SteamVirtual.candidates(input))
+                    || Self::names_are_all_in(value, LinuxPad::DeckRaw.candidates(input))))
     }
 
     /// [`Mapping::is_own_vocabulary`] for the three non-GameCube bindings.
     pub fn extra_is_own_vocabulary(extra: Extra, value: &str) -> bool {
         Self::names_are_all_in(value, Self::extra_candidates(extra))
-            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.extra_candidates(extra))
-            || Self::names_are_all_in(value, LinuxPad::DeckRaw.extra_candidates(extra))
+            || (LINUX_NAMES_ARE_OURS
+                && (Self::names_are_all_in(value, LinuxPad::SteamVirtual.extra_candidates(extra))
+                    || Self::names_are_all_in(value, LinuxPad::DeckRaw.extra_candidates(extra))))
     }
 
     fn names_are_all_in(value: &str, names: &[&str]) -> bool {

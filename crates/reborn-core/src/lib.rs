@@ -57,6 +57,7 @@ pub mod controller_profiles;
 pub mod controller_diagnostics;
 pub mod cards;
 pub mod notices;
+pub mod pad_report;
 pub mod devices;
 pub mod gamepad;
 pub mod game_image;

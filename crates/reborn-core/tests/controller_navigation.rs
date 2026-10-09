@@ -8,13 +8,24 @@ fn profile() -> ControllerProfile {
     ControllerProfile::new(DeviceIdentity {guid: "test".into(),serial: None,name: "USB controller".into(),family: DeviceFamily::Generic},1)
 }
 
-/// SDL and DirectInput report the same plastic as XInput/WGInput under other
-/// names (`DInput/0/Wireless Controller` for a DualSense), so while a backend
-/// that names its controls has a pad, they are not offered: a pad kept on two
-/// backends gets two ports and drives two players.
+/// Runtime 1.2.7 lists no WGInput: an SDL pad beside an Xbox pad is a second
+/// pad (a USB GameCube pad is player two), DirectInput is never offered.
 #[test]
-fn a_named_backend_pad_hides_sdl_and_directinput_copies() {
+fn on_runtime_1_2_7_an_sdl_pad_beside_an_xbox_pad_is_player_two() {
     let scan=scan("XInput/0/Gamepad
+SDL/0/USB GameCube Controller
+DInput/0/USB Arcade Pad
+DInput/0/Keyboard Mouse");
+    let names:Vec<_>=scan.playable_pads().iter().map(|p|p.device_string()).collect();
+    assert_eq!(names,["XInput/0/Gamepad","SDL/0/USB GameCube Controller"]);
+}
+
+/// An older runtime lists WGInput, and its SDL numbers controls: SDL and
+/// DirectInput copies are hidden while a named pad exists.
+#[test]
+fn on_an_older_runtime_a_named_pad_hides_sdl_and_directinput_copies() {
+    let scan=scan("XInput/0/Gamepad
+WGInput/0/Xbox One Game Controller
 SDL/0/USB GameCube Controller
 DInput/0/USB Arcade Pad
 DInput/0/Keyboard Mouse");
