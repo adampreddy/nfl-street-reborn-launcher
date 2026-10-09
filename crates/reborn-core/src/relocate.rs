@@ -554,6 +554,30 @@ mod tests {
         assert!(plan(&root, Path::new("relative")).is_err());
     }
 
+    /// A real move to another drive, run by hand (the Windows Sandbox walk,
+    /// with a virtual drive attached): plans and copies the data root at
+    /// REBORN_MOVE_ROOT onto REBORN_MOVE_DRIVE and writes the plan to
+    /// REBORN_MOVE_PLAN_OUT for the launcher's --finish-move to complete.
+    /// With REBORN_MOVE_EXPECT_REFUSAL set, asserts the plan is refused with
+    /// those words instead.
+    #[test]
+    #[ignore]
+    fn real_drive_move() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} not set"));
+        let root = PathBuf::from(var("REBORN_MOVE_ROOT"));
+        let drive = PathBuf::from(var("REBORN_MOVE_DRIVE"));
+        if let Ok(words) = std::env::var("REBORN_MOVE_EXPECT_REFUSAL") {
+            let why = plan(&root, &drive).expect_err("the plan should have been refused");
+            println!("refused: {why}");
+            assert!(why.contains(&words), "{why}");
+            return;
+        }
+        let plan = plan(&root, &drive).unwrap_or_else(|why| panic!("plan refused: {why}"));
+        println!("plan: {plan:?}");
+        copy(&plan, &|_, _| {}, &AtomicBool::new(false)).unwrap_or_else(|why| panic!("copy: {why}"));
+        std::fs::write(var("REBORN_MOVE_PLAN_OUT"), serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+    }
+
     #[test]
     #[cfg(windows)]
     fn the_new_folder_is_always_at_the_top_of_the_drive() {
