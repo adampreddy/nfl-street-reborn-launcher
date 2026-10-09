@@ -43,3 +43,7 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 - `league-game` tree: `league.json` (`{"schema":"nsr.league-game.v1","game_id","iso","textures"}`), `game/league.iso`, `textures/<GAME_ID>/...`; installed at `library/league/`. `league-content`: `seed/league.s01`, installed at `library/league-content/`. Plan 3b checks `league.json.game_id == LEAGUE_GAME_ID` and composes from `library/league/textures/<ID>`.
 - `ComponentId` names `LeagueGame`/`LeagueContent` and install roots must be identical in Plan 4 (deck/publisher line) and Plan 3b (3.0.35 launcher line); merge conflict expected and resolved in favour of identical definitions.
 - Publish CLI adds `--origin` and `--version` like every other publish command.
+
+## Rulings (controller, after Plan 2 final review)
+- If the joiner's league-game version is NEWER than the room's `required`, Plan 3a shows "Your opponent needs to update their league files" (not "Update league files"). Compare versions client-side: `league_update_required.required < installed` -> opponent message.
+- Join body `league_game_version` is REQUIRED for edition:"league" rooms even when the room's version is null; missing -> 409 league_version_mismatch with `required: null`.
