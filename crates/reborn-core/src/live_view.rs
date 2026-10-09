@@ -52,7 +52,7 @@ impl LiveError {
 }
 
 /// A non-success status as a [`LiveError`]: 429 is its own kind, everything else is `Server`.
-fn status_error(status: u16) -> LiveError {
+pub(crate) fn status_error(status: u16) -> LiveError {
     if status == 429 {
         LiveError::RateLimited
     } else {

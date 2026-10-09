@@ -346,6 +346,10 @@ pub fn clear_token(platform: &Platform) -> Result<()> {
     if still_there.is_some() {
         return Err(Error::player(SIGN_OUT_FAILED));
     }
+    // The League tab's last answer belongs to this sign-in: the next player on this PC must not see the tab.
+    if let Ok(league) = crate::league_home::cache_path(platform) {
+        let _ = std::fs::remove_file(league);
+    }
     let path = identity_path(platform).map_err(|e| {
         tracing::warn!("the identity file path could not be resolved: {e}");
         Error::player(SIGN_OUT_FAILED)
@@ -558,6 +562,12 @@ pub fn machine_label() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signing_out_forgets_the_league_tab() {
+        let src = include_str!("identity.rs");
+        let body = &src[src.find("pub fn clear_token").unwrap()..src.find("pub fn sign_out").unwrap()];
+        assert!(body.contains("league_home::cache_path"), "clear_token no longer removes league.json");
+    }
 
     #[test]
     fn a_nickname_refusal_reaches_the_player_verbatim_and_a_server_fault_does_not() {

@@ -898,6 +898,7 @@ mod tests {
 pub mod dolphin_preferences;
 pub mod live_plays;
 pub mod live_view;
+pub mod league_home;
 pub mod matchmaking;
 pub mod presence;
 pub mod presence_discord;
