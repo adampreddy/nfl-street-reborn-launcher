@@ -30,3 +30,9 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 - `league_host_friendly(ruleset: "league"|"raw")` → creates friendly room via backend and opens it in the existing room flow.
 - `league_room_open()` (league game; from old Plan 3) and the existing `mm_room_join(code)` join path; the room launch path picks the seed from `ruleset` (`league` → `league.s01` from `league-content`, `ranked` → `ranked.s01`, `raw` → none) and the ISO/game ID from `edition`.
 - Uploads for league matches set `intent.league=true` + `intent.fixture_id`.
+
+## Rulings (controller, after Plan 3a draft)
+- Every league-edition room call carries the caller's installed version in the body: `POST /v1/league/room {league_game_version}`, `POST /v1/league/friendly {ruleset, league_game_version}`, `POST /v1/mm/rooms/:code/join {league_game_version}` (field ignored for retail rooms). Backend compares against the room's `league_game_version`.
+- Backend version refusal: 409 `{error:"league_version_mismatch", required:"<version>"}`. The launcher's join/open mapping (Plan 3b) turns it into `{kind:"league_update_required", required}`; Plan 3a matches on that kind.
+- `league_room_open()` resolves `{action:"created"|"join"|"in_series", room?, code?, match_id?}` (unchanged from the old plan).
+- `league_host_friendly` and `league_room_open` do NOT navigate; the League tab page navigates to `online.html` itself.
