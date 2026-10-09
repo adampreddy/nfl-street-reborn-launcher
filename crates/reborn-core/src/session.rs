@@ -809,6 +809,12 @@ impl Session {
                 let repair = crate::dolphin_preferences::unusable_here(&doc);
                 report.updated.extend(doc.merge(&repair).updated);
             }
+            // And a GFX.ini value that blacks out the game here (Immediate XFB
+            // on a Mac). Always empty off macOS.
+            if name == "GFX.ini" {
+                let repair = crate::dolphin_preferences::gfx_unusable_here(&doc);
+                report.updated.extend(doc.merge(&repair).updated);
+            }
 
             // Nothing to change means nothing to write. A launcher that
             // rewrites a config on every start looks like it is corrupting it.
