@@ -401,6 +401,9 @@ pub struct WrittenConfig {
     /// Set when PLAYER ONE's pad has dead essential bindings. See
     /// [`player_one_blocked`].
     pub player_one_blocked: Option<BlockedPad>,
+    /// What this Play saw of the pads, for [`crate::pad_report`]. Only when
+    /// the runtime itself answered the device scan.
+    pub pad_report: Option<serde_json::Value>,
     /// Which user directory this launch will boot against, and why.
     pub user_dir: UserDir,
     /// What the recorded controls profile did to the activation.
@@ -423,6 +426,7 @@ impl Default for WrittenConfig {
             no_controller: false,
             pads_needing_setup: Vec::new(),
             player_one_blocked: None,
+            pad_report: None,
             // A path is required, and an empty one is obviously not a real
             // directory, so a caller that forgets to set it cannot mistake it
             // for a resolved one.
@@ -996,6 +1000,9 @@ impl Session {
             }
         }
         written.pads_needing_setup = plan.pads_needing_setup.clone();
+        if authoritative {
+            written.pad_report = Some(crate::pad_report::build(&scan, &plan, true, crate::pad_report::runtime_version(platform).as_deref()));
+        }
         match plan.ini {
             Some(ini) => {
                 let path = pad_path;
@@ -1106,6 +1113,10 @@ impl Session {
         let _ = supervisor.recover_unfinished()?;
 
         let written = Self::prepare(platform, req)?;
+        // Before any refusal: a pad that cannot press Start is the report that matters most.
+        if let Some(report) = written.pad_report.clone() {
+            crate::pad_report::send_if_new(platform, report);
+        }
 
         // Never start the game on a pad that cannot press Start.
         //
