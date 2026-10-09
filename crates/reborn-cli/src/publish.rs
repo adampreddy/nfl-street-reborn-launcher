@@ -232,6 +232,83 @@ pub enum PublishCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Publish the league build (members only): the league disc and its
+    /// texture folder, staged with league.json, published to the PRIVATE
+    /// blob store, then a release carrying every other pin forward. This
+    /// publishes to the local origin only; upload afterwards with
+    /// `publish upload --private --bucket reborn-league` FIRST, then
+    /// `publish upload`. If the default stage `<origin>-stage\league-game-<v>`
+    /// would overlap the disc, texture folder or origin (the iso or textures
+    /// sit in the origin's parent), the publish is refused: pass `--stage`
+    /// somewhere outside them.
+    LeagueGame {
+        /// The league disc: a plain GameCube image with a league game id.
+        #[arg(long)]
+        iso: PathBuf,
+        /// Named after the league game id, or holding a folder that is.
+        #[arg(long)]
+        textures: PathBuf,
+        #[arg(long)]
+        origin: PathBuf,
+        #[arg(long)]
+        version: String,
+        /// Where the component is staged. Defaults to
+        /// `<origin>-stage\league-game-<version>`; must not overlap the
+        /// origin, the disc folder or the texture folder.
+        #[arg(long)]
+        stage: Option<PathBuf>,
+        /// Defaults to one above the highest league-game sequence.
+        #[arg(long)]
+        sequence: Option<u64>,
+        /// The publisher.key file. Without it the release step is only described.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        release_version: Option<String>,
+        #[arg(long)]
+        release_sequence: Option<u64>,
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
+        /// Stage, publish and sign. Without this everything is checked and
+        /// nothing is written.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Publish the league seed (members only) as seed/league.s01. Local
+    /// origin only; upload with `publish upload --private --bucket
+    /// reborn-league` first, then `publish upload`.
+    LeagueContent {
+        /// The captured league seed (a .s01 save state, at least 1 MiB).
+        #[arg(long)]
+        seed: PathBuf,
+        /// make_seed.py's capture record, when there is one.
+        #[arg(long)]
+        seed_json: Option<PathBuf>,
+        #[arg(long)]
+        origin: PathBuf,
+        #[arg(long)]
+        version: String,
+        /// Defaults to `<origin>-stage\league-content-<version>`; must not
+        /// overlap the origin or the seed's folder (pass `--stage` if so).
+        #[arg(long)]
+        stage: Option<PathBuf>,
+        #[arg(long)]
+        sequence: Option<u64>,
+        #[arg(long)]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        release_version: Option<String>,
+        #[arg(long)]
+        release_sequence: Option<u64>,
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
+        #[arg(long)]
+        apply: bool,
+    },
     /// Upload the origin's plan to the bucket: every blob, then every
     /// component manifest, then the two release files, in that order, and
     /// read back what the public host serves once it is all up.
@@ -338,6 +415,19 @@ fn exit_of<T>(outcome: &Outcome<T>) -> std::process::ExitCode {
     match outcome {
         Outcome::Done(_) | Outcome::Described => OK,
         Outcome::Refused(_) => PROBLEM,
+    }
+}
+
+/// After a league publish lands in the local origin, say what comes next:
+/// nothing here uploads. The private store goes first so the release never
+/// points at a blob the members' store does not hold yet.
+fn league_next_step<T>(outcome: &Outcome<T>) {
+    if matches!(outcome, Outcome::Done(_)) {
+        println!();
+        println!("Next: upload the members-only blobs first:");
+        println!("  rebornctl publish upload --origin <origin> --private --bucket reborn-league");
+        println!("then the public files:");
+        println!("  rebornctl publish upload --origin <origin>");
     }
 }
 
@@ -506,6 +596,72 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             };
             let log = ScanLog::new();
             Ok(exit_of(&stage_game_full(&req, &log as &dyn ScanObserver, &mut sink)?))
+        }
+        PublishCommand::LeagueGame {
+            iso,
+            textures,
+            origin,
+            version,
+            stage,
+            sequence,
+            key,
+            release_version,
+            release_sequence,
+            notes,
+            notes_file,
+            apply,
+        } => {
+            let notes = read_notes(notes, notes_file.as_deref())?;
+            let req = reborn_core::publish::league::LeagueGameRequest {
+                iso: &iso,
+                textures: &textures,
+                version: &version,
+                stage: stage.as_deref(),
+                origin: &origin,
+                sequence,
+                key: key.as_deref(),
+                release_version: release_version.as_deref(),
+                release_sequence,
+                notes: notes.as_deref(),
+                apply,
+            };
+            let log = ScanLog::new();
+            let outcome = reborn_core::publish::league::publish_league_game(&req, &log as &dyn ScanObserver, &mut sink)?;
+            league_next_step(&outcome);
+            Ok(exit_of(&outcome))
+        }
+        PublishCommand::LeagueContent {
+            seed,
+            seed_json,
+            origin,
+            version,
+            stage,
+            sequence,
+            key,
+            release_version,
+            release_sequence,
+            notes,
+            notes_file,
+            apply,
+        } => {
+            let notes = read_notes(notes, notes_file.as_deref())?;
+            let req = reborn_core::publish::league::LeagueContentRequest {
+                seed: &seed,
+                seed_json: seed_json.as_deref(),
+                version: &version,
+                stage: stage.as_deref(),
+                origin: &origin,
+                sequence,
+                key: key.as_deref(),
+                release_version: release_version.as_deref(),
+                release_sequence,
+                notes: notes.as_deref(),
+                apply,
+            };
+            let log = ScanLog::new();
+            let outcome = reborn_core::publish::league::publish_league_content(&req, &log as &dyn ScanObserver, &mut sink)?;
+            league_next_step(&outcome);
+            Ok(exit_of(&outcome))
         }
         PublishCommand::Upload {
             origin,
@@ -849,5 +1005,163 @@ mod private_upload_tests {
         for bad in ["reborn-content/", "a/b", "../x", " reborn-content", "Reborn"] {
             assert!(upload_target(false, Some(bad), None).is_err(), "{bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod league_tests {
+    use super::{run, PublishCommand};
+    use clap::Parser;
+    use std::path::{Path, PathBuf};
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: PublishCommand,
+    }
+
+    /// Hand rolled: `tempfile` is not a dependency of this crate.
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            let p = std::env::temp_dir().join(format!("rebornctl-league-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Tmp(p)
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fake_iso(path: &Path, id: &str) {
+        let mut b = vec![0u8; 0x440];
+        b[..6].copy_from_slice(id.as_bytes());
+        b[0x1C..0x20].copy_from_slice(&[0xC2, 0x33, 0x9F, 0x3D]);
+        std::fs::write(path, b).unwrap();
+    }
+
+    /// <root>/discs/league.iso, <root>/tex/LGTEST/a.png, origin <root>/work/origin.
+    fn layout(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let iso = root.join("discs").join("league.iso");
+        std::fs::create_dir_all(iso.parent().unwrap()).unwrap();
+        fake_iso(&iso, "LGTEST");
+        let tex = root.join("tex");
+        std::fs::create_dir_all(tex.join("LGTEST")).unwrap();
+        std::fs::write(tex.join("LGTEST").join("a.png"), b"png").unwrap();
+        let origin = root.join("work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        (iso, tex, origin)
+    }
+
+    fn game(iso: &Path, tex: &Path, origin: &Path, extra: &[&str]) -> PublishCommand {
+        let mut a: Vec<String> = vec![
+            "x".into(), "league-game".into(),
+            "--iso".into(), iso.display().to_string(),
+            "--textures".into(), tex.display().to_string(),
+            "--origin".into(), origin.display().to_string(),
+            "--version".into(), "2026.10.08".into(),
+        ];
+        a.extend(extra.iter().map(|s| s.to_string()));
+        Cli::try_parse_from(a).unwrap().cmd
+    }
+
+    fn code(c: std::process::ExitCode) -> String {
+        format!("{c:?}")
+    }
+
+    #[test]
+    fn league_commands_parse_with_the_contract_flags() {
+        let g = Cli::try_parse_from([
+            "x", "league-game", "--iso", "a.iso", "--textures", "t", "--origin", "o",
+            "--version", "2026.10.08", "--notes-file", "n.md", "--apply",
+        ]);
+        assert!(g.is_ok(), "{:?}", g.err());
+        let c = Cli::try_parse_from(["x", "league-content", "--seed", "league.s01", "--origin", "o", "--version", "1.0.0"]);
+        assert!(c.is_ok(), "{:?}", c.err());
+    }
+
+    #[test]
+    fn league_commands_require_origin_and_version_and_reject_both_notes() {
+        assert!(Cli::try_parse_from(["x", "league-game", "--iso", "a", "--textures", "t", "--version", "1"]).is_err());
+        assert!(Cli::try_parse_from(["x", "league-content", "--seed", "s", "--origin", "o"]).is_err());
+        assert!(Cli::try_parse_from([
+            "x", "league-content", "--seed", "s", "--origin", "o", "--version", "1",
+            "--notes", "a", "--notes-file", "b",
+        ]).is_err());
+    }
+
+    #[test]
+    fn league_game_help_says_to_pass_stage_when_the_default_is_refused() {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        let sub = cmd.find_subcommand_mut("league-game").unwrap();
+        let help = sub.render_long_help().to_string();
+        assert!(help.contains("--stage"), "{help}");
+        assert!(help.contains("refus"), "{help}");
+        for flag in ["--iso", "--textures", "--notes-file", "--origin", "--version", "--apply"] {
+            assert!(help.contains(flag), "{flag} missing: {help}");
+        }
+    }
+
+    #[test]
+    fn a_dry_run_succeeds_and_writes_nothing() {
+        let t = Tmp::new("dry");
+        let (iso, tex, origin) = layout(&t.0);
+        let before = std::fs::read_dir(t.0.join("work")).unwrap().count();
+        let stage = t.0.join("stage");
+        let cmd = game(&iso, &tex, &origin, &["--stage", &stage.display().to_string()]);
+        assert_eq!(code(run(cmd).unwrap()), code(super::OK));
+        assert_eq!(std::fs::read_dir(t.0.join("work")).unwrap().count(), before);
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn the_default_stage_is_refused_clearly_when_the_iso_sits_beside_the_origin() {
+        let t = Tmp::new("overlap");
+        let (iso, tex, _) = layout(&t.0);
+        // Origin directly beside the disc folder's contents: <root>/discs/origin,
+        // so the default <origin>-stage lands inside the disc folder.
+        let origin = t.0.join("discs").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let cmd = game(&iso, &tex, &origin, &[]);
+        assert_eq!(code(run(cmd).unwrap()), code(super::PROBLEM));
+        assert!(!t.0.join("discs").join("origin-stage").exists());
+    }
+
+    #[test]
+    fn a_non_disc_is_refused_and_a_bad_notes_file_is_an_error() {
+        let t = Tmp::new("bad");
+        let (iso, tex, origin) = layout(&t.0);
+        std::fs::write(&iso, vec![0u8; 0x440]).unwrap();
+        let stage = t.0.join("stage");
+        let s = stage.display().to_string();
+        assert_eq!(code(run(game(&iso, &tex, &origin, &["--stage", &s])).unwrap()), code(super::PROBLEM));
+        fake_iso(&iso, "LGTEST");
+        let missing = t.0.join("nope.md").display().to_string();
+        assert!(run(game(&iso, &tex, &origin, &["--stage", &s, "--notes-file", &missing])).is_err());
+    }
+
+    #[test]
+    fn league_content_dry_run_and_refusals() {
+        let t = Tmp::new("content");
+        let origin = t.0.join("work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let seed = t.0.join("seeds").join("league.s01");
+        std::fs::create_dir_all(seed.parent().unwrap()).unwrap();
+        std::fs::write(&seed, vec![1u8; 1024 * 1024 + 8]).unwrap();
+        let stage = t.0.join("stage").display().to_string();
+        let mk = |seed: &Path| {
+            Cli::try_parse_from([
+                "x", "league-content", "--seed", &seed.display().to_string(),
+                "--origin", &origin.display().to_string(), "--version", "1.0.0", "--stage", &stage,
+            ]).unwrap().cmd
+        };
+        assert_eq!(code(run(mk(&seed)).unwrap()), code(super::OK));
+        assert!(!Path::new(&stage).exists());
+        let tiny = t.0.join("seeds").join("tiny.s01");
+        std::fs::write(&tiny, b"x").unwrap();
+        assert_eq!(code(run(mk(&tiny)).unwrap()), code(super::PROBLEM));
     }
 }
