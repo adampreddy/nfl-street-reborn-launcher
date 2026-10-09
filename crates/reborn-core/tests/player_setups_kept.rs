@@ -269,3 +269,59 @@ fn two_identical_pads_keep_their_own_numbers() {
     assert_eq!(assignment, [(1, "WGInput/0/Wireless Controller".to_string()), (2, "WGInput/1/Wireless Controller".to_string())]);
     assert!(blocks_play(&[GcInput::Start]));
 }
+
+/// The same reset, wherever a player's working choice is spelled like one of
+/// the launcher's defaults: on the Deck an evdev stick is `Axis 1-`, which is
+/// also a launcher default there. With the pad's controls listed, a binding
+/// that works is the player's and is never widened away.
+#[test]
+fn a_working_choice_spelled_like_a_default_is_not_widened_away() {
+    let dump = "DEVICE\tWGInput/0/Arcade Pad\nINPUT\tButton A\t1\nINPUT\tStart\t1\nINPUT\tMenu\t1\n\
+INPUT\tLeft Y+\t1\nINPUT\tLeft Y-\t1\nINPUT\tLeft X+\t1\nINPUT\tLeft X-\t1\n";
+    let mut desk = Desk::new(dump);
+    desk.play(None, "");
+    let profile = desk.profiles.iter_mut().find(|p| p.identity.profile_key() == "WGInput/0/Arcade Pad").unwrap();
+    profile.rebind(GcInput::Start, "`Menu`");
+    desk.play(None, "");
+    let after = desk.profiles.iter().find(|p| p.identity.profile_key() == "WGInput/0/Arcade Pad").unwrap();
+    assert_eq!(after.mapping.get(GcInput::Start), Some("`Menu`"), "the player's Start was put back to the launcher's pick");
+}
+
+/// The Mac report (Adam, 2026-10-08: "the main issue is with the analog
+/// sticks"): the Mac emulator reads pads through SDL, which numbers every
+/// control. Buttons set up by pressing them survived Play, sticks did not:
+/// `Axis 1-` read as a launcher default and became `Left Y+` again.
+#[test]
+fn an_sdl_pad_set_up_by_pressing_keeps_its_sticks() {
+    let mut dump = String::from("DEVICE\tSDL/0/Xbox Series X Controller\n");
+    for b in 0..16 {
+        dump.push_str(&format!("INPUT\tButton {b}\t1\n"));
+    }
+    for a in 0..6 {
+        dump.push_str(&format!("INPUT\tAxis {a}-\t1\nINPUT\tAxis {a}+\t1\n"));
+    }
+    let mut desk = Desk::new(&dump);
+    let first = desk.play(None, "");
+    assert!(blocked(&first), "numbered controls: the wizard first");
+    let profile = desk.profiles.iter_mut().find(|p| p.identity.profile_key() == "SDL/0/Xbox Series X Controller").unwrap();
+    for (input, binding) in [
+        (GcInput::ButtonA, "`Button 0`"),
+        (GcInput::Start, "`Button 6`"),
+        (GcInput::MainStickUp, "`Axis 1-`"),
+        (GcInput::MainStickDown, "`Axis 1+`"),
+        (GcInput::MainStickLeft, "`Axis 0-`"),
+        (GcInput::MainStickRight, "`Axis 0+`"),
+        (GcInput::CStickUp, "`Axis 3-`"),
+        (GcInput::CStickRight, "`Axis 2+`"),
+    ] {
+        profile.rebind(input, binding);
+    }
+    for play in 1..=2 {
+        let plan = desk.play(None, "");
+        let after = desk.profiles.iter().find(|p| p.identity.profile_key() == "SDL/0/Xbox Series X Controller").unwrap();
+        assert_eq!(after.mapping.get(GcInput::MainStickUp), Some("`Axis 1-`"), "play {play}: left stick reset");
+        assert_eq!(after.mapping.get(GcInput::CStickUp), Some("`Axis 3-`"), "play {play}: C-stick reset");
+        assert!(plan.ini.as_deref().unwrap().contains("Main Stick/Up = `Axis 1-`"), "play {play}: not what the game reads");
+        assert!(!blocked(&plan), "play {play}: asked again");
+    }
+}

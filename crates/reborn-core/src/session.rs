@@ -1837,7 +1837,16 @@ pub fn plan_pads(inputs: &PadInputs, mut saved_profiles: Vec<ControllerProfile>)
                         // reached those players. The universal binding needs
                         // no evidence; the repair narrows it back to exact
                         // names whenever it can.
-                        let widened = existing.widen_stale_defaults();
+                        //
+                        // Only then. When the runtime HAS listed the pad's
+                        // controls, `repair_for` below fixes exactly the dead
+                        // ones, and widening first throws away a working
+                        // choice that happens to be spelled like one of ours:
+                        // a stick set up by pressing it is `Axis 1-`, which is
+                        // also an evdev default, and every Play put it back to
+                        // a name the pad does not have (2026-10-08, sticks
+                        // "just getting reset" on the Mac and on Windows).
+                        let widened = if available.is_empty() { existing.widen_stale_defaults() } else { Vec::new() };
                         if !widened.is_empty() {
                             tracing::info!(
                                 "{}: {} binding(s) were the launcher's own older vocabulary and were widened to bind every pad: {:?}",
