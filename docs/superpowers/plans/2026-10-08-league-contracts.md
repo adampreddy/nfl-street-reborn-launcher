@@ -51,3 +51,8 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 ## Rulings (Adam, 10-09)
 - No rematch after a ranked match or a league fixture match. Backend refuses the rematch route with 409; the launcher (Plan 3b) hides the Rematch button for these matches. Friendlies and casual/room matches keep rematch.
 - League live scores show on every member's scoreboard regardless of hidden presence (confirmed).
+
+## Ruling (Adam, 10-09): league game ID = `NSRS04`
+- `LEAGUE_GAME_ID = "NSRS04"` (replaces the `LGXXXX` placeholder in Plan 3b; the stager keeps refusing `LGXXXX`).
+- Dolphin takes a GameCube disc's REGION from the header at 0x458, not from the ID; the 4th ID char (`S`) only sets the country label. The league ISO must keep region NTSC-U (value 1) at 0x458 — the stager will refuse other regions.
+- Paths: textures `Load/Textures/NSRS04/`, per-game settings `GameSettings/NSRS04.ini` (+ 3-char `NSR.ini` layer). Retail's `Sys/GameSettings/GN7.ini` fixes do NOT apply to NSRS04 — Plan 3b must mirror them.
