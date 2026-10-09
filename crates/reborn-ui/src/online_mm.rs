@@ -645,6 +645,11 @@ pub fn mm_launch_prefs(runtime: Option<String>, game: Option<String>, preset: Op
     *lock(&LAUNCH) = (runtime, game, preset.unwrap_or_default());
 }
 
+/// What the Play page last reported (runtime, game, preset), for a launch that has no page choices of its own.
+pub(crate) fn launch_prefs() -> (Option<String>, Option<String>, String) {
+    lock(&LAUNCH).clone()
+}
+
 fn run(platform: Platform) {
     let mut since: u64 = 0;
     let mut chat: u64 = 0;
@@ -794,9 +799,13 @@ fn with_client<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, St
 /// A join's rejection: the sentence it always was, or, for a league version refusal, the shape Plan 3a matches on.
 pub(crate) fn join_error(e: MmError) -> serde_json::Value {
     match e {
-        MmError::LeagueUpdateRequired { required } => serde_json::json!({
-            "kind": "league_update_required", "message": reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE, "required": required
-        }),
+        MmError::LeagueUpdateRequired { required } => {
+            let mut v = serde_json::json!({ "kind": "league_update_required", "message": reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE });
+            if !required.trim().is_empty() {
+                v["required"] = serde_json::Value::from(required);
+            }
+            v
+        }
         other => serde_json::Value::String(other.to_string()),
     }
 }
@@ -1437,6 +1446,10 @@ mod tests {
     fn join_error_shapes() {
         let update = join_error(reborn_core::matchmaking::MmError::LeagueUpdateRequired { required: "2026.10.09".into() });
         assert_eq!(update, serde_json::json!({"kind":"league_update_required","message":reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE,"required":"2026.10.09"}));
+        // A room with no recorded version: no `required`, so the page says "update" and never compares "" with the
+        // installed version (which would read as "your opponent needs to update").
+        let unnamed = join_error(reborn_core::matchmaking::MmError::LeagueUpdateRequired { required: String::new() });
+        assert_eq!(unnamed, serde_json::json!({"kind":"league_update_required","message":reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE}));
         let plain = join_error(reborn_core::matchmaking::MmError::Refused("No such lobby.".into()));
         assert_eq!(plain, serde_json::Value::String("No such lobby.".into()), "every other refusal stays the sentence it was");
     }

@@ -1205,6 +1205,8 @@ async fn launch(
     // The player saw that their controller needs setting up and chose to play
     // anyway. Absent and false are the same thing: ask first.
     play_anyway: Option<bool>,
+    // "league": the League tab's Play offline (league_edition::league_play_offline). Absent: retail, as always.
+    edition: Option<String>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LaunchGuard::acquire_session()?;
@@ -1226,13 +1228,31 @@ async fn launch(
         // What we are about to boot, before we boot it. A disc that is not a
         // Reborn build must never reach the emulator wearing Reborn's
         // textures: that is what produced "old names with new faces".
-        let standing = may_play_before_boot(&p, &game_path)?;
+        //
+        // The League tab's Play offline boots the league build (spec v2 §4): its own disc, its own game ID, never
+        // judged against the retail patch chain (it is not on it) but by session's rule for that build. Retail is
+        // exactly what it was.
+        let league = edition.as_deref() == Some("league");
+        let (game_path, standing, build) = if league {
+            let image = crate::league_edition::ready_league_image(&p)?;
+            let data = p.paths.data_root().ok();
+            let standing = reborn_core::session::standing_for_build(
+                GameBuild::League,
+                &image,
+                data.as_deref(),
+                reborn_core::game_identity::ImageStanding::Unknown,
+            );
+            (image, standing, GameBuild::League)
+        } else {
+            let standing = may_play_before_boot(&p, &game_path)?;
+            (game_path, standing, GameBuild::Offline)
+        };
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
             graphics: preset_from(&preset),
             fullscreen,
-            build: GameBuild::Offline,
+            build,
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
@@ -2067,6 +2087,23 @@ pub(crate) fn sync_active_judged_for(
     already_judged: Option<reborn_core::game_identity::ImageStanding>,
     build: GameBuild,
 ) -> Result<ModSyncView, String> {
+    // The league tree composes only from an installed league build, and is judged by session's rule for that build
+    // (`standing_for_build`), never by the retail disc's verdict or the caller's word for it.
+    let league_standing = if build == GameBuild::League {
+        let data = p.paths.data_root().map_err(|e| e.to_string())?;
+        if reborn_core::league_edition::read_league_info(&data).is_err() {
+            return Err(crate::league_edition::NOT_INSTALLED.to_string());
+        }
+        Some(reborn_core::session::standing_for_build(
+            GameBuild::League,
+            &reborn_core::league_edition::league_image_path(&data),
+            Some(&data),
+            reborn_core::game_identity::ImageStanding::Unknown,
+        ))
+    } else {
+        None
+    };
+    let already_judged = league_standing.or(already_judged);
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
@@ -6683,6 +6720,11 @@ fn main() {
             online_mm::mm_leave_queue,
             online_mm::mm_room_create,
             online_mm::mm_room_join,
+            league_edition::league_edition_status,
+            league_edition::league_edition_install,
+            league_edition::league_play_offline,
+            league_edition::league_host_friendly,
+            league_edition::league_room_open,
             online_mm::mm_room_lookup,
             online_mm::mm_room_action,
             online_mm::mm_match_action,
