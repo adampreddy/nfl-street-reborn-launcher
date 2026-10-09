@@ -300,6 +300,7 @@ export function answers() {
   Object.assign(data, {
     session_active: false, ui_notices: [], netplay_status: null, netplay_pending_join: null, mm_state: null, mm_launch_prefs: null,
     settings_paths: { runtime: null, game: null, userDir: null, legacyRoot: null },
+    league_member: false,
     update_policy: { automatic: false, source: 'settings' }, update_check: { state: 'current', current: '3.0.0' }, update_activity: { downloading: false, ready: null },
     content_status: { phase: 'up_to_date', note: 'Everything is current.', components: [] },
     content_check: { phase: 'up_to_date', note: 'Everything is current.', components: [] },

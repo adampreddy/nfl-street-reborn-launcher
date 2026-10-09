@@ -165,6 +165,27 @@ export function minutes(n) {
   return m ? `${h} h ${m} min` : `${h} h`;
 }
 
+// The League tab (spec 2026-10-08): members only, so it is not in any page's hard-coded nav. The startup block below
+// adds it after Online when the core's cached answer (`league_member`, no network) says this player is in the league.
+// league.html carries its own link, so the page is never without it. Built with createElement only.
+const LEAGUE_ICON = ['M12 3 4 6v6c0 4.4 3.4 8.3 8 9 4.6-.7 8-4.6 8-9V6l-8-3Z', 'm9 12 2 2 4-4'];
+export function addLeagueLink(doc = document) {
+  const nav = doc && typeof doc.querySelector === 'function' ? doc.querySelector('.shell-nav') : null;
+  if (!nav || nav.querySelector('a[href="league.html"]')) return false;
+  const online = nav.querySelector('a[href="online.html"]');
+  if (!online) return false;
+  const a = doc.createElement('a');
+  a.setAttribute('href', 'league.html');
+  const ns = 'http://www.w3.org/2000/svg', svg = doc.createElementNS(ns, 'svg');
+  for (const [k, v] of [['viewBox', '0 0 24 24'], ['aria-hidden', 'true'], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '1.6'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round']]) svg.setAttribute(k, v);
+  for (const d of LEAGUE_ICON) { const p = doc.createElementNS(ns, 'path'); p.setAttribute('d', d); svg.append(p); }
+  const label = doc.createElement('span');
+  label.textContent = 'League';
+  a.append(svg, label);
+  online.insertAdjacentElement('afterend', a);
+  return true;
+}
+
 // Disk preferences are authoritative across windows and the Play shortcut.
 // Wait before a page builds its first command arguments from browser storage.
 if (bridge) {
@@ -174,6 +195,7 @@ if (bridge) {
       if (saved && Object.prototype.hasOwnProperty.call(saved, key)) set(key, saved[key]);
     }
   } catch (_) { /* Pages surface their own read failures and keep existing values. */ }
+  try { if (await bridge.invoke("league_member") === true) addLeagueLink(document); } catch (_) { /* no tab is the safe answer */ }
 }
 
 import("./look.js").then(m => { m.refreshLook(); m.mountNavMarker(); }).catch(() => {});
