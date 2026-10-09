@@ -34,14 +34,30 @@ pub fn cache_path(platform: &Platform) -> crate::platform::Result<PathBuf> {
     Ok(platform.data_dir(DataDir::Config)?.join(CACHE_FILE))
 }
 
+/// A cache whose `home` is not a JSON object (hand-edited, or from a future shape) is no cache at all.
 pub fn load_cache(path: &Path) -> LeagueCache {
-    std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let cache: LeagueCache = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if cache.home.as_ref().is_some_and(|h| !h.is_object()) {
+        return LeagueCache::default();
+    }
+    cache
 }
 
-/// Best effort: a cache that cannot be written only costs the next first frame its League link.
+/// Best effort: a cache that cannot be written only costs the next first frame its League link. Written to a
+/// sibling `.tmp` and renamed over the target, so a crash mid-write never leaves a truncated `league.json` (which
+/// would read as "not a member" and drop the tab during an outage).
 pub fn save_cache(path: &Path, cache: &LeagueCache) {
     let Ok(bytes) = serde_json::to_vec(cache) else { return };
-    if let Err(e) = std::fs::write(path, bytes) {
+    let tmp = path.with_file_name(format!("{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or(CACHE_FILE)));
+    let result = (|| -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
         tracing::warn!("league: the cache could not be written at {}: {e}", path.display());
     }
 }
@@ -76,7 +92,7 @@ pub fn resolve(fetched: Result<Value, LiveError>, cache: &LeagueCache, now_ms: u
         }
         Err(LiveError::Server(401)) => (Err(LiveError::Server(401)), Some(LeagueCache::default())),
         Err(e) => match (&cache.home, cache.member) {
-            (Some(home), true) => {
+            (Some(home), true) if home.is_object() => {
                 let mut v = home.clone();
                 v["stale"] = Value::Bool(true);
                 v["fetched_at_ms"] = Value::from(cache.fetched_at_ms);
@@ -180,5 +196,32 @@ mod tests {
         assert_eq!(load_cache(&path), c);
         std::fs::write(&path, b"not json").unwrap();
         assert_eq!(load_cache(&path), LeagueCache::default());
+    }
+
+    #[test]
+    fn a_leftover_tmp_file_does_not_confuse_load_and_save_replaces_it() {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let path = dir.join("league.json");
+        std::fs::write(dir.join("league.json.tmp"), b"{\"member\":tr").unwrap();
+        assert_eq!(load_cache(&path), LeagueCache::default());
+        let c = LeagueCache { member: true, home: Some(serde_json::json!({"member":true})), fetched_at_ms: 5 };
+        save_cache(&path, &c);
+        assert_eq!(load_cache(&path), c);
+        assert!(!dir.join("league.json.tmp").exists());
+        let nested = dir.join("a").join("league.json");
+        save_cache(&nested, &c);
+        assert_eq!(load_cache(&nested), c, "a missing parent dir is created");
+    }
+
+    #[test]
+    fn a_cache_with_a_non_object_home_is_no_cache_and_never_panics_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        std::fs::write(&path, br#"{"member":true,"home":"oops","fetched_at_ms":1}"#).unwrap();
+        assert_eq!(load_cache(&path), LeagueCache::default());
+        let bad = LeagueCache { member: true, home: Some(serde_json::json!("oops")), fetched_at_ms: 1 };
+        let (out, next) = resolve(Err(LiveError::Unreachable), &bad, 9);
+        assert_eq!(out.unwrap_err(), LiveError::Unreachable);
+        assert!(next.is_none());
     }
 }
