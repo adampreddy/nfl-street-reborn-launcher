@@ -56,3 +56,7 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 - `LEAGUE_GAME_ID = "NSRS04"` (replaces the `LGXXXX` placeholder in Plan 3b; the stager keeps refusing `LGXXXX`).
 - Dolphin takes a GameCube disc's REGION from the header at 0x458, not from the ID; the 4th ID char (`S`) only sets the country label. The league ISO must keep region NTSC-U (value 1) at 0x458 — the stager will refuse other regions.
 - Paths: textures `Load/Textures/NSRS04/`, per-game settings `GameSettings/NSRS04.ini` (+ 3-char `NSR.ini` layer). Retail's `Sys/GameSettings/GN7.ini` fixes do NOT apply to NSRS04 — Plan 3b must mirror them.
+
+## Ruling (controller, Plan 3b Task 8 review)
+- `league_play_offline({play_anyway?: bool})` — default false. When the controller check wants setup, it rejects with `{kind:"controller_setup", message}`; the League page offers "Set up controller" (Controllers page) and "Play anyway" (calls again with `play_anyway:true`). Mirrors the Play page.
+- `league_edition_install()` refuses before downloading when the data drive lacks space: `{kind:"no_space", message}` (message names the GB needed); a StorageFull during download maps to the same kind.
