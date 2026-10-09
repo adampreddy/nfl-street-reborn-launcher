@@ -1158,6 +1158,15 @@ mod tests {
         assert!(!dir.path().join("library").join("imported").exists());
     }
 
+    /// League blobs are not on the public CDN: the automatic update loop must never try to fetch them.
+    #[test]
+    fn league_components_are_never_auto_updated() {
+        assert!(!updatable().contains(&ComponentId::LeagueGame));
+        assert!(!updatable().contains(&ComponentId::LeagueContent));
+        assert_eq!(install_dir(ComponentId::LeagueGame), Some(DataDir::LibraryLeague));
+        assert_eq!(install_dir(ComponentId::LeagueContent), Some(DataDir::LibraryLeagueContent));
+    }
+
     /// A release that does not pin `game-full` cannot be talked into serving
     /// it: the pin is the only door, and without one the answer is
     /// `NotCarried`, not an error.

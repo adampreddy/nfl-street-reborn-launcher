@@ -45,6 +45,9 @@ pub enum GameBuild {
     Offline,
     /// Matchmaking. Standardized, verified before every match.
     Online,
+    /// The League edition (spec 2026-10-08 v2 §4): its own disc and game ID, members only. Not customizable, for the
+    /// same reason as `Online`: two members play it in lockstep, so nothing may rewrite it.
+    League,
 }
 
 impl GameBuild {
@@ -52,6 +55,7 @@ impl GameBuild {
         match self {
             GameBuild::Offline => "library/offline",
             GameBuild::Online => "library/online",
+            GameBuild::League => "library/league",
         }
     }
 
@@ -73,6 +77,7 @@ impl GameBuild {
         match self {
             GameBuild::Offline => "GN7E69",
             GameBuild::Online => "FR4N31",
+            GameBuild::League => crate::league_edition::LEAGUE_GAME_ID,
         }
     }
 }
@@ -639,6 +644,15 @@ mod tests {
             GameBuild::Offline.install_root(),
             GameBuild::Online.install_root()
         );
+    }
+
+    #[test]
+    fn the_league_build_is_its_own_non_customizable_game() {
+        assert_eq!(GameBuild::League.install_root(), "library/league");
+        assert!(!GameBuild::League.is_customizable(), "two members must boot the same bytes");
+        assert_eq!(GameBuild::League.game_id(), crate::league_edition::LEAGUE_GAME_ID);
+        assert_ne!(GameBuild::League.game_id(), GameBuild::Offline.game_id());
+        assert_eq!(crate::supervisor::RecordedBuild::from(GameBuild::League), crate::supervisor::RecordedBuild::Offline);
     }
 
     #[test]

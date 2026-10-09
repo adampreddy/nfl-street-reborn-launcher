@@ -92,6 +92,9 @@ impl From<GameBuild> for RecordedBuild {
         match b {
             GameBuild::Offline => RecordedBuild::Offline,
             GameBuild::Online => RecordedBuild::Online,
+            // The record keeps its two-value wire format (a backend reads it). A retail netplay session is already
+            // recorded `Offline` (netplay_open boots with build Offline), and a league one is the same kind of session.
+            GameBuild::League => RecordedBuild::Offline,
         }
     }
 }

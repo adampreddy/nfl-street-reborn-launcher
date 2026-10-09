@@ -173,6 +173,11 @@ if (-not $RuntimeOnly) {
     if ($Publisher) {
         cargo build --release -p reborn-publisher -p reborn-cli
     } else {
+        if ($Channel -eq "stable") {
+            # Plan 3b release gate: a stable launcher must boot the real league disc ID, never the placeholder.
+            cargo test -p reborn-core --lib league_game_id_is_named_before_a_stable_release -- --ignored
+            if ($LASTEXITCODE -ne 0) { throw "LEAGUE_GAME_ID is still the placeholder (crates/reborn-core/src/league_edition.rs). Name the league game ID before a stable build." }
+        }
         cargo build --release -p reborn-ui -p reborn-cli
     }
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
