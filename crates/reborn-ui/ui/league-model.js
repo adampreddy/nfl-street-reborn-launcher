@@ -1,0 +1,232 @@
+// The League tab's words and rows (spec 2026-10-08 v2 §3-4; data = Plan 1's site contract + Plan 2's room/live fields;
+// edition state = Plan 3b's league_edition_status), pure: no DOM, no calls. league.js draws what this returns.
+// The site stores no kickoff time (`when` is always null), so nothing here prints a time. Series and scores arrive as
+// {home, away}; `matchup.home` turns them into you/opp. `winner_team_id` is the series LEADER until status is final.
+
+const str = (v) => (typeof v === 'string' ? v : '');
+const num = (v) => (Number.isFinite(v) ? v : null);
+const arr = (v) => (Array.isArray(v) ? v : []);
+const HEX = /^#[0-9A-Fa-f]{6}$/;
+
+export function ordinal(n) {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  return `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'}`;
+}
+
+/** The only team colour that may reach a `--tc` property: an exact #RRGGBB. */
+export function teamColor(team) {
+  return typeof team?.color === 'string' && HEX.test(team.color) ? team.color : null;
+}
+
+export function pageMode(home) {
+  if (home && home.signed_in === false) return 'signed_out';
+  return home && home.member === true ? 'member' : 'redirect';
+}
+
+export function headerLine(home) {
+  const parts = [];
+  if (num(home?.league?.season) !== null) parts.push(`Season ${home.league.season}`);
+  const week = str(home?.league?.week_label) || (num(home?.league?.week) !== null ? `Week ${home.league.week}` : '');
+  if (week) parts.push(week);
+  if (str(home?.team?.record)) parts.push(home.team.record);
+  if (num(home?.team?.standing) !== null) parts.push(ordinal(home.team.standing));
+  return parts.join(' · ');
+}
+
+export function bannerLine(home) {
+  return home?.stale === true ? 'League data unavailable. Showing what was last loaded.' : null;
+}
+
+/** The This Week card's title. The site picks each team's earliest unfinished fixture, so a postponed game can sit in
+ *  an earlier week than the league's: that is a catch-up game, titled by its own week. */
+export function weekTitle(home) {
+  const lw = num(home?.league?.week);
+  const mw = num(home?.matchup?.week);
+  if (mw !== null && lw !== null && mw < lw) return `Catch-up game · Week ${mw}`;
+  const label = str(home?.league?.week_label) || (lw !== null ? `Week ${lw}` : '');
+  return label ? `This week · ${label}` : 'This week';
+}
+
+function oppName(m) {
+  return str(m?.opponent?.owner_display) || str(m?.opponent?.name) || 'your opponent';
+}
+
+/** {home, away} as [you, opp] from this team's side, or null. */
+function mine(pair, home) {
+  if (!pair || num(pair.home) === null || num(pair.away) === null) return null;
+  return home ? [pair.home, pair.away] : [pair.away, pair.home];
+}
+
+function standing(you, opp) {
+  if (you > opp) return `You lead ${you}-${opp}`;
+  if (you < opp) return `You trail ${you}-${opp}`;
+  return `Tied ${you}-${opp}`;
+}
+
+function finalLine(m, teamId) {
+  const decided = m.winner_team_id !== null && m.winner_team_id !== undefined;
+  const won = decided && m.winner_team_id === teamId;
+  if (m.forfeit === true) return decided ? `Final · ${won ? 'Won' : 'Lost'} by forfeit` : 'Final · Forfeit';
+  if (!decided) return 'Final';
+  const s = mine(m.series, m.home);
+  return `Final · ${won ? 'Won' : 'Lost'} the series${s ? ` ${s[0]}-${s[1]}` : ''}`;
+}
+
+const join = (...parts) => parts.filter(Boolean).join(' · ');
+
+/** The This Week card. A room only counts when it has a code to join. */
+export function cardState(home) {
+  const m = home?.matchup;
+  const base = { line: '', action: null, cancel: false, room: null };
+  if (home?.schedule_published === false) return { ...base, kind: 'unscheduled', line: 'Schedule not published yet' };
+  if (!m || m.status === 'bye' || !m.opponent) return { ...base, kind: 'bye', line: 'No game this week' };
+  if (m.status === 'final') return { ...base, kind: 'final', line: finalLine(m, home?.team?.id) };
+  const s = mine(m.series, m.home);
+  const who = oppName(m);
+  if (m.status === 'live' || m.room?.state === 'in_series') return { ...base, kind: 'live', line: s ? `LIVE · ${standing(...s)}` : 'LIVE', action: 'Open room', room: m.room || null };
+  const series = m.status === 'in_progress' && s ? `Series · ${standing(...s)}` : '';
+  // Plan 2 sends no `you_host`: the opponent hosts exactly when the room's host is the opponent's Discord ID.
+  const room = m.room && str(m.room.code) ? m.room : null;
+  if (room) {
+    const oppId = str(m.opponent.discord_user_id);
+    const theirs = oppId !== '' && room.host_discord_user_id === oppId;
+    const lobby = room.state === 'lobby';
+    if (theirs) return lobby ? { ...base, kind: 'lobby', line: join(series, `You're in @${who}'s room`), action: 'Open room', room }
+      : { ...base, kind: 'join', line: join(series, `@${who} is waiting`), action: `Join @${who}'s game`, room };
+    return { ...base, kind: lobby ? 'lobby' : 'waiting', line: join(series, lobby ? `@${who} joined` : `Waiting for @${who}…`), action: 'Open room', cancel: true, room };
+  }
+  if (!str(m.opponent.discord_user_id)) return { ...base, kind: 'unlinked', line: join(series, "Opponent hasn't linked Discord") };
+  // Mid-series the score is the line; otherwise say whether the opponent is online.
+  return { ...base, kind: 'play', line: series || (m.opponent.online === true ? `@${who} is online` : ''), action: 'Play league game' };
+}
+
+function gb(bytes) {
+  const n = num(bytes);
+  return n && n > 0 ? ` (${(n / 1073741824).toFixed(1)} GB)` : '';
+}
+
+function pct(p) {
+  return num(p?.total) && p.total > 0 && num(p?.done) !== null ? Math.max(0, Math.min(100, Math.round((p.done / p.total) * 100))) : null;
+}
+
+/** The header's Install/Update button, or null when the League edition is installed and current. `progress` is the
+ *  latest `league-install-progress` payload while an install runs, else null. */
+export function installState(status, progress) {
+  const busy = (label, percent) => ({ label: percent === null ? label : `${label} ${percent}%`, disabled: true, primary: false, percent });
+  if (progress && typeof progress === 'object') {
+    const p = pct(progress);
+    if (progress.phase === 'verify') return busy('Checking downloaded files…', null);
+    if (progress.phase === 'compose') return busy('Setting up textures…', p);
+    return busy('Downloading league files…', p);
+  }
+  if (!status || typeof status !== 'object') return { label: 'Checking league files…', disabled: true, primary: false, percent: null };
+  if (status.installed !== true) return { label: `Install league files${gb(status.size_bytes)}`, disabled: false, primary: true, percent: null };
+  if (status.update_available === true) return { label: `Update league files${gb(status.size_bytes)}`, disabled: false, primary: true, percent: null };
+  return null;
+}
+
+/** Whether the three play buttons work: only with the League edition installed, current and not mid-install. */
+export function playGate(status, progress) {
+  if (progress && typeof progress === 'object') return { ready: false, hint: 'League files are installing…' };
+  if (!status || typeof status !== 'object') return { ready: false, hint: 'Checking league files…' };
+  if (status.installed !== true) return { ready: false, hint: 'Install league files to play.' };
+  if (status.update_available === true) return { ready: false, hint: 'Update league files to play.' };
+  return { ready: true, hint: null };
+}
+
+/** A room refused because the two players' league files differ (Plan 2 `league_version_mismatch`, mapped by 3b to
+ *  kind `league_update_required`; the existing join path may pass the raw code through as the message). */
+export function isUpdateRequired(e) {
+  if (typeof e === 'string') return e === 'league_version_mismatch';
+  if (!e || typeof e !== 'object') return false;
+  return e.kind === 'league_update_required' || e.message === 'league_version_mismatch';
+}
+
+/** Dotted versions ("2026.10.08") compared segment by segment as numbers; <0, 0, >0. */
+function cmpVersion(a, b) {
+  const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = b.split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** The sentence for a league version refusal, or null when `e` is not one. The room's `required` version being OLDER
+ *  than ours means the opponent is behind (contracts Ruling after Plan 2 final review); otherwise ours are. */
+export function updateRequiredLine(e, status) {
+  if (!isUpdateRequired(e)) return null;
+  const required = str(e?.required);
+  const installed = status?.installed === true ? str(status.version) : '';
+  if (required && installed && cmpVersion(required, installed) < 0) return 'Your opponent needs to update their league files.';
+  return 'Update league files to play.';
+}
+
+export function friendlyRuleset(leagueSettingsOn) {
+  return leagueSettingsOn ? 'league' : 'raw';
+}
+
+function side(t, score, won) {
+  return { abbrev: str(t?.abbr), name: str(t?.name) || str(t?.abbr), record: str(t?.record), logo_url: str(t?.logo_url) || null,
+    color: teamColor(t), score, winner: won };
+}
+
+/** The week scoreboard strip: your game first, then the server's order. Pairs print away-home. A row with no fixture
+ *  or teams is dropped. A winner is marked only on a final game (mid-series `winner_team_id` is the leader). */
+export function scoreCells(home) {
+  const mineId = home?.matchup?.fixture_id;
+  const rows = arr(home?.week_games).filter((g) => g && g.fixture_id !== undefined && g.fixture_id !== null && g.home && g.away);
+  rows.sort((a, b) => (b.fixture_id === mineId) - (a.fixture_id === mineId));
+  return rows.map((g) => {
+    const status = ['final', 'in_progress', 'live'].includes(g.status) ? g.status : 'scheduled';
+    const ser = g.series && num(g.series.home) !== null && num(g.series.away) !== null ? `${g.series.away}-${g.series.home}` : '';
+    const statusText = status === 'final' ? (g.forfeit === true ? 'FORFEIT' : ser ? `FINAL · ${ser}` : 'FINAL')
+      : status === 'live' ? (ser ? `LIVE · ${ser}` : 'LIVE')
+      : status === 'in_progress' ? (ser ? `SERIES · ${ser}` : 'SERIES')
+      : 'This week';
+    const decided = status === 'final' && g.winner_team_id !== null && g.winner_team_id !== undefined;
+    const pts = (k) => (status === 'scheduled' ? null : num(g.score?.[k]));
+    return {
+      key: g.fixture_id, mine: g.fixture_id === mineId, status, statusText,
+      away: side(g.away, pts('away'), decided && g.winner_team_id === g.away.team_id),
+      home: side(g.home, pts('home'), decided && g.winner_team_id === g.home.team_id),
+    };
+  });
+}
+
+export function standingsRows(home) {
+  const me = home?.team?.id;
+  return arr(home?.standings).filter(Boolean).map((r) => ({
+    rank: num(r.rank), name: str(r.name), abbrev: str(r.abbr), record: str(r.record), mine: r.team_id === me,
+  }));
+}
+
+export function recentRows(home) {
+  return arr(home?.recent).filter(Boolean).map((r) => {
+    const where = `${r.home ? 'vs' : '@'} ${str(r.opponent_abbr)}${num(r.week) !== null ? ` · Week ${r.week}` : ''}`;
+    if (r.result !== 'W' && r.result !== 'L') return { result: null, text: `Forfeit ${where}` };
+    if (r.forfeit === true) return { result: r.result, text: `${r.result} by forfeit ${where}` };
+    const line = str(r.score) || str(r.series);
+    return { result: r.result, text: `${r.result}${line ? ` ${line}` : ''} ${where}` };
+  });
+}
+
+const LEADER_COLS = [['pass', 'Passing'], ['rush', 'Rushing'], ['rec', 'Receiving']];
+export function leaderCols(home) {
+  const unit = str(home?.leaders_unit);
+  return LEADER_COLS.map(([k, label]) => ({
+    label: unit ? `${label} ${unit}` : label,
+    rows: arr(home?.leaders?.[k]).filter(Boolean).slice(0, 3).map((p) => ({
+      name: str(p.name),
+      value: num(p.value) === null ? '—' : `${p.value.toLocaleString('en-US')}${unit ? ` ${unit}` : ''}`,
+    })),
+  }));
+}
+
+export function rosterRows(home) {
+  return arr(home?.roster).filter(Boolean).map((p) => ({
+    key: p.poid ?? null, number: num(p.number) === null ? '' : String(p.number), name: str(p.name), position: str(p.position),
+  }));
+}

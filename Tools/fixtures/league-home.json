@@ -1,0 +1,54 @@
+{
+  "ok": true,
+  "signed_in": true,
+  "member": true,
+  "stale": false,
+  "schedule_published": true,
+  "edition_versions": { "league-game": "2026.10.08", "league-content": "1.0.0" },
+  "league": { "id": 36, "name": "Reborn Season 4", "season": 4, "week": 6, "week_label": "Week 6" },
+  "team": { "id": 493, "name": "Subway Surfers", "abbr": "ADAM", "logo_url": "/live-assets/league/493.png", "color": "#00A3FF", "record": "4-1", "standing": 2 },
+  "matchup": {
+    "fixture_id": 1234, "week": 6, "home": true, "status": "scheduled", "forfeit": false,
+    "score": null, "series": null, "winner_team_id": null, "when": null,
+    "opponent": { "team_id": 486, "name": "Football Furies", "abbr": "BLONDE", "logo_url": null, "color": "#FF0000", "record": "3-2",
+                  "owner_display": "BLONDE", "discord_user_id": "480510938571735040", "online": true },
+    "room": null, "match_id": null
+  },
+  "week_games": [
+    { "fixture_id": 1230,
+      "home": { "team_id": 482, "name": "Gridiron Ghosts", "abbr": "GHO", "logo_url": null, "color": "#22AA44", "record": "5-0" },
+      "away": { "team_id": 483, "name": "Jock Squad", "abbr": "JOCK", "logo_url": null, "color": "#AA2222", "record": "2-3" },
+      "status": "final", "forfeit": false, "score": { "home": 49, "away": 21 }, "series": { "home": 2, "away": 0 }, "winner_team_id": 482, "when": null },
+    { "fixture_id": 1231,
+      "home": { "team_id": 484, "name": "Night Owls", "abbr": "OWL", "logo_url": null, "color": "#333333", "record": "2-3" },
+      "away": { "team_id": 485, "name": "Sand Crabs", "abbr": "CRAB", "logo_url": null, "color": "#DDAA00", "record": "1-4" },
+      "status": "in_progress", "forfeit": false, "score": { "home": 14, "away": 21 }, "series": { "home": 0, "away": 1 }, "winner_team_id": 485, "when": null },
+    { "fixture_id": 1232,
+      "home": { "team_id": 487, "name": "Rail Riders", "abbr": "RAIL", "logo_url": null, "color": "#5555FF", "record": "3-2" },
+      "away": { "team_id": 488, "name": "Dune Kings", "abbr": "DUNE", "logo_url": null, "color": "#AA7700", "record": "2-3" },
+      "status": "final", "forfeit": true, "score": null, "series": null, "winner_team_id": 487, "when": null },
+    { "fixture_id": 1234,
+      "home": { "team_id": 493, "name": "Subway Surfers", "abbr": "ADAM", "logo_url": "/live-assets/league/493.png", "color": "#00A3FF", "record": "4-1" },
+      "away": { "team_id": 486, "name": "Football Furies", "abbr": "BLONDE", "logo_url": null, "color": "#FF0000", "record": "3-2" },
+      "status": "scheduled", "forfeit": false, "score": null, "series": null, "winner_team_id": null, "when": null }
+  ],
+  "standings": [
+    { "rank": 1, "team_id": 482, "name": "Gridiron Ghosts", "abbr": "GHO", "logo_url": null, "record": "5-0" },
+    { "rank": 2, "team_id": 493, "name": "Subway Surfers", "abbr": "ADAM", "logo_url": null, "record": "4-1" },
+    { "rank": 3, "team_id": 486, "name": "Football Furies", "abbr": "BLONDE", "logo_url": null, "record": "3-2" }
+  ],
+  "recent": [
+    { "fixture_id": 1200, "week": 5, "opponent_abbr": "JOCK", "home": false, "result": "W", "score": "28-21", "series": "2-1", "forfeit": false },
+    { "fixture_id": 1190, "week": 4, "opponent_abbr": "GHO", "home": true, "result": "L", "score": null, "series": "0-2", "forfeit": false },
+    { "fixture_id": 1180, "week": 3, "opponent_abbr": "RAIL", "home": true, "result": null, "score": null, "series": null, "forfeit": true },
+    { "fixture_id": 1170, "week": 2, "opponent_abbr": "DUNE", "home": false, "result": "W", "score": null, "series": null, "forfeit": true }
+  ],
+  "leaders": {
+    "pass": [ { "poid": 12, "name": "Michael Vick", "value": 14 } ],
+    "rush": [ { "poid": 20, "name": "Barry Sanders", "value": 1204 } ],
+    "rec":  []
+  },
+  "leaders_unit": "TD",
+  "roster": [ { "poid": 12, "name": "Michael Vick", "position": "QB", "number": 7 }, { "poid": 84, "name": "Randy Moss", "position": "WR", "number": 84 } ],
+  "site_url": "https://nflstreetreborn.com/league/team.php?league_id=36&team_id=493"
+}
