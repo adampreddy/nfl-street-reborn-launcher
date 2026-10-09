@@ -87,6 +87,11 @@ pub fn previous_log_path(platform: &Platform) -> Result<PathBuf> {
 /// ever be shown.
 ///
 /// Call it once, first thing in `main`.
+///
+/// Never install a `log`-crate bridge (`tracing-log`'s `LogTracer`, `env_logger` and the like) or a debug-level
+/// capture for ureq or any other HTTP crate. ureq writes `log` debug records that carry each request URL, and the
+/// league's members-only downloads are presigned links (`X-Amz-Signature=...`, valid 6 h): any such capture would
+/// write working download credentials to this file on disk. Guarded by `tests::no_log_crate_bridge_is_in_the_build`.
 pub fn start(platform: &Platform) -> Option<PathBuf> {
     let path = log_path(platform).ok()?;
     let previous = previous_log_path(platform).ok()?;
@@ -293,6 +298,20 @@ impl Sink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guard for the note on [`start`]: no `log`-crate bridge or logger is in the build, so ureq's debug records
+    /// (which carry each request URL, the league's signed links among them) are never captured.
+    #[test]
+    fn no_log_crate_bridge_is_in_the_build() {
+        let lock_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+        let lock = std::fs::read_to_string(&lock_path).expect("the workspace Cargo.lock");
+        for bridge in ["tracing-log", "env_logger", "simplelog", "fern", "log4rs", "flexi_logger", "pretty_env_logger"] {
+            assert!(
+                !lock.contains(&format!("name = \"{bridge}\"")),
+                "{bridge} is in Cargo.lock: a `log` bridge would write ureq's request URLs (signed league links) to disk"
+            );
+        }
+    }
 
     /// A warning actually reaches a file on disk.
     ///

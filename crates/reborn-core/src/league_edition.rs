@@ -151,6 +151,9 @@ impl std::fmt::Debug for GatedFile {
 
 #[derive(Deserialize)]
 struct DownloadReply {
+    ok: bool,
+    component: String,
+    version: String,
     files: Vec<GatedFile>,
 }
 
@@ -172,6 +175,11 @@ pub fn request_download(
         return Err(status_error(reply.status));
     }
     let parsed: DownloadReply = serde_json::from_str(&reply.body).map_err(|_| LeagueError::BadReply)?;
+    // Links for another component or version would put another build's blobs under this manifest; the hash check
+    // would refuse them, but only after downloading. Refused here, before a byte is fetched.
+    if !parsed.ok || parsed.component != component || parsed.version != version {
+        return Err(LeagueError::BadReply);
+    }
     Ok(parsed.files)
 }
 
@@ -232,8 +240,22 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
+/// The marker inside the error for a signed link the blob store refused (401/403): typed, so it survives the message
+/// being rewritten or replaced, and [`link_expired`] never reads wording.
+#[derive(Debug)]
+struct ExpiredLink(String);
+
+impl std::fmt::Display for ExpiredLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ExpiredLink {}
+
 /// An error from opening a signed link, with the link's query (the signature) taken out of the message, since the
-/// message reaches logs. If the signature still shows in any form, only a fixed sentence is kept.
+/// message reaches logs. If the signature still shows in any form, only a fixed sentence is kept. A refusal
+/// (`PermissionDenied`, which `open_blob_url` gives a 401/403) is marked [`ExpiredLink`].
 fn without_signature(err: crate::Error, url: &str, path: &str) -> crate::Error {
     let crate::Error::PlainIo(io) = err else { return err };
     let bare = url.split('?').next().unwrap_or("");
@@ -244,6 +266,9 @@ fn without_signature(err: crate::Error, url: &str, path: &str) -> crate::Error {
     }
     if msg.contains("X-Amz-") || msg.contains("Signature=") {
         msg = format!("the league download link for {path} failed");
+    }
+    if io.kind() == std::io::ErrorKind::PermissionDenied {
+        return crate::Error::PlainIo(std::io::Error::new(io.kind(), ExpiredLink(msg)));
     }
     crate::Error::PlainIo(std::io::Error::new(io.kind(), msg))
 }
@@ -280,8 +305,9 @@ impl ReleaseSource for LeagueSource {
 }
 
 /// A signed link past its 6 h: the blob store answers 403. Asked again of the backend once, then the fetch resumes.
+/// Typed: only an error `LeagueSource` marked, never a message that happens to say 403.
 pub fn link_expired(err: &crate::Error) -> bool {
-    err.to_string().contains(" answered 403 ")
+    matches!(err, crate::Error::PlainIo(io) if io.get_ref().is_some_and(|inner| inner.is::<ExpiredLink>()))
 }
 
 #[cfg(test)]
@@ -347,7 +373,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_download_request_names_the_component_and_version_with_the_bearer() {
-        let body = format!(r#"{{"files":[{{"path":"game/league.iso","url":"https://r2.test/x?sig=1","sha256":"{SHA}","size":6}}],
+        let body = format!(r#"{{"ok":true,"files":[{{"path":"game/league.iso","url":"https://r2.test/x?sig=1","sha256":"{SHA}","size":6}}],
             "expires_at":"2026-10-08T20:00:00Z","component":"league-game","version":"2026.10.08"}}"#);
         let http = FakeHttp::default().reply(DL, 200, &body);
         let files = request_download(&http, ORIGIN, "tok", "league-game", "2026.10.08").unwrap();
@@ -388,11 +414,52 @@ pub(crate) mod tests {
         assert!(err.to_string().contains("no download link"), "{err}");
     }
 
+    /// A 200 that does not say `ok`, or answers for another component or version, is not the links that were asked
+    /// for: installing from it would put another build's blobs under this one's manifest.
+    #[test]
+    fn a_download_reply_must_answer_what_was_asked() {
+        let reply = |ok: &str, component: &str, version: &str| {
+            format!(r#"{{"ok":{ok},"component":"{component}","version":"{version}","expires_at":"2026-10-08T20:00:00Z",
+                "files":[{{"path":"game/league.iso","url":"https://r2.test/x?sig=1","sha256":"{SHA}","size":6}}]}}"#)
+        };
+        for (body, why) in [
+            (reply("true", "league-content", "1"), "wrong component"),
+            (reply("true", "league-game", "2"), "wrong version"),
+            (reply("false", "league-game", "1"), "ok:false"),
+            (r#"{"component":"league-game","version":"1","files":[]}"#.to_string(), "no ok"),
+        ] {
+            let http = FakeHttp::default().reply(DL, 200, &body);
+            assert_eq!(request_download(&http, ORIGIN, "tok", "league-game", "1").unwrap_err(), LeagueError::BadReply, "{why}");
+        }
+        let http = FakeHttp::default().reply(DL, 200, reply("true", "league-game", "1"));
+        assert_eq!(request_download(&http, ORIGIN, "tok", "league-game", "1").unwrap().len(), 1);
+    }
+
     #[test]
     fn expired_links_are_requested_again_once() {
-        // The signed links last 6 h; the blob store answers 403 for an expired one. Only that is "expired".
-        assert!(link_expired(&crate::origin::test_not_found("https://r2.test/x answered 403 for game/league.iso")));
-        assert!(!link_expired(&crate::origin::test_not_found("https://r2.test/x answered 404 for game/league.iso")));
+        // The signed links last 6 h; the blob store answers 403 for an expired one. Only that is "expired", and it is
+        // a typed signal: wording alone (or a 404) never counts.
+        assert!(!link_expired(&crate::origin::test_not_found("https://r2.test/x answered 403 for game/league.iso")));
+        let (base, _log) = blob_store(std::collections::BTreeMap::new());
+        let file = league_iso();
+        let req = crate::content::BlobRequest { component: "league-game", version: "1", file: &file, offset: 0 };
+        let expired = LeagueSource::new(crate::origin::Origin::new("https://cdn.test/"), &[gated(format!("{base}/blob?sig=old"))]);
+        assert!(link_expired(&crate::content::BlobSource::open(&expired, &req).err().expect("403")));
+        let missing = LeagueSource::new(crate::origin::Origin::new("https://cdn.test/"), &[]);
+        assert!(!link_expired(&crate::content::BlobSource::open(&missing, &req).err().expect("no link")));
+    }
+
+    /// When the redaction cannot keep the URL out by removing the query, it keeps only a fixed sentence; the
+    /// expired-link signal survives that.
+    #[test]
+    fn an_expired_link_is_still_named_when_the_message_is_replaced() {
+        let (base, _log) = blob_store(std::collections::BTreeMap::new());
+        let src = LeagueSource::new(crate::origin::Origin::new("https://cdn.test/"), &[gated(format!("{base}/X-Amz-blob?sig=old"))]);
+        let file = league_iso();
+        let req = crate::content::BlobRequest { component: "league-game", version: "1", file: &file, offset: 0 };
+        let err = crate::content::BlobSource::open(&src, &req).err().expect("expired");
+        assert_eq!(err.to_string(), "the league download link for game/league.iso failed");
+        assert!(link_expired(&err), "{err}");
     }
 
     /// A loopback blob store: `/<name>?sig=good` serves `files[name]` honoring `Range`; any other signature (or

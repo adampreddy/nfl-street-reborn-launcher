@@ -250,6 +250,12 @@ pub(crate) fn open_blob_url(agent: &ureq::Agent, url: &str, req: &BlobRequest<'_
              decides what happens to the partial file",
             req.offset, req.file.path
         ))),
+        // Refused (401/403) is its own kind, not text: a signed link past its time answers 403, and the league
+        // source asks the backend for new links on exactly that (`league_edition::link_expired`).
+        Err(ureq::Error::Status(status @ (401 | 403), _)) => Err(Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{url} answered {status} for {}. Nothing was written", req.file.path),
+        ))),
         Err(ureq::Error::Status(status, _)) => Err(not_found(format!(
             "{url} answered {status} for {}. Nothing was written",
             req.file.path
