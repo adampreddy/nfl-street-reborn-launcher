@@ -38,7 +38,7 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 - `league_host_friendly` and `league_room_open` do NOT navigate; the League tab page navigates to `online.html` itself.
 
 ## Rulings (controller, after Plans 2 and 4 drafts)
-- Storage: private R2 bucket `reborn-league`, keys `blobs/by-hash/<xx>/<sha256>`, no public domain; backend presigns SigV4 GET, 6 h, env `LEAGUE_R2_ENDPOINT|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY`.
+- Storage: private R2 bucket `reborn-league`, keys `blobs/by-hash/<xx>/<sha256>`, no public domain; backend presigns SigV4 GET, 6 h, env `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `LEAGUE_BLOB_BUCKET` (names per Plan 2).
 - Manifest file entries are `{path, bytes, sha256}` (existing schema). The download API keeps `size` in its response; Plan 2 maps `bytes` -> `size`.
 - `league-game` tree: `league.json` (`{"schema":"nsr.league-game.v1","game_id","iso","textures"}`), `game/league.iso`, `textures/<GAME_ID>/...`; installed at `library/league/`. `league-content`: `seed/league.s01`, installed at `library/league-content/`. Plan 3b checks `league.json.game_id == LEAGUE_GAME_ID` and composes from `library/league/textures/<ID>`.
 - `ComponentId` names `LeagueGame`/`LeagueContent` and install roots must be identical in Plan 4 (deck/publisher line) and Plan 3b (3.0.35 launcher line); merge conflict expected and resolved in favour of identical definitions.
