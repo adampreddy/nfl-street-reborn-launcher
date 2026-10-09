@@ -392,6 +392,7 @@ use reborn_core::publish::vault::{
     bucket as vault_bucket, forget_site_token, r2_access, r2_secret, site_token, store_r2_access, store_r2_secret,
     store_site_token, R2_ACCESS_ACCOUNT, R2_SECRET_ACCOUNT, SITE_TOKEN_ACCOUNT,
 };
+use reborn_core::publish::roster::Push;
 use reborn_core::publish::{Channel, Event, Outcome, Sink};
 use reborn_core::signing::Ed25519Verifier;
 
@@ -418,20 +419,37 @@ fn exit_of<T>(outcome: &Outcome<T>) -> std::process::ExitCode {
     }
 }
 
-/// After a league publish lands in the local origin, say what comes next:
-/// nothing here uploads. The private store goes first so the release never
-/// points at a blob the members' store does not hold yet.
-fn league_next_step<T>(outcome: &Outcome<T>) {
-    if matches!(outcome, Outcome::Done(_)) {
-        println!();
-        println!("Next: upload the members-only blobs first:");
-        println!("  rebornctl publish upload --origin <origin> --private --bucket reborn-league");
-        println!("then the public files:");
-        println!("  rebornctl publish upload --origin <origin>");
+/// What comes next after a league publish: nothing here uploads. The private
+/// store goes first so the release never points at a blob the members' store
+/// does not hold yet. An unsigned release has to be signed before either
+/// upload, so then the hint says only that.
+fn league_hint(origin: &std::path::Path, signed: bool) -> String {
+    if !signed {
+        return "The release still needs signing (no --key): run the `publish release` command printed above, then upload."
+            .to_string();
+    }
+    let o = origin.display();
+    [
+        "Next: upload the members-only blobs first, then the public files:".to_string(),
+        format!("  rebornctl publish upload --private --bucket reborn-league --origin \"{o}\""),
+        format!("  rebornctl publish upload --origin \"{o}\""),
+    ]
+    .join("\n")
+}
+
+/// Emit the hint for a landed publish; a refused or described run gets none.
+fn league_next_step(outcome: &Outcome<Push>, origin: &std::path::Path, hint: &mut dyn FnMut(&str)) {
+    if let Outcome::Done(push) = outcome {
+        hint("");
+        hint(&league_hint(origin, push.release.is_some()));
     }
 }
 
 pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
+    run_with(cmd, &mut |line| println!("{line}"))
+}
+
+fn run_with(cmd: PublishCommand, hint: &mut dyn FnMut(&str)) -> reborn_core::Result<std::process::ExitCode> {
     let mut sink = print;
     match cmd {
         PublishCommand::Keygen { out } => Ok(exit_of(&keygen(&out, &mut sink)?)),
@@ -627,7 +645,7 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             };
             let log = ScanLog::new();
             let outcome = reborn_core::publish::league::publish_league_game(&req, &log as &dyn ScanObserver, &mut sink)?;
-            league_next_step(&outcome);
+            league_next_step(&outcome, &origin, hint);
             Ok(exit_of(&outcome))
         }
         PublishCommand::LeagueContent {
@@ -660,7 +678,7 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             };
             let log = ScanLog::new();
             let outcome = reborn_core::publish::league::publish_league_content(&req, &log as &dyn ScanObserver, &mut sink)?;
-            league_next_step(&outcome);
+            league_next_step(&outcome, &origin, hint);
             Ok(exit_of(&outcome))
         }
         PublishCommand::Upload {
@@ -1010,7 +1028,7 @@ mod private_upload_tests {
 
 #[cfg(test)]
 mod league_tests {
-    use super::{run, PublishCommand};
+    use super::{run, run_with, PublishCommand};
     use clap::Parser;
     use std::path::{Path, PathBuf};
 
@@ -1163,5 +1181,52 @@ mod league_tests {
         let tiny = t.0.join("seeds").join("tiny.s01");
         std::fs::write(&tiny, b"x").unwrap();
         assert_eq!(code(run(mk(&tiny)).unwrap()), code(super::PROBLEM));
+    }
+
+    #[test]
+    fn a_signed_apply_prints_the_two_quoted_upload_commands_in_order() {
+        let t = Tmp::new("hint dir");
+        let (iso, tex, _) = layout(&t.0);
+        let origin = t.0.join("my work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let key = match reborn_core::publish::keys::keygen(&t.0.join("keys"), &mut |_| {}).unwrap() {
+            reborn_core::publish::Outcome::Done(w) => w.publisher_path,
+            o => panic!("{o:?}"),
+        };
+        let stage = t.0.join("stage").display().to_string();
+        let key_s = key.display().to_string();
+        let cmd = game(&iso, &tex, &origin, &[
+            "--stage", &stage, "--key", &key_s, "--release-version", "3.0.0", "--release-sequence", "1", "--apply",
+        ]);
+        let mut lines: Vec<String> = Vec::new();
+        let c = run_with(cmd, &mut |l| lines.push(l.to_string())).unwrap();
+        assert_eq!(code(c), code(super::OK));
+        let o = origin.display();
+        assert_eq!(
+            lines.join("
+"),
+            format!(
+                "\nNext: upload the members-only blobs first, then the public files:\n\
+                 \x20 rebornctl publish upload --private --bucket reborn-league --origin \"{o}\"\n\
+                 \x20 rebornctl publish upload --origin \"{o}\""
+            )
+        );
+        assert!(o.to_string().contains(' '));
+    }
+
+    #[test]
+    fn an_unsigned_apply_says_the_release_needs_signing_and_hints_no_upload() {
+        let t = Tmp::new("nokey");
+        let (iso, tex, origin) = layout(&t.0);
+        let stage = t.0.join("stage").display().to_string();
+        let cmd = game(&iso, &tex, &origin, &[
+            "--stage", &stage, "--release-version", "3.0.0", "--release-sequence", "1", "--apply",
+        ]);
+        let mut lines: Vec<String> = Vec::new();
+        run_with(cmd, &mut |l| lines.push(l.to_string())).unwrap();
+        let all = lines.join("
+");
+        assert!(all.contains("still needs signing"), "{all}");
+        assert!(!all.contains("publish upload"), "{all}");
     }
 }
