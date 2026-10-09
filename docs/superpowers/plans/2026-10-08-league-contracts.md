@@ -47,3 +47,7 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 ## Rulings (controller, after Plan 2 final review)
 - If the joiner's league-game version is NEWER than the room's `required`, Plan 3a shows "Your opponent needs to update their league files" (not "Update league files"). Compare versions client-side: `league_update_required.required < installed` -> opponent message.
 - Join body `league_game_version` is REQUIRED for edition:"league" rooms even when the room's version is null; missing -> 409 league_version_mismatch with `required: null`.
+
+## Rulings (Adam, 10-09)
+- No rematch after a ranked match or a league fixture match. Backend refuses the rematch route with 409; the launcher (Plan 3b) hides the Rematch button for these matches. Friendlies and casual/room matches keep rematch.
+- League live scores show on every member's scoreboard regardless of hidden presence (confirmed).
