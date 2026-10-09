@@ -144,7 +144,9 @@ UsePreviousTasks=no
 PrivilegesRequired=lowest
 
 ; The folder page stays. Someone with a small system drive needs to be able to
-; put this elsewhere, and hiding the choice does not make it safer.
+; put this elsewhere, and hiding the choice does not make it safer. Since
+; 2026-10-09 a folder on another drive takes the game's data with it on a
+; first install (PlaceDataBesideProgram), not only the program.
 DisableDirPage=no
 DisableProgramGroupPage=yes
 DisableReadyPage=no
@@ -605,16 +607,175 @@ begin
   end;
 end;
 
+#endif
+
+// The game's data on the drive the player chose (2026-10-09).
+//
+// The launcher keeps everything heavy (the imported game, the textures,
+// Dolphin's folders, the saves) in its data root, {userappdata}\{#DataDir},
+// whatever folder this page was given; only the program went where the
+// player said. A player who picked D: to keep C: free still filled C:
+// ("The game keeps installing itself on my C drive no matter how I try").
+//
+// When the program folder is on another drive and this PC has no data root
+// yet, the data root is made a junction to a folder beside the program, so
+// it lands on that drive too. A junction, not a setting: the launcher writes
+// its data root's path into its own files, and every one of those paths keeps
+// working through it. It is the same link Settings > Files & storage > "Move
+// to another drive" leaves, which is how a player who already has data on C:
+// moves it.
+//
+// Never when a data root is already there (an upgrade, a self-update, a 2.1
+// install the launcher tucks away, or data the player already moved), and
+// never beside a launcher-era root ({#DataDir} Launcher), whose entries the
+// launcher adopts by renaming, which cannot cross drives. If the junction
+// cannot be made, nothing is lost: the launcher makes its data root on the
+// system drive, as it always did.
+// A folder this install creates outside the player's profile is made
+// private to the player (plus SYSTEM and Administrators) before anything
+// goes in it. Under the profile everything is private already; a folder on a
+// second drive inherits the drive's permissions, which let every signed-in
+// account on the PC create and change files, and the program folder holds
+// the launcher and Dolphin (security review, 2026-10-09). Folders that were
+// already there are left as the player set them.
+function OutsideProfile(Dir: String): Boolean;
+begin
+  Result := Pos(Lowercase(AddBackslash(ExpandConstant('{%USERPROFILE}'))), Lowercase(AddBackslash(Dir))) <> 1;
+end;
+
+function MakePrivate(Dir: String): Boolean;
+var
+  Tmp, Sid: String;
+  Lines: TArrayOfString;
+  Code, At: Integer;
+begin
+  Result := False;
+  Tmp := ExpandConstant('{tmp}\whoami.csv');
+  if not Exec(ExpandConstant('{cmd}'), '/D /C whoami /user /fo csv /nh > "' + Tmp + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    exit;
+  if not LoadStringsFromFile(Tmp, Lines) or (GetArrayLength(Lines) = 0) then
+    exit;
+  At := Pos('"S-1-', Lines[0]);
+  if At = 0 then
+    exit;
+  Sid := Copy(Lines[0], At + 1, Length(Lines[0]));
+  StringChangeEx(Sid, '"', '', True);
+  Sid := Trim(Sid);
+  // SYSTEM and Administrators by well-known id, so a non-English Windows
+  // names them correctly.
+  Result := Exec(ExpandConstant('{sys}\icacls.exe'),
+      '"' + Dir + '" /inheritance:r /grant:r "*' + Sid + ':(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /Q',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+  if Result then
+    Log('Made private to this account: ' + Dir)
+  else
+    Log('Could not make private: ' + Dir + ' (code ' + IntToStr(Code) + ')');
+end;
+
+// ssInstall, before any file is copied: the program folder (and, for the
+// `...\<name>\app` shape, the folder holding it, which becomes the data root)
+// made private when this install is the one creating it.
+procedure MakeNewFoldersPrivate();
+var
+  App, Parent: String;
+begin
+  App := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
+  if not OutsideProfile(App) then
+    exit;
+  Parent := ExtractFileDir(App);
+  if (CompareText(ExtractFileName(App), 'app') = 0) and (Length(RemoveBackslashUnlessRoot(Parent)) > 3)
+     and not DirExists(Parent) then
+    if ForceDirectories(Parent) then
+      MakePrivate(Parent);
+  if not DirExists(App) then
+    if ForceDirectories(App) then
+      MakePrivate(App);
+end;
+
+function DataBesideProgram(): String;
+var
+  App, Parent: String;
+begin
+  App := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
+  Parent := ExtractFileDir(App);
+  // ...\NFL Street Reborn\app keeps the default shape: the data root is the
+  // folder holding `app`. Anything else, or `app` at the root of a drive,
+  // gets a `data` folder inside the program folder, never a drive root or a
+  // folder the player did not choose for this.
+  if (CompareText(ExtractFileName(App), 'app') = 0) and (Length(RemoveBackslashUnlessRoot(Parent)) > 3) then
+    Result := Parent
+  else
+    Result := AddBackslash(App) + 'data';
+end;
+
+procedure PlaceDataBesideProgram();
+var
+  DataRoot, LauncherEra, Target: String;
+  Code: Integer;
+  Fresh: Boolean;
+begin
+  DataRoot := ExpandConstant('{userappdata}\{#DataDir}');
+  if CompareText(ExtractFileDrive(ExpandConstant('{app}')), ExtractFileDrive(DataRoot)) = 0 then
+    exit;
+  if DirExists(DataRoot) or FileExists(DataRoot) then
+  begin
+    Log('Data root already exists; left where it is: ' + DataRoot);
+    exit;
+  end;
+  LauncherEra := ExpandConstant('{userappdata}\{#DataDir}') + ' Launcher';
+#if Channel == "beta"
+  LauncherEra := ExpandConstant('{userappdata}\NFL Street Reborn Launcher Beta');
+#endif
+  if DirExists(LauncherEra) then
+  begin
+    Log('A launcher-era data root is adopted at first start; data stays on the system drive: ' + LauncherEra);
+    exit;
+  end;
+  Target := DataBesideProgram();
+  Fresh := not DirExists(Target);
+  if not ForceDirectories(Target) then
+  begin
+    Log('Could not make ' + Target + '; data stays on the system drive');
+    exit;
+  end;
+  // A data folder this install made, never one others can change: refused
+  // (data stays on the system drive) rather than linked to a shared folder.
+  if Fresh and OutsideProfile(Target) and not MakePrivate(Target) then
+  begin
+    RemoveDir(Target);
+    exit;
+  end;
+  if (Pos('"', DataRoot) > 0) or (Pos('"', Target) > 0) then
+    exit;
+  if Exec(ExpandConstant('{cmd}'), '/D /C mklink /J "' + DataRoot + '" "' + Target + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) and DirExists(DataRoot) then
+    Log('Data root ' + DataRoot + ' leads to ' + Target)
+  else
+    Log('Could not link ' + DataRoot + ' to ' + Target + ' (code ' + IntToStr(Code) + '); data stays on the system drive');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  // ssInstall fires before a single file is copied, so the download runs
-  // alongside the copy instead of after it.
+  // ssInstall fires before a single file is copied, so the WebView2 download
+  // runs alongside the copy instead of after it.
   if CurStep = ssInstall then
+  begin
+    MakeNewFoldersPrivate();
+#ifdef Redist
     StartWebView2;
-  if CurStep = ssPostInstall then
-    WaitForWebView2;
-end;
 #endif
+  end;
+  // Before [Run] can start the launcher, which makes the data root on first
+  // start if it is not there.
+  if CurStep = ssPostInstall then
+  begin
+    PlaceDataBesideProgram();
+#ifdef Redist
+    WaitForWebView2;
+#endif
+  end;
+end;
 
 // True only when the launcher started this install to update itself. Read
 // from the command line, defaulting to 0, so a person double-clicking Setup

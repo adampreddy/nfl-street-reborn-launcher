@@ -104,6 +104,58 @@ pub fn make_dir_link(_link: &Path, _target: &Path) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "folder links are not available here"))
 }
 
+/// Make `dir` private to this account (plus SYSTEM and Administrators),
+/// for everything later created inside it.
+///
+/// A folder under the player's profile is private already. A folder on a
+/// second drive inherits the drive's permissions, and on Windows those let
+/// every signed-in account on the PC create and change files. The data root
+/// holds the launcher and Dolphin themselves (`app`, `runtime`), so left
+/// like that, another account could replace a program this player runs.
+/// Inheritance is cut and three grants put in its place; what is copied in
+/// afterwards inherits them.
+#[cfg(windows)]
+pub fn make_private(dir: &Path) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows")).join("System32");
+    let who = std::process::Command::new(system.join("whoami.exe"))
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(0x0800_0000)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let sid = String::from_utf8_lossy(&who.stdout)
+        .rsplit(',')
+        .next()
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| s.starts_with("S-1-"))
+        .ok_or_else(|| io::Error::other("this account's security id could not be read"))?;
+    let output = std::process::Command::new(system.join("icacls.exe"))
+        .arg(plain(dir))
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("*{sid}:(OI)(CI)F"))
+        // SYSTEM and Administrators, by well-known id so a non-English
+        // Windows names them correctly.
+        .args(["*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"])
+        .creation_flags(0x0800_0000)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(String::from_utf8_lossy(&output.stdout).trim().to_string()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn make_private(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(any(windows, unix)))]
+pub fn make_private(_dir: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// Whether the process `pid` is still running.
 #[cfg(windows)]
 pub fn pid_alive(pid: u32) -> bool {
@@ -147,6 +199,32 @@ mod tests {
         // Removing the link leaves the folder it led to.
         std::fs::remove_dir(&link).unwrap();
         assert!(target.join("a.txt").is_file());
+    }
+
+    /// The grants on `dir` as icacls lists them: one line per entry.
+    #[cfg(windows)]
+    pub(crate) fn grants(dir: &Path) -> Vec<String> {
+        let out = std::process::Command::new("icacls").arg(dir).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).replace(&dir.display().to_string(), "");
+        text.lines().map(str::trim).filter(|l| l.contains(":(")).map(String::from).collect()
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_private_folder_has_exactly_its_three_grants_and_passes_them_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("moved");
+        std::fs::create_dir(&folder).unwrap();
+        make_private(&folder).unwrap();
+        let own = grants(&folder);
+        assert_eq!(own.len(), 3, "{own:?}");
+        assert!(own.iter().all(|g| !g.contains("(I)")), "nothing inherited: {own:?}");
+        // What is made inside afterwards inherits those three and nothing else.
+        std::fs::create_dir(folder.join("app")).unwrap();
+        std::fs::write(folder.join("app").join("x.exe"), b"x").unwrap();
+        let child = grants(&folder.join("app").join("x.exe"));
+        assert_eq!(child.len(), 3, "{child:?}");
+        assert!(child.iter().all(|g| g.contains("(I)")), "{child:?}");
     }
 
     #[test]

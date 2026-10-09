@@ -218,6 +218,10 @@ fn copy_inner(plan: &Plan, progress: &dyn Fn(u64, u64), cancel: &AtomicBool) -> 
         std::fs::create_dir_all(parent).map_err(|e| format!("{} could not be made: {e}", parent.display()))?;
     }
     std::fs::create_dir(&plan.staged).map_err(|e| format!("{} could not be made: {e}", plan.staged.display()))?;
+    // Before a single file goes in: the launcher and Dolphin are part of
+    // what moves, and a second drive's folders are writable by every account
+    // on the PC. Refused rather than moved into a folder others can change.
+    dir_move::make_private(&plan.staged).map_err(|e| format!("The new folder could not be made private to your account, so nothing was moved: {e}"))?;
     std::fs::write(plan.staged.join(STAGED_MARKER), b"").map_err(|e| format!("The new folder could not be written: {e}"))?;
     let items = walk(&plan.real).map_err(|e| format!("The game folder could not be read: {e}"))?;
     let mut linked: HashMap<(u64, u64), PathBuf> = HashMap::new();
@@ -564,6 +568,16 @@ mod tests {
         assert!(!plan.target.join("dolphin-users/User/GC/MemoryCardA.USA.raw").exists());
         assert!(!plan.target.join(STAGED_MARKER).exists());
         assert!(!plan.staged.exists());
+        // The new folder is private to this account: nothing inherited from
+        // the drive (security review, 2026-10-09).
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("icacls").arg(&plan.target).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let entries: Vec<&str> = text.lines().filter(|l| l.contains(":(")).collect();
+            assert_eq!(entries.len(), 3, "{text}");
+            assert!(entries.iter().all(|l| !l.contains("(I)")), "{text}");
+        }
         assert_eq!(last_outcome(&root).unwrap(), outcome);
         assert_eq!(location(&root), (real(&plan.target), true));
         assert_eq!(leftovers(&root), vec![retired.clone()]);
