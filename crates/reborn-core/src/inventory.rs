@@ -1154,14 +1154,19 @@ impl SerializedComponent {
         }
         if parsed.members_only != component.members_only {
             return Err(refuse(format!(
-                "the manifest this generator produced for {:?} lost its members_only                  flag on the way out. Publishing it would put members-only content                  on the public CDN",
+                "the manifest this generator produced for {:?} lost its members_only \
+                 flag on the way out. Publishing it would put members-only content \
+                 on the public CDN",
                 component.component
             )));
         }
         if let Some(id) = ComponentId::parse(&component.component) {
             if component.members_only != id.is_members_only() {
                 return Err(refuse(format!(
-                    "the manifest for {:?} says members_only = {} but that component                      is members_only = {}. A league build marked public would be                      published to the public CDN; a retail component marked                      members-only could never be downloaded",
+                    "the manifest for {:?} says members_only = {} but that component \
+                     is members_only = {}. A league build marked public would be \
+                     published to the public CDN; a retail component marked \
+                     members-only could never be downloaded",
                     component.component,
                     component.members_only,
                     id.is_members_only()
@@ -2488,6 +2493,7 @@ mod tests {
             scan.component.members_only = flag;
             let err = SerializedComponent::new(scan.component).unwrap_err();
             assert!(err.to_string().contains("members_only"), "{id:?}: {err}");
+            assert!(!err.to_string().contains("  "), "no run of spaces: {err}");
         }
     }
 

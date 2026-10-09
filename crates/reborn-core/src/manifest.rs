@@ -116,7 +116,8 @@ pub enum ManifestError {
     MissingCustomizable(String),
 
     #[error(
-        "component {component:?} declares members_only = {declared} but that          component is members_only = {expected}"
+        "component {component:?} declares members_only = {declared} but that \
+         component is members_only = {expected}"
     )]
     MembersOnlyMismatch {
         component: String,
@@ -574,6 +575,7 @@ mod tests {
             .accept_component("league-game", json.as_bytes())
             .unwrap_err();
         assert!(matches!(err, ManifestError::MembersOnlyMismatch { .. }), "{err:?}");
+        assert!(!err.to_string().contains("  "), "no run of spaces: {err}");
     }
 
     #[test]
