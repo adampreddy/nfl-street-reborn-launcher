@@ -1,7 +1,7 @@
 # League Tab — Design
 
 Date: 2026-10-08
-Status: approved in brainstorming, awaiting spec review
+Status: v2 (League edition added 2026-10-08), awaiting spec review
 
 ## Goal
 
@@ -9,6 +9,10 @@ A launcher tab that only league members can see. It is the league website's
 homepage seen from *your team*: the week's scoreboard, your matchup, standings,
 results, leaders and roster, plus a one-click way to play this week's league
 game against your opponent. It must look native to the glass launcher.
+
+The tab is also the home of the **League edition**: the league's own build of
+the game (its own ISO, texture folder and game ID). Members install it from the
+tab and play it offline, in friendlies, and in league games.
 
 ## Decisions (from brainstorming)
 
@@ -18,7 +22,12 @@ game against your opponent. It must look native to the glass launcher.
 | Scope | Read-only league data + "play this week's game". No roster moves, trades, or score reporting. |
 | Data path | Approach 1: launcher -> Reborn backend -> league site (server-to-server). No secret in the launcher. |
 | League game | Private league room, locked to the two Discord IDs, tagged with the fixture. First click hosts, second click joins. |
-| Rules | Ranked settings (Hard + GB Off, `ranked.s01` seed), **best of 3** via the existing series system. |
+| Rules | League games: **league seed** (Hard + GB Off, captured on the league ISO), **best of 3** via the existing series system. |
+| League edition | Separate build: own ISO + texture folder + game ID (`LEAGUE_GAME_ID`, name TBD by Adam). Offline, friendlies and league games are all in the League tab; Play/Online tabs stay retail-only. |
+| Distribution | Members-only download via the backend; published with the **Publisher** as signed components. |
+| Mods | **One shared mod list** (JSGME): every enabled mod applies to both editions' texture folders. Controller textures compose for both game IDs. |
+| Friendlies | Host-friendly toggle **League settings, default ON** = league seed; OFF = raw game, standard netplay. Never tagged as league games. |
+| Which league | Backend env `LEAGUE_ID` (36 now) is sent to the site; site falls back to newest non-hidden league only when absent. |
 | Result recording on site | Out of scope. Results are tagged and forwarded; the site consuming them is a later feature. |
 
 ## Architecture
@@ -34,11 +43,12 @@ Launcher (league.html/js) --Rust cmd--> reborn-core backend.rs
                                          League site (PHP/MySQL, live)
 ```
 
-Three codebases change:
+Four codebases change (the Publisher + update pipeline is the fourth):
 
 1. **League site** (live `public_html/league`, SiteGround; pull live files first — local replica is stale for Season 4).
 2. **Reborn backend** (`Reborn Backend`, new branch `feat/league-tab`).
 3. **Launcher** (new branch `feat/league-tab` off the current stable line, 3.0.35).
+4. **Publisher / update pipeline** (`rebornctl` + Publisher app + signed manifest): new members-only components.
 
 ## 1. League site: `team_home` action
 
@@ -169,6 +179,45 @@ Style: existing `theme.css` glass tokens; panel treatment borrowed from the Madd
 ### Error/empty states
 - Skeleton while loading; cached data + "League data unavailable" banner on 503; signed-out -> tab hidden.
 
+## 4. League edition
+
+### Components (published with the Publisher)
+- `league-game`: league ISO + league texture folder. Signed, versioned, with release notes, like roster/texture components.
+- `league-content`: the league seed (Hard + GB Off) captured on the league ISO, like `online-content` holds `ranked.s01`.
+- Both are flagged `members_only` in the signed manifest. The manifest is public; the blobs are not linked publicly.
+
+### Download gate
+- `POST /v1/league/download {component, version}` (requirePlayer): backend checks membership exactly like `/v1/league/me` (site `team_home`, `member:true`), then returns short-lived signed blob URLs. Non-members get 403 and never see a URL.
+- The launcher verifies the downloaded files against the signed manifest hashes, the same way as every other component.
+
+### Game ID
+- One launcher constant `LEAGUE_GAME_ID`. A placeholder is used until Adam names it; release is blocked until the real ID is set (a test asserts it is not the placeholder in release builds).
+
+### Install layout (follows the install path law)
+- ISO under `<root>\library\league\`, separate from the retail image.
+- Textures under `Load\Textures\<LEAGUE_GAME_ID>\`, composed with hardlinks + length/mtime verification exactly like retail.
+- Controller textures composed into both game IDs' folders.
+- Mods (JSGME): one shared enabled list; enabling a mod applies it to both texture folders. The Mods tab shows a small "may not match the league build" note.
+- Dolphin per-game settings layers (`Sys/GameSettings`, `User/GameSettings/<ID>.ini`), settings law and baked-cheat handling mirrored for `LEAGUE_GAME_ID`; retail untouched.
+- Saves land on the same memory card under the new game ID, so they never collide with retail saves.
+
+### Launch modes (League tab only)
+| Mode | Boots |
+|---|---|
+| Play offline | league ISO, raw (no seed) |
+| Host friendly / join | members-only private netplay room, league ISO; **League settings toggle default ON** = league seed (Hard + GB Off); OFF = raw game, standard netplay; not tagged, no series |
+| Play league game | room locked to the two Discord IDs, league ISO, league seed, best of 3, fixture-tagged |
+
+### Netplay
+- Rooms carry `edition: "league"` and the `league-game` version. Both players must match; otherwise the room shows "Update league files" instead of starting (same as the existing update-before-room gate).
+- Join refusal for non-members on friendly rooms: backend checks membership on join for `edition: "league"` rooms.
+
+### Install / update UX
+- League tab header shows **Install league files (X GB)** or **Update league files** when a newer version exists; the three play buttons stay disabled until installed and current.
+
+### Membership lost
+- Backend says `member:false` (not an outage) -> tab hidden; league files stay on disk but cannot be launched. Rejoining restores access without re-download.
+
 ## Security
 
 - Site token only on the backend.
@@ -181,6 +230,7 @@ Style: existing `theme.css` glass tokens; panel treatment borrowed from the Madd
 - Site: `team_home` against a local MariaDB copy of the live Season 4 data — member, non-member, bye week, final week.
 - Backend: unit tests with a stubbed site — gating, cache, 503 path, room idempotency (parallel creates -> one room), join refusal for a third Discord ID, cancel rules, expiry, live-score merge.
 - Launcher: `reborn-core` tests for `discord_user_id` parse + `league_member` persistence; UI states rendered from fixture JSON; nav injection on/off.
+- League edition: download gate (member gets URLs, non-member 403); install into the right folders; mods + controller textures composed into both game IDs; offline boot; friendly with toggle on/off; version-mismatch gate.
 - End-to-end: two accounts on two PCs (or two local Dolphins) play a league best-of-3 from the tab; verify room lock, series score on card + scoreboard, tagged upload forwarded.
 
 ## Out of scope
@@ -188,10 +238,12 @@ Style: existing `theme.css` glass tokens; panel treatment borrowed from the Madd
 - Site automatically recording league results from forwarded uploads.
 - Roster moves, trades, draft from the launcher.
 - Multiple teams/leagues per person.
-- Custom league seed (uses Ranked settings).
+- Per-league mod lists (mods are shared across editions).
+- Separate league memory card.
 
 ## Rollout
 
 1. Site action deployed (pull live first, WinSCP single files).
 2. Backend deployed (dark: no launcher calls it yet).
-3. Launcher shipped to beta channel; league members test; then stable.
+3. Publisher/manifest support for members-only components; first `league-game` + `league-content` published once Adam sets `LEAGUE_GAME_ID` and the league seed is captured.
+4. Launcher shipped to beta channel; league members test; then stable.
