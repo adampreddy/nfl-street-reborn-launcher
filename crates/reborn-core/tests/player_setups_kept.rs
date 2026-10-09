@@ -325,3 +325,49 @@ fn an_sdl_pad_set_up_by_pressing_keeps_its_sticks() {
         assert!(!blocked(&plan), "play {play}: asked again");
     }
 }
+
+// ---------------------------------------------------------------------------
+// One pad, one device, named by position (runtime 1.2.13)
+// ---------------------------------------------------------------------------
+
+/// Captured 2026-10-09 from a virtual DualShock 4 (ViGEmBus) on the shipped
+/// runtime 1.2.12: the one pad is SDL/0, SDL/1, WGInput and DInput.
+const DS4_ON_1_2_12: &str = include_str!("fixtures/input-capture-ds4-runtime-1.2.12.txt");
+/// The same pad on runtime 1.2.13: WGInput off, SDL adds it once and names
+/// its controls by position (`Button A`, `Start`, `Left Y+`).
+const DS4_ON_1_2_13: &str = include_str!("fixtures/input-capture-ds4-sdl-runtime-1.2.13.txt");
+
+#[test]
+fn a_dualshock_4_on_runtime_1_2_13_is_one_player_with_nothing_to_set_up() {
+    let mut desk = Desk::new(DS4_ON_1_2_13);
+    let plan = desk.play(None, "");
+    assert_eq!(plan.assignment, [(1, "SDL/0/PS4 Controller".to_string())]);
+    assert!(plan.dead_by_device.is_empty(), "{:?}", plan.dead_by_device);
+    let ini = plan.ini.unwrap();
+    for line in ["Device = SDL/0/PS4 Controller", "Buttons/A = `Button A`", "Buttons/Start = `Start`", "Main Stick/Up = `Left Y+`", "C-Stick/Left = `Right X-`", "Triggers/L = `Trigger L`"] {
+        assert!(ini.contains(line), "missing {line}:\n{ini}");
+    }
+}
+
+#[test]
+fn a_dualshock_4_on_runtime_1_2_12_is_still_one_player() {
+    let mut desk = Desk::new(DS4_ON_1_2_12);
+    let plan = desk.play(None, "");
+    assert_eq!(plan.assignment, [(1, "WGInput/0/Sony DualShock4 Gamepad".to_string())], "SDL/0 and SDL/1 are the same pad");
+    assert!(!blocked(&plan), "{:?}", plan.dead_by_device);
+}
+
+/// The update itself: a player who played on 1.2.12 presses Play on 1.2.13.
+/// The file on disk names a WGInput device that no longer exists; the pad is
+/// SDL's now and works with nothing to set up.
+#[test]
+fn a_player_from_1_2_12_plays_on_1_2_13_with_nothing_to_set_up() {
+    let mut desk = Desk::new(DS4_ON_1_2_12);
+    let old = desk.play(None, "").ini.unwrap();
+    desk.inputs = parse_device_inputs(DS4_ON_1_2_13);
+    desk.scan = scan_of(&desk.inputs);
+    let plan = desk.play(Some(&old), &old);
+    assert_eq!(plan.assignment, [(1, "SDL/0/PS4 Controller".to_string())]);
+    assert!(plan.kept.is_empty(), "{:?}", plan.kept);
+    assert!(plan.dead_by_device.is_empty(), "{:?}", plan.dead_by_device);
+}
