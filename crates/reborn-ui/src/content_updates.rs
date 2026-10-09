@@ -983,6 +983,21 @@ pub async fn content_repair_image(app: tauri::AppHandle) -> Result<serde_json::V
                     | GamePatchResult::Refused(reborn_core::game_patch::Refusal::NoPristine { .. })
             ) {
                 tracing::warn!("repair: {} Downloading the Reborn game instead.", gp.message());
+                // The unknown image goes aside first (kept, not deleted). The
+                // launcher uses the NEWEST pristine image, and a download that
+                // was already on disk lands with its old date: the unknown one
+                // was picked again and Repair ended on the same error (tester,
+                // 2026-10-09). With it moved, the download is the only one.
+                if let Some(bad) = reborn_core::game_image::find_pristine(&data_root) {
+                    if let Some(folder) = bad.path.parent() {
+                        let aside = data_root.join("library").join("imported-unrecognised");
+                        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                        let target = aside.join(format!("{}-{stamp}", bad.folder_sha256));
+                        std::fs::create_dir_all(&aside).map_err(|e| e.to_string())?;
+                        std::fs::rename(folder, &target).map_err(|e| format!("{}: {e}", folder.display()))?;
+                        tracing::warn!("repair: moved the unrecognised game image to {}", target.display());
+                    }
+                }
                 crate::setup_tools::download_reborn_game(&app)?;
                 gp = updater.apply_current_game_patch(&hook).map_err(|e| e.to_string())?;
             }

@@ -1340,13 +1340,36 @@ impl<'a> ContentService<'a> {
 
             report
                 .results
-                .insert(fetch.path.clone(), self.fetch_one(plan, file, source)?);
+                .insert(fetch.path.clone(), self.fetch_one_retrying(plan, file, source)?);
         }
 
         if report.is_complete() {
             self.set_state(plan.component(), OperationState::Staged)?;
         }
         Ok(report)
+    }
+
+    /// [`fetch_one`], asked again when the connection drops part way.
+    ///
+    /// A host can close a connection in the middle of a file ("peer closed
+    /// connection without sending TLS close_notify", one of 9,111 texture
+    /// files, Deck build test 2026-10-09), and that stopped the whole 8 GB
+    /// download. The bytes already received stay in the part file, so each
+    /// retry resumes from them; after three, the error is reported.
+    fn fetch_one_retrying(&self, plan: &UpdatePlan, file: &ManifestFile, source: &dyn BlobSource) -> Result<FetchState> {
+        let mut last = None;
+        for wait in [0u64, 1, 2, 4] {
+            if wait > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(if cfg!(test) { 0 } else { wait }));
+            }
+            match self.fetch_one(plan, file, source) {
+                Ok(state) => return Ok(state),
+                // A full disk is not passing: report it at once.
+                Err(e @ Error::Io { .. }) if matches!(&e, Error::Io { source: io, .. } if io.kind() == std::io::ErrorKind::StorageFull) => return Err(e),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.expect("at least one attempt"))
     }
 
     fn fetch_one(
@@ -2168,6 +2191,60 @@ mod tests {
             };
             Ok(Box::new(std::io::Cursor::new(body)))
         }
+    }
+
+    /// Breaks the first connection part way with a read ERROR (the CDN closing
+    /// the TLS stream), then serves honestly from the asked offset.
+    #[derive(Debug)]
+    struct DropsOnce {
+        bytes: Vec<u8>,
+        opens: Mutex<Vec<u64>>,
+    }
+
+    struct BreaksAfter(std::io::Cursor<Vec<u8>>);
+    impl Read for BreaksAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.read(buf)? {
+                0 => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "peer closed connection without sending TLS close_notify")),
+                n => Ok(n),
+            }
+        }
+    }
+
+    impl BlobSource for DropsOnce {
+        fn open(&self, req: &BlobRequest<'_>) -> Result<Box<dyn Read>> {
+            let mut opens = self.opens.lock().expect("opens");
+            opens.push(req.offset);
+            let from = req.offset as usize;
+            if opens.len() == 1 {
+                let half = self.bytes.len() / 2;
+                return Ok(Box::new(BreaksAfter(std::io::Cursor::new(self.bytes[from..half].to_vec()))));
+            }
+            Ok(Box::new(std::io::Cursor::new(self.bytes[from..].to_vec())))
+        }
+    }
+
+    /// One dropped connection in the middle of a file must not stop the
+    /// download: it resumes from the bytes it has (Deck build test, 2026-10-09).
+    #[test]
+    fn a_connection_dropped_part_way_is_resumed_not_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = Platform::detect();
+        let service = ContentService::new(&platform, dir.path());
+        let good = b"a texture file served across two connections".to_vec();
+        let bytes = manifest("2.4.0", 8, false, vec![file_of("tex.dds", &good)]);
+        let release = signed(&bytes, 12);
+        let plan = expect_plan(
+            service
+                .plan(&release, "offline-content", &bytes, DataDir::LibraryOffline, &RebuildState::default())
+                .expect("plan"),
+        );
+        let source = DropsOnce { bytes: good.clone(), opens: Mutex::new(Vec::new()) };
+        assert!(service.download(&plan, &source).expect("download").is_complete());
+        let staged = service.layout().staging_dir("offline-content", "2.4.0").join("tex.dds");
+        assert_eq!(std::fs::read(&staged).expect("staged"), good);
+        let opens = source.opens.lock().unwrap().clone();
+        assert_eq!(opens, vec![0, (good.len() / 2) as u64], "the retry resumed from the bytes it had");
     }
 
     /// Fails the first rename that lands on `poison`, then behaves normally.
