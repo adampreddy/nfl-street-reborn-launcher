@@ -13,3 +13,4 @@ Owner-count runner (__lt_owner_count.php) was 403-blocked by SiteGround, deleted
 Live checks: no-token 401; unknown id 200 member:false; Adam's id 200 member:true league 36 'Reborn Season 4' team 493 Subway Surfers (week 1, bye, week_games empty); stat_schema regression 200 ok.
 Discord coverage via fixtures action (league 36, weeks 1-14): 0 fixtures scheduled, so missing_discord could NOT be determined (inconclusive).
 Note: SiteGround intermittently returns 403 on the first request after a pause; retry succeeds.
+2026-10-08T22:36:52 Plan 2 Task 1: team_home league_id deployed; nsr_team_home.php E4FA584A8181DEB56F0FD9769E2741D5776EBF2826332C3B3F7702149A7AF702 bot.php F28B76AD64DE92F44763ADD41B781021B531DBD343A60CACA67CE3D41E338B04; rollback copies stage_league_tab\v3\before

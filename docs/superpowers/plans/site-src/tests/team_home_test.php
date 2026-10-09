@@ -193,6 +193,19 @@ try {
     check('empty league: matchup is a bye', ($z['matchup']['status'] ?? null) === 'bye' && ($z['matchup']['forfeit'] ?? null) === false);
     check('empty league: no week games', ($z['week_games'] ?? null) === []);
     check('empty season_label falls back to the league name', ($z['league']['season'] ?? null) === 7);
+
+    /* ---- explicit league_id: the backend pins the league (LEAGUE_ID) ---- */
+    // lid2 (the empty league) is now the newest non-hidden one, so the fallback picks it...
+    check('fallback picks the newest league', nsr_th_current_league($pdo) === $fx['lid2']);
+    check('fallback: A is not a member of the newest league', nsr_team_home($pdo, $did['A']) === ['member' => false]);
+    // ...but an explicit league_id pins the fixture league whatever is newer.
+    $p = nsr_team_home($pdo, $did['A'], $lid);
+    check('pinned: A is a member', ($p['member'] ?? null) === true);
+    check('pinned: league is the fixture league', ($p['league']['id'] ?? null) === $lid);
+    check('pinned: A team', ($p['team']['id'] ?? null) === $t['A']);
+    $threw = '';
+    try { nsr_team_home($pdo, $did['A'], 999999999); } catch (InvalidArgumentException $e) { $threw = $e->getMessage(); }
+    check('unknown league_id is refused, not member:false', $threw === 'league_id is not a league');
 } finally {
     th_cleanup($pdo, $fx);
 }

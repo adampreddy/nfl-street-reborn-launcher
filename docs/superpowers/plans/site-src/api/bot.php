@@ -27,7 +27,7 @@ declare(strict_types=1);
  *
  *   {"action":"stat","league_id":13,"q":"who leads in sacks"}
  *       -> a one-line answer, or a list of what it can answer
- *   {"action":"team_home","discord_user_id":"..."}
+ *   {"action":"team_home","discord_user_id":"...","league_id":36?}
  *       -> that person's club in the current league, for the launcher's League
  *          tab (via the Reborn backend), or {"ok":true,"member":false}
  *
@@ -929,7 +929,15 @@ if ($action === 'stat_query') {
 if ($action === 'team_home') {
     require_once __DIR__ . '/../_inc/nsr_team_home.php';
     try {
-        $home = nsr_team_home($pdo, (string)($in['discord_user_id'] ?? ''));
+        $leagueId = null;
+        if (array_key_exists('league_id', $in) && $in['league_id'] !== null) {
+            if (!is_int($in['league_id']) && !(is_string($in['league_id']) && ctype_digit($in['league_id']))) {
+                throw new InvalidArgumentException('league_id must be a positive whole number');
+            }
+            $leagueId = (int)$in['league_id'];
+            if ($leagueId <= 0) throw new InvalidArgumentException('league_id must be a positive whole number');
+        }
+        $home = nsr_team_home($pdo, (string)($in['discord_user_id'] ?? ''), $leagueId);
     } catch (InvalidArgumentException $e) {
         fail($e->getMessage());
     }

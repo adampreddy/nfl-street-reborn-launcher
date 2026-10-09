@@ -248,13 +248,25 @@ function nsr_th_page(PDO $pdo, int $lid, int $teamId, array $teams, array $recor
     ];
 }
 
-function nsr_team_home(PDO $pdo, string $discordUserId): array {
+/**
+ * @param int|null $leagueId  the league the caller pins (the Reborn backend's LEAGUE_ID), or null for the
+ *                            newest non-hidden league. A pinned league that does not exist is a caller error,
+ *                            never member:false: a misconfigured backend must not hide the tab from members.
+ */
+function nsr_team_home(PDO $pdo, string $discordUserId, ?int $leagueId = null): array {
     $did = trim($discordUserId);
     if (!preg_match('/^\d{15,22}$/', $did)) {
         throw new InvalidArgumentException('discord_user_id must be a Discord snowflake');
     }
 
-    $lid = nsr_th_current_league($pdo);
+    if ($leagueId !== null) {
+        $q = $pdo->prepare('SELECT id FROM leagues WHERE id = ?');
+        $q->execute([$leagueId]);
+        $lid = (int)($q->fetchColumn() ?: 0);
+        if ($lid <= 0) throw new InvalidArgumentException('league_id is not a league');
+    } else {
+        $lid = nsr_th_current_league($pdo);
+    }
     if ($lid <= 0) return ['member' => false];
 
     /* Several owner rows can share one Discord id (one person, two handles over
