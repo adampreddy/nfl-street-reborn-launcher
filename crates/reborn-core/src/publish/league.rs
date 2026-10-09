@@ -74,6 +74,10 @@ pub struct LeagueContentRequest<'a> {
 /// NKit v01 images keep the normal header, so they carry it too.
 pub const GAMECUBE_MAGIC: [u8; 4] = [0xC2, 0x33, 0x9F, 0x3D];
 const GAMECUBE_MAGIC_OFFSET: usize = 0x1C;
+/// The big-endian region code in the disc header (apploader-visible), and the
+/// only one the league ships: 1 = NTSC-U.
+const REGION_OFFSET: usize = 0x458;
+const REGION_NTSC_U: u32 = 1;
 /// Compressed image formats Dolphin reads but the league path never ships:
 /// the launcher boots `game/league.iso` as a plain disc.
 const COMPRESSED_MAGICS: &[(&[u8; 4], &str)] = &[
@@ -107,8 +111,8 @@ pub fn read_game_id(iso: &Path) -> Result<String> {
 fn check_disc(iso: &Path) -> Result<std::result::Result<String, String>> {
     use std::io::Read;
     let f = std::fs::File::open(iso).map_err(|e| io_err(iso, e))?;
-    let mut head = Vec::with_capacity(0x20);
-    f.take(0x20).read_to_end(&mut head).map_err(|e| io_err(iso, e))?;
+    let mut head = Vec::with_capacity(REGION_OFFSET + 4);
+    f.take((REGION_OFFSET + 4) as u64).read_to_end(&mut head).map_err(|e| io_err(iso, e))?;
     if head.len() >= 4 {
         if let Some((_, name)) = COMPRESSED_MAGICS.iter().find(|(m, _)| head[..4] == m[..]) {
             return Ok(Err(format!(
@@ -117,7 +121,7 @@ fn check_disc(iso: &Path) -> Result<std::result::Result<String, String>> {
             )));
         }
     }
-    if head.len() < 0x20 {
+    if head.len() < GAMECUBE_MAGIC_OFFSET + 4 {
         return Ok(Err(format!(
             "{} is too short to be a GameCube disc ({} bytes; the header alone is 32).",
             iso.display(),
@@ -128,6 +132,26 @@ fn check_disc(iso: &Path) -> Result<std::result::Result<String, String>> {
         return Ok(Err(format!(
             "{} is not a GameCube disc (no C2339F3D magic at offset 0x1C).",
             iso.display()
+        )));
+    }
+    if head.len() < REGION_OFFSET + 4 {
+        return Ok(Err(format!(
+            "{} is too short to be a GameCube disc ({} bytes; the region code at 0x458 is missing).",
+            iso.display(),
+            head.len()
+        )));
+    }
+    let code = u32::from_be_bytes([head[REGION_OFFSET], head[REGION_OFFSET + 1], head[REGION_OFFSET + 2], head[REGION_OFFSET + 3]]);
+    if code != REGION_NTSC_U {
+        let name = match code {
+            0 => "NTSC-J",
+            2 => "PAL",
+            4 => "NTSC-K",
+            _ => "unknown",
+        };
+        return Ok(Err(format!(
+            "This disc's region is {name} (code {code}); the league disc must be NTSC-U like the retail game. \
+             Rebuild it from the US disc."
         )));
     }
     Ok(Ok(String::from_utf8_lossy(&head[..6]).into_owned()))
@@ -574,6 +598,7 @@ mod tests {
         let mut bytes = vec![0u8; 2048];
         bytes[..6].copy_from_slice(id);
         bytes[0x1C..0x20].copy_from_slice(&GAMECUBE_MAGIC);
+        bytes[0x458..0x45C].copy_from_slice(&1u32.to_be_bytes());
         raw_disc(w, &bytes)
     }
 
@@ -927,6 +952,55 @@ mod tests {
         let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
         assert!(!outcome.is_done());
         assert!(lines.iter().any(|l| l.contains("GameCube disc")), "{lines:#?}");
+    }
+
+    fn disc_with_region(w: &World, region: Option<u32>, len: usize) -> PathBuf {
+        let mut bytes = vec![0u8; len];
+        bytes[..6].copy_from_slice(b"NSRS04");
+        bytes[0x1C..0x20].copy_from_slice(&GAMECUBE_MAGIC);
+        if let Some(r) = region {
+            bytes[0x458..0x45C].copy_from_slice(&r.to_be_bytes());
+        }
+        raw_disc(w, &bytes)
+    }
+
+    #[test]
+    fn only_an_ntsc_u_disc_is_accepted() {
+        let w = world();
+        let tex = textures(&w, "NSRS04", &["a.dds"]);
+        for (region, want) in [
+            (2u32, "region is PAL (code 2)"),
+            (0, "region is NTSC-J (code 0)"),
+            (4, "region is NTSC-K (code 4)"),
+            (9, "region is unknown (code 9)"),
+        ] {
+            let disc = disc_with_region(&w, Some(region), 2048);
+            let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
+            assert!(!outcome.is_done(), "{region}");
+            let want = format!("This disc's {want}; the league disc must be NTSC-U like the retail game. Rebuild it from the US disc.");
+            assert!(lines.iter().any(|l| l.contains(&want)), "{region}: {lines:#?}");
+        }
+        assert!(!stage_root(&w).exists());
+        let disc = disc_with_region(&w, Some(1), 2048);
+        let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, false));
+        assert!(outcome.is_done() || matches!(outcome, Outcome::Described), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_disc_too_short_for_the_region_code_is_a_clean_refusal() {
+        let w = world();
+        let tex = textures(&w, "NSRS04", &["a.dds"]);
+        for len in [0x20usize, 0x440, 0x459] {
+            let disc = disc_with_region(&w, None, len);
+            let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
+            assert!(!outcome.is_done(), "{len}");
+            assert!(lines.iter().any(|l| l.contains("too short") && l.contains("region")), "{len}: {lines:#?}");
+        }
+    }
+
+    #[test]
+    fn the_chosen_league_game_id_passes_the_id_rule() {
+        assert_eq!(check_league_game_id("NSRS04"), Ok(()));
     }
 
     #[test]

@@ -1179,9 +1179,10 @@ mod league_tests {
     }
 
     fn fake_iso(path: &Path, id: &str) {
-        let mut b = vec![0u8; 0x440];
+        let mut b = vec![0u8; 0x460];
         b[..6].copy_from_slice(id.as_bytes());
         b[0x1C..0x20].copy_from_slice(&[0xC2, 0x33, 0x9F, 0x3D]);
+        b[0x458..0x45C].copy_from_slice(&1u32.to_be_bytes());
         std::fs::write(path, b).unwrap();
     }
 

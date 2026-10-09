@@ -659,6 +659,8 @@ pub fn check_private_endpoint(endpoint: &str, buckets: &[&str]) -> std::result::
     let Some(host) = endpoint.strip_prefix("https://") else {
         return Err(format!("The private upload endpoint {endpoint:?} must start with https://."));
     };
+    // The uploader tolerates exactly one trailing slash; so does the check.
+    let host = host.strip_suffix('/').unwrap_or(host);
     let host_ok = !host.is_empty()
         && !host.starts_with('.')
         && !host.ends_with('.')
@@ -2376,12 +2378,16 @@ mod listing_tests {
         let names = ["reborn-league", "my-public"];
         assert!(check_private_endpoint("https://acct.r2.cloudflarestorage.com", &names).is_ok());
         assert!(check_private_endpoint(crate::publish::vault::PRODUCTION_ENDPOINT, &names).is_ok());
+        // The uploader tolerates exactly one trailing slash, so the check does too.
+        assert!(check_private_endpoint("https://acct.r2.cloudflarestorage.com/", &names).is_ok());
         for bad in [
             "http://acct.r2.cloudflarestorage.com",
             "acct.r2.cloudflarestorage.com",
             "https://",
-            "https://acct.r2.cloudflarestorage.com/",
+            "https://acct.r2.cloudflarestorage.com//",
             "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "https://acct.r2.cloudflarestorage.com/reborn-content/",
+            "https:///",
             "https://acct.r2.cloudflarestorage.com?x=1",
             "https://acct.r2.cloudflarestorage.com#x",
             "https://user:pw@acct.r2.cloudflarestorage.com",

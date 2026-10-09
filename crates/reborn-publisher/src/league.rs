@@ -108,6 +108,21 @@ fn upload_private(
     upload::upload(transport, http, &req, sink)
 }
 
+/// The two buckets differ and the private endpoint is a plain account
+/// endpoint. Run by `resolve` before any publish or signing, so a bad
+/// setting refuses with nothing written.
+pub(crate) fn check_bucket_pair(public: &Bucket, private: &Bucket) -> Result<(), String> {
+    if private.bucket == public.bucket {
+        return Err(format!(
+            "The private league bucket and the public bucket are both {}. Members-only blobs never go to the \
+             public bucket. Nothing was uploaded.",
+            public.bucket
+        ));
+    }
+    let buckets = [public.bucket.as_str(), private.bucket.as_str()];
+    check_private_endpoint(&private.endpoint, &buckets).map_err(|why| format!("{why} Nothing was uploaded."))
+}
+
 /// Private blobs first, then the public plan (manifest + release files).
 /// A refused or failed private upload returns before anything public is
 /// planned, listed or sent.
@@ -120,18 +135,10 @@ pub(crate) fn upload_private_then_public(
     public_base: &str,
     sink: Sink<'_>,
 ) -> reborn_core::Result<Outcome<Value>> {
-    if private.bucket == public.bucket {
-        return Ok(refuse(sink, &[format!(
-            "The private league bucket and the public bucket are both {}. Members-only blobs never go to the \
-             public bucket. Nothing was uploaded.",
-            public.bucket
-        )]));
-    }
-
-    let mut buckets = vec![public.bucket.as_str(), private.bucket.as_str()];
-    buckets.dedup();
-    if let Err(why) = check_private_endpoint(&private.endpoint, &buckets) {
-        return Ok(refuse(sink, &[why, "Nothing was uploaded.".to_string()]));
+    // Also checked in `resolve`, before anything is signed; kept here so the
+    // upload leg is safe on its own.
+    if let Err(why) = check_bucket_pair(public, private) {
+        return Ok(refuse(sink, &[why]));
     }
 
     let advice = retry_advice(origin, &private.bucket);
@@ -192,6 +199,7 @@ fn resolve(dry_run: bool) -> Result<Resolved, String> {
     let key = key_path(&settings)?;
     let public = bucket_from(&platform, &settings)?;
     let private = Bucket { bucket: league, ..public.clone() };
+    check_bucket_pair(&public, &private)?;
     Ok(Resolved { origin, public_base, key: Some(key), buckets: Some((public, private)) })
 }
 
@@ -508,6 +516,32 @@ mod tests {
             assert!(matches!(out, Outcome::Refused(_)), "{endpoint}: {out:?}");
             assert!(t.calls.lock().unwrap().is_empty(), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn the_bucket_pair_check_runs_up_front() {
+        let ok = |endpoint: &str| {
+            let private = Bucket { endpoint: endpoint.into(), ..bucket("reborn-league") };
+            check_bucket_pair(&bucket("reborn-content"), &private)
+        };
+        assert!(ok("https://acct.r2.cloudflarestorage.com").is_ok());
+        assert!(ok("https://acct.r2.cloudflarestorage.com/").is_ok(), "one trailing slash is tolerated");
+        assert!(ok("https://reborn-league.acct.r2.cloudflarestorage.com").is_err());
+        assert!(ok("https://acct.r2.cloudflarestorage.com/reborn-league").is_err());
+        let same = check_bucket_pair(&bucket("reborn-content"), &bucket("reborn-content")).unwrap_err();
+        assert!(same.contains("Nothing was"), "{same}");
+    }
+
+    #[test]
+    fn a_bad_endpoint_is_refused_by_the_pair_check_before_anything_is_written() {
+        // resolve() runs this before the publish step ever starts, so the
+        // origin stays exactly as it was.
+        let (dir, _p, _q) = origin();
+        let before: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let private = Bucket { endpoint: "http://acct.r2.cloudflarestorage.com".into(), ..bucket("reborn-league") };
+        assert!(check_bucket_pair(&bucket("reborn-content"), &private).is_err());
+        let after: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(before, after);
     }
 
     #[test]
