@@ -387,7 +387,10 @@ infrastructure, not a publish.
    nor `rebornctl publish upload` can reach the bucket (both go over the
    same S3 API, so reaching for this is a genuinely different situation,
    not a routine choice):
-   `rclone copy "C:\Reborn Origin" r2:reborn-content --progress`
+   `rclone copy "C:\Reborn Origin" r2:reborn-content --exclude "private/**" --progress`
+   **`--exclude "private/**"` is mandatory on every rclone copy of the origin to
+   `reborn-content` once league files exist: without it the members-only blobs in
+   `private\` go to the public bucket.**
    Two things about a bucket-scoped token, both found on 2026-09-06:
    - `rclone lsd r2:` answers 403. It lists every bucket in the account,
      which a token scoped to one bucket may not do. Test with
@@ -400,8 +403,8 @@ infrastructure, not a publish.
    Upload order still matters here, by hand: blobs and `components/` first,
    `release.json` and `release.json.sig` last, so a client mid-upload never
    sees a release that pins content still in flight. `rclone copy` with
-   `--exclude release.json --exclude release.json.sig`, then `rclone
-   copyto` the two release files.
+   `--exclude "private/**" --exclude release.json --exclude release.json.sig`,
+   then `rclone copyto` the two release files.
 3. Bucket settings, Custom Domains, add `files.nflstreetreborn.com`.
    Cloudflare adds the DNS record itself since you own the zone there. The
    first HTTPS request may fail for a few minutes while the certificate is
@@ -959,7 +962,13 @@ What the commands refuse (read the message, fix the input):
 rclone fallback, same order:
 
     rclone copy "C:\Reborn Origin\private\blobs" r2:reborn-league/blobs
-    then the usual public order: blobs -> components -> release.json + .sig
+    rclone copy "C:\Reborn Origin" r2:reborn-content --exclude "private/**" --exclude release.json --exclude release.json.sig
+    rclone copyto "C:\Reborn Origin\release.json.sig" r2:reborn-content/release.json.sig
+    rclone copyto "C:\Reborn Origin\release.json" r2:reborn-content/release.json
+
+**`--exclude "private/**"` is mandatory on every rclone copy of the origin to
+`reborn-content` once league files exist: without it the members-only blobs in
+`private\` go to the public bucket.**
 
 ### Recovery and rollback
 

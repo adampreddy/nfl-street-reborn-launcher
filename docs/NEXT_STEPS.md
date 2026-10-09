@@ -364,7 +364,7 @@ py -3 Tools\e2e-update.py                 # the update pipeline, 12 steps
 py -3 Tools\e2e-roster.py                 # roster apply on the real image
 
 target\release\rebornctl.exe publish roster --from https://nflstreetreborn.com/rdatabase/api/download.php?file=rebornroster --origin "C:\Reborn Origin" --version <date> --key "C:\Users\Adam\Reborn Keys\publisher.key" --apply
-<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copy "C:\Reborn Origin" r2:reborn-content --exclude release.json --exclude release.json.sig
+<rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copy "C:\Reborn Origin" r2:reborn-content --exclude "private/**" --exclude release.json --exclude release.json.sig
 <rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto "C:\Reborn Origin\release.json.sig" r2:reborn-content/release.json.sig
 <rclone> --config "C:\Users\Adam\Reborn Keys\rclone.conf" copyto "C:\Reborn Origin\release.json" r2:reborn-content/release.json
 ```
@@ -372,6 +372,9 @@ target\release\rebornctl.exe publish roster --from https://nflstreetreborn.com/r
 `<rclone>` is
 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Rclone.Rclone_Microsoft.Winget.Source_8wekyb3d8bbwe\rclone-v1.75.1-windows-amd64\rclone.exe`
 (not on PATH in every shell). Release files always go up last.
+**`--exclude "private/**"` is mandatory on every rclone copy of the origin to
+`reborn-content` once league files exist: without it the members-only blobs in
+`private\` go to the public bucket.**
 
 ## Traps already paid for
 
