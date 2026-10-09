@@ -273,8 +273,22 @@ pub async fn setup_import_game(app: tauri::AppHandle, image: String) -> Result<s
                         reborn_core::game_identity::Verdict::RebornBuild{label,..}=>Some(label.clone()).filter(|b|!b.is_empty()),
                         _=>None,
                     };
+                    // The raw copy the import made of the player's disc goes:
+                    // no update knows it, and left as a second original it was
+                    // picked over the download whenever it was newer, so online
+                    // refused "1070822a…" for good (Deck tester, 2026-10). Only
+                    // a copy the chain does not know is removed; the player's
+                    // own file was never this copy.
+                    if let Some(dir)=output.parent(){
+                        let folder=dir.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let known=reborn_core::game_patch::Chain::load(&reborn_core::game_patch::component_root(&data).join(reborn_core::game_patch::CHAIN_FILE)).ok().flatten()
+                            .map(|c|!matches!(c.route(&folder),reborn_core::game_patch::Route::Unknown)).unwrap_or(false);
+                        if !known && dir.starts_with(reborn_core::game_image::imported_root(&data)) {
+                            if let Err(e)=std::fs::remove_dir_all(dir){eprintln!("could not remove the unconverted copy {}: {e}",dir.display());}
+                        }
+                    }
                     (downloaded,"downloaded".to_string(),build,
-                     Some("Reborn could not convert the game file you chose, so it downloaded and verified the Reborn game for you. Your own file was not changed.".to_string()))
+                     Some("Your NFL Street 2 disc checks out (game ID GN7E69). Its files differ from the retail release Reborn patches, so Reborn downloaded its ready-made game for you. Your own file was not changed.".to_string()))
                 }
                 Err(why)=>{
                     let first=note.clone().unwrap_or_else(||"Reborn does not recognize this disc.".into());

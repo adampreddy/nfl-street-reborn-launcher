@@ -107,7 +107,20 @@ pub fn list_pristine(data_root: &Path) -> Vec<Pristine> {
 /// The pristine image the launcher uses: the newest, which after a game
 /// update is the one the update built.
 pub fn find_pristine(data_root: &Path) -> Option<Pristine> {
-    list_pristine(data_root).into_iter().next()
+    let all = list_pristine(data_root);
+    // An original the game-update chain knows wins over a newer one it does
+    // not. A raw copy of a disc that would not convert, left beside the
+    // downloaded Reborn game, was picked by date: every update and online
+    // check then refused it ("is not a build this update knows", Deck tester
+    // 2026-10). Newest first among the known ones; the newest of all when the
+    // chain knows none (or is not on disk).
+    let chain_path = crate::game_patch::component_root(data_root).join(crate::game_patch::CHAIN_FILE);
+    if let Ok(Some(chain)) = crate::game_patch::Chain::load(&chain_path) {
+        if let Some(known) = all.iter().find(|p| !matches!(chain.route(&p.folder_sha256), crate::game_patch::Route::Unknown)) {
+            return Some(known.clone());
+        }
+    }
+    all.into_iter().next()
 }
 
 /// How the booted image was made.
@@ -259,6 +272,29 @@ mod tests {
 
         std::fs::create_dir_all(pristine_dir(dir.path(), "cccc")).unwrap();
         assert_eq!(list_pristine(dir.path()).len(), 2, "an empty folder is not an image");
+    }
+
+    /// The Deck tester's state: the downloaded Reborn game (a build the chain
+    /// knows) and a NEWER raw copy of their own disc (unknown). The known one
+    /// must be used, or every update and online check refuses (2026-10).
+    #[test]
+    fn an_original_the_chain_knows_beats_a_newer_unknown_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = "a".repeat(64);
+        let head = "b".repeat(64);
+        let chain = format!(
+            r#"{{"schema":"nsr.game-patch-chain.v1","disc_id":"GN7E69","steps":[{{"from_sha256":"{known}","to_sha256":"{head}","to_bytes":3,"patch":"patches/a-b.xdelta","label":"newest"}}]}}"#
+        );
+        let chain_file = crate::game_patch::component_root(dir.path()).join(crate::game_patch::CHAIN_FILE);
+        std::fs::create_dir_all(chain_file.parent().unwrap()).unwrap();
+        std::fs::write(&chain_file, chain).unwrap();
+
+        let downloaded = put(dir.path(), &known, IMAGE_FILE, b"reborn");
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        std::fs::File::options().write(true).open(&downloaded).unwrap().set_modified(then).unwrap();
+        put(dir.path(), &"1070822a5988".repeat(5)[..60].to_string().clone().chars().chain("0000".chars()).collect::<String>(), IMAGE_FILE, b"their disc");
+
+        assert_eq!(find_pristine(dir.path()).unwrap().folder_sha256, known);
     }
 
     #[test]
