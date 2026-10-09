@@ -24,6 +24,8 @@ pub struct SessionFacts {
     pub exit_code: Option<i32>,
     /// The matchmade match the session played, from its intent. None for everything else.
     pub match_id: Option<String>,
+    /// The league fixture, from the intent, when this was a league game.
+    pub league_fixture_id: Option<u64>,
 }
 
 pub fn session_facts(history: &[SessionRecord]) -> Vec<SessionFacts> {
@@ -44,6 +46,7 @@ pub fn session_facts(history: &[SessionRecord]) -> Vec<SessionFacts> {
                 exit: exit.to_string(),
                 exit_code: code,
                 match_id: r.intent.as_ref().and_then(|i| i.match_id.clone()),
+                league_fixture_id: r.intent.as_ref().and_then(|i| i.league_fixture_id),
             }
         })
         .collect()
@@ -82,6 +85,10 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
         "flags": entry.summary.as_ref().map(|s| s.flags.clone()).unwrap_or_default(),
         "submitted_at": now,
     });
+    // A league game names its fixture beside `intent.league` (Plan 2: forward.js reads both). Only for a league game.
+    if let Some(fixture) = facts.filter(|f| f.league_match).and_then(|f| f.league_fixture_id) {
+        env["intent"]["fixture_id"] = serde_json::Value::from(fixture);
+    }
     // Series spec §3.1 (MATCHMAKING_SPEC T12): a result from a matchmade session names its match at the top level, so
     // results.js links it into the series. Only a canonical uuid goes out; nothing else in the envelope changes.
     if let Some(id) = facts.and_then(|f| f.match_id.as_deref()).filter(|id| crate::live_view::is_canonical_uuid(id)) {
@@ -382,7 +389,7 @@ mod tests {
     fn a_matchmade_session_names_its_match_in_the_envelope_and_nothing_else_does() {
         let facts = |match_id: Option<&str>| SessionFacts {
             session_id: "s1".into(), league_match: false, exit: "clean".into(), exit_code: Some(0),
-            match_id: match_id.map(str::to_string),
+            match_id: match_id.map(str::to_string), league_fixture_id: None,
         };
         let env = envelope(&entry("s1", Some("online")), CAP, Some(&facts(Some(MATCH))), "3.1.0", "t").unwrap();
         assert_eq!(env["match_id"], MATCH, "series spec §3.1: the envelope's top-level match_id");
@@ -399,7 +406,7 @@ mod tests {
         let rec = SessionRecord {
             id: "1-online".into(), build: RecordedBuild::Online, started_ms: 1, ended_ms: Some(2),
             end: Some(SessionEnd::Exited { code: Some(0) }),
-            intent: Some(SessionIntent { league_match: false, match_id: Some(MATCH.into()) }),
+            intent: Some(SessionIntent { league_match: false, match_id: Some(MATCH.into()), league_fixture_id: None }),
         };
         assert_eq!(session_facts(&[rec])[0].match_id.as_deref(), Some(MATCH));
         // A record an older build wrote has no match_id and still reads.
@@ -409,7 +416,7 @@ mod tests {
 
     #[test]
     fn the_envelope_carries_the_capture_the_hash_the_folder_the_session_and_the_intent() {
-        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None };
+        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: None };
         let env = envelope(&entry("s1", Some("offline")), CAP, Some(&facts), "3.1.0", "2026-09-08T21:00:00Z").unwrap();
         assert_eq!(env["schema"], "nsr.submission.v1");
         assert_eq!(env["capture_hash"], crate::stats::wire_hash_of(CAP).unwrap());
@@ -679,5 +686,24 @@ mod tests {
         assert_eq!(posts[0].2.as_deref(), Some("s3cr3t"));
         assert!(!format!("{s:?}").contains("s3cr3t"));
         let _ = EntryState::Queued;
+    }
+
+    #[test]
+    fn a_league_upload_names_its_fixture() {
+        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: Some(1234) };
+        let env = envelope(&entry("s1", Some("online")), CAP, Some(&facts), "3.1.0", "2026-10-08T21:00:00Z").unwrap();
+        assert_eq!((env["intent"]["league"].as_bool(), env["intent"]["fixture_id"].as_u64()), (Some(true), Some(1234)));
+        let casual = SessionFacts { league_match: false, league_fixture_id: None, ..facts };
+        let env = envelope(&entry("s1", Some("online")), CAP, Some(&casual), "3.1.0", "2026-10-08T21:00:00Z").unwrap();
+        assert!(env["intent"].get("fixture_id").is_none(), "only a league game names a fixture");
+    }
+
+    #[test]
+    fn session_facts_carry_the_fixture_from_the_intent() {
+        use crate::supervisor::SessionIntent;
+        let old: SessionIntent = serde_json::from_str(r#"{"league_match":true}"#).unwrap();
+        assert_eq!(old.league_fixture_id, None, "a record an older build wrote still reads");
+        let new: SessionIntent = serde_json::from_str(r#"{"league_match":true,"league_fixture_id":1234}"#).unwrap();
+        assert_eq!(new.league_fixture_id, Some(1234));
     }
 }
