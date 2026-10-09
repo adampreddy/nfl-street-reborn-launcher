@@ -527,11 +527,47 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
     }
 }
 
-/// The bucket a private upload goes to, or why it cannot run. The public
-/// bucket is refused by name, so a typo can never send league blobs where
-/// the CDN serves them.
-fn private_target(bucket: Option<&str>, public_base: Option<&str>) -> Result<String, String> {
-    let Some(name) = bucket.map(str::trim).filter(|b| !b.is_empty()) else {
+/// Which plan an upload sends.
+#[derive(Debug, PartialEq, Eq)]
+enum PlanKind {
+    Origin,
+    Private,
+}
+
+/// Everything `publish upload` decides from its flags, before the vault is
+/// touched.
+#[derive(Debug, PartialEq, Eq)]
+struct Target {
+    /// The bucket to write to; `None` keeps the production default.
+    bucket: Option<String>,
+    plan: PlanKind,
+    /// The public host to read back from; always `None` for a private upload.
+    read_back: Option<String>,
+}
+
+/// A bucket name goes straight into the path-style request path, so only a
+/// canonical S3 name is allowed: lowercase letters, digits and hyphens, 3 to
+/// 63 characters, no slash, dot or whitespace. Nothing is trimmed.
+fn valid_bucket_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    (3..=63).contains(&b.len()) && edge(b[0]) && edge(b[b.len() - 1]) && b.iter().all(|&c| edge(c) || c == b'-')
+}
+
+/// Decide the bucket, the plan and the read-back from the flags. The public
+/// bucket is refused for a private upload by name, so a typo can never send
+/// league blobs where the CDN serves them.
+fn upload_target(private: bool, bucket: Option<&str>, public_base: Option<&str>) -> Result<Target, String> {
+    if let Some(name) = bucket {
+        if !valid_bucket_name(name) {
+            return Err(format!("--bucket {name:?} is not a bucket name (lowercase letters, digits and hyphens, 3 to 63 characters)."));
+        }
+    }
+    if !private {
+        let read_back = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
+        return Ok(Target { bucket: bucket.map(str::to_string), plan: PlanKind::Origin, read_back: Some(read_back) });
+    }
+    let Some(name) = bucket else {
         return Err("--private needs --bucket <private bucket>, for example --bucket reborn-league.".to_string());
     };
     if public_base.is_some() {
@@ -540,7 +576,7 @@ fn private_target(bucket: Option<&str>, public_base: Option<&str>) -> Result<Str
     if name == reborn_core::publish::vault::PRODUCTION_BUCKET {
         return Err(format!("{name} is the PUBLIC bucket. Members-only blobs never go there."));
     }
-    Ok(name.to_string())
+    Ok(Target { bucket: Some(name.to_string()), plan: PlanKind::Private, read_back: None })
 }
 
 /// Build the bucket to upload to (the vault's credentials, with `--endpoint`
@@ -555,6 +591,13 @@ fn upload_command(
     apply: bool,
     sink: Sink<'_>,
 ) -> reborn_core::Result<std::process::ExitCode> {
+    let target = match upload_target(private, bucket_name, public_base) {
+        Ok(t) => t,
+        Err(why) => {
+            eprintln!("{why}");
+            return Ok(misuse());
+        }
+    };
     let platform = reborn_core::Platform::detect();
     let Some(mut bucket) = vault_bucket(&platform)? else {
         eprintln!("R2 credentials are not stored in the vault ({R2_ACCESS_ACCOUNT}, {R2_SECRET_ACCOUNT}).");
@@ -566,36 +609,26 @@ fn upload_command(
     if let Some(e) = endpoint {
         bucket.endpoint = e.to_string();
     }
-    if private {
-        match private_target(bucket_name, public_base) {
-            Ok(name) => bucket.bucket = name,
-            Err(why) => {
-                eprintln!("{why}");
-                return Ok(misuse());
-            }
-        }
-    } else if let Some(b) = bucket_name {
-        bucket.bucket = b.to_string();
+    if let Some(b) = &target.bucket {
+        bucket.bucket = b.clone();
     }
 
     let transport = UreqTransport::new();
     let (already, how) = reborn_core::publish::upload::already_on_bucket(&transport, &bucket)?;
     sink(Event::out(how));
-    let plan = if private {
-        reborn_core::publish::upload::plan_private(origin, &*already)?
-    } else {
-        plan_origin(origin, &*already)?
+    let plan = match target.plan {
+        PlanKind::Private => reborn_core::publish::upload::plan_private(origin, &*already)?,
+        PlanKind::Origin => plan_origin(origin, &*already)?,
     };
 
     let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
-    let public_base = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
     let req = UploadRequest {
         bucket: &bucket,
         plan: &plan,
         multipart_threshold: DEFAULT_MULTIPART_THRESHOLD,
         part_size: DEFAULT_PART_SIZE,
         attempts: DEFAULT_ATTEMPTS,
-        public_base: if private { None } else { Some(&public_base) },
+        public_base: target.read_back.as_deref(),
         apply,
     };
     Ok(exit_of(&run_upload(&transport, &http, &req, sink)?))
@@ -763,27 +796,58 @@ fn read_notes(notes: Option<String>, file: Option<&std::path::Path>) -> reborn_c
 
 #[cfg(test)]
 mod private_upload_tests {
-    use super::private_target;
+    use super::{upload_target, PlanKind};
 
     #[test]
     fn a_private_upload_needs_a_named_bucket() {
-        assert!(private_target(None, None).is_err());
-        assert!(private_target(Some("  "), None).is_err());
+        assert!(upload_target(true, None, None).is_err());
+        assert!(upload_target(true, Some("  "), None).is_err());
     }
 
     #[test]
     fn a_private_upload_never_reads_back_through_the_public_cdn() {
-        assert!(private_target(Some("reborn-league"), Some("https://files.nflstreetreborn.com/")).is_err());
+        assert!(upload_target(true, Some("reborn-league"), Some("https://files.nflstreetreborn.com/")).is_err());
     }
 
     #[test]
-    fn a_private_upload_refuses_the_public_bucket() {
-        assert!(private_target(Some("reborn-content"), None).is_err());
-        assert!(private_target(Some(" reborn-content "), None).is_err());
+    fn a_private_upload_refuses_the_public_bucket_however_it_is_spelled() {
+        for bad in [
+            "reborn-content",
+            "reborn-content/",
+            "reborn-content/x",
+            "Reborn-Content",
+            "reborn-league/../reborn-content",
+            " reborn-league",
+            "reborn-league ",
+            "reborn.league",
+            "-reborn",
+            "ab",
+        ] {
+            assert!(upload_target(true, Some(bad), None).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
-    fn the_league_bucket_is_accepted() {
-        assert_eq!(private_target(Some("reborn-league"), None), Ok("reborn-league".to_string()));
+    fn the_league_bucket_is_private_and_never_read_back() {
+        let t = upload_target(true, Some("reborn-league"), None).unwrap();
+        assert_eq!(t.bucket.as_deref(), Some("reborn-league"));
+        assert_eq!(t.plan, PlanKind::Private);
+        assert_eq!(t.read_back, None);
+    }
+
+    #[test]
+    fn a_plain_upload_keeps_the_production_bucket_and_reads_back() {
+        let t = upload_target(false, Some("reborn-content"), None).unwrap();
+        assert_eq!(t.bucket.as_deref(), Some("reborn-content"));
+        assert_eq!(t.plan, PlanKind::Origin);
+        assert!(t.read_back.is_some());
+        assert!(upload_target(false, None, Some("https://x.test/")).unwrap().read_back.as_deref() == Some("https://x.test/"));
+    }
+
+    #[test]
+    fn a_plain_upload_also_refuses_a_path_injecting_bucket() {
+        for bad in ["reborn-content/", "a/b", "../x", " reborn-content", "Reborn"] {
+            assert!(upload_target(false, Some(bad), None).is_err(), "{bad:?}");
+        }
     }
 }
