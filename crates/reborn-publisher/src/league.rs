@@ -1,7 +1,8 @@
 //! The "League files" page: publish the league build (`league-game`) or the
 //! league seed (`league-content`), upload their blobs to the PRIVATE bucket
 //! first, then the manifest and release to the public bucket. One button per
-//! job, like every page.
+//! job, like every page. No release notes: notes become a "What's new"
+//! card for EVERY player, members or not.
 //!
 //! # Members-only blobs never go public
 //!
@@ -20,6 +21,11 @@
 //! release files). If the private upload is refused or fails, the public
 //! upload never starts: a public release pinning blobs members cannot fetch
 //! would break every league install at once.
+//! Every failure on the private leg (listing, planning, upload) carries the
+//! same advice: run the private upload again, then the public one. The
+//! private endpoint must be `https://<host>` with no bucket in the host, so a
+//! virtual-hosted endpoint can never route members-only blobs to another
+//! bucket.
 //!
 //! # The check
 //!
@@ -35,7 +41,7 @@ use reborn_core::inventory::{RunToCompletion, ScanObserver};
 use reborn_core::net::{Http, UreqHttp};
 use reborn_core::publish::league::{publish_league_content, publish_league_game, LeagueContentRequest, LeagueGameRequest};
 use reborn_core::publish::roster::Push;
-use reborn_core::publish::upload::{self, check_private_bucket, plan_origin, plan_private, Bucket, Transport, UploadRequest, UreqTransport};
+use reborn_core::publish::upload::{self, check_private_bucket, check_private_endpoint, plan_origin, plan_private, Bucket, Transport, UploadRequest, UreqTransport};
 use reborn_core::publish::{refuse, Event, Outcome, Sink};
 
 use crate::content::{bucket_from, key_path, origin_dir, settings_and_platform};
@@ -63,9 +69,44 @@ pub(crate) fn private_bucket_name(settings: &Settings) -> Result<String, String>
     Ok(name.to_string())
 }
 
-/// Shown with every failed private upload. Home -> Upload would push the
-/// public plan without the members-only blobs, so retry means a new version.
-const RETRY_ADVICE: &str = "Publish a new league version to retry; don't use Home \u{2192} Upload until then.";
+/// Shown with every failure on the private leg (listing, planning or
+/// upload). The release is already signed in the local origin, so the fix is
+/// the private upload again, then the public one; anything else published or
+/// uploaded first could push a release whose members-only blobs are missing.
+fn retry_advice(origin: &Path, private_bucket: &str) -> String {
+    format!(
+        "The league files are published locally but not uploaded. Don't publish or upload anything else until this \
+         is fixed: run `rebornctl publish upload --private --bucket {private_bucket} --origin \"{}\" --apply`, then \
+         the public upload.",
+        origin.display()
+    )
+}
+
+/// The whole private leg: list the private bucket, plan the members-only
+/// blobs against it, upload them. One `Result`, so every failure on this leg
+/// gets the same retry advice.
+fn upload_private(
+    transport: &dyn Transport,
+    http: &dyn Http,
+    private: &Bucket,
+    origin: &Path,
+    sink: Sink<'_>,
+) -> reborn_core::Result<Outcome<upload::Uploaded>> {
+    let (already_private, how) = upload::already_on_bucket(transport, private)?;
+    sink(Event::out(how));
+    let private_plan = plan_private(origin, &*already_private)?;
+    let req = UploadRequest {
+        bucket: private,
+        plan: &private_plan,
+        multipart_threshold: upload::DEFAULT_MULTIPART_THRESHOLD,
+        part_size: upload::DEFAULT_PART_SIZE,
+        attempts: upload::DEFAULT_ATTEMPTS,
+        // Never read back: the public CDN does not serve these.
+        public_base: None,
+        apply: true,
+    };
+    upload::upload(transport, http, &req, sink)
+}
 
 /// Private blobs first, then the public plan (manifest + release files).
 /// A refused or failed private upload returns before anything public is
@@ -87,26 +128,20 @@ pub(crate) fn upload_private_then_public(
         )]));
     }
 
-    let (already_private, how) = upload::already_on_bucket(transport, private)?;
-    sink(Event::out(how));
-    let private_plan = plan_private(origin, &*already_private)?;
-    let req = UploadRequest {
-        bucket: private,
-        plan: &private_plan,
-        multipart_threshold: upload::DEFAULT_MULTIPART_THRESHOLD,
-        part_size: upload::DEFAULT_PART_SIZE,
-        attempts: upload::DEFAULT_ATTEMPTS,
-        // Never read back: the public CDN does not serve these.
-        public_base: None,
-        apply: true,
-    };
-    let private_done = match upload::upload(transport, http, &req, sink) {
+    let mut buckets = vec![public.bucket.as_str(), private.bucket.as_str()];
+    buckets.dedup();
+    if let Err(why) = check_private_endpoint(&private.endpoint, &buckets) {
+        return Ok(refuse(sink, &[why, "Nothing was uploaded.".to_string()]));
+    }
+
+    let advice = retry_advice(origin, &private.bucket);
+    let private_done = match upload_private(transport, http, private, origin, sink) {
         Err(e) => {
-            return Ok(refuse(sink, &[format!("The private league upload failed: {e}"), RETRY_ADVICE.to_string()]));
+            return Ok(refuse(sink, &[format!("The private league upload failed: {e}"), advice]));
         }
         Ok(Outcome::Refused(mut r)) => {
-            sink(Event::out(RETRY_ADVICE.to_string()));
-            r.lines.push(RETRY_ADVICE.to_string());
+            sink(Event::out(advice.clone()));
+            r.lines.push(advice);
             return Ok(Outcome::Refused(r));
         }
         Ok(Outcome::Done(u)) => u,
@@ -204,11 +239,10 @@ fn op_name(page: &'static str, dry_run: bool) -> &'static str {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn league_game_run(iso: String, textures: String, version: String, notes: String, dry_run: bool) -> Result<Value, String> {
+pub fn league_game_run(iso: String, textures: String, version: String, dry_run: bool) -> Result<Value, String> {
     let iso = PathBuf::from(trimmed(&iso).ok_or("Choose the league disc first.")?);
     let textures = PathBuf::from(trimmed(&textures).ok_or("Choose the league texture folder first.")?);
     let version = trimmed(&version).ok_or("Choose a version first.")?;
-    let notes = trimmed(&notes);
     let resolved = resolve(dry_run)?;
     let inputs = json!({
         "kind": "league-game-run", "iso": iso.display().to_string(), "textures": textures.display().to_string(),
@@ -225,7 +259,8 @@ pub fn league_game_run(iso: String, textures: String, version: String, notes: St
             key: resolved.key.as_deref(),
             release_version: None,
             release_sequence: None,
-            notes: notes.as_deref(),
+            // Never: notes become a "What's new" card for every player.
+            notes: None,
             apply: !dry_run,
         };
         let push = publish_league_game(&req, &RunToCompletion as &dyn ScanObserver, sink)?;
@@ -235,11 +270,10 @@ pub fn league_game_run(iso: String, textures: String, version: String, notes: St
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn league_content_run(seed: String, seed_json: Option<String>, version: String, notes: String, dry_run: bool) -> Result<Value, String> {
+pub fn league_content_run(seed: String, seed_json: Option<String>, version: String, dry_run: bool) -> Result<Value, String> {
     let seed = PathBuf::from(trimmed(&seed).ok_or("Choose the league seed (.s01) first.")?);
     let seed_json = seed_json.as_deref().and_then(trimmed).map(PathBuf::from);
     let version = trimmed(&version).ok_or("Choose a version first.")?;
-    let notes = trimmed(&notes);
     let resolved = resolve(dry_run)?;
     let inputs = json!({
         "kind": "league-content-run", "seed": seed.display().to_string(),
@@ -256,7 +290,8 @@ pub fn league_content_run(seed: String, seed_json: Option<String>, version: Stri
             key: resolved.key.as_deref(),
             release_version: None,
             release_sequence: None,
-            notes: notes.as_deref(),
+            // Never: notes become a "What's new" card for every player.
+            notes: None,
             apply: !dry_run,
         };
         let push = publish_league_content(&req, &RunToCompletion as &dyn ScanObserver, sink)?;
@@ -316,10 +351,17 @@ mod tests {
     struct Recorder {
         calls: Mutex<Vec<(String, String)>>,
         fail_bucket: Option<String>,
+        /// Every request to this bucket fails at the transport, listing included.
+        unreachable_bucket: Option<String>,
     }
     impl Transport for Recorder {
         fn send(&self, req: &SignedRequest, _body: Body<'_>) -> reborn_core::Result<Reply> {
             self.calls.lock().unwrap().push((req.method.to_string(), req.url.clone()));
+            if let Some(b) = &self.unreachable_bucket {
+                if req.url.contains(&format!("/{b}/")) {
+                    return Err(reborn_core::Error::PlainIo(std::io::Error::new(std::io::ErrorKind::NotConnected, "offline")));
+                }
+            }
             if req.method == "GET" {
                 let xml = "<?xml version=\"1.0\"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>";
                 return Ok(Reply { status: 200, headers: vec![], body: xml.as_bytes().to_vec() });
@@ -416,14 +458,56 @@ mod tests {
         let mut sink = |_e: Event| {};
         let out = upload_private_then_public(&t, &edge, &bucket("reborn-content"), &bucket("reborn-league"), dir.path(), "https://files.example.test/", &mut sink).unwrap();
         match &out {
-            Outcome::Refused(r) => assert!(
-                r.lines.iter().any(|l| l.contains("Publish a new league version to retry; don't use Home \u{2192} Upload until then.")),
-                "{r:?}"
-            ),
+            Outcome::Refused(r) => assert!(r.lines.iter().any(|l| l == &expected_advice(dir.path())), "{r:?}"),
             other => panic!("{other:?}"),
         }
         let calls = t.calls.lock().unwrap().clone();
         assert!(!calls.iter().any(|(_, u)| u.contains("/reborn-content/")), "nothing public, not even a listing: {calls:?}");
+    }
+
+    fn expected_advice(origin: &Path) -> String {
+        format!(
+            "The league files are published locally but not uploaded. Don't publish or upload anything else until this \
+             is fixed: run `rebornctl publish upload --private --bucket reborn-league --origin \"{}\" --apply`, then \
+             the public upload.",
+            origin.display()
+        )
+    }
+
+    #[test]
+    fn a_private_bucket_that_cannot_be_listed_gets_the_retry_advice_and_nothing_public() {
+        let (dir, _private, _public) = origin();
+        let t = Recorder { unreachable_bucket: Some("reborn-league".into()), ..Default::default() };
+        let edge = Edge(vec![]);
+        let mut sink = |_e: Event| {};
+        let out = upload_private_then_public(&t, &edge, &bucket("reborn-content"), &bucket("reborn-league"), dir.path(), "https://files.example.test/", &mut sink).unwrap();
+        match &out {
+            Outcome::Refused(r) => assert!(r.lines.iter().any(|l| l == &expected_advice(dir.path())), "{r:?}"),
+            other => panic!("{other:?}"),
+        }
+        let calls = t.calls.lock().unwrap().clone();
+        assert!(!calls.is_empty(), "the private listing was attempted");
+        assert!(!calls.iter().any(|(_, u)| u.contains("/reborn-content/")), "nothing public: {calls:?}");
+    }
+
+    #[test]
+    fn a_private_endpoint_naming_a_bucket_is_refused_before_any_request() {
+        let (dir, _p, _q) = origin();
+        for endpoint in [
+            "https://reborn-content.acct.r2.cloudflarestorage.com",
+            "https://reborn-league.acct.r2.cloudflarestorage.com",
+            "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "http://acct.r2.cloudflarestorage.com",
+            "https://u@acct.r2.cloudflarestorage.com",
+        ] {
+            let t = Recorder::default();
+            let edge = Edge(vec![]);
+            let mut sink = |_e: Event| {};
+            let private = Bucket { endpoint: endpoint.into(), ..bucket("reborn-league") };
+            let out = upload_private_then_public(&t, &edge, &bucket("reborn-content"), &private, dir.path(), "https://files.example.test/", &mut sink).unwrap();
+            assert!(matches!(out, Outcome::Refused(_)), "{endpoint}: {out:?}");
+            assert!(t.calls.lock().unwrap().is_empty(), "{endpoint}");
+        }
     }
 
     #[test]

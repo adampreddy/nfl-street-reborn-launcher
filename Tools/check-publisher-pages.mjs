@@ -297,7 +297,11 @@ current = "(between page checks)";
     await settle(4);
     const runs = calls.filter((c) => c.cmd === "league_game_run");
     check("League build's button runs the check only (dry run)", runs.length === 1 && runs[0].args.dry_run === true, JSON.stringify(runs));
+    // Release notes become a "What's new" card for EVERY player, members or
+    // not, so the League files page never sends any.
+    check("League build sends no release notes", runs.length === 1 && !("notes" in runs[0].args), JSON.stringify(runs));
   }
+  check("League files has no notes box", screen.querySelectorAll("textarea").length === 0 && !/\bNotes\b/.test(t), t.slice(0, 300));
 }
 {
   const { screen } = await loadPage("crates/reborn-publisher/ui/content.js", FULL, "full");

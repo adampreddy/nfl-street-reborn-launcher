@@ -935,9 +935,12 @@ NEVER `blobs\`. Public `publish upload` and any rclone push of `blobs\` cannot s
 ### Publish
 
 Both commands are a dry run (a check, nothing written) until you add `--apply`.
+Leave out `--notes` / `--notes-file`: release notes are shown to EVERY player as a
+"What's new" card, including non-members. The Publisher's League files page has no
+notes box for that reason.
 
-    rebornctl publish league-content --seed <league.s01> [--seed-json <seed.json>] --origin "C:\Reborn Origin" --version 1.0.0 --key "<publisher.key>" --notes-file notes.md --apply
-    rebornctl publish league-game --iso <league.iso> --textures <folder named after the league id> --origin "C:\Reborn Origin" --version 2026.10.08 --key "<publisher.key>" --notes-file notes.md --apply
+    rebornctl publish league-content --seed <league.s01> [--seed-json <seed.json>] --origin "C:\Reborn Origin" --version 1.0.0 --key "<publisher.key>" --apply
+    rebornctl publish league-game --iso <league.iso> --textures <folder named after the league id> --origin "C:\Reborn Origin" --version 2026.10.08 --key "<publisher.key>" --apply
     rebornctl publish upload --origin "C:\Reborn Origin" --private --bucket reborn-league --apply   # FIRST
     rebornctl publish upload --origin "C:\Reborn Origin" --apply                                    # THEN
 
@@ -972,10 +975,12 @@ rclone fallback, same order:
 
 ### Recovery and rollback
 
-- If the private upload fails (Publisher or CLI), do NOT use Home -> Upload. That would
-  push the public manifest and release without the members-only blobs and break every
-  league install. Publish a NEW league version to retry.
-- League components cannot be rolled back (History refuses them, the CLI too): their
+- If the private upload fails (Publisher or CLI): the league files are published locally
+  but not uploaded. Don't publish or upload anything else until this is fixed: run
+  `rebornctl publish upload --private --bucket reborn-league --origin "C:\Reborn Origin" --apply`,
+  then the public upload. Never the public upload alone: it would push the public
+  manifest and release without the members-only blobs and break every league install.
+- League components cannot be rolled back (History refuses them): their
   blobs are not in the public bucket. Publish a new version instead.
 
 LAWS

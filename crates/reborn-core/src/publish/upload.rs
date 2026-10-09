@@ -648,6 +648,41 @@ pub fn check_private_bucket(name: &str, public: &[&str]) -> std::result::Result<
     Ok(())
 }
 
+/// May members-only blobs be sent to `endpoint`? Only `https://<host>`:
+/// no path, query, fragment, port or user-info, so the bucket can only come
+/// from the path-style request path. And the host must not start with a
+/// label naming any of `buckets` (the private bucket, the public buckets,
+/// [`crate::publish::vault::PRODUCTION_BUCKET`] is always added): a
+/// virtual-hosted endpoint such as `reborn-content.<account>.r2.cloudflarestorage.com`
+/// would route the upload to THAT bucket whatever the path says.
+pub fn check_private_endpoint(endpoint: &str, buckets: &[&str]) -> std::result::Result<(), String> {
+    let Some(host) = endpoint.strip_prefix("https://") else {
+        return Err(format!("The private upload endpoint {endpoint:?} must start with https://."));
+    };
+    let host_ok = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-');
+    if !host_ok {
+        return Err(format!(
+            "The private upload endpoint {endpoint:?} must be https://<host> only: no path, query, port or user name."
+        ));
+    }
+    let first = host.split('.').next().unwrap_or_default();
+    let named = buckets
+        .iter()
+        .copied()
+        .chain(std::iter::once(crate::publish::vault::PRODUCTION_BUCKET))
+        .find(|b| !b.is_empty() && first.eq_ignore_ascii_case(b));
+    if let Some(b) = named {
+        return Err(format!(
+            "The private upload endpoint {endpoint:?} names the bucket {b} in its host. Use the account endpoint \
+             (https://<account>.r2.cloudflarestorage.com); the bucket goes in --bucket."
+        ));
+    }
+    Ok(())
+}
+
 /// The members-only blobs, for the PRIVATE bucket (`reborn-league`): every
 /// file under `<origin>/private/blobs/by-hash` the bucket does not already
 /// hold at the right length, keyed by the ordinary `blobs/by-hash/<xx>/<sha>`
@@ -2334,6 +2369,31 @@ mod listing_tests {
             assert!(!valid_bucket_name(bad), "{bad:?}");
         }
         assert!(valid_bucket_name("reborn-content"));
+    }
+
+    #[test]
+    fn a_private_endpoint_is_https_host_only_and_never_names_a_bucket() {
+        let names = ["reborn-league", "my-public"];
+        assert!(check_private_endpoint("https://acct.r2.cloudflarestorage.com", &names).is_ok());
+        assert!(check_private_endpoint(crate::publish::vault::PRODUCTION_ENDPOINT, &names).is_ok());
+        for bad in [
+            "http://acct.r2.cloudflarestorage.com",
+            "acct.r2.cloudflarestorage.com",
+            "https://",
+            "https://acct.r2.cloudflarestorage.com/",
+            "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "https://acct.r2.cloudflarestorage.com?x=1",
+            "https://acct.r2.cloudflarestorage.com#x",
+            "https://user:pw@acct.r2.cloudflarestorage.com",
+            "https://acct.r2.cloudflarestorage.com:443",
+            "https://reborn-content.acct.r2.cloudflarestorage.com",
+            "https://Reborn-Content.acct.r2.cloudflarestorage.com",
+            "https://reborn-league.acct.r2.cloudflarestorage.com",
+            "https://my-public.acct.r2.cloudflarestorage.com",
+            "https://.acct.r2.cloudflarestorage.com",
+        ] {
+            assert!(check_private_endpoint(bad, &names).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

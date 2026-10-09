@@ -6,6 +6,9 @@
 // league bucket first and only then uploads the manifest and the release
 // to the public server. The check is the same command with dry_run: true;
 // "Yes, publish" calls it again with dry_run: false. `job.js` drives both.
+//
+// No release notes here: notes become a "What's new" card for EVERY player,
+// members or not, and a league publish is nothing non-members should see.
 
 import { call, el, markCurrent } from "./shell.js";
 import { job } from "./job.js";
@@ -42,10 +45,6 @@ function browseButton(input, command, args) {
   });
 }
 
-function notesBox() {
-  return el("textarea", { rows: 4, placeholder: "What changed, one line each. Leave empty for none.", style: "width:100%;max-width:560px;font:inherit" });
-}
-
 function describe(plan) {
   if (plan && typeof plan === "object" && plan.summary) return [String(plan.summary)];
   return ["The check came back with nothing to describe."];
@@ -56,7 +55,6 @@ function describe(plan) {
 const gameIso = el("input", { type: "text", placeholder: String.raw`C:\path\to\league.iso`, style: "width:420px" });
 const gameTextures = el("input", { type: "text", placeholder: String.raw`C:\path\to\textures\<game id>`, style: "width:420px" });
 const gameVersion = el("input", { type: "text", value: todayLabel(), style: "width:140px" });
-const gameNotes = notesBox();
 const gameJobHost = el("div", {});
 
 const gameJob = job(gameJobHost, {
@@ -77,7 +75,7 @@ const gameJob = job(gameJobHost, {
 });
 
 function gameArgs(dryRun) {
-  return { iso: gameIso.value.trim(), textures: gameTextures.value.trim(), version: gameVersion.value.trim(), notes: gameNotes.value.trim(), dry_run: dryRun };
+  return { iso: gameIso.value.trim(), textures: gameTextures.value.trim(), version: gameVersion.value.trim(), dry_run: dryRun };
 }
 
 const gameBlock = block(
@@ -86,8 +84,6 @@ const gameBlock = block(
   pathRow("Textures", gameTextures, browseButton(gameTextures, "pick_folder", {})),
   el("p", { class: "hint", text: "An uncompressed league disc (its own game id, never a retail one) and its texture folder." }),
   el("div", { class: "row", style: "margin-top:10px" }, el("label", { class: "inline" }, "Version ", gameVersion)),
-  el("p", { class: "hint", text: "Notes" }),
-  gameNotes,
   el("p", { class: "hint", text: MEMBERS_ONLY }),
   gameJobHost
 );
@@ -97,7 +93,6 @@ const gameBlock = block(
 const seedFile = el("input", { type: "text", placeholder: String.raw`C:\path\to\league.s01`, style: "width:420px" });
 const seedJson = el("input", { type: "text", placeholder: "Optional: seed.json", style: "width:420px" });
 const seedVersion = el("input", { type: "text", value: todayLabel(), style: "width:140px" });
-const seedNotes = notesBox();
 const seedJobHost = el("div", {});
 
 const seedJob = job(seedJobHost, {
@@ -119,7 +114,7 @@ const seedJob = job(seedJobHost, {
 
 function seedArgs(dryRun) {
   const json = seedJson.value.trim();
-  return { seed: seedFile.value.trim(), seed_json: json || null, version: seedVersion.value.trim(), notes: seedNotes.value.trim(), dry_run: dryRun };
+  return { seed: seedFile.value.trim(), seed_json: json || null, version: seedVersion.value.trim(), dry_run: dryRun };
 }
 
 const seedBlock = block(
@@ -128,8 +123,6 @@ const seedBlock = block(
   pathRow("seed.json", seedJson, browseButton(seedJson, "pick_file", { kind: "json" })),
   el("p", { class: "hint", text: "The .s01 save state league games boot from, and optionally its seed.json capture record." }),
   el("div", { class: "row", style: "margin-top:10px" }, el("label", { class: "inline" }, "Version ", seedVersion)),
-  el("p", { class: "hint", text: "Notes" }),
-  seedNotes,
   el("p", { class: "hint", text: MEMBERS_ONLY }),
   seedJobHost
 );
