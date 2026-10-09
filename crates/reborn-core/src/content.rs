@@ -2440,6 +2440,7 @@ mod tests {
             sequence,
             install_root: DataDir::LibraryOffline.relative().to_string(),
             customizable,
+            members_only: false,
             files,
         };
         serde_json::to_vec(&component).expect("a component manifest encodes")
@@ -3314,6 +3315,7 @@ mod tests {
             sequence: 3,
             install_root: install_root.to_string(),
             customizable: false,
+            members_only: false,
             files: vec![file_of("tex1_128x128_m_ffc5151a141db330_14.dds", b"dds")],
         };
         let bytes = serde_json::to_vec(&component).expect("encodes");

@@ -142,6 +142,10 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         // check/fetch/promote loop.
         ComponentId::GameFull => Some(DataDir::LibraryGameFull),
         ComponentId::GameImport => Some(DataDir::LibraryGameImport),
+        // Members only, never in `updatable()`: delivered by the league tab's
+        // own backend-signed download path, not this public-CDN loop.
+        ComponentId::LeagueGame => Some(DataDir::LibraryLeague),
+        ComponentId::LeagueContent => Some(DataDir::LibraryLeagueContent),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }
@@ -1024,6 +1028,7 @@ mod tests {
                 sequence: b.sequence,
                 install_root: b.install_root.clone(),
                 customizable: false,
+                members_only: false,
                 files,
             };
             let bytes = serde_json::to_vec(&component).unwrap();

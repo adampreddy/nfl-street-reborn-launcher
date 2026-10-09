@@ -245,7 +245,23 @@ pub struct Component {
     /// soundtrack from being re-fetched over. See [`crate::library::Repairer`].
     pub customizable: bool,
 
+    /// Whether this component's blobs are withheld from the public CDN.
+    ///
+    /// True for `league-game` and `league-content` only, derived from the
+    /// identity like `customizable`. The manifest itself is public and pinned
+    /// like any other. A launcher fetches the blobs through the backend's
+    /// `POST /v1/league/download` (signed, short-lived URLs), never from
+    /// `<origin>/blobs/by-hash`. Absent means false, and false is never
+    /// written, so every manifest published before this field existed still
+    /// round-trips byte for byte.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub members_only: bool,
+
     pub files: Vec<ManifestFile>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -484,5 +500,33 @@ mod tests {
     fn total_bytes_sums_the_file_list() {
         let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
         assert_eq!(c.total_bytes(), 1_459_978_240);
+    }
+
+    /// Every manifest published before league content existed has no
+    /// `members_only` key. It must still parse, as public.
+    #[test]
+    fn a_manifest_without_members_only_parses_as_public() {
+        let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
+        assert!(!c.members_only);
+    }
+
+    /// And it must serialize back without the key, byte for byte, or the
+    /// release signer's round-trip check refuses every old manifest.
+    #[test]
+    fn a_public_manifest_serializes_without_the_members_only_key() {
+        let c = Component::parse(component_json("runtime", false).as_bytes()).unwrap();
+        let out = serde_json::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("members_only"), "{out}");
+    }
+
+    #[test]
+    fn a_members_only_manifest_says_so_and_round_trips() {
+        let json = component_json("league-game", false)
+            .replace("\"customizable\": false,", "\"customizable\": false,
+  \"members_only\": true,");
+        let c = Component::parse(json.as_bytes()).unwrap();
+        assert!(c.members_only);
+        let out = serde_json::to_string_pretty(&c).unwrap();
+        assert!(out.contains("\"members_only\": true"), "{out}");
     }
 }

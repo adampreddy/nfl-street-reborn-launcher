@@ -301,6 +301,7 @@ mod tests {
             sequence: 7,
             install_root: "library/offline".into(),
             customizable,
+            members_only: false,
             files,
         }
     }

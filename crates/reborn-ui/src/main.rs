@@ -8622,6 +8622,7 @@ struct StatsSubmitView {"),
             sequence: 1,
             install_root: DataDir::LibraryOffline.relative().to_string(),
             customizable: true,
+            members_only: false,
             files: vec![
                 ManifestFile {
                     path: "game.iso".to_string(),
