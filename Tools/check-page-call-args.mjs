@@ -27,6 +27,7 @@ import { join } from "path";
 const RUST = [
   "crates/reborn-ui/src/main.rs",
   "crates/reborn-ui/src/league_edition.rs",
+  "crates/reborn-ui/src/league_tab.rs",
   "crates/reborn-ui/src/online_mm.rs",
 ];
 const UI_DIR = "crates/reborn-ui/ui";

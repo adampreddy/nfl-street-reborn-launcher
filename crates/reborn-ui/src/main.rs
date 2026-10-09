@@ -32,6 +32,7 @@ mod shell_tools;
 mod dolphin_settings;
 mod online_mm;
 mod league_edition;
+mod league_tab;
 mod live_settings;
 mod live_view;
 mod launcher_look;
@@ -6737,6 +6738,8 @@ fn main() {
             live_view::stats_my_games,
             live_view::stats_game,
             live_view::stats_dashboard,
+            league_tab::league_member,
+            league_tab::league_home,
             live_view::player_profile,
             live_view::set_plays_as,
             live_view::leaderboard,
