@@ -744,7 +744,7 @@ function moveRow(info) {
   }
   return row("Move to another drive", {
     control: el("button", { type: "button", id: "move-start", class: "btn", text: "Move…", disabled: busy, onclick: pickMoveFolder }),
-    help: info.last_failure ? `The last move did not finish: ${info.last_failure}` : "Free up space on this drive. Choose a folder on another drive; the game, textures and saves all move there." });
+    help: info.last_failure ? `The last move did not finish: ${info.last_failure}` : "Free up space on this drive. Pick any folder on the drive you want; the game, textures and saves move into a folder of their own at the top of that drive." });
 }
 
 function filesBlock() {

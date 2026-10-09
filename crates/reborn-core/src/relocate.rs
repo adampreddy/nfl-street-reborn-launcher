@@ -87,8 +87,18 @@ fn gib(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
 }
 
-/// Decide where the data root goes when the player picks `chosen`, and
-/// refuse, in words a player can act on, anything that would not work.
+/// Decide where the data root goes when the player picks `chosen` (any
+/// folder on the drive they want), and refuse, in words a player can act
+/// on, anything that would not work or would not be safe.
+///
+/// The target is always `<drive root>\<data root's name>`, the same shape
+/// as the folder under `%APPDATA%`, whatever folder was picked on that
+/// drive. A folder deeper down is only as safe as every folder above it: on
+/// a second drive a folder like `D:\Games` can be renamed by any account on
+/// the PC, which could then put its own `NFL Street Reborn` in its place,
+/// and the junction would lead there. The drive root cannot be renamed, and
+/// it is checked to make sure no other account can delete what is in it or
+/// take it over (security review, 2026-10-09).
 pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
     if !data_root.is_dir() {
         return Err("There is nothing to move yet. Set up the game first.".into());
@@ -98,25 +108,10 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
     }
     let name = data_root.file_name().ok_or("The game folder has no name.")?;
     let real_root = real(data_root);
-    let chosen_real = real(chosen);
-    if chosen_real.starts_with(&real_root) || same_path(&chosen_real, &real_root) {
-        return Err("Choose a folder outside the game folder itself.".into());
-    }
-    let target = if chosen.file_name() == Some(name) { chosen.to_path_buf() } else { chosen.join(name) };
-    if same_path(&target, data_root) || same_path(&real(&target), &real_root) {
-        return Err("The game is already in that folder.".into());
-    }
-    if let Ok(mut entries) = std::fs::read_dir(&target) {
-        if entries.next().is_some() {
-            return Err(format!("{} already exists and is not empty. Choose another folder, or empty that one first.", target.display()));
-        }
-    } else if target.exists() {
-        return Err(format!("{} already exists. Choose another folder.", target.display()));
-    }
     let here = file_identity::of(&real_root).map_err(|e| format!("The game folder could not be read: {e}"))?;
     let there = file_identity::of_nearest(chosen).map_err(|e| format!("{} could not be read: {e}", chosen.display()))?;
     if here.volume == there.volume {
-        return Err("The game is already on that drive. Choose a folder on a different drive.".into());
+        return Err("The game is already on that drive. Choose a different drive.".into());
     }
     let facts = dir_move::volume_facts(chosen).ok_or("That drive could not be read.")?;
     if facts.removable {
@@ -128,6 +123,30 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
     if cfg!(windows) && fs != "NTFS" && fs != "REFS" {
         return Err(format!("{} is formatted as {}. The game needs an NTFS drive.", facts.mount.display(), facts.filesystem));
     }
+    let (target, staged) = targets_on(&facts.mount, name);
+    // Never a folder that is already there: one this move did not make
+    // could belong to another account. The one exception is this account's
+    // own unfinished copy (the launcher closed during an earlier move),
+    // which `copy` clears and starts again.
+    if std::fs::symlink_metadata(&target).is_ok() {
+        return Err(format!("{} already exists. Rename or remove it, then try again.", target.display()));
+    }
+    if std::fs::symlink_metadata(&staged).is_ok() {
+        let ours = !is_dir_link(&staged) && staged.join(STAGED_MARKER).is_file() && dir_move::owned_by_me(&staged).unwrap_or(false);
+        if !ours {
+            return Err(format!("{} already exists. Rename or remove it, then try again.", staged.display()));
+        }
+    }
+    match dir_move::others_can_replace_children(&facts.mount) {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(format!(
+                "Other accounts on this PC can change the top folder of {}, so the game's files would not be safe there. Choose another drive.",
+                facts.mount.display()
+            ))
+        }
+        Err(e) => return Err(format!("The permissions of {} could not be checked: {e}", facts.mount.display())),
+    }
     let (bytes, files) = measure(&real_root).map_err(|e| format!("The game folder could not be measured: {e}"))?;
     if facts.free_bytes < bytes + MARGIN_BYTES {
         return Err(format!(
@@ -137,10 +156,15 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
             gib(bytes + MARGIN_BYTES)
         ));
     }
-    let mut staged_name = target.file_name().unwrap_or(name).to_os_string();
-    staged_name.push(STAGED_SUFFIX);
-    let staged = target.with_file_name(staged_name);
     Ok(Plan { link: data_root.to_path_buf(), real: real_root, target, staged, bytes, files })
+}
+
+/// The new folder and its copy in progress, at the top of the drive
+/// mounted at `mount`.
+pub fn targets_on(mount: &Path, name: &std::ffi::OsStr) -> (PathBuf, PathBuf) {
+    let mut staged_name = name.to_os_string();
+    staged_name.push(STAGED_SUFFIX);
+    (mount.join(name), mount.join(staged_name))
 }
 
 enum Item {
@@ -516,11 +540,16 @@ mod tests {
         let elsewhere = dir.path().join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
         assert!(plan(&root, &elsewhere).unwrap_err().contains("already on that drive"));
-        assert!(plan(&root, &root.join("library")).unwrap_err().contains("outside the game folder"));
+        assert!(plan(&root, &root.join("library")).unwrap_err().contains("already on that drive"));
         assert!(plan(&root, Path::new("relative")).is_err());
-        let full = dir.path().join("full");
-        put(&full, "NFL Street Reborn/x.txt", b"x");
-        assert!(plan(&root, &full).unwrap_err().contains("not empty"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_new_folder_is_always_at_the_top_of_the_drive() {
+        let (target, staged) = targets_on(Path::new("D:\\"), std::ffi::OsStr::new("NFL Street Reborn"));
+        assert_eq!(target, PathBuf::from("D:\\NFL Street Reborn"));
+        assert_eq!(staged, PathBuf::from("D:\\NFL Street Reborn.moving"));
     }
 
     #[test]
