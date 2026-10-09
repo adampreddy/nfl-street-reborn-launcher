@@ -31,6 +31,7 @@ mod setup_tools;
 mod shell_tools;
 mod dolphin_settings;
 mod online_mm;
+mod league_edition;
 mod live_settings;
 mod live_view;
 mod launcher_look;
@@ -2055,13 +2056,24 @@ pub(crate) fn sync_active_judged(
     runtime_hint: Option<&str>,
     already_judged: Option<reborn_core::game_identity::ImageStanding>,
 ) -> Result<ModSyncView, String> {
+    sync_active_judged_for(p, runtime_hint, already_judged, GameBuild::Offline)
+}
+
+/// [`sync_active_judged`] for a named build: the League edition composes `Load/Textures/<LEAGUE_GAME_ID>` from its own
+/// pristine tree plus the shared mod list (reborn_core::mods::payload_fallback_for).
+pub(crate) fn sync_active_judged_for(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    already_judged: Option<reborn_core::game_identity::ImageStanding>,
+    build: GameBuild,
+) -> Result<ModSyncView, String> {
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
     let exe = runtime_for(p, runtime_hint);
     let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let user = reborn_core::session::resolve_user_dir_for(p, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
-    let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
+    let game = GameId::parse(build.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
     // The same two questions a launch asks, in the same order, and for the
@@ -8898,7 +8910,10 @@ struct StatsSubmitView {"),
             !netplay.contains("netplay_copy_is_reborns_own"),
             "the provenance downgrade is back: it withholds the pack from players who have it offline"
         );
-        let gate = depth_at("may_play_before_boot");
+        // The gate's STATEMENT: a league room's disc is ruled Reborn by its own gate (ready_league_image), so the
+        // retail call sits in the `else` of that statement, one brace deeper than the statement itself.
+        assert!(netplay.contains("may_play_before_boot"), "netplay_open no longer asks what a retail disc is");
+        let gate = depth_at("let chosen_disc=");
         let sync_depth = depth_at("sync_active_judged");
         assert!(
             netplay.find("let standing=chosen_disc;").unwrap() < netplay.find("sync_active_judged").unwrap(),

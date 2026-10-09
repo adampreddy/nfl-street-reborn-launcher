@@ -595,12 +595,14 @@ fn run_step(m: Option<&MatchView>, step: &Step) -> Result<(), String> {
     let id = m.map(|m| m.id.clone()).unwrap_or_default();
     let post = |a: MatchAction| with_client(|c| c.match_action(&id, a)).map(|_| ());
     let (runtime, game, preset) = lock(&LAUNCH).clone();
+    let edition = m.and_then(edition_of);
     match step {
         Step::Ready => post(MatchAction::Ready {
             ready: true,
             // The seed the SERVER named for this match (regular = quick game, pickup; a ranked match's regular game
-            // boots ranked.s01), so both peers hash the same file and boot from it.
-            preflight: crate::dolphin_settings::mm_preflight(runtime.as_deref(), game.as_deref(), m.map(|m| crate::dolphin_settings::match_seed_kind(m.seed_kind.as_deref(), Some(&m.mode)))),
+            // boots ranked.s01; a league room league.s01, or none when raw), so both peers hash the same file and boot
+            // from it.
+            preflight: crate::dolphin_settings::mm_preflight(runtime.as_deref(), game.as_deref(), m.map(|m| seed_for_match(m)), edition.as_deref()),
             rtt_ms: None,
         }),
         Step::PostHostLaunched => post(MatchAction::HostLaunched),
@@ -623,7 +625,8 @@ fn run_step(m: Option<&MatchView>, step: &Step) -> Result<(), String> {
                 code.clone().unwrap_or_default(),
                 2626,
                 Some(relay_driver::rng_seed_for(&id)),
-                m.map(|m| crate::dolphin_settings::match_seed_kind(m.seed_kind.as_deref(), Some(&m.mode)).to_string()),
+                m.map(|m| seed_for_match(m).to_string()),
+                edition,
             ))
             .map(|_| ())
         }
@@ -775,15 +778,27 @@ fn set_link(link: Link, snap: Option<Snapshot>, err: Option<String>) {
 // Commands. Every mutating call is a short request; the poller picks up the result.
 // ------------------------------------------------------------------------------------------------
 
-fn with_client<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, String> {
+fn with_client_mm<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, MmError> {
     let p = Platform::detect();
-    let token = reborn_core::identity::token(&p)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| MmError::SignedOut.to_string())?;
-    let origin = reborn_core::identity::origin(&p).map_err(|e| e.to_string())?;
+    let token = reborn_core::identity::token(&p).map_err(|e| MmError::Offline(e.to_string()))?.ok_or(MmError::SignedOut)?;
+    let origin = reborn_core::identity::origin(&p).map_err(|e| MmError::Offline(e.to_string()))?;
     let http = crate::http_client();
     let client = Client::new(&http, origin, token);
-    f(&client).map_err(|e| e.to_string())
+    f(&client)
+}
+
+fn with_client<T>(f: impl FnOnce(&Client) -> Result<T, MmError>) -> Result<T, String> {
+    with_client_mm(f).map_err(|e| e.to_string())
+}
+
+/// A join's rejection: the sentence it always was, or, for a league version refusal, the shape Plan 3a matches on.
+pub(crate) fn join_error(e: MmError) -> serde_json::Value {
+    match e {
+        MmError::LeagueUpdateRequired { required } => serde_json::json!({
+            "kind": "league_update_required", "message": reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE, "required": required
+        }),
+        other => serde_json::Value::String(other.to_string()),
+    }
 }
 
 fn parse_mode(mode: &str) -> Result<Mode, String> {
@@ -804,6 +819,33 @@ pub fn current_match_id() -> Option<String> {
         .filter(|m| !matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held"))
         .filter(|m| !m.extra_player())
         .map(|m| m.id.clone())
+}
+
+/// The seed a match boots from. A League edition match plays the league seed unless its ruleset is `raw`; otherwise
+/// the retail rule: a ranked ruleset (or, from an older server, ranked mode) boots ranked.s01, else the server's kind.
+/// The backend names retail rooms `"retail"`, so only `"league"` is the League edition.
+pub(crate) fn seed_for_match(m: &MatchView) -> &'static str {
+    if m.edition.as_deref().map(str::trim) == Some("league") {
+        return if m.ruleset.as_deref().map(str::trim) == Some("raw") { "raw" } else { "league" };
+    }
+    let by = if m.ruleset.as_deref().map(str::trim) == Some("ranked") { "ranked" } else { m.mode.as_str() };
+    crate::dolphin_settings::match_seed_kind(m.seed_kind.as_deref(), Some(by))
+}
+
+/// `Some("league")` for a League edition match, else `None` (retail, whether the server said `"retail"` or nothing).
+pub(crate) fn edition_of(m: &MatchView) -> Option<String> {
+    m.edition.as_deref().map(str::trim).filter(|e| *e == "league").map(str::to_string)
+}
+
+/// The running match's league fixture, when it is a league game: its results then go up with `intent.league = true`
+/// and the fixture, which forward.js needs. A league friendly has no fixture and is not a league game.
+pub fn current_match_league() -> Option<u64> {
+    let s = lock(&STATE);
+    let m = s.snapshot.as_ref()?.matched.as_ref()?;
+    if edition_of(m).is_none() {
+        return None;
+    }
+    m.league.as_ref()?.get("fixture_id")?.as_u64()
 }
 
 /// Everything the Online page shows, in one read.
@@ -846,6 +888,8 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
             "id": r.id, "code": r.code, "mode": r.mode, "best_of": r.best_of, "status": r.status, "you_host": r.you_host,
             // 4 for a 2v2 room, 2 for a room an older launcher opened (or an older server: it sends 0).
             "capacity": r.capacity.max(2),
+            // The League edition (Plan 3b): the page names a league room by these, never by guessing from the code.
+            "edition": r.edition, "ruleset": r.ruleset, "league": r.league, "league_game_version": r.league_game_version,
             "seed_kind": crate::dolphin_settings::seed_kind_or_default(r.seed_kind.as_deref()),
             // `you` is decided HERE, from the signed-in player's id, so the page never has to guess
             // which member it is. Member order is the server's and carries no meaning.
@@ -857,29 +901,7 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
                 "you": s.player.as_ref().is_some_and(|p| !p.id.is_empty() && p.id == m.player_id),
             })).collect::<Vec<_>>(),
         })),
-        "match": s.matched.as_ref().map(|m| serde_json::json!({
-            "id": m.id, "mode": m.mode, "status": m.status, "relay_state": m.relay_state,
-            "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
-            "opponent": shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name),
-            "opponent_discord": discord_aside(m.opponent.nickname.as_deref(), &m.opponent.display_name),
-            "opponent_id": id(&m.opponent.id),
-            "field": m.field.as_deref().map(reborn_core::matchmaking::field_title),
-            // Display only (spec 2026-10-02 §3.3): null until the server sends them, and the page then hides each spot.
-            "opponent_elo": m.opponent.rating, "opponent_rank": m.opponent.rank,
-            "opponent_team": m.opponent.team, "opponent_avatar_url": m.opponent.avatar_url,
-            "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
-            "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
-            "hold_reason": m.hold_reason, "seat": m.seat,
-            "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
-            // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
-            "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
-            // A 3-4 player room's match: everyone in it, by seat ([] for two players). Names only; tags stay here.
-            "party": m.party.iter().filter(|p| p.active).map(|p| serde_json::json!({
-                "seat": p.seat, "you": p.you,
-                "name": Some(shown_name(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or(""))).filter(|n| !n.is_empty()),
-                "discord": discord_aside(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or("")),
-            })).collect::<Vec<_>>(),
-        })),
+        "match": s.matched.as_ref().map(match_json),
         "chat": chat.iter().map(|c| serde_json::json!({
             // The line under both names: `body` (what the page always read) and `text` (the server's own name).
             "seq": c.seq, "player_id": id(&c.player_id), "name": shown_name(c.nickname.as_deref(), &c.display_name),
@@ -891,6 +913,40 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
             "name": shown_name(p.nickname.as_deref(), &p.display_name),
             "discord": discord_aside(p.nickname.as_deref(), &p.display_name), "activity": p.activity,
         })).collect::<Vec<_>>() },
+    })
+}
+
+
+/// The match as `snapshot_json` gives it to the page (its own function: one `json!` this size is past the macro's
+/// recursion limit).
+fn match_json(m: &MatchView) -> serde_json::Value {
+    use reborn_core::matchmaking::{discord_aside, shown_name};
+    let id = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
+    serde_json::json!({
+        "id": m.id, "mode": m.mode, "status": m.status, "relay_state": m.relay_state,
+        "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
+        "opponent": shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name),
+        "opponent_discord": discord_aside(m.opponent.nickname.as_deref(), &m.opponent.display_name),
+        "opponent_id": id(&m.opponent.id),
+        "field": m.field.as_deref().map(reborn_core::matchmaking::field_title),
+        // Display only (spec 2026-10-02 §3.3): null until the server sends them, and the page then hides each spot.
+        "opponent_elo": m.opponent.rating, "opponent_rank": m.opponent.rank,
+        "opponent_team": m.opponent.team, "opponent_avatar_url": m.opponent.avatar_url,
+        "your_field_pick": m.your_field_pick, "your_accepted": m.your_accepted, "your_ready": m.your_ready,
+        "series": m.series, "wins_needed": m.wins_needed, "winner_seat": m.winner_seat,
+        "hold_reason": m.hold_reason, "seat": m.seat,
+        "edition": m.edition, "ruleset": m.ruleset, "league": m.league,
+        // Adam 10-09: the series-over screen offers Rematch only when the server does (true from an older server).
+        "rematch_available": m.rematch_available,
+        "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
+        // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
+        "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
+        // A 3-4 player room's match: everyone in it, by seat ([] for two players). Names only; tags stay here.
+        "party": m.party.iter().filter(|p| p.active).map(|p| serde_json::json!({
+            "seat": p.seat, "you": p.you,
+            "name": Some(shown_name(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or(""))).filter(|n| !n.is_empty()),
+            "discord": discord_aside(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or("")),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -925,8 +981,15 @@ pub async fn mm_room_create(mode: String, seed_kind: Option<String>) -> Result<s
 }
 
 #[tauri::command]
-pub async fn mm_room_join(code: String) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || with_client(|c| c.join_room(code.trim()))).await.map_err(|e| e.to_string())?
+pub async fn mm_room_join(code: String) -> Result<serde_json::Value, serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // The installed league build goes with every join: a league room refuses a mismatched one before anyone boots
+        // (league_update_required); a retail room ignores it. A launcher without league files sends nothing.
+        let version = crate::league_edition::installed_league_version();
+        with_client_mm(|c| c.join_room_as(code.trim(), version.as_deref())).map_err(join_error)
+    })
+    .await
+    .map_err(|e| serde_json::Value::String(e.to_string()))?
 }
 
 /// Who invited the player to a room (spec 2026-10-02 §3.10): `{ host_name, mode }`, or null when the server does not
@@ -1301,5 +1364,82 @@ mod tests {
         assert!(!drive.contains("m.mode == \"ranked\""), "no ranked-only close");
         let exit = &src[src.find("\npub fn dolphin_exited(").unwrap()..src.find("\npub(crate) fn mm_log(").unwrap()];
         assert!(exit.contains("decided_for_exit(\n            reborn_core::series::closes_at_decider(&m)"), "the exit report follows the series");
+    }
+
+    fn mv(json: &str) -> reborn_core::matchmaking::MatchView {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn the_seed_follows_edition_then_ruleset_then_mode() {
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","edition":"league","ruleset":"league","mode":"casual"}"#)), "league");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","edition":"league","ruleset":"raw"}"#)), "raw");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","edition":"league"}"#)), "league", "a league room without a ruleset plays league rules");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","edition":"retail","ruleset":"ranked","mode":"casual"}"#)), "ranked", "retail is sent explicitly");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","mode":"casual","ruleset":"ranked","seed_kind":"regular"}"#)), "ranked");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","mode":"ranked"}"#)), "ranked", "an older server still boots ranked by mode");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","mode":"casual","seed_kind":"pickup"}"#)), "pickup");
+        assert_eq!(seed_for_match(&mv(r#"{"id":"m","mode":"casual"}"#)), "regular");
+        assert_eq!(edition_of(&mv(r#"{"id":"m","edition":"league"}"#)).as_deref(), Some("league"));
+        assert_eq!(edition_of(&mv(r#"{"id":"m","edition":"retail"}"#)), None, "the backend names retail; it is still retail");
+        assert_eq!(edition_of(&mv(r#"{"id":"m"}"#)), None);
+    }
+
+    #[test]
+    fn every_seed_choice_goes_through_seed_for_match() {
+        let src = include_str!("online_mm.rs");
+        let production = &src[..src.find("\n#[cfg(test)]").expect("the test module moved")];
+        assert!(!production.contains("Some(&m.mode)"), "a seed is still picked from mode alone");
+        assert_eq!(production.matches("seed_for_match(m)").count(), 2, "ready's preflight and the room launch");
+    }
+
+    #[test]
+    fn a_league_match_is_launched_as_one() {
+        let snap: reborn_core::matchmaking::Snapshot = serde_json::from_str(
+            r#"{"match":{"id":"m1","relay_state":"launching","edition":"league","league":{"league_id":36,"fixture_id":1234,"week":6}}}"#).unwrap();
+        lock(&STATE).snapshot = Some(snap);
+        assert_eq!(current_match_league(), Some(1234));
+        let snap: reborn_core::matchmaking::Snapshot = serde_json::from_str(r#"{"match":{"id":"m1","relay_state":"launching","edition":"league"}}"#).unwrap();
+        lock(&STATE).snapshot = Some(snap);
+        assert_eq!(current_match_league(), None, "a friendly is not a league game");
+        lock(&STATE).snapshot = None;
+        assert_eq!(current_match_league(), None);
+    }
+
+    #[test]
+    fn join_error_shapes() {
+        let update = join_error(reborn_core::matchmaking::MmError::LeagueUpdateRequired { required: "2026.10.09".into() });
+        assert_eq!(update, serde_json::json!({"kind":"league_update_required","message":reborn_core::matchmaking::LEAGUE_UPDATE_SENTENCE,"required":"2026.10.09"}));
+        let plain = join_error(reborn_core::matchmaking::MmError::Refused("No such lobby.".into()));
+        assert_eq!(plain, serde_json::Value::String("No such lobby.".into()), "every other refusal stays the sentence it was");
+    }
+
+    #[test]
+    fn a_join_carries_the_installed_league_build() {
+        let src = include_str!("online_mm.rs");
+        let join = &src[src.find("\npub async fn mm_room_join(").unwrap()..];
+        let join = &join[..join.find("\n}\n").unwrap()];
+        assert!(join.contains("crate::league_edition::installed_league_version()"));
+        assert!(join.contains("c.join_room_as(code.trim(), version.as_deref())"));
+        assert!(join.contains(".map_err(join_error)"));
+    }
+
+    #[test]
+    fn the_page_sees_edition_ruleset_league_and_whether_a_rematch_is_offered() {
+        let s: Snapshot = serde_json::from_value(serde_json::json!({
+            "room": { "id": "r", "edition": "league", "ruleset": "raw", "league_game_version": "2026.10.08",
+                      "league": { "league_id": 36, "fixture_id": 1234, "week": 6 } },
+            "match": { "id": "m", "edition": "league", "ruleset": "league", "rematch_available": false,
+                       "league": { "league_id": 36, "fixture_id": 1234, "week": 6 } } })).unwrap();
+        let v = snapshot_json(&s, &[]);
+        assert_eq!((v["room"]["edition"].as_str(), v["room"]["ruleset"].as_str(), v["room"]["league_game_version"].as_str()), (Some("league"), Some("raw"), Some("2026.10.08")));
+        assert_eq!(v["room"]["league"]["week"], 6);
+        assert_eq!((v["match"]["edition"].as_str(), v["match"]["ruleset"].as_str()), (Some("league"), Some("league")));
+        assert_eq!(v["match"]["league"]["fixture_id"], 1234);
+        assert_eq!(v["match"]["rematch_available"], false);
+        let old: Snapshot = serde_json::from_value(serde_json::json!({ "room": { "id": "r" }, "match": { "id": "m" } })).unwrap();
+        let v = snapshot_json(&old, &[]);
+        assert_eq!(v["match"]["rematch_available"], true, "an older server offers a rematch");
+        assert!(v["match"]["edition"].is_null() && v["room"]["edition"].is_null() && v["match"]["league"].is_null());
     }
 }

@@ -98,6 +98,34 @@ pub async fn dolphin_saves_folder(runtime:Option<String>)->Result<(),String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn league_and_raw_seeds_are_their_own_files() {
+        let d = std::path::Path::new("/data");
+        assert_eq!(boot_state_path(d, Some("league")), Some(reborn_core::league_edition::league_seed_path(d)));
+        assert_eq!(boot_state_path(d, Some("raw")), None, "a raw room boots the disc");
+        assert_eq!(boot_state_path(d, Some("ranked")), Some(d.join("library/online/seed").join("ranked.s01")));
+        assert_eq!(boot_state_path(d, Some("pickup")), Some(d.join("library/online/seed").join("pickup.s01")));
+        assert_eq!(boot_state_path(d, None), Some(d.join("library/online/seed").join("regular.s01")));
+    }
+
+    #[test]
+    fn a_netplay_launch_boots_the_edition_it_was_given() {
+        // The names are split so this test's own text never matches the scans in main.rs (command_body finds the
+        // FIRST occurrence, and this module sits above the command in this file).
+        let src = include_str!("dolphin_settings.rs");
+        let open = src.find(&format!("{}{}", "pub async fn netplay", "_open(")).expect("netplay_open moved");
+        let body = &src[open..open + src[open..].find("\n}\n").unwrap()];
+        assert!(body.contains("edition:Option<String>"));
+        assert!(body.contains("let league=edition.as_deref()==Some(\"league\");"));
+        assert!(body.contains("crate::league_edition::ready_league_image(&p)?"));
+        assert!(body.contains("build:if league{GameBuild::League}else{GameBuild::Offline}"));
+        assert!(body.contains("let fixture=crate::online_mm::current_match_league();"));
+        assert!(body.contains("league_fixture_id:fixture"));
+        let pre = &src[src.find(&format!("{}{}", "pub(crate) fn mm_pre", "flight(")).unwrap()..open];
+        assert!(pre.contains("\"seed_ok\":seed_ok,") && pre.contains("seed.is_some()||seed_kind.map(str::trim)==Some(\"raw\")"), "a raw room needs no seed");
+        assert!(pre.contains("edition:Option<&str>") && pre.contains("\"league_game_version\":crate::league_edition::installed_league_version()"));
+    }
+
     /// The exact line runtime 1.2.6 wrote into the joiner's status when the
     /// host ran 1.2.5, observed 09-25 on localhost through the session bridge.
     #[test]
@@ -269,17 +297,17 @@ pub(crate) fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
 /// launcher was captured to disk and then either never delivered or adopted by
 /// the next offline session and stamped with that session's id and exit.
 ///
-/// `build` stays [`GameBuild::Offline`] deliberately. That field names which
-/// game image is booting, not how the two players reach each other: NetPlay
-/// runs the customizable offline disc, and its game id decides which
-/// `GameSettings` file is written and which mod library is composed. Whether
-/// the game was online is carried by the folder Dolphin writes into, which the
-/// queue records and the envelope sends.
+/// `build` names which game image is booting, not how the two players reach
+/// each other: [`GameBuild::Offline`] (the retail disc) unless the matchmade
+/// room is a League edition one (`edition`), which boots [`GameBuild::League`].
+/// Its game id decides which `GameSettings` file is written and which mod
+/// library is composed. Whether the game was online is carried by the folder
+/// Dolphin writes into, which the queue records and the envelope sends.
 ///
-/// `league_match` is false because this dialog never asks. Recording "not a
-/// league fixture" is the only honest answer to a question the player was not
-/// put, and asserting a fixture nobody claimed is the one direction that
-/// corrupts league standings. The result still reaches the server, marked
+/// `league_match` is true only for a matchmade league fixture (the match's
+/// `league.fixture_id`, `online_mm::current_match_league`); the Direct dialog
+/// never asks, and asserting a fixture nobody claimed is the one direction that
+/// corrupts league standings.
 /// The seed save state an online match boots into, when one is installed.
 ///
 /// Netplay otherwise starts at the title screen and both players walk the menus by hand.
@@ -318,15 +346,30 @@ pub(crate) fn match_seed_kind(kind:Option<&str>,mode:Option<&str>)->&'static str
  match (seed_kind_or_default(kind),mode.map(str::trim)) { ("regular",Some("ranked"))=>"ranked", (k,_)=>k }
 }
 
+/// The seed file a room boots from. `league` is the league build's own seed (league-content); `raw` is none (the disc
+/// boots to its title screen, standard netplay); the rest are online-content's, with ranked falling back to regular on
+/// an install that predates ranked.s01.
+pub(crate) fn boot_state_path(data_root:&std::path::Path,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
+ match seed_kind.map(str::trim) {
+  Some("league")=>Some(reborn_core::league_edition::league_seed_path(data_root)),
+  Some("raw")=>None,
+  other=>{
+   let dir=data_root.join("library/online/seed");
+   let name=match other { Some("ranked")=>"ranked", o=>seed_kind_or_default(o) };
+   Some(dir.join(format!("{name}.s01")))
+  }
+ }
+}
+
 /// A content install that predates ranked.s01 boots ranked from regular.s01; the server's seed comparison still holds
-/// a match whose two peers would boot different files.
+/// a match whose two peers would boot different files. A league seed has no fallback: a league room without it is
+/// held by that comparison, never booted from a retail seed.
 fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
- let dir=p.paths.data_root().ok()?.join("library/online/seed");
- let name=match seed_kind.map(str::trim) { Some("ranked")=>"ranked", other=>seed_kind_or_default(other) };
- let seed=dir.join(format!("{name}.s01"));
+ let data=p.paths.data_root().ok()?;
+ let seed=boot_state_path(&data,seed_kind)?;
  if seed.is_file() { return Some(seed); }
- let fallback=dir.join("regular.s01");
- (name=="ranked" && fallback.is_file()).then_some(fallback)
+ let fallback=data.join("library/online/seed").join("regular.s01");
+ (seed_kind.map(str::trim)==Some("ranked") && fallback.is_file()).then_some(fallback)
 }
 
 /// What matchmaking's `ready` sends: this PC's answers, measured, never assumed. `seed_sha256` is
@@ -334,11 +377,17 @@ fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::Pat
 /// before either Dolphin starts, because they would desync on frame one. `traversal_ok` is one
 /// hello to the traversal server, the same first packet Dolphin sends (about 1.5 s at worst).
 /// Cheap on purpose: it does not rebuild the online image (netplay_open does that at launch).
-pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Option<&str>)->serde_json::Value{
+pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Option<&str>,edition:Option<&str>)->serde_json::Value{
  let p=Platform::detect();let legacy=default_legacy_root(&p);
  let found=find_runtime_and_game(&p,runtime,game,legacy.as_deref());
  let runtime_ok=found.as_ref().map(|(f,_)|supports_launcher_netplay(f.path()).unwrap_or(false)).unwrap_or(false);
+ // A league room boots the league disc, so that is the image that must be there. The retail pristine_*/chain_head
+ // fields below still describe the retail disc; the server ignores them for an edition:"league" match (Plan 2).
+ let league=edition==Some("league");
+ let image_ok=if league { crate::league_edition::ready_league_image(&p).is_ok() } else { found.is_ok() };
  let seed=netplay_boot_state(&p,seed_kind).and_then(|s|reborn_core::game_patch::sha256_of(&s).ok()).map(|h|h.to_string());
+ // A raw league room boots the disc with no seed at all (standard netplay): nothing to be missing.
+ let seed_ok=seed.is_some()||seed_kind.map(str::trim)==Some("raw");
  // What this PC would boot, named precisely enough for the server to refuse a mismatch BEFORE
  // two Dolphins start: the installed component versions, and the online copy's provenance
  // (the pristine it was built from and the roster applied). 09-26: the two online copies had
@@ -358,16 +407,17 @@ pub(crate) fn mm_preflight(runtime:Option<&str>,game:Option<&str>,seed_kind:Opti
  let pristine=data.as_ref().and_then(|d|reborn_core::game_image::find_pristine(d)).map(|x|x.folder_sha256);
  let chain_head=data.as_ref().and_then(|d|reborn_core::game_patch::Chain::load(&reborn_core::game_patch::component_root(d).join(reborn_core::game_patch::CHAIN_FILE)).ok().flatten()).and_then(|c|c.head().map(str::to_string));
  let pristine_at_tip=match (&pristine,&chain_head){(Some(a),Some(b))=>Some(a==b),_=>None};
- serde_json::json!({"runtime_ok":runtime_ok,"image_ok":found.is_ok(),"seed_ok":seed.is_some(),"seed_sha256":seed,"backend_ok":true,
+ serde_json::json!({"runtime_ok":runtime_ok,"image_ok":image_ok,"seed_ok":seed_ok,"seed_sha256":seed,"backend_ok":true,
   "roster_version":version("roster"),"game_patch_version":version("game-patch"),"runtime_version":version("runtime"),
   "pristine_sha256":source.as_ref().map(|s|s.pristine_sha256.clone()),"roster_sha256":source.as_ref().and_then(|s|s.roster_sha256.clone()),
   "pristine_at_tip":pristine_at_tip,"chain_head":chain_head,
+  "edition":edition,"league_game_version":crate::league_edition::installed_league_version(),
   "traversal_ok":reborn_core::traversal_probe::probe(reborn_core::traversal_probe::DEFAULT_SERVER,std::time::Duration::from_millis(1500))})
 }
 
 /// online.
 #[tauri::command]
-pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16,rng_seed:Option<u32>,seed_kind:Option<String>)->Result<serde_json::Value,String>{
+pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:String,nickname:String,mode:String,connection:String,address:String,port:u16,rng_seed:Option<u32>,seed_kind:Option<String>,edition:Option<String>)->Result<serde_json::Value,String>{
  tauri::async_runtime::spawn_blocking(move||{
   let guard=LaunchGuard::acquire_session()?;
   let nickname=nickname.trim();let address=address.trim();
@@ -376,11 +426,15 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   if mode=="join"&&(address.is_empty()||address.len()>253||!address.chars().all(|c|c.is_ascii_alphanumeric()||".:-_".contains(c))){return Err("Enter a valid host code or address.".into());}
   let p=Platform::detect();let legacy=default_legacy_root(&p);let (found,game_path)=find_runtime_and_game(&p,runtime.as_deref(),game.as_deref(),legacy.as_deref())?;
   require_closed(found.path())?;
+  // A League edition room boots the league disc (NSRS04), never the retail copy: its own image, textures and seed.
+  let league=edition.as_deref()==Some("league");
   // Boots through the same gate every other path does: `may_play_before_boot`
   // asks what this image is before anything below applies the texture pack
   // or starts the emulator, so an unverified disc gets neither one here
   // either.
-  let chosen_disc=may_play_before_boot(&p,&game_path)?;
+  // The league disc is not judged as a retail one (it would read NotReborn, and Withhold would take its pack off
+  // every launch); ready_league_image below is its gate: installed, league.json naming this launcher's game ID.
+  let chosen_disc=if league { reborn_core::game_identity::ImageStanding::Reborn } else { may_play_before_boot(&p,&game_path)? };
   // Netplay is lockstep, so both sides must run the same bytes. The offline
   // image is the one a custom soundtrack rewrites, so it is never the one
   // netplay boots: reborn_core::online_image keeps a copy that is the
@@ -390,7 +444,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // Resolved BEFORE the texture sync, not after, because these are the bytes
   // the sync has to be judging. The gate above read the disc the player
   // chose; this is the file the emulator is actually handed.
-  let online=match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)};
+  let online=if league { Some(crate::league_edition::ready_league_image(&p)?) } else { match netplay_image(&p){Ok(Some(path))=>Some(path),Ok(None)=>None,Err(e)=>return Err(e)} };
   // The file the emulator is handed, not the one the player picked. A netplay
   // copy that is not Reborn's own is a ruling on the bytes about to boot, so
   // it turns a verified disc into NotReborn. A chosen disc nobody could read
@@ -419,10 +473,13 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // Passing the verdict instead of gating the call is the whole fix.
   // NotReborn now means Withhold, which takes the pack off, rather than
   // "skip". A sync problem is logged, not fatal: the room still opens.
-  if let Err(e)=crate::sync_active_judged(&p,runtime.as_deref(),Some(standing)) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
+  if let Err(e)=crate::sync_active_judged_for(&p,runtime.as_deref(),Some(standing),if league{GameBuild::League}else{GameBuild::Offline}) { eprintln!("netplay: texture sync before launch did not finish: {e}"); }
   // Fail before preparing settings when an older/custom runtime lacks the bridge.
   if !supports_launcher_netplay(found.path())? { return Err("This Dolphin build does not support launcher Netplay. Choose the Reborn Dolphin runtime included with the latest launcher in Files and storage.".into()); }
-  let req=LaunchRequest{play_with_unset_controller:true,runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:GameBuild::Offline,mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:false,textures:standing};
+  // A league fixture's game files its results as a league game (intent.league + the fixture forward.js needs); a
+  // league friendly has no fixture and is not one.
+  let fixture=crate::online_mm::current_match_league();
+  let req=LaunchRequest{play_with_unset_controller:true,runtime_exe:found.path().to_path_buf(),game_path:game_path.clone(),graphics:preset_from(&preset),fullscreen:true,build:if league{GameBuild::League}else{GameBuild::Offline},mods_disabled:false,user_dir:selected_user_dir(&p,None)?,league_match:fixture.is_some(),textures:standing};
   // The lock, before anything is written or started, and anything left
   // unfinished recovered. The same first two steps as a launch.
   // The waiting acquire, the same one a launch takes. A lock this launcher's
@@ -451,7 +508,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   // Written before the emulator, so the id every capture from this session is
   // filed under exists before there is anything to file.
   let session_match=crate::online_mm::current_match_id();
-  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:session_match.clone(),league_fixture_id:None})).map_err(player)?;
+  let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:session_match.clone(),league_fixture_id:fixture})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now(),matchmade:rng_seed.is_some()});
   std::thread::spawn(move||{

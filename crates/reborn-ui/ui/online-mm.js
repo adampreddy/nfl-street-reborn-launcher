@@ -651,12 +651,20 @@ function drawRoom(r, chat) {
   // title; the host can switch it until the game starts (the server un-readies everyone, so the crew re-confirms).
   const kind = kindName(r.seed_kind);
   const started = typeof r.status === 'string' && r.status !== '' && r.status !== 'open';
-  const kindControl = r.you_host === true
+  // A League edition room (Plan 3b) has no Quick game | Pickup switch (the server refuses one) and its title says what
+  // it is: a fixture's game by its week, or a friendly by its rules. The backend names retail rooms 'retail'.
+  const leagueGame = r.league && typeof r.league === 'object' ? r.league : null;
+  const leagueRoom = r.edition === 'league';
+  const kindControl = r.you_host === true && !leagueRoom
     ? el('div', { class: 'on-kindrow' }, el('span', { class: 'k-label', text: 'Game' }),
       tabs('mm-room-kind', Object.keys(KINDS), kind, (name) => changeKind(r.id, KINDS[name]), { label: 'Quick game or Pickup', disabled: started }))
     : null;
   const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: `Your room · ${kind}` }), r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    el('div', { class: 'on-card-h' },
+      el('h2', { text: leagueGame ? `League game · Week ${leagueGame.week ?? '?'}` : leagueRoom ? 'League friendly' : `Your room · ${kind}` }),
+      leagueGame ? el('span', { text: 'League rules · Best of 3' })
+        : leagueRoom ? el('span', { text: r.ruleset === 'raw' ? 'Raw game' : 'League settings' })
+        : r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
     kindControl,
     el('div', { class: 'on-coderow' },
       el('strong', { class: 'on-codebig', text: r.code }),
