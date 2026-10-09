@@ -1315,6 +1315,70 @@ pub fn parse_gcpad(text: &str) -> BTreeMap<u8, PadSection> {
     out
 }
 
+/// Player one on a Mac keyboard: Dolphin's own default GameCube layout, so it
+/// matches every Dolphin keyboard guide. Key names are the fork's
+/// Quartz/QuartzKeyboardAndMouse.mm table, read, not guessed.
+const MAC_KEYBOARD_PAD1: &str = "[GCPad1]
+Device = Quartz/0/Keyboard & Mouse
+Buttons/A = `X`
+Buttons/B = `Z`
+Buttons/X = `C`
+Buttons/Y = `S`
+Buttons/Z = `D`
+Buttons/Start = `Return`
+Main Stick/Up = `Up Arrow`
+Main Stick/Down = `Down Arrow`
+Main Stick/Left = `Left Arrow`
+Main Stick/Right = `Right Arrow`
+Main Stick/Modifier = `Left Shift`
+Main Stick/Modifier/Range = 50.000000000000000
+C-Stick/Up = `I`
+C-Stick/Down = `K`
+C-Stick/Left = `J`
+C-Stick/Right = `L`
+Triggers/L = `Q`
+Triggers/R = `W`
+D-Pad/Up = `T`
+D-Pad/Down = `G`
+D-Pad/Left = `F`
+D-Pad/Right = `H`
+";
+
+/// What a Mac launch that saw no pad leaves in `GCPadNew.ini`: player one on
+/// the keyboard, or `None` when there is nothing to change.
+///
+/// [`standing_pad_file`] keeps a Windows device line and lets the runtime
+/// swap in whichever pad turns up; the fork's fallback only knows XInput and
+/// WGInput, so on a Mac that line binds nothing and the game cannot get past
+/// its memory card check. A player one with no section, or one naming a
+/// Windows backend that can never exist here, gets the keyboard. Anything
+/// else (a layout the player made, a Mac pad set up by hand) is theirs. A pad
+/// detected later still gets bound: adoption only folds a section into the
+/// pad its Device line names, and a keyboard names none.
+pub fn mac_keyboard_pad_file(live: &str) -> Option<String> {
+    let windows_only = |d: &str| d.starts_with("XInput/") || d.starts_with("WGInput/") || d.starts_with("DInput/");
+    let replace = match parse_gcpad(live).get(&1) {
+        None => true,
+        Some(s) => s.get("Device").is_none_or(|d| d.is_empty() || windows_only(d)),
+    };
+    if !replace {
+        return None;
+    }
+    // Every line but player one's own section, kept as it was.
+    let mut rest = String::with_capacity(live.len());
+    let mut in_pad1 = false;
+    for raw in live.split_inclusive('\n') {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_pad1 = line == "[GCPad1]";
+        }
+        if !in_pad1 {
+            rest.push_str(raw);
+        }
+    }
+    Some(format!("{MAC_KEYBOARD_PAD1}{rest}"))
+}
+
 /// Fold everything the player changed in Dolphin's own Controller Settings
 /// back into the launcher's profiles.
 ///
@@ -1862,6 +1926,26 @@ mod external_edit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Mac with no pad: player one gets the keyboard, once, and is then left
+    /// alone. A Windows device line can never bind on a Mac, so the seeded
+    /// `XInput/0/Gamepad` section is not anybody's choice here.
+    #[test]
+    fn a_mac_with_no_pad_plays_on_the_keyboard() {
+        let seeded = "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\n[GCPad2]\nDevice = XInput/1/Gamepad\n";
+        let once = mac_keyboard_pad_file(seeded).expect("the Windows pad line is replaced");
+        let pads = parse_gcpad(&once);
+        assert_eq!(pads[&1]["Device"], "Quartz/0/Keyboard & Mouse");
+        assert_eq!(pads[&1]["Buttons/Start"], "`Return`");
+        assert_eq!(pads[&2]["Device"], "XInput/1/Gamepad", "only player one is the launcher's to fill");
+        assert!(!once.contains("`Button A`"), "nothing of the old section is left behind");
+        assert_eq!(mac_keyboard_pad_file(&once), None, "the second launch has nothing to say");
+        assert!(mac_keyboard_pad_file("").is_some(), "no file still gets a player one");
+        let theirs = "[GCPad1]\nDevice = Quartz/0/Keyboard & Mouse\nButtons/A = `Space`\n";
+        assert_eq!(mac_keyboard_pad_file(theirs), None, "a layout the player made is theirs");
+        assert_eq!(mac_keyboard_pad_file("[GCPad1]\nDevice = Input/0/DualSense Wireless Controller\n"), None,
+            "a Mac pad set up by hand is theirs");
+    }
 
     fn identity(name: &str) -> DeviceIdentity {
         DeviceIdentity {

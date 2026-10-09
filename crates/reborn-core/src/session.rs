@@ -1629,7 +1629,14 @@ pub fn leave_standing_pad_file(pad_path: &Path) -> std::io::Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    let Some(standing) = crate::controller::standing_pad_file(&live) else {
+    // A Mac has no runtime fallback to hand a late pad to (the fork's knows
+    // XInput and WGInput only), so its no-pad answer is the keyboard.
+    let standing = if cfg!(target_os = "macos") {
+        crate::controller::mac_keyboard_pad_file(&live)
+    } else {
+        crate::controller::standing_pad_file(&live)
+    };
+    let Some(standing) = standing else {
         return Ok(false);
     };
     if let Some(parent) = pad_path.parent() {
@@ -2591,6 +2598,7 @@ mod tests {
     /// pad the scan had missed was dead for the session. What is on disk
     /// afterwards must be pressable by that pad.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_leaves_player_one_bindable_on_disk() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
@@ -2608,6 +2616,7 @@ mod tests {
     /// A keyboard player has no pad on every launch of their life. Their file
     /// is theirs, byte for byte.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_never_touches_a_keyboard_players_file() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
@@ -2633,11 +2642,24 @@ mod tests {
     /// No pad file at all is the same player with even less: they still get a
     /// player one.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_and_no_pad_file_writes_one() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
         assert!(leave_standing_pad_file(&pad).unwrap());
         assert!(std::fs::read_to_string(&pad).unwrap().starts_with("[GCPad1]\n"));
+    }
+
+    /// The Mac half: the seeded Windows pad file becomes the keyboard, once.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_launch_that_sees_no_pad_puts_player_one_on_the_keyboard() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        std::fs::write(&pad, "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\n").unwrap();
+        assert!(leave_standing_pad_file(&pad).unwrap());
+        assert!(std::fs::read_to_string(&pad).unwrap().contains("Device = Quartz/0/Keyboard & Mouse"));
+        assert!(!leave_standing_pad_file(&pad).unwrap(), "the second launch writes nothing");
     }
     /// The detection bug, pinned. A directory holding only the INIs the
     /// launcher itself writes must never be mistaken for a real install: that
