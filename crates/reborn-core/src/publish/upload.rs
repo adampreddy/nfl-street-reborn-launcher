@@ -37,7 +37,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::manifest::Sha256Hex;
 use crate::net::Http;
-use crate::origin::{blob_path, BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
+use crate::origin::{blob_path, BLOB_DIR, PRIVATE_BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
 use crate::publish::journal::JOURNAL_FILE;
 use crate::publish::{err, io_err, out, refuse, thousands, Event, Outcome, Sink, COMPONENTS_DIR};
 use crate::{Error, Result};
@@ -611,6 +611,43 @@ pub fn plan_origin(origin: &Path, already: &dyn Fn(&str) -> Option<u64>) -> Resu
         }
     }
 
+    Ok(plan)
+}
+
+/// The members-only blobs, for the PRIVATE bucket (`reborn-league`): every
+/// file under `<origin>/private/blobs/by-hash` the bucket does not already
+/// hold at the right length, keyed by the ordinary `blobs/by-hash/<xx>/<sha>`
+/// layout. Blobs only. The manifests and release files that name them are
+/// public and go up through [`plan_origin`] to the public bucket, after this
+/// plan has finished.
+pub fn plan_private(origin: &Path, already: &dyn Fn(&str) -> Option<u64>) -> Result<UploadPlan> {
+    let mut plan = UploadPlan::new();
+    let dir = origin.join(PRIVATE_BLOB_DIR);
+    if !dir.is_dir() {
+        return Ok(plan);
+    }
+    let mut blobs: Vec<(String, PathBuf, u64, Sha256Hex)> = Vec::new();
+    for prefix in sorted_dir_entries(&dir)? {
+        if !prefix.is_dir() {
+            continue;
+        }
+        for file in sorted_dir_entries(&prefix)? {
+            if !file.is_file() {
+                continue;
+            }
+            let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let sha256 = Sha256Hex::parse(&name)
+                .map_err(|_| invalid(format!("{} is not a sha-256 file name; refusing to plan its upload", file.display())))?;
+            let bytes = std::fs::metadata(&file).map_err(|e| io_err(&file, e))?.len();
+            blobs.push((blob_path(&sha256), file, bytes, sha256));
+        }
+    }
+    blobs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, from, bytes, sha256) in blobs {
+        if already(&key) != Some(bytes) {
+            plan.blob(key, from, bytes, sha256);
+        }
+    }
     Ok(plan)
 }
 
@@ -2290,5 +2327,35 @@ mod listing_tests {
         assert_eq!(already("release.json"), Some(30));
         assert_eq!(already("missing"), None);
         assert_eq!(t.urls.lock().unwrap().len(), 1, "no HEAD followed the listing");
+    }
+
+    fn write_blob(dir: &std::path::Path, bytes: &[u8]) -> Sha256Hex {
+        let sha = Sha256Hex::from_bytes(bytes);
+        let p = dir.join(&sha.as_str()[..2]).join(sha.as_str());
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+        sha
+    }
+
+    #[test]
+    fn the_public_plan_never_contains_a_private_blob() {
+        let t = tempfile::tempdir().unwrap();
+        write_blob(&t.path().join(crate::origin::PRIVATE_BLOB_DIR), b"league only");
+        let plan = plan_origin(t.path(), &|_| None).unwrap();
+        assert!(plan.is_empty(), "{:?}", plan.items().map(|i| &i.key).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_private_plan_holds_only_private_blobs_under_the_public_key_layout() {
+        let t = tempfile::tempdir().unwrap();
+        let public = write_blob(&t.path().join(BLOB_DIR), b"retail");
+        let private = write_blob(&t.path().join(crate::origin::PRIVATE_BLOB_DIR), b"league only");
+        let plan = plan_private(t.path(), &|_| None).unwrap();
+        let keys: Vec<&str> = plan.items().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, vec![blob_path(&private).as_str()]);
+        assert!(!keys.contains(&blob_path(&public).as_str()));
+        assert!(plan.items().all(|i| i.group == Group::Blob));
+        let already_there = plan_private(t.path(), &|k| (k == blob_path(&private)).then_some(11)).unwrap();
+        assert!(already_there.is_empty(), "a blob the bucket holds at the right length is skipped");
     }
 }

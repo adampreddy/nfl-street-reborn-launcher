@@ -59,6 +59,19 @@ pub const SIGNATURE_FILE: &str = "release.json.sig";
 /// The content-addressed blob store, relative to the origin base.
 pub const BLOB_DIR: &str = "blobs/by-hash";
 
+/// Where members-only blobs (league content) sit in the LOCAL origin.
+/// Deliberately outside `blobs/`: `plan_origin` and every rclone push of
+/// `blobs/` to the public bucket can never pick them up. On the private
+/// bucket (`reborn-league`) the same object lives at the ordinary
+/// [`blob_path`] key; only the local directory differs.
+pub const PRIVATE_BLOB_DIR: &str = "private/blobs/by-hash";
+
+/// A members-only blob's path relative to the local origin.
+pub fn private_blob_path(sha256: &Sha256Hex) -> String {
+    let s = sha256.as_str();
+    format!("{PRIVATE_BLOB_DIR}/{}/{s}", &s[..2])
+}
+
 /// A manifest larger than this is refused unread. The texture component, the
 /// largest, is about 1.3 MB for 8,050 rows; this is fifty times that, and it
 /// exists so a hostile or broken origin cannot stream a manifest forever.

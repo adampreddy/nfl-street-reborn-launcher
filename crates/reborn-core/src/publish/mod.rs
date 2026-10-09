@@ -156,6 +156,18 @@ pub fn manifest_path(origin: &Path, id: ComponentId, version: &str) -> PathBuf {
     origin.join(COMPONENTS_DIR).join(format!("{}-{}.json", id.as_str(), version))
 }
 
+/// Where a component's blob is stored in the local origin: the private store
+/// for members-only components, the public one for everything else. The one
+/// place this choice is made, so the publisher and the release signer cannot
+/// disagree about it.
+pub fn stored_blob(origin: &Path, members_only: bool, sha256: &crate::manifest::Sha256Hex) -> PathBuf {
+    if members_only {
+        origin.join(crate::origin::private_blob_path(sha256))
+    } else {
+        origin.join(crate::origin::blob_path(sha256))
+    }
+}
+
 /// The address a release pins a component manifest at, relative to the origin.
 pub fn manifest_url(id: ComponentId, version: &str) -> String {
     format!("{COMPONENTS_DIR}/{}-{}.json", id.as_str(), version)
