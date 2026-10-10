@@ -61,3 +61,7 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 ## Ruling (controller, Plan 3b Task 8 review)
 - `league_play_offline({play_anyway?: bool})` — default false. When the controller check wants setup, it rejects with `{kind:"controller_setup", message}`; the League page offers "Set up controller" (Controllers page) and "Play anyway" (calls again with `play_anyway:true`). Mirrors the Play page.
 - `league_edition_install()` refuses before downloading when the data drive lacks space: `{kind:"no_space", message}` (message names the GB needed); a StorageFull during download maps to the same kind.
+
+## Rulings (Adam, 10-10)
+- Pre-game holds free the fixture: `league-version-mismatch`, `seed-mismatch`, `content-mismatch`, `content-stale` join PREGAME_HOLD_REASONS (still only when nothing was played/reported/decided).
+- League stats = A: only league FIXTURE games upload (tagged `intent.league=true` + `fixture_id`, edition league). They are forwarded to the league site but NEVER appear on public profiles, public stats pages, leaderboards, live-feed history or Elo. League offline games and league friendlies do not upload at all (launcher skips the upload for edition league without a fixture).
