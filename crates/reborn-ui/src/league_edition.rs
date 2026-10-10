@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reborn_core::content::pipeline::{CheckRequest, ComponentState, ContentCheck, Depth, Updater};
@@ -60,6 +60,47 @@ const LINK_MAX_AGE: Duration = Duration::from_secs(5 * 3600 + 30 * 60);
 
 /// One install at a time: a second press while the first downloads is refused, never run alongside it.
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// The running install's last `league-install-progress` payload, so a page opened mid-install shows where it is.
+static LAST_PROGRESS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+/// A `league-install-progress` payload. `checking` marks the first verify, before anything downloads: it checks the
+/// files already installed, not downloaded ones (the page words the two apart).
+pub(crate) fn progress_payload(phase: &str, done: u64, total: u64, checking: bool) -> serde_json::Value {
+    let mut v = serde_json::json!({ "phase": phase, "done": done, "total": total });
+    if checking {
+        v["checking"] = serde_json::Value::Bool(true);
+    }
+    v
+}
+
+pub(crate) fn record_progress(payload: &serde_json::Value) {
+    if let Ok(mut last) = LAST_PROGRESS.lock() {
+        *last = Some(payload.clone());
+    }
+}
+
+/// Every progress payload goes out through here: recorded for [`install_now`], then sent to the page.
+fn emit_progress(app: &tauri::AppHandle, payload: serde_json::Value) {
+    use tauri::Emitter;
+    record_progress(&payload);
+    let _ = app.emit("league-install-progress", payload);
+}
+
+/// Whether an install holds the slot, and its last progress if so.
+pub(crate) fn install_now() -> (bool, Option<serde_json::Value>) {
+    if !INSTALLING.load(Ordering::SeqCst) {
+        return (false, None);
+    }
+    (true, LAST_PROGRESS.lock().ok().and_then(|l| l.clone()))
+}
+
+/// A status answer plus `installing` and `progress` (null unless installing).
+pub(crate) fn with_install(mut view: serde_json::Value, installing: bool, progress: Option<serde_json::Value>) -> serde_json::Value {
+    view["installing"] = serde_json::Value::Bool(installing);
+    view["progress"] = if installing { progress.unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null };
+    view
+}
 
 /// `{ kind, message }` like every League command, plus `required` for a version refusal that names one (contracts,
 /// rulings). No `required` means "update" with nothing to compare.
@@ -303,12 +344,21 @@ pub(crate) fn bytes_on_disk<'a>(downloads: &Path, staging: &Path, files: impl It
 }
 
 /// Install state only, from disk (the pointer and `league.json`): no network, no release check. For pages that ask
-/// on every load (the Mods page's league note); `latest` is always null and `update_available` false.
+/// on every load (the Mods page's league note) and the League page's polls; `latest` is always null and
+/// `update_available` false. Says whether an install is running (`installing`, `progress`).
 #[tauri::command]
-pub fn league_edition_installed() -> serde_json::Value {
-    let p = Platform::detect();
-    let info_ok = p.paths.data_root().map(|d| le::read_league_info(&d).is_ok()).unwrap_or(false);
-    status_view(installed_league_version().as_deref(), None, 0, info_ok)
+pub async fn league_edition_installed() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        let p = Platform::detect();
+        let info_ok = p.paths.data_root().map(|d| le::read_league_info(&d).is_ok()).unwrap_or(false);
+        let (installing, progress) = install_now();
+        with_install(status_view(installed_league_version().as_deref(), None, 0, info_ok), installing, progress)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let (installing, progress) = install_now();
+        with_install(status_view(None, None, 0, false), installing, progress)
+    })
 }
 
 /// Install state, and the newest version the signed release offers (network; absent offline).
@@ -334,7 +384,8 @@ pub async fn league_edition_status() -> Result<serde_json::Value, LeagueCommandE
                 size = check.download_bytes();
             }
         }
-        Ok(status_view(installed.as_deref(), latest.as_deref(), size, info_ok))
+        let (installing, progress) = install_now();
+        Ok(with_install(status_view(installed.as_deref(), latest.as_deref(), size, info_ok), installing, progress))
     })
     .await
     .map_err(|_| err("unavailable", UNAVAILABLE))?
@@ -354,16 +405,19 @@ impl InstallSlot {
 
 impl Drop for InstallSlot {
     fn drop(&mut self) {
+        if let Ok(mut last) = LAST_PROGRESS.lock() {
+            *last = None;
+        }
         INSTALLING.store(false, Ordering::SeqCst);
     }
 }
 
 /// Download (members-only links), verify, swap in, then compose the league texture tree. Resumes a previous attempt.
-/// Emits `league-install-progress` `{phase: "download"|"verify"|"compose", done, total}`; resolves `{version}`.
+/// Emits `league-install-progress` `{phase: "download"|"verify"|"compose", done, total, checking?}` (`checking: true`
+/// on the first verify only); resolves `{version}`.
 #[tauri::command]
 pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json::Value, LeagueCommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        use tauri::Emitter;
         let _slot = InstallSlot::take()?;
         let p = Platform::detect();
         if !is_member(&p) {
@@ -374,13 +428,11 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
         let settings = crate::content_updates::load_settings(&p).map_err(|_| err("unavailable", UNAVAILABLE))?;
         let verifier = crate::content_updates::verifier().map_err(|_| err("unavailable", UNAVAILABLE))?;
         let origin = Origin::new(&crate::content_updates::origin_url(&settings));
-        let say = |phase: &str, done: u64, total: u64| {
-            let _ = app.emit("league-install-progress", serde_json::json!({ "phase": phase, "done": done, "total": total }));
-        };
+        let say = |phase: &str, done: u64, total: u64| emit_progress(&app, progress_payload(phase, done, total, false));
 
         // 1. What the signed release offers, from the public origin. A Verify check hashes the installed tree too, so
         //    Install also repairs a damaged build. It takes a while on a 6 GB build: the bar says so from the start.
-        say("verify", 0, 1);
+        emit_progress(&app, progress_payload("verify", 0, 1, true));
         let check = Updater::new(&p, &data, &origin, &verifier)
             .check(&CheckRequest { components: &COMPONENTS, depth: Depth::Verify })
             .map_err(|e| {
@@ -440,7 +492,7 @@ pub async fn league_edition_install(app: tauri::AppHandle) -> Result<serde_json:
                 let before = done.fetch_add(n, Ordering::Relaxed);
                 let now = before.saturating_add(n);
                 if progress_due(before, now, total) {
-                    let _ = app.emit("league-install-progress", serde_json::json!({ "phase": "download", "done": now.min(total), "total": total }));
+                    emit_progress(&app, progress_payload("download", now.min(total), total, false));
                 }
             }) as Arc<dyn Fn(u64) + Send + Sync>
         };
@@ -632,12 +684,13 @@ mod tests {
     #[test]
     fn the_local_install_answer_needs_no_network() {
         let src = include_str!("league_edition.rs");
-        let body = &src[src.find("pub fn league_edition_installed(").expect("league_edition_installed")..];
+        let body = &src[src.find("pub async fn league_edition_installed(").expect("league_edition_installed is async")..];
         let body = &body[..body.find("\n}\n").unwrap()];
         for net in ["Updater", "Origin", "http", "check("] {
             assert!(!body.contains(net), "the Mods page asks on every load: no network ({net})");
         }
         assert!(body.contains("status_view(") && body.contains("read_league_info"));
+        assert!(body.contains("spawn_blocking"), "its disk reads stay off the main thread");
         assert!(include_str!("main.rs").contains("league_edition::league_edition_installed,"));
         let mods = include_str!("../ui/mods.js");
         assert!(mods.contains("\"league_edition_installed\"") && !mods.contains("league_edition_status"), "the Mods page asks the local answer");
@@ -868,9 +921,46 @@ mod tests {
     fn the_bar_shows_verify_before_the_first_slow_check() {
         let src = include_str!("league_edition.rs");
         let body = &src[src.find("pub async fn league_edition_install(").unwrap()..];
-        let first_say = body.find("say(\"verify\", 0, 1);").expect("verify 0/1 is said");
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let first_say = body.find("progress_payload(\"verify\", 0, 1, true)").expect("the first check is said");
         let check = body.find("depth: Depth::Verify").unwrap();
         assert!(first_say < check, "the bar is never blank during the first check");
+        assert_eq!(body.matches(", true)").count(), 1, "only the first check is the checking one");
+    }
+
+    /// The first verify (before anything downloads) checks the installed files; the later one the downloaded ones.
+    #[test]
+    fn the_first_check_is_marked_so_the_page_words_it_right() {
+        assert_eq!(progress_payload("verify", 0, 1, true), serde_json::json!({ "phase": "verify", "done": 0, "total": 1, "checking": true }));
+        assert_eq!(progress_payload("download", 5, 9, false), serde_json::json!({ "phase": "download", "done": 5, "total": 9 }));
+    }
+
+    /// Leaving the League page mid-install must not lose it: both status answers say an install is running, with
+    /// its last progress, while the slot is held, and nothing once it is released.
+    #[test]
+    fn the_status_answers_report_a_running_install() {
+        let view = status_view(Some("2026.10.08"), None, 0, true);
+        let idle = with_install(view.clone(), false, Some(serde_json::json!({"phase":"download"})));
+        assert_eq!((idle["installing"].clone(), idle["progress"].clone()), (serde_json::json!(false), serde_json::Value::Null));
+        let p = progress_payload("download", 3, 10, false);
+        let busy = with_install(view, true, Some(p.clone()));
+        assert_eq!((busy["installing"].clone(), busy["progress"].clone()), (serde_json::json!(true), p.clone()));
+        assert_eq!(busy["version"], "2026.10.08", "the install fields are added, nothing replaced");
+
+        let slot = InstallSlot::take().unwrap();
+        record_progress(&p);
+        assert_eq!(install_now(), (true, Some(p)));
+        drop(slot);
+        assert_eq!(install_now(), (false, None), "a finished install leaves no progress behind");
+
+        let src = include_str!("league_edition.rs");
+        for c in ["pub async fn league_edition_installed(", "pub async fn league_edition_status("] {
+            let body = &src[src.find(c).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(body.contains("with_install(") && body.contains("install_now()"), "{c} reports a running install");
+        }
+        let install = &src[src.find("pub async fn league_edition_install(").unwrap()..];
+        assert!(!install.contains("app.emit(\"league-install-progress\""), "every progress goes through emit_progress (recorded)");
     }
 
     #[test]

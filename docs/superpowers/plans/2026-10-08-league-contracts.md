@@ -24,8 +24,9 @@ Spec: `docs/superpowers/specs/2026-10-08-league-tab-design.md` (v2). Plan 1 (sit
 
 ## Plan 3b (launcher League edition) → Plan 3a (League tab UI)
 Tauri commands (reborn-ui), all async, errors as fixed sentences:
-- `league_edition_status()` → `{installed: bool, version: string|null, latest: string|null, update_available: bool, size_bytes: number, game_id: string}`
-- `league_edition_install()` → streams progress events `league-install-progress` `{phase:"download"|"verify"|"compose", done, total}`; resolves `{version}`.
+- `league_edition_status()` → `{installed: bool, version: string|null, latest: string|null, update_available: bool, size_bytes: number, game_id: string, installing: bool, progress: <last progress payload>|null}` (network release check). `league_edition_installed()` → the same shape from disk only (`latest` null, `update_available` false); the League page polls this one and calls `league_edition_status` on load, after an install and after a version refusal (3a final fix M2/M4).
+- `league_edition_install()` → streams progress events `league-install-progress` `{phase:"download"|"verify"|"compose", done, total, checking?: true}` (`checking` only on the first verify, before anything downloads); resolves `{version}`.
+- Membership (3a final fix C1): the core refreshes `league.json` on startup and after sign-in, on its own thread, and emits `league-membership` (bool) on a fresh answer; shell.js adds the League link on `true`.
 - `league_play_offline()` → boots league ISO raw.
 - `league_host_friendly(ruleset: "league"|"raw")` → creates friendly room via backend and opens it in the existing room flow.
 - `league_room_open()` (league game; from old Plan 3) and the existing `mm_room_join(code)` join path; the room launch path picks the seed from `ruleset` (`league` → `league.s01` from `league-content`, `ranked` → `ranked.s01`, `raw` → none) and the ISO/game ID from `edition`.
