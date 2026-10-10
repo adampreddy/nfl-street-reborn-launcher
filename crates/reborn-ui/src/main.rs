@@ -5115,7 +5115,7 @@ async fn identity_sign_in_start() -> Result<SignInStartView, String> {
 
 /// Ask whether the browser step finished. On "done" the token is already in the vault.
 #[tauri::command]
-async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, String> {
+async fn identity_sign_in_poll(app: tauri::AppHandle, device_code: String) -> Result<SignInPollView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let origin = backend_origin(&p)?;
@@ -5135,6 +5135,8 @@ async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, St
                 // consumed, and the refusals they got landed on the screen
                 // beside the sign-in that had just succeeded.
                 send_backlog_in_background();
+                // The League link for this sign-in, on its own thread too.
+                league_tab::refresh_membership(app);
                 Ok(SignInPollView { state: "done", display_name: Some(name) })
             }
         }
@@ -6644,6 +6646,9 @@ fn main() {
             // A one-file Linux launcher fetches its emulator now, in the
             // background, so no page waits for it.
             content_updates::start_runtime_download();
+            // The League link's answer (league.json), refreshed on its own thread: no page waits for it, and a new
+            // member's link appears when it lands (spec 2026-10-08 §3).
+            league_tab::refresh_membership(app.handle().clone());
             // An old folder a move could not delete at the time, if any.
             move_drive::clean_leftovers();
             if let Some(w) = tauri::Manager::get_webview_window(app, "main") {

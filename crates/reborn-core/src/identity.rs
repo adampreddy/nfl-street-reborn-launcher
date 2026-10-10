@@ -304,6 +304,16 @@ pub fn origin(platform: &Platform) -> Result<String> {
     })
 }
 
+/// The bearer of a signed-in player (both halves, as [`status`] counts them), reading the vault ONCE: [`status`]
+/// then [`token`] would read it twice, and the League tab asks on every navigation. `None` is signed out, including
+/// a blank token.
+pub fn signed_in_token(platform: &Platform) -> Result<Option<String>> {
+    if read_identity(&identity_path(platform)?)?.is_none() {
+        return Ok(None);
+    }
+    Ok(token(platform)?.filter(|t| !t.trim().is_empty()))
+}
+
 pub fn token(platform: &Platform) -> Result<Option<String>> {
     platform.credentials.retrieve(TOKEN_ACCOUNT)
 }
@@ -583,6 +593,48 @@ mod tests {
         let p = parse_nickname_reply(&ok, url).unwrap();
         assert_eq!((p.display_name.as_str(), p.nickname.as_deref()), ("adam_discord", Some("Slick")));
         assert_eq!(p.nickname_next_change_at.as_deref(), Some("2026-10-07T12:00:00.000Z"));
+    }
+
+    /// A platform whose config lives in `root`, with a vault that counts its reads.
+    fn counting_platform(root: &Path, token: Option<&str>) -> (Platform, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        struct TempPaths(PathBuf);
+        impl crate::platform::Paths for TempPaths {
+            fn install_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.join("install")) }
+            fn data_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.clone()) }
+            fn cache_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.join("cache")) }
+            fn exe_suffix(&self) -> &'static str { ".exe" }
+        }
+        struct Vault(Option<String>, Arc<AtomicUsize>);
+        impl crate::platform::CredentialVault for Vault {
+            fn store(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+            fn retrieve(&self, _: &str) -> Result<Option<String>> { self.1.fetch_add(1, Ordering::SeqCst); Ok(self.0.clone()) }
+            fn delete(&self, _: &str) -> Result<()> { Ok(()) }
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut p = Platform::detect();
+        p.paths = Box::new(TempPaths(root.to_path_buf()));
+        p.credentials = Box::new(Vault(token.map(str::to_owned), reads.clone()));
+        (p, reads)
+    }
+
+    /// The League tab asks this on every navigation: the vault (a DPAPI round trip on Windows) is read once.
+    #[test]
+    fn the_signed_in_bearer_reads_the_vault_once() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (p, reads) = counting_platform(dir.path(), Some("tok"));
+        assert_eq!(signed_in_token(&p).unwrap(), None, "no facts file: signed out");
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "signed out never touches the vault");
+        let file = IdentityFile { player: serde_json::from_str(r#"{"id":"p1","display_name":"Adam"}"#).unwrap(), signed_in_at_ms: 1 };
+        std::fs::write(identity_path(&p).unwrap(), serde_json::to_vec(&file).unwrap()).unwrap();
+        assert_eq!(signed_in_token(&p).unwrap().as_deref(), Some("tok"));
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one vault read per answer");
+        let (blank, _) = counting_platform(dir.path(), Some("  "));
+        assert_eq!(signed_in_token(&blank).unwrap(), None, "a blank token is no bearer");
+        let (none, _) = counting_platform(dir.path(), None);
+        assert_eq!(signed_in_token(&none).unwrap(), None, "facts without a token: signed out");
     }
 
     #[test]

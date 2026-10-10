@@ -186,6 +186,17 @@ export function addLeagueLink(doc = document) {
   return true;
 }
 
+// The core refreshes membership on startup and after sign-in, off the main thread (league_tab.rs refresh_membership),
+// and sends `league-membership` (a bool) when the server answers. A new member's link appears on the page already
+// open; a lost membership drops it on the next page (the cache is the answer there). Never throws.
+export function watchLeagueMembership(ev, doc = document) {
+  if (!ev || typeof ev.listen !== 'function') return false;
+  try {
+    Promise.resolve(ev.listen('league-membership', (e) => { if (e && e.payload === true) addLeagueLink(doc); })).catch(() => {});
+    return true;
+  } catch (_) { return false; }
+}
+
 // Disk preferences are authoritative across windows and the Play shortcut.
 // Wait before a page builds its first command arguments from browser storage.
 if (bridge) {
@@ -196,6 +207,8 @@ if (bridge) {
     }
   } catch (_) { /* Pages surface their own read failures and keep existing values. */ }
   // Not awaited: no page's startup waits on the League link. A failure leaves the tab out (the safe answer).
+  // Listening first, so a refresh that lands while the cached answer is read is not missed.
+  watchLeagueMembership(window.__TAURI__.event, document);
   try { Promise.resolve(bridge.invoke("league_member")).then((m) => { if (m === true) addLeagueLink(document); }).catch(() => {}); } catch (_) { /* no tab */ }
 }
 

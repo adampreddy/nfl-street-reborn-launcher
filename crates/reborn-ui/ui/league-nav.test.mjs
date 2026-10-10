@@ -37,3 +37,19 @@ test('never twice, and not on a page without the sidebar', () => {
   assert.equal(addLeagueLink(fakeDoc(['index.html']).doc), false, 'no Online link: onboarding and harness pages');
   assert.equal(addLeagueLink({ querySelector: () => null }), false);
 });
+
+test('a membership refresh that says member adds the link without a restart; anything else adds nothing', async () => {
+  const { watchLeagueMembership } = await import('./shell.js');
+  const handlers = {};
+  const ev = { listen: (name, fn) => { handlers[name] = fn; return Promise.resolve(() => {}); } };
+  const { doc, inserted } = fakeDoc(['index.html', 'online.html', 'stats.html']);
+  assert.equal(watchLeagueMembership(ev, doc), true);
+  assert.equal(typeof handlers['league-membership'], 'function', 'listens for the core refresh');
+  handlers['league-membership']({ payload: false });
+  handlers['league-membership']({ payload: 'true' });
+  assert.equal(inserted.length, 0, 'only a real `true` adds the tab');
+  handlers['league-membership']({ payload: true });
+  assert.equal(inserted.length, 1);
+  assert.equal(watchLeagueMembership(null, doc), false, 'no event bridge (harness, tests): nothing to watch');
+  assert.equal(watchLeagueMembership({ listen: () => { throw new Error('x'); } }, doc), false, 'a failing bridge is quiet');
+});

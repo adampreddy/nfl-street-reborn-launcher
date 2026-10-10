@@ -4,6 +4,8 @@
 //!
 //! Every failure is `{ kind, message }` (`LiveCommandError`), with `message` one of the fixed sentences below.
 
+use std::path::Path;
+
 use reborn_core::identity;
 use reborn_core::league_home::{self, LeagueCache};
 use reborn_core::live_view::LiveError;
@@ -33,14 +35,55 @@ fn mark_signed_in(v: &mut serde_json::Value) {
     v["signed_in"] = serde_json::Value::Bool(true);
 }
 
-/// The bearer, or `None` when signed out (no facts file, or no vault token).
+/// The bearer, or `None` when signed out (no facts file, or no vault token). One vault read.
 fn bearer(p: &Platform) -> Option<String> {
-    identity::status(p).ok().flatten()?;
-    identity::token(p).ok().flatten().filter(|t| !t.trim().is_empty())
+    identity::signed_in_token(p).ok().flatten()
 }
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// One fetch of the team home, resolved against `league.json` and written back (`league_home::resolve`). The page's
+/// load and the background membership refresh both come through here.
+fn home_pass(
+    path: Option<&Path>,
+    fetch: impl FnOnce() -> Result<serde_json::Value, LiveError>,
+    now: u64,
+) -> Result<serde_json::Value, LiveError> {
+    let cache = path.map(league_home::load_cache).unwrap_or_else(LeagueCache::default);
+    let (out, next) = league_home::resolve(fetch(), &cache, now);
+    if let (Some(path), Some(next)) = (path, next) {
+        league_home::save_cache(path, &next);
+    }
+    out
+}
+
+/// The background refresh's news: the server's fresh member answer (a 401 is "not a member": the session is over),
+/// or `None` for anything else. An outage, or the cached fallback it reads as, changes nothing.
+fn refresh_pass(path: Option<&Path>, fetch: impl FnOnce() -> Result<serde_json::Value, LiveError>, now: u64) -> Option<bool> {
+    match home_pass(path, fetch, now) {
+        Ok(v) if v["stale"] != serde_json::Value::Bool(true) => Some(v["member"].as_bool().unwrap_or(false)),
+        Err(LiveError::Server(401)) => Some(false),
+        _ => None,
+    }
+}
+
+/// Spec §3: membership refreshed on startup and after sign-in. Writes `league.json` (the nav's answer) on its own
+/// thread, never awaited, and says nothing on failure. A fresh answer is sent to every page as `league-membership`
+/// (a bool), so a new member's League link appears without a restart (shell.js). Signed out: does nothing.
+pub fn refresh_membership(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        use tauri::Emitter;
+        let p = Platform::detect();
+        let Some(token) = bearer(&p) else { return };
+        let Ok(origin) = identity::origin(&p) else { return };
+        let path = league_home::cache_path(&p).ok();
+        let fetch = || league_home::fetch_home(&crate::http_client(), &origin, &token);
+        if let Some(member) = refresh_pass(path.as_deref(), fetch, now_ms()) {
+            let _ = app.emit("league-membership", member);
+        }
+    });
 }
 
 /// Whether the nav draws the League link: the cached answer only, no network, so every page's first frame has it.
@@ -66,13 +109,8 @@ pub async fn league_home() -> Result<serde_json::Value, LiveCommandError> {
         let Some(token) = bearer(&p) else { return Ok(signed_out()) };
         let origin = identity::origin(&p).map_err(|_| err("unavailable", NOT_LOADED))?;
         let path = league_home::cache_path(&p).ok();
-        let cache = path.as_deref().map(league_home::load_cache).unwrap_or_else(LeagueCache::default);
-        let fetched = league_home::fetch_home(&crate::http_client(), &origin, &token);
-        let (out, next) = league_home::resolve(fetched, &cache, now_ms());
-        if let (Some(path), Some(next)) = (path.as_deref(), next) {
-            league_home::save_cache(path, &next);
-        }
-        match out {
+        let fetch = || league_home::fetch_home(&crate::http_client(), &origin, &token);
+        match home_pass(path.as_deref(), fetch, now_ms()) {
             Ok(mut v) => {
                 mark_signed_in(&mut v);
                 Ok(v)
@@ -109,6 +147,95 @@ mod tests {
         let mut v = serde_json::json!({ "member": true });
         mark_signed_in(&mut v);
         assert_eq!(v["signed_in"], true);
+    }
+
+    fn member_home() -> serde_json::Value {
+        serde_json::json!({ "member": true, "team": { "id": 485, "name": "Atlanta Falcons" }, "matchup": null })
+    }
+
+    /// Spec §3 "Membership refreshed on startup and after sign-in": nothing else writes league.json before the tab
+    /// exists, so without this a member could never see the League link.
+    #[test]
+    fn a_refresh_with_no_cache_writes_the_member_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        assert_eq!(refresh_pass(Some(&path), || Ok(member_home()), 7), Some(true));
+        let cache = league_home::load_cache(&path);
+        assert!(cache.member, "the nav's next read says member");
+        assert_eq!(cache.fetched_at_ms, 7);
+    }
+
+    #[test]
+    fn a_refresh_for_a_non_member_never_offers_the_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        assert_eq!(refresh_pass(Some(&path), || Ok(serde_json::json!({ "member": false })), 7), Some(false));
+        assert!(!league_home::load_cache(&path).member);
+    }
+
+    #[test]
+    fn an_outage_during_a_refresh_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        for e in [LiveError::Server(503), LiveError::Unreachable, LiveError::RateLimited, LiveError::BadReply] {
+            assert_eq!(refresh_pass(Some(&path), || Err(e.clone()), 7), None, "{e:?}");
+            assert!(!path.exists(), "no cache appears from an outage ({e:?})");
+        }
+        let cached = LeagueCache { member: true, home: Some(member_home()), fetched_at_ms: 3 };
+        league_home::save_cache(&path, &cached);
+        assert_eq!(refresh_pass(Some(&path), || Err(LiveError::Server(503)), 9), None, "a stale fallback is not news");
+        assert_eq!(league_home::load_cache(&path), cached, "a member keeps the tab through an outage");
+    }
+
+    #[test]
+    fn a_refresh_the_server_refuses_drops_the_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        league_home::save_cache(&path, &LeagueCache { member: true, home: Some(member_home()), fetched_at_ms: 3 });
+        assert_eq!(refresh_pass(Some(&path), || Err(LiveError::Server(401)), 9), Some(false));
+        assert!(!league_home::load_cache(&path).member);
+    }
+
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let from = src.find(sig).unwrap_or_else(|| panic!("{sig} is gone"));
+        let rest = &src[from..];
+        &rest[..rest.find("\n}\n").unwrap_or(rest.len())]
+    }
+
+    /// One fetch + resolve + save, shared: the page's load and the background refresh never drift apart.
+    #[test]
+    fn the_page_and_the_refresh_share_one_home_pass() {
+        let src = include_str!("league_tab.rs");
+        let production = &src[..src.find("\n#[cfg(test)]").unwrap()];
+        assert_eq!(production.matches("league_home::resolve(").count(), 1, "resolve is called from home_pass only");
+        assert!(body(production, "pub async fn league_home(").contains("home_pass("));
+        assert!(body(production, "fn refresh_pass(").contains("home_pass("));
+    }
+
+    /// Off the main thread and never awaited: startup and sign-in answer first; a failure says nothing.
+    #[test]
+    fn the_refresh_runs_on_its_own_thread_and_tells_the_nav() {
+        let src = include_str!("league_tab.rs");
+        let refresh = body(src, "pub fn refresh_membership(");
+        assert!(refresh.contains("std::thread::spawn"), "the refresh is spawned, not awaited");
+        assert!(refresh.contains("\"league-membership\""), "the nav hears a fresh answer without a restart");
+        let main = include_str!("main.rs");
+        let main_fn = &main[main.find("\nfn main() {").unwrap()..];
+        let setup = &main_fn[main_fn.find(".setup(move |app| {").unwrap()..];
+        let setup = &setup[..setup.find("Ok(())").unwrap()];
+        assert!(setup.contains("league_tab::refresh_membership("), "startup refreshes membership");
+        let poll = &main[main.find("async fn identity_sign_in_poll(").unwrap()..];
+        let poll = &poll[..poll.find("\n#[tauri::command]").unwrap()];
+        let done = &poll[poll.find("save_signed_in(").unwrap()..];
+        assert!(done.contains("league_tab::refresh_membership("), "a finished sign-in refreshes membership");
+    }
+
+    /// The facts file and the vault, the vault read once (identity::signed_in_token).
+    #[test]
+    fn the_bearer_reads_the_vault_once() {
+        let src = include_str!("league_tab.rs");
+        let b = body(src, "fn bearer(");
+        assert!(b.contains("identity::signed_in_token(") && !b.contains("identity::status(") && !b.contains("identity::token("));
     }
 
     /// The same rule live_view.rs holds itself to: no command hands a page an error's Display.
