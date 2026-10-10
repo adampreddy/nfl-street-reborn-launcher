@@ -66,7 +66,9 @@ pub async fn live_match(match_id: String) -> Result<Option<serde_json::Value>, L
         let p = Platform::detect();
         let origin = identity::origin(&p).map_err(|e| LiveCommandError::unavailable(e.player_message()))?;
         let http = crate::http_client();
-        reborn_core::live_view::snapshot(&http, &origin, &match_id).map_err(LiveCommandError::from)
+        // A league match's snapshot is for its two seated players: the device token is the proof. Retail is public.
+        let token = identity::token(&p).unwrap_or(None);
+        reborn_core::live_view::snapshot(&http, &origin, token.as_deref(), &match_id).map_err(LiveCommandError::from)
     })
     .await
     .map_err(|_| LiveCommandError::unavailable(NOT_LOADED))?
