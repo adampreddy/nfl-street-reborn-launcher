@@ -4335,6 +4335,7 @@ fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
         EntryState::Held { reason } => ("held", Some(reason.clone())),
         EntryState::Rejected { reason } => ("rejected", Some(reason.clone())),
         EntryState::Stalled { reason } => ("stalled", Some(reason.clone())),
+        EntryState::NotUploaded { reason } => ("local", Some(reason.clone())),
     }
 }
 
@@ -4365,6 +4366,8 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
             EntryState::Accepted => counts.accepted += 1,
             EntryState::Held { .. } => counts.held += 1,
             EntryState::Rejected { .. } => counts.rejected += 1,
+            // Kept on this computer by design: not waiting, not a problem, only part of `total`.
+            EntryState::NotUploaded { .. } => {}
         }
     }
     counts

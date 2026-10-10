@@ -3708,6 +3708,7 @@ fn describe_state(state: &EntryState) -> String {
         EntryState::Queued => "waiting to be sent".to_string(),
         EntryState::Quarantined { reason } => format!("held back: {}", reason.message()),
         EntryState::Accepted => "sent and counted".to_string(),
+        EntryState::NotUploaded { .. } => "kept on this computer, not sent".to_string(),
         EntryState::Held { reason } => {
             format!("sent, and a person will decide. This is a success: {reason}")
         }

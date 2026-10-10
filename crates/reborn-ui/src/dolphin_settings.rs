@@ -109,6 +109,31 @@ mod tests {
     }
 
     #[test]
+    fn only_a_matchmade_session_that_may_upload_names_its_match() {
+        let id=||Some("644488b4-16f1-4b76-b207-20403fbaea90".to_string());
+        assert_eq!(session_match_for(true,false,None,id()),id(),"matchmade retail");
+        assert_eq!(session_match_for(true,true,Some(5),id()),id(),"matchmade league fixture");
+        assert_eq!(session_match_for(true,true,None,id()),None,"league friendly");
+        assert_eq!(session_match_for(false,false,None,id()),None,"Direct/private never claims the current match");
+        assert_eq!(session_match_for(false,true,Some(5),id()),None);
+    }
+
+    /// Wiring scans: the session that boots the league edition says so in its intent (offline in core, NetPlay here),
+    /// and the match it names goes through the gate above.
+    #[test]
+    fn the_sessions_record_that_they_are_league_edition() {
+        let src=include_str!("dolphin_settings.rs");
+        let open=src.find(&format!("{}{}","pub async fn netplay","_open(")).expect("netplay_open moved");
+        let body=&src[open..open+src[open..].find("
+}
+").unwrap()];
+        assert!(body.contains("league_edition:req.build==GameBuild::League"));
+        assert!(body.contains("let session_match=session_match_for(rng_seed.is_some(),league,fixture,crate::online_mm::current_match_id());"));
+        let core=include_str!("../../reborn-core/src/session.rs");
+        assert!(core.contains("league_edition: req.build == GameBuild::League }),"), "the offline run records the edition");
+    }
+
+    #[test]
     fn a_netplay_launch_boots_the_edition_it_was_given() {
         // The names are split so this test's own text never matches the scans in main.rs (command_body finds the
         // FIRST occurrence, and this module sits above the command in this file).
@@ -359,6 +384,14 @@ pub(crate) fn netplay_image(p: &Platform) -> Result<Option<PathBuf>, String> {
 /// `boot_state` is present only when a seed is installed. The fork treats a named-but-missing
 /// file as a hard error rather than falling back to the disc, because a peer that could not
 /// load it would start from a different machine state and desync on the first frame.
+/// The match id a NetPlay session's results and exit report are filed under. Only a matchmade room (it was handed the
+/// relay's RNG seed) names a match, and a league friendly (league room, no fixture) keeps its results local, so it
+/// names none: a Direct or private game never claims whichever match is current in the snapshot.
+fn session_match_for(matchmade:bool,league:bool,fixture:Option<u64>,current:Option<String>)->Option<String>{
+  if !matchmade||(league&&fixture.is_none()) { return None; }
+  current
+}
+
 fn netplay_plan(game:&std::path::Path,mode:&str,seed:Option<&std::path::Path>,rng_seed:Option<u32>)->serde_json::Value{
  let mut plan=serde_json::json!({"game":game,"mode":mode});
  if let Some(seed)=seed {
@@ -559,7 +592,7 @@ pub async fn netplay_open(runtime:Option<String>,game:Option<String>,preset:Stri
   let user_dir=user.to_path_buf();
   // Written before the emulator, so the id every capture from this session is
   // filed under exists before there is anything to file.
-  let session_match=crate::online_mm::current_match_id();
+  let session_match=session_match_for(rng_seed.is_some(),league,fixture,crate::online_mm::current_match_id());
   let record=supervisor.begin_with_intent(req.build,Some(SessionIntent{league_match:req.league_match,match_id:session_match.clone(),league_fixture_id:fixture,league_edition:req.build==GameBuild::League})).map_err(player)?;
   let handle=p.processes.spawn(found.path(),&args,found.path().parent(),&Default::default()).map_err(player)?;
   *NETPLAY.lock().map_err(netplay_lock_poisoned)?=Some(NetplaySession{path:path.clone(),user_dir:Some(user_dir.clone()),active:true,sequence:0,connection:connection.clone(),port,last_status:serde_json::json!({"phase":"connecting"}),started:std::time::Instant::now(),matchmade:rng_seed.is_some()});

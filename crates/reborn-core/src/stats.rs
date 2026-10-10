@@ -1411,9 +1411,6 @@ pub enum QuarantineReason {
     /// there is no destination, and guessing one is how an offline game lands on
     /// a real league fixture.
     NoSession,
-    /// A game that is not meant to be uploaded (a league game outside a fixture). Kept for the player's own
-    /// results list, never sent, never retried.
-    NotUploaded { reason: String },
 }
 
 impl QuarantineReason {
@@ -1442,7 +1439,6 @@ impl QuarantineReason {
                  launcher started explains it, so there is nowhere it can safely be sent. \
                  It is being kept."
                 .to_string(),
-            QuarantineReason::NotUploaded { reason } => reason.clone(),
         }
     }
 }
@@ -1468,6 +1464,9 @@ pub enum EntryState {
     /// Too many transient failures. Still on disk, and
     /// [`StatsQueue::retry_stalled`] puts it back in the queue.
     Stalled { reason: String },
+    /// Not meant to be uploaded at all (a league game outside a fixture). Terminal and not a problem: the game stays
+    /// on this computer, is never sent or retried, and is pruned like any finished result.
+    NotUploaded { reason: String },
 }
 
 impl EntryState {
@@ -1475,7 +1474,10 @@ impl EntryState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            EntryState::Accepted | EntryState::Held { .. } | EntryState::Rejected { .. }
+            EntryState::Accepted
+                | EntryState::Held { .. }
+                | EntryState::Rejected { .. }
+                | EntryState::NotUploaded { .. }
         )
     }
 
@@ -2339,9 +2341,8 @@ impl StatsQueue {
                     // Not a failed attempt and not sent: the entry leaves the pending set without a ledger row.
                     entry.last_attempt_ms = was_last_attempt_ms;
                     entry.last_error = None;
-                    entry.state = EntryState::Quarantined {
-                        reason: QuarantineReason::NotUploaded { reason },
-                    };
+                    entry.finished_ms = Some(now);
+                    entry.state = EntryState::NotUploaded { reason };
                     self.write_entry(&entry)?;
                     report.skipped.push(entry.key.clone());
                 }
@@ -4764,8 +4765,42 @@ mod tests {
         q.submit_pending(&again, 5).unwrap();
         assert_eq!(again.count(), 0, "never offered again");
         let e = &q.entries().unwrap()[0];
-        assert!(matches!(e.state, EntryState::Quarantined { reason: QuarantineReason::NotUploaded { .. } }));
-        assert!(q.capture_bytes(&e.key).unwrap().is_some(), "the capture stays for local display");
-        crate::player_sentence::assert_player_safe(&QuarantineReason::NotUploaded { reason: "This game stays on this computer.".into() }.message());
+        assert!(matches!(e.state, EntryState::NotUploaded { .. }));
+        assert!(q.quarantined().unwrap().is_empty(), "a skipped game is not a problem entry");
+        assert!(q.capture_bytes(&e.key).unwrap().is_some(), "the capture is kept until pruned");
+        // Pruned like any finished result (the Stats page reads the archive written at ingest, not this payload).
+        let later = StatsQueue::open_at(root.path(), FixedClock::new(1 + 86_400_001)).unwrap();
+        assert_eq!(later.prune_terminal(86_400_000).unwrap().len(), 1);
+        assert!(later.entries().unwrap().is_empty());
+    }
+
+    /// The whole path: a real queue entry, the real backend submitter, a league edition session with no fixture.
+    #[test]
+    fn a_league_friendly_goes_through_the_queue_and_the_backend_submitter_without_a_post() {
+        use crate::backend::{BackendSubmitter, SessionFacts};
+        use crate::net::fake::FakeHttp;
+        let facts = |fixture: Option<u64>| SessionFacts {
+            session_id: "s1".into(), league_match: fixture.is_some(), league_edition: true, exit: "clean".into(),
+            exit_code: Some(0), match_id: None, league_fixture_id: fixture,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), Some("online")).unwrap();
+        let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts(None)], "3.1.0");
+        let r = q.submit_pending(&s, 5).unwrap();
+        assert_eq!((r.skipped.len(), r.sent(), r.still_waiting()), (1, 0, 0));
+        assert!(matches!(q.entries().unwrap()[0].state, EntryState::NotUploaded { .. }));
+        q.submit_pending(&s, 5).unwrap();
+        assert!(http.posts.lock().unwrap().is_empty(), "zero posts across two passes");
+
+        // The same entry from a fixture session is sent and accepted.
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), Some("online")).unwrap();
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts(Some(9))], "3.1.0");
+        assert_eq!(q.submit_pending(&s, 5).unwrap().accepted.len(), 1);
+        assert_eq!(http.posts.lock().unwrap().len(), 1);
+        assert_eq!(q.entries().unwrap()[0].state, EntryState::Accepted);
     }
 }

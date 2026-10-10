@@ -14,3 +14,10 @@ Tests (RED confirmed by compile failure first): offline and friendly never post 
 Results: reborn-core 1184 passed, reborn-ui all passed, cargo check --workspace --tests clean.
 
 Concern: a league room that lost its fixture tag (non matchmade) is treated as a friendly by design. Entries already queued from earlier league sessions have no `league_edition` flag, so they upload as before.
+
+## Review fixes (second commit)
+1. Skipped games are now `EntryState::NotUploaded { reason }` (terminal, not Quarantined): pruned by `prune_terminal` after keep_for_ms, not counted as quarantined in `queue_counts` (UI label "local"), `queue.quarantined()` excludes them. Trace: the Stats page reads the archive (`StatsQueue::archive`, written in `ingest_all` before submit, dedupe by content), not the queue payload, so pruning the payload does not touch local stats.
+2. `rebornctl stats status` uses `queue.quarantined()` and the exit code, so NotUploaded is excluded by construction. `StatsIngestView.quarantined` counts enqueue-time `Enqueued::Quarantined` (validation/no-session) only, which a skip never produces.
+3. `live_plays::keeps_results_local` (league edition, no fixture) makes `match_ctx` None, so the live feed never streams a league friendly. `dolphin_settings::session_match_for` stamps `match_id` only for a matchmade session (rng_seed) that may upload, so the exit/series report (`exit_report_applies` with None) skips league friendlies and Direct/private games.
+4. Tests: the facts loop now includes league_edition+league_match+no fixture; end-to-end queue + BackendSubmitter test (zero posts, final state NotUploaded, fixture session accepted); source scans that session.rs and netplay_open set league_edition; session_match_for and match_ctx tests.
+Results: reborn-core 1186 passed, reborn-ui 188 passed, check --workspace --tests clean.

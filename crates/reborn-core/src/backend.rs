@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn a_league_offline_game_and_a_league_friendly_are_never_posted() {
         let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
-        for facts in [facts_of(true, false, None)] {
+        for facts in [facts_of(true, false, None), facts_of(true, true, None)] {
             let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts], "3.1.0");
             assert!(matches!(s.submit(&entry("s1", Some("offline")), CAP), SubmitOutcome::Skipped { .. }));
             assert!(matches!(s.submit(&entry("s1", Some("online")), CAP), SubmitOutcome::Skipped { .. }));
