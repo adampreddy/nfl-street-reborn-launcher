@@ -5394,7 +5394,7 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
         // is being opened on its own rather than pointed at a fixture. The
         // folder Dolphin writes into still says whether the game was online.
         let record = supervisor
-            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false, match_id: None, league_fixture_id: None }))
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false, match_id: None, league_fixture_id: None, league_edition: false }))
             .map_err(|e| e.player_message().to_string())?;
 
         let env = std::collections::BTreeMap::new();

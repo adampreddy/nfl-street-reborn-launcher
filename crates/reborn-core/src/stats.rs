@@ -1411,6 +1411,9 @@ pub enum QuarantineReason {
     /// there is no destination, and guessing one is how an offline game lands on
     /// a real league fixture.
     NoSession,
+    /// A game that is not meant to be uploaded (a league game outside a fixture). Kept for the player's own
+    /// results list, never sent, never retried.
+    NotUploaded { reason: String },
 }
 
 impl QuarantineReason {
@@ -1439,6 +1442,7 @@ impl QuarantineReason {
                  launcher started explains it, so there is nowhere it can safely be sent. \
                  It is being kept."
                 .to_string(),
+            QuarantineReason::NotUploaded { reason } => reason.clone(),
         }
     }
 }
@@ -1699,6 +1703,9 @@ pub enum SubmitOutcome {
     /// The server stored it as a completed record that does not count as a win or loss,
     /// for example a game that ended below 36. Terminal, with a note for the player.
     Recorded { note: String },
+    /// Not meant to be uploaded at all (a league game outside a fixture). Terminal for the queue: kept locally,
+    /// never sent, never retried. `reason` is the sentence a player reads.
+    Skipped { reason: String },
     /// The token was refused. The entry stays queued; the caller clears the token.
     Unauthorized,
 }
@@ -1732,6 +1739,8 @@ pub struct SubmitReport {
     pub lost_payload: Vec<CaptureKey>,
     /// Stored as a completed record that does not count as a win or loss. Terminal.
     pub recorded: Vec<CaptureKey>,
+    /// Not uploaded by design (league game outside a fixture). Quarantined locally, never retried.
+    pub skipped: Vec<CaptureKey>,
     /// The stored token was refused. Nothing in the queue changed state; the
     /// caller must clear the token and get the player signed in again.
     pub waiting_for_sign_in: bool,
@@ -2325,6 +2334,16 @@ impl StatsQueue {
                     entry.note = Some(note);
                     self.write_entry(&entry)?;
                     report.recorded.push(entry.key.clone());
+                }
+                SubmitOutcome::Skipped { reason } => {
+                    // Not a failed attempt and not sent: the entry leaves the pending set without a ledger row.
+                    entry.last_attempt_ms = was_last_attempt_ms;
+                    entry.last_error = None;
+                    entry.state = EntryState::Quarantined {
+                        reason: QuarantineReason::NotUploaded { reason },
+                    };
+                    self.write_entry(&entry)?;
+                    report.skipped.push(entry.key.clone());
                 }
                 SubmitOutcome::Unauthorized => {
                     // Not a failed attempt: nothing about the capture was wrong.
@@ -4729,5 +4748,24 @@ mod tests {
         let e = &q.entries().unwrap()[0];
         assert_eq!(e.state, EntryState::Accepted);
         assert_eq!(e.note.as_deref(), Some("Recorded as incomplete."));
+    }
+
+    /// A skipped result (a league game outside a fixture) leaves the pending set, is kept, and is never retried.
+    #[test]
+    fn a_skipped_result_is_kept_locally_and_never_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), None).unwrap();
+        let skip = Recorder::new(SubmitOutcome::Skipped { reason: "This game stays on this computer.".to_string() });
+        let r = q.submit_pending(&skip, 5).unwrap();
+        assert_eq!((r.skipped.len(), r.sent(), r.still_waiting()), (1, 0, 0));
+        assert!(q.pending().unwrap().is_empty(), "not left in the retry queue");
+        let again = Recorder::new(SubmitOutcome::Accepted);
+        q.submit_pending(&again, 5).unwrap();
+        assert_eq!(again.count(), 0, "never offered again");
+        let e = &q.entries().unwrap()[0];
+        assert!(matches!(e.state, EntryState::Quarantined { reason: QuarantineReason::NotUploaded { .. } }));
+        assert!(q.capture_bytes(&e.key).unwrap().is_some(), "the capture stays for local display");
+        crate::player_sentence::assert_player_safe(&QuarantineReason::NotUploaded { reason: "This game stays on this computer.".into() }.message());
     }
 }

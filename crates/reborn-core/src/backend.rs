@@ -19,6 +19,8 @@ use crate::supervisor::{SessionEnd, SessionRecord};
 pub struct SessionFacts {
     pub session_id: String,
     pub league_match: bool,
+    /// The session booted the league edition. With no fixture it is an offline or friendly game, which never uploads.
+    pub league_edition: bool,
     /// "clean" | "error" | "crashed" | "terminated" | "interrupted" | "unknown"
     pub exit: String,
     pub exit_code: Option<i32>,
@@ -43,6 +45,7 @@ pub fn session_facts(history: &[SessionRecord]) -> Vec<SessionFacts> {
             SessionFacts {
                 session_id: r.id.clone(),
                 league_match: r.intent.as_ref().is_some_and(|i| i.league_match),
+                league_edition: r.intent.as_ref().is_some_and(|i| i.league_edition),
                 exit: exit.to_string(),
                 exit_code: code,
                 match_id: r.intent.as_ref().and_then(|i| i.match_id.clone()),
@@ -101,6 +104,9 @@ pub fn envelope(entry: &QueueEntry, capture_bytes: &[u8], facts: Option<&Session
 /// launcher could actually read. Deliberately says nothing about status codes,
 /// bodies or hosts: this string is carried on the queue entry as `last_error`
 /// and shown on the results screen.
+/// Shown on the results list for a league game that does not count toward a league.
+const LEAGUE_NOT_UPLOADED: &str = "This league game was not part of a league fixture, so it stays on this computer and is not sent.";
+
 const COULD_NOT_DELIVER: &str = "The server could not take this result just now. It is being kept and will be sent again.";
 
 /// The refusal the server states, in words a player can act on.
@@ -311,6 +317,11 @@ fn now_iso() -> String {
 impl Submitter for BackendSubmitter<'_> {
     fn submit(&self, entry: &QueueEntry, capture: &[u8]) -> SubmitOutcome {
         let facts = entry.session_id.as_deref().and_then(|id| self.sessions.get(id));
+        // Ruling 2026-10-10 (A): league stats are fixture games only. A league edition session with no fixture (the League
+        // tab's Play offline, a league friendly) keeps its result on this machine and sends nothing.
+        if facts.is_some_and(|f| f.league_edition && !(f.league_match && f.league_fixture_id.is_some())) {
+            return SubmitOutcome::Skipped { reason: LEAGUE_NOT_UPLOADED.to_string() };
+        }
         let Some(env) = envelope(entry, capture, facts, &self.launcher_version, &now_iso()) else {
             tracing::warn!("a queued capture is not a JSON object, so no envelope could be built for it");
             return SubmitOutcome::Rejected { reason: NOT_A_CAPTURE.to_string(), code: None };
@@ -388,7 +399,7 @@ mod tests {
     #[test]
     fn a_matchmade_session_names_its_match_in_the_envelope_and_nothing_else_does() {
         let facts = |match_id: Option<&str>| SessionFacts {
-            session_id: "s1".into(), league_match: false, exit: "clean".into(), exit_code: Some(0),
+            session_id: "s1".into(), league_match: false, league_edition: false, exit: "clean".into(), exit_code: Some(0),
             match_id: match_id.map(str::to_string), league_fixture_id: None,
         };
         let env = envelope(&entry("s1", Some("online")), CAP, Some(&facts(Some(MATCH))), "3.1.0", "t").unwrap();
@@ -406,7 +417,7 @@ mod tests {
         let rec = SessionRecord {
             id: "1-online".into(), build: RecordedBuild::Online, started_ms: 1, ended_ms: Some(2),
             end: Some(SessionEnd::Exited { code: Some(0) }),
-            intent: Some(SessionIntent { league_match: false, match_id: Some(MATCH.into()), league_fixture_id: None }),
+            intent: Some(SessionIntent { league_match: false, match_id: Some(MATCH.into()), league_fixture_id: None, league_edition: false }),
         };
         assert_eq!(session_facts(&[rec])[0].match_id.as_deref(), Some(MATCH));
         // A record an older build wrote has no match_id and still reads.
@@ -416,7 +427,7 @@ mod tests {
 
     #[test]
     fn the_envelope_carries_the_capture_the_hash_the_folder_the_session_and_the_intent() {
-        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: None };
+        let facts = SessionFacts { session_id: "s1".into(), league_match: true, league_edition: false, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: None };
         let env = envelope(&entry("s1", Some("offline")), CAP, Some(&facts), "3.1.0", "2026-09-08T21:00:00Z").unwrap();
         assert_eq!(env["schema"], "nsr.submission.v1");
         assert_eq!(env["capture_hash"], crate::stats::wire_hash_of(CAP).unwrap());
@@ -690,12 +701,60 @@ mod tests {
 
     #[test]
     fn a_league_upload_names_its_fixture() {
-        let facts = SessionFacts { session_id: "s1".into(), league_match: true, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: Some(1234) };
+        let facts = SessionFacts { session_id: "s1".into(), league_match: true, league_edition: true, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: Some(1234) };
         let env = envelope(&entry("s1", Some("online")), CAP, Some(&facts), "3.1.0", "2026-10-08T21:00:00Z").unwrap();
         assert_eq!((env["intent"]["league"].as_bool(), env["intent"]["fixture_id"].as_u64()), (Some(true), Some(1234)));
         let casual = SessionFacts { league_match: false, league_fixture_id: None, ..facts };
         let env = envelope(&entry("s1", Some("online")), CAP, Some(&casual), "3.1.0", "2026-10-08T21:00:00Z").unwrap();
         assert!(env["intent"].get("fixture_id").is_none(), "only a league game names a fixture");
+    }
+
+    fn facts_of(league_edition: bool, league_match: bool, fixture: Option<u64>) -> SessionFacts {
+        SessionFacts { session_id: "s1".into(), league_match, league_edition, exit: "clean".into(), exit_code: Some(0), match_id: None, league_fixture_id: fixture }
+    }
+
+    /// Adam's ruling 10-10 (A): only a league FIXTURE game uploads. The League tab's Play offline and a league
+    /// friendly (edition league, no fixture) never post, and are not left to retry.
+    #[test]
+    fn a_league_offline_game_and_a_league_friendly_are_never_posted() {
+        let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
+        for facts in [facts_of(true, false, None)] {
+            let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts], "3.1.0");
+            assert!(matches!(s.submit(&entry("s1", Some("offline")), CAP), SubmitOutcome::Skipped { .. }));
+            assert!(matches!(s.submit(&entry("s1", Some("online")), CAP), SubmitOutcome::Skipped { .. }));
+        }
+        assert!(http.posts.lock().unwrap().is_empty(), "nothing reached the network");
+    }
+
+    #[test]
+    fn a_league_fixture_game_still_uploads_with_its_fixture_and_retail_is_unchanged() {
+        let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts_of(true, true, Some(1234))], "3.1.0");
+        assert_eq!(s.submit(&entry("s1", Some("online")), CAP), SubmitOutcome::Accepted);
+        let body: serde_json::Value = serde_json::from_slice(&http.posts.lock().unwrap()[0].1).unwrap();
+        assert_eq!((body["intent"]["league"].as_bool(), body["intent"]["fixture_id"].as_u64()), (Some(true), Some(1234)));
+
+        let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts_of(false, false, None)], "3.1.0");
+        assert_eq!(s.submit(&entry("s1", Some("offline")), CAP), SubmitOutcome::Accepted);
+        // No session facts at all (a legacy capture) also posts as before.
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![], "3.1.0");
+        assert_eq!(s.submit(&entry("s1", Some("offline")), CAP), SubmitOutcome::Accepted);
+        assert_eq!(http.posts.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn session_facts_know_a_league_edition_session_from_its_intent() {
+        use crate::supervisor::{RecordedBuild, SessionEnd, SessionIntent, SessionRecord};
+        let rec = |league_edition| SessionRecord {
+            id: "1-offline".into(), build: RecordedBuild::Offline, started_ms: 1, ended_ms: Some(2),
+            end: Some(SessionEnd::Exited { code: Some(0) }),
+            intent: Some(SessionIntent { league_match: false, match_id: None, league_fixture_id: None, league_edition }),
+        };
+        assert!(session_facts(&[rec(true)])[0].league_edition);
+        assert!(!session_facts(&[rec(false)])[0].league_edition);
+        let old: SessionIntent = serde_json::from_str(r#"{"league_match":true}"#).unwrap();
+        assert!(!old.league_edition, "a record an older build wrote is not a league edition session");
     }
 
     #[test]
