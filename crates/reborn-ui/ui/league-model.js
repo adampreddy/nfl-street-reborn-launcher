@@ -75,8 +75,12 @@ function finalLine(m, teamId) {
 
 const join = (...parts) => parts.filter(Boolean).join(' · ');
 
-/** The This Week card. A room only counts when it has a code to join. */
-export function cardState(home) {
+const STALE_ROOM = 'Room status comes back when the league does';
+
+/** The This Week card. A room only counts when it has a code to join. `stale`: the data is the last good answer, not
+ *  the server's current one (a cached fallback, or a refresh that failed): no room button and no "online" claim is
+ *  built from it, since the room may be gone and Join/Cancel would act on old state. Play still asks the server. */
+export function cardState(home, { stale = false } = {}) {
   const m = home?.matchup;
   const base = { line: '', action: null, cancel: false, room: null };
   if (home?.schedule_published === false) return { ...base, kind: 'unscheduled', line: 'Schedule not published yet' };
@@ -84,10 +88,12 @@ export function cardState(home) {
   if (m.status === 'final') return { ...base, kind: 'final', line: finalLine(m, home?.team?.id) };
   const s = mine(m.series, m.home);
   const who = oppName(m);
-  if (m.status === 'live' || m.room?.state === 'in_series') return { ...base, kind: 'live', line: s ? `LIVE · ${standing(...s)}` : 'LIVE', action: 'Open room', room: m.room || null };
-  const series = m.status === 'in_progress' && s ? `Series · ${standing(...s)}` : '';
-  // Plan 2 sends no `you_host`: the opponent hosts exactly when the room's host is the opponent's Discord ID.
   const room = m.room && str(m.room.code) ? m.room : null;
+  const live = m.status === 'live' || m.room?.state === 'in_series';
+  const series = (m.status === 'in_progress' || m.status === 'live') && s ? `Series · ${standing(...s)}` : '';
+  if (stale && (live || room)) return { ...base, kind: 'stale', line: join(series, STALE_ROOM) };
+  if (live) return { ...base, kind: 'live', line: s ? `LIVE · ${standing(...s)}` : 'LIVE', action: 'Open room', room: m.room || null };
+  // Plan 2 sends no `you_host`: the opponent hosts exactly when the room's host is the opponent's Discord ID.
   if (room) {
     const oppId = str(m.opponent.discord_user_id);
     const theirs = oppId !== '' && room.host_discord_user_id === oppId;
@@ -98,7 +104,7 @@ export function cardState(home) {
   }
   if (!str(m.opponent.discord_user_id)) return { ...base, kind: 'unlinked', line: join(series, "Opponent hasn't linked Discord") };
   // Mid-series the score is the line; otherwise say whether the opponent is online.
-  return { ...base, kind: 'play', line: series || (m.opponent.online === true ? `@${who} is online` : ''), action: 'Play league game' };
+  return { ...base, kind: 'play', line: series || (!stale && m.opponent.online === true ? `@${who} is online` : ''), action: 'Play league game' };
 }
 
 function gb(bytes) {
@@ -116,7 +122,8 @@ export function installState(status, progress) {
   const busy = (label, percent) => ({ label: percent === null ? label : `${label} ${percent}%`, disabled: true, primary: false, percent });
   if (progress && typeof progress === 'object') {
     const p = pct(progress);
-    if (progress.phase === 'verify') return busy('Checking downloaded files…', null);
+    // The first verify (`checking`, before anything downloads) looks at the files already installed.
+    if (progress.phase === 'verify') return busy(progress.checking === true ? 'Checking your league files…' : 'Checking downloaded files…', null);
     if (progress.phase === 'compose') return busy('Setting up textures…', p);
     return busy('Downloading league files…', p);
   }
@@ -124,6 +131,26 @@ export function installState(status, progress) {
   if (status.installed !== true) return { label: `Install league files${gb(status.size_bytes)}`, disabled: false, primary: true, percent: null };
   if (status.update_available === true) return { label: `Update league files${gb(status.size_bytes)}`, disabled: false, primary: true, percent: null };
   return null;
+}
+
+/** The page's edition state after a poll: the local answer (`league_edition_installed`: install state, no network)
+ *  over the last release check (`league_edition_status`), whose `latest` and size it keeps. The update offer is worked
+ *  out again, so a build installed meanwhile reads as current. */
+export function withInstalled(full, local) {
+  if (!local || typeof local !== 'object') return full;
+  if (!full || typeof full !== 'object') return local;
+  const installed = local.installed === true;
+  const version = installed ? local.version : null;
+  return { ...full, installed, version, installing: local.installing === true, progress: local.progress ?? null,
+    update_available: installed && typeof full.latest === 'string' && full.latest !== version };
+}
+
+/** An install the core is already running (`installing: true` on either status answer), as the progress to draw:
+ *  its last `league-install-progress` payload, or the first check when none was sent yet. Null when none runs. */
+export function runningInstall(status) {
+  if (status?.installing !== true) return null;
+  const p = status.progress;
+  return p && typeof p === 'object' && typeof p.phase === 'string' ? p : { phase: 'verify', done: 0, total: 1, checking: true };
 }
 
 /** Whether the three play buttons work: only with the League edition installed, current and not mid-install. */

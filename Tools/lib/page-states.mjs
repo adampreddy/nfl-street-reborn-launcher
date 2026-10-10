@@ -306,6 +306,14 @@ function leagueStates() {
     L('league-not-installed', { league_edition_status: { ...LEAGUE_EDITION, installed: false, version: null } }),
     L('league-update', { league_edition_status: { ...LEAGUE_EDITION, latest: '2026.10.09', update_available: true, size_bytes: 268435456 } }),
     L('league-stale', { league_home: home({ stale: true }) }),
+    // 3a final fix M1: a cached answer with a room in it offers no Join/Cancel and says the room status is away.
+    L('league-stale-room', { league_home: home({ stale: true, matchup: matchup({ room: { room_id: 'r2', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: oppId } }) }) }),
+    // 3a final fix M4/M6: an install already running when the page opens (Install disabled, its progress shown), and
+    // the first check of the installed files.
+    L('league-installing', (() => { const s = { ...LEAGUE_EDITION, installed: false, version: null, installing: true, progress: { phase: 'download', done: 644245094, total: 1610612736 } };
+      return { league_edition_status: s, league_edition_installed: s }; })()),
+    L('league-checking', (() => { const s = { ...LEAGUE_EDITION, installing: true, progress: { phase: 'verify', done: 0, total: 1, checking: true } };
+      return { league_edition_status: s, league_edition_installed: s }; })()),
     // The league server goes away after a good load: Cancel leaves the room, the reload fails, the old page stays with
     // the refresh-failed line.
     L('league-refresh-failed', { league_home: { __first: home({ matchup: matchup({ room: { room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111' } }) }),

@@ -13,12 +13,15 @@ import { avatar, teamLogo } from './match-rows.js';
 import { createSignIn } from './sign-in.js';
 import {
   bannerLine, cardState, friendlyRuleset, headerLine, installState, isUpdateRequired, leaderCols, pageMode, playGate,
-  recentRows, rosterRows, scoreCells, standingsRows, teamColor, updateRequiredLine, weekTitle,
+  recentRows, rosterRows, runningInstall, scoreCells, standingsRows, teamColor, updateRequiredLine, weekTitle, withInstalled,
 } from './league-model.js';
 
 const REFRESH_MS = 60000;
 const FRIENDLY_KEY = 'league-friendly-league-settings';
-const REFRESH_FAILED = "Can't reach the league right now. Showing the last league data we have and retrying. Joining or leaving a room may not work until it's back.";
+const REFRESH_FAILED = "Can't reach the league right now. Showing the last league data we have and retrying. Room buttons come back when it does.";
+// While an install the page did not start runs (it was started before the page opened), how often to ask whether it
+// is still running. Local (league_edition_installed), no network.
+const WATCH_MS = 2000;
 const screen = document.getElementById('screen');
 // busy: which control is working ('primary', 'cancel', 'offline', 'friendly'), or null.
 // controllerSetup: the controller check's sentence after Play offline, until the player answers it.
@@ -30,14 +33,55 @@ const tinted = (node, prop, color) => { if (color && node?.style?.setProperty) n
 const leagueSettingsOn = () => get(FRIENDLY_KEY) !== 'off'; // default ON
 const go = (href) => { location.href = href; };
 
+// The release check (network): on page load, after an install and after a version refusal only (3a final fix M2).
 async function loadEdition() {
   try { state.edition = await quietCall('league_edition_status'); }
   catch (_) { state.edition = null; }
+  watchRunningInstall();
+}
+
+// Between release checks, a poll reads the install state from disk only and keeps the last check's `latest`.
+async function loadInstalled() {
+  try { state.edition = withInstalled(state.edition, await quietCall('league_edition_installed')); }
+  catch (_) { /* keep what the page has */ }
+  watchRunningInstall();
+}
+
+// An install already running when the page opened (it was started before the player left the page): show its
+// progress with Install disabled, follow its events, and ask the local answer until it ends; then the release check.
+let watching = false;
+function watchRunningInstall() {
+  const running = runningInstall(state.edition);
+  if (!running || state.progress || watching) return;
+  watching = true;
+  state.progress = running;
+  let unlisten = null;
+  const listening = window.__TAURI__?.event?.listen
+    ? Promise.resolve(window.__TAURI__.event.listen('league-install-progress', (e) => { if (watching) { state.progress = e.payload; draw(); } }))
+      .then((u) => { unlisten = u; }).catch(() => {})
+    : Promise.resolve();
+  const finish = async () => {
+    await listening;
+    if (typeof unlisten === 'function') unlisten();
+    watching = false;
+    state.progress = null;
+    await loadEdition();
+    draw();
+  };
+  const tickWatch = async () => {
+    let s = null;
+    try { s = await quietCall('league_edition_installed'); } catch (_) { /* the next poll looks again */ }
+    if (s && s.installing === true) {
+      if (s.progress && typeof s.progress === 'object') { state.progress = s.progress; draw(); }
+      setTimeout(tickWatch, WATCH_MS);
+    } else await finish();
+  };
+  setTimeout(tickWatch, WATCH_MS);
 }
 
 // One load at a time: a load asked for while one runs (a refresh during the post-Cancel reload, say) runs once more
 // after it, so the page always ends on an answer read after the latest change. Every caller shares the same promise.
-let loading = null, again = false;
+let loading = null, again = false, editionChecked = false;
 function load() {
   if (loading) { again = true; return loading; }
   loading = (async () => {
@@ -62,7 +106,10 @@ async function loadOnce() {
     draw();
     throw e; // makePoller backs off (and waits a full minute after a rate limit)
   }
-  if (pageMode(state.home) === 'member' && !state.progress) await loadEdition();
+  if (pageMode(state.home) === 'member' && !state.progress) {
+    // A release check that failed (null) is tried again; one that answered is not repeated by polls.
+    if (!editionChecked || !state.edition) { editionChecked = true; await loadEdition(); } else await loadInstalled();
+  }
   draw();
 }
 const poller = makePoller(load, REFRESH_MS);
@@ -92,7 +139,7 @@ async function act(key, fn) {
 async function install() {
   if (state.progress) return;
   let unlisten = null;
-  state.progress = { phase: 'download', done: 0, total: 0 }; state.installError = null; draw();
+  state.progress = { phase: 'verify', done: 0, total: 1, checking: true }; state.installError = null; draw();
   try {
     if (window.__TAURI__?.event?.listen) unlisten = await window.__TAURI__.event.listen('league-install-progress', (e) => { state.progress = e.payload; draw(); });
     await call('league_edition_install');
@@ -225,12 +272,14 @@ function vsSide(t, { opp = false, online = true } = {}) {
 const BUSY_WORDS = { play: 'Opening room…', join: 'Joining…', cancel: 'Leaving…' };
 
 function thisWeek(home) {
-  const s = cardState(home);
+  // Old data (the core's cached fallback, or a refresh that failed after a good load): no room button, no "Online".
+  const stale = Boolean(state.error) || home.stale === true;
+  const s = cardState(home, { stale });
   const gate = playGate(state.edition, state.progress);
   const m = home.matchup || {};
   const opp = m.opponent || {};
   const noGame = s.kind === 'bye' || s.kind === 'unscheduled';
-  const vs = noGame ? null : el('div', { class: 'lg-vs' }, vsSide(home.team), el('span', { class: 'lg-vs-at', text: m.home ? 'vs' : '@' }), vsSide(opp, { opp: true, online: !s.line.endsWith('is online') }));
+  const vs = noGame ? null : el('div', { class: 'lg-vs' }, vsSide(home.team), el('span', { class: 'lg-vs-at', text: m.home ? 'vs' : '@' }), vsSide(opp, { opp: true, online: !stale && !s.line.endsWith('is online') }));
   // Opening a room that already exists (waiting / lobby / live) needs no league files; starting or joining one does.
   const needsFiles = s.kind === 'play' || s.kind === 'join';
   const onClick = s.kind === 'play' ? play : s.kind === 'join' ? () => join(s.room) : (s.kind === 'waiting' || s.kind === 'lobby' || s.kind === 'live') ? () => go('online.html') : null;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   pageMode, headerLine, bannerLine, teamColor, weekTitle, cardState, installState, playGate, isUpdateRequired, updateRequiredLine, friendlyRuleset,
-  scoreCells, standingsRows, recentRows, leaderCols, rosterRows, ordinal,
+  scoreCells, standingsRows, recentRows, leaderCols, rosterRows, ordinal, runningInstall, withInstalled,
 } from './league-model.js';
 
 const FIX = JSON.parse(readFileSync(new URL('../../../Tools/fixtures/league-home.json', import.meta.url), 'utf8'));
@@ -100,6 +100,21 @@ test('cardState: live (backend merge) or a room already in its series', () => {
   assert.equal(cardState(withMatchup({ status: 'live', series: null })).line, 'LIVE');
 });
 
+test('cardState: cached data offers no room action and no online claim (3a final fix M1)', () => {
+  for (const room of [MINE, THEIRS, { ...MINE, state: 'lobby' }, { ...THEIRS, state: 'lobby' }]) {
+    const s = cardState(withMatchup({ room }), { stale: true });
+    assert.deepEqual([s.kind, s.action, s.cancel, s.room], ['stale', null, false, null], JSON.stringify(room));
+    assert.equal(s.line, 'Room status comes back when the league does');
+  }
+  const live = cardState(withMatchup({ status: 'live', series: { home: 1, away: 0 } }), { stale: true });
+  assert.deepEqual([live.kind, live.action, live.line], ['stale', null, 'Series · You lead 1-0 · Room status comes back when the league does']);
+  const play = cardState(FIX, { stale: true });
+  assert.deepEqual([play.kind, play.action, play.line], ['play', 'Play league game', ''], 'opening a room asks the server; "is online" is not claimed from old data');
+  assert.equal(cardState(withMatchup({ room: THEIRS }), { stale: false }).kind, 'join', 'fresh data is unchanged');
+  const fin = cardState(withMatchup({ status: 'final', series: { home: 2, away: 1 }, winner_team_id: 493 }), { stale: true });
+  assert.equal(fin.kind, 'final', 'a final result is still a result');
+});
+
 test('cardState: an opponent without Discord gets no button', () => {
   const h = clone(); h.matchup.opponent.discord_user_id = null;
   const s = cardState(h);
@@ -122,6 +137,33 @@ test('installState: checking, install, update, progress, current', () => {
   assert.deepEqual(installState(ED, { phase: 'compose', done: 3, total: 4 }), { label: 'Setting up textures… 75%', disabled: true, primary: false, percent: 75 });
   assert.equal(installState(ED, null), null, 'installed and current: no button');
   assert.equal(installState({ ...ED, size_bytes: 0, installed: false }, null).label, 'Install league files');
+  // M6: the first verify, before anything downloads, checks the installed files.
+  assert.deepEqual(installState(ED, { phase: 'verify', done: 0, total: 1, checking: true }), { label: 'Checking your league files…', disabled: true, primary: false, percent: null });
+});
+
+test('withInstalled: a poll\'s local answer keeps the last release check (3a final fix M2)', () => {
+  const full = { ...ED, latest: '2026.10.09', update_available: true };
+  const local = { ...ED, latest: null, update_available: false, size_bytes: 0, installing: false, progress: null };
+  assert.deepEqual(withInstalled(full, local), { ...full, installing: false, progress: null }, 'same build: the update offer stays');
+  const updated = withInstalled(full, { ...local, version: '2026.10.09' });
+  assert.deepEqual([updated.version, updated.latest, updated.update_available], ['2026.10.09', '2026.10.09', false], 'installed elsewhere: current now');
+  const gone = withInstalled(ED, { ...local, installed: false, version: null });
+  assert.deepEqual([gone.installed, gone.update_available], [false, false]);
+  const running = withInstalled(ED, { ...local, installing: true, progress: { phase: 'download', done: 1, total: 2 } });
+  assert.deepEqual([running.installing, running.progress.phase], [true, 'download']);
+  assert.equal(withInstalled(null, local), local, 'no release check yet: the local answer');
+  assert.equal(withInstalled(full, null), full, 'a failed local read keeps what the page had');
+});
+
+test('runningInstall: an install already running when the page opens (3a final fix M4)', () => {
+  assert.equal(runningInstall(ED), null);
+  assert.equal(runningInstall({ ...ED, installing: false, progress: { phase: 'download', done: 1, total: 2 } }), null);
+  assert.deepEqual(runningInstall({ ...ED, installing: true, progress: { phase: 'download', done: 1, total: 4 } }), { phase: 'download', done: 1, total: 4 });
+  assert.deepEqual(runningInstall({ ...ED, installing: true, progress: null }), { phase: 'verify', done: 0, total: 1, checking: true }, 'no progress yet: the first check');
+  const p = runningInstall({ ...ED, installing: true, progress: { phase: 'download', done: 1, total: 4 } });
+  assert.equal(installState(ED, p).disabled, true, 'Install is disabled while it runs');
+  assert.equal(playGate(ED, p).ready, false);
+  assert.equal(runningInstall(null), null);
 });
 
 test('playGate: buttons only when installed, current and idle', () => {
