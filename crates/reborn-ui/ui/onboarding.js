@@ -729,18 +729,37 @@ function contentEta(seconds){
 function contentDownload(){
   let phase='checking',note='',alive=true,timer=null,samples=[],view=null;
   const root=el('div','content-download');
-  const success=el('div','setup-success','✓');
+  const success=el('div','setup-success');success.setAttribute('aria-hidden','true');
+  success.innerHTML='<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
   const lead=el('p','setup-intro','Checking for game content…');
-  const bar=document.createElement('progress');bar.className='content-download-bar';bar.max=100;
-  const amount=el('p','content-download-amount','');
-  const rate=el('p','content-download-rate','');
+  // Amount and percent over the bar, speed and time left under it. The fill
+  // is scaled (transform), never sized; a red sweep runs while the length of
+  // the job is not known yet (checking, installing).
+  const meter=el('div','cd-meter');
+  const figures=el('div','cd-figures');
+  const amount=el('span','cd-amount num','');
+  const percent=el('span','cd-percent num','');
+  figures.append(amount,percent);
+  const meterTrack=el('div','cd-track');meterTrack.setAttribute('role','progressbar');meterTrack.setAttribute('aria-label','Game content download');meterTrack.setAttribute('aria-valuemin','0');meterTrack.setAttribute('aria-valuemax','100');
+  const fill=el('div','cd-fill');const sweep=el('div','sweep');
+  meterTrack.append(fill,sweep);
+  const meta=el('div','cd-meta');
+  const rate=el('span','num','');const eta=el('span','num','');
+  meta.append(rate,eta);
+  meter.append(figures,meterTrack,meta);
   const list=el('ul','content-download-list');
   const problem=el('p','refusal','');problem.hidden=true;
   const actions=el('div','content-download-actions');
   const retry=el('button','primary','Try again');retry.type='button';retry.hidden=true;
   const later=el('button',null,'Download later');later.type='button';later.hidden=true;
   actions.append(retry,later);
-  root.append(success,lead,bar,amount,rate,list,problem,actions);
+  root.append(success,lead,meter,list,problem,actions);
+  function setFill(pct){
+    if(pct==null){meterTrack.removeAttribute('aria-valuenow');sweep.hidden=false;fill.style.transform='scaleX(0)';return;}
+    const v=Math.max(0,Math.min(100,pct));
+    meterTrack.setAttribute('aria-valuenow',String(Math.floor(v)));sweep.hidden=true;fill.style.transform=`scaleX(${v/100})`;
+  }
+  setFill(null);
 
   const title=t=>{const h=document.querySelector('#screen h1');if(h)h.textContent=t;};
   const rows=new Map();
@@ -748,16 +767,29 @@ function contentDownload(){
     list.replaceChildren();rows.clear();
     for(const c of components){
       const row=el('li','content-download-item');
-      row.append(el('span','content-download-name',CONTENT_NAMES[c.component]||c.component),el('span','content-download-size',contentSize(c.bytes)),el('span','content-download-state','Waiting'));
+      row.append(el('span','content-download-name',CONTENT_NAMES[c.component]||c.component),el('span','content-download-size num',contentSize(c.bytes)),el('span','content-download-state num','Waiting'));
       rows.set(c.component,row);list.append(row);
     }
   }
-  function setRows(word,cls){for(const row of rows.values()){row.lastChild.textContent=word;row.className='content-download-item'+(cls?' '+cls:'');}}
+  function setRow(row,word,cls){row.lastChild.textContent=word;row.className='content-download-item'+(cls?' '+cls:'');}
+  function setRows(word,cls){for(const row of rows.values())setRow(row,word,cls);}
+  // Each part's own progress, from the bytes the core has staged for it:
+  // Waiting, then its percent, then Downloaded. Six files fetch at once, so
+  // several parts can be moving together.
+  function trackRows(components){
+    for(const c of components||[]){
+      const row=rows.get(c.component);if(!row)continue;
+      const total=c.bytes||0,got=Math.min(total,c.fetched_bytes||0);
+      if(total&&got>=total)setRow(row,'Downloaded','done');
+      else if(got>0)setRow(row,`${Math.floor(got*100/total)}%`,'active');
+      else setRow(row,'Waiting','');
+    }
+  }
   function render(){
     if(!alive)return;
     success.hidden=phase!=='done';
-    bar.hidden=!(phase==='downloading'||phase==='installing'||phase==='checking');
-    amount.hidden=rate.hidden=phase!=='downloading';
+    meter.hidden=!(phase==='downloading'||phase==='installing'||phase==='checking');
+    figures.hidden=meta.hidden=phase!=='downloading';
     list.hidden=!rows.size;
     problem.hidden=phase!=='problem';problem.textContent=note;
     retry.hidden=phase!=='problem';
@@ -765,7 +797,7 @@ function contentDownload(){
     if(phase==='done'){title("You're all set");lead.textContent=rows.size?"Game content installed. Your settings are applied. You're ready to hit the streets!":"Your settings are applied. You're ready to hit the streets!";}
     else if(phase==='skipped'){title("You're all set");lead.textContent='Your settings are applied. The game content keeps downloading in the background; the Play page shows its progress.';}
     else {title('Downloading game content');lead.textContent=phase==='checking'?'Checking for game content…':phase==='installing'?'Installing…':phase==='problem'?'The download stopped.':'Keep the launcher open. This is a large download.';}
-    if(phase==='checking'||phase==='installing')bar.removeAttribute('value');
+    if(phase==='checking'||phase==='installing')setFill(null);
     updateNav();
   }
   function track(s){
@@ -773,12 +805,15 @@ function contentDownload(){
     const total=s.download_bytes||0,got=Math.min(total,s.fetched_bytes||0),now=performance.now();
     samples.push([now,got]);while(samples.length>2&&now-samples[0][0]>8000)samples.shift();
     const [t0,b0]=samples[0];const speed=now>t0?(got-b0)*1000/(now-t0):0;
-    bar.value=total?Math.min(99,got*100/total):0;
-    amount.textContent=`${contentSize(got)} of ${contentSize(total)} · ${total?Math.floor(got*100/total):0}%`;
+    setFill(total?Math.min(99,got*100/total):0);
+    amount.textContent=`${contentSize(got)} of ${contentSize(total)}`;
+    percent.textContent=`${total?Math.floor(got*100/total):0}%`;
     // The first seconds fetch the emulator's 2,300 small files, which read as
     // "0.0 MB/s · about 158 h left" (-9 test): no estimate until it means something.
     const measured=now-t0>=5000&&speed>=102400;
-    rate.textContent=measured?`${(speed/1048576).toFixed(1)} MB/s · ${contentEta((total-got)/speed)}`:'Measuring speed…';
+    rate.textContent=measured?`${(speed/1048576).toFixed(1)} MB/s`:'Measuring speed…';
+    eta.textContent=measured?contentEta((total-got)/speed):'';
+    trackRows(s.components);
   }
   async function poll(){
     if(!alive||phase!=='downloading')return;
@@ -793,14 +828,14 @@ function contentDownload(){
       const wanted=(s.components||[]).filter(c=>c.state==='available');
       if(['available','fetching','staged','installing'].includes(s.phase)&&wanted.length)drawList(wanted);
       if(s.phase==='available'||s.phase==='fetching'){
-        phase='downloading';samples=[];setRows('Downloading','active');render();track(s);timer=setTimeout(poll,1000);
+        phase='downloading';samples=[];render();track(s);timer=setTimeout(poll,1000);
         s=s.phase==='available'?await call('content_fetch'):s;
         while(alive&&s.phase==='fetching'){await new Promise(r=>setTimeout(r,1000));s=await call('content_status');}
         clearTimeout(timer);
       }
       if(!alive||phase==='skipped')return;
       if(s.phase==='staged'||s.phase==='installing'){
-        phase='installing';bar.value=100;setRows('Installing','active');render();
+        phase='installing';setRows('Installing','active');render();
         s=s.phase==='staged'?await call('content_promote',{confirm:true}):s;
         while(alive&&s.phase==='installing'){await new Promise(r=>setTimeout(r,1000));s=await call('content_status');}
       }
