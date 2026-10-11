@@ -4,10 +4,12 @@
 // event (window_picker.rs) and waits for `pick_path_answer`; outside Game Mode
 // the core uses the native dialog and this never shows.
 //
-// It is driven by the controller too (Deck tester: only the trackpad mouse
-// moved through the folders): D-pad or left stick moves, A opens or chooses,
-// B goes up a folder. The arrow keys do the same, in case Steam maps the
-// D-pad to keys.
+// It is a modal <dialog>, so the launcher's own pad navigation (app-shell.js)
+// drives it like every other dialog: the D-pad moves inside it, A presses the
+// focused button, and B arrives as the dialog's `cancel`, which goes up a
+// folder (and cancels at the top). It reads no pad itself: in 3.0.39 it did,
+// beside app-shell, and one press acted twice (focus stuck, B left the page).
+// The arrow keys move too, in case Steam maps the D-pad to keys.
 import { bridge } from './shell.js';
 
 const ev = window.__TAURI__ && window.__TAURI__.event;
@@ -26,35 +28,39 @@ function size(bytes) {
   return Math.max(1, Math.round(bytes / 1024)) + ' KB';
 }
 
+// Surface, border, radius, padding and backdrop come from theme.css's dialog
+// rule; this sizes the picker and lays out its parts.
 function style() {
   if (document.getElementById('window-picker-style')) return;
   const s = node('style');
   s.id = 'window-picker-style';
   s.textContent = `
-.wp-veil{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px}
-.wp{width:min(880px,100%);max-height:100%;display:flex;flex-direction:column;gap:10px;background:#16181c;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:18px;color:#eceee4;font:13px/1.4 Inter,system-ui,sans-serif}
-.wp h2{margin:0;font-size:18px}
-.wp-where{color:#9a9c96;font-size:12px;overflow-wrap:anywhere}
+dialog.wp[open]{width:min(880px,calc(100vw - 32px));max-height:calc(100vh - 32px);box-sizing:border-box;display:flex;flex-direction:column;gap:8px;font:13px/1.4 Inter,system-ui,sans-serif}
+.wp h2{margin:0 0 4px;font-size:18px;font-weight:600}
+.wp-where{color:var(--fg-3);font-size:12px;overflow-wrap:anywhere}
 .wp-places,.wp-actions{display:flex;flex-wrap:wrap;gap:8px}
-.wp button{font:inherit;color:inherit;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:8px 12px;cursor:pointer;text-align:left}
-.wp button:focus-visible,.wp button:hover{border-color:#eceee4;outline:none;background:rgba(255,255,255,.12)}
-.wp-list{overflow:auto;display:flex;flex-direction:column;gap:4px;min-height:120px;flex:1}
-.wp-list button{display:flex;justify-content:space-between;gap:12px}
+.wp button{font:inherit;color:var(--fg);background:var(--glass-2);border:1px solid var(--stroke);border-radius:var(--r-sm);padding:8px 12px;cursor:pointer;text-align:left}
+.wp button:hover{background:var(--glass-3)}
+.wp-list{overflow:auto;display:flex;flex-direction:column;gap:4px;min-height:120px;flex:1;margin:8px 0}
+.wp-list button{display:flex;justify-content:space-between;gap:16px;flex:none}
 .wp-list .wp-dir::before{content:"\\1F4C1  "}
-.wp-size{color:#9a9c96;white-space:nowrap}
-.wp-none{color:#9a9c96;padding:12px 2px}
-.wp-hint{color:#9a9c96;font-size:12px;margin-right:auto;align-self:center}
-.wp-actions{justify-content:flex-end}
-.wp-actions .wp-primary{background:#eceee4;color:#16181c;border-color:#eceee4}`;
+.wp-size{color:var(--fg-3);white-space:nowrap}
+.wp-none{color:var(--fg-3);padding:12px 2px}
+.wp-hint{color:var(--fg-3);font-size:12px;margin-right:auto;align-self:center}
+.wp-actions .wp-primary{background:var(--fg);color:var(--surface-solid);border-color:var(--fg)}
+html:not(#_) dialog.wp h2{text-transform:none;letter-spacing:0;font-size:18px}
+html:not(#_) dialog.wp .wp-list button{justify-content:flex-start;text-align:left}
+html:not(#_) dialog.wp .wp-list .wp-size{margin-left:auto}`;
   document.head.append(s);
 }
 
 function finish(path) {
   if (!open) return;
-  open.veil.remove();
-  document.removeEventListener('keydown', open.onKey, true);
-  cancelAnimationFrame(open.frame);
+  const { box, onKey } = open;
   open = null;
+  document.removeEventListener('keydown', onKey, true);
+  if (box.open) box.close();
+  box.remove();
   Promise.resolve(bridge.invoke('pick_path_answer', { path: path || null })).catch(() => {});
 }
 
@@ -63,10 +69,8 @@ async function show(req) {
   style();
   const exts = (req.extensions || []).map(e => e.toLowerCase());
   const matches = name => !exts.length || exts.some(e => name.toLowerCase().endsWith('.' + e));
-  const veil = node('div', 'wp-veil');
-  const box = node('div', 'wp');
-  box.setAttribute('role', 'dialog');
-  box.setAttribute('aria-modal', 'true');
+  const box = node('dialog', 'wp');
+  box.setAttribute('aria-label', req.title || 'Choose a file');
   const title = node('h2', null, req.title || 'Choose a file');
   const where = node('div', 'wp-where');
   const places = node('div', 'wp-places');
@@ -81,21 +85,24 @@ async function show(req) {
   const hint = node('span', 'wp-hint', 'Controller: D-pad to move · A to open · B to go up');
   actions.append(hint, cancel, choose);
   box.append(title, where, places, list, actions);
-  veil.append(box);
-  document.body.append(veil);
+  document.body.append(box);
+
   let parent = null;
-  // Every button in reading order: places, the folder list, then the actions.
+  function back() {
+    if (parent) go(parent); else finish(null);
+  }
+  // B (app-shell dispatches `cancel` on the open dialog, and closes it only
+  // when nobody prevents that) goes up a folder. Escape cancels outright.
+  box.addEventListener('cancel', e => { e.preventDefault(); back(); });
+  // The list scrolls inside the dialog; keep the focused row in view however
+  // focus got there (pad, arrow keys, Tab).
+  box.addEventListener('focusin', e => { if (list.contains(e.target)) e.target.scrollIntoView({ block: 'nearest' }); });
   const buttons = () => [...box.querySelectorAll('button')].filter(b => !b.hidden);
   function move(step) {
     const all = buttons();
     if (!all.length) return;
     const at = all.indexOf(document.activeElement);
-    const next = all[at < 0 ? 0 : Math.max(0, Math.min(all.length - 1, at + step))];
-    next.focus();
-    next.scrollIntoView({ block: 'nearest' });
-  }
-  function back() {
-    if (parent) go(parent); else finish(null);
+    all[at < 0 ? 0 : Math.max(0, Math.min(all.length - 1, at + step))].focus();
   }
   const onKey = e => {
     let done = true;
@@ -107,52 +114,14 @@ async function show(req) {
     if (done) { e.preventDefault(); e.stopPropagation(); }
   };
   document.addEventListener('keydown', onKey, true);
-  open = { veil, onKey, frame: 0 };
-
-  // The controller, read directly (standard mapping: 0 A, 1 B, 12-15 D-pad,
-  // axis 1 the left stick's up/down). A button held when the picker opened
-  // (the A that pressed "Browse") counts only after it is let go. Holding a
-  // direction repeats, like a keyboard.
-  const held = new Set();
-  let first = true;
-  let repeatAt = 0;
-  function poll(now) {
-    if (!open || open.veil !== veil) return;
-    let pads = [];
-    try { pads = [...(navigator.getGamepads?.() || [])].filter(p => p?.connected); } catch { pads = []; }
-    const down = new Set();
-    for (const p of pads) {
-      const b = i => !!(p.buttons[i] && p.buttons[i].pressed);
-      const y = p.axes[1] || 0;
-      const x = p.axes[0] || 0;
-      if (b(0)) down.add('a');
-      if (b(1)) down.add('b');
-      if (b(13) || b(15) || y > 0.6 || x > 0.6) down.add('next');
-      if (b(12) || b(14) || y < -0.6 || x < -0.6) down.add('prev');
-    }
-    if (first) { for (const k of down) held.add(k); first = false; }
-    for (const k of [...held]) if (!down.has(k)) held.delete(k);
-    for (const k of down) {
-      const dir = k === 'next' ? 1 : k === 'prev' ? -1 : 0;
-      if (!held.has(k)) {
-        held.add(k);
-        if (dir) { move(dir); repeatAt = now + 350; }
-        else if (k === 'a') { const f = document.activeElement; if (f && box.contains(f) && f.tagName === 'BUTTON') f.click(); else move(0); }
-        else if (k === 'b') back();
-        if (!open || open.veil !== veil) return;
-      } else if (dir && now >= repeatAt) {
-        move(dir);
-        repeatAt = now + 110;
-      }
-    }
-    open.frame = requestAnimationFrame(poll);
-  }
-  open.frame = requestAnimationFrame(poll);
+  open = { box, onKey };
+  box.showModal();
 
   async function go(path) {
     let listing;
     try { listing = await bridge.invoke('browse_dir', { path: path || null }); }
     catch (e) { where.textContent = String(e && e.message || e); return; }
+    if (!open || open.box !== box) return;
     where.textContent = listing.path;
     parent = listing.parent || null;
     choose.onclick = () => finish(listing.path);
