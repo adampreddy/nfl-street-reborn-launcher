@@ -795,8 +795,8 @@ const CREDENTIAL_STORE_NAME: &str = if cfg!(windows) {
 
 /// Secrets in the operating system's store, and nowhere else.
 ///
-/// There is no fallback, on purpose, except one: Linux with no Secret Service
-/// (a Steam Deck in Game Mode), see `linux_file_vault`. Elsewhere, if the platform store cannot be reached,
+/// There is no fallback, on purpose, except two: Linux with no Secret Service
+/// (a Steam Deck in Game Mode) and macOS, see `file_vault`. Elsewhere, if the platform store cannot be reached,
 /// every method fails and says so. The tempting alternative, a file under the
 /// data root, would turn a Discord token into something any process running as
 /// the user can read, and it would pass every test in this file.
@@ -820,33 +820,43 @@ impl OsCredentialVault {
     }
 }
 
-/// Where secrets go on Linux when no Secret Service answers, or None when one
-/// does (then the platform store is used, as everywhere else).
+/// Where secrets go when they are not in the platform store, or None when
+/// they are.
 ///
-/// The one exception to "the operating system's store, and nowhere else". A
-/// Steam Deck in Game Mode runs no desktop session, so neither KWallet nor
-/// gnome-keyring is there to answer, and every sign-in and stats upload failed
-/// ("results could not be sent", Deck build, 2026-10). Steam keeps its own
-/// login in a file on the same machine. So here, and only here: one file per
-/// account under `<data root>/credentials/`, the folder 0700 and the file 0600
-/// from the moment they are created, written whole and read back.
-#[cfg(target_os = "linux")]
-fn linux_file_vault() -> Option<PathBuf> {
+/// The two exceptions to "the operating system's store, and nowhere else":
+/// - Linux with no Secret Service. A Steam Deck in Game Mode runs no desktop
+///   session, so neither KWallet nor gnome-keyring is there to answer, and every
+///   sign-in and stats upload failed ("results could not be sent", Deck build,
+///   2026-10).
+/// - macOS, always. The Mac builds are ad-hoc signed, and the Keychain trusts
+///   only the exact build that saved an item, so every update asked the player
+///   for their login keychain password to read their own sign-in (Adam's Mac,
+///   2026-10-12). Adam chose this file over a signing certificate.
+///
+/// Steam keeps its own login in a file on the same machine. So there, and only
+/// there: one file per account under `<data root>/credentials/`, the folder 0700
+/// and the file 0600 from the moment they are created, written whole and read
+/// back.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn file_vault() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
     if keyring::Entry::store_status().is_ok() {
         return None;
     }
     RealPaths { channel: Channel::detect().channel }.data_root().ok().map(|d| d.join("credentials"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn file_vault_path(dir: &Path, account: &str) -> Result<PathBuf> {
     if account.is_empty() || !account.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
-        return Err(Error::CredentialStore(format!("{account:?} cannot name a credential file")));
+        return Err(Error::CredentialStore(format!(
+            "{account:?} cannot name a credential file: an account name is letters, digits, '.', '_' or '-'"
+        )));
     }
     Ok(dir.join(account))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn file_vault_store(dir: &Path, account: &str, secret: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -868,7 +878,7 @@ fn file_vault_store(dir: &Path, account: &str, secret: &str) -> Result<()> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn file_vault_retrieve(dir: &Path, account: &str) -> Result<Option<String>> {
     let path = file_vault_path(dir, account)?;
     match std::fs::read_to_string(&path) {
@@ -878,7 +888,7 @@ fn file_vault_retrieve(dir: &Path, account: &str) -> Result<Option<String>> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn file_vault_delete(dir: &Path, account: &str) -> Result<()> {
     let path = file_vault_path(dir, account)?;
     match std::fs::remove_file(&path) {
@@ -901,8 +911,8 @@ impl CredentialVault for OsCredentialVault {
     /// and the user signs in twice. The other way round is a user who is told
     /// they are signed in and is not.
     fn store(&self, account: &str, secret: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = linux_file_vault() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(dir) = file_vault() {
             return file_vault_store(&dir, account, secret);
         }
         let entry = Self::entry(account)?;
@@ -932,8 +942,8 @@ impl CredentialVault for OsCredentialVault {
     /// them a store failure sends them hunting for a problem that does not
     /// exist.
     fn retrieve(&self, account: &str) -> Result<Option<String>> {
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = linux_file_vault() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(dir) = file_vault() {
             return file_vault_retrieve(&dir, account);
         }
         let entry = Self::entry(account)?;
@@ -950,8 +960,8 @@ impl CredentialVault for OsCredentialVault {
     /// caller forced to special-case "it was already gone" will eventually leave
     /// a token behind instead.
     fn delete(&self, account: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = linux_file_vault() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(dir) = file_vault() {
             return file_vault_delete(&dir, account);
         }
         let entry = Self::entry(account)?;
@@ -1324,10 +1334,11 @@ mod tests {
         format!("reborn-test-{tag}-{}-{nanos}", std::process::id())
     }
 
-    /// The Linux file vault: owner-only, round trip, absent is None, delete is idempotent.
-    #[cfg(target_os = "linux")]
+    /// The file vault (Linux without a Secret Service, and macOS): owner-only,
+    /// round trip, absent is None, delete is idempotent.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn the_linux_file_vault_keeps_a_secret_owner_only() {
+    fn the_file_vault_keeps_a_secret_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(probe_account("vault")).join("credentials");
         assert_eq!(file_vault_retrieve(&dir, "discord").unwrap(), None);

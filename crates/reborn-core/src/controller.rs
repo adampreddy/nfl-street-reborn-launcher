@@ -2115,6 +2115,40 @@ mod tests {
         assert_eq!(extras.get(Extra::RumbleMotor), "`Motor`");
     }
 
+    /// The same pad read through Apple's GameController framework (SDL's MFi
+    /// driver), as a Mac runtime without SDL's HIDAPI driver reports it
+    /// (2026-10-12, Xbox Wireless Controller over Bluetooth): a d-pad on a
+    /// hat, the triggers on axes 2 and 5. Every GameCube control still maps.
+    #[test]
+    fn a_pad_read_through_apples_framework_maps_itself_too() {
+        use GcInput::*;
+        const MFI: &str = "050018dc5e040000e0020000ff070000,Xbox Wireless Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b9,leftshoulder:b4,leftstick:b6,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b7,righttrigger:a5,rightx:a3,righty:a4,start:b10,x:b2,y:b3,platform:Mac OS X";
+        let mut text = format!("DEVICE\tSDL/0/Xbox Wireless Controller\nMAPPING\t{MFI}\n");
+        let mut controls: Vec<String> = (0..11).map(|b| format!("Button {b}")).collect();
+        controls.extend(["N", "E", "S", "W"].map(|d| format!("Hat 0 {d}")));
+        for a in 0..6 {
+            controls.extend([format!("Axis {a}-"), format!("Axis {a}+"), format!("Full Axis {a}+"), format!("Full Axis {a}-")]);
+        }
+        for c in &controls {
+            text += &format!("INPUT\t{c}\t1\n");
+        }
+        text += "OUTPUT\tMotor\nSETTLED\t1219\t28\n";
+        let device = &crate::devices::parse_device_inputs(&text)[0];
+        let layout = device.sdl_layout().expect("the mapping rides along");
+        let (mapping, unmatched) = Mapping::auto_from_with(&device.all_names(), Some(&layout));
+        assert!(unmatched.is_empty(), "nothing left for the wizard: {unmatched:?}");
+        for (input, name) in [
+            (ButtonA, "Button 0"), (ButtonB, "Button 1"), (ButtonX, "Button 2"), (ButtonY, "Button 3"),
+            (ButtonZ, "Button 5"), (Start, "Button 10"),
+            (MainStickUp, "Axis 1-"), (MainStickRight, "Axis 0+"), (CStickUp, "Axis 4-"), (CStickRight, "Axis 3+"),
+            (TriggerL, "Full Axis 2+"), (TriggerR, "Full Axis 5+"),
+            (DPadUp, "Hat 0 N"), (DPadDown, "Hat 0 S"), (DPadLeft, "Hat 0 W"), (DPadRight, "Hat 0 E"),
+        ] {
+            assert_eq!(mapping.get(input), Some(Mapping::quote(name).as_str()), "{input:?}");
+        }
+        assert_eq!(Extras::from_device_with(&device.all_names(), Some(&layout)).get(Extra::RumbleMotor), "`Motor`");
+    }
+
     /// The other shapes SDL's database uses: a d-pad on a hat, an inverted
     /// axis, a half axis. And a binding is only given when the pad reports
     /// that control: SDL's word never invents a name the runtime lacks.

@@ -140,12 +140,13 @@ codesign --verify --deep --strict "$APP"
 # --- 7. The .dmg and the update zip ---------------------------------------------
 DMG="$OUT/NFL Street Reborn $VERSION.dmg"
 ZIP="$OUT/NFL Street Reborn $VERSION.app.zip"
-STAGE="$WORK/dmg"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/$APP_NAME"
-ln -s /Applications "$STAGE/Applications"
+# dmgbuild lays out the window (background art, icon spots, the Applications
+# link) without scripting Finder, so this stays headless.
+"$WORK/venv/bin/pip" install -q "dmgbuild==1.6.*" "pillow==12.*" "fonttools[woff]==4.*"
+"$WORK/venv/bin/python" "$HERE/dmg-background.py" "$REPO" "$WORK/dmg-art"
 rm -f "$DMG" "$ZIP"
-hdiutil create -volname "NFL Street Reborn" -srcfolder "$STAGE" -format UDZO -ov "$DMG" > /dev/null
+"$WORK/venv/bin/dmgbuild" -s "$HERE/dmg-settings.py" -D app="$APP" -D art="$WORK/dmg-art" \
+  -D icon="$APP/Contents/Resources/${APP_NAME%.app}.icns" "NFL Street Reborn" "$DMG"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 # --- 8. BUILD-INFO --------------------------------------------------------------
