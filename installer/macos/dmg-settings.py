@@ -20,4 +20,3 @@ show_status_bar = show_tab_view = show_toolbar = show_pathbar = show_sidebar = F
 icon_size = 112
 text_size = 13
 icon_locations = {name: (165, 215), "Applications": (495, 215)}
-hide_extensions = [name]
