@@ -436,6 +436,38 @@ pub fn launcher_run(version: String, dry_run: bool) -> Result<Value, String> {
             }
             out!(sink, "Confirmed     {} matches latest.json independently: {app_bytes} byte(s), sha256 {}", app_path.display(), app_hash.as_str());
             plan.blob(format!("launcher/{}", linux.file_name), app_path.clone(), app_bytes, app_hash.clone());
+
+            // The Mac app the manifest names (a zipped .app, what a Mac's
+            // self-update unpacks) goes up the same way, with the .dmg players
+            // download beside it. A manifest with no Mac build (build.ps1
+            // -NoMac) leaves Macs on the version they have.
+            match manifest.macos.clone() {
+                Some(macos) => {
+                    let stage = PathBuf::from(r"C:\Reborn Origin-stage\launcher-macos");
+                    let zip_path = stage.join(&macos.file_name);
+                    let zip_bytes = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
+                    let zip_hash = reborn_core::library::hash_file(&zip_path).map_err(|e| plain_err(format!("{}: {e}", zip_path.display())))?;
+                    if zip_hash.as_str() != macos.sha256.as_str() || zip_bytes != macos.bytes {
+                        return Ok(refuse(sink, &[format!(
+                            "{} is sha256 {} ({zip_bytes} byte(s)) but latest.json names {} ({} byte(s)). Nothing was uploaded.",
+                            zip_path.display(), zip_hash.as_str(), macos.sha256.as_str(), macos.bytes
+                        )]));
+                    }
+                    let dmg_name = format!("{}.dmg", macos.file_name.trim_end_matches(".app.zip"));
+                    let dmg_path = stage.join(&dmg_name);
+                    let Ok(dmg_meta) = std::fs::metadata(&dmg_path) else {
+                        return Ok(refuse(sink, &[format!(
+                            "{} is missing: the Mac download goes up with the Mac update. Nothing was uploaded.",
+                            dmg_path.display()
+                        )]));
+                    };
+                    let dmg_hash = reborn_core::library::hash_file(&dmg_path).map_err(|e| plain_err(format!("{}: {e}", dmg_path.display())))?;
+                    out!(sink, "Confirmed     {} matches latest.json independently: {zip_bytes} byte(s), sha256 {}", zip_path.display(), zip_hash.as_str());
+                    plan.blob(format!("launcher/{}", macos.file_name), zip_path.clone(), zip_bytes, zip_hash.clone());
+                    plan.blob(format!("launcher/{dmg_name}"), dmg_path.clone(), dmg_meta.len(), dmg_hash.clone());
+                }
+                None => out!(sink, "No Mac build  latest.json names none, so Macs stay on the version they have"),
+            }
             let manifest_key = "launcher/latest.json".to_string();
             let manifest_sha = Sha256Hex::from_bytes(&manifest_bytes);
             plan.release_file(
