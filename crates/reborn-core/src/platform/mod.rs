@@ -1016,11 +1016,17 @@ pub trait RemovableDrives: Send + Sync {
     /// then a port that forgot to would be a port that offers the system drive,
     /// and nothing about the signature would show it. Written once, it cannot be
     /// forgotten once.
+    ///
+    /// The volume the launcher runs from is never offered either, removable or
+    /// not: a Mac player running the app straight out of the opened .dmg, or a
+    /// launcher started from the very stick the wizard would write.
     fn enumerate(&self) -> Result<Vec<RemovableDrive>> {
+        let exe = std::env::current_exe().ok();
         Ok(self
             .enumerate_volumes()?
             .into_iter()
             .filter(Volume::is_removable)
+            .filter(|v| !exe.as_ref().is_some_and(|e| e.starts_with(&v.drive.mount_point)))
             .map(|volume| volume.drive)
             .collect())
     }

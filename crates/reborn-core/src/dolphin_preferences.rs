@@ -78,6 +78,26 @@ fn vulkan_driver_present(var: impl Fn(&str) -> Option<std::ffi::OsString>, has_m
     dirs.iter().any(|d| has_manifest(d))
 }
 
+/// Values in `GFX.ini` this platform's Dolphin cannot use, the `GFX.ini`
+/// half of [`unusable_here`]. Always empty off macOS.
+pub fn gfx_unusable_here(doc: &crate::ini::IniDocument) -> crate::ini::Overlay {
+    gfx_unusable_for(doc, cfg!(target_os = "macos"))
+}
+
+/// Immediate XFB on the Mac's Metal backend shows the memory card check and
+/// then nothing: every later frame is black while the game, and its audio,
+/// carry on (2026-10-08, retail disc, 142 frames dumped and none after; 524
+/// in the same time with it off). The template's True is a Windows latency
+/// tuning; on a Mac it is a black screen, so it is put back to Dolphin's own
+/// default there and left the player's everywhere else.
+fn gfx_unusable_for(doc: &crate::ini::IniDocument, macos: bool) -> crate::ini::Overlay {
+    let mut repair = crate::ini::Overlay::new();
+    if macos && doc.get("Hacks", "ImmediateXFBEnable").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
+        repair.entry("Hacks".into()).or_default().insert("ImmediateXFBEnable".into(), "False".into());
+    }
+    repair
+}
+
 fn unusable_for(doc: &crate::ini::IniDocument, video: &[&str], windows: bool) -> crate::ini::Overlay {
     let mut repair = crate::ini::Overlay::new();
     if windows {
@@ -382,6 +402,18 @@ fn under(normalized:&str,user:&std::path::Path)->bool{
  #[test] fn a_usable_choice_is_never_touched(){
   assert!(unusable_for(&doc("[Core]\nGFXBackend = OGL\n[DSP]\nBackend = Pulse\n"),LINUX,false).is_empty());
   assert!(unusable_for(&doc("[Core]\n"),LINUX,false).is_empty(),"absent is the seeded default's job");
+ }
+
+ /// Immediate XFB on Mac Metal: the memory card check draws, then every frame
+ /// after it is black while the intro's audio plays (measured 2026-10-08:
+ /// 142 frames and none after; 524 with it off). Elsewhere it is a latency
+ /// trade and stays the player's.
+ #[test] fn immediate_xfb_is_turned_off_on_a_mac_and_only_there(){
+  let on=doc("[Hacks]\nImmediateXFBEnable = True\n");
+  assert_eq!(gfx_unusable_for(&on,true)["Hacks"]["ImmediateXFBEnable"],"False");
+  assert!(gfx_unusable_for(&on,false).is_empty(),"Windows and Linux keep the player's value");
+  assert!(gfx_unusable_for(&doc("[Hacks]\nImmediateXFBEnable = False\n"),true).is_empty(),"already off");
+  assert!(gfx_unusable_for(&doc("[Hacks]\n"),true).is_empty(),"absent is Dolphin's own default, off");
  }
 
  /// Windows players see no change from the port.

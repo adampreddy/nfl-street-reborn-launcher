@@ -27,6 +27,11 @@ pub(crate) fn is_running(exe: &Path) -> io::Result<bool> {
 fn running_images() -> io::Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir("/proc")?
         .flatten()
+        .filter(|entry| {
+            // NUL-separated arguments; an unreadable one is not a helper.
+            let cmdline = std::fs::read(entry.path().join("cmdline")).unwrap_or_default();
+            !is_launcher_helper(&String::from_utf8_lossy(&cmdline).replace('\0', " "))
+        })
         .map(|entry| {
             let name = entry.file_name();
             let image = std::fs::read_link(entry.path().join("exe"));
@@ -37,15 +42,55 @@ fn running_images() -> io::Result<Vec<PathBuf>> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn running_images() -> io::Result<Vec<PathBuf>> {
-    let output = std::process::Command::new("ps")
-        .args(["-axww", "-o", "comm="])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()?;
-    if !output.status.success() {
-        return Err(io::Error::other("ps failed"));
+    let ps = |format: &str| -> io::Result<Vec<u8>> {
+        let output = std::process::Command::new("ps")
+            .args(["-axww", "-o", format])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("ps failed"));
+        }
+        Ok(output.stdout)
+    };
+    // The executable path and the full command line, joined by pid: the path
+    // alone cannot tell a game from the launcher's own helper runs, and the
+    // command line alone cannot be split back into a path that has spaces.
+    parse_ps_with_args(&ps("pid=,comm=")?, &ps("pid=,args=")?)
+}
+
+/// The launcher's own short runs of the emulator, which are not a game
+/// session and must never block one: the remap wizard's device reader
+/// (`--input-capture`) and the pad scan (`--dump-device-inputs`).
+fn is_launcher_helper(command_line: &str) -> bool {
+    command_line.split_whitespace().any(|arg| {
+        arg.starts_with("--input-capture") || arg.starts_with("--dump-device-inputs")
+    })
+}
+
+/// `ps -o pid=,comm=` and `ps -o pid=,args=`, joined by pid, without the
+/// launcher's helper runs. A listing with no process at all is never read as
+/// "nothing is running": `ps` itself was running. One holding only helpers is.
+#[cfg_attr(any(windows, target_os = "linux"), allow(dead_code))]
+fn parse_ps_with_args(comm: &[u8], args: &[u8]) -> io::Result<Vec<PathBuf>> {
+    let split = |line: &str| -> Option<(u32, String)> {
+        let line = line.trim_start();
+        let (pid, rest) = line.split_once(char::is_whitespace)?;
+        Some((pid.parse().ok()?, rest.trim().to_string()))
+    };
+    let args_text = String::from_utf8_lossy(args);
+    let helpers: std::collections::HashSet<u32> = args_text
+        .lines()
+        .filter_map(split)
+        .filter(|(_, line)| is_launcher_helper(line))
+        .map(|(pid, _)| pid)
+        .collect();
+    let comm_text = String::from_utf8_lossy(comm);
+    let all: Vec<(u32, String)> = comm_text.lines().filter_map(split).filter(|(_, p)| !p.is_empty()).collect();
+    if all.is_empty() {
+        return Err(io::Error::other("empty process list"));
     }
-    parse_ps(&output.stdout)
+    Ok(all.into_iter().filter(|(pid, _)| !helpers.contains(pid)).map(|(_, p)| PathBuf::from(p)).collect())
 }
 
 /// The executables behind `/proc`'s numeric entries. Anything else there
@@ -59,22 +104,6 @@ fn images_from_proc(entries: impl Iterator<Item = (OsString, io::Result<PathBuf>
         .filter(|(name, _)| name.to_str().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
         .filter_map(|(_, image)| image.ok())
         .collect()
-}
-
-/// `ps -o comm=` prints one executable path per line. An empty listing is
-/// never read as "nothing is running": `ps` itself was running.
-#[cfg_attr(any(windows, target_os = "linux"), allow(dead_code))]
-fn parse_ps(bytes: &[u8]) -> io::Result<Vec<PathBuf>> {
-    let images: Vec<PathBuf> = String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect();
-    if images.is_empty() {
-        return Err(io::Error::other("empty process list"));
-    }
-    Ok(images)
 }
 
 /// Linux reports an executable that was replaced on disk as `<path> (deleted)`.
@@ -142,16 +171,29 @@ mod tests {
         assert!(same_image(real, exe, Some(real)));
     }
 
+    /// The launcher's own short runs of the emulator (the remap wizard's
+    /// device reader, the pad scan) are not a game session. Counting them
+    /// told a Mac first run to "Close Reborn Dolphin to continue" about a
+    /// process the launcher itself had started (2026-10-08).
     #[test]
-    fn an_empty_ps_listing_is_an_error_not_an_idle_machine() {
-        assert!(parse_ps(b"").is_err());
-        assert!(parse_ps(b"\n  \n").is_err());
-        assert_eq!(
-            parse_ps(b"/sbin/launchd\n/Applications/NFL Street Reborn.app/Contents/MacOS/Dolphin\n").unwrap(),
-            vec![
-                PathBuf::from("/sbin/launchd"),
-                PathBuf::from("/Applications/NFL Street Reborn.app/Contents/MacOS/Dolphin"),
-            ]
-        );
+    fn the_launchers_own_helper_runs_are_not_a_session() {
+        assert!(is_launcher_helper("/rt/dolphin-emu --input-capture=/data/cache/remap"));
+        assert!(is_launcher_helper("/rt/dolphin-emu -u /u --dump-device-inputs /tmp/d.txt"));
+        assert!(!is_launcher_helper("/rt/dolphin-emu -u /u -e /games/NSR.iso"));
+        assert!(!is_launcher_helper("/rt/dolphin-emu"), "a Dolphin opened by hand is a session");
+    }
+
+    #[test]
+    fn a_mac_listing_drops_helper_runs_by_pid() {
+        let exe = "/Applications/NFL Street Reborn.app/Contents/Resources/runtime/NFL Street Reborn Dolphin.app/Contents/MacOS/NFL Street Reborn Dolphin";
+        let comm = format!("    1 /sbin/launchd\n  501 {exe}\n  777 {exe}\n");
+        let args = format!("    1 /sbin/launchd\n  501 {exe} --input-capture=/x/remap\n  777 {exe} -u /u -e /g/NSR.iso\n");
+        let images = parse_ps_with_args(comm.as_bytes(), args.as_bytes()).unwrap();
+        assert_eq!(images, vec![PathBuf::from("/sbin/launchd"), PathBuf::from(exe)], "the game stays, the helper goes");
+        let only_helper = format!("  501 {exe}\n");
+        let helper_args = format!("  501 {exe} --input-capture=/x/remap\n");
+        assert!(parse_ps_with_args(only_helper.as_bytes(), helper_args.as_bytes()).unwrap().is_empty(),
+            "a listing holding only a helper is a machine with no session, not an error");
+        assert!(parse_ps_with_args(b"", b"").is_err());
     }
 }

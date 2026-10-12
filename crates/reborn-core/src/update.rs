@@ -304,7 +304,7 @@ pub fn download(http: &dyn Http, asset: &Asset, dir: &Path) -> Result<Downloaded
 fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
     if base.is_empty() || base == "." || base == ".." {
-        if cfg!(windows) { "launcher-setup.exe" } else { "launcher.AppImage" }.to_string()
+        if cfg!(windows) { "launcher-setup.exe" } else if cfg!(target_os = "macos") { "launcher.app.zip" } else { "launcher.AppImage" }.to_string()
     } else {
         base.to_string()
     }
@@ -381,6 +381,103 @@ fn apply_appimage(platform: &crate::Platform, downloaded: &Path, current: Option
     platform.processes.spawn(current, &[], current.parent(), &env).map(|_| ())
 }
 
+/// Shown on a Mac whose app macOS runs from a read-only quarantine copy
+/// (opened straight from Downloads), or that the player cannot write over.
+pub const UPDATE_MOVE_TO_APPLICATIONS: &str =
+    "Reborn could not replace itself. Move NFL Street Reborn to your Applications folder, open it from there, then try again.";
+
+/// The `.app` an executable runs inside: `<x>.app/Contents/MacOS/<exe>`.
+pub fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let named = |p: &Path, n: &str| p.file_name() == Some(n.as_ref());
+    (named(macos, "MacOS") && named(contents, "Contents") && app.extension().is_some_and(|x| x == "app"))
+        .then(|| app.to_path_buf())
+}
+
+/// Put the bundle at `staged` where `current` is. Two renames on one volume:
+/// the old bundle aside, the new one in; if the second fails the old one goes
+/// back. The old copy is then deleted (the running launcher keeps what it has
+/// already mapped).
+pub fn swap_app_bundle(staged: &Path, current: &Path) -> Result<()> {
+    let aside = current.with_extension("app.old");
+    let io = |path: &Path| { let path = path.to_path_buf(); move |source| Error::Io { path, source } };
+    if aside.exists() {
+        std::fs::remove_dir_all(&aside).map_err(io(&aside))?;
+    }
+    std::fs::rename(current, &aside).map_err(io(current))?;
+    if let Err(source) = std::fs::rename(staged, current) {
+        let _ = std::fs::rename(&aside, current);
+        return Err(Error::Io { path: current.to_path_buf(), source });
+    }
+    let _ = std::fs::remove_dir_all(&aside);
+    if let Some(stage_dir) = staged.parent() {
+        let _ = std::fs::remove_dir_all(stage_dir);
+    }
+    Ok(())
+}
+
+/// The Mac update: unpack the downloaded zip of the new .app beside the
+/// running one, clear the quarantine flag, check the signature (ad hoc, as
+/// built), swap, and start the new one. The caller exits afterwards.
+///
+/// `ditto` unpacks it because it keeps the symlinks and signatures a bundle's
+/// frameworks depend on. Files the launcher downloads itself are not
+/// quarantined, but a flag that is there regardless would stop the new app
+/// opening, so it is cleared either way.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn apply_app_bundle(platform: &crate::Platform, downloaded: &Path, current: Option<&Path>) -> Result<()> {
+    let Some(current) = current else {
+        return Err(Error::player(UPDATE_THROUGH_PACKAGE));
+    };
+    if current.to_string_lossy().contains("/AppTranslocation/") {
+        return Err(Error::player(UPDATE_MOVE_TO_APPLICATIONS));
+    }
+    let parent = current.parent().ok_or_else(|| Error::player(UPDATE_THROUGH_PACKAGE))?;
+    let name = current.file_name().ok_or_else(|| Error::player(UPDATE_THROUGH_PACKAGE))?;
+    let stage = parent.join(format!(".{}.update", name.to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&stage);
+    if let Err(source) = std::fs::create_dir_all(&stage) {
+        return Err(if source.kind() == std::io::ErrorKind::PermissionDenied {
+            Error::player(UPDATE_MOVE_TO_APPLICATIONS)
+        } else {
+            Error::Io { path: stage, source }
+        });
+    }
+    let env = std::collections::BTreeMap::new();
+    let run = |program: &str, args: &[&std::ffi::OsStr]| -> Result<bool> {
+        let args: Vec<std::ffi::OsString> = args.iter().map(|a| a.to_os_string()).collect();
+        Ok(platform.processes.run_capturing(Path::new(program), &args, &env)?.succeeded())
+    };
+    if !run("/usr/bin/ditto", &["-x".as_ref(), "-k".as_ref(), downloaded.as_os_str(), stage.as_os_str()])? {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(Error::PlainIo(std::io::Error::other(format!("could not unpack {}", downloaded.display()))));
+    }
+    let staged = stage.join(name);
+    if !staged.join("Contents").is_dir() {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(Error::PlainIo(std::io::Error::other(format!(
+            "the update holds no {}", name.to_string_lossy()))));
+    }
+    let _ = run("/usr/bin/xattr", &["-dr".as_ref(), "com.apple.quarantine".as_ref(), staged.as_os_str()]);
+    let verify = |app: &Path| run("/usr/bin/codesign", &["--verify".as_ref(), "--deep".as_ref(), "--strict".as_ref(), app.as_os_str()]);
+    if !verify(&staged)? {
+        let _ = run("/usr/bin/codesign", &["--force".as_ref(), "--deep".as_ref(), "--sign".as_ref(), "-".as_ref(), staged.as_os_str()]);
+        if !verify(&staged)? {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(Error::PlainIo(std::io::Error::other("the update's signature does not verify")));
+        }
+    }
+    if let Err(e) = swap_app_bundle(&staged, current) {
+        let _ = std::fs::remove_dir_all(&stage);
+        let denied = matches!(&e, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied);
+        return Err(if denied { Error::player(UPDATE_MOVE_TO_APPLICATIONS) } else { e });
+    }
+    let args = vec![std::ffi::OsString::from("-n"), current.as_os_str().to_os_string()];
+    platform.processes.spawn(Path::new("/usr/bin/open"), &args, None, &env).map(|_| ())
+}
+
 /// Start the installer. The caller exits afterwards; Inno does the rest.
 ///
 /// `/SILENT` shows progress and asks nothing; `/NORESTART` keeps the machine
@@ -393,10 +490,15 @@ pub fn apply(platform: &crate::Platform, installer: &Path) -> Result<()> {
         let current = running_appimage();
         return apply_appimage(platform, installer, current.as_deref());
     }
-    // The installer is Inno Setup, a Windows program. On macOS the launcher
-    // is updated the way it was installed, and a release carries no asset
-    // for it yet, so a check never offers one. This refuses anything that
-    // gets here regardless.
+    // A Mac is one .app bundle: unpack the zip, swap it, relaunch. See
+    // `apply_app_bundle`.
+    #[cfg(target_os = "macos")]
+    {
+        let current = std::env::current_exe().ok().and_then(|exe| app_bundle_of(&exe));
+        return apply_app_bundle(platform, installer, current.as_deref());
+    }
+    // The installer is Inno Setup, a Windows program. This refuses anything
+    // else that gets here.
     #[allow(unreachable_code)]
     if !cfg!(windows) {
         return Err(Error::player(UPDATE_THROUGH_PACKAGE));
@@ -539,6 +641,92 @@ mod tests {
         let platform = crate::Platform::detect();
         let err = apply_appimage(&platform, &downloaded, None).expect_err("no AppImage to replace");
         assert_eq!(err.to_string(), UPDATE_THROUGH_PACKAGE);
+    }
+
+    /// The Mac update replaces the running .app, found from the executable
+    /// inside it; a binary outside any bundle has nothing to replace.
+    #[test]
+    fn a_mac_update_finds_the_bundle_it_runs_from() {
+        let exe = Path::new("/Applications/NFL Street Reborn.app/Contents/MacOS/reborn-launcher");
+        assert_eq!(app_bundle_of(exe), Some(PathBuf::from("/Applications/NFL Street Reborn.app")));
+        assert_eq!(app_bundle_of(Path::new("/usr/local/bin/rebornctl")), None);
+        assert_eq!(app_bundle_of(Path::new("/x/Contents/MacOS/reborn-launcher")), None, "not a .app");
+    }
+
+    /// Opened straight from Downloads, macOS runs a quarantined app from a
+    /// read-only random copy. Nothing there can be replaced; the player is
+    /// told what to do instead.
+    #[test]
+    fn a_translocated_app_is_told_to_move_to_applications() {
+        let platform = crate::Platform::detect();
+        let app = Path::new("/private/var/folders/x/T/AppTranslocation/ABC/d/NFL Street Reborn.app");
+        let err = apply_app_bundle(&platform, Path::new("/tmp/u.zip"), Some(app)).expect_err("cannot replace");
+        assert_eq!(err.to_string(), UPDATE_MOVE_TO_APPLICATIONS);
+        let err = apply_app_bundle(&platform, Path::new("/tmp/u.zip"), None).expect_err("no bundle");
+        assert_eq!(err.to_string(), UPDATE_THROUGH_PACKAGE);
+    }
+
+    /// The swap: the new bundle takes the old one's place whole, and neither
+    /// the old copy nor anything staged is left beside it.
+    #[test]
+    fn swapping_the_app_bundle_puts_the_new_one_in_place_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Reborn.app");
+        let staged = dir.path().join(".Reborn.update").join("Reborn.app");
+        for (app, body) in [(&current, "old"), (&staged, "new")] {
+            std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            std::fs::write(app.join("Contents/MacOS/reborn-launcher"), body).unwrap();
+        }
+        std::fs::write(current.join("Contents/MacOS/only-in-old"), "x").unwrap();
+        swap_app_bundle(&staged, &current).expect("swap");
+        assert_eq!(std::fs::read_to_string(current.join("Contents/MacOS/reborn-launcher")).unwrap(), "new");
+        assert!(!current.join("Contents/MacOS/only-in-old").exists(), "the new bundle is whole, not merged");
+        assert!(!staged.exists() && !current.with_extension("app.old").exists());
+    }
+
+    /// The whole Mac update against the real tools: ditto unpacks, codesign
+    /// signs and verifies, the swap lands, and `open` starts the new app,
+    /// which proves it ran by writing a file. Ignored: it starts an app.
+    /// `cargo test -p reborn-core --lib a_real_mac_update -- --ignored`
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn a_real_mac_update_unpacks_signs_swaps_and_relaunches() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let proof = dir.path().join("relaunched");
+        let make_app = |app: &Path, body: &str| {
+            std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            std::fs::write(app.join("Contents/Info.plist"), concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>",
+                "<key>CFBundleExecutable</key><string>reborn-launcher</string>",
+                "<key>CFBundleIdentifier</key><string>com.nflstreetreborn.updatetest</string>",
+                "<key>CFBundlePackageType</key><string>APPL</string></dict></plist>")).unwrap();
+            let exe = app.join("Contents/MacOS/reborn-launcher");
+            std::fs::write(&exe, body).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let current = dir.path().join("Reborn Test.app");
+        make_app(&current, "#!/bin/sh\necho old\n");
+        let build = dir.path().join("build");
+        make_app(&build.join("Reborn Test.app"), &format!("#!/bin/sh\ntouch '{}'\n", proof.display()));
+        let zip = dir.path().join("update.zip");
+        let ok = std::process::Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--keepParent"]).arg(build.join("Reborn Test.app")).arg(&zip)
+            .status().unwrap().success();
+        assert!(ok, "the zip is made the way the publisher will make it");
+
+        let platform = crate::Platform::detect();
+        apply_app_bundle(&platform, &zip, Some(&current)).expect("the update applies");
+
+        let exe = std::fs::read_to_string(current.join("Contents/MacOS/reborn-launcher")).unwrap();
+        assert!(exe.contains("touch"), "the new bundle is in place");
+        assert!(!dir.path().join(".Reborn Test.app.update").exists() && !current.with_extension("app.old").exists());
+        for _ in 0..50 {
+            if proof.exists() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(proof.exists(), "open started the new app");
     }
 
     #[test]

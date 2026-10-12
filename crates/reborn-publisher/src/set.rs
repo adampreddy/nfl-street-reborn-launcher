@@ -1070,8 +1070,10 @@ mod tests {
     //! `launcher.rs`'s own tests take for its shorter build.
 
     use super::*;
+    #[cfg(windows)]
     use std::time::Instant;
 
+    #[cfg(windows)]
     fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
@@ -1192,6 +1194,7 @@ mod tests {
 
     // -- run_build, against a fast fake script -----------------------
 
+    #[cfg(windows)] // runs powershell.exe; the publisher only runs on Windows
     #[test]
     fn run_build_streams_both_channels_and_reports_success() {
         let dir = tempfile::tempdir().unwrap();
@@ -1225,6 +1228,7 @@ exit 0
         );
     }
 
+    #[cfg(windows)] // runs powershell.exe; the publisher only runs on Windows
     #[test]
     fn run_build_reports_a_non_zero_exit_without_treating_it_as_a_hard_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1240,6 +1244,7 @@ exit 0
         }
     }
 
+    #[cfg(windows)] // runs powershell.exe; the publisher only runs on Windows
     #[test]
     fn run_build_stops_early_when_the_operator_cancels() {
         let dir = tempfile::tempdir().unwrap();

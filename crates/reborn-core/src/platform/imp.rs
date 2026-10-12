@@ -143,8 +143,13 @@ impl Paths for RealPaths {
         }
         #[cfg(target_os = "macos")]
         {
-            Ok(PathBuf::from("/Applications")
-                .join(format!("{PRODUCT}{}.app", self.channel.suffix())))
+            // The running bundle's Contents/Resources, wherever the player put
+            // the app: that is where the .app carries the emulator, the tools
+            // and anything to seed from, as an AppImage carries them in
+            // $APPDIR. A plain binary (cargo run, rebornctl) answers with its
+            // own folder. Read only once installed, like the AppImage mount.
+            let exe = std::env::current_exe()?;
+            Ok(crate::runtime::emulator_home(&exe).unwrap_or(exe))
         }
         #[cfg(target_os = "linux")]
         {
@@ -1180,6 +1185,31 @@ mod tests {
         );
     }
 
+    /// A removable volume the launcher is running from is not a destination.
+    /// On a Mac that is the opened .dmg (a player who never dragged the app
+    /// out); on Windows, a launcher run from the very stick it would format.
+    #[test]
+    fn the_volume_holding_the_running_launcher_is_never_offered() {
+        struct RunningFromStick(PathBuf);
+        impl RemovableDrives for RunningFromStick {
+            fn enumerate_volumes(&self) -> Result<Vec<Volume>> {
+                Ok(vec![
+                    volume(self.0.to_str().unwrap(), VolumeKind::Removable),
+                    volume("/media/other-stick", VolumeKind::Removable),
+                ])
+            }
+            fn eject(&self, _mount_point: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let offered = RunningFromStick(exe_dir).enumerate().expect("enumerate");
+        assert_eq!(
+            offered.iter().map(|d| &d.mount_point).collect::<Vec<_>>(),
+            vec![&PathBuf::from("/media/other-stick")],
+        );
+    }
+
     /// Same rule, against whatever is actually attached to this machine rather
     /// than a fake. On the machine this was written on that is one fixed NTFS
     /// volume and no removable drives, so `enumerate` is empty and that is the
@@ -1562,15 +1592,15 @@ mod tests {
         // launcher's data, and uninstalling the beta would remove it.
         let stable = RealPaths { channel: Channel::Stable };
         let beta = RealPaths { channel: Channel::Beta };
-        // On Linux the install root is the running executable's own folder (an
-        // AppImage lives wherever the player put it), so two channels run from
-        // one test binary share it. The roots an uninstall could reach, data
-        // and cache, are the ones that must stay apart there.
+        // On Linux and macOS the install root is where the running app is (an
+        // AppImage or a .app lives wherever the player put it), so two
+        // channels run from one test binary share it. The roots an uninstall
+        // could reach, data and cache, are the ones that must stay apart there.
         let mut roots = vec![
             ("data", stable.data_root(), beta.data_root()),
             ("cache", stable.cache_root(), beta.cache_root()),
         ];
-        if !cfg!(target_os = "linux") {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
             roots.push(("install", stable.install_root(), beta.install_root()));
         }
         for (name, s, b) in roots {

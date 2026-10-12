@@ -813,6 +813,12 @@ impl Session {
                 let repair = crate::dolphin_preferences::unusable_here(&doc);
                 report.updated.extend(doc.merge(&repair).updated);
             }
+            // And a GFX.ini value that blacks out the game here (Immediate XFB
+            // on a Mac). Always empty off macOS.
+            if name == "GFX.ini" {
+                let repair = crate::dolphin_preferences::gfx_unusable_here(&doc);
+                report.updated.extend(doc.merge(&repair).updated);
+            }
 
             // Nothing to change means nothing to write. A launcher that
             // rewrites a config on every start looks like it is corrupting it.
@@ -1491,7 +1497,14 @@ pub fn leave_standing_pad_file(pad_path: &Path) -> std::io::Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    let Some(standing) = crate::controller::standing_pad_file(&live) else {
+    // A Mac has no runtime fallback to hand a late pad to (the fork's knows
+    // XInput and WGInput only), so its no-pad answer is the keyboard.
+    let standing = if cfg!(target_os = "macos") {
+        crate::controller::mac_keyboard_pad_file(&live)
+    } else {
+        crate::controller::standing_pad_file(&live)
+    };
+    let Some(standing) = standing else {
         return Ok(false);
     };
     if let Some(parent) = pad_path.parent() {
@@ -1809,10 +1822,10 @@ pub fn plan_pads(inputs: &PadInputs, mut saved_profiles: Vec<ControllerProfile>)
                 // Ask the runtime first. Fall back to a recorded device only
                 // when it could not be asked, which is any runtime older than
                 // --dump-device-inputs. See `devices::known_inputs`.
-                let available = match device_inputs
-                    .iter()
-                    .find(|d| d.device == pad.device_string())
-                {
+                let reported_pad = device_inputs.iter().find(|d| d.device == pad.device_string());
+                // What SDL says this pad's numbered controls are, when it knows.
+                let sdl = reported_pad.and_then(|d| d.sdl_layout());
+                let available = match reported_pad {
                     Some(reported) => reported.all_names(),
                     // The runtime is too old to list controls. Do NOT try to
                     // guess the pad from its name: Windows names a DualSense
@@ -1866,7 +1879,7 @@ pub fn plan_pads(inputs: &PadInputs, mut saved_profiles: Vec<ControllerProfile>)
                                 widened
                             );
                         }
-                        let repaired = existing.repair_for(&available);
+                        let repaired = existing.repair_for_with(&available, sdl.as_ref());
                         if !repaired.is_empty() {
                             tracing::info!(
                                 "{}: repaired {} binding(s) that named controls this pad does not have: {:?}",
@@ -1880,10 +1893,11 @@ pub fn plan_pads(inputs: &PadInputs, mut saved_profiles: Vec<ControllerProfile>)
                         }
                     }
                     None => {
-                        let seeded = crate::controller::ControllerProfile::from_device(
+                        let seeded = crate::controller::ControllerProfile::from_device_with(
                             pad.identity(),
                             1,
                             &available,
+                            sdl.as_ref(),
                         );
                         let dead = seeded.mapping.unresolvable(&available);
                         if dead.is_empty() {
@@ -2478,7 +2492,20 @@ fn dolphin_in(dir: &Path) -> Option<PathBuf> {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
         (if name.trim_end_matches(".exe") == "nfl street reborn dolphin" { 0 } else { 1 }, name)
     });
-    found.into_iter().next()
+    // A Mac runtime is a bundle, `<name>.app/Contents/MacOS/<name>`: Mac
+    // Dolphin finds Sys, and Qt its Cocoa plugin, only through it.
+    found.into_iter().next().or_else(|| {
+        let mut apps: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "app") && p.is_dir())
+            .filter_map(|app| {
+                let stem = app.file_stem()?.to_str()?.to_string();
+                stem.to_lowercase().contains("dolphin").then(|| app.join("Contents").join("MacOS").join(stem))
+            })
+            .filter(|exe| exe.is_file())
+            .collect();
+        apps.sort();
+        apps.into_iter().next()
+    })
 }
 
 /// Find the emulator, without asking anyone.
@@ -2559,6 +2586,20 @@ pub fn resolve_runtime(
                 if let Some(found) = dolphin_in(&candidate) {
                     return Ok(Runtime::Bundled(found));
                 }
+            }
+        }
+    }
+
+    // A Mac .app carries it in its install root, Contents/Resources/runtime,
+    // not beside the executable in Contents/MacOS. Without this a fresh Mac
+    // install went to download runtime-macos before the first check had
+    // seeded it, and said "No Reborn emulator was found" (2026-10-08).
+    if let Ok(install) = platform.paths.install_root() {
+        let candidate = install.join("runtime");
+        if !looked.contains(&candidate) {
+            looked.push(candidate.clone());
+            if let Some(found) = dolphin_in(&candidate) {
+                return Ok(Runtime::Bundled(found));
             }
         }
     }
@@ -2967,6 +3008,7 @@ mod tests {
     /// pad the scan had missed was dead for the session. What is on disk
     /// afterwards must be pressable by that pad.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_leaves_player_one_bindable_on_disk() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
@@ -2984,6 +3026,7 @@ mod tests {
     /// A keyboard player has no pad on every launch of their life. Their file
     /// is theirs, byte for byte.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_never_touches_a_keyboard_players_file() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
@@ -3009,11 +3052,24 @@ mod tests {
     /// No pad file at all is the same player with even less: they still get a
     /// player one.
     #[test]
+    #[cfg(not(target_os = "macos"))] // a Mac writes the keyboard; see the test below
     fn a_launch_that_sees_no_pad_and_no_pad_file_writes_one() {
         let dir = tempfile::tempdir().unwrap();
         let pad = dir.path().join("GCPadNew.ini");
         assert!(leave_standing_pad_file(&pad).unwrap());
         assert!(std::fs::read_to_string(&pad).unwrap().starts_with("[GCPad1]\n"));
+    }
+
+    /// The Mac half: the seeded Windows pad file becomes the keyboard, once.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_launch_that_sees_no_pad_puts_player_one_on_the_keyboard() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = dir.path().join("GCPadNew.ini");
+        std::fs::write(&pad, "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\n").unwrap();
+        assert!(leave_standing_pad_file(&pad).unwrap());
+        assert!(std::fs::read_to_string(&pad).unwrap().contains("Device = Quartz/0/Keyboard & Mouse"));
+        assert!(!leave_standing_pad_file(&pad).unwrap(), "the second launch writes nothing");
     }
     /// The detection bug, pinned. A directory holding only the INIs the
     /// launcher itself writes must never be mistaken for a real install: that
@@ -3140,6 +3196,18 @@ mod tests {
         assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "dolphin-emu");
         std::fs::write(dir.path().join("NFL Street Reborn Dolphin"), b"").unwrap();
         assert_eq!(dolphin_in(dir.path()).unwrap().file_name().unwrap(), "NFL Street Reborn Dolphin");
+    }
+
+    /// The Mac runtime is a bundle: Mac Dolphin finds its Sys and Qt its
+    /// Cocoa plugin through it, so the emulator is the executable inside.
+    #[test]
+    fn a_mac_runtime_is_found_inside_its_app_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("NFL Street Reborn Dolphin.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        assert!(dolphin_in(dir.path()).is_none(), "a bundle with no executable is no emulator");
+        std::fs::write(macos.join("NFL Street Reborn Dolphin"), b"").unwrap();
+        assert_eq!(dolphin_in(dir.path()).unwrap(), macos.join("NFL Street Reborn Dolphin"));
     }
 
     #[test]

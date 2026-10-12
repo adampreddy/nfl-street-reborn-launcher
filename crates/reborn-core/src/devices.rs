@@ -269,11 +269,19 @@ pub struct DeviceInputs {
     /// Output names, such as rumble motors. Bound by name exactly like an
     /// input, and exactly as dead when the name is wrong.
     pub outputs: Vec<String>,
+    /// SDL's mapping of this pad's numbered controls (the runtime's
+    /// `MAPPING` line), when SDL's controller database knows the pad.
+    pub sdl_mapping: Option<String>,
 }
 
 impl DeviceInputs {
     /// Inputs and outputs together, which is what the analog trigger and
     /// rumble bindings must be checked against: the motor is an output.
+    /// [`DeviceInputs::sdl_mapping`], parsed.
+    pub fn sdl_layout(&self) -> Option<crate::controller::SdlLayout> {
+        self.sdl_mapping.as_deref().and_then(crate::controller::SdlLayout::parse)
+    }
+
     pub fn all_names(&self) -> Vec<String> {
         let mut all = self.names();
         all.extend(self.outputs.iter().cloned());
@@ -360,9 +368,13 @@ pub fn parse_device_inputs(text: &str) -> Vec<DeviceInputs> {
                 if let Some(name) = parts.next() {
                     all.push(DeviceInputs {
                         device: name.to_string(),
-                        inputs: Vec::new(),
-                        outputs: Vec::new(),
+                        ..Default::default()
                     });
+                }
+            }
+            Some("MAPPING") => {
+                if let (Some(current), Some(mapping)) = (all.last_mut(), parts.next()) {
+                    current.sdl_mapping = Some(mapping.to_string());
                 }
             }
             Some("OUTPUT") => {
