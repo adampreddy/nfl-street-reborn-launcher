@@ -142,7 +142,7 @@ DMG="$OUT/NFL Street Reborn $VERSION.dmg"
 ZIP="$OUT/NFL Street Reborn $VERSION.app.zip"
 # dmgbuild lays out the window (background art, icon spots, the Applications
 # link) without scripting Finder, so this stays headless.
-"$WORK/venv/bin/pip" install -q "dmgbuild==1.6.*" "pillow==12.*"
+"$WORK/venv/bin/pip" install -q "dmgbuild==1.6.*" "pillow==12.*" "fonttools[woff]==4.*"
 "$WORK/venv/bin/python" "$HERE/dmg-background.py" "$REPO" "$WORK/dmg-art"
 rm -f "$DMG" "$ZIP"
 "$WORK/venv/bin/dmgbuild" -s "$HERE/dmg-settings.py" -D app="$APP" -D art="$WORK/dmg-art" \

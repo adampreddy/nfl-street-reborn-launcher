@@ -1,75 +1,88 @@
-"""Draw the .dmg window background (1x and @2x) from the launcher's own art.
+"""Draw the .dmg window background (1x and @2x) in the launcher's own look.
 
 Usage: python dmg-background.py <repo> <out dir>
 Writes <out>/background.png and <out>/background@2x.png; dmgbuild joins them.
-Light on purpose: Finder draws icon labels in black on any background image.
-The layout (content size, icon centers) is shared with dmg-settings.py.
+Colors and type follow crates/reborn-ui/ui/theme.css (DESIGN.md). Finder draws
+icon labels in black on any background picture, even in Dark mode, so each
+label sits on a light name tag. Layout is shared with dmg-settings.py.
 """
+import io
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from fontTools.ttLib import TTFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # 28 px taller than the layout needs: Finder may or may not count its title
-# bar in the window height, and the bottom stripes read either way.
+# bar in the window height, and nothing important sits in that strip.
 W, H = 660, 428
-APP_X, APPS_X, ICON_Y = 165, 495, 215
-RED = (214, 32, 39, 255)
-INK = (40, 42, 48, 255)
+APP_X, APPS_X, ICON_Y, ICON = 165, 495, 215, 112
+BG, BG_GLOW = (13, 14, 17), (35, 38, 45)  # --fallback-bg
+FG_2 = (174, 181, 192)  # --fg-2
+RED = (224, 39, 46)  # --red
+TAG = (233, 235, 239)  # label name tag: light, so Finder's black label reads
 
 repo, out = Path(sys.argv[1]), Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 
+# The launcher's Inter, unpacked from its woff2.
+inter = io.BytesIO()
+ttf = TTFont(repo / "crates/reborn-ui/ui/fonts/InterVariable.woff2")
+ttf.flavor = None
+ttf.save(inter)
 
-def font(size, bold=False):
-    names = ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc"]
-    for f in names:
-        try:
-            ft = ImageFont.truetype(f, size)
-            if bold:
-                try:
-                    ft.set_variation_by_name("Semibold")
-                except (OSError, ValueError):
-                    pass
-            return ft
-        except OSError:
-            pass
-    return ImageFont.load_default()
+
+def font(size, weight):
+    inter.seek(0)
+    f = ImageFont.truetype(inter, size)
+    f.set_variation_by_axes([14, weight] if len(f.get_variation_axes()) > 1 else [weight])
+    return f
+
+
+def rounded(img, box, r, fill, outline=None):
+    ImageDraw.Draw(img).rounded_rectangle(box, r, fill=fill, outline=outline)
 
 
 def draw(s):
     w, h = W * s, H * s
-    # Soft white-to-cool-gray, top to bottom.
-    bg = Image.new("RGBA", (w, h))
-    px = ImageDraw.Draw(bg)
-    for y in range(h):
-        t = y / h
-        c = tuple(round(a + (b - a) * t) for a, b in zip((250, 250, 251), (231, 233, 237)))
-        px.line((0, y, w, y), fill=c + (255,))
-
-    # Street stripes: two slanted bars along the bottom edge.
-    d = ImageDraw.Draw(bg)
-    base = h - 50 * s
-    d.polygon([(0, base), (w, base - 26 * s), (w, base - 18 * s), (0, base + 8 * s)], fill=RED)
-    d.polygon([(0, base + 14 * s), (w, base - 12 * s), (w, h), (0, h)], fill=(28, 44, 92, 255))
+    # --fallback-bg: radial #23262d at 50% 40% fading into #0d0e11.
+    bg = Image.new("RGB", (w, h), BG)
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).ellipse((w * 0.2, h * 0.1, w * 0.8, h * 0.7), fill=255)
+    glow = glow.filter(ImageFilter.GaussianBlur(110 * s))
+    bg = Image.composite(Image.new("RGB", (w, h), BG_GLOW), bg, glow).convert("RGBA")
 
     logo = Image.open(repo / "assets/NSRLOGO.png").convert("RGBA")
-    lw = 250 * s
+    lw = 236 * s
     logo = logo.resize((lw, round(logo.height * lw / logo.width)), Image.LANCZOS)
-    bg.alpha_composite(logo, ((w - lw) // 2, 18 * s))
+    bg.alpha_composite(logo, ((w - lw) // 2, 20 * s))
 
-    # Chevron arrow from the app to Applications.
+    # One glass card around both icons: --glass-1, --stroke, --r-lg, --sheen.
+    card = Image.new("RGBA", (w, h))
+    box = (48 * s, 140 * s, (W - 48) * s, 322 * s)
+    rounded(card, box, 14 * s, (255, 255, 255, 12), (255, 255, 255, 23))
+    ImageDraw.Draw(card).line((box[0] + 14 * s, box[1] + s, box[2] - 14 * s, box[1] + s),
+                              fill=(255, 255, 255, 18), width=s)
+    bg.alpha_composite(card)
+
+    d = ImageDraw.Draw(bg)
+    # Name tags where Finder draws each label, just under the icon.
+    tag_top = (ICON_Y + ICON // 2 + 6) * s  # measured: Finder centers its label 74 pt below the icon center
+    for x in (APP_X, APPS_X):
+        rounded(bg, ((x - 78) * s, tag_top, (x + 78) * s, tag_top + 24 * s), 8 * s, TAG)
+
+    # Chevrons in --red, fading in toward Applications.
     y = ICON_Y * s
-    for i, x in enumerate((290, 318, 346)):
+    for i, x in enumerate((292, 318, 344)):
+        k = 0.4 + 0.3 * i
+        c = tuple(round(b + (r - b) * k) for r, b in zip(RED, BG_GLOW))
         x *= s
-        k = 0.45 + 0.275 * i  # fade in toward Applications
-        a = tuple(round(245 + (c - 245) * k) for c in RED[:3]) + (255,)
-        d.line([(x, y - 16 * s), (x + 16 * s, y), (x, y + 16 * s)], fill=a, width=6 * s, joint="curve")
+        d.line([(x, y - 14 * s), (x + 14 * s, y), (x, y + 14 * s)], fill=c, width=5 * s, joint="curve")
 
     caption = "Drag NFL Street Reborn into Applications"
-    f = font(15 * s, bold=True)
+    f = font(14 * s, 560)
     tw = d.textlength(caption, font=f)
-    d.text(((w - tw) / 2, 318 * s), caption, font=f, fill=INK)
+    d.text(((w - tw) / 2, 340 * s), caption, font=f, fill=FG_2)
     return bg.convert("RGB")
 
 
