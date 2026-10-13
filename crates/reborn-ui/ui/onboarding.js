@@ -753,7 +753,11 @@ function contentDownload(){
   const retry=el('button','primary','Try again');retry.type='button';retry.hidden=true;
   const later=el('button',null,'Download later');later.type='button';later.hidden=true;
   actions.append(retry,later);
-  root.append(success,lead,meter,list,problem,actions);
+  // Steam Deck: internal storage or the SD card, asked before the download so
+  // it lands where it stays (a player whose internal storage filled up halfway
+  // had no way onto the card, 2026-10-12). Only shown when a card is mounted.
+  const where=el('div','cd-where');where.hidden=true;
+  root.append(success,lead,where,meter,list,problem,actions);
   function setFill(pct){
     if(pct==null){meterTrack.removeAttribute('aria-valuenow');sweep.hidden=false;fill.style.transform='scaleX(0)';return;}
     const v=Math.max(0,Math.min(100,pct));
@@ -788,7 +792,8 @@ function contentDownload(){
   function render(){
     if(!alive)return;
     success.hidden=phase!=='done';
-    meter.hidden=!(phase==='downloading'||phase==='installing'||phase==='checking');
+    meter.hidden=!(phase==='downloading'||phase==='installing'||phase==='checking'||phase==='moving');
+    where.hidden=phase!=='where';
     figures.hidden=meta.hidden=phase!=='downloading';
     list.hidden=!rows.size;
     problem.hidden=phase!=='problem';problem.textContent=note;
@@ -796,8 +801,10 @@ function contentDownload(){
     later.hidden=!(phase==='downloading'||phase==='problem');
     if(phase==='done'){title("You're all set");lead.textContent=rows.size?"Game content installed. Your settings are applied. You're ready to hit the streets!":"Your settings are applied. You're ready to hit the streets!";}
     else if(phase==='skipped'){title("You're all set");lead.textContent='Your settings are applied. The game content keeps downloading in the background; the Play page shows its progress.';}
+    else if(phase==='where'){title('Where should the game go?');lead.textContent='The game, its textures and your saves go together. You can move them later in Settings.';}
+    else if(phase==='moving'){title('Where should the game go?');lead.textContent='Setting up on your SD card…';}
     else {title('Downloading game content');lead.textContent=phase==='checking'?'Checking for game content…':phase==='installing'?'Installing…':phase==='problem'?'The download stopped.':'Keep the launcher open. This is a large download.';}
-    if(phase==='checking'||phase==='installing')setFill(null);
+    if(phase==='checking'||phase==='installing'||phase==='moving')setFill(null);
     updateNav();
   }
   function track(s){
@@ -820,12 +827,60 @@ function contentDownload(){
     try{const s=await call('content_status');if(s.phase==='fetching')track(s);}catch(_){}
     timer=setTimeout(poll,1000);
   }
+  // Resolves once the game is where the player chose (moved first if that is
+  // the SD card). Asked once per screen; a refused move asks again.
+  let placed=false;
+  function choosePlace(places,need){
+    return new Promise(resolve=>{
+      const ask=(said)=>{
+        where.replaceChildren();
+        // The card is the suggestion only when internal storage cannot hold the download.
+        const inside=places.find(p=>p.kind==='internal'),tight=!!inside&&inside.current&&inside.free_bytes<need;
+        for(const place of places){
+          const enough=place.free_bytes>=need;
+          const b=el('button',place.kind==='media'&&tight?'cd-place primary':'cd-place');b.type='button';
+          b.append(el('span','cd-place-name',place.label+(place.current?' (now)':'')),
+            el('span','cd-place-free num',`${contentSize(place.free_bytes)} free`+(enough?'':` · needs ${contentSize(need)}`)));
+          b.onclick=async()=>{
+            if(place.current){placed=true;resolve();return;}
+            phase='moving';render();
+            try{
+              await call('move_drive_check',{folder:place.path});
+              await call('move_drive_start',{folder:place.path,confirm:true});
+              let st;
+              do{await new Promise(r=>setTimeout(r,500));st=await call('move_drive_status');}while(alive&&(st.phase==='copying'||st.phase==='restarting'));
+              if(st.phase!=='moved')throw new Error(st.message||'The game could not be moved.');
+              placed=true;resolve();
+            }catch(e){phase='where';render();ask(String(e?.message||e));}
+          };
+          where.append(b);
+        }
+        if(said)where.append(el('p','refusal',said));
+        phase='where';render();
+        where.querySelector('button.primary,button')?.focus({preventScroll:true});
+      };
+      ask(tightNote(places,need));
+    });
+  }
+  function tightNote(places,need){
+    const inside=places.find(p=>p.kind==='internal');
+    return inside&&inside.current&&inside.free_bytes<need?`Internal storage has ${contentSize(inside.free_bytes)} free and the download needs ${contentSize(need)}.`:'';
+  }
   async function run(){
     phase='checking';note='';render();
     try{
       let s=await call('content_status');
       if(['idle','up_to_date','problem','installed'].includes(s.phase))s=await call('content_check',{depth:null});
       const wanted=(s.components||[]).filter(c=>c.state==='available');
+      if(!placed&&s.phase==='available'&&wanted.length){
+        const places=await call('install_places').catch(()=>[]);
+        // The download plus 1 GB, as the move itself asks.
+        const need=wanted.reduce((a,c)=>a+(c.bytes||0),0)+1073741824;
+        if(Array.isArray(places)&&places.length>1)await choosePlace(places,need);
+        placed=true;
+        if(!alive)return;
+        phase='checking';render();
+      }
       if(['available','fetching','staged','installing'].includes(s.phase)&&wanted.length)drawList(wanted);
       if(s.phase==='available'||s.phase==='fetching'){
         phase='downloading';samples=[];render();track(s);timer=setTimeout(poll,1000);
@@ -858,7 +913,7 @@ function contentDownload(){
   return {
     node:root,
     finished:()=>phase==='done'||phase==='skipped',
-    hint:()=>phase==='downloading'?'Finish unlocks when the download is done, or choose Download later.':phase==='problem'?'Try again, or choose Download later.':'',
+    hint:()=>phase==='where'?'Choose where the game goes.':phase==='moving'?'One moment.':phase==='downloading'?'Finish unlocks when the download is done, or choose Download later.':phase==='problem'?'Try again, or choose Download later.':'',
     dispose:()=>{alive=false;clearTimeout(timer);},
   };
 }

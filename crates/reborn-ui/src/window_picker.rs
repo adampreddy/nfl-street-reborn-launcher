@@ -93,6 +93,16 @@ fn places() -> Vec<Place> {
             out.push(Place { label: label.into(), path: p.display().to_string() });
         }
     }
+    for m in media_mounts() {
+        let name = m.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        out.push(Place { label: format!("SD card / drive: {name}"), path: m.display().to_string() });
+    }
+    out
+}
+
+/// Every mounted SD card or USB drive: `/run/media/<user>/<label>`, or
+/// `/run/media/<label>` on systems that mount without the user level.
+pub fn media_mounts() -> Vec<PathBuf> {
     let mut media = Vec::new();
     for root in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
         let Ok(level1) = std::fs::read_dir(&root) else { continue };
@@ -111,11 +121,7 @@ fn places() -> Vec<Place> {
     }
     media.sort();
     media.dedup();
-    for m in media {
-        let name = m.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        out.push(Place { label: format!("SD card / drive: {name}"), path: m.display().to_string() });
-    }
-    out
+    media
 }
 
 /// One folder's contents: folders first, then files, hidden ones left out.

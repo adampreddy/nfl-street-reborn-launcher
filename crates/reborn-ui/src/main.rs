@@ -6699,6 +6699,7 @@ fn main() {
             shell_tools::uninstall_launcher,
             move_drive::move_drive_info,
             move_drive::moved_drive_missing,
+            move_drive::install_places,
             move_drive::move_drive_check,
             move_drive::move_drive_start,
             move_drive::move_drive_status,

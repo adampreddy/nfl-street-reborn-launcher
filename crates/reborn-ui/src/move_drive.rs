@@ -224,6 +224,49 @@ pub fn finish_from_args(args: &[String]) {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct InstallPlace {
+    /// internal | media
+    pub kind: &'static str,
+    pub label: String,
+    /// The folder to hand [`move_drive_check`].
+    pub path: String,
+    pub free_bytes: u64,
+    /// The game is here now.
+    pub current: bool,
+}
+
+/// Where the game can go, for the "Where should the game go?" step before
+/// setup's download: internal storage and every SD card or USB drive. Empty
+/// where moving is not offered, and on Linux when no card is mounted, so the
+/// step only shows when there is a choice to make.
+#[tauri::command]
+pub fn install_places() -> Vec<InstallPlace> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let Ok(root) = data_root() else { return Vec::new() };
+    let Some(home) = root.parent().map(Path::to_path_buf) else { return Vec::new() };
+    let (at, _) = relocate::location(&root);
+    let media = crate::window_picker::media_mounts();
+    let on = |mount: &Path| at.starts_with(mount);
+    let mut out: Vec<InstallPlace> = media
+        .iter()
+        .filter_map(|m| {
+            let facts = reborn_core::platform::dir_move::volume_facts(m)?;
+            let name = m.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Some(InstallPlace { kind: "media", label: format!("SD card: {name}"), path: m.display().to_string(), free_bytes: facts.free_bytes, current: on(m) })
+        })
+        .collect();
+    if out.is_empty() {
+        return out;
+    }
+    let free = reborn_core::platform::dir_move::volume_facts(&home).map(|f| f.free_bytes).unwrap_or(0);
+    let current = !out.iter().any(|p| p.current);
+    out.insert(0, InstallPlace { kind: "internal", label: "Internal storage".into(), path: home.display().to_string(), free_bytes: free, current });
+    out
+}
+
 /// The folder the game was moved to, when that drive is not connected (a
 /// Steam Deck's SD card taken out). `None` otherwise. Every page asks, and
 /// says so instead of failing to read its own files.
