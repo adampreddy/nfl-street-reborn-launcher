@@ -7,6 +7,11 @@
 //! with `--finish-move`. A copy, because the launcher usually runs from
 //! inside the folder being moved, and Windows renames no folder that holds a
 //! running program.
+//!
+//! Linux (the Steam Deck) needs no helper: the AppImage lives outside the
+//! data root, and Linux renames a folder whatever is open in it. The move
+//! finishes in this process and the page reloads, so nothing restarts inside
+//! Game Mode.
 
 use reborn_core::relocate::{self, Plan};
 use reborn_core::Platform;
@@ -18,9 +23,14 @@ use std::sync::Mutex;
 pub const FINISH_SWITCH: &str = "--finish-move";
 const HELPER_PREFIX: &str = "reborn-move-";
 
+/// Where moving the game works: Windows, and Linux for the Steam Deck's SD
+/// card. Not macOS yet (untested there).
+const SUPPORTED: bool = cfg!(any(windows, target_os = "linux"));
+const UNSUPPORTED: &str = "Moving the game is not available on this system yet.";
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Status {
-    /// idle | copying | restarting | failed
+    /// idle | copying | restarting | moved | failed
     pub phase: &'static str,
     pub done: u64,
     pub total: u64,
@@ -58,7 +68,7 @@ pub fn move_drive_info() -> Result<Info, String> {
     let (at, moved) = relocate::location(&root);
     let last_failure = relocate::last_outcome(&root).filter(|o| !o.moved).map(|o| o.message);
     Ok(Info {
-        supported: cfg!(windows),
+        supported: SUPPORTED,
         data_root: root.display().to_string(),
         stored_at: at.display().to_string(),
         moved,
@@ -77,8 +87,8 @@ pub struct Check {
 /// Async: measuring walks every file, and that must not hold the window.
 #[tauri::command]
 pub async fn move_drive_check(folder: String) -> Result<Check, String> {
-    if !cfg!(windows) {
-        return Err("Moving the game is available on Windows.".into());
+    if !SUPPORTED {
+        return Err(UNSUPPORTED.into());
     }
     let root = data_root()?;
     let plan = tauri::async_runtime::spawn_blocking(move || relocate::plan(&root, Path::new(&folder)))
@@ -103,8 +113,8 @@ pub fn move_drive_start(app: tauri::AppHandle, folder: String, confirm: bool) ->
     if !confirm {
         return Err("The move was not confirmed.".into());
     }
-    if !cfg!(windows) {
-        return Err("Moving the game is available on Windows.".into());
+    if !SUPPORTED {
+        return Err(UNSUPPORTED.into());
     }
     if crate::session_active() {
         return Err("Close the game first.".into());
@@ -123,7 +133,11 @@ pub fn move_drive_start(app: tauri::AppHandle, folder: String, confirm: bool) ->
     std::thread::spawn(move || {
         let _guard = guard;
         match run(&folder) {
-            Ok(()) => {
+            Ok(Finish::InPlace(message)) => set(|s| {
+                s.phase = "moved";
+                s.message = message;
+            }),
+            Ok(Finish::Restart) => {
                 set(|s| s.phase = "restarting");
                 // A moment for the page to say so, then close for the helper.
                 std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -138,7 +152,14 @@ pub fn move_drive_start(app: tauri::AppHandle, folder: String, confirm: bool) ->
     Ok(())
 }
 
-fn run(folder: &str) -> Result<(), String> {
+enum Finish {
+    /// Done in this process (Linux); the sentence to show.
+    InPlace(String),
+    /// The helper finishes once this launcher has closed (Windows).
+    Restart,
+}
+
+fn run(folder: &str) -> Result<Finish, String> {
     let root = data_root()?;
     let plan = relocate::plan(&root, Path::new(folder))?;
     set(|s| {
@@ -146,11 +167,23 @@ fn run(folder: &str) -> Result<(), String> {
         s.total = plan.bytes;
     });
     relocate::copy(&plan, &|done, total| set(|s| { s.done = done; s.total = total; }), &CANCEL)?;
+    if cfg!(target_os = "linux") {
+        // The launcher guard is held, so no game, update or settings write
+        // is running. This session's log stays in the old folder until it is
+        // deleted; the next start logs into the new one.
+        let (outcome, retired) = relocate::finish(&plan, None);
+        if let Some(old) = retired {
+            if let Err(e) = std::fs::remove_dir_all(&old) {
+                tracing::warn!(folder = %old.display(), %e, "The old game folder could not be removed yet");
+            }
+        }
+        return if outcome.moved { Ok(Finish::InPlace(outcome.message)) } else { Err(outcome.message) };
+    }
     if let Err(why) = start_helper(&plan) {
         let _ = std::fs::remove_dir_all(&plan.staged);
         return Err(why);
     }
-    Ok(())
+    Ok(Finish::Restart)
 }
 
 fn start_helper(plan: &Plan) -> Result<(), String> {
@@ -188,6 +221,25 @@ pub fn finish_from_args(args: &[String]) {
     }
     if let Some(old) = retired {
         let _ = std::fs::remove_dir_all(old);
+    }
+}
+
+/// The folder the game was moved to, when that drive is not connected (a
+/// Steam Deck's SD card taken out). `None` otherwise. Every page asks, and
+/// says so instead of failing to read its own files.
+#[tauri::command]
+pub fn moved_drive_missing() -> Option<String> {
+    let root = data_root().ok()?;
+    let target = std::fs::read_link(&root).ok()?;
+    (!root.exists()).then(|| target.display().to_string())
+}
+
+/// At start: a card is mounted a moment after a Deck wakes or boots, so wait
+/// for a missing one a little before the first page asks.
+pub fn wait_for_moved_drive() {
+    let started = std::time::Instant::now();
+    while moved_drive_missing().is_some() && started.elapsed() < std::time::Duration::from_secs(8) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 

@@ -371,3 +371,29 @@ fn a_player_from_1_2_12_plays_on_1_2_13_with_nothing_to_set_up() {
     assert!(plan.kept.is_empty(), "{:?}", plan.kept);
     assert!(plan.dead_by_device.is_empty(), "{:?}", plan.dead_by_device);
 }
+
+/// A Steam Deck in Game Mode, from its pad report (2026-10-12): the Deck's own
+/// controller reads nothing because Steam owns it, and Steam Input hands the
+/// game a virtual Xbox 360 pad. Names as the fork's evdev backend reports them.
+const DECK_GAME_MODE: &str = "DEVICE\tevdev/0/Valve Software Steam Controller\nINPUT\tLEFTCTRL\t1\nINPUT\tLEFT\t1\n\
+DEVICE\tevdev/0/AT Translated Set 2 keyboard\nINPUT\tA\t1\nINPUT\tSPACE\t1\n\
+DEVICE\tevdev/0/Microsoft X-Box 360 pad 0\nINPUT\tSOUTH\t1\nINPUT\tEAST\t1\nINPUT\tNORTH\t1\nINPUT\tWEST\t1\nINPUT\tTL\t1\nINPUT\tTR\t1\n\
+INPUT\tSELECT\t1\nINPUT\tSTART\t1\nINPUT\tMODE\t1\nINPUT\tTHUMBL\t1\nINPUT\tTHUMBR\t1\n\
+INPUT\tAxis 0-\t1\nINPUT\tAxis 0+\t1\nINPUT\tAxis 1-\t1\nINPUT\tAxis 1+\t1\nINPUT\tAxis 2-\t1\nINPUT\tAxis 2+\t1\nINPUT\tAxis 3-\t1\nINPUT\tAxis 3+\t1\n\
+INPUT\tAxis 4-\t1\nINPUT\tAxis 4+\t1\nINPUT\tAxis 5-\t1\nINPUT\tAxis 5+\t1\nINPUT\tAxis 6-\t1\nINPUT\tAxis 6+\t1\nINPUT\tAxis 7-\t1\nINPUT\tAxis 7+\t1\n";
+
+#[test]
+fn on_a_deck_steams_pad_is_player_one_even_after_an_older_launcher_put_the_deck_controller_there() {
+    let mut desk = Desk::new(DECK_GAME_MODE);
+    desk.enabled = [true, true, true, true];
+    // What 3.0.40 wrote: the dead Deck controller on 1, the keyboard on 2.
+    let old = "[GCPad1]\nDevice = evdev/0/Valve Software Steam Controller\nButtons/A = `SOUTH`\n\
+[GCPad2]\nDevice = evdev/0/AT Translated Set 2 keyboard\nButtons/A = `SOUTH`\n\
+[GCPad3]\nDevice = evdev/0/Microsoft X-Box 360 pad 0\nButtons/A = `SOUTH`\n";
+    let plan = desk.play(Some(old), old);
+    assert!(plan.kept.is_empty(), "nothing in that file is the player's own: {:?}", plan.kept);
+    assert_eq!(plan.assignment, [(1, "evdev/0/Microsoft X-Box 360 pad 0".to_string())]);
+    assert!(!blocked(&plan), "every control of Steam's pad maps by name: {:?}", plan.dead_by_device);
+    let ini = plan.ini.unwrap();
+    assert!(!ini.contains("Valve Software") && !ini.contains("keyboard"), "{ini}");
+}

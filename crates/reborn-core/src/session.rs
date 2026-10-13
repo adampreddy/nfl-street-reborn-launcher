@@ -1665,6 +1665,7 @@ pub fn player_sections(live: &str, scan: &Enumeration, enabled_ports: [bool; 4])
             let theirs = enabled_ports[port as usize - 1]
                 && connected.is_controller()
                 && connected.family != crate::controller::DeviceFamily::Keyboard
+                && !scan.steam_input_replaces(connected)
                 && !offered.contains(&device);
             theirs.then_some(PlayerSection { port, device, text })
         })

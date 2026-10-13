@@ -24,7 +24,7 @@
 //!    undone if a later one fails, and the old folder is deleted only once
 //!    the link leads to the new one.
 
-use crate::platform::dir_move::{self, is_dir_link, make_dir_link, plain, real};
+use crate::platform::dir_move::{self, is_dir_link, make_dir_link, plain, real, remove_dir_link};
 use crate::platform::file_identity::{self, FileId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -114,6 +114,40 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
         return Err("The game is already on that drive. Choose a different drive.".into());
     }
     let facts = dir_move::volume_facts(chosen).ok_or("That drive could not be read.")?;
+    #[cfg(not(windows))]
+    let (target, staged) = unix_targets(data_root, chosen, name, &facts)?;
+    #[cfg(windows)]
+    let (target, staged) = windows_targets(name, &facts)?;
+    // Never a folder that is already there: one this move did not make
+    // could belong to another account. The one exception is this account's
+    // own unfinished copy (the launcher closed during an earlier move),
+    // which `copy` clears and starts again. Moving back to where the data
+    // root started (Linux) puts the files where its link is now.
+    if std::fs::symlink_metadata(&target).is_ok() && !(same_path(&target, data_root) && is_dir_link(data_root)) {
+        return Err(format!("{} already exists. Rename or remove it, then try again.", target.display()));
+    }
+    if std::fs::symlink_metadata(&staged).is_ok() {
+        let ours = !is_dir_link(&staged) && staged.join(STAGED_MARKER).is_file() && dir_move::owned_by_me(&staged).unwrap_or(false);
+        if !ours {
+            return Err(format!("{} already exists. Rename or remove it, then try again.", staged.display()));
+        }
+    }
+    let (bytes, files) = measure(&real_root).map_err(|e| format!("The game folder could not be measured: {e}"))?;
+    if facts.free_bytes < bytes + MARGIN_BYTES {
+        return Err(format!(
+            "{} has {} free. Moving the game needs {} (its size plus 1 GB to spare).",
+            facts.mount.display(),
+            gib(facts.free_bytes),
+            gib(bytes + MARGIN_BYTES)
+        ));
+    }
+    Ok(Plan { link: data_root.to_path_buf(), real: real_root, target, staged, bytes, files })
+}
+
+/// Windows: `<drive root>\<name>`, on a fixed NTFS drive with its own letter
+/// whose top folder no other account can change.
+#[cfg(windows)]
+fn windows_targets(name: &std::ffi::OsStr, facts: &dir_move::VolumeFacts) -> Result<(PathBuf, PathBuf), String> {
     if facts.removable {
         return Err(format!("{} is a removable drive. The game has to stay on a drive that is always connected.", facts.mount.display()));
     }
@@ -133,20 +167,6 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
             facts.mount.display()
         ));
     }
-    let (target, staged) = targets_on(&facts.mount, name);
-    // Never a folder that is already there: one this move did not make
-    // could belong to another account. The one exception is this account's
-    // own unfinished copy (the launcher closed during an earlier move),
-    // which `copy` clears and starts again.
-    if std::fs::symlink_metadata(&target).is_ok() {
-        return Err(format!("{} already exists. Rename or remove it, then try again.", target.display()));
-    }
-    if std::fs::symlink_metadata(&staged).is_ok() {
-        let ours = !is_dir_link(&staged) && staged.join(STAGED_MARKER).is_file() && dir_move::owned_by_me(&staged).unwrap_or(false);
-        if !ours {
-            return Err(format!("{} already exists. Rename or remove it, then try again.", staged.display()));
-        }
-    }
     match dir_move::others_can_replace_children(&facts.mount) {
         Ok(false) => {}
         Ok(true) => {
@@ -157,16 +177,56 @@ pub fn plan(data_root: &Path, chosen: &Path) -> Result<Plan, String> {
         }
         Err(e) => return Err(format!("The permissions of {} could not be checked: {e}", facts.mount.display())),
     }
-    let (bytes, files) = measure(&real_root).map_err(|e| format!("The game folder could not be measured: {e}"))?;
-    if facts.free_bytes < bytes + MARGIN_BYTES {
+    Ok(targets_on(&facts.mount, name))
+}
+
+/// Linux (the Steam Deck's SD card) and macOS: `<chosen>/<name>`, or the
+/// data root's own path when the player picks the drive it started on.
+///
+/// Not the top of the drive, as on Windows: on Linux every drive is
+/// mounted inside a folder (`/run/media/deck/<card>`), the internal one's
+/// top is `/` or `/home` and not the player's to write, and an SD card is
+/// removable by design. What the Windows rule protects against, another
+/// account renaming a folder above the game, is checked on every folder
+/// above it instead.
+#[cfg(not(windows))]
+fn unix_targets(data_root: &Path, chosen: &Path, name: &std::ffi::OsStr, facts: &dir_move::VolumeFacts) -> Result<(PathBuf, PathBuf), String> {
+    // The textures are hard links and Dolphin is a program run from inside
+    // the folder: FAT and exFAT have neither links nor permissions, and an
+    // NTFS card through FUSE is unreliable for both.
+    const FILESYSTEMS: &[&str] = &["ext4", "ext3", "ext2", "btrfs", "xfs", "f2fs", "bcachefs", "zfs", "apfs", "hfs"];
+    let fs = facts.filesystem.to_ascii_lowercase();
+    if !FILESYSTEMS.contains(&fs.as_str()) {
         return Err(format!(
-            "{} has {} free. Moving the game needs {} (its size plus 1 GB to spare).",
+            "{} is formatted as {}, which cannot hold the game. On a Steam Deck, Settings > System > Format SD Card formats it the way the game needs (this erases the card).",
             facts.mount.display(),
-            gib(facts.free_bytes),
-            gib(bytes + MARGIN_BYTES)
+            facts.filesystem
         ));
     }
-    Ok(Plan { link: data_root.to_path_buf(), real: real_root, target, staged, bytes, files })
+    let home_drive = data_root
+        .parent()
+        .and_then(|p| file_identity::of(p).ok())
+        .zip(file_identity::of_nearest(chosen).ok())
+        .is_some_and(|(home, there)| home.volume == there.volume);
+    let target = if home_drive { data_root.to_path_buf() } else { chosen.join(name) };
+    let mut staged_name = name.to_os_string();
+    staged_name.push(STAGED_SUFFIX);
+    let staged = target.with_file_name(staged_name);
+    let mut above = target.parent();
+    while let Some(dir) = above {
+        match dir_move::others_can_replace_children(dir) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(format!(
+                    "Other accounts can change {}, so the game's files would not be safe there. Choose another folder.",
+                    dir.display()
+                ))
+            }
+            Err(e) => return Err(format!("The permissions of {} could not be checked: {e}", dir.display())),
+        }
+        above = dir.parent();
+    }
+    Ok((target, staged))
 }
 
 /// The new folder and its copy in progress, at the top of the drive
@@ -434,7 +494,7 @@ fn swap(plan: &Plan) -> Result<PathBuf, String> {
     //    just put aside). Removing a link removes no files.
     let was_link = !same_path(&plan.link, &plan.real);
     if was_link {
-        if let Err(e) = std::fs::remove_dir(&plan.link) {
+        if let Err(e) = remove_dir_link(&plan.link) {
             undo_1();
             return Err(format!("The old folder link at {} could not be removed, so nothing was moved: {e}", plan.link.display()));
         }
@@ -450,9 +510,10 @@ fn swap(plan: &Plan) -> Result<PathBuf, String> {
         undo_1();
         return Err(format!("The copy could not be named {}, so nothing was moved: {e}", plan.target.display()));
     }
-    // 4. The link at the old path.
-    if let Err(e) = make_dir_link(&plan.link, &plan.target) {
-        let _ = std::fs::remove_dir(&plan.link);
+    // 4. The link at the old path, unless the files went back to it.
+    let back_home = same_path(&plan.link, &plan.target);
+    if let Err(e) = if back_home { Ok(()) } else { make_dir_link(&plan.link, &plan.target) } {
+        let _ = remove_dir_link(&plan.link);
         let _ = std::fs::rename(&plan.target, &plan.staged);
         undo_2();
         undo_1();
@@ -700,5 +761,45 @@ mod tests {
         assert!(retired.is_none());
         assert!(!is_dir_link(&root) && root.join("config/settings.json").is_file());
         assert!(!plan.staged.exists() && !plan.target.exists());
+    }
+
+    /// Steam Deck: the game went to the SD card, then the player picks
+    /// internal storage again. The files go back to the data root's own path
+    /// and the link there is replaced by the real folder.
+    #[test]
+    #[cfg(unix)]
+    fn moving_back_to_where_it_started_leaves_a_real_folder_and_no_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sample(dir.path());
+        let out = same_volume_plan(dir.path());
+        copy(&out, &|_, _| {}, &AtomicBool::new(false)).unwrap();
+        let (outcome, retired) = finish(&out, None);
+        assert!(outcome.moved, "{}", outcome.message);
+        std::fs::remove_dir_all(retired.unwrap()).unwrap();
+        assert!(is_dir_link(&root));
+
+        let (bytes, files) = measure(&root).unwrap();
+        let back = Plan { link: root.clone(), real: real(&root), target: root.clone(), staged: root.with_file_name("NFL Street Reborn.moving"), bytes, files };
+        copy(&back, &|_, _| {}, &AtomicBool::new(false)).unwrap();
+        let (outcome, retired) = finish(&back, None);
+        assert!(outcome.moved, "{}", outcome.message);
+        assert!(!is_dir_link(&root) && root.is_dir(), "a real folder again");
+        assert_eq!(std::fs::read(root.join("config/settings.json")).unwrap(), br#"{"user_dir":"x"}"#);
+        assert!(!out.target.exists(), "the SD card copy was put aside");
+        assert!(retired.unwrap().join(RETIRED_MARKER).is_file());
+        assert_eq!(location(&root), (real(&root), false));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_card_that_cannot_hold_links_is_refused_in_words_a_deck_player_can_act_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sample(dir.path());
+        let facts = |fs: &str| dir_move::VolumeFacts { mount: PathBuf::from("/run/media/deck/card"), free_bytes: u64::MAX, filesystem: fs.into(), removable: true };
+        let why = unix_targets(&root, dir.path(), std::ffi::OsStr::new("NFL Street Reborn"), &facts("exfat")).unwrap_err();
+        assert!(why.contains("Format SD Card"), "{why}");
+        let (target, staged) = unix_targets(&root, dir.path(), std::ffi::OsStr::new("NFL Street Reborn"), &facts("ext4")).unwrap();
+        assert_eq!(target, root, "the same drive as the data root means back to the data root's own path");
+        assert_eq!(staged, root.with_file_name("NFL Street Reborn.moving"));
     }
 }

@@ -15,6 +15,33 @@ try {
   }
 } catch { /* never a reason for a page not to load */ }
 
+// The game was moved to a drive that is not connected (a Steam Deck's SD card taken out). Every page
+// says so, over whatever it managed to draw, instead of failing to read its own files.
+try {
+  if (bridge && typeof bridge.invoke === 'function') {
+    Promise.resolve(bridge.invoke('moved_drive_missing')).then(at => {
+      if (typeof at !== 'string' || !at) return;
+      const box = document.createElement('dialog');
+      box.className = 'drive-missing';
+      const h = document.createElement('h2');
+      h.textContent = 'Your game is on a drive that is not connected';
+      const p = document.createElement('p');
+      p.textContent = `It was moved to ${at}. Put the SD card (or drive) back in, then choose Try again.`;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'primary';
+      retry.textContent = 'Try again';
+      retry.onclick = () => location.reload();
+      // B and Esc cannot close it: nothing behind it can work.
+      box.addEventListener('cancel', e => e.preventDefault());
+      box.append(h, p, retry);
+      document.body.append(box);
+      box.showModal();
+      retry.focus();
+    }).catch(() => {});
+  }
+} catch { /* never a reason for a page not to load */ }
+
 const selector = 'a[href],button,input,select,textarea,summary';
 const main = document.getElementById('main');
 const screen = document.getElementById('screen');

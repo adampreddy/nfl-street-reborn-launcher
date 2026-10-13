@@ -104,6 +104,16 @@ pub fn make_dir_link(_link: &Path, _target: &Path) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "folder links are not available here"))
 }
 
+/// Remove a folder link made by [`make_dir_link`], never what it leads to.
+/// A junction is removed as a folder; a Unix symbolic link is a file.
+pub fn remove_dir_link(link: &Path) -> io::Result<()> {
+    if cfg!(windows) {
+        std::fs::remove_dir(link)
+    } else {
+        std::fs::remove_file(link)
+    }
+}
+
 /// Make `dir` private to this account (plus SYSTEM and Administrators),
 /// for everything later created inside it.
 ///
@@ -293,7 +303,7 @@ mod tests {
         assert_eq!(std::fs::read(link.join("a.txt")).unwrap(), b"hi");
         assert_eq!(real(&link), real(&target));
         // Removing the link leaves the folder it led to.
-        std::fs::remove_dir(&link).unwrap();
+        remove_dir_link(&link).unwrap();
         assert!(target.join("a.txt").is_file());
     }
 
