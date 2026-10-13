@@ -188,7 +188,11 @@ fn windows_targets(name: &std::ffi::OsStr, facts: &dir_move::VolumeFacts) -> Res
 /// top is `/` or `/home` and not the player's to write, and an SD card is
 /// removable by design. What the Windows rule protects against, another
 /// account renaming a folder above the game, is checked on every folder
-/// above it instead.
+/// above it instead, on the real path: the picked folder is resolved first,
+/// so no link in it can be pointed elsewhere after the check, and every
+/// folder above the target must belong to this account or root and be
+/// writable by no one else (security review, 2026-10-12). Nothing then can
+/// change between this check and the copy but this account itself.
 #[cfg(not(windows))]
 fn unix_targets(data_root: &Path, chosen: &Path, name: &std::ffi::OsStr, facts: &dir_move::VolumeFacts) -> Result<(PathBuf, PathBuf), String> {
     // The textures are hard links and Dolphin is a program run from inside
@@ -208,15 +212,16 @@ fn unix_targets(data_root: &Path, chosen: &Path, name: &std::ffi::OsStr, facts: 
         .and_then(|p| file_identity::of(p).ok())
         .zip(file_identity::of_nearest(chosen).ok())
         .is_some_and(|(home, there)| home.volume == there.volume);
+    let chosen = std::fs::canonicalize(chosen).map_err(|e| format!("{} could not be read: {e}", chosen.display()))?;
     let target = if home_drive { data_root.to_path_buf() } else { chosen.join(name) };
     let mut staged_name = name.to_os_string();
     staged_name.push(STAGED_SUFFIX);
     let staged = target.with_file_name(staged_name);
     let mut above = target.parent();
     while let Some(dir) = above {
-        match dir_move::others_can_replace_children(dir) {
-            Ok(false) => {}
-            Ok(true) => {
+        match dir_move::only_me_or_root_can_change(dir) {
+            Ok(true) => {}
+            Ok(false) => {
                 return Err(format!(
                     "Other accounts can change {}, so the game's files would not be safe there. Choose another folder.",
                     dir.display()
@@ -801,5 +806,32 @@ mod tests {
         let (target, staged) = unix_targets(&root, dir.path(), std::ffi::OsStr::new("NFL Street Reborn"), &facts("ext4")).unwrap();
         assert_eq!(target, root, "the same drive as the data root means back to the data root's own path");
         assert_eq!(staged, root.with_file_name("NFL Street Reborn.moving"));
+    }
+
+    /// A folder others may write, or reached through a link, is never where
+    /// the game goes (security review, 2026-10-12).
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_others_can_change_is_refused_even_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = sample(dir.path());
+        let facts = dir_move::VolumeFacts { mount: PathBuf::from("/run/media/deck/card"), free_bytes: u64::MAX, filesystem: "ext4".into(), removable: true };
+        let open = dir.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let card = open.join("card");
+        std::fs::create_dir(&card).unwrap();
+        // The data root's own drive would mean "move back"; pretend the card is elsewhere by asking
+        // for the folders above `card/<name>` directly.
+        let name = std::ffi::OsStr::new("NFL Street Reborn");
+        let other_root = PathBuf::from("/nonexistent/NFL Street Reborn");
+        let why = unix_targets(&other_root, &card, name, &facts).unwrap_err();
+        assert!(why.contains("Other accounts can change"), "{why}");
+        let via_link = dir.path().join("link");
+        std::os::unix::fs::symlink(&card, &via_link).unwrap();
+        let why = unix_targets(&other_root, &via_link, name, &facts).unwrap_err();
+        assert!(why.contains(&open.display().to_string()), "checked on the real path: {why}");
+        let _ = root;
     }
 }

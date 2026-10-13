@@ -246,6 +246,21 @@ pub fn others_can_replace_children(dir: &Path) -> io::Result<bool> {
     Ok(mode & 0o022 != 0 && mode & 0o1000 == 0)
 }
 
+/// Unix: whether `dir` is a real folder that only this account or root can
+/// change: owned by one of them, and with no write access for anyone else
+/// that a sticky bit does not cancel. A folder another account owns fails
+/// even at 0755, because its owner may rename what is inside it.
+#[cfg(unix)]
+pub fn only_me_or_root_can_change(dir: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.file_type().is_dir() {
+        return Ok(false);
+    }
+    let owner_ok = meta.uid() == 0 || owned_by_me(dir)?;
+    Ok(owner_ok && !others_can_replace_children(dir)?)
+}
+
 #[cfg(not(any(windows, unix)))]
 pub fn others_can_replace_children(_dir: &Path) -> io::Result<bool> {
     Ok(true)
