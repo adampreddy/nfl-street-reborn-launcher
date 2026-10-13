@@ -217,7 +217,10 @@ fn unix_targets(data_root: &Path, chosen: &Path, name: &std::ffi::OsStr, facts: 
     let mut staged_name = name.to_os_string();
     staged_name.push(STAGED_SUFFIX);
     let staged = target.with_file_name(staged_name);
-    let mut above = target.parent();
+    // Checked where it really is: a link above it (macOS's /var) is not a
+    // folder anyone can change, and what it leads to is checked instead.
+    let real_parent = target.parent().map(real);
+    let mut above = real_parent.as_deref();
     while let Some(dir) = above {
         match dir_move::only_me_or_root_can_change(dir) {
             Ok(true) => {}
@@ -496,8 +499,10 @@ fn swap(plan: &Plan) -> Result<PathBuf, String> {
         let _ = std::fs::rename(&retired, &plan.real);
     };
     // 2. A link from an earlier move is removed (the folder it led to was
-    //    just put aside). Removing a link removes no files.
-    let was_link = !same_path(&plan.link, &plan.real);
+    //    just put aside). Removing a link removes no files. Asked of the
+    //    path itself: comparing it with where it leads also differs when a
+    //    folder above it is a link (macOS's /var), with no link here.
+    let was_link = is_dir_link(&plan.link);
     if was_link {
         if let Err(e) = remove_dir_link(&plan.link) {
             undo_1();
@@ -709,7 +714,7 @@ mod tests {
         }
         assert_eq!(last_outcome(&root).unwrap(), outcome);
         assert_eq!(location(&root), (real(&plan.target), true));
-        assert_eq!(leftovers(&root), vec![retired.clone()]);
+        assert_eq!(leftovers(&root).iter().map(|p| real(p)).collect::<Vec<_>>(), vec![real(&retired)]);
         std::fs::remove_dir_all(&retired).unwrap();
         assert!(leftovers(&root).is_empty());
     }
