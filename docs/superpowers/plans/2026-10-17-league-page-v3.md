@@ -200,7 +200,7 @@ Write each commented case as real assertions with those exact strings. The owner
 
 - [ ] **Step 4: Write `pages/league.css`** to the spec's sizes:
   - Grid `.lg-cols{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1.1fr);gap:16px;align-items:stretch}`. Cards are flex columns, and week rows and best groups get `flex:1`.
-  - Rows are 36px; names ellipsize.
+  - Rows are 36px; names ellipsize. Hover: `.lg-link:hover{background:var(--glass-1)}`; headings that link get an underline on hover and a `›` in `--fg-3`.
   - Under 1100px: two columns, with `#lg-best` spanning both and its groups in 3 columns. The banner wraps, and the primary button gets `flex:1`.
   - `#main` has no `min-height` stretch.
 
