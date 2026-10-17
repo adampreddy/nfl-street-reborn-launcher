@@ -16,9 +16,15 @@
   // can: it answers with an expression it built itself, on the device it will
   // later resolve it on, so it works for any pad Windows can see.
   let listening=false;
-  const listen=async()=>{
+  // Starting the runtime takes a few seconds, and a press made before it listens is lost: a quick tap
+  // "did nothing" while a held button worked (Deck players, 2026-10-12). So the prompt to press waits
+  // for the runtime, and says it is getting ready until then.
+  const ready=async()=>{
    if(!runtime)throw new Error('The game files were not found, so a press cannot be read here yet.');
-   if(!listening){await window.__TAURI__.core.invoke('remap_start',{runtime});listening=true;}
+   if(!listening){message.textContent='Getting your controller ready…';await window.__TAURI__.core.invoke('remap_start',{runtime});listening=true;}
+  };
+  const listen=async()=>{
+   await ready();
    const answer=await window.__TAURI__.core.invoke('remap_detect',{device});
    return answer&&answer.binding?answer.binding:null;
   };
@@ -74,6 +80,9 @@
    const mine=capture;
    (async()=>{
     try{
+     await ready();
+     if(capture!==mine){if(!capture&&!guiding)await stopListening();return;}
+     message.textContent=`${row.label}: press the button on your controller now, or move the stick. Esc cancels.`;
      const binding=await listen();
      if(capture!==mine){if(!capture&&!guiding)await stopListening();return;}
      await stopListening();
@@ -115,6 +124,7 @@
    if(saving||capture||guiding)return;guiding=true;onBusy(true);needsStart.disabled=true;const list=rows.filter(r=>r.dead),found={};
    document.body.dataset.controllerTesting='setup';document.dispatchEvent(new Event('controller-test-state'));
    try{
+    await ready();
     for(const [i,row] of list.entries()){
      if(disposed)break;message.textContent=`Step ${i+1} of ${list.length}: press ${row.label} on your controller. Wait a few seconds to skip it.`;
      const binding=await listen();if(binding){found[row.key]=binding;row.binding=binding;renderRows();}

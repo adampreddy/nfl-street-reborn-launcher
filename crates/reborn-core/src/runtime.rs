@@ -1112,8 +1112,17 @@ mod unix_process_detection_tests {
 /// tuned INIs, the game settings and the shader lists. The session layers
 /// the launcher's required keys on afterwards, so those still win. Returns
 /// the files written, for the launch report.
+/// The folder an emulator's own files sit in: beside the executable, or in a
+/// Mac bundle the Contents/Resources beside Contents/MacOS, where Mac Dolphin
+/// keeps Sys and the runtime keeps its User template.
+pub fn emulator_home(runtime_exe: &Path) -> Option<PathBuf> {
+    let dir = runtime_exe.parent()?;
+    let contents = dir.parent().filter(|c| dir.file_name() == Some("MacOS".as_ref()) && c.file_name() == Some("Contents".as_ref()));
+    Some(contents.map_or_else(|| dir.to_path_buf(), |c| c.join("Resources")))
+}
+
 pub fn seed_user_from_template(runtime_exe: &Path, user_dir: &Path) -> Result<Vec<PathBuf>> {
-    let Some(template) = runtime_exe.parent().map(|d| d.join("User")) else {
+    let Some(template) = emulator_home(runtime_exe).map(|d| d.join("User")) else {
         return Ok(Vec::new());
     };
     if !template.is_dir() {
@@ -1143,6 +1152,16 @@ fn seed_dir(from: &Path, to: &Path, written: &mut Vec<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod template_tests {
     use super::*;
+
+    /// In a Mac bundle the executable sits in Contents/MacOS and the template
+    /// in Contents/Resources, beside Sys; anywhere else, beside the executable.
+    #[test]
+    fn the_template_of_a_mac_bundle_is_in_its_resources() {
+        let app = Path::new("/rt/NFL Street Reborn Dolphin.app/Contents");
+        assert_eq!(emulator_home(&app.join("MacOS").join("NFL Street Reborn Dolphin")), Some(app.join("Resources")));
+        assert_eq!(emulator_home(Path::new("/rt/runtime/Dolphin.exe")), Some(PathBuf::from("/rt/runtime")));
+        assert_eq!(emulator_home(Path::new("/opt/MacOS/dolphin-emu")), Some(PathBuf::from("/opt/MacOS")), "MacOS alone is not a bundle");
+    }
 
     fn runtime_with_template(dir: &Path) -> PathBuf {
         let exe = dir.join("runtime").join("NFL Street Reborn Dolphin.exe");

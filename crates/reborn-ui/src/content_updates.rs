@@ -64,6 +64,10 @@ pub struct ComponentView {
     pub offered: Option<String>,
     pub files: u64,
     pub bytes: u64,
+    /// Bytes of this component in staging while a fetch runs (capped at
+    /// `bytes`), so the setup screen can say which parts are done. Zero
+    /// outside a fetch.
+    pub fetched_bytes: u64,
     /// A repair of the installed version rather than a move to a new one.
     pub repair: bool,
     pub message: Option<String>,
@@ -109,8 +113,18 @@ pub struct ContentStatusView {
 /// progress and a fetch that resumed still reads right. Capped at the plan.
 fn staged_bytes(cap: u64) -> u64 {
     let Ok(root) = reborn_core::Platform::detect().paths.data_root() else { return 0 };
+    tree_bytes(&root.join(reborn_core::DataDir::Staging.relative())).min(cap)
+}
+
+/// The same measure for one component: staging is `<component>/<version>`.
+fn staged_component_bytes(component: &str, cap: u64) -> u64 {
+    let Ok(root) = reborn_core::Platform::detect().paths.data_root() else { return 0 };
+    tree_bytes(&root.join(reborn_core::DataDir::Staging.relative()).join(component)).min(cap)
+}
+
+fn tree_bytes(top: &std::path::Path) -> u64 {
     let mut total = 0u64;
-    let mut stack = vec![root.join(reborn_core::DataDir::Staging.relative())];
+    let mut stack = vec![top.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
@@ -122,7 +136,7 @@ fn staged_bytes(cap: u64) -> u64 {
             }
         }
     }
-    total.min(cap)
+    total
 }
 
 /// What a check found, kept in a shape the page can be shown while the
@@ -225,7 +239,17 @@ fn view(h: &Held) -> ContentStatusView {
         origin: h.origin.clone(),
         release: s.release.clone(),
         notes: s.notes.clone(),
-        components: s.components.clone(),
+        components: s
+            .components
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                if matches!(h.phase, Phase::Fetching) && c.state == "available" {
+                    c.fetched_bytes = staged_component_bytes(&c.component, c.bytes);
+                }
+                c
+            })
+            .collect(),
         download_bytes: s.download_bytes,
         fetched_bytes,
         download_files: s.download_files,
@@ -265,6 +289,7 @@ fn snapshot_of(check: &ContentCheck) -> Snapshot {
                 offered,
                 files,
                 bytes,
+                fetched_bytes: 0,
                 repair,
                 message,
             }

@@ -217,6 +217,113 @@ impl LinuxPad {
     }
 }
 
+/// Whether the [`LinuxPad`] tables are the launcher's own vocabulary here.
+/// Only Linux Dolphin speaks evdev; everywhere else those names (`Axis 1-`,
+/// `A`) belong to the player.
+const LINUX_NAMES_ARE_OURS: bool = cfg!(target_os = "linux");
+
+/// What SDL's controller database says a pad's numbered controls are, read
+/// from the `MAPPING` line the runtime writes beside an SDL device.
+///
+/// The fork's SDL backend names controls by number (`Button 0`, `Axis 1-`),
+/// and a number names no position, so [`Mapping::candidates`] cannot bind
+/// them and the launcher may not guess. SDL's mapping (`a:b0,leftx:a0,...`)
+/// is the runtime's own answer, from the same SDL that resolves the binding:
+/// an Xbox Series X pad on a Mac reports it, and with it maps itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdlLayout(BTreeMap<String, String>);
+
+impl SdlLayout {
+    /// `<guid>,<name>,<element>:<source>,...`. `None` when it maps nothing.
+    pub fn parse(mapping: &str) -> Option<Self> {
+        let elements: BTreeMap<String, String> = mapping
+            .split(',')
+            .skip(2)
+            .filter_map(|part| part.split_once(':'))
+            .filter(|(element, _)| *element != "platform")
+            .map(|(element, source)| (element.trim().to_string(), source.trim().to_string()))
+            .collect();
+        (!elements.is_empty()).then_some(Self(elements))
+    }
+
+    /// The fork's name for one direction of an SDL element: `b3` is
+    /// `Button 3`; `h0.4` is `Hat 0 S` (SDL's hat bits are up, right, down,
+    /// left; the fork's are N E S W); an axis is half of itself, `-` or `+`,
+    /// with `~` reversing it; `+a4` or `-a4` is already a half.
+    fn source(&self, element: &str, positive: bool) -> Option<String> {
+        let source = self.0.get(element)?;
+        if let Some(n) = source.strip_prefix('b') {
+            return Some(format!("Button {}", n.parse::<u32>().ok()?));
+        }
+        if let Some(hat) = source.strip_prefix('h') {
+            let (index, bit) = hat.split_once('.')?;
+            let dir = match bit { "1" => 'N', "2" => 'E', "4" => 'S', "8" => 'W', _ => return None };
+            return Some(format!("Hat {} {dir}", index.parse::<u32>().ok()?));
+        }
+        let (half, rest) = match source.chars().next()? {
+            '+' => (Some('+'), &source[1..]),
+            '-' => (Some('-'), &source[1..]),
+            _ => (None, source.as_str()),
+        };
+        let inverted = rest.ends_with('~');
+        let index: u32 = rest.trim_end_matches('~').strip_prefix('a')?.parse().ok()?;
+        if let Some(sign) = half {
+            return Some(format!("Axis {index}{sign}"));
+        }
+        let sign = if positive != inverted { '+' } else { '-' };
+        Some(format!("Axis {index}{sign}"))
+    }
+
+    /// A trigger rests at one end of its axis (SDL: -32768 released, 32767
+    /// full, in both macOS drivers), so a whole axis is bound full range.
+    fn trigger(&self, element: &str) -> Option<String> {
+        let source = self.0.get(element)?;
+        let whole_axis = source.starts_with('a') && !source.ends_with('~');
+        if whole_axis {
+            return Some(format!("Full Axis {}+", source[1..].parse::<u32>().ok()?));
+        }
+        self.source(element, true)
+    }
+
+    /// The control in this GameCube input's position, by SDL's word.
+    /// Positions as [`Mapping::candidates`] has them: GameCube B on the east
+    /// face button (SDL `b`), X on the west (`x`), Z on the right shoulder.
+    pub fn binding(&self, input: GcInput) -> Option<String> {
+        use GcInput::*;
+        match input {
+            ButtonA => self.source("a", true),
+            ButtonB => self.source("b", true),
+            ButtonX => self.source("x", true),
+            ButtonY => self.source("y", true),
+            ButtonZ => self.source("rightshoulder", true),
+            Start => self.source("start", true),
+            // SDL's Y axes are positive downward.
+            MainStickUp => self.source("lefty", false),
+            MainStickDown => self.source("lefty", true),
+            MainStickLeft => self.source("leftx", false),
+            MainStickRight => self.source("leftx", true),
+            CStickUp => self.source("righty", false),
+            CStickDown => self.source("righty", true),
+            CStickLeft => self.source("rightx", false),
+            CStickRight => self.source("rightx", true),
+            TriggerL => self.trigger("lefttrigger"),
+            TriggerR => self.trigger("righttrigger"),
+            DPadUp => self.source("dpup", true),
+            DPadDown => self.source("dpdown", true),
+            DPadLeft => self.source("dpleft", true),
+            DPadRight => self.source("dpright", true),
+        }
+    }
+
+    pub fn extra_binding(&self, extra: Extra) -> Option<String> {
+        match extra {
+            Extra::AnalogTriggerL => self.trigger("lefttrigger"),
+            Extra::AnalogTriggerR => self.trigger("righttrigger"),
+            Extra::RumbleMotor => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mapping(BTreeMap<GcInput, PhysicalBinding>);
 
@@ -399,17 +506,25 @@ impl Mapping {
     /// wrote. None of those is a player's choice, and none says anything the
     /// universal binding does not already say. A value naming anything else
     /// (`Circle` on A, `Trigger R` on Z) is the player's.
+    ///
+    /// The evdev tables count only on Linux. On Windows `Axis 1-` is what a
+    /// pad with no button labels calls its left stick, so a stick the player
+    /// set up by pressing it read as the launcher's own and was widened back
+    /// to `Left Y+` on the next Play: dead again, and "set up your controller"
+    /// again (3.0.37, 2026-10-08).
     pub fn is_own_vocabulary(input: GcInput, value: &str) -> bool {
         Self::names_are_all_in(value, Self::candidates(input))
-            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.candidates(input))
-            || Self::names_are_all_in(value, LinuxPad::DeckRaw.candidates(input))
+            || (LINUX_NAMES_ARE_OURS
+                && (Self::names_are_all_in(value, LinuxPad::SteamVirtual.candidates(input))
+                    || Self::names_are_all_in(value, LinuxPad::DeckRaw.candidates(input))))
     }
 
     /// [`Mapping::is_own_vocabulary`] for the three non-GameCube bindings.
     pub fn extra_is_own_vocabulary(extra: Extra, value: &str) -> bool {
         Self::names_are_all_in(value, Self::extra_candidates(extra))
-            || Self::names_are_all_in(value, LinuxPad::SteamVirtual.extra_candidates(extra))
-            || Self::names_are_all_in(value, LinuxPad::DeckRaw.extra_candidates(extra))
+            || (LINUX_NAMES_ARE_OURS
+                && (Self::names_are_all_in(value, LinuxPad::SteamVirtual.extra_candidates(extra))
+                    || Self::names_are_all_in(value, LinuxPad::DeckRaw.extra_candidates(extra))))
     }
 
     fn names_are_all_in(value: &str, names: &[&str]) -> bool {
@@ -447,10 +562,21 @@ impl Mapping {
     /// fully playable. A non-empty list is the exact set of controls the remap
     /// wizard has to ask the player to press, and nothing else.
     pub fn auto_from(available: &[String]) -> (Self, Vec<GcInput>) {
+        Self::auto_from_with(available, None)
+    }
+
+    /// [`Mapping::auto_from`] with what SDL says the pad's numbered controls
+    /// are. SDL's answer comes first, and only when the pad reports that name.
+    pub fn auto_from_with(available: &[String], sdl: Option<&SdlLayout>) -> (Self, Vec<GcInput>) {
         let mut mapping = Mapping(BTreeMap::new());
         let mut unmatched = Vec::new();
         let linux = LinuxPad::from_names(available);
         for input in GcInput::ALL {
+            let reported = |name: &str| available.iter().any(|a| Self::bare(a) == name);
+            if let Some(name) = sdl.and_then(|l| l.binding(*input)).filter(|n| reported(n)) {
+                mapping.set(*input, Self::quote(&name));
+                continue;
+            }
             let found = linux
                 .map(|pad| pad.candidates(*input))
                 .unwrap_or(&[])
@@ -641,9 +767,20 @@ impl Extras {
     /// the second is indistinguishable from the first while playing, and
     /// indistinguishable from a bug while reading the file.
     pub fn from_device(available: &[String]) -> Self {
+        Self::from_device_with(available, None)
+    }
+
+    /// [`Extras::from_device`] with SDL's mapping, as [`Mapping::auto_from_with`].
+    pub fn from_device_with(available: &[String], sdl: Option<&SdlLayout>) -> Self {
         let mut out = Self::default();
         let linux = LinuxPad::from_names(available);
         for extra in Extra::ALL {
+            if let Some(name) = sdl.and_then(|l| l.extra_binding(*extra))
+                .filter(|n| available.iter().any(|a| Mapping::bare(a) == n))
+            {
+                out.set(*extra, Mapping::quote(&name));
+                continue;
+            }
             let found = linux
                 .map(|pad| pad.extra_candidates(*extra))
                 .unwrap_or(&[])
@@ -997,6 +1134,13 @@ impl ControllerProfile {
     /// Returns the inputs that were repaired, so the caller can say so rather
     /// than changing the player's controls in silence.
     pub fn repair_for(&mut self, available: &[String]) -> Vec<GcInput> {
+        self.repair_for_with(available, None)
+    }
+
+    /// [`ControllerProfile::repair_for`] with SDL's mapping of the pad, so a
+    /// pad that reports only numbered controls is repaired to the control in
+    /// each position rather than left for the wizard.
+    pub fn repair_for_with(&mut self, available: &[String], sdl: Option<&SdlLayout>) -> Vec<GcInput> {
         if available.is_empty() {
             return Vec::new();
         }
@@ -1023,7 +1167,7 @@ impl ControllerProfile {
         // Repair extras independently. A dead motor must not reset a working
         // trigger remap, and a custom OR expression is not a default placeholder.
         let dead_extras = self.extras.unresolvable(available);
-        let defaults = Extras::from_device(available);
+        let defaults = Extras::from_device_with(available, sdl);
         for extra in Extra::ALL {
             let current = self.extras.get(*extra);
             if dead_extras.contains(extra)
@@ -1033,7 +1177,7 @@ impl ControllerProfile {
             }
         }
 
-        let (workable, _) = Mapping::auto_from(available);
+        let (workable, _) = Mapping::auto_from_with(available, sdl);
         let mut repaired = Vec::new();
         for input in needs {
             if let Some(binding) = workable.get(input) {
@@ -1055,8 +1199,13 @@ impl ControllerProfile {
     /// pad and dead for a PlayStation one. This is what should be used whenever
     /// the device's real input list is available.
     pub fn from_device(identity: DeviceIdentity, port: u8, available: &[String]) -> Self {
+        Self::from_device_with(identity, port, available, None)
+    }
+
+    /// [`ControllerProfile::from_device`] with SDL's mapping of the pad.
+    pub fn from_device_with(identity: DeviceIdentity, port: u8, available: &[String], sdl: Option<&SdlLayout>) -> Self {
         let mut profile = Self::new(identity, port);
-        profile.repair_for(available);
+        profile.repair_for_with(available, sdl);
         profile
     }
 
@@ -1313,6 +1462,70 @@ pub fn parse_gcpad(text: &str) -> BTreeMap<u8, PadSection> {
             .insert(key.trim().to_string(), value.trim().to_string());
     }
     out
+}
+
+/// Player one on a Mac keyboard: Dolphin's own default GameCube layout, so it
+/// matches every Dolphin keyboard guide. Key names are the fork's
+/// Quartz/QuartzKeyboardAndMouse.mm table, read, not guessed.
+const MAC_KEYBOARD_PAD1: &str = "[GCPad1]
+Device = Quartz/0/Keyboard & Mouse
+Buttons/A = `X`
+Buttons/B = `Z`
+Buttons/X = `C`
+Buttons/Y = `S`
+Buttons/Z = `D`
+Buttons/Start = `Return`
+Main Stick/Up = `Up Arrow`
+Main Stick/Down = `Down Arrow`
+Main Stick/Left = `Left Arrow`
+Main Stick/Right = `Right Arrow`
+Main Stick/Modifier = `Left Shift`
+Main Stick/Modifier/Range = 50.000000000000000
+C-Stick/Up = `I`
+C-Stick/Down = `K`
+C-Stick/Left = `J`
+C-Stick/Right = `L`
+Triggers/L = `Q`
+Triggers/R = `W`
+D-Pad/Up = `T`
+D-Pad/Down = `G`
+D-Pad/Left = `F`
+D-Pad/Right = `H`
+";
+
+/// What a Mac launch that saw no pad leaves in `GCPadNew.ini`: player one on
+/// the keyboard, or `None` when there is nothing to change.
+///
+/// [`standing_pad_file`] keeps a Windows device line and lets the runtime
+/// swap in whichever pad turns up; the fork's fallback only knows XInput and
+/// WGInput, so on a Mac that line binds nothing and the game cannot get past
+/// its memory card check. A player one with no section, or one naming a
+/// Windows backend that can never exist here, gets the keyboard. Anything
+/// else (a layout the player made, a Mac pad set up by hand) is theirs. A pad
+/// detected later still gets bound: adoption only folds a section into the
+/// pad its Device line names, and a keyboard names none.
+pub fn mac_keyboard_pad_file(live: &str) -> Option<String> {
+    let windows_only = |d: &str| d.starts_with("XInput/") || d.starts_with("WGInput/") || d.starts_with("DInput/");
+    let replace = match parse_gcpad(live).get(&1) {
+        None => true,
+        Some(s) => s.get("Device").is_none_or(|d| d.is_empty() || windows_only(d)),
+    };
+    if !replace {
+        return None;
+    }
+    // Every line but player one's own section, kept as it was.
+    let mut rest = String::with_capacity(live.len());
+    let mut in_pad1 = false;
+    for raw in live.split_inclusive('\n') {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_pad1 = line == "[GCPad1]";
+        }
+        if !in_pad1 {
+            rest.push_str(raw);
+        }
+    }
+    Some(format!("{MAC_KEYBOARD_PAD1}{rest}"))
 }
 
 /// Fold everything the player changed in Dolphin's own Controller Settings
@@ -1862,6 +2075,128 @@ mod external_edit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read off a real Xbox Series X pad on a Mac (2026-10-08): SDL backend,
+    /// numbered controls, and this mapping from SDL's own database.
+    const XBOX_SERIES_MAC: &str = "0300509d5e040000130b000009056800,*,a:b0,b:b1,back:b4,dpdown:b12,dpleft:b13,dpright:b14,dpup:b11,guide:b5,leftshoulder:b9,leftstick:b7,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b10,rightstick:b8,righttrigger:a5,rightx:a2,righty:a3,start:b6,x:b2,y:b3,misc1:b15,platform:Mac OS X";
+
+    fn sdl_pad_names() -> Vec<String> {
+        let mut names: Vec<String> = (0..16).map(|b| format!("Button {b}")).collect();
+        for a in 0..6 {
+            for n in [format!("Axis {a}-"), format!("Axis {a}+"), format!("Full Axis {a}+"), format!("Full Axis {a}-")] {
+                names.push(n);
+            }
+        }
+        names.push("Motor".into());
+        names
+    }
+
+    /// SDL's mapping puts every GameCube control on the numbered control in
+    /// that position, so the pad needs no wizard at all.
+    #[test]
+    fn an_sdl_pad_maps_itself_from_sdls_own_mapping() {
+        use GcInput::*;
+        let layout = SdlLayout::parse(XBOX_SERIES_MAC).expect("a game controller mapping");
+        let (mapping, unmatched) = Mapping::auto_from_with(&sdl_pad_names(), Some(&layout));
+        assert!(unmatched.is_empty(), "nothing left for the wizard: {unmatched:?}");
+        for (input, name) in [
+            (ButtonA, "Button 0"), (ButtonB, "Button 1"), (ButtonX, "Button 2"), (ButtonY, "Button 3"),
+            (ButtonZ, "Button 10"), (Start, "Button 6"),
+            (MainStickUp, "Axis 1-"), (MainStickDown, "Axis 1+"), (MainStickLeft, "Axis 0-"), (MainStickRight, "Axis 0+"),
+            (CStickUp, "Axis 3-"), (CStickDown, "Axis 3+"), (CStickLeft, "Axis 2-"), (CStickRight, "Axis 2+"),
+            (TriggerL, "Full Axis 4+"), (TriggerR, "Full Axis 5+"),
+            (DPadUp, "Button 11"), (DPadDown, "Button 12"), (DPadLeft, "Button 13"), (DPadRight, "Button 14"),
+        ] {
+            assert_eq!(mapping.get(input), Some(Mapping::quote(name).as_str()), "{input:?}");
+        }
+        let extras = Extras::from_device_with(&sdl_pad_names(), Some(&layout));
+        assert_eq!(extras.get(Extra::AnalogTriggerL), "`Full Axis 4+`");
+        assert_eq!(extras.get(Extra::AnalogTriggerR), "`Full Axis 5+`");
+        assert_eq!(extras.get(Extra::RumbleMotor), "`Motor`");
+    }
+
+    /// The same pad read through Apple's GameController framework (SDL's MFi
+    /// driver), as a Mac runtime without SDL's HIDAPI driver reports it
+    /// (2026-10-12, Xbox Wireless Controller over Bluetooth): a d-pad on a
+    /// hat, the triggers on axes 2 and 5. Every GameCube control still maps.
+    #[test]
+    fn a_pad_read_through_apples_framework_maps_itself_too() {
+        use GcInput::*;
+        const MFI: &str = "050018dc5e040000e0020000ff070000,Xbox Wireless Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b9,leftshoulder:b4,leftstick:b6,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b7,righttrigger:a5,rightx:a3,righty:a4,start:b10,x:b2,y:b3,platform:Mac OS X";
+        let mut text = format!("DEVICE\tSDL/0/Xbox Wireless Controller\nMAPPING\t{MFI}\n");
+        let mut controls: Vec<String> = (0..11).map(|b| format!("Button {b}")).collect();
+        controls.extend(["N", "E", "S", "W"].map(|d| format!("Hat 0 {d}")));
+        for a in 0..6 {
+            controls.extend([format!("Axis {a}-"), format!("Axis {a}+"), format!("Full Axis {a}+"), format!("Full Axis {a}-")]);
+        }
+        for c in &controls {
+            text += &format!("INPUT\t{c}\t1\n");
+        }
+        text += "OUTPUT\tMotor\nSETTLED\t1219\t28\n";
+        let device = &crate::devices::parse_device_inputs(&text)[0];
+        let layout = device.sdl_layout().expect("the mapping rides along");
+        let (mapping, unmatched) = Mapping::auto_from_with(&device.all_names(), Some(&layout));
+        assert!(unmatched.is_empty(), "nothing left for the wizard: {unmatched:?}");
+        for (input, name) in [
+            (ButtonA, "Button 0"), (ButtonB, "Button 1"), (ButtonX, "Button 2"), (ButtonY, "Button 3"),
+            (ButtonZ, "Button 5"), (Start, "Button 10"),
+            (MainStickUp, "Axis 1-"), (MainStickRight, "Axis 0+"), (CStickUp, "Axis 4-"), (CStickRight, "Axis 3+"),
+            (TriggerL, "Full Axis 2+"), (TriggerR, "Full Axis 5+"),
+            (DPadUp, "Hat 0 N"), (DPadDown, "Hat 0 S"), (DPadLeft, "Hat 0 W"), (DPadRight, "Hat 0 E"),
+        ] {
+            assert_eq!(mapping.get(input), Some(Mapping::quote(name).as_str()), "{input:?}");
+        }
+        assert_eq!(Extras::from_device_with(&device.all_names(), Some(&layout)).get(Extra::RumbleMotor), "`Motor`");
+    }
+
+    /// The other shapes SDL's database uses: a d-pad on a hat, an inverted
+    /// axis, a half axis. And a binding is only given when the pad reports
+    /// that control: SDL's word never invents a name the runtime lacks.
+    #[test]
+    fn sdl_hats_inverted_and_half_axes_and_absent_controls() {
+        use GcInput::*;
+        let layout = SdlLayout::parse("x,Pad,a:b1,dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,lefty:a1~,lefttrigger:+a4,platform:Linux").unwrap();
+        let names: Vec<String> = ["Button 1", "Hat 0 N", "Hat 0 E", "Hat 0 S", "Hat 0 W", "Axis 1-", "Axis 1+", "Axis 4+"]
+            .iter().map(|n| n.to_string()).collect();
+        let (mapping, unmatched) = Mapping::auto_from_with(&names, Some(&layout));
+        assert_eq!(mapping.get(ButtonA), Some("`Button 1`"));
+        assert_eq!(mapping.get(DPadUp), Some("`Hat 0 N`"));
+        assert_eq!(mapping.get(DPadLeft), Some("`Hat 0 W`"));
+        assert_eq!(mapping.get(MainStickUp), Some("`Axis 1+`"), "inverted: up is positive");
+        assert_eq!(mapping.get(TriggerL), Some("`Axis 4+`"), "a half axis is bound as itself");
+        assert!(unmatched.contains(&ButtonB), "no b in the mapping and no name for it");
+        assert!(SdlLayout::parse("").is_none() && SdlLayout::parse("guid,name,platform:Mac OS X").is_none());
+    }
+
+    /// The device list carries the mapping, and a pad without one has none.
+    #[test]
+    fn the_device_list_carries_sdls_mapping() {
+        let text = format!("DEVICE\tSDL/0/Xbox Series X Controller\nMAPPING\t{XBOX_SERIES_MAC}\nINPUT\tButton 0\t1\nDEVICE\tQuartz/0/Keyboard & Mouse\nINPUT\tA\t1\n");
+        let devices = crate::devices::parse_device_inputs(&text);
+        assert_eq!(devices[0].sdl_mapping.as_deref(), Some(XBOX_SERIES_MAC));
+        assert!(devices[0].sdl_layout().is_some());
+        assert_eq!(devices[1].sdl_mapping, None);
+    }
+
+    /// A Mac with no pad: player one gets the keyboard, once, and is then left
+    /// alone. A Windows device line can never bind on a Mac, so the seeded
+    /// `XInput/0/Gamepad` section is not anybody's choice here.
+    #[test]
+    fn a_mac_with_no_pad_plays_on_the_keyboard() {
+        let seeded = "[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A`\n[GCPad2]\nDevice = XInput/1/Gamepad\n";
+        let once = mac_keyboard_pad_file(seeded).expect("the Windows pad line is replaced");
+        let pads = parse_gcpad(&once);
+        assert_eq!(pads[&1]["Device"], "Quartz/0/Keyboard & Mouse");
+        assert_eq!(pads[&1]["Buttons/Start"], "`Return`");
+        assert_eq!(pads[&2]["Device"], "XInput/1/Gamepad", "only player one is the launcher's to fill");
+        assert!(!once.contains("`Button A`"), "nothing of the old section is left behind");
+        assert_eq!(mac_keyboard_pad_file(&once), None, "the second launch has nothing to say");
+        assert!(mac_keyboard_pad_file("").is_some(), "no file still gets a player one");
+        let theirs = "[GCPad1]\nDevice = Quartz/0/Keyboard & Mouse\nButtons/A = `Space`\n";
+        assert_eq!(mac_keyboard_pad_file(theirs), None, "a layout the player made is theirs");
+        assert_eq!(mac_keyboard_pad_file("[GCPad1]\nDevice = Input/0/DualSense Wireless Controller\n"), None,
+            "a Mac pad set up by hand is theirs");
+    }
 
     fn identity(name: &str) -> DeviceIdentity {
         DeviceIdentity {

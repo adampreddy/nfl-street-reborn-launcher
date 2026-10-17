@@ -6569,6 +6569,8 @@ fn main() {
     // a 2.1 install at the root goes into its own subfolder and the data of
     // a launcher named "Launcher" is adopted. Renames only; it says nothing
     // and it cannot fail a start.
+    // Moved to an SD card that is not mounted yet: give it a moment.
+    move_drive::wait_for_moved_drive();
     match reborn_core::layout::prepare_data_root(&Platform::detect()) {
         Ok(prepared) => prepared.log(),
         Err(why) => eprintln!("The data root could not be prepared: {why}"),
@@ -6763,6 +6765,8 @@ fn main() {
             shell_tools::open_website,
             shell_tools::uninstall_launcher,
             move_drive::move_drive_info,
+            move_drive::moved_drive_missing,
+            move_drive::install_places,
             move_drive::move_drive_check,
             move_drive::move_drive_start,
             move_drive::move_drive_status,

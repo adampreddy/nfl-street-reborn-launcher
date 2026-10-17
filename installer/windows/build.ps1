@@ -93,7 +93,15 @@ param(
     # Where release-deck.sh stages the Steam Deck AppImage for a version. A
     # stable launcher release ships Windows and Linux together, at the same
     # version, from the same commit; see the manifest block at the end.
-    [string]$LinuxStage = "C:\Reborn Origin-stage\launcher-linux"
+    [string]$LinuxStage = "C:\Reborn Origin-stage\launcher-linux",
+    # Where the Mac build of a version is staged: "NFL Street Reborn <v>.app.zip"
+    # (the self-update asset), "NFL Street Reborn <v>.dmg" (what players
+    # download) and BUILD-INFO-<v>.txt, from installer/macos/build-release.sh
+    # on the MacBook, built from this same commit.
+    [string]$MacStage = "C:\Reborn Origin-stage\launcher-macos",
+    # Write a stable manifest with no Mac build. Macs then stay on the version
+    # they have; say so in the release notes.
+    [switch]$NoMac
 )
 
 $ErrorActionPreference = "Stop"
@@ -866,13 +874,37 @@ if ($Publisher) {
             $linux = [ordered]@{ url = $base + [uri]::EscapeDataString($appName) + "?v=" + $appHash.Substring(0, 8); sha256 = $appHash; bytes = $appItem.Length; file_name = $appName }
             Write-Host ("Steam Deck build {0}: sha256 {1}... from commit {2}" -f $appName, $appHash.Substring(0, 12), $head.Substring(0, 12))
         }
+        # The Mac too, by the same rule, unless -NoMac says this release
+        # leaves Macs where they are. A manifest with "macos": null drops every
+        # Mac from self-update (3.0.39's Mac entry went in by hand afterwards).
+        $macos = $null
+        if ($Channel -eq "stable" -and -not $NoMac) {
+            $zipName = "NFL Street Reborn $Version.app.zip"
+            $zipPath = Join-Path $MacStage $zipName
+            $dmgPath = Join-Path $MacStage "NFL Street Reborn $Version.dmg"
+            $macInfo = Join-Path $MacStage "BUILD-INFO-$Version.txt"
+            if (-not (Test-Path $zipPath) -or -not (Test-Path $dmgPath) -or -not (Test-Path $macInfo)) {
+                throw "No Mac build of $Version in $MacStage (needs $zipName, the .dmg and BUILD-INFO-$Version.txt). Build it on the MacBook from this commit with installer/macos/build-release.sh, or pass -NoMac."
+            }
+            $head = (git -C $root rev-parse HEAD).Trim()
+            $built = ((Get-Content $macInfo | Where-Object { $_ -match '^launcher\s+[0-9a-f]{40}\s*$' }) -split "\s+")[1]
+            if ($built -ne $head) {
+                throw "The Mac build of $Version is from $built, this build is $head. Rebuild it on the MacBook from this commit, or pass -NoMac."
+            }
+            $zipItem = Get-Item $zipPath
+            $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
+            $macos = [ordered]@{ url = $base + [uri]::EscapeDataString($zipName) + "?v=" + $zipHash.Substring(0, 8); sha256 = $zipHash; bytes = $zipItem.Length; file_name = $zipName }
+            Write-Host ("Mac build {0}: sha256 {1}... from commit {2}" -f $zipName, $zipHash.Substring(0, 12), $head.Substring(0, 12))
+        } elseif ($Channel -eq "stable") {
+            Write-Warning "-NoMac: latest.json names no Mac build, so Macs stay on the version they have."
+        }
         $manifest = [ordered]@{
             schema   = "nsr.launcher-release.v1"
             version  = $Version
             channel  = $Channel
             notes    = $null
             windows  = [ordered]@{ url = $assetUrl; sha256 = $hash; bytes = $setup.Length; file_name = $setup.Name }
-            macos    = $null
+            macos    = $macos
             linux    = $linux
         }
         $manifestName = if ($Channel -eq "beta") { "latest-beta.json" } else { "latest.json" }

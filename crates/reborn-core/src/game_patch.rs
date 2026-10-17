@@ -298,7 +298,21 @@ impl Patcher for Xdelta3<'_> {
 /// AppImage is read only and nothing can be put beside it.
 pub fn tool_dirs(platform: &Platform, extra: &[PathBuf]) -> Vec<PathBuf> {
     let appdir = std::env::var_os("APPDIR").filter(|v| !v.is_empty()).map(PathBuf::from);
-    tool_dirs_for(platform.paths.install_root().ok().as_deref(), appdir.as_deref(), extra)
+    tool_dirs_for(platform.paths.install_root().ok().as_deref(), appdir.as_deref(), &with_mac_bundle(extra))
+}
+
+/// `extra` with, on a Mac, the folder holding the running launcher in front:
+/// a .app carries its tools there (Contents/MacOS, where the bundler puts
+/// external binaries), while the install root is Contents/Resources.
+pub(crate) fn with_mac_bundle(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(extra.len() + 1);
+    if cfg!(target_os = "macos") {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            dirs.push(dir);
+        }
+    }
+    dirs.extend(extra.iter().cloned());
+    dirs
 }
 
 /// [`tool_dirs`] with its two inputs in hand, so the order is testable.
@@ -613,6 +627,19 @@ pub fn sha256_of(path: &Path) -> Result<Sha256Hex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Mac .app's tools sit beside the launcher, searched before the rest.
+    #[test]
+    fn a_mac_searches_beside_the_running_launcher_first() {
+        let extra = vec![PathBuf::from("/extra")];
+        let dirs = with_mac_bundle(&extra);
+        let here = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        if cfg!(target_os = "macos") {
+            assert_eq!(dirs, vec![here, PathBuf::from("/extra")]);
+        } else {
+            assert_eq!(dirs, extra, "nothing changes off macOS");
+        }
+    }
     use std::collections::BTreeMap;
 
     /// An AppImage carries its tools under usr/bin and nothing can sit

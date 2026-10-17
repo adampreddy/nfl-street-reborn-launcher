@@ -750,26 +750,31 @@ html:not(#_) .page-setup #next:disabled{opacity:.6}
 
 /* Game content download, the last setup step (Deck port, carried onto the
    redesign): one large bar, then the item list. Same card as .patch-card. */
-html:not(#_) .content-download{border:1px solid var(--stroke);border-radius:var(--r-md);padding:28px;background:var(--glass-1);text-align:center;max-width:620px;margin:0 auto}
-html:not(#_) .content-download .setup-success{margin:4px auto 18px}
-html:not(#_) .page-setup[data-setup-stage="completion"] #screen .content-download>.setup-intro{font-size:15px;margin:0 0 18px;color:var(--fg)}
-html:not(#_) .content-download-bar{display:block;width:100%;height:12px;border:0;border-radius:8px;overflow:hidden;background:var(--glass-2);accent-color:var(--fg)}
-html:not(#_) .content-download-bar::-webkit-progress-bar{background:var(--glass-2)}
-html:not(#_) .content-download-bar::-webkit-progress-value{background:var(--fg);transition:width 400ms linear}
-html:not(#_) .content-download-bar:not([value]){background:linear-gradient(90deg,var(--glass-2) 20%,var(--fg-2) 50%,var(--glass-2) 80%);background-size:200% 100%;animation:content-loading 1.4s ease-in-out infinite}
-html:not(#_) .content-download-bar:not([value])::-webkit-progress-bar{background:transparent}
-@media(prefers-reduced-motion:reduce){html:not(#_) .content-download-bar:not([value]){animation:none}}
-html:not(#_) .content-download-amount{font-size:20px;font-weight:600;color:var(--fg);margin:22px 0 4px;font-variant-numeric:tabular-nums}
-html:not(#_) .content-download-rate{font-size:12px;color:var(--fg-2);margin:0 0 18px;font-variant-numeric:tabular-nums}
+html:not(#_) .content-download{border:1px solid var(--stroke);border-radius:var(--r-lg);padding:24px;background:var(--glass-1);box-shadow:var(--sheen);text-align:center;max-width:620px;margin:0 auto}
+html:not(#_) .content-download .setup-success{margin:0 auto 16px}
+html:not(#_) .page-setup[data-setup-stage="completion"] #screen .content-download>.setup-intro{font-size:14px;margin:0 0 24px;color:var(--fg-2)}
+html:not(#_) .cd-meter{margin:0 0 24px;text-align:left}
+html:not(#_) .cd-figures{display:flex;justify-content:space-between;align-items:baseline;gap:16px;margin:0 0 8px}
+html:not(#_) .cd-amount{font-size:15px;font-weight:600;color:var(--fg)}
+html:not(#_) .cd-percent{font-size:15px;font-weight:700;color:var(--fg)}
+html:not(#_) .cd-track{position:relative;height:6px;border-radius:3px;background:var(--glass-2);overflow:hidden}
+html:not(#_) .cd-fill{position:absolute;inset:0;background:var(--red);transform-origin:left center;transform:scaleX(0);transition:transform var(--d2) var(--ease)}
+html:not(#_) .cd-track .sweep{top:0;height:auto}
+html:not(#_) .cd-meta{display:flex;justify-content:space-between;gap:16px;margin:8px 0 0;font-size:12px;color:var(--fg-3)}
+html:not(#_) .cd-meter [hidden]{display:none}
+html:not(#_) .cd-where{display:flex;flex-direction:column;gap:8px;margin:0 0 24px;text-align:left}
+html:not(#_) .cd-where[hidden]{display:none}
+html:not(#_) .cd-where .cd-place{display:flex;justify-content:space-between;align-items:center;gap:16px;min-height:40px;width:100%;text-align:left}
+html:not(#_) .cd-place-free{color:var(--fg-3)}
+html:not(#_) .cd-where .cd-place.primary .cd-place-free{color:inherit}
+html:not(#_) #screen .content-download .cd-where .refusal{margin:8px 0 0;max-width:none;text-align:left}
 html:not(#_) .content-download-list{list-style:none;margin:0;padding:0;border:1px solid var(--stroke);border-radius:10px;overflow:hidden;text-align:left}
-html:not(#_) .content-download-item{display:grid;grid-template-columns:minmax(0,1fr) auto 92px;gap:14px;align-items:center;padding:11px 16px;border-bottom:1px solid var(--stroke);font-size:12px;color:var(--fg)}
+html:not(#_) .content-download-item{display:grid;grid-template-columns:minmax(0,1fr) auto 96px;gap:16px;align-items:center;padding:10px 16px;min-height:40px;box-sizing:border-box;border-bottom:1px solid var(--stroke);font-size:12px;color:var(--fg)}
 html:not(#_) .content-download-item:last-child{border-bottom:0}
-html:not(#_) .content-download-size{color:var(--fg-2);font-variant-numeric:tabular-nums}
-html:not(#_) .content-download-state{text-align:right;color:var(--fg-2)}
+html:not(#_) .content-download-size{color:var(--fg-3)}
+html:not(#_) .content-download-state{text-align:right;color:var(--fg-3)}
 html:not(#_) .content-download-item.active .content-download-state{color:var(--fg)}
 html:not(#_) .content-download-item.done .content-download-state{color:var(--ok)}
-html:not(#_) .content-download .refusal{margin:16px 0 0;text-align:left}
-html:not(#_) .content-download-actions{display:flex;gap:10px;justify-content:center;margin-top:18px}
-html:not(#_) .content-download-actions button{font-size:12px}
+html:not(#_) #screen .content-download .refusal{margin:16px 0 0;max-width:none;text-align:left}
+html:not(#_) .content-download-actions{display:flex;gap:8px;justify-content:center;margin-top:16px}
 html:not(#_) .content-download-actions:not(:has(button:not([hidden]))){display:none}
-@keyframes content-loading{0%{background-position:100% 0}100%{background-position:-100% 0}}

@@ -118,7 +118,38 @@ impl DetectedDevice {
     pub fn is_controller(&self) -> bool {
         let name = self.name.to_ascii_lowercase();
         // Dolphin's DirectInput backend exposes keyboards AND joysticks.
-        !matches!(name.as_str(), "keyboard mouse" | "keyboard" | "mouse")
+        if matches!(name.as_str(), "keyboard mouse" | "keyboard" | "mouse") {
+            return false;
+        }
+        // Linux Dolphin's evdev backend lists every input node: keyboards, the
+        // power button, a TV's CEC remote. Deck players got
+        // `evdev/0/AT Translated Set 2 keyboard` as player two, with all twenty
+        // controls dead (pad reports, 2026-10-12).
+        if self.backend == Backend::Other("evdev".into()) {
+            const NOT_PADS: &[&str] = &[
+                "keyboard", "mouse", "consumer control", "system control", "steamos-manager",
+                "power button", "sleep button", "video bus", "lid switch", "touchpad", "touchscreen",
+                "cros-ec", "hdmi", "headphone", "headset", "speaker", "telink",
+            ];
+            return !NOT_PADS.iter().any(|n| name.contains(n));
+        }
+        true
+    }
+
+    /// Steam Input's virtual pad, as evdev names it: `Microsoft X-Box 360 pad 0`.
+    ///
+    /// Steam numbers its pads; the xpad driver's own name for a real 360 pad
+    /// has no number, so the number is what tells them apart.
+    pub fn is_steam_virtual_pad(&self) -> bool {
+        self.backend == Backend::Other("evdev".into())
+            && self
+                .name
+                .strip_prefix("Microsoft X-Box 360 pad ")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    fn steam_pad_number(&self) -> u32 {
+        self.name.rsplit(' ').next().and_then(|n| n.parse().ok()).unwrap_or(u32::MAX)
     }
 }
 
@@ -132,6 +163,23 @@ impl Enumeration {
             .filter(|d| d.is_controller() && d.backend != Backend::DInput)
             .collect();
 
+        // Steam Input owns every pad when it is on (Steam Deck Game Mode, or a
+        // game launched from Steam). It hands the game one virtual
+        // `Microsoft X-Box 360 pad N` per pad, and the real devices stay listed
+        // beside them: in Game Mode the Deck's own `Valve Software Steam Deck
+        // Controller` / `Steam Controller` reads nothing at all, and any other
+        // pad would be offered twice. Every evdev device has id 0, so the list
+        // order was Dolphin's, and the dead Deck controller took player one
+        // while the working virtual pad landed on player three (pad reports,
+        // 2026-10-12; testers fixed it by picking "Xbox 360" in Dolphin).
+        // So when Steam's pads are there, they are the only pads, in Steam's
+        // order.
+        if pads.iter().any(|d| d.is_steam_virtual_pad()) {
+            pads.retain(|d| !self.steam_input_replaces(d));
+            // The sort below is stable, so this order survives it.
+            pads.sort_by_key(|d| (d.backend.preference(), d.steam_pad_number()));
+        }
+
         // DirectInput is never offered, and SDL only when it is all there is.
         //
         // Both name controls by number and both report the same plastic as
@@ -143,8 +191,23 @@ impl Enumeration {
         // also where vJoy, wheels and HOTAS drivers live, which would make a
         // keyboard player's "controller" something they never meant to hold.
         // WGInput reports every HID game controller DirectInput does.
-        if pads.iter().any(|d| d.backend.names_its_controls()) {
-            pads.retain(|d| d.backend != Backend::Sdl);
+        //
+        // Runtime 1.2.7 changed who owns a pad. WGInput is off, so nothing
+        // reports a pad twice, and SDL names a pad it recognises like an Xbox
+        // pad (`Button A`, `Start`, `Left Y+`): SDL is where every PlayStation,
+        // Switch and third-party pad lives now, and dropping it would leave a
+        // DualSense beside an Xbox pad with no port. A list with WGInput in it
+        // comes from an older runtime, whose SDL numbers its controls, so the
+        // old rule stands for it.
+        let older_runtime = pads.iter().any(|d| d.backend == Backend::Other("WGInput".into()));
+        if older_runtime {
+            if pads.iter().any(|d| d.backend.names_its_controls()) {
+                pads.retain(|d| d.backend != Backend::Sdl);
+            }
+        } else if pads.iter().any(|d| d.backend == Backend::XInput) {
+            // The runtime leaves Xbox pads to XInput; this only guards a name
+            // that slipped through (a pad SDL did not type as Xbox).
+            pads.retain(|d| !(d.backend == Backend::Sdl && d.name.to_ascii_lowercase().contains("xbox")));
         }
 
         // Deduplicate by the PAD, not by the backend.
@@ -188,6 +251,16 @@ impl Enumeration {
         chosen
     }
 
+    /// Whether Steam Input stands in for this device: Steam's virtual pads are
+    /// listed and this is one of the real evdev devices behind them. Such a
+    /// device is never a player's pad, not even one picked in Dolphin, because
+    /// a launch before 3.0.41 wrote it there itself.
+    pub fn steam_input_replaces(&self, device: &DetectedDevice) -> bool {
+        device.backend == Backend::Other("evdev".into())
+            && !device.is_steam_virtual_pad()
+            && self.devices.iter().any(|d| d.is_steam_virtual_pad())
+    }
+
     /// Devices that were found but will not be offered, and why.
     ///
     /// Shown so a player whose pad is not being used can see that it was seen.
@@ -201,7 +274,9 @@ impl Enumeration {
             .iter()
             .filter(|d| !chosen.contains(&d.device_string()))
             .map(|d| {
-                let why = if !d.is_controller() {
+                let why = if self.steam_input_replaces(d) {
+                    "Steam Input passes this controller to the game as an Xbox 360 pad"
+                } else if !d.is_controller() {
                     "keyboard and mouse, kept as a fallback for an unused port"
                 } else {
                     "the same pad is already offered through a better backend"
@@ -254,11 +329,19 @@ pub struct DeviceInputs {
     /// Output names, such as rumble motors. Bound by name exactly like an
     /// input, and exactly as dead when the name is wrong.
     pub outputs: Vec<String>,
+    /// SDL's mapping of this pad's numbered controls (the runtime's
+    /// `MAPPING` line), when SDL's controller database knows the pad.
+    pub sdl_mapping: Option<String>,
 }
 
 impl DeviceInputs {
     /// Inputs and outputs together, which is what the analog trigger and
     /// rumble bindings must be checked against: the motor is an output.
+    /// [`DeviceInputs::sdl_mapping`], parsed.
+    pub fn sdl_layout(&self) -> Option<crate::controller::SdlLayout> {
+        self.sdl_mapping.as_deref().and_then(crate::controller::SdlLayout::parse)
+    }
+
     pub fn all_names(&self) -> Vec<String> {
         let mut all = self.names();
         all.extend(self.outputs.iter().cloned());
@@ -345,9 +428,13 @@ pub fn parse_device_inputs(text: &str) -> Vec<DeviceInputs> {
                 if let Some(name) = parts.next() {
                     all.push(DeviceInputs {
                         device: name.to_string(),
-                        inputs: Vec::new(),
-                        outputs: Vec::new(),
+                        ..Default::default()
                     });
+                }
+            }
+            Some("MAPPING") => {
+                if let (Some(current), Some(mapping)) = (all.last_mut(), parts.next()) {
+                    current.sdl_mapping = Some(mapping.to_string());
                 }
             }
             Some("OUTPUT") => {
@@ -890,5 +977,54 @@ XInput/0/Gamepad",
         assert!(parse_device_string("not a device").is_none());
         assert!(parse_device_string("SDL/notanumber/Pad").is_none());
         assert!(parse_device_string("SDL/0/").is_none());
+    }
+
+    fn offered(text: &str) -> Vec<String> {
+        parse_all(text).playable_pads().iter().map(|d| d.device_string()).collect()
+    }
+
+    /// Verbatim from a Steam Deck's pad report (3.0.40, runtime 1.2.12): the
+    /// Deck's own controller took player one with all twenty controls dead,
+    /// the keyboard player two, and Steam's working pads three and four.
+    #[test]
+    fn steam_inputs_pads_are_the_only_pads_in_steams_order() {
+        let deck = "evdev/0/Valve Software Steam Controller
+evdev/0/AT Translated Set 2 keyboard
+evdev/0/Microsoft X-Box 360 pad 0
+evdev/0/Microsoft X-Box 360 pad 1
+evdev/0/DualSense Wireless Controller";
+        assert_eq!(offered(deck), ["evdev/0/Microsoft X-Box 360 pad 0", "evdev/0/Microsoft X-Box 360 pad 1"]);
+    }
+
+    #[test]
+    fn steam_pads_are_numbered_by_steam_not_by_list_order() {
+        let deck = "evdev/0/Microsoft X-Box 360 pad 10
+evdev/0/Valve Software Steam Deck Controller
+evdev/0/Microsoft X-Box 360 pad 2";
+        assert_eq!(offered(deck), ["evdev/0/Microsoft X-Box 360 pad 2", "evdev/0/Microsoft X-Box 360 pad 10"]);
+    }
+
+    /// Without Steam Input (desktop, Steam closed) the real pads are the pads,
+    /// and the keyboards and buttons beside them never are.
+    #[test]
+    fn without_steam_the_real_pads_stay_and_keyboards_go() {
+        let desktop = "evdev/0/USB Composite Device USB Composite Device Consumer Control
+evdev/0/AT Translated Set 2 keyboard
+evdev/0/InputPlumber Keyboard
+evdev/0/Microsoft X-Box One Elite 2 pad
+evdev/0/steamos-manager
+evdev/0/8BitDo Pro 2
+evdev/0/Telink Wireless Receiver
+evdev/0/cros-ec-cec";
+        assert_eq!(offered(desktop), ["evdev/0/Microsoft X-Box One Elite 2 pad", "evdev/0/8BitDo Pro 2"]);
+        assert_eq!(offered("evdev/0/Valve Software Steam Deck Controller"), ["evdev/0/Valve Software Steam Deck Controller"]);
+    }
+
+    #[test]
+    fn a_real_360_pad_is_not_mistaken_for_steams() {
+        let d = parse_all("evdev/0/Microsoft X-Box 360 pad
+evdev/0/Microsoft X-Box 360 pad 0");
+        let names: Vec<bool> = d.devices.iter().map(|d| d.is_steam_virtual_pad()).collect();
+        assert_eq!(names, [false, true]);
     }
 }

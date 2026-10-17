@@ -618,3 +618,7 @@ a.lb-row.player-link:hover .lb-name{text-decoration:underline;text-decoration-th
 .m-open{all:unset;position:absolute;inset:0;border-radius:var(--r-md);cursor:pointer}
 .m-open-row>:not(.m-open){position:relative;pointer-events:none}
 .m-open-row a.player-link{pointer-events:auto}
+/* The missing-drive notice (app-shell.js): any page, a Steam Deck SD card taken out. */
+body.themed dialog.drive-missing{max-width:min(560px,calc(100vw - 32px))}
+body.themed dialog.drive-missing h2{margin:0 0 8px}
+body.themed dialog.drive-missing p{margin:0 0 24px;color:var(--fg-2)}
