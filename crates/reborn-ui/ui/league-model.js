@@ -257,3 +257,135 @@ export function rosterRows(home) {
     key: p.poid ?? null, number: num(p.number) === null ? '' : String(p.number), name: str(p.name), position: str(p.position),
   }));
 }
+
+// ---- League page v3, layout F (spec 2026-10-17-league-page-v3-design.md) ----
+
+const SITE = 'https://nflstreetreborn.com/league/';
+const posInt = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null);
+
+/** "Reborn Season 4 · Week 3": the league's own name and the week. */
+export function seasonLine(home) {
+  const week = str(home?.league?.week_label) || (num(home?.league?.week) !== null ? `Week ${home.league.week}` : '');
+  return [str(home?.league?.name), week].filter(Boolean).join(' · ');
+}
+
+/** The team card's "2-0 · 2nd". */
+export function teamCardLine(home) {
+  const parts = [str(home?.team?.record)];
+  if (num(home?.team?.standing) !== null) parts.push(ordinal(home.team.standing));
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** "you lead 1-0" / "you trail 0-1" / "tied 1-1", from [you, opp]. */
+function seriesWords([you, opp]) {
+  if (you > opp) return `you lead ${you}-${opp}`;
+  if (you < opp) return `you trail ${you}-${opp}`;
+  return `tied ${you}-${opp}`;
+}
+
+/** The matchup banner: what sits between the teams (`mid`), the numbers beside them (`scores`, you first), one line
+ *  (`text`, `tone` '' | 'ok' | 'bad') and the buttons on the right (`actions`). `edition` / `progress` are the League
+ *  files' state: while they are missing, behind or installing, the install button takes the action slot, except when
+ *  a game already runs from the installed files (live, or a room already open). */
+export function bannerState(home, { stale = false, edition = null, progress = null } = {}) {
+  const m = home?.matchup;
+  const c = cardState(home, { stale });
+  const owner = oppName(m);
+  const lw = num(home?.league?.week);
+  const mw = num(m?.week);
+  const vs = mw !== null && lw !== null && mw < lw ? `Week ${mw} game` : 'VS';
+  const series = mine(m?.series, m?.home);
+  const off = !playGate(edition, progress).ready;
+  const offline = { key: 'offline', label: 'Play offline', primary: false, disabled: off };
+  const friendly = { key: 'friendly', label: 'Friendly', primary: false, disabled: off };
+  const play = (disabled) => ({ key: 'play', label: `Play ${str(m?.opponent?.name) || owner}`, primary: true, disabled });
+  const out = (kind, { mid = vs, scores = null, text = '', tone = '', actions = [] } = {}) => ({ kind, mid, scores, text, tone, actions });
+  let s;
+  switch (c.kind) {
+    case 'unscheduled': s = out('unscheduled', { mid: null, text: 'No schedule yet', actions: [offline, friendly] }); break;
+    case 'bye': s = out('bye', { mid: null, text: 'No game this week', actions: [offline, friendly] }); break;
+    case 'final': {
+      const decided = m.winner_team_id !== null && m.winner_team_id !== undefined;
+      const won = decided && m.winner_team_id === home?.team?.id;
+      const text = !decided ? 'Final' : m.forfeit === true ? `You ${won ? 'won' : 'lost'} by forfeit`
+        : `You ${won ? 'won' : 'lost'} the series${series ? ` ${series[0]}-${series[1]}` : ''}`;
+      s = out('final', { mid: 'FINAL', scores: m.forfeit === true ? null : series, text, tone: decided ? (won ? 'ok' : 'bad') : '', actions: [offline, friendly] });
+      break;
+    }
+    case 'stale': s = out('stale', { scores: series, actions: [offline, friendly] }); break;
+    case 'live': {
+      const n = series ? series[0] + series[1] + 1 : null;
+      s = out('live', { mid: 'LIVE', scores: mine(m.score, m.home), text: series ? `Game ${n} of 3 · ${seriesWords(series)}` : '',
+        actions: [{ key: 'back', label: 'Back to the game', primary: true, disabled: false }] });
+      break;
+    }
+    case 'join': s = out('join', { text: `${owner} opened the room`, actions: [{ key: 'join', label: 'Join', primary: true, disabled: off }] }); break;
+    case 'lobby': s = out('lobby', { text: `${owner} is in the room`, actions: [{ key: 'open', label: 'Open room', primary: true, disabled: false }] }); break;
+    case 'waiting': s = out('waiting', { text: `Waiting for ${owner} to join`, actions: [{ key: 'cancel', label: 'Cancel', primary: false, disabled: false }] }); break;
+    case 'unlinked': s = out('unlinked', { text: `${owner} hasn't linked Discord on the league site`, actions: [offline, friendly, play(true)] }); break;
+    default: {
+      const between = (m?.status === 'in_progress' || m?.status === 'live') && series;
+      s = out('play', { scores: between ? series : null, text: between ? `Game ${series[0] + series[1] + 1} next · ${seriesWords(series)}` : '',
+        actions: [offline, friendly, play(off)] });
+    }
+  }
+  const files = installState(edition, progress);
+  if (files && !['live', 'waiting', 'lobby'].includes(s.kind)) {
+    s.actions = [{ key: 'install', label: files.label, primary: true, disabled: files.disabled, percent: files.percent }];
+  }
+  return s;
+}
+
+function gameSide(t, score, winner) {
+  return { team_id: num(t?.team_id), name: str(t?.name) || str(t?.abbr), record: str(t?.record), score, winner };
+}
+
+/** The Week card: finished games first, then yours, then the rest, each keeping the server's order. `marker` is the
+ *  right-hand word: 'You' on yours, 'Live', 'Final', or ''. */
+export function weekGames(home) {
+  const mineId = home?.matchup?.fixture_id;
+  const rows = arr(home?.week_games).filter((g) => g && g.fixture_id !== undefined && g.fixture_id !== null && g.home && g.away);
+  const rank = (g) => (g.status === 'final' ? 0 : g.fixture_id === mineId ? 1 : 2);
+  return rows.map((g, i) => ({ g, i })).sort((a, b) => rank(a.g) - rank(b.g) || a.i - b.i).map(({ g }) => {
+    const status = ['final', 'in_progress', 'live'].includes(g.status) ? g.status : 'scheduled';
+    const isMine = g.fixture_id === mineId;
+    const decided = status === 'final' && g.winner_team_id !== null && g.winner_team_id !== undefined;
+    const pts = (k) => (status === 'scheduled' ? null : num(g.score?.[k]));
+    return {
+      fixture_id: g.fixture_id, mine: isMine, status,
+      marker: isMine ? 'You' : status === 'live' ? 'Live' : status === 'final' ? 'Final' : '',
+      away: gameSide(g.away, pts('away'), decided && g.winner_team_id === g.away.team_id),
+      home: gameSide(g.home, pts('home'), decided && g.winner_team_id === g.home.team_id),
+    };
+  });
+}
+
+/** "Week N's best": the site's `week_best` (top 3 per group, the leader marked `top`), or the empty line. */
+export function weekBest(home) {
+  const wb = home?.week_best;
+  const week = num(wb?.week) ?? num(home?.league?.week);
+  const title = week !== null ? `Week ${week}'s best` : 'Best of the week';
+  const groups = arr(wb?.groups).filter((g) => g && str(g.label)).map((g) => ({
+    label: g.label,
+    rows: arr(g.rows).filter(Boolean).slice(0, 3).map((r, i) => ({ poid: num(r.poid), name: str(r.name), team_id: num(r.team_id), line: str(r.line), top: i === 0 })),
+  }));
+  if (!groups.some((g) => g.rows.length)) return { title, empty: 'No games played yet' };
+  return { title, groups };
+}
+
+/** A league-site page, built only from numeric ids (never a URL from the answer). Null when an id is not one. */
+export function siteUrl(kind, home, id) {
+  const lid = posInt(home?.league?.id);
+  if (lid === null) return null;
+  const q = `league_id=${lid}`;
+  const need = (fn) => (posInt(id) === null ? null : fn(id));
+  switch (kind) {
+    case 'team': return need((v) => `${SITE}team.php?${q}&team_id=${v}`);
+    case 'game': return need((v) => `${SITE}stats/box.php?${q}&game_id=${v}`);
+    case 'player': return need((v) => `${SITE}stats/player.php?${q}&poid=${v}`);
+    case 'standings': return `${SITE}standings.php?${q}`;
+    case 'schedule': { const w = posInt(home?.league?.week); return `${SITE}schedule.php?${q}${w === null ? '' : `&week=${w}`}`; }
+    case 'leaders': return `${SITE}stats/leaders.php?${q}`;
+    default: return null;
+  }
+}
