@@ -458,7 +458,10 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       if (cmd === 'launch') return new Promise(() => {});
       // `{ __reject: 'why' }`: the command fails with that sentence (a server that refuses, or lacks the route).
       // `{ __first: answer, __reject: 'why' }`: the first call answers, every later one fails (a server lost after a good load).
-      if (cmd in data) { const v = data[cmd]; if (v && typeof v === 'object' && '__first' in v) { if (!v.__used) { v.__used = true; return v.__first; } throw v.__reject; }
+      if (cmd in data) { const v = data[cmd];
+        // An answer that depends on one argument: { __byArg: 'teamId', values: { '482': ... } } (league_logo).
+        if (v && typeof v === 'object' && '__byArg' in v) return v.values[String(args?.[v.__byArg])] ?? null;
+        if (v && typeof v === 'object' && '__first' in v) { if (!v.__used) { v.__used = true; return v.__first; } throw v.__reject; }
         if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
       if (/^onboarding_/.test(cmd)) return { outcome: 'recorded' };
       return null;

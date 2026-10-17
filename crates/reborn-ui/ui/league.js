@@ -28,7 +28,26 @@ const screen = document.getElementById('screen');
 const state = { home: null, error: null, busy: null, actionError: null, installError: null, controllerSetup: null,
   edition: null, progress: null, needsUpdate: false, trackLeft: 0 };
 const signIn = createSignIn({ onChange: () => draw(), onDone: () => load().catch(() => {}) });
-const logoTeam = (t) => ({ name: t?.name || t?.abbrev || t?.abbr, abbrev: t?.abbrev || t?.abbr, logo_url: t?.logo_url });
+// Real team logos: asked of the core once per team per visit (league_logo), drawn as soon as each arrives. The
+// league answer's own logo_url is a backend /live-assets/league/ path the page cannot load from a non-production backend.
+const logos = new Map();
+const askedLogos = new Set();
+let logoDraw = 0;
+function logoFor(id) {
+  const key = Number(id);
+  if (!Number.isSafeInteger(key) || key <= 0) return null;
+  if (!askedLogos.has(key)) {
+    askedLogos.add(key);
+    quietCall('league_logo', { teamId: key }).then((u) => {
+      if (typeof u !== 'string') return;
+      logos.set(key, u);
+      if (!logoDraw) logoDraw = setTimeout(() => { logoDraw = 0; draw(); }, 50);
+    }).catch(() => {});
+  }
+  return logos.get(key) ?? null;
+}
+const logoTeam = (t) => ({ name: t?.name || t?.abbrev || t?.abbr, abbrev: t?.abbrev || t?.abbr,
+  logo_url: logoFor(t?.team_id ?? t?.id) ?? t?.logo_url });
 const tinted = (node, prop, color) => { if (color && node?.style?.setProperty) node.style.setProperty(prop, color); return node; };
 const leagueSettingsOn = () => get(FRIENDLY_KEY) !== 'off'; // default ON
 const go = (href) => { location.href = href; };
@@ -191,21 +210,21 @@ function teamHeader(home) {
     ? el('button', { type: 'button', class: 'btn quiet sm lg-site', 'data-key': 'league-site', text: 'View on site ›',
       onclick: () => call('open_website', { url: home.site_url }).catch(() => {}) })
     : null;
-  return tinted(el('header', { class: 'glass lg-head' },
-    teamLogo(logoTeam(t), 'lg-head-logo'),
+  // The page heading every page has (Stats, Online): the title, one line under it, the actions on the right.
+  return el('div', { class: 'page-heading lg-head' },
     el('div', { class: 'lg-head-text' },
-      el('span', { class: 'k-label', text: home.league?.name || 'League' }),
-      el('h1', { text: t.name || 'Your team' }),
-      el('p', { class: 'lg-head-line num', text: headerLine(home) })),
-    el('div', { class: 'lg-head-actions' }, installArea(), site)), '--tc', teamColor(t));
+      el('h1', { text: 'League' }),
+      el('p', { class: 'purpose lg-head-line' }, teamLogo(logoTeam(t), 'lg-head-logo'),
+        el('b', { text: t.name || 'Your team' }), el('span', { class: 'num', text: `· ${headerLine(home)}` }))),
+    el('div', { class: 'lg-head-actions' }, installArea(), site));
 }
 
 // ---- the week scoreboard: every game this week, yours first ----
 
 function sideRow(s) {
   return tinted(el('div', { class: `lg-side${s.winner ? ' won' : ''}` },
-    el('span', { class: 'lg-chip', 'aria-hidden': 'true' }), teamLogo(logoTeam(s), 'lg-cell-logo'),
-    el('b', { class: 'lg-abbr', text: s.abbrev }), el('span', { class: 'lg-rec num', text: s.record }),
+    teamLogo(logoTeam(s), 'lg-cell-logo'),
+    el('b', { class: 'lg-abbr', text: s.name || s.abbrev, title: s.name || null }), el('span', { class: 'lg-rec num', text: s.record }),
     el('span', { class: 'lg-pts num', text: s.score === null ? '' : String(s.score) })), '--tc', s.color);
 }
 
@@ -329,7 +348,8 @@ function standings(home) {
   const rows = standingsRows(home);
   return card('lg-standings', 'Standings', rows.length ? el('ol', { class: 'lg-list lg-stand' }, ...rows.map((r) =>
     el('li', { class: r.mine ? 'mine' : null, 'aria-current': r.mine ? 'true' : null },
-      el('span', { class: 'num lg-rank', text: r.rank === null ? '' : String(r.rank) }), el('span', { class: 'lg-name', text: r.name || r.abbrev }),
+      el('span', { class: 'num lg-rank', text: r.rank === null ? '' : String(r.rank) }),
+      el('span', { class: 'lg-team' }, teamLogo(logoTeam(r), 'lg-row-logo'), el('span', { class: 'lg-name', text: r.name || r.abbrev })),
       el('span', { class: 'num r', text: r.record })))) : el('p', { class: 'vc-none', text: 'No standings yet.' }), { flush: rows.length > 0 });
 }
 

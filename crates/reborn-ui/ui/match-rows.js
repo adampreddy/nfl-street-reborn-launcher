@@ -20,7 +20,9 @@ export function initial(name) {
 export function teamLogo(team, cls = '') {
   const c = `team-logo${cls ? ` ${cls}` : ''}`;
   const badge = () => el('span', { class: `${c} text`, 'aria-hidden': 'true', text: team?.abbrev || initial(team?.name) });
-  const src = assetUrl(team?.logo_url);
+  // A league logo arrives inline (league_logo: the core fetched it from the backend in use); CSP allows data: images.
+  const inline = typeof team?.logo_url === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(team.logo_url);
+  const src = inline ? team.logo_url : assetUrl(team?.logo_url);
   if (!src) return badge();
   const img = el('img', { class: c, alt: '', src, title: team?.name || null });
   img.addEventListener('error', () => img.replaceWith(badge()), { once: true });

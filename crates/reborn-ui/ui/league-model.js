@@ -196,7 +196,7 @@ export function friendlyRuleset(leagueSettingsOn) {
 }
 
 function side(t, score, won) {
-  return { abbrev: str(t?.abbr), name: str(t?.name) || str(t?.abbr), record: str(t?.record), logo_url: str(t?.logo_url) || null,
+  return { team_id: num(t?.team_id), abbrev: str(t?.abbr), name: str(t?.name) || str(t?.abbr), record: str(t?.record), logo_url: str(t?.logo_url) || null,
     color: teamColor(t), score, winner: won };
 }
 
@@ -226,7 +226,7 @@ export function scoreCells(home) {
 export function standingsRows(home) {
   const me = home?.team?.id;
   return arr(home?.standings).filter(Boolean).map((r) => ({
-    rank: num(r.rank), name: str(r.name), abbrev: str(r.abbr), record: str(r.record), mine: r.team_id === me,
+    rank: num(r.rank), team_id: num(r.team_id), name: str(r.name), abbrev: str(r.abbr), record: str(r.record), mine: r.team_id === me,
   }));
 }
 

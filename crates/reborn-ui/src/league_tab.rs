@@ -123,9 +123,96 @@ pub async fn league_home() -> Result<serde_json::Value, LiveCommandError> {
     .map_err(|_| err("unavailable", NOT_LOADED))?
 }
 
+/// A day: how long a downloaded league logo is used before it is fetched again.
+const LOGO_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// The backend's own cap on a league logo (`router.js`, 1 MiB).
+const LOGO_MAX_BYTES: u64 = 1 << 20;
+const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// One team's logo as a `data:image/png;base64,` URL, or `None` when there is none to show.
+///
+/// The page may load images only from the production API's `/live-assets/` and `data:` (tauri.conf.json CSP), and the
+/// backend's league logo route (`/live-assets/league/<team>.png`) is on whichever backend this launcher uses. So the
+/// core fetches it from that origin, keeps it a day in `cache/league-logos/`, and hands the page the bytes. Asked once
+/// per team per page visit (league.js), never with every league refresh: twelve real logos are about 4 MB.
+#[tauri::command]
+pub async fn league_logo(team_id: u64) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Platform::detect();
+        let origin = identity::origin(&p).ok()?;
+        let dir = p.paths.cache_root().ok()?.join("league-logos");
+        let file = dir.join(format!("{team_id}.png"));
+        let fresh = std::fs::metadata(&file)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age < LOGO_MAX_AGE);
+        if !fresh {
+            let _ = std::fs::create_dir_all(&dir);
+            let part = dir.join(format!("{team_id}.png.part"));
+            let url = format!("{}/live-assets/league/{team_id}.png", origin.trim_end_matches('/'));
+            use reborn_core::net::Http;
+            match crate::http_client().get_to_file(&url, &part) {
+                Ok(n) if n > 0 && n <= LOGO_MAX_BYTES => {
+                    let _ = std::fs::rename(&part, &file);
+                }
+                _ => {
+                    let _ = std::fs::remove_file(&part);
+                }
+            }
+        }
+        logo_data_url(&std::fs::read(&file).ok()?)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// `bytes` as a `data:` URL, only when they are a PNG no bigger than the backend allows.
+fn logo_data_url(bytes: &[u8]) -> Option<String> {
+    if bytes.len() as u64 > LOGO_MAX_BYTES || !bytes.starts_with(&PNG_MAGIC) {
+        return None;
+    }
+    Some(format!("data:image/png;base64,{}", base64_encode(bytes)))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_the_standard_alphabet_and_padding() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
+    }
+
+    #[test]
+    fn only_a_png_within_the_cap_becomes_a_logo() {
+        let mut png = PNG_MAGIC.to_vec();
+        png.extend_from_slice(b"rest");
+        assert!(logo_data_url(&png).unwrap().starts_with("data:image/png;base64,iVBORw0KGgpyZXN0"));
+        assert_eq!(logo_data_url(b"<html>captcha</html>"), None, "an HTML answer is never drawn as a logo");
+        let mut big = PNG_MAGIC.to_vec();
+        big.resize(LOGO_MAX_BYTES as usize + 1, 0);
+        assert_eq!(logo_data_url(&big), None);
+    }
 
     #[test]
     fn every_home_failure_reads_as_a_league_sentence() {

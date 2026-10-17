@@ -6750,6 +6750,7 @@ fn main() {
             live_view::stats_dashboard,
             league_tab::league_member,
             league_tab::league_home,
+            league_tab::league_logo,
             live_view::player_profile,
             live_view::set_plays_as,
             live_view::leaderboard,
