@@ -1,0 +1,403 @@
+{
+ "home": {
+  "ok": true,
+  "member": true,
+  "schedule_published": true,
+  "league": {
+   "id": 36,
+   "name": "Reborn Season 4",
+   "season": 4,
+   "week": 3,
+   "week_label": "Week 3"
+  },
+  "team": {
+   "id": 493,
+   "name": "Subway Surfers",
+   "abbr": "ADAM",
+   "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_493.png?v=1792198037",
+   "color": "#2563A4",
+   "record": "2-0",
+   "standing": 2
+  },
+  "matchup": {
+   "fixture_id": 2614,
+   "week": 3,
+   "home": true,
+   "status": "scheduled",
+   "forfeit": false,
+   "score": null,
+   "series": null,
+   "winner_team_id": null,
+   "when": null,
+   "opponent": {
+    "team_id": 484,
+    "name": "Wolves Reign",
+    "abbr": "SNIPER",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_484.png?v=1792198037",
+    "color": "#D15619",
+    "record": "2-0",
+    "owner_display": "SNIPER",
+    "discord_user_id": "900000000000000100"
+   }
+  },
+  "week_games": [
+   {
+    "fixture_id": 2613,
+    "home": {
+     "team_id": 488,
+     "name": "Kings",
+     "abbr": "PROPEL",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_488.png?v=1792198037",
+     "color": "#2D1B2D",
+     "record": "2-1"
+    },
+    "away": {
+     "team_id": 490,
+     "name": "Patriots",
+     "abbr": "DREAD",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_490.png?v=1792198037",
+     "color": "#0A2515",
+     "record": "1-2"
+    },
+    "status": "final",
+    "forfeit": false,
+    "score": {
+     "home": 28,
+     "away": 14
+    },
+    "series": {
+     "home": 2,
+     "away": 0
+    },
+    "winner_team_id": 488,
+    "when": null
+   },
+   {
+    "fixture_id": 2614,
+    "home": {
+     "team_id": 493,
+     "name": "Subway Surfers",
+     "abbr": "ADAM",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_493.png?v=1792198037",
+     "color": "#2563A4",
+     "record": "2-0"
+    },
+    "away": {
+     "team_id": 484,
+     "name": "Wolves Reign",
+     "abbr": "SNIPER",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_484.png?v=1792198037",
+     "color": "#D15619",
+     "record": "2-0"
+    },
+    "status": "scheduled",
+    "forfeit": false,
+    "score": null,
+    "series": null,
+    "winner_team_id": null,
+    "when": null
+   },
+   {
+    "fixture_id": 2615,
+    "home": {
+     "team_id": 485,
+     "name": "Wildcats",
+     "abbr": "JACOB",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_485.png?v=1792198037",
+     "color": "#121D62",
+     "record": "0-3"
+    },
+    "away": {
+     "team_id": 491,
+     "name": "Team Korra",
+     "abbr": "MIKEL",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_491.png?v=1792198037",
+     "color": "#2773AE",
+     "record": "1-2"
+    },
+    "status": "final",
+    "forfeit": false,
+    "score": {
+     "home": 17,
+     "away": 21
+    },
+    "series": {
+     "home": 0,
+     "away": 2
+    },
+    "winner_team_id": 491,
+    "when": null
+   },
+   {
+    "fixture_id": 2616,
+    "home": {
+     "team_id": 492,
+     "name": "Big Tunas",
+     "abbr": "TUNA",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_492.png?v=1792198037",
+     "color": "#006A75",
+     "record": "3-0"
+    },
+    "away": {
+     "team_id": 483,
+     "name": "Rubber Ducks",
+     "abbr": "JOCK",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_483.png?v=1792198037",
+     "color": "#A47201",
+     "record": "0-3"
+    },
+    "status": "final",
+    "forfeit": false,
+    "score": {
+     "home": 35,
+     "away": 7
+    },
+    "series": {
+     "home": 2,
+     "away": 0
+    },
+    "winner_team_id": 492,
+    "when": null
+   },
+   {
+    "fixture_id": 2617,
+    "home": {
+     "team_id": 486,
+     "name": "Football Furies",
+     "abbr": "BLONDE",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_486.png?v=1792198037",
+     "color": "#305834",
+     "record": "2-1"
+    },
+    "away": {
+     "team_id": 489,
+     "name": "Commandments",
+     "abbr": "MOSES",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_489.png?v=1792198037",
+     "color": "#C3C3C3",
+     "record": "2-1"
+    },
+    "status": "scheduled",
+    "forfeit": false,
+    "score": null,
+    "series": null,
+    "winner_team_id": null,
+    "when": null
+   },
+   {
+    "fixture_id": 2618,
+    "home": {
+     "team_id": 487,
+     "name": "Pinky's Records",
+     "abbr": "PINKY",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_487.png?v=1792198037",
+     "color": "#A23E81",
+     "record": "1-2"
+    },
+    "away": {
+     "team_id": 482,
+     "name": "Revenants",
+     "abbr": "JD",
+     "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_482.png?v=1792198037",
+     "color": "#B4010F",
+     "record": "1-2"
+    },
+    "status": "scheduled",
+    "forfeit": false,
+    "score": null,
+    "series": null,
+    "winner_team_id": null,
+    "when": null
+   }
+  ],
+  "standings": [
+   {
+    "rank": 1,
+    "team_id": 492,
+    "name": "Big Tunas",
+    "abbr": "TUNA",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_492.png?v=1792198037",
+    "record": "3-0"
+   },
+   {
+    "rank": 2,
+    "team_id": 493,
+    "name": "Subway Surfers",
+    "abbr": "ADAM",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_493.png?v=1792198037",
+    "record": "2-0"
+   },
+   {
+    "rank": 3,
+    "team_id": 484,
+    "name": "Wolves Reign",
+    "abbr": "SNIPER",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_484.png?v=1792198037",
+    "record": "2-0"
+   },
+   {
+    "rank": 4,
+    "team_id": 489,
+    "name": "Commandments",
+    "abbr": "MOSES",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_489.png?v=1792198037",
+    "record": "2-1"
+   },
+   {
+    "rank": 5,
+    "team_id": 486,
+    "name": "Football Furies",
+    "abbr": "BLONDE",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_486.png?v=1792198037",
+    "record": "2-1"
+   },
+   {
+    "rank": 6,
+    "team_id": 488,
+    "name": "Kings",
+    "abbr": "PROPEL",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_488.png?v=1792198037",
+    "record": "2-1"
+   },
+   {
+    "rank": 7,
+    "team_id": 490,
+    "name": "Patriots",
+    "abbr": "DREAD",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_490.png?v=1792198037",
+    "record": "1-2"
+   },
+   {
+    "rank": 8,
+    "team_id": 487,
+    "name": "Pinky's Records",
+    "abbr": "PINKY",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_487.png?v=1792198037",
+    "record": "1-2"
+   },
+   {
+    "rank": 9,
+    "team_id": 482,
+    "name": "Revenants",
+    "abbr": "JD",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_482.png?v=1792198037",
+    "record": "1-2"
+   },
+   {
+    "rank": 10,
+    "team_id": 491,
+    "name": "Team Korra",
+    "abbr": "MIKEL",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_491.png?v=1792198037",
+    "record": "1-2"
+   },
+   {
+    "rank": 11,
+    "team_id": 483,
+    "name": "Rubber Ducks",
+    "abbr": "JOCK",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_483.png?v=1792198037",
+    "record": "0-3"
+   },
+   {
+    "rank": 12,
+    "team_id": 485,
+    "name": "Wildcats",
+    "abbr": "JACOB",
+    "logo_url": "https://nflstreetreborn.com/league/uploads/league_36/teams/team_485.png?v=1792198037",
+    "record": "0-3"
+   }
+  ],
+  "site_url": "https://nflstreetreborn.com/league/team.php?league_id=36&team_id=493",
+  "signed_in": true,
+  "stale": false,
+  "week_best": {
+   "week": 3,
+   "groups": [
+    {
+     "label": "Passing",
+     "rows": [
+      {
+       "poid": 101,
+       "name": "P. Mahomes",
+       "team_id": 492,
+       "line": "318 yds · 4 TD"
+      },
+      {
+       "poid": 102,
+       "name": "C. Stroud",
+       "team_id": 491,
+       "line": "274 yds · 3 TD"
+      },
+      {
+       "poid": 103,
+       "name": "J. Goff",
+       "team_id": 488,
+       "line": "251 yds · 2 TD"
+      }
+     ]
+    },
+    {
+     "label": "Rushing",
+     "rows": [
+      {
+       "poid": 201,
+       "name": "D. Henry",
+       "team_id": 492,
+       "line": "142 yds · 2 TD"
+      },
+      {
+       "poid": 202,
+       "name": "K. Williams",
+       "team_id": 488,
+       "line": "118 yds · 1 TD"
+      },
+      {
+       "poid": 203,
+       "name": "J. Jacobs",
+       "team_id": 491,
+       "line": "97 yds · 1 TD"
+      }
+     ]
+    },
+    {
+     "label": "Receiving",
+     "rows": [
+      {
+       "poid": 301,
+       "name": "J. Jefferson",
+       "team_id": 492,
+       "line": "161 yds · 2 TD"
+      },
+      {
+       "poid": 302,
+       "name": "A. St. Brown",
+       "team_id": 488,
+       "line": "128 yds · 1 TD"
+      },
+      {
+       "poid": 303,
+       "name": "N. Collins",
+       "team_id": 491,
+       "line": "112 yds · 1 TD"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "logos": {
+  "488": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGPQldalCmIYNWjUoFGDRg0aNWjUIN0BNwgACqMHUJM4bg4AAAAASUVORK5CYII=",
+  "490": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGPgUhWlCmIYNWjUoFGDRg0aNWjUIK4BNwgAmL2ZAcTojd0AAAAASUVORK5CYII=",
+  "493": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGNQTV5CFcQwatCoQaMGjRo0atCoQaoDbhAANGOjH95ZQTwAAAAASUVORK5CYII=",
+  "484": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGO4GCZJFcQwatCoQaMGjRo0atCoQRcH3CAA9UfQHxJgOQ8AAAAASUVORK5CYII=",
+  "485": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGMQkk2iCmIYNWjUoFGDRg0aNWjUIKEBNwgA9y1GUAUnEwAAAAAASUVORK5CYII=",
+  "491": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGNQL15HFcQwatCoQaMGjRo0atCoQeoDbhAAwvziHynJpFoAAAAASUVORK5CYII=",
+  "492": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR4nGNgyCqlDho1aNSgUYNGDRo1aNQghgE3CABRJPXQUQcT9wAAAABJRU5ErkJggg==",
+  "483": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGNYUsRIFcQwatCoQaMGjRo0atCoQUsG3CAACJJz3z9dqKkAAAAASUVORK5CYII=",
+  "486": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGMwiDChCmIYNWjUoFGDRg0aNWjUIIMBNwgAxqGnEIR8he0AAAAASUVORK5CYII=",
+  "489": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAHklEQVR4nGM4TCXAMGrQqEGjBo0aNGrQqEGHB9wgABnPJIz4hhY9AAAAAElFTkSuQmCC",
+  "487": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGNYZNdIFcQwatCoQaMGjRo0atCoQYsG3CAAw1oabnSPrEIAAAAASUVORK5CYII=",
+  "482": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGPYwshPFcQwatCoQaMGjRo0atCoQVsG3CAA3pK5EP2vCG8AAAAASUVORK5CYII="
+ }
+}

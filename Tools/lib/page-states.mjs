@@ -253,76 +253,59 @@ function onlineStates() {
   ];
 }
 
-/** The League tab (plan 3a Task 5) as a member sees it: Tools/fixtures/league-home.json filled out to a 12-team week
- *  (six games, the full table, five results, three leaders each, a roster), then each This week state, the League
- *  files states and an outage. No logos (letters on team colours): the fake image route would draw the cover art. */
-function leagueHome() {
-  const h = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-home.json'), 'utf8'));
-  const T = (team_id, name, abbr, color, record) => ({ team_id, name, abbr, logo_url: null, color, record });
-  const me = T(493, 'Subway Surfers', 'ADAM', '#00A3FF', '4-1'), opp = T(486, 'Football Furies', 'BLONDE', '#FF0000', '3-2');
-  const g = (fixture_id, away, home, status, extra = {}) => ({ fixture_id, away, home, status, forfeit: false, score: null, series: null, winner_team_id: null, when: null, ...extra });
-  h.team.logo_url = null;
-  h.matchup.opponent.logo_url = null;
-  h.week_games = [
-    g(1234, opp, me, 'scheduled'),
-    g(1230, T(483, 'Jock Squad', 'JOCK', '#AA2222', '2-3'), T(482, 'Gridiron Ghosts', 'GHO', '#22AA44', '5-0'), 'final', { score: { home: 49, away: 21 }, series: { home: 2, away: 0 }, winner_team_id: 482 }),
-    g(1231, T(485, 'Sand Crabs', 'CRAB', '#DDAA00', '1-4'), T(484, 'Night Owls', 'OWL', '#6A5ACD', '2-3'), 'live', { score: { home: 14, away: 21 }, series: { home: 0, away: 1 } }),
-    g(1232, T(488, 'Dune Kings', 'DUNE', '#AA7700', '2-3'), T(487, 'Rail Riders', 'RAIL', '#5555FF', '3-2'), 'final', { forfeit: true, winner_team_id: 487 }),
-    g(1233, T(490, 'Harbor Hawks', 'HAWK', '#008B8B', '3-2'), T(489, 'Concrete Kings', 'CONC', '#808080', '1-4'), 'in_progress', { score: { home: 28, away: 35 }, series: { home: 1, away: 1 } }),
-    g(1235, T(492, 'Rooftop Rebels', 'ROOF', '#E040A0', '2-3'), T(491, 'Alley Cats', 'ALLY', '#FF8C00', '4-1'), 'scheduled'),
-  ];
-  const table = [[482, 'Gridiron Ghosts', 'GHO', '5-0'], [493, 'Subway Surfers', 'ADAM', '4-1'], [491, 'Alley Cats', 'ALLY', '4-1'], [486, 'Football Furies', 'BLONDE', '3-2'],
-    [487, 'Rail Riders', 'RAIL', '3-2'], [490, 'Harbor Hawks', 'HAWK', '3-2'], [483, 'Jock Squad', 'JOCK', '2-3'], [484, 'Night Owls', 'OWL', '2-3'], [488, 'Dune Kings', 'DUNE', '2-3'],
-    [492, 'Rooftop Rebels', 'ROOF', '2-3'], [485, 'Sand Crabs', 'CRAB', '1-4'], [489, 'Concrete Kings', 'CONC', '1-4']];
-  h.standings = table.map(([team_id, name, abbr, record], i) => ({ rank: i + 1, team_id, name, abbr, logo_url: null, record }));
-  h.recent = [...h.recent, { fixture_id: 1160, week: 1, opponent_abbr: 'CRAB', home: true, result: 'W', score: '35-14', series: '2-0', forfeit: false }];
-  h.leaders = {
-    pass: [{ poid: 12, name: 'Michael Vick', value: 14 }, { poid: 13, name: 'Donovan McNabb', value: 6 }],
-    rush: [{ poid: 20, name: 'Barry Sanders', value: 9 }, { poid: 12, name: 'Michael Vick', value: 5 }, { poid: 21, name: 'Jerome Bettis', value: 3 }],
-    rec: [{ poid: 84, name: 'Randy Moss', value: 7 }, { poid: 80, name: 'Jerry Rice', value: 4 }],
-  };
-  h.roster = [[12, 'Michael Vick', 'QB', 7], [20, 'Barry Sanders', 'HB', 20], [84, 'Randy Moss', 'WR', 84], [80, 'Jerry Rice', 'WR', 80], [55, 'Junior Seau', 'LB', 55],
-    [92, 'Reggie White', 'DE', 92], [24, 'Charles Woodson', 'CB', 24]].map(([poid, name, position, number]) => ({ poid, name, position, number }));
-  return h;
+/** The League tab, layout F (spec 2026-10-17-league-page-v3-design.md), as Adam's team sees it: the real Season 4
+ *  answer (Tools/fixtures/league-home-s4.json, Discord ids replaced) at a Week 3 with three finals and a week_best.
+ *  league_logo answers each team's small generated logo. */
+function leagueS4() {
+  return JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-home-s4.json'), 'utf8'));
 }
 function leagueStates() {
-  const LEAGUE_HOME = leagueHome();
+  const S4 = leagueS4();
+  const LEAGUE_HOME = S4.home;
+  const LOGOS = { __byArg: 'teamId', values: S4.logos };
   const LEAGUE_EDITION = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-edition-status.json'), 'utf8'));
   const home = (patch) => ({ ...structuredClone(LEAGUE_HOME), ...patch });
   const matchup = (patch) => ({ ...structuredClone(LEAGUE_HOME.matchup), ...patch });
   const oppId = LEAGUE_HOME.matchup.opponent.discord_user_id;
-  const L = (name, data = {}, extra = {}) => ({ name, url: 'league.html', scope: 'main', data: { league_member: true, league_home: LEAGUE_HOME, league_edition_status: LEAGUE_EDITION, ...data }, ...extra });
-  const live = home({ matchup: matchup({ status: 'live', series: { home: 1, away: 0 }, score: { home: 21, away: 14 },
-    room: { room_id: 'r1', code: 'K7QP2M', members: 2, expires_at: null, state: 'in_series', host_discord_user_id: '111' } }) });
-  live.week_games = live.week_games.map((w) => (w.fixture_id === 1234 ? { ...w, status: 'live', score: { home: 21, away: 14 }, series: { home: 1, away: 0 } } : w));
+  const room = (patch) => ({ room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111', ...patch });
+  const L = (name, data = {}, extra = {}) => ({ name, url: 'league.html', scope: 'main',
+    data: { league_member: true, league_home: LEAGUE_HOME, league_edition_status: LEAGUE_EDITION, league_logo: LOGOS, open_website: null, ...data }, ...extra });
+  const mineId = LEAGUE_HOME.matchup.fixture_id;
+  const live = home({ matchup: matchup({ status: 'live', series: { home: 1, away: 0 }, score: { home: 21, away: 14 }, room: room({ members: 2, state: 'in_series' }) }) });
+  live.week_games = live.week_games.map((w) => (w.fixture_id === mineId ? { ...w, status: 'live', score: { home: 21, away: 14 }, series: { home: 1, away: 0 } } : w));
+  const noLogo = { __byArg: 'teamId', values: { ...S4.logos, 484: null } };
+  const installing = { ...LEAGUE_EDITION, installed: false, version: null, installing: true, progress: { phase: 'download', done: 644245094, total: 1610612736 } };
+  const checking = { ...LEAGUE_EDITION, installing: true, progress: { phase: 'verify', done: 0, total: 1, checking: true } };
   return [
     L('league'),
-    L('league-join', { league_home: home({ matchup: matchup({ room: { room_id: 'r2', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: oppId } }) }) }),
-    L('league-waiting', { league_home: home({ matchup: matchup({ room: { room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111' } }) }) }),
+    L('league-waiting', { league_home: home({ matchup: matchup({ room: room() }) }) }),
+    L('league-join', { league_home: home({ matchup: matchup({ room: room({ room_id: 'r2', host_discord_user_id: oppId }) }) }) }),
+    L('league-lobby', { league_home: home({ matchup: matchup({ room: room({ members: 2, state: 'lobby', host_discord_user_id: oppId }) }) }) }),
     L('league-live', { league_home: live }),
+    L('league-between', { league_home: home({ matchup: matchup({ status: 'in_progress', series: { home: 1, away: 0 } }) }) }),
     L('league-final', { league_home: home({ matchup: matchup({ status: 'final', series: { home: 2, away: 1 }, winner_team_id: 493 }) }) }),
+    L('league-forfeit', { league_home: home({ matchup: matchup({ status: 'final', forfeit: true, winner_team_id: 484 }) }) }),
     L('league-bye', { league_home: home({ matchup: matchup({ status: 'bye', opponent: null }) }) }),
     L('league-unscheduled', { league_home: home({ schedule_published: false, matchup: null, week_games: [] }) }),
+    L('league-unlinked', { league_home: home({ matchup: matchup({ opponent: { ...LEAGUE_HOME.matchup.opponent, discord_user_id: null } }) }) }),
+    L('league-stale', { league_home: home({ stale: true, matchup: matchup({ room: room({ room_id: 'r2', host_discord_user_id: oppId }) }) }) }),
+    L('league-catchup', { league_home: home({ matchup: matchup({ week: 2, fixture_id: 9999 }) }) }),
     L('league-not-installed', { league_edition_status: { ...LEAGUE_EDITION, installed: false, version: null } }),
-    L('league-update', { league_edition_status: { ...LEAGUE_EDITION, latest: '2026.10.09', update_available: true, size_bytes: 268435456 } }),
-    L('league-stale', { league_home: home({ stale: true }) }),
-    // 3a final fix M1: a cached answer with a room in it offers no Join/Cancel and says the room status is away.
-    L('league-stale-room', { league_home: home({ stale: true, matchup: matchup({ room: { room_id: 'r2', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: oppId } }) }) }),
-    // 3a final fix M4/M6: an install already running when the page opens (Install disabled, its progress shown), and
-    // the first check of the installed files.
-    L('league-installing', (() => { const s = { ...LEAGUE_EDITION, installed: false, version: null, installing: true, progress: { phase: 'download', done: 644245094, total: 1610612736 } };
-      return { league_edition_status: s, league_edition_installed: s }; })()),
-    L('league-checking', (() => { const s = { ...LEAGUE_EDITION, installing: true, progress: { phase: 'verify', done: 0, total: 1, checking: true } };
-      return { league_edition_status: s, league_edition_installed: s }; })()),
-    // The league server goes away after a good load: Cancel leaves the room, the reload fails, the old page stays with
-    // the refresh-failed line.
-    L('league-refresh-failed', { league_home: { __first: home({ matchup: matchup({ room: { room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111' } }) }),
+    L('league-update', { league_edition_status: { ...LEAGUE_EDITION, latest: '2026.10.17.9', update_available: true, size_bytes: 268435456 } }),
+    L('league-installing', { league_edition_status: installing, league_edition_installed: installing }),
+    L('league-checking', { league_edition_status: checking, league_edition_installed: checking }),
+    L('league-no-best', { league_home: home({ week_best: null }) }),
+    L('league-no-logo', { league_logo: noLogo }),
+    L('league-long-names', { league_home: (() => { const h = home({}); const long = 'The Extremely Long Team Name Club'; h.standings[0].name = long;
+      h.week_games[0].away.name = long; h.matchup.opponent.name = long; return h; })() }),
+    // The league server goes away after a good load: Cancel leaves the room, the reload fails, one stale line.
+    L('league-refresh-failed', { league_home: { __first: home({ matchup: matchup({ room: room() }) }),
       __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }, { click: '[data-key="league-cancel"]' }),
     L('league-controller', { league_play_offline: { __reject: { kind: 'controller_setup', message: 'Your controller is not set up for this game yet. Set it up so it can press Start.' } } }, { click: '[data-key="league-offline"]' }),
-    L('league-update-required', { league_room_open: { __reject: { kind: 'league_update_required', message: 'Update league files to play.', required: '2026.10.09' } } }, { click: '[data-key="league-primary"]' }),
+    L('league-update-required', { league_room_open: { __reject: { kind: 'league_update_required', message: 'Update league files to play.', required: '2026.10.17.9' } } }, { click: '[data-key="league-play"]' }),
     L('league-error', { league_home: { __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }),
     L('league-signed-out', { league_home: { signed_in: false } }),
-    L('league-small', {}, { viewport: { width: 800, height: 560 } }),
+    L('league-small', {}, { viewport: { width: 960, height: 760 } }),
     L('league-small-live', { league_home: live }, { viewport: { width: 800, height: 560 } }),
     L('league-pad', {}, { pad: true }),
   ];
