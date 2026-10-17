@@ -193,17 +193,22 @@ fn resolve_textures(textures: &Path, id: &str) -> std::result::Result<PathBuf, S
     ))
 }
 
-/// Files a texture working folder carries that must never ship: bake logs
-/// (`texconv.log` went out in textures 1.0.0), `.blanked_off` backups, and
-/// Explorer's own droppings. The retail textures path has no filter of its
-/// own to reuse: it publishes a folder already cleaned by hand.
+/// Files a texture working folder carries that must never ship. Only
+/// textures Dolphin loads (`.dds`, `.png`) ship at all, so bake logs
+/// (`texconv.log` went out in textures 1.0.0), `.blanked_off` backups,
+/// Explorer's droppings and a build's own notes (the league's first texture
+/// folder held `manifest.csv`, `team_colors.csv` and `_build/build.py`) stay
+/// behind. A name starting with `_` is the author's (`_preview.png`), and so
+/// is everything in a folder whose name does. The retail textures path has no
+/// filter of its own to reuse: it publishes a folder already cleaned by hand.
 fn skipped(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.ends_with(".log")
-        || lower.contains(".blanked_off")
-        || lower == "thumbs.db"
-        || lower == "desktop.ini"
-        || lower == ".ds_store"
+    !(lower.ends_with(".dds") || lower.ends_with(".png")) || lower.starts_with('_')
+}
+
+/// A folder whose files never ship (see [`skipped`]).
+fn skipped_folder(name: &str) -> bool {
+    name.starts_with('_')
 }
 
 /// A symlink, junction or any other reparse point. Never followed: a link
@@ -238,10 +243,10 @@ struct TreeCount {
 /// Walk the texture tree BEFORE anything is written: count what would ship
 /// (by the same `skipped` rule staging uses) and refuse any link.
 fn scan_tree(dir: &Path, count: &mut TreeCount) -> Result<std::result::Result<(), String>> {
-    scan_under(dir, "", count)
+    scan_under(dir, "", false, count)
 }
 
-fn scan_under(dir: &Path, prefix: &str, count: &mut TreeCount) -> Result<std::result::Result<(), String>> {
+fn scan_under(dir: &Path, prefix: &str, dropping: bool, count: &mut TreeCount) -> Result<std::result::Result<(), String>> {
     for entry in std::fs::read_dir(dir).map_err(|e| io_err(dir, e))? {
         let entry = entry.map_err(|e| io_err(dir, e))?;
         let path = entry.path();
@@ -256,10 +261,10 @@ fn scan_under(dir: &Path, prefix: &str, count: &mut TreeCount) -> Result<std::re
         let name = entry.file_name().to_string_lossy().into_owned();
         let relative = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
         if ft.is_dir() {
-            if let Err(why) = scan_under(&path, &relative, count)? {
+            if let Err(why) = scan_under(&path, &relative, dropping || skipped_folder(&name), count)? {
                 return Ok(Err(why));
             }
-        } else if skipped(&name) {
+        } else if dropping || skipped(&name) {
             count.dropped += 1;
         } else {
             count.files += 1;
@@ -493,7 +498,7 @@ pub fn publish_league_game(req: &LeagueGameRequest<'_>, observer: &dyn ScanObser
     }
     if count.files == 0 {
         return Ok(refuse(sink, &[
-            format!("{} holds no texture files to ship ({} log/backup file(s) skipped).", tex.display(), count.dropped),
+            format!("{} holds no texture files to ship ({} non-texture file(s) left out).", tex.display(), count.dropped),
             nothing(),
         ]));
     }
@@ -535,7 +540,7 @@ pub fn publish_league_game(req: &LeagueGameRequest<'_>, observer: &dyn ScanObser
         return Ok(refuse(sink, &[why]));
     }
     out!(sink, "League disc   {} (game id {id})", req.iso.display());
-    out!(sink, "Textures      {} ({} file(s), {} bytes; {} log/backup file(s) skipped)",
+    out!(sink, "Textures      {} ({} file(s), {} bytes; {} non-texture file(s) left out)",
         tex.display(), thousands(count.files), thousands(count.bytes), count.dropped);
     match &retail {
         Some((version, _)) => out!(sink, "Ships         {} file(s), {} bytes; {} identical to retail textures {version} left out",
@@ -971,7 +976,27 @@ mod tests {
     #[test]
     fn explorer_droppings_are_not_shipped() {
         assert!(skipped("Thumbs.db") && skipped("desktop.ini") && skipped("TEXCONV.LOG") && skipped("x.png.blanked_off"));
-        assert!(!skipped("a.dds") && !skipped("catalog.png"));
+        assert!(!skipped("a.dds") && !skipped("catalog.png") && !skipped("TEX1_A.DDS"));
+    }
+
+    /// The league's first texture folder (10-16) carried its build notes beside the jerseys.
+    #[test]
+    fn only_textures_ship_and_underscore_names_stay_behind() {
+        for name in ["manifest.csv", "team_colors.csv", "logos.json", "build.py", "_preview.png", "notes.txt"] {
+            assert!(skipped(name), "{name}");
+        }
+        let w = world();
+        let disc = iso(&w, b"ZZLG01");
+        let tex = textures(&w, "ZZLG01", &[
+            "01 Revenants/tex1_a.dds", "manifest.csv", "_preview.png", "_build/build.py", "_build/tex1_b.dds",
+        ]);
+        let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
+        let Outcome::Done(_) = outcome else { panic!("{lines:#?}") };
+        let bytes = std::fs::read(manifest_path(&w.origin, ComponentId::LeagueGame, "2026.10.08")).unwrap();
+        let mut paths: Vec<String> = Component::parse(&bytes).unwrap().files.into_iter().map(|f| f.path).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["game/league.iso", "league.json", "textures/ZZLG01/01 Revenants/tex1_a.dds"]);
+        assert!(lines.iter().any(|l| l.contains("4 non-texture file(s) left out")), "{lines:#?}");
     }
 
     // ---- fix round 1 ----
