@@ -53,14 +53,10 @@ for (const s of STATES.league) {
     const opened = await page.evaluate(() => window.__calls.filter((c) => c.cmd === 'open_website').map((c) => c.args.url));
     if (!/^https:\/\/nflstreetreborn\.com\/league\/team\.php\?league_id=36&team_id=\d+$/.test(want || '') || opened.at(-1) !== want) p.push(`standings link ${want} opened ${opened.at(-1)}`);
     // the Friendly menu: League rules is the default; Standard rules hosts one raw game
-    // hosting a friendly hands over to the Online page, which starts a fresh call log: keep this one's in sessionStorage
-    await page.evaluate(() => { const push = window.__calls.push.bind(window.__calls); window.__calls.push = (c) => {
-      if (c.cmd === 'league_host_friendly') sessionStorage.setItem('friendly', c.args.ruleset); return push(c); }; });
-    await page.click('[data-key="league-friendly-menu"]');
-    await page.locator('dialog.menu[open] .menu-item', { hasText: 'Standard rules' }).click();
-    await page.waitForTimeout(400);
-    const rules = await page.evaluate(() => sessionStorage.getItem('friendly'));
-    if (rules !== 'raw') p.push(`Standard rules hosted ${rules}`);
+    // Friendly is league rules only (Adam 10-17: "dont let us cycle through game rules"): no rules menu
+    if (await page.locator('[data-key="league-friendly-menu"]').count()) p.push('a Friendly rules menu is offered');
+    const best = (await page.locator('#lg-best .vc-h h2').innerText()).trim();
+    if (best !== "Week 3's Top Performers") p.push(`week's best card reads "${best}"`);
   }
   if (s.name === 'league-stale' && (t.match(/Can't reach the league/g) || []).length !== 1) p.push('stale data is not said exactly once');
   if (s.name === 'league-stale' && (await page.locator('[data-key="league-join"], [data-key="league-cancel"]').count())) p.push('stale data offers a room button');

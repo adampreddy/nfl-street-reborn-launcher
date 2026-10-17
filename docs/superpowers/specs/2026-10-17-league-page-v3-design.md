@@ -51,11 +51,11 @@ Adam opened the League tab in the rehearsal and said it should "look more like t
 - **My call (not in the mockup):** the League files install/update lives in this banner. When the files are not installed, or an update is required, the primary button becomes **Install league files** / **Update league files** with its progress bar, and Play offline / Friendly are disabled. Once installed, nothing about the files is shown.
 - The "League settings" switch for friendlies goes away. Friendly always uses league rules (Hard, GameBreakers off), with a ▾ for a one-off standard game (see "Calls" below). That keeps the banner to three buttons.
 
-### 3. Three columns: Standings · Week N · Week N's best
+### 3. Three columns: Standings · Week N · Week N's Top Performers
 - The grid is `1.1fr 1fr 1.1fr` with 16px gaps. All three cards stretch to the tallest, so they end on one line. The page is only as tall as its content; it does not stretch to the window.
 - **Standings** (heading links to the site's standings): all 12 teams, with rank, logo, name and W-L. Your team is bold with a 6px red dot after the name. There is no row background and no red edge.
 - **Week N** (heading links to the week's schedule; aside "3 of 6 final"): order is finished games first, then your game, then the other unplayed games. Each game shows away over home, each with a logo, a name and the score. The loser of a final is in `--fg-3`. The right column reads **Final** for a finished game, **You** (in `--red-ink`) for yours, and nothing for unplayed games. A live game says **Live** with the live dot. The rows share the card height evenly.
-- **Week N's best** (aside **All stats ›**): top 3 passers, rushers and receivers from that week's finished games. Each row has the team logo, the player name (the leader in bold) and the game line, e.g. "318 yds · 4 TD". Before any game of the week is final, show last week's best under the title "Week N-1's best". In week 1 with nothing final, the card reads "No games played yet".
+- **Week N's Top Performers** (aside **All stats ›**): top 3 passers, rushers and receivers from that week's finished games. Each row has the team logo, the player name (the leader in bold) and the game line, e.g. "318 yds · 4 TD". Before any game of the week is final, show last week's best under the title "Week N-1's Top Performers". In week 1 with nothing final, the card reads "No games played yet".
 
 ### Small windows (under 1100px)
 Standings and Week sit side by side, with Week's best across the full width under them (three stat groups in a row). The matchup banner wraps so the actions take the full width, with the primary button stretched.
@@ -103,7 +103,7 @@ The site pages need the player to be logged in to the site. Adam (10-17) is fine
 - **Controller setup:** the existing amber `.partial` box with **Set up controller** / **Play anyway** appears directly under the banner, as today, only after Play offline asks for it.
 - **Week's best data:** rows are series totals across the best of 3 (passing yds and TD, rushing yds and TD, receiving yds and TD), counted from every finished game, even inside a series still being played. Ranked by yards. Until the site sends `week_best` (the launcher may ship first), the card reads "No games played yet" in the same place.
 - **Week card scores:** the summed points (`score`), as the site's week view shows them. Series wins appear only in the banner.
-- **Friendly (Adam, 10-17):** "always default to the league rules". **Friendly** always hosts on league rules; the ▾ beside it offers "Standard rules" for that one game only. Nothing is remembered: the `league-friendly-league-settings` key and the old switch are removed.
+- **Friendly (Adam, 10-17):** "always default to the league rules", then "dont let us cycle through game rules". **Friendly** always hosts on league rules, with no menu and no other choice. The `league-friendly-league-settings` key and the old switch are removed.
 
 ## Left to the builder
 

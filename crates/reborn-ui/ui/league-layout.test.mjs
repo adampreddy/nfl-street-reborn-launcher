@@ -157,17 +157,17 @@ test('weekGames: finals first, then yours, then the rest; markers and sides', ()
 
 test("weekBest: title, top 3, the leader marked; empty and fallback", () => {
   const b = weekBest(H());
-  assert.equal(b.title, "Week 3's best");
+  assert.equal(b.title, "Week 3's Top Performers");
   assert.deepEqual(b.groups.map((x) => x.label), ['Passing', 'Rushing', 'Receiving']);
   assert.equal(b.groups[0].rows.length, 3);
   assert.deepEqual(b.groups[0].rows.map((r) => r.top), [true, false, false]);
   assert.deepEqual(b.groups[0].rows[0], { poid: 12, name: 'P. Mahomes', team_id: 492, line: '318 yds · 4 TD', top: true });
   const last = H(); last.week_best.week = 2;
-  assert.equal(weekBest(last).title, "Week 2's best");
+  assert.equal(weekBest(last).title, "Week 2's Top Performers");
   const none = H(); none.week_best = null;
-  assert.deepEqual(weekBest(none), { title: "Week 3's best", empty: 'No games played yet' });
+  assert.deepEqual(weekBest(none), { title: "Week 3's Top Performers", empty: 'No games played yet' });
   const missing = H(); delete missing.week_best;
-  assert.deepEqual(weekBest(missing), { title: "Week 3's best", empty: 'No games played yet' });
+  assert.deepEqual(weekBest(missing), { title: "Week 3's Top Performers", empty: 'No games played yet' });
   const blank = H(); blank.week_best.groups = blank.week_best.groups.map((x) => ({ ...x, rows: [] }));
   assert.equal(weekBest(blank).empty, 'No games played yet');
 });

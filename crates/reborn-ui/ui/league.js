@@ -7,7 +7,6 @@
 // the Online page itself.
 import { call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
 import { makePoller } from './live-common.js';
-import { openMenu } from './menu.js';
 import { teamLogo } from './match-rows.js';
 import { createSignIn } from './sign-in.js';
 import {
@@ -182,8 +181,8 @@ const cancel = (room) => act('cancel', async () => { await call('mm_room_action'
   await load().catch(() => {});
 });
 const offline = (playAnyway = false) => act('offline', async () => { await call('league_play_offline', playAnyway ? { playAnyway: true } : {}); });
-// Friendly hosts on the league rules unless the ▾ menu picked standard rules for this one game (Adam 10-17).
-const friendly = (ruleset = 'league') => act('friendly', async () => { await call('league_host_friendly', { ruleset: ruleset === 'raw' ? 'raw' : 'league' }); go('online.html'); });
+// Friendly always hosts on the league rules; there is no other choice (Adam 10-17: "dont let us cycle through game rules").
+const friendly = () => act('friendly', async () => { await call('league_host_friendly', { ruleset: 'league' }); go('online.html'); });
 
 // ---- League page v3, layout F (spec 2026-10-17-league-page-v3-design.md) ----
 // The page heading with your team card, the matchup banner, then Standings · Week N · Week N's best. Everything that
@@ -222,7 +221,7 @@ const ACT_BUSY = { play: 'Opening room…', join: 'Joining…', cancel: 'Leaving
 function actionButton(a, s, home) {
   const handlers = {
     play: () => play(), join: () => join(home.matchup.room), open: () => go('online.html'), back: () => go('online.html'),
-    cancel: () => cancel(home.matchup.room), offline: () => offline(), friendly: () => friendly('league'), install: () => install(),
+    cancel: () => cancel(home.matchup.room), offline: () => offline(), friendly: () => friendly(), install: () => install(),
   };
   const busyKey = { play: 'primary', join: 'primary', cancel: 'cancel', offline: 'offline', friendly: 'friendly' }[a.key];
   const label = busyKey && state.busy === busyKey ? ACT_BUSY[a.key] : a.label;
@@ -231,13 +230,7 @@ function actionButton(a, s, home) {
   if (a.key === 'install' && a.percent !== null && a.percent !== undefined) {
     return el('div', { class: 'lg-install' }, btn, el('progress', { max: '100', value: a.percent, 'aria-label': a.label }));
   }
-  if (a.key !== 'friendly') return btn;
-  // Friendly always plays the league rules (Adam 10-17); the ▾ offers one standard-rules game. Nothing is remembered.
-  const more = el('button', { type: 'button', class: 'btn lg-more', 'data-key': 'league-friendly-menu', 'aria-label': 'Friendly rules', text: '▾',
-    disabled: a.disabled || Boolean(state.busy),
-    onclick: (e) => openMenu(e.currentTarget, { label: 'Friendly rules', current: 'league',
-      options: [{ value: 'league', label: 'League rules' }, { value: 'raw', label: 'Standard rules' }], onPick: (v) => friendly(v) }) });
-  return el('span', { class: 'lg-split' }, btn, more);
+  return btn;
 }
 
 function banner(home) {

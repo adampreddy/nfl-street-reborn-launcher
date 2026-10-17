@@ -294,11 +294,11 @@ export function weekGames(home) {
   });
 }
 
-/** "Week N's best": the site's `week_best` (top 3 per group, the leader marked `top`), or the empty line. */
+/** "Week N's Top Performers": the site's `week_best` (top 3 per group, the leader marked `top`), or the empty line. */
 export function weekBest(home) {
   const wb = home?.week_best;
   const week = num(wb?.week) ?? num(home?.league?.week);
-  const title = week !== null ? `Week ${week}'s best` : 'Best of the week';
+  const title = week !== null ? `Week ${week}'s Top Performers` : 'Top Performers';
   const groups = arr(wb?.groups).filter((g) => g && str(g.label)).map((g) => ({
     label: g.label,
     rows: arr(g.rows).filter(Boolean).slice(0, 3).map((r, i) => ({ poid: num(r.poid), name: str(r.name), team_id: num(r.team_id), line: str(r.line), top: i === 0 })),
