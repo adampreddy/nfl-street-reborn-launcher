@@ -300,21 +300,21 @@ for (const [file, name] of PAGES) {
   const reject = (e) => () => { throw e; };
   let p = await leaguePage();
   let t = text(p.screen());
-  check("League draws the team header", t.includes("Subway Surfers") && t.includes("Season 4 · Week 6 · 4-1 · 2nd"), t.slice(0, 300));
-  check("League draws the week scoreboard", t.includes("GHO") && t.includes("FINAL · 0-2"), t.slice(0, 600));
-  const go = findByText(p.screen(), "Play league game");
-  check("League offers Play league game", !!go && !go.disabled);
-  check("Play league game is the page's primary control", go?.attrs?.["data-primary"] === "true");
+  check("League draws the heading and your team card", t.includes("Reborn Season 4 · Week 6") && t.includes("Subway Surfers") && t.includes("4-1 · 2nd"), t.slice(0, 300));
+  check("League draws the week's games", t.includes("Gridiron Ghosts") && t.includes("Final") && t.includes("You"), t.slice(0, 600));
+  check("League never says This week or draws a roster", !t.includes("This week") && !t.includes("Roster"), t.slice(0, 900));
+  const go = findByText(p.screen(), "Play Football Furies");
+  check("League offers Play {opponent}", !!go && !go.disabled);
+  check("Play {opponent} is the page's primary control", go?.attrs?.["data-primary"] === "true");
   if (go) {
     await p.press(go);
-    check("Play league game opens the room, then hands over to Online", p.seen.some(([c]) => c === "league_room_open") && global.location.href === "online.html", JSON.stringify(p.seen.map(([c]) => c)));
+    check("Play {opponent} opens the room, then hands over to Online", p.seen.some(([c]) => c === "league_room_open") && global.location.href === "online.html", JSON.stringify(p.seen.map(([c]) => c)));
   }
 
   p = await leaguePage({ league_edition_status: { installed: false, version: null, latest: "2026.10.08", update_available: false, size_bytes: 1610612736, game_id: "NSRS04" } });
   t = text(p.screen());
   check("League offers Install league files with its size", t.includes("Install league files (1.5 GB)"), t.slice(0, 400));
-  check("Play league game waits for the league files", findByText(p.screen(), "Play league game")?.disabled === true && t.includes("Install league files to play."));
-  check("Play offline waits for the league files", findByText(p.screen(), "Play offline")?.disabled === true);
+  check("Without league files the install button takes the play slot", !findByText(p.screen(), "Play Football Furies") && !findByText(p.screen(), "Play offline"), t.slice(0, 600));
 
   p = await leaguePage({ league_edition_status: { ...FULL.league_edition_status, latest: "2026.10.09", update_available: true } });
   check("League offers Update league files", text(p.screen()).includes("Update league files (1.5 GB)"), text(p.screen()).slice(0, 400));
@@ -329,10 +329,10 @@ for (const [file, name] of PAGES) {
   check("Play anyway asks again with playAnyway", offline === 2 && p.seen.some(([c, a]) => c === "league_play_offline" && a.playAnyway === true), JSON.stringify(p.seen.filter(([c]) => c === "league_play_offline")));
 
   p = await leaguePage({ league_room_open: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.09" }) });
-  await p.press(findByText(p.screen(), "Play league game"));
+  await p.press(findByText(p.screen(), "Play Football Furies"));
   check("A newer league build is asked for in plain words", text(p.screen()).includes("Update league files to play."), text(p.screen()).slice(0, 600));
   p = await leaguePage({ league_room_open: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.01" }) });
-  await p.press(findByText(p.screen(), "Play league game"));
+  await p.press(findByText(p.screen(), "Play Football Furies"));
   check("An opponent on an older build is told to update", text(p.screen()).includes("Your opponent needs to update their league files."), text(p.screen()).slice(0, 600));
 
   // Fix round 1: the install's no-space sentence, a version refusal on the join path, Cancel's leave and a reload that
@@ -346,7 +346,7 @@ for (const [file, name] of PAGES) {
   const oppId = FULL.league_home.matchup.opponent.discord_user_id;
   p = await leaguePage({ league_home: withRoom({ room_id: "r2", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: oppId }),
     mm_room_join: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.09" }) });
-  const joinBtn = findByText(p.screen(), "Join @BLONDE's game");
+  const joinBtn = findByText(p.screen(), "Join");
   if (joinBtn) await p.press(joinBtn);
   check("A join refused for the league build asks for the update", !!joinBtn && text(p.screen()).includes("Update league files to play.") && p.seen.some(([c, a]) => c === "mm_room_join" && a.code === "K7QP2M"), text(p.screen()).slice(0, 600));
 
@@ -357,17 +357,17 @@ for (const [file, name] of PAGES) {
   if (cancelBtn) await p.press(cancelBtn);
   t = text(p.screen());
   check("Cancel leaves the room by its id", p.seen.some(([c, a]) => c === "mm_room_action" && a.roomId === "r7" && a.action === "leave"), JSON.stringify(p.seen.filter(([c]) => c === "mm_room_action")));
-  check("A reload that fails after a good load says the data is old and room buttons are away until it is back", t.includes("Showing the last league data we have") && t.includes("Room buttons come back"), t.slice(0, 400));
+  check("A reload that fails after a good load says so in one line", t.includes("Can't reach the league right now.") && (t.match(/Can't reach the league/g) || []).length === 1, t.slice(0, 400));
   check("A successful Cancel is not reported as a failure", !t.includes("couldn't be loaded"), t.slice(0, 400));
   // 3a final fix M1: no Join, Cancel or Open room, and no "Online", built from data the server did not just send.
-  check("After a failed refresh the cached room offers no Cancel or Open room", !findByText(p.screen(), "Cancel") && !findByText(p.screen(), "Open room") && t.includes("Room status comes back when the league does"), t.slice(0, 900));
+  check("After a failed refresh the cached room offers no Cancel or Open room", !findByText(p.screen(), "Cancel") && !findByText(p.screen(), "Open room"), t.slice(0, 900));
   p = await leaguePage({ league_home: { ...withRoom({ room_id: "r2", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: oppId }), stale: true } });
   t = text(p.screen());
-  check("A cached (stale) answer offers no Join from its old room", !findByText(p.screen(), "Join @BLONDE's game") && !findByText(p.screen(), "Cancel") && t.includes("League data unavailable"), t.slice(0, 900));
+  check("A cached (stale) answer offers no Join from its old room", !findByText(p.screen(), "Join") && !findByText(p.screen(), "Cancel") && t.includes("Can't reach the league right now."), t.slice(0, 900));
   p = await leaguePage({ league_home: { ...FULL.league_home, stale: true, matchup: { ...FULL.league_home.matchup, opponent: { ...FULL.league_home.matchup.opponent, online: true } } } });
   t = text(p.screen());
   check("A cached answer never says the opponent is online", !t.includes("is online") && !/\bOnline\b/.test(t.replace(/Online page|online\.html/g, "")), t.slice(0, 900));
-  check("A cached answer still offers Play league game (it asks the server)", !!findByText(p.screen(), "Play league game"));
+  check("A cached answer still offers Play {opponent} (it asks the server)", !!findByText(p.screen(), "Play Football Furies"));
 
   // 3a final fix M2: the release check (network) on load only; a later load reads the local install state.
   homeCalls = 0;
@@ -384,7 +384,7 @@ for (const [file, name] of PAGES) {
     league_edition_installed: () => { localCalls++; return { ...FULL.league_edition_installed, installing: false }; } });
   const busyBtn = findByAttr(p.screen(), "data-key", "league-install");
   check("A running install shows its progress with Install disabled", busyBtn?.textContent === "Downloading league files… 25%" && busyBtn.disabled === true, String(busyBtn?.textContent));
-  check("Play offline waits for a running install", findByText(p.screen(), "Play offline")?.disabled === true);
+  check("A running install takes the play slot (no Play offline until it ends)", !findByText(p.screen(), "Play offline"));
   await new Promise((r) => setTimeout(r, 2300)); await tick(); await tick(); await tick();
   t = text(p.screen());
   check("When the running install ends the page checks the release again", localCalls >= 1 && p.seen.filter(([c]) => c === "league_edition_status").length === 2 && !findByAttr(p.screen(), "data-key", "league-install")?.disabled, JSON.stringify(p.seen.map(([c]) => c)));
@@ -392,11 +392,10 @@ for (const [file, name] of PAGES) {
   const store = new Map(), realStorage = global.localStorage;
   global.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
   p = await leaguePage();
-  await p.press(findByText(p.screen(), "Host friendly"));
-  await p.press(findByAttr(p.screen(), "data-key", "league-settings"));
-  await p.press(findByText(p.screen(), "Host friendly"));
+  await p.press(findByText(p.screen(), "Friendly"));
+  await p.press(findByText(p.screen(), "Friendly"));
   const rulesets = p.seen.filter(([c]) => c === "league_host_friendly").map(([, a]) => a.ruleset);
-  check("Friendlies use league settings by default, the raw game after the switch", JSON.stringify(rulesets) === '["league","raw"]', JSON.stringify(rulesets));
+  check("Friendly always plays the league rules and remembers nothing (Adam 10-17)", JSON.stringify(rulesets) === '["league","league"]' && store.size === 0, JSON.stringify(rulesets));
   global.localStorage = realStorage;
 
   p = await leaguePage({ league_home: { ok: true, signed_in: true, member: false } });

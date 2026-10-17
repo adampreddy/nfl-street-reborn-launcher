@@ -94,10 +94,8 @@ W is `--ok`, L is `--red-ink`. There is no T: ties do not exist.
 | `--chart-grey` | `rgba(174,181,192,.45)` | a chart's second series: points allowed, the grey legend key |
 | `--chart-grid`, `--chart-base` | `rgba(255,255,255,.06)`, `.14` | a chart's grid lines and its zero line |
 | `--chart-hole` | `#0d0e11` | the hole a chart dot sits in (the window colour) |
-| `--league-cell-w` | `224px` | one week-scoreboard cell (League): wide enough for a team name beside its logo |
-| `--mine-edge` | `inset 3px 0 0 var(--red)` | your game, your row and the Update attention mark: a 3px red left edge, never a glow (League) |
 
-Set per element, not on `:root`: `--tc` (portrait team colour, from the server; on the League tab your team's colour), `--oc` (the League tab's opponent colour; both only as an exact `#RRGGBB`), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
+Set per element, not on `:root`: `--tc` (portrait team colour, from the server; only as an exact `#RRGGBB`), `--c1`/`--c2` (cover colours from the Discord avatar, `cover-color.js`), `--menu-x`/`--menu-y` (menu position, `menu.js`), `--rail` (sidebar width), `--hint-height` (hint bar, 0px or 34px).
 
 Colour rules:
 

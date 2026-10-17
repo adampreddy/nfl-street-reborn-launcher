@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  pageMode, headerLine, bannerLine, teamColor, weekTitle, cardState, installState, playGate, isUpdateRequired, updateRequiredLine, friendlyRuleset,
-  scoreCells, standingsRows, recentRows, leaderCols, rosterRows, ordinal, runningInstall, withInstalled,
+  pageMode, headerLine, bannerLine, teamColor, cardState, installState, playGate, isUpdateRequired, updateRequiredLine,
+  standingsRows, ordinal, runningInstall, withInstalled,
 } from './league-model.js';
 
 const FIX = JSON.parse(readFileSync(new URL('../../../Tools/fixtures/league-home.json', import.meta.url), 'utf8'));
@@ -34,13 +34,6 @@ test('ordinal, header line (week_label wins), banner only when stale', () => {
 test('teamColor: only #RRGGBB passes', () => {
   assert.equal(teamColor(FIX.team), '#00A3FF');
   for (const bad of ['red', '#FFF', 'url(x)', '#00A3FF;x:y', null, 7]) assert.equal(teamColor({ color: bad }), null, String(bad));
-});
-
-test('weekTitle: the league week, or the matchup week when a postponed game is still open', () => {
-  assert.equal(weekTitle(FIX), 'This week · Week 6');
-  const late = withMatchup({ week: 5 });
-  assert.equal(weekTitle(late), 'Catch-up game · Week 5');
-  const noLabel = clone(); noLabel.league.week_label = ''; assert.equal(weekTitle(noLabel), 'This week · Week 6');
 });
 
 test('cardState: play, waiting, join, lobby, final, bye', () => {
@@ -174,50 +167,16 @@ test('playGate: buttons only when installed, current and idle', () => {
   assert.deepEqual(playGate(ED, { phase: 'download', done: 1, total: 2 }), { ready: false, hint: 'League files are installing…' });
 });
 
-test('isUpdateRequired and friendlyRuleset', () => {
+test('isUpdateRequired', () => {
   assert.equal(isUpdateRequired({ kind: 'league_update_required', message: 'x' }), true);
   assert.equal(isUpdateRequired({ kind: 'unavailable', message: 'league_version_mismatch' }), true, 'a raw code from the existing join path');
   assert.equal(isUpdateRequired('league_version_mismatch'), true);
   assert.equal(isUpdateRequired({ kind: 'unavailable', message: 'nope' }), false);
   assert.equal(isUpdateRequired(null), false);
-  assert.equal(friendlyRuleset(true), 'league');
-  assert.equal(friendlyRuleset(false), 'raw');
 });
 
-test('scoreCells: mine first, never a time, series and forfeit lines, winners only when final', () => {
-  const cells = scoreCells(FIX);
-  assert.deepEqual(cells.map((c) => c.key), [1234, 1230, 1231, 1232]);
-  const [mine, fin, prog, ff] = cells;
-  assert.deepEqual([mine.mine, mine.status, mine.statusText, mine.home.score], [true, 'scheduled', 'This week', null]);
-  assert.deepEqual([fin.status, fin.statusText, fin.home.score, fin.away.score, fin.home.winner, fin.away.winner], ['final', 'FINAL · 0-2', 49, 21, true, false]);
-  assert.deepEqual([prog.status, prog.statusText, prog.home.winner, prog.away.winner], ['in_progress', 'SERIES · 1-0', false, false], 'the leader is not a winner');
-  assert.deepEqual([ff.statusText, ff.home.winner, ff.away.winner, ff.home.score], ['FORFEIT', true, false, null]);
-  assert.equal(mine.home.color, '#00A3FF');
-  assert.equal(fin.home.logo_url, null);
-});
-
-test('scoreCells: live text, junk rows dropped, no week_games is []', () => {
-  const h = clone(); h.week_games[3].status = 'live'; h.week_games[3].series = { home: 1, away: 0 }; h.week_games.push(null, { fixture_id: 9 });
-  const cells = scoreCells(h);
-  assert.deepEqual([cells[0].status, cells[0].statusText], ['live', 'LIVE · 0-1']);
-  assert.equal(cells.length, 4);
-  assert.deepEqual(scoreCells({ member: true }), []);
-});
-
-test('rows: standings mark mine; recent with forfeits; TD leaders; roster', () => {
+test('standings mark mine', () => {
   assert.deepEqual(standingsRows(FIX).map((r) => [r.rank, r.abbrev, r.record, r.mine]), [[1, 'GHO', '5-0', false], [2, 'ADAM', '4-1', true], [3, 'BLONDE', '3-2', false]]);
-  assert.deepEqual(recentRows(FIX), [
-    { result: 'W', text: 'W 28-21 @ JOCK · Week 5' },
-    { result: 'L', text: 'L 0-2 vs GHO · Week 4' },
-    { result: null, text: 'Forfeit vs RAIL · Week 3' },
-    { result: 'W', text: 'W by forfeit @ DUNE · Week 2' },
-  ]);
-  assert.deepEqual(leaderCols(FIX).map((c) => [c.label, c.rows[0]?.name ?? null, c.rows[0]?.value ?? null]),
-    [['Passing TD', 'Michael Vick', '14 TD'], ['Rushing TD', 'Barry Sanders', '1,204 TD'], ['Receiving TD', null, null]]);
-  const bare = clone(); bare.leaders_unit = undefined;
-  assert.equal(leaderCols(bare)[0].rows[0].value, '14', 'no unit from the server: the bare number');
-  assert.deepEqual(rosterRows(FIX)[0], { key: 12, number: '7', name: 'Michael Vick', position: 'QB' });
-  assert.deepEqual([recentRows({}), leaderCols({}).map((c) => c.rows.length), rosterRows({})], [[], [0, 0, 0], []]);
 });
 
 test('updateRequiredLine: our files are behind unless the room wants an older version', () => {

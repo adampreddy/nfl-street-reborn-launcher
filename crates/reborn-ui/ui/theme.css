@@ -49,8 +49,6 @@
      axis base and the hole a chart dot sits in (the card colour) */
   --rule:rgba(255,255,255,.055);--red-deep:#b81f25;--chart-grey:rgba(174,181,192,.45);--chart-grid:rgba(255,255,255,.06);--chart-base:rgba(255,255,255,.14);--chart-hole:#0d0e11;
   /* League (spec 2026-10-08): one week-scoreboard cell; your game / your row / the Update mark: a red left edge, not a glow */
-  --league-cell-w:224px;
-  --mine-edge:inset 3px 0 0 var(--red);
 }
 html[data-motion="slow"]{--d1:480ms;--d2:720ms;--d3:960ms}
 html[data-motion="quick"]{--d1:120ms;--d2:180ms;--d3:240ms}

@@ -38,16 +38,6 @@ export function bannerLine(home) {
   return home?.stale === true ? 'League data unavailable. Showing what was last loaded.' : null;
 }
 
-/** The This Week card's title. The site picks each team's earliest unfinished fixture, so a postponed game can sit in
- *  an earlier week than the league's: that is a catch-up game, titled by its own week. */
-export function weekTitle(home) {
-  const lw = num(home?.league?.week);
-  const mw = num(home?.matchup?.week);
-  if (mw !== null && lw !== null && mw < lw) return `Catch-up game · Week ${mw}`;
-  const label = str(home?.league?.week_label) || (lw !== null ? `Week ${lw}` : '');
-  return label ? `This week · ${label}` : 'This week';
-}
-
 function oppName(m) {
   return str(m?.opponent?.owner_display) || str(m?.opponent?.name) || 'your opponent';
 }
@@ -191,38 +181,6 @@ export function updateRequiredLine(e, status) {
   return 'Update league files to play.';
 }
 
-export function friendlyRuleset(leagueSettingsOn) {
-  return leagueSettingsOn ? 'league' : 'raw';
-}
-
-function side(t, score, won) {
-  return { team_id: num(t?.team_id), abbrev: str(t?.abbr), name: str(t?.name) || str(t?.abbr), record: str(t?.record), logo_url: str(t?.logo_url) || null,
-    color: teamColor(t), score, winner: won };
-}
-
-/** The week scoreboard strip: your game first, then the server's order. Pairs print away-home. A row with no fixture
- *  or teams is dropped. A winner is marked only on a final game (mid-series `winner_team_id` is the leader). */
-export function scoreCells(home) {
-  const mineId = home?.matchup?.fixture_id;
-  const rows = arr(home?.week_games).filter((g) => g && g.fixture_id !== undefined && g.fixture_id !== null && g.home && g.away);
-  rows.sort((a, b) => (b.fixture_id === mineId) - (a.fixture_id === mineId));
-  return rows.map((g) => {
-    const status = ['final', 'in_progress', 'live'].includes(g.status) ? g.status : 'scheduled';
-    const ser = g.series && num(g.series.home) !== null && num(g.series.away) !== null ? `${g.series.away}-${g.series.home}` : '';
-    const statusText = status === 'final' ? (g.forfeit === true ? 'FORFEIT' : ser ? `FINAL · ${ser}` : 'FINAL')
-      : status === 'live' ? (ser ? `LIVE · ${ser}` : 'LIVE')
-      : status === 'in_progress' ? (ser ? `SERIES · ${ser}` : 'SERIES')
-      : 'This week';
-    const decided = status === 'final' && g.winner_team_id !== null && g.winner_team_id !== undefined;
-    const pts = (k) => (status === 'scheduled' ? null : num(g.score?.[k]));
-    return {
-      key: g.fixture_id, mine: g.fixture_id === mineId, status, statusText,
-      away: side(g.away, pts('away'), decided && g.winner_team_id === g.away.team_id),
-      home: side(g.home, pts('home'), decided && g.winner_team_id === g.home.team_id),
-    };
-  });
-}
-
 export function standingsRows(home) {
   const me = home?.team?.id;
   return arr(home?.standings).filter(Boolean).map((r) => ({
@@ -230,33 +188,6 @@ export function standingsRows(home) {
   }));
 }
 
-export function recentRows(home) {
-  return arr(home?.recent).filter(Boolean).map((r) => {
-    const where = `${r.home ? 'vs' : '@'} ${str(r.opponent_abbr)}${num(r.week) !== null ? ` · Week ${r.week}` : ''}`;
-    if (r.result !== 'W' && r.result !== 'L') return { result: null, text: `Forfeit ${where}` };
-    if (r.forfeit === true) return { result: r.result, text: `${r.result} by forfeit ${where}` };
-    const line = str(r.score) || str(r.series);
-    return { result: r.result, text: `${r.result}${line ? ` ${line}` : ''} ${where}` };
-  });
-}
-
-const LEADER_COLS = [['pass', 'Passing'], ['rush', 'Rushing'], ['rec', 'Receiving']];
-export function leaderCols(home) {
-  const unit = str(home?.leaders_unit);
-  return LEADER_COLS.map(([k, label]) => ({
-    label: unit ? `${label} ${unit}` : label,
-    rows: arr(home?.leaders?.[k]).filter(Boolean).slice(0, 3).map((p) => ({
-      name: str(p.name),
-      value: num(p.value) === null ? '—' : `${p.value.toLocaleString('en-US')}${unit ? ` ${unit}` : ''}`,
-    })),
-  }));
-}
-
-export function rosterRows(home) {
-  return arr(home?.roster).filter(Boolean).map((p) => ({
-    key: p.poid ?? null, number: num(p.number) === null ? '' : String(p.number), name: str(p.name), position: str(p.position),
-  }));
-}
 
 // ---- League page v3, layout F (spec 2026-10-17-league-page-v3-design.md) ----
 

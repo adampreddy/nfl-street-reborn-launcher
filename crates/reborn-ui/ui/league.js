@@ -1,24 +1,22 @@
 // The League tab (spec 2026-10-08 v2 §3-4): the league site's homepage for your team, plus the League edition's
 // Install/Update button and play panel. Members only: league_home answers member:false for anyone else, and this
-// page sends them to Play. Everything is server data, drawn with el()'s `text` only; images only through
-// teamLogo()/avatar() (assetUrl / avatarSrc, the two prefixes the CSP allows). Team colours reach CSS only as the
-// `--tc` / `--oc` custom properties, and only as an exact #RRGGBB (league-model.js teamColor).
+// page sends them to Play. Everything is server data, drawn with el()'s `text` only; images only through teamLogo()
+// (league_logo data: URLs, or assetUrl). Layout F (spec 2026-10-17): no team colour reaches CSS.
 // The League edition commands (league_edition_*, league_play_offline, league_host_friendly, league_room_open) are
 // Plan 3b's; none of them navigates. Rooms run through the existing private-room path and this page hands over to
 // the Online page itself.
-import { call, el, get, markCurrent, quietCall, reason, set, wireCoreFold } from './shell.js';
+import { call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
 import { makePoller } from './live-common.js';
-import { card } from './stats-cards.js';
-import { avatar, teamLogo } from './match-rows.js';
+import { openMenu } from './menu.js';
+import { teamLogo } from './match-rows.js';
 import { createSignIn } from './sign-in.js';
 import {
-  bannerLine, cardState, friendlyRuleset, headerLine, installState, isUpdateRequired, leaderCols, pageMode, playGate,
-  recentRows, rosterRows, runningInstall, scoreCells, standingsRows, teamColor, updateRequiredLine, weekTitle, withInstalled,
+  bannerState, isUpdateRequired, pageMode, runningInstall, seasonLine, siteUrl, standingsRows, teamCardLine, updateRequiredLine,
+  weekBest, weekGames, withInstalled,
 } from './league-model.js';
 
 const REFRESH_MS = 60000;
-const FRIENDLY_KEY = 'league-friendly-league-settings';
-const REFRESH_FAILED = "Can't reach the league right now. Showing the last league data we have and retrying. Room buttons come back when it does.";
+const STALE_LINE = "Can't reach the league right now.";
 // While an install the page did not start runs (it was started before the page opened), how often to ask whether it
 // is still running. Local (league_edition_installed), no network.
 const WATCH_MS = 2000;
@@ -48,8 +46,6 @@ function logoFor(id) {
 }
 const logoTeam = (t) => ({ name: t?.name || t?.abbrev || t?.abbr, abbrev: t?.abbrev || t?.abbr,
   logo_url: logoFor(t?.team_id ?? t?.id) ?? t?.logo_url });
-const tinted = (node, prop, color) => { if (color && node?.style?.setProperty) node.style.setProperty(prop, color); return node; };
-const leagueSettingsOn = () => get(FRIENDLY_KEY) !== 'off'; // default ON
 const go = (href) => { location.href = href; };
 
 // The release check (network): on page load, after an install and after a version refusal only (3a final fix M2).
@@ -186,197 +182,117 @@ const cancel = (room) => act('cancel', async () => { await call('mm_room_action'
   await load().catch(() => {});
 });
 const offline = (playAnyway = false) => act('offline', async () => { await call('league_play_offline', playAnyway ? { playAnyway: true } : {}); });
-const friendly = () => act('friendly', async () => { await call('league_host_friendly', { ruleset: friendlyRuleset(leagueSettingsOn()) }); go('online.html'); });
+// Friendly hosts on the league rules unless the ▾ menu picked standard rules for this one game (Adam 10-17).
+const friendly = (ruleset = 'league') => act('friendly', async () => { await call('league_host_friendly', { ruleset: ruleset === 'raw' ? 'raw' : 'league' }); go('online.html'); });
 
-// ---- the team header: who you are, and the League edition's Install / Update button ----
+// ---- League page v3, layout F (spec 2026-10-17-league-page-v3-design.md) ----
+// The page heading with your team card, the matchup banner, then Standings · Week N · Week N's best. Everything that
+// is a team, a game or a player is a button that opens its page on the league site (siteUrl: numeric ids only).
 
-function installArea() {
-  // A room asked for a newer build than the release check has seen yet: still offer the update (install fetches it).
-  const s = installState(state.edition, state.progress)
-    || (state.needsUpdate ? { label: 'Update league files', disabled: false, primary: true, percent: null } : null);
-  if (!s) {
-    const v = state.edition?.version;
-    return v ? el('span', { class: 'lg-files' }, el('span', { class: 'lg-ok', 'aria-hidden': 'true' }), `League files ${v}`) : null;
-  }
-  const btn = el('button', { type: 'button', class: `btn${s.primary ? ' primary' : ''}${state.needsUpdate ? ' attention' : ''}`, 'data-key': 'league-install',
-    text: s.label, disabled: s.disabled || Boolean(state.busy), onclick: install });
-  const bar = s.percent === null ? null : el('progress', { max: '100', value: s.percent, 'aria-label': s.label });
-  return el('div', { class: 'lg-install' }, btn, bar);
+let linkN = 0;
+function link(url, cls, kids, label) {
+  if (!url) return el('div', { class: cls }, ...kids);
+  linkN += 1;
+  return el('button', { type: 'button', class: `${cls} lg-link`, 'data-url': url, 'data-key': `league-link-${linkN}`, 'aria-label': label || null }, ...kids);
 }
+const dotIf = (yes) => (yes ? el('span', { class: 'lg-me', 'aria-hidden': 'true' }) : null);
+const teamName = (name, me) => el('span', { class: `lg-name${me ? ' me' : ''}` }, name, dotIf(me));
 
-function teamHeader(home) {
+function pageHeading(home) {
   const t = home.team || {};
-  const site = typeof home.site_url === 'string' && home.site_url.startsWith('https://nflstreetreborn.com/')
-    ? el('button', { type: 'button', class: 'btn quiet sm lg-site', 'data-key': 'league-site', text: 'View on site ›',
-      onclick: () => call('open_website', { url: home.site_url }).catch(() => {}) })
-    : null;
-  // The page heading every page has (Stats, Online): the title, one line under it, the actions on the right.
+  const card = el('div', { class: 'glass lg-teamcard' }, teamLogo(logoTeam(t), 'lg-tc-logo'),
+    el('div', { class: 'lg-tc-text' }, el('b', { text: t.name || 'Your team' }), el('span', { class: 'num', text: teamCardLine(home) })),
+    link(siteUrl('team', home, t.id), 'btn quiet sm lg-tc-site', ['View on site ›']));
+  const site = card.querySelector?.('.lg-tc-site');
+  if (site) site.setAttribute('data-key', 'league-team-site');
   return el('div', { class: 'page-heading lg-head' },
-    el('div', { class: 'lg-head-text' },
-      el('h1', { text: 'League' }),
-      el('p', { class: 'purpose lg-head-line' }, teamLogo(logoTeam(t), 'lg-head-logo'),
-        el('b', { text: t.name || 'Your team' }), el('span', { class: 'num', text: `· ${headerLine(home)}` }))),
-    el('div', { class: 'lg-head-actions' }, installArea(), site));
+    el('div', {}, el('h1', { text: 'League' }), el('p', { class: 'purpose', text: seasonLine(home) })), card);
 }
 
-// ---- the week scoreboard: every game this week, yours first ----
-
-function sideRow(s) {
-  return tinted(el('div', { class: `lg-side${s.winner ? ' won' : ''}` },
-    teamLogo(logoTeam(s), 'lg-cell-logo'),
-    el('b', { class: 'lg-abbr', text: s.name || s.abbrev, title: s.name || null }), el('span', { class: 'lg-rec num', text: s.record }),
-    el('span', { class: 'lg-pts num', text: s.score === null ? '' : String(s.score) })), '--tc', s.color);
+function bannerTeam(home, t, me, score) {
+  const sub = [me ? home.team?.abbr : (t?.owner_display || t?.abbr), t?.record].filter(Boolean).join(' · ');
+  return el('div', { class: 'lg-bt' },
+    link(siteUrl('team', home, t?.team_id ?? t?.id), 'lg-bt-team', [teamLogo(logoTeam(t), 'lg-bt-logo'),
+      el('span', { class: 'lg-bt-text' }, el('b', { text: t?.name || '' }), el('span', { class: 'num', text: sub }))]),
+    score === null || score === undefined ? null : el('span', { class: 'lg-bt-score num', text: String(score) }));
 }
 
-function cellLabel(c) {
-  const side = (s) => `${s.name || s.abbrev}${s.score === null ? '' : ` ${s.score}`}`;
-  return `${c.mine ? 'Your game: ' : ''}${side(c.away)} at ${side(c.home)}, ${c.mine && c.status === 'scheduled' ? 'this week' : c.statusText.toLowerCase()}`;
-}
+const ACT_BUSY = { play: 'Opening room…', join: 'Joining…', cancel: 'Leaving…', offline: 'Playing…', friendly: 'Opening room…' };
 
-function scoreboard(home) {
-  const cells = scoreCells(home);
-  if (!cells.length) return null;
-  const toWeek = () => {
-    const btn = document.querySelector?.('[data-key="league-primary"]:not(:disabled)');
-    if (btn) btn.focus(); else document.getElementById('lg-week')?.scrollIntoView?.({ block: 'nearest' });
+function actionButton(a, s, home) {
+  const handlers = {
+    play: () => play(), join: () => join(home.matchup.room), open: () => go('online.html'), back: () => go('online.html'),
+    cancel: () => cancel(home.matchup.room), offline: () => offline(), friendly: () => friendly('league'), install: () => install(),
   };
-  const track = el('ol', { class: 'lg-track', 'aria-label': `${home.league?.week_label || 'This week'}'s games` }, ...cells.map((c) => {
-    const status = el('span', { class: `lg-status ${c.status}` }, c.status === 'live' ? el('span', { class: 'live-dot', 'aria-hidden': 'true' }) : null,
-      c.mine && c.status === 'scheduled' ? 'Your game' : c.statusText);
-    const kids = [status, sideRow(c.away), sideRow(c.home)];
-    const cls = `lg-cell ${c.status}${c.mine ? ' mine' : ''}`;
-    const body = c.mine
-      ? el('button', { type: 'button', class: cls, 'data-key': 'league-my-cell', 'aria-label': `${cellLabel(c)}. Go to This week`, onclick: toWeek }, ...kids)
-      : el('div', { class: cls, 'aria-label': cellLabel(c), role: 'group' }, ...kids);
-    return el('li', {}, body);
-  }));
-  const prev = el('button', { type: 'button', class: 'btn quiet sm lg-step', 'data-key': 'league-earlier', 'aria-label': 'Earlier games', text: '‹' });
-  const next = el('button', { type: 'button', class: 'btn quiet sm lg-step', 'data-key': 'league-later', 'aria-label': 'Later games', text: '›' });
-  const board = el('section', { class: 'glass lg-board', 'aria-label': `${home.league?.week_label || 'Week'} scoreboard` }, prev, track, next);
-  const steps = () => {
-    const max = (track.scrollWidth || 0) - (track.clientWidth || 0);
-    const left = track.scrollLeft || 0;
-    prev.disabled = left <= 1;
-    next.disabled = left >= max - 1;
-    board.classList.toggle('fits', max <= 1);
-  };
-  const still = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const step = (dir) => () => track.scrollBy?.({ left: dir * (track.clientWidth || 0) * 0.8, behavior: still() ? 'auto' : 'smooth' });
-  prev.addEventListener('click', step(-1));
-  next.addEventListener('click', step(1));
-  track.addEventListener('scroll', () => { state.trackLeft = track.scrollLeft || 0; steps(); }, { passive: true });
-  // A mouse wheel scrolls the strip sideways, but only while there is somewhere to go (the page keeps its own scroll).
-  track.addEventListener('wheel', (e) => {
-    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-    const max = track.scrollWidth - track.clientWidth;
-    if (max <= 1 || (e.deltaY < 0 && track.scrollLeft <= 0) || (e.deltaY > 0 && track.scrollLeft >= max - 1)) return;
-    track.scrollLeft += e.deltaY; e.preventDefault();
-  }, { passive: false });
-  // After layout: back where the strip was before this redraw, and the arrows set for it.
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { track.scrollLeft = state.trackLeft; steps(); });
-  return board;
+  const busyKey = { play: 'primary', join: 'primary', cancel: 'cancel', offline: 'offline', friendly: 'friendly' }[a.key];
+  const label = busyKey && state.busy === busyKey ? ACT_BUSY[a.key] : a.label;
+  const btn = el('button', { type: 'button', class: `btn${a.primary ? ' primary' : ''}`, 'data-key': `league-${a.key}`, ...(a.primary ? { 'data-primary': 'true' } : {}),
+    text: label, disabled: a.disabled || (Boolean(state.busy) && a.key !== 'back' && a.key !== 'open'), onclick: handlers[a.key] });
+  if (a.key === 'install' && a.percent !== null && a.percent !== undefined) {
+    return el('div', { class: 'lg-install' }, btn, el('progress', { max: '100', value: a.percent, 'aria-label': a.label }));
+  }
+  if (a.key !== 'friendly') return btn;
+  // Friendly always plays the league rules (Adam 10-17); the ▾ offers one standard-rules game. Nothing is remembered.
+  const more = el('button', { type: 'button', class: 'btn lg-more', 'data-key': 'league-friendly-menu', 'aria-label': 'Friendly rules', text: '▾',
+    disabled: a.disabled || Boolean(state.busy),
+    onclick: (e) => openMenu(e.currentTarget, { label: 'Friendly rules', current: 'league',
+      options: [{ value: 'league', label: 'League rules' }, { value: 'raw', label: 'Standard rules' }], onPick: (v) => friendly(v) }) });
+  return el('span', { class: 'lg-split' }, btn, more);
 }
 
-// ---- This Week: your game, and the one button that plays it ----
-
-function vsSide(t, { opp = false, online = true } = {}) {
-  const owner = opp && t?.owner_display ? el('div', { class: 'lg-owner' }, avatar(t.avatar_url, t.owner_display, 'lg-av'),
-    el('span', { class: 'lg-handle', text: `@${t.owner_display}` }),
-    online && t.online === true ?el('span', { class: 'lg-online' }, el('span', { class: 'lg-ok', 'aria-hidden': 'true' }), 'Online') : null) : null;
-  return el('div', { class: `lg-vs-team${opp ? ' opp' : ''}` }, teamLogo(logoTeam(t), 'lg-vs-logo'),
-    el('b', { class: 'lg-vs-name', text: t?.name || t?.abbr || '' }),
-    el('span', { class: 'lg-vs-rec num', text: [t?.abbr, t?.record].filter(Boolean).join(' · ') }), owner);
-}
-
-const BUSY_WORDS = { play: 'Opening room…', join: 'Joining…', cancel: 'Leaving…' };
-
-function thisWeek(home) {
-  // Old data (the core's cached fallback, or a refresh that failed after a good load): no room button, no "Online".
+function banner(home) {
   const stale = Boolean(state.error) || home.stale === true;
-  const s = cardState(home, { stale });
-  const gate = playGate(state.edition, state.progress);
+  const s = bannerState(home, { stale, edition: state.edition, progress: state.progress });
   const m = home.matchup || {};
-  const opp = m.opponent || {};
-  const noGame = s.kind === 'bye' || s.kind === 'unscheduled';
-  const vs = noGame ? null : el('div', { class: 'lg-vs' }, vsSide(home.team), el('span', { class: 'lg-vs-at', text: m.home ? 'vs' : '@' }), vsSide(opp, { opp: true, online: !stale && !s.line.endsWith('is online') }));
-  // Opening a room that already exists (waiting / lobby / live) needs no league files; starting or joining one does.
-  const needsFiles = s.kind === 'play' || s.kind === 'join';
-  const onClick = s.kind === 'play' ? play : s.kind === 'join' ? () => join(s.room) : (s.kind === 'waiting' || s.kind === 'lobby' || s.kind === 'live') ? () => go('online.html') : null;
-  const blocked = Boolean(state.busy) || (needsFiles && !gate.ready);
-  const label = state.busy === 'primary' ? (s.kind === 'join' ? BUSY_WORDS.join : BUSY_WORDS.play) : s.action;
-  const buttons = s.action || s.cancel ? el('div', { class: 'lg-actions' },
-    s.action ? el('button', { type: 'button', class: 'btn primary lg-go', 'data-key': 'league-primary', 'data-primary': 'true', text: label, disabled: blocked, onclick: onClick }) : null,
-    s.cancel ? el('button', { type: 'button', class: 'btn', 'data-key': 'league-cancel', text: state.busy === 'cancel' ? BUSY_WORDS.cancel : 'Cancel', disabled: Boolean(state.busy), onclick: () => cancel(s.room) }) : null) : null;
-  const hint = s.action && needsFiles && !gate.ready ? el('p', { class: 'lg-hint', text: gate.hint })
-    : s.kind === 'unlinked' ? el('p', { class: 'lg-hint', text: 'They need to link Discord on the league site before you can play.' }) : null;
-  const line = s.line ? el('p', { class: `lg-line ${s.kind}` }, s.kind === 'live' ? el('span', { class: 'live-dot', 'aria-hidden': 'true' }) : null, s.line) : null;
-  const node = card('lg-week', weekTitle(home), [vs, line, buttons, hint,
-    state.actionError ? el('p', { class: 'refusal', role: 'alert', text: state.actionError }) : null],
-  { aside: noGame ? null : (m.home ? 'Home' : 'Away'), cls: `lg-week ${s.kind}${noGame ? ' empty' : ''}` });
-  tinted(node, '--tc', teamColor(home.team));
-  return tinted(node, '--oc', teamColor(opp));
+  const you = { ...(home.team || {}), team_id: home.team?.id };
+  const bg = el('div', { class: 'lg-banner-bg', 'aria-hidden': 'true' }, teamLogo(logoTeam(you), ''), m.opponent ? teamLogo(logoTeam(m.opponent), '') : null);
+  const sc = s.scores || [null, null];
+  const teams = s.kind === 'bye' || s.kind === 'unscheduled'
+    ? el('div', { class: 'lg-bt' }, teamLogo(logoTeam(you), 'lg-bt-logo'), el('span', { class: 'lg-bt-text' }, el('b', { text: s.text }),
+      s.kind === 'bye' ? el('span', { text: `${you.name || 'Your team'} have a bye` }) : null))
+    : [bannerTeam(home, you, true, sc[0]), s.mid ? el('span', { class: `lg-mid ${s.kind}` }, s.kind === 'live' ? el('span', { class: 'live-dot', 'aria-hidden': 'true' }) : null, s.mid) : null,
+      bannerTeam(home, m.opponent, false, sc[1])];
+  const text = s.text && s.kind !== 'bye' && s.kind !== 'unscheduled' ? el('span', { class: `lg-bn-text${s.tone ? ` ${s.tone}` : ''}`, role: 'status', text: s.text }) : null;
+  return el('section', { class: 'glass lg-banner', 'aria-label': 'Your game' }, bg,
+    el('div', { class: 'lg-bn-row' }, ...[teams].flat(), el('div', { class: 'lg-acts' }, text, ...s.actions.map((a) => actionButton(a, s, home)))));
 }
 
-// ---- the League edition: offline and friendlies ----
-
-function playPanel() {
-  const gate = playGate(state.edition, state.progress);
-  const on = leagueSettingsOn();
-  const toggle = el('button', { type: 'button', class: 'look-switch', role: 'switch', 'aria-checked': on ? 'true' : 'false', 'aria-labelledby': 'lg-ls-label',
-    'data-key': 'league-settings', disabled: Boolean(state.busy),
-    onclick: () => { set(FRIENDLY_KEY, on ? 'off' : 'on'); draw(); } });
-  const setup = state.controllerSetup ? el('div', { class: 'partial lg-setup', role: 'alert' },
-    el('p', { text: state.controllerSetup }),
-    el('div', { class: 'lg-row' },
-      el('a', { class: 'btn primary sm', href: 'controls.html', 'data-key': 'league-setup', text: 'Set up controller' }),
-      el('button', { type: 'button', class: 'btn sm', 'data-key': 'league-anyway', text: 'Play anyway', disabled: Boolean(state.busy), onclick: () => offline(true) }))) : null;
-  return card('lg-play', 'League build', [
-    el('div', { class: 'lg-play-btns' },
-      el('button', { type: 'button', class: 'btn', 'data-key': 'league-offline', text: state.busy === 'offline' ? 'Playing…' : 'Play offline', disabled: Boolean(state.busy) || !gate.ready, onclick: () => offline() }),
-      el('button', { type: 'button', class: 'btn', 'data-key': 'league-friendly', text: state.busy === 'friendly' ? 'Opening room…' : 'Host friendly', disabled: Boolean(state.busy) || !gate.ready, onclick: friendly })),
-    el('div', { class: 'lg-toggle' },
-      el('span', { id: 'lg-ls-label', class: 'lg-toggle-text' }, el('b', { text: 'League settings' }), el('span', { text: on ? 'Friendlies play Hard, GameBreakers off' : 'Friendlies play the game as it comes' })),
-      toggle),
-    gate.ready ? null : el('p', { class: 'lg-hint', text: gate.hint }),
-    setup,
-  ], { cls: 'lg-play' });
+function head(title, url, aside) {
+  const h = url ? el('button', { type: 'button', class: 'lg-hlink lg-link', 'data-url': url, 'data-key': `league-head-${title.replace(/\W+/g, '-').toLowerCase()}` }, title) : el('span', { text: title });
+  return el('div', { class: 'vc-h' }, el('h2', {}, h), aside);
 }
 
-// ---- the quiet cards: standings, results, leaders, roster ----
-
-function standings(home) {
+function standingsCard(home) {
   const rows = standingsRows(home);
-  return card('lg-standings', 'Standings', rows.length ? el('ol', { class: 'lg-list lg-stand' }, ...rows.map((r) =>
-    el('li', { class: r.mine ? 'mine' : null, 'aria-current': r.mine ? 'true' : null },
-      el('span', { class: 'num lg-rank', text: r.rank === null ? '' : String(r.rank) }),
-      el('span', { class: 'lg-team' }, teamLogo(logoTeam(r), 'lg-row-logo'), el('span', { class: 'lg-name', text: r.name || r.abbrev })),
-      el('span', { class: 'num r', text: r.record })))) : el('p', { class: 'vc-none', text: 'No standings yet.' }), { flush: rows.length > 0 });
+  return el('section', { id: 'lg-standings', class: 'glass vc lg-card' }, head('Standings', siteUrl('standings', home), el('span', { class: 'vc-aside', text: 'W-L' })),
+    rows.length ? el('div', { class: 'lg-rows' }, ...rows.map((r) => link(siteUrl('team', home, r.team_id), `lg-row${r.mine ? ' mine' : ''}`, [
+      el('span', { class: 'lg-rank num', text: r.rank === null ? '' : String(r.rank) }), teamLogo(logoTeam(r), 'lg-row-logo'), teamName(r.name || r.abbrev, r.mine),
+      el('span', { class: 'lg-rec num', text: r.record })], `${r.name}, ${r.record}`)))
+      : el('p', { class: 'vc-none', text: 'No standings yet.' }));
 }
 
-function recent(home) {
-  const rows = recentRows(home);
-  return card('lg-recent', 'Recent results', rows.length ? el('ol', { class: 'lg-list lg-results' }, ...rows.map((r) => {
-    let rest = r.result && r.text.startsWith(r.result) ? r.text.slice(r.result.length).trim() : r.text;
-    if (rest.startsWith('by forfeit')) rest = `${r.result === 'W' ? 'Won' : 'Lost'} ${rest}`;
-    return el('li', {}, el('span', { class: `lg-res ${r.result === 'W' ? 'w' : r.result === 'L' ? 'l' : 'f'}`, 'aria-hidden': 'true', text: r.result || '–' }),
-      el('span', { class: 'lg-name', text: rest, 'aria-label': r.text }));
-  })) : el('p', { class: 'vc-none', text: 'No results yet.' }), { flush: rows.length > 0 });
+function weekCard(home) {
+  const games = weekGames(home);
+  const week = home.league?.week_label || (home.league?.week ? `Week ${home.league.week}` : 'Week');
+  const finals = games.filter((g) => g.status === 'final').length;
+  const side = (t, final) => el('div', { class: `lg-g-side${final && !t.winner ? ' lost' : ''}` },
+    teamLogo(logoTeam(t), 'lg-g-logo'), teamName(t.name, t.team_id === home.team?.id), el('span', { class: 'lg-g-score num', text: t.score === null ? '' : String(t.score) }));
+  return el('section', { id: 'lg-week', class: 'glass vc lg-card' }, head(week, siteUrl('schedule', home), games.length ? el('span', { class: 'vc-aside num', text: `${finals} of ${games.length} final` }) : null),
+    games.length ? el('div', { class: 'lg-games' }, ...games.map((g) => link(siteUrl('game', home, g.fixture_id), `lg-game${g.mine ? ' mine' : ''}`, [
+      el('div', { class: 'lg-g-pair' }, side(g.away, g.status === 'final'), side(g.home, g.status === 'final')),
+      el('span', { class: `lg-mark ${g.marker.toLowerCase()}` }, g.marker === 'Live' ? el('span', { class: 'live-dot', 'aria-hidden': 'true' }) : null, g.marker)],
+    `${g.away.name} at ${g.home.name}`)))
+      : el('p', { class: 'vc-none', text: 'No games scheduled.' }));
 }
 
-function leaders(home) {
-  const colsData = leaderCols(home);
-  return card('lg-leaders', 'Team leaders', el('div', { class: 'lg-leaders' }, ...colsData.map((c) => el('div', { class: 'lg-lcol' },
-    el('span', { class: 'k-label', text: c.label }),
-    ...(c.rows.length ? c.rows.map((r) => el('div', { class: 'lg-leader' }, el('span', { class: 'lg-name', text: r.name }), el('b', { class: 'num', text: r.value })))
-      : [el('p', { class: 'vc-none', text: 'No one yet' })])))));
-}
-
-function roster(home) {
-  const rows = rosterRows(home);
-  if (!rows.length) return null;
-  return el('details', { class: 'glass lg-roster' }, el('summary', { 'data-key': 'league-roster', text: `Roster · ${rows.length} ${rows.length === 1 ? 'player' : 'players'}` }),
-    el('ol', { class: 'lg-list' }, ...rows.map((r) => el('li', { 'data-poid': r.key === null ? null : String(r.key) },
-      el('span', { class: 'num lg-rank', text: r.number }), el('span', { class: 'lg-name', text: r.name }), el('span', { class: 'r lg-pos', text: r.position })))));
+function bestCard(home) {
+  const b = weekBest(home);
+  const all = el('button', { type: 'button', class: 'sec-link lg-link', 'data-url': siteUrl('leaders', home), 'data-key': 'league-all-stats', text: 'All stats ›' });
+  return el('section', { id: 'lg-best', class: 'glass vc lg-card' }, el('div', { class: 'vc-h' }, el('h2', { text: b.title }), all),
+    b.empty ? el('p', { class: 'vc-none lg-best-none', text: b.empty }) : el('div', { class: 'lg-best' }, ...b.groups.map((g) => el('div', { class: 'lg-bgrp' },
+      el('span', { class: 'k-label', text: g.label }),
+      ...g.rows.map((r) => link(siteUrl('player', home, r.poid), `lg-brow${r.top ? ' top' : ''}`, [teamLogo(logoTeam({ team_id: r.team_id }), 'lg-row-logo'),
+        el('span', { class: 'lg-name', text: r.name }), el('span', { class: 'lg-line num', text: r.line })], `${r.name}, ${r.line}`))))));
 }
 
 // ---- drawing ----
@@ -400,9 +316,8 @@ function draw() {
   if (!screen) return;
   const active = typeof screen.contains === 'function' && screen.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = active?.getAttribute?.('data-key') ?? null;
-  const rosterOpen = Boolean(screen.querySelector?.('.lg-roster')?.open);
+  linkN = 0;
   screen.replaceChildren(...view());
-  if (rosterOpen) { const r = screen.querySelector?.('.lg-roster'); if (r) r.open = true; }
   if (focusKey) screen.querySelector?.(`[data-key="${focusKey}"]`)?.focus?.({ preventScroll: true });
 }
 
@@ -416,19 +331,30 @@ function view() {
   const mode = pageMode(home);
   if (mode === 'signed_out') return [signInCard()];
   if (mode !== 'member') return [el('p', { class: 'loading', text: 'The League tab is for league members. Taking you to Play…' })];
-  // A refresh that failed after a good load: the old answer stays on screen, said so plainly, room buttons included.
-  const banner = state.error ? REFRESH_FAILED : bannerLine(home);
+  // One amber line for old data, whichever way it is old (the core's cached answer, or a refresh that failed).
+  const stale = state.error || home.stale === true ? STALE_LINE : null;
+  const setup = state.controllerSetup ? el('div', { class: 'partial lg-setup', role: 'alert' },
+    el('p', { text: state.controllerSetup }),
+    el('div', { class: 'lg-row-btns' },
+      el('a', { class: 'btn primary sm', href: 'controls.html', 'data-key': 'league-setup', text: 'Set up controller' }),
+      el('button', { type: 'button', class: 'btn sm', 'data-key': 'league-anyway', text: 'Play anyway', disabled: Boolean(state.busy), onclick: () => offline(true) }))) : null;
   return [
-    teamHeader(home),
+    pageHeading(home),
+    stale ? el('p', { class: 'partial', role: 'status', text: stale }) : null,
     state.installError ? el('p', { class: 'refusal', role: 'alert', text: state.installError }) : null,
-    banner ? el('p', { class: 'partial', role: 'status', text: banner }) : null,
-    scoreboard(home),
-    el('div', { class: 'lg-grid' },
-      el('div', { class: 'lg-col lg-main' }, thisWeek(home), el('div', { class: 'lg-pair' }, recent(home), leaders(home))),
-      el('div', { class: 'lg-col lg-side-col' }, playPanel(), standings(home))),
-    roster(home),
+    banner(home),
+    state.actionError ? el('p', { class: 'refusal', role: 'alert', text: state.actionError }) : null,
+    setup,
+    el('div', { class: 'lg-cols' }, standingsCard(home), weekCard(home), bestCard(home)),
   ].filter(Boolean);
 }
+
+// One handler for every link on the page: open it on the league site (open_website refuses anything else).
+screen?.addEventListener?.('click', (e) => {
+  const a = e.target?.closest?.('.lg-link[data-url]');
+  if (!a) return;
+  call('open_website', { url: a.getAttribute('data-url') }).catch(() => {});
+});
 
 markCurrent();
 wireCoreFold();
