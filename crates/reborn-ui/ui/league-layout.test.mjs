@@ -186,3 +186,9 @@ test('siteUrl: only numeric ids, under the league site', () => {
   assert.equal(siteUrl('nope', h, 1), null);
   assert.equal(siteUrl('schedule', { league: { id: 36 } }), 'https://nflstreetreborn.com/league/schedule.php?league_id=36');
 });
+
+test('bannerState: a room that refused our league files offers Update even before the release check knows the build', () => {
+  const s = bannerState(H(), { edition: READY, needsUpdate: true });
+  assert.deepEqual(acts(s), [['install', 'Update league files', true, false]]);
+  assert.deepEqual(acts(bannerState(H(), { edition: READY })).map((a) => a[0]), ['offline', 'friendly', 'play'], 'no refusal, no update');
+});

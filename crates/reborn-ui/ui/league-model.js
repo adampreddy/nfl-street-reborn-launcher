@@ -217,8 +217,9 @@ function seriesWords([you, opp]) {
 /** The matchup banner: what sits between the teams (`mid`), the numbers beside them (`scores`, you first), one line
  *  (`text`, `tone` '' | 'ok' | 'bad') and the buttons on the right (`actions`). `edition` / `progress` are the League
  *  files' state: while they are missing, behind or installing, the install button takes the action slot, except when
- *  a game already runs from the installed files (live, or a room already open). */
-export function bannerState(home, { stale = false, edition = null, progress = null } = {}) {
+ *  a game already runs from the installed files (live, or a room already open). `needsUpdate`: a room refused our
+ *  league files (league_version_mismatch) for a newer build than the release check knows. */
+export function bannerState(home, { stale = false, edition = null, progress = null, needsUpdate = false } = {}) {
   const m = home?.matchup;
   const c = cardState(home, { stale });
   const owner = oppName(m);
@@ -260,7 +261,9 @@ export function bannerState(home, { stale = false, edition = null, progress = nu
         actions: [offline, friendly, play(off)] });
     }
   }
-  const files = installState(edition, progress);
+  // A room refused our league files for a build the release check has not seen yet: still offer the update
+  // (install fetches it).
+  const files = installState(edition, progress) || (needsUpdate ? { label: 'Update league files', disabled: false, percent: null } : null);
   if (files && !['live', 'waiting', 'lobby'].includes(s.kind)) {
     s.actions = [{ key: 'install', label: files.label, primary: true, disabled: files.disabled, percent: files.percent }];
   }

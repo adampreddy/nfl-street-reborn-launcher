@@ -67,8 +67,35 @@ for (const s of STATES.league) {
   if (s.name === 'league-catchup' && !/week 2 game/i.test(t)) p.push('catch-up game is not labelled Week 2 game');
   if (s.name === 'league-no-best' && !t.includes('No games played yet')) p.push('no week_best does not say No games played yet');
   if (s.name === 'league-no-logo' && !(await page.locator('.lg-bt .team-logo.text').count())) p.push('a missing logo has no letter fallback');
+  if (s.name === 'league-update-required' && !(await page.locator('[data-key="league-install"]', { hasText: 'Update league files' }).count())) p.push('a version refusal offers no Update league files');
+  // a letter badge (no logo yet, or none) never spills out of its circle
+  const spill = await page.$$eval('#screen .team-logo.text', (n) => n.filter((b) => b.scrollWidth > b.clientWidth + 1).length);
+  if (spill) p.push(`${spill} letter badge(s) overflow`);
   if (p.length) fail(s.name, p.join('; ')); else ok(s.name);
   await done();
+}
+// The banner at three widths: nothing overflows it, normal names are never cut, and the primary button stays inside.
+for (const name of ['league', 'league-unlinked', 'league-between', 'league-long-names', 'league-update-required']) {
+  for (const width of [960, 1101, 1280]) {
+    const s = STATES.league.find((x) => x.name === name);
+    const { page, errors, close: done } = await openState(browser, base, s, { viewport: { width, height: 800 } });
+    await settle(page);
+    const p = [...errors];
+    const r = await page.evaluate(() => {
+      const row = document.querySelector('.lg-bn-row'), banner = document.querySelector('.lg-banner');
+      const names = [...document.querySelectorAll('.lg-bt-text b')].map((b) => ({ t: b.textContent, cut: b.scrollWidth > b.clientWidth + 1 }));
+      const subs = [...document.querySelectorAll('.lg-bt-text span')].map((x) => x.getBoundingClientRect().height);
+      const prim = document.querySelector('.lg-acts .btn.primary');
+      const pr = prim?.getBoundingClientRect(), br = banner?.getBoundingClientRect();
+      return { over: row ? row.scrollWidth - row.clientWidth : 0, names, subs, primOut: pr && br ? pr.right > br.right + 1 || pr.left < br.left - 1 : false };
+    });
+    if (r.over > 1) p.push(`banner row overflows by ${r.over}px`);
+    if (r.primOut) p.push('primary button outside the banner');
+    if (name !== 'league-long-names' && r.names.some((n) => n.cut)) p.push(`team name cut: ${r.names.filter((n) => n.cut).map((n) => n.t).join(', ')}`);
+    if (r.subs.some((h) => h > 22)) p.push('owner · record wraps');
+    if (p.length) fail(`${name}@${width}`, p.join('; ')); else ok(`${name}@${width}`);
+    await done();
+  }
 }
 await browser.close();
 await close();

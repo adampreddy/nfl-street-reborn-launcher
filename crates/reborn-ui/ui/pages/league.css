@@ -15,25 +15,27 @@ body.page-league #main{padding:28px}
 .lg-tc-site{margin-left:8px}
 
 /* the matchup banner: one slim card, both logos blurred behind it */
-.lg-banner{position:relative;overflow:hidden;padding:16px 20px}
+.lg-banner{position:relative;overflow:hidden;padding:16px 20px;container-type:inline-size}
 .lg-banner-bg{position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;opacity:.16;pointer-events:none}
 .lg-banner-bg .team-logo{width:100%;height:100%;object-fit:cover;filter:blur(28px) saturate(1.4);transform:scale(1.4)}
 .lg-banner-bg .team-logo.text{display:none}
 .lg-bn-row{position:relative;display:flex;align-items:center;gap:16px;min-width:0}
-.lg-bt{display:flex;align-items:center;gap:14px;min-width:0}
+.lg-bt{display:flex;align-items:center;gap:14px;flex:0 1 auto;min-width:0}
 .lg-bt-team{display:flex;align-items:center;gap:14px;min-width:0;padding:4px 8px 4px 4px;margin:-4px 0 -4px -4px;border:0;border-radius:var(--r-md);background:none;color:inherit;font:inherit;text-align:left}
 .lg-bt .team-logo.lg-bt-logo{width:52px;height:52px}
 .lg-bt-text{display:flex;flex-direction:column;min-width:0}
 .lg-bt-text b{font:700 17px/1.2 Inter,system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lg-bt-text span{font-size:12.5px;color:var(--fg-3)}
+.lg-bt-text span{font-size:12.5px;color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lg-bt-score{font:700 26px/1 Inter,system-ui,sans-serif;margin-left:4px}
 .lg-mid{display:flex;align-items:center;gap:6px;flex:none;margin:0 4px;font:700 12px Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3)}
 .lg-mid.live{color:var(--red-ink)}
-.lg-acts{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
-.lg-bn-text{margin-right:6px;font-size:13px;color:var(--fg-2);white-space:nowrap}
+/* the status line sits over the buttons, so it never takes the team names' room */
+.lg-acts{display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto;flex:none;max-width:60%}
+.lg-act-btns{display:flex;align-items:center;gap:8px}
+.lg-bn-text{max-width:100%;font-size:12.5px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lg-bn-text.ok{color:var(--ok);font-weight:600}
 .lg-bn-text.bad{color:var(--red-ink);font-weight:600}
-.lg-acts .btn.primary{padding:0 26px}
+.lg-acts .btn.primary{max-width:280px;padding:0 26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lg-split{display:inline-flex}
 .lg-split>.btn:first-child{border-top-right-radius:0;border-bottom-right-radius:0}
 .lg-split>.lg-more{width:30px;padding:0;border-top-left-radius:0;border-bottom-left-radius:0}
@@ -58,6 +60,9 @@ body.page-league #main{padding:28px}
 .lg-name.me{font-weight:700}
 .lg-me{flex:none;width:6px;height:6px;border-radius:50%;background:var(--red)}
 .team-logo.lg-row-logo,.team-logo.lg-g-logo{width:22px;height:22px}
+/* a small badge with no logo is just the circle: its letters would not fit */
+.team-logo.text.lg-row-logo,.team-logo.text.lg-g-logo,.team-logo.text.lg-tc-logo{font-size:0}
+.lg-bt .team-logo.text.lg-bt-logo{overflow:hidden;font-size:11px}
 
 /* standings: rank, logo, team, W-L */
 .lg-rows{display:flex;flex-direction:column;flex:1}
@@ -99,10 +104,15 @@ body.page-league #main{padding:28px}
   .lg-best{flex-direction:row}
   .lg-bgrp{flex:1;border-left:1px solid var(--rule)}
   .lg-bgrp:first-child{border-left:0}
-  .lg-bn-row{flex-wrap:wrap}
-  .lg-acts{margin-left:0;width:100%}
-  .lg-acts .btn.primary,.lg-acts .lg-install{flex:1}
   .page-league .lg-head{flex-wrap:wrap;align-items:flex-start}
+}
+/* a narrow banner (its own width, not the window's, under 900px): the actions take a row of their own */
+@container (max-width:900px){
+  .lg-bn-row{flex-wrap:wrap}
+  .lg-acts{margin-left:0;width:100%;max-width:none;align-items:stretch}
+  .lg-bn-text{text-align:left}
+  .lg-act-btns{width:100%}
+  .lg-act-btns .btn.primary,.lg-act-btns .lg-install{flex:1;max-width:none}
 }
 @media (max-width:1000px){
   body.page-league #main{padding:20px 24px 16px}

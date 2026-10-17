@@ -242,7 +242,7 @@ function actionButton(a, s, home) {
 
 function banner(home) {
   const stale = Boolean(state.error) || home.stale === true;
-  const s = bannerState(home, { stale, edition: state.edition, progress: state.progress });
+  const s = bannerState(home, { stale, edition: state.edition, progress: state.progress, needsUpdate: state.needsUpdate });
   const m = home.matchup || {};
   const you = { ...(home.team || {}), team_id: home.team?.id };
   const bg = el('div', { class: 'lg-banner-bg', 'aria-hidden': 'true' }, teamLogo(logoTeam(you), ''), m.opponent ? teamLogo(logoTeam(m.opponent), '') : null);
@@ -254,7 +254,7 @@ function banner(home) {
       bannerTeam(home, m.opponent, false, sc[1])];
   const text = s.text && s.kind !== 'bye' && s.kind !== 'unscheduled' ? el('span', { class: `lg-bn-text${s.tone ? ` ${s.tone}` : ''}`, role: 'status', text: s.text }) : null;
   return el('section', { class: 'glass lg-banner', 'aria-label': 'Your game' }, bg,
-    el('div', { class: 'lg-bn-row' }, ...[teams].flat(), el('div', { class: 'lg-acts' }, text, ...s.actions.map((a) => actionButton(a, s, home)))));
+    el('div', { class: 'lg-bn-row' }, ...[teams].flat(), el('div', { class: 'lg-acts' }, text, el('div', { class: 'lg-act-btns' }, ...s.actions.map((a) => actionButton(a, s, home))))));
 }
 
 function head(title, url, aside) {
