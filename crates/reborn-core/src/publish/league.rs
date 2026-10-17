@@ -15,6 +15,12 @@
 //! publishing straight from a working folder would publish whatever else
 //! sits there. Texture logs and `.blanked_off` backups are dropped while
 //! staging; textures 1.0.0 once shipped `texconv.log` to every player.
+//!
+//! The league texture tree carries only what the league changes. The
+//! launcher lays it over the retail pack (`mods::base_root_for`), so a texture
+//! byte-identical to the retail one of the same name is left out here: Adam
+//! can point at a whole working copy of the pack and members download only
+//! the league's own files (10-16: "idk if we want to download 10 more GB").
 
 use std::path::{Path, PathBuf};
 
@@ -225,11 +231,17 @@ struct TreeCount {
     files: u64,
     bytes: u64,
     dropped: u64,
+    /// Every shippable file: its path and its path under the tree, `/`-separated.
+    found: Vec<(PathBuf, String)>,
 }
 
 /// Walk the texture tree BEFORE anything is written: count what would ship
-/// (by the same `skipped` rule `link_tree` uses) and refuse any link.
+/// (by the same `skipped` rule staging uses) and refuse any link.
 fn scan_tree(dir: &Path, count: &mut TreeCount) -> Result<std::result::Result<(), String>> {
+    scan_under(dir, "", count)
+}
+
+fn scan_under(dir: &Path, prefix: &str, count: &mut TreeCount) -> Result<std::result::Result<(), String>> {
     for entry in std::fs::read_dir(dir).map_err(|e| io_err(dir, e))? {
         let entry = entry.map_err(|e| io_err(dir, e))?;
         let path = entry.path();
@@ -241,54 +253,83 @@ fn scan_tree(dir: &Path, count: &mut TreeCount) -> Result<std::result::Result<()
                 path.display()
             )));
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let relative = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
         if ft.is_dir() {
-            if let Err(why) = scan_tree(&path, count)? {
+            if let Err(why) = scan_under(&path, &relative, count)? {
                 return Ok(Err(why));
             }
-        } else if skipped(&entry.file_name().to_string_lossy()) {
+        } else if skipped(&name) {
             count.dropped += 1;
         } else {
             count.files += 1;
             count.bytes += entry.metadata().map_err(|e| io_err(&path, e))?.len();
+            count.found.push((path, relative));
         }
     }
     Ok(Ok(()))
 }
 
-/// Hard-link (else copy) every file under `from` into `to`, keeping relative
-/// paths and dropping logs and backups. `scan_tree` has already refused any
-/// link; directories are recognised by their own type, never by following.
-fn link_tree(from: &Path, to: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(from).map_err(|e| io_err(from, e))? {
-        let entry = entry.map_err(|e| io_err(from, e))?;
-        let src = entry.path();
-        let ft = entry.file_type().map_err(|e| io_err(&src, e))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let dst = to.join(&name);
-        if ft.is_symlink() {
-            continue;
-        }
-        if ft.is_dir() {
-            link_tree(&src, &dst)?;
-        } else if !skipped(&name) {
-            #[cfg(test)]
-            FAIL_LINK_AFTER.with(|c| -> Result<()> {
-                match c.get() {
-                    Some(0) => Err(io_err(&src, std::io::Error::other("injected staging failure"))),
-                    Some(n) => {
-                        c.set(Some(n - 1));
-                        Ok(())
-                    }
-                    None => Ok(()),
+/// Hard-link (else copy) each `(source, relative)` file into `to`, keeping
+/// its relative path. `scan_tree` found them and has already refused any link.
+fn link_files(files: &[(PathBuf, String)], to: &Path) -> Result<()> {
+    for (src, relative) in files {
+        #[cfg(test)]
+        FAIL_LINK_AFTER.with(|c| -> Result<()> {
+            match c.get() {
+                Some(0) => Err(io_err(src, std::io::Error::other("injected staging failure"))),
+                Some(n) => {
+                    c.set(Some(n - 1));
+                    Ok(())
                 }
-            })?;
-            std::fs::create_dir_all(to).map_err(|e| io_err(to, e))?;
-            if std::fs::hard_link(&src, &dst).is_err() {
-                std::fs::copy(&src, &dst).map_err(|e| io_err(&dst, e))?;
+                None => Ok(()),
             }
+        })?;
+        let mut dst = to.to_path_buf();
+        for seg in relative.split('/') {
+            dst.push(seg);
         }
+        link_file(src, &dst)?;
     }
     Ok(())
+}
+
+/// Per texture name, the hashes a pack ships under it.
+type ByName = std::collections::HashMap<String, Vec<crate::manifest::Sha256Hex>>;
+
+/// The retail texture pack the origin serves: its version and its files by
+/// texture name (case folded, as Dolphin keys a pack). `None` when the origin
+/// pins no textures component.
+fn retail_textures(origin: &Path) -> Result<Option<(String, ByName)>> {
+    use crate::manifest::{Component, Release};
+    let release_path = origin.join(crate::origin::RELEASE_FILE);
+    if !release_path.is_file() {
+        return Ok(None);
+    }
+    let bad = |path: &Path, e: String| {
+        crate::Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} does not parse: {e}", path.display()),
+        ))
+    };
+    let bytes = std::fs::read(&release_path).map_err(|e| io_err(&release_path, e))?;
+    let release = Release::parse(&bytes).map_err(|e| bad(&release_path, e.to_string()))?;
+    let Some(pin) = release.components.get(ComponentId::Textures.as_str()) else {
+        return Ok(None);
+    };
+    let manifest = origin.join(pin.url.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
+    let bytes = std::fs::read(&manifest).map_err(|e| io_err(&manifest, e))?;
+    let component = Component::parse(&bytes).map_err(|e| bad(&manifest, e.to_string()))?;
+    let mut by_name = ByName::new();
+    for f in &component.files {
+        by_name.entry(texture_name(&f.path)).or_default().push(f.sha256.clone());
+    }
+    Ok(Some((component.version, by_name)))
+}
+
+/// A texture's name as Dolphin keys it: the file name, case folded.
+fn texture_name(relative: &str) -> String {
+    relative.rsplit('/').next().unwrap_or(relative).to_lowercase()
 }
 
 fn link_file(src: &Path, dst: &Path) -> Result<()> {
@@ -456,6 +497,32 @@ pub fn publish_league_game(req: &LeagueGameRequest<'_>, observer: &dyn ScanObser
             nothing(),
         ]));
     }
+    // Only what differs from the retail pack ships: the launcher lays the
+    // league files over it.
+    let retail = retail_textures(req.origin)?;
+    let mut shipped: Vec<(PathBuf, String)> = Vec::new();
+    let mut same_as_retail = 0u64;
+    let mut ship_bytes = 0u64;
+    for (path, relative) in std::mem::take(&mut count.found) {
+        if let Some(hashes) = retail.as_ref().and_then(|(_, by_name)| by_name.get(&texture_name(&relative))) {
+            if hashes.contains(&crate::library::hash_file(&path)?) {
+                same_as_retail += 1;
+                continue;
+            }
+        }
+        ship_bytes += std::fs::metadata(&path).map_err(|e| io_err(&path, e))?.len();
+        shipped.push((path, relative));
+    }
+    if shipped.is_empty() {
+        return Ok(refuse(sink, &[
+            format!(
+                "Every texture in {} is identical to the retail pack's ({} file(s)), so the league changes nothing.",
+                tex.display(),
+                thousands(same_as_retail)
+            ),
+            nothing(),
+        ]));
+    }
     let stage_dir = match req.stage {
         Some(s) => s.to_path_buf(),
         None => default_stage(req.origin, &format!("league-game-{}", req.version)),
@@ -470,6 +537,12 @@ pub fn publish_league_game(req: &LeagueGameRequest<'_>, observer: &dyn ScanObser
     out!(sink, "League disc   {} (game id {id})", req.iso.display());
     out!(sink, "Textures      {} ({} file(s), {} bytes; {} log/backup file(s) skipped)",
         tex.display(), thousands(count.files), thousands(count.bytes), count.dropped);
+    match &retail {
+        Some((version, _)) => out!(sink, "Ships         {} file(s), {} bytes; {} identical to retail textures {version} left out",
+            thousands(shipped.len() as u64), thousands(ship_bytes), thousands(same_as_retail)),
+        None => out!(sink, "Ships         all {} file(s): the origin pins no retail textures to compare with",
+            thousands(shipped.len() as u64)),
+    }
     out!(sink, "Stage         {}", stage_dir.display());
     out!(sink, "Origin        {}", req.origin.display());
 
@@ -487,18 +560,23 @@ pub fn publish_league_game(req: &LeagueGameRequest<'_>, observer: &dyn ScanObser
     // lets a rerun clear this stage, should anything below fail and the
     // cleanup itself not finish.
     staged_or_cleared(&stage_dir, || {
-        let info = serde_json::json!({
+        let mut info = serde_json::json!({
             "schema": "nsr.league-game.v1",
             "game_id": id,
             "iso": LEAGUE_ISO_PATH,
             "textures": format!("textures/{id}"),
         });
+        // For the record only: the launcher lays the league files over
+        // whichever retail pack the player has.
+        if let Some((version, _)) = &retail {
+            info["retail_textures"] = serde_json::Value::from(version.as_str());
+        }
         let info_path = stage_dir.join(LEAGUE_INFO_FILE);
         std::fs::write(&info_path, serde_json::to_vec_pretty(&info).expect("static json")).map_err(|e| io_err(&info_path, e))?;
         link_file(req.iso, &stage_dir.join(LEAGUE_ISO_PATH))?;
-        link_tree(&tex, &stage_dir.join("textures").join(&id))
+        link_files(&shipped, &stage_dir.join("textures").join(&id))
     })?;
-    out!(sink, "Staged        disc, league.json and {} texture file(s)", thousands(count.files));
+    out!(sink, "Staged        disc, league.json and {} texture file(s)", thousands(shipped.len() as u64));
 
     publish_staged(
         ComponentId::LeagueGame, &stage_dir, req.origin, req.version, req.sequence,
@@ -728,6 +806,72 @@ mod tests {
         assert_eq!(info["game_id"], "ZZLG01");
         assert_eq!(info["schema"], "nsr.league-game.v1");
         assert!(!w.origin.join(crate::origin::BLOB_DIR).exists(), "no public blobs at all");
+    }
+
+    /// An origin already serving retail textures 1.3.4 holding `files` (path, bytes).
+    fn serve_retail_textures(w: &World, files: &[(&str, &[u8])]) {
+        let entries: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(path, bytes)| {
+                let sha = crate::manifest::Sha256Hex::from_bytes(bytes);
+                let blob = w.origin.join(crate::origin::blob_path(&sha));
+                std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+                std::fs::write(&blob, bytes).unwrap();
+                serde_json::json!({"path": path, "bytes": bytes.len(), "sha256": sha})
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "schema": "nsr.component.v1", "component": "textures", "version": "1.3.4", "sequence": 9,
+            "install_root": "library/textures/GN7E69", "customizable": false, "files": entries,
+        });
+        // As the publisher writes a manifest, so the release re-sign can pin it.
+        let parsed = Component::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let bytes = serde_json::to_vec_pretty(&parsed).unwrap();
+        let at = w.origin.join("components").join("textures-1.3.4.json");
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, &bytes).unwrap();
+        let sha = crate::library::hash_file(&at).unwrap();
+        let release = serde_json::json!({
+            "schema": "nsr.release.v1", "version": "2.9.0", "sequence": 0,
+            "components": {"textures": {"url": "components/textures-1.3.4.json", "sha256": sha}},
+        });
+        std::fs::write(w.origin.join(crate::origin::RELEASE_FILE), serde_json::to_vec(&release).unwrap()).unwrap();
+    }
+
+    /// Adam 10-16: the league ships only what it changes. A texture byte-identical to the retail one of the same
+    /// name (wherever either sits) is left out; a changed one and a new one ship.
+    #[test]
+    fn textures_identical_to_retail_are_left_out() {
+        let w = world();
+        let disc = iso(&w, b"ZZLG01");
+        // `textures()` writes each file's own path as its bytes.
+        let tex = textures(&w, "ZZLG01", &["jerseys/same.dds", "changed.dds", "new.dds"]);
+        serve_retail_textures(&w, &[("1ALL/same.dds", b"jerseys/same.dds"), ("changed.dds", b"the retail bytes")]);
+        let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
+        let Outcome::Done(_) = outcome else { panic!("{lines:#?}") };
+        assert!(lines.iter().any(|l| l.contains("1 identical to retail textures 1.3.4 left out")), "{lines:#?}");
+
+        let bytes = std::fs::read(manifest_path(&w.origin, ComponentId::LeagueGame, "2026.10.08")).unwrap();
+        let c = Component::parse(&bytes).unwrap();
+        let mut paths: Vec<&str> = c.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["game/league.iso", "league.json", "textures/ZZLG01/changed.dds", "textures/ZZLG01/new.dds"]);
+        let info = c.files.iter().find(|f| f.path == "league.json").unwrap();
+        let info: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(w.origin.join(crate::origin::private_blob_path(&info.sha256))).unwrap()).unwrap();
+        assert_eq!(info["retail_textures"], "1.3.4");
+    }
+
+    #[test]
+    fn a_league_tree_identical_to_retail_is_refused() {
+        let w = world();
+        let disc = iso(&w, b"ZZLG01");
+        let tex = textures(&w, "ZZLG01", &["a.dds"]);
+        serve_retail_textures(&w, &[("a.dds", b"a.dds")]);
+        let (outcome, lines) = run_game(&game_req(&w, &disc, &tex, true));
+        assert!(matches!(outcome, Outcome::Refused(_)), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("identical to the retail pack")), "{lines:#?}");
+        assert!(!manifest_path(&w.origin, ComponentId::LeagueGame, "2026.10.08").exists());
     }
 
     #[test]

@@ -65,3 +65,12 @@ Tauri commands (reborn-ui), all async, errors as fixed sentences:
 ## Rulings (Adam, 10-10)
 - Pre-game holds free the fixture: `league-version-mismatch`, `seed-mismatch`, `content-mismatch`, `content-stale` join PREGAME_HOLD_REASONS (still only when nothing was played/reported/decided).
 - League stats = A: only league FIXTURE games upload (tagged `intent.league=true` + `fixture_id`, edition league). They are forwarded to the league site but NEVER appear on public profiles, public stats pages, leaderboards, live-feed history or Elo. League offline games and league friendlies do not upload at all (launcher skips the upload for edition league without a fixture).
+
+## Ruling (Adam, 10-16): the league ships only the textures it changes
+- The league keeps its own disc and game ID (`NSRS04`). What changes is the texture download: members already have the retail pack, so a second ~10 GB copy is not shipped ("idk if we want to download 10 more GB for people").
+- Launcher: `Load/Textures/NSRS04` is composed as the retail pack (`mods::base_root_for` = retail `pristine_root(GN7E69)`), then the league tree from `library/league/textures/NSRS04`, then the shared mod list. All hardlinks, no extra disk.
+- A league texture replaces every retail file with the same texture NAME (file name, case folded), wherever either sits: Dolphin keys a pack by file name and keeps one of two duplicates at random.
+- League textures win over mods ("league textures win but they wont overlap"): a mod file with a league texture's name is left out. A mod over a retail texture still applies.
+- The league tree's identity is `<league-game ver#seq>+textures <retail ver#seq>`, so a retail texture update rebuilds it too. The composed record carries `base_root`; a different base rebuilds.
+- Publisher: `publish league-game --textures` may be a whole working copy. A file byte-identical (sha256) to a retail file of the same name in the textures component the origin's release pins is left out; the run reports how many. A tree identical to retail is refused. With no textures pinned in the origin, everything ships (reported).
+- `league.json` stays `nsr.league-game.v1` and gains `retail_textures: "<version>"`, for the record only. The launcher lays the league files over whichever retail pack the player has.

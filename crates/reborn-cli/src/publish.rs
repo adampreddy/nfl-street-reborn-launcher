@@ -52,7 +52,9 @@ pub struct LeagueGameArgs {
     /// The league disc: a plain GameCube image with a league game id.
     #[arg(long)]
     iso: PathBuf,
-    /// Named after the league game id, or holding a folder that is.
+    /// Named after the league game id, or holding a folder that is. Only
+    /// the textures that differ from the retail pack the origin serves ship
+    /// (the launcher lays them over it), so a whole working copy is fine.
     #[arg(long)]
     textures: PathBuf,
     #[arg(long)]
