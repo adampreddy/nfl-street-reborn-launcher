@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn online_cards_and_save_writes_are_session_only() {
         let options=netplay_session_options("Player", "join", "direct", "127.0.0.1",2626);
-        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=True","Dolphin.Interface.SkipNKitWarning=True"] { assert!(options.iter().any(|v|v==required)); }
+        for required in ["Dolphin.Core.SlotA=255","Dolphin.Core.SlotB=255","Dolphin.NetPlay.WriteSaveData=False","Dolphin.NetPlay.SyncSaves=True","Dolphin.NetPlay.SyncCodes=True","Dolphin.NetPlay.StrictSettingsSync=False","Dolphin.Interface.SkipNKitWarning=True"] { assert!(options.iter().any(|v|v==required)); }
         assert!(options.iter().all(|v|!v.contains("MemcardAPath")&&!v.contains("MemcardBPath")));
     }
 
@@ -522,7 +522,10 @@ fn netplay_session_options(nickname:&str,_mode:&str,connection:&str,address:&str
  let mut values=vec![
   "Dolphin.Core.SlotA=255".into(),"Dolphin.Core.SlotB=255".into(),
   "Dolphin.NetPlay.SyncSaves=True".into(),"Dolphin.NetPlay.WriteSaveData=False".into(),
-  "Dolphin.NetPlay.SyncCodes=True".into(),"Dolphin.NetPlay.StrictSettingsSync=True".into(),
+  "Dolphin.NetPlay.SyncCodes=True".into(),
+  // Strict sync forces the host's resolution and filtering onto every peer, and lockstep then
+  // runs the room at the weakest GPU's speed. The Creation League Dolphin plays with it off.
+  "Dolphin.NetPlay.StrictSettingsSync=False".into(),
   "Dolphin.NetPlay.UseIndex=False".into(),"Dolphin.Display.RenderToMain=False".into(),
   "Dolphin.Analytics.PermissionAsked=True".into(),"Dolphin.Interface.SkipNKitWarning=True".into(),
   // The launcher owns presence; Dolphin's own would race it on the IPC socket.

@@ -31,7 +31,7 @@ def launch(mode,connection='direct',address='127.0.0.1'):
  plan=folder/'session.json';plan.write_text(json.dumps({'game':str(game),'mode':'host' if mode=='host' else 'join'}),encoding='utf-8');Path(str(plan)+'.alive').write_text('alive')
  for suffix in ['.command','.status']:Path(str(plan)+suffix).unlink(missing_ok=True)
  args=[str(runtime),'-u',str(user),'--reborn-netplay-session',str(plan)]
- for value in ['Core.SlotA=255','Core.SlotB=255','NetPlay.SyncSaves=True','NetPlay.WriteSaveData=False','NetPlay.SyncCodes=True','NetPlay.StrictSettingsSync=True','NetPlay.UseIndex=False','Display.RenderToMain=False','Display.Fullscreen=False','Analytics.PermissionAsked=True','Interface.SkipNKitWarning=True',f'NetPlay.TraversalChoice={connection}','NetPlay.HostPort=26261','NetPlay.ConnectPort=26261',f'NetPlay.Address={address}','NetPlay.HostCode='+address,'NetPlay.Nickname=Test '+mode,'Interface.ConfirmStop=False']:
+ for value in ['Core.SlotA=255','Core.SlotB=255','NetPlay.SyncSaves=True','NetPlay.WriteSaveData=False','NetPlay.SyncCodes=True','NetPlay.StrictSettingsSync=False','NetPlay.UseIndex=False','Display.RenderToMain=False','Display.Fullscreen=False','Analytics.PermissionAsked=True','Interface.SkipNKitWarning=True',f'NetPlay.TraversalChoice={connection}','NetPlay.HostPort=26261','NetPlay.ConnectPort=26261',f'NetPlay.Address={address}','NetPlay.HostCode='+address,'NetPlay.Nickname=Test '+mode,'Interface.ConfirmStop=False']:
   args+=['-C','Dolphin.'+value]
  args+=['-C','Graphics.Settings.WaitForShadersBeforeStarting=False']
  processes[mode]=subprocess.Popen(args,cwd=runtime.parent,creationflags=0x08000000)
