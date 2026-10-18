@@ -1442,9 +1442,15 @@ pub fn base_root_for(platform: &Platform, game: &GameId) -> Result<Option<PathBu
     Ok(Some(pristine_root(platform, &retail)?))
 }
 
-/// A texture's name as Dolphin keys it: the file name, case folded.
+/// A texture's name as Dolphin keys it: the file name without its extension, case folded. Dolphin loads a `.dds`
+/// and a `.png` of one name as the same texture and keeps one of them at random, so `x.png` replaces `x.dds`.
 fn texture_name(relative: &str) -> String {
-    relative.rsplit('/').next().unwrap_or(relative).to_lowercase()
+    let file = relative.rsplit('/').next().unwrap_or(relative);
+    let stem = match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.contains(' ') => stem,
+        _ => file,
+    };
+    stem.to_lowercase()
 }
 
 /// The build whose mod payloads a tree borrows when a package has none of its own: the league build borrows retail
@@ -4475,6 +4481,25 @@ mod tests {
     }
 
     /// "league textures win": a mod with a league texture's name is left out; a mod over a retail texture applies.
+    /// Dolphin keys a texture by its name WITHOUT the extension and keeps one of a .dds/.png pair at random: the
+    /// league's PNG numbers (S4, 10-18) must replace the retail .dds of the same name.
+    #[test]
+    fn a_league_png_replaces_the_retail_dds_of_the_same_name() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let stem = BALL.trim_end_matches(".dds");
+        let own = fx.pristine.parent().unwrap().join(crate::league_edition::LEAGUE_GAME_ID);
+        write(&own.join("numbers").join(format!("{stem}.png")), b"league png ball");
+        let mut req = fx.request(vec![]);
+        req.game = league();
+        req.payload_fallback = payload_fallback_for(&req.game);
+        req.base_root = Some(fx.pristine.clone());
+        req.pristine_root = own;
+        let plan = planned(&p, &req);
+        let names: Vec<&str> = plan.entries.iter().map(|e| e.relative.as_str()).collect();
+        assert_eq!(names, vec![format!("numbers/{stem}.png").as_str(), "sub/tex1_other.dds"], "the retail .dds is gone");
+    }
+
     #[test]
     fn a_league_texture_beats_a_mod_and_a_mod_still_beats_retail() {
         let p = Platform::detect();
