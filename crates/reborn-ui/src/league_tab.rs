@@ -59,13 +59,50 @@ fn home_pass(
     out
 }
 
-/// The background refresh's news: the server's fresh member answer (a 401 is "not a member": the session is over),
-/// or `None` for anything else. An outage, or the cached fallback it reads as, changes nothing.
-fn refresh_pass(path: Option<&Path>, fetch: impl FnOnce() -> Result<serde_json::Value, LiveError>, now: u64) -> Option<bool> {
-    match home_pass(path, fetch, now) {
-        Ok(v) if v["stale"] != serde_json::Value::Bool(true) => Some(v["member"].as_bool().unwrap_or(false)),
-        Err(LiveError::Server(401)) => Some(false),
+/// What one membership check learned from the server: whether this player is a member, and whether that came from
+/// the league site itself (`fresh`) or from the backend's saved copy while the site is down (backend migration 033).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Refresh {
+    member: bool,
+    fresh: bool,
+}
+
+/// The background refresh's news: the server's member answer (a 401 is "not a member": the session is over), or
+/// `None` for anything else. An outage, or the launcher's own cached fallback it reads as, changes nothing.
+fn refresh_pass(path: Option<&Path>, fetch: impl FnOnce() -> Result<serde_json::Value, LiveError>, now: u64) -> Option<Refresh> {
+    let fetched = fetch();
+    let from_server = fetched.is_ok();
+    let server_stale = matches!(&fetched, Ok(v) if v["stale"] == serde_json::Value::Bool(true));
+    match home_pass(path, move || fetched, now) {
+        Ok(v) if from_server => Some(Refresh { member: v["member"].as_bool().unwrap_or(false), fresh: !server_stale }),
+        Err(LiveError::Server(401)) => Some(Refresh { member: false, fresh: true }),
         _ => None,
+    }
+}
+
+/// How long to wait before each retry after an outage, in seconds: a member who signed in while the league site
+/// was unreachable gets the tab as soon as it answers, not at the next restart (Adam 10-18).
+const RETRY_AFTER_S: [u64; 6] = [60, 120, 300, 600, 900, 1800];
+
+/// Check, and after an outage (or the backend's saved copy) wait and check again, until a fresh answer or the last
+/// wait. `tell` hears each new membership answer once.
+fn refresh_with_retries(mut pass: impl FnMut() -> Option<Refresh>, mut sleep: impl FnMut(std::time::Duration), mut tell: impl FnMut(bool), waits: &[u64]) {
+    let mut told: Option<bool> = None;
+    let mut waits = waits.iter();
+    loop {
+        if let Some(r) = pass() {
+            if told != Some(r.member) {
+                tell(r.member);
+                told = Some(r.member);
+            }
+            if r.fresh {
+                return;
+            }
+        }
+        match waits.next() {
+            Some(&s) => sleep(std::time::Duration::from_secs(s)),
+            None => return,
+        }
     }
 }
 
@@ -76,13 +113,14 @@ pub fn refresh_membership(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         use tauri::Emitter;
         let p = Platform::detect();
-        let Some(token) = bearer(&p) else { return };
         let Ok(origin) = identity::origin(&p) else { return };
         let path = league_home::cache_path(&p).ok();
-        let fetch = || league_home::fetch_home(&crate::http_client(), &origin, &token);
-        if let Some(member) = refresh_pass(path.as_deref(), fetch, now_ms()) {
-            let _ = app.emit("league-membership", member);
-        }
+        let pass = || {
+            // Read the bearer each time: a sign-out while waiting ends the retries (no token, nothing to ask).
+            let token = bearer(&p)?;
+            refresh_pass(path.as_deref(), || league_home::fetch_home(&crate::http_client(), &origin, &token), now_ms())
+        };
+        refresh_with_retries(pass, std::thread::sleep, |member| { let _ = app.emit("league-membership", member); }, &RETRY_AFTER_S);
     });
 }
 
@@ -242,11 +280,36 @@ mod tests {
 
     /// Spec §3 "Membership refreshed on startup and after sign-in": nothing else writes league.json before the tab
     /// exists, so without this a member could never see the League link.
+    /// Adam 10-18: a member who signed in while the league site was unreachable never saw the tab until a restart.
+    /// The backend's stale answer (its saved copy) is news; the launcher's own cached fallback is not.
+    #[test]
+    fn a_server_stale_member_answer_is_news_but_not_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("league.json");
+        let stale = serde_json::json!({ "member": true, "stale": true, "team": { "id": 493 } });
+        assert_eq!(refresh_pass(Some(&path), || Ok(stale), 7), Some(Refresh { member: true, fresh: false }));
+        assert!(league_home::load_cache(&path).member, "the next start draws the tab");
+        assert_eq!(refresh_pass(Some(&path), || Err(LiveError::Server(503)), 9), None, "the launcher's own fallback is not news");
+    }
+
+    /// An outage is retried on a backoff until a fresh answer arrives; each answer is told once, a change again.
+    #[test]
+    fn a_refresh_retries_through_an_outage_until_a_fresh_answer() {
+        let mut answers = vec![None, Some(Refresh { member: true, fresh: false }), None, Some(Refresh { member: true, fresh: true })].into_iter();
+        let (mut slept, mut told) = (Vec::new(), Vec::new());
+        refresh_with_retries(|| answers.next().flatten(), |d| slept.push(d.as_secs()), |m| told.push(m), &[60, 120, 300, 600, 900]);
+        assert_eq!(slept, vec![60, 120, 300], "three waits, then the fresh answer ends it");
+        assert_eq!(told, vec![true], "told once: the fresh answer said the same");
+        let (mut slept, mut told) = (Vec::new(), Vec::new());
+        refresh_with_retries(|| None, |d| slept.push(d.as_secs()), |m| told.push(m), &[60, 120]);
+        assert_eq!((slept, told), (vec![60, 120], vec![]), "a long outage gives up after the last wait, saying nothing");
+    }
+
     #[test]
     fn a_refresh_with_no_cache_writes_the_member_and_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("league.json");
-        assert_eq!(refresh_pass(Some(&path), || Ok(member_home()), 7), Some(true));
+        assert_eq!(refresh_pass(Some(&path), || Ok(member_home()), 7), Some(Refresh { member: true, fresh: true }));
         let cache = league_home::load_cache(&path);
         assert!(cache.member, "the nav's next read says member");
         assert_eq!(cache.fetched_at_ms, 7);
@@ -256,7 +319,7 @@ mod tests {
     fn a_refresh_for_a_non_member_never_offers_the_tab() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("league.json");
-        assert_eq!(refresh_pass(Some(&path), || Ok(serde_json::json!({ "member": false })), 7), Some(false));
+        assert_eq!(refresh_pass(Some(&path), || Ok(serde_json::json!({ "member": false })), 7), Some(Refresh { member: false, fresh: true }));
         assert!(!league_home::load_cache(&path).member);
     }
 
@@ -279,7 +342,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("league.json");
         league_home::save_cache(&path, &LeagueCache { member: true, home: Some(member_home()), fetched_at_ms: 3 });
-        assert_eq!(refresh_pass(Some(&path), || Err(LiveError::Server(401)), 9), Some(false));
+        assert_eq!(refresh_pass(Some(&path), || Err(LiveError::Server(401)), 9), Some(Refresh { member: false, fresh: true }));
         assert!(!league_home::load_cache(&path).member);
     }
 

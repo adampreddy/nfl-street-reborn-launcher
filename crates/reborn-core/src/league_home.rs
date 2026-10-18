@@ -87,7 +87,9 @@ pub fn resolve(fetched: Result<Value, LiveError>, cache: &LeagueCache, now_ms: u
         Ok(mut v) => {
             let member = v["member"].as_bool().unwrap_or(false);
             let next = LeagueCache { member, home: member.then(|| v.clone()), fetched_at_ms: now_ms };
-            v["stale"] = Value::Bool(false);
+            // The backend marks its saved copy stale while the league site is down (backend migration 033): keep it.
+            let stale = v["stale"] == Value::Bool(true);
+            v["stale"] = Value::Bool(stale);
             (Ok(v), Some(next))
         }
         Err(LiveError::Server(401)) => (Err(LiveError::Server(401)), Some(LeagueCache::default())),
@@ -151,6 +153,17 @@ mod tests {
         assert!(next.member);
         assert_eq!(next.fetched_at_ms, 7);
         assert_eq!(next.home.unwrap()["team"]["id"], 485);
+    }
+
+    /// The backend serves a member's last good answer, marked stale, while the league site is down (backend 033):
+    /// it stays stale on the page, and the member is cached so the next start draws the tab.
+    #[test]
+    fn a_stale_server_answer_stays_stale_and_caches_the_member() {
+        let (out, next) = resolve(Ok(serde_json::json!({"member": true, "stale": true, "team": {"id": 493}})), &LeagueCache::default(), 5);
+        assert_eq!(out.unwrap()["stale"], true);
+        let next = next.unwrap();
+        assert!(next.member);
+        assert_eq!(next.home.unwrap()["team"]["id"], 493);
     }
 
     #[test]
