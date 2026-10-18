@@ -820,6 +820,30 @@ impl OsCredentialVault {
     }
 }
 
+/// Save a secret in Credential Manager as a local-machine credential.
+///
+/// `keyring` saves as Enterprise (roaming) unless told otherwise, and Windows
+/// refuses an Enterprise save on some PCs where a local one goes through:
+/// players who signed in fine in the browser were told "You were signed in,
+/// but it could not be saved on this PC" every time, through reinstalls and
+/// other browsers (Discord, 2026-10-10 and 10-14). The token is per device, so
+/// roaming it to another PC was never wanted anyway.
+///
+/// An existing entry is deleted first rather than re-saved with a new
+/// persistence: keyring's own tests found a read straight after a persistence
+/// change can fail. Reads and deletes need no modifier, the target name alone
+/// finds the credential whatever its persistence.
+#[cfg(windows)]
+fn store_local_machine(account: &str, secret: &str) -> keyring::Result<()> {
+    let modifiers = std::collections::HashMap::from([("persistence", "Local")]);
+    let entry = keyring_core::Entry::new_with_modifiers(CREDENTIAL_SERVICE, account, &modifiers)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(e),
+    }
+    entry.set_password(secret)
+}
+
 /// Where secrets go when they are not in the platform store, or None when
 /// they are.
 ///
@@ -916,10 +940,27 @@ impl CredentialVault for OsCredentialVault {
             return file_vault_store(&dir, account, secret);
         }
         let entry = Self::entry(account)?;
-        entry
-            .set_password(secret)
-            .map_err(|e| credential_error("storing the secret for", account, e))?;
-        match entry.get_password() {
+        #[cfg(windows)]
+        let written = store_local_machine(account, secret).or_else(|local| {
+            tracing::warn!(
+                "Windows Credential Manager refused a local-machine save for {account:?} ({local}); \
+                 trying the enterprise save"
+            );
+            entry.set_password(secret)
+        });
+        #[cfg(not(windows))]
+        let written = entry.set_password(secret);
+        written.map_err(|e| credential_error("storing the secret for", account, e))?;
+        // Credential Manager can answer a read straight after a write with the
+        // old value or nothing; one short wait before calling the save failed.
+        let read_back = match entry.get_password() {
+            Ok(back) if back == secret => Ok(back),
+            _ => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                entry.get_password()
+            }
+        };
+        match read_back {
             Ok(read_back) if read_back == secret => Ok(()),
             Ok(_) => Err(Error::CredentialStore(format!(
                 "{CREDENTIAL_STORE_NAME} accepted the secret for {account:?} and \
@@ -1375,6 +1416,27 @@ mod tests {
                 true
             }
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_secret_saved_over_an_enterprise_one_is_local_and_reads_back() {
+        let vault = OsCredentialVault;
+        let account = probe_account("persistence");
+        // What every launcher up to 3.0.41 left behind: an Enterprise entry.
+        OsCredentialVault::entry(&account).expect("entry").set_password("old").expect("enterprise save");
+
+        let stored = vault.store(&account, "new");
+        let persistence = keyring_core::Entry::new(CREDENTIAL_SERVICE, &account)
+            .and_then(|e| e.get_attributes())
+            .map(|a| a.get("persistence").cloned());
+        let read = vault.retrieve(&account);
+        let deleted = vault.delete(&account);
+
+        stored.expect("store over an enterprise entry");
+        assert_eq!(persistence.expect("attributes").as_deref(), Some("Local"));
+        assert_eq!(read.expect("retrieve").as_deref(), Some("new"));
+        deleted.expect("delete");
     }
 
     #[test]

@@ -80,6 +80,10 @@ publish = ["dep:getrandom", "dep:hmac", "dep:base64", "dep:percent-encoding"]
 
 [target.'cfg(windows)'.dependencies]
 rusty-xinput = "1.3"
+# The store `keyring` itself drives, named directly for one call: an entry with
+# the `persistence` modifier, which `keyring::Entry` does not expose. Same crate
+# instance as keyring's (already in Cargo.lock), so it sees the store keyring set.
+keyring-core = "1"
 # Win32_UI_Shell and Win32_UI_WindowsAndMessaging are both here for one call,
 # ShellExecuteW, which is how platform::imp::open_url hands a link to the shell.
 # Two features rather than one because windows-sys declares the function in the
