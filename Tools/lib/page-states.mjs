@@ -94,6 +94,7 @@ export const STATES = {
     { name: 'leaderboard-soon', url: 'leaderboard.html', scope: 'main', data: { leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null } } }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
   league: leagueStates(),
+  gameday: gamedayStates(),
   onboarding: [
     ...STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),
     { name: 'onboarding-preparation-tasks', url: 'onboarding.html?stage=preparation', scope: 'page', progress: PREP },
@@ -259,6 +260,53 @@ function onlineStates() {
 function leagueS4() {
   return JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-home-s4.json'), 'utf8'));
 }
+/** League game day (spec 2026-10-21-league-game-day-design.md): your fixture's room on the League tab. The S4 answer
+ *  (league-home-s4.json) with both real starting lineups and their portraits from league-gameday-s4.json; season
+ *  numbers are samples. `wk1` empties both teams' totals (no games yet). */
+function gamedayStates() {
+  const S4 = leagueS4();
+  const GD = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-gameday-s4.json'), 'utf8'));
+  const LEAGUE_EDITION = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-edition-status.json'), 'utf8'));
+  const ZERO = { gp: 0, pts: 0, pts_allowed: 0, yds: 0, pass_yds: 0, rush_yds: 0, turnovers: 0, sacks: 0, def_td: 0 };
+  const home = ({ wk1 = false, oppRoster = true, stale = false } = {}) => {
+    const h = structuredClone(S4.home);
+    h.roster = structuredClone(GD.rosters['493']);
+    h.team_season = wk1 ? ZERO : GD.team_season['493'];
+    h.matchup.opponent.roster = structuredClone(GD.rosters['484']);
+    h.matchup.opponent.team_season = wk1 ? ZERO : GD.team_season['484'];
+    h.matchup.opponent.color = '#D15619';
+    if (wk1) { h.team.record = '0-0'; h.matchup.opponent.record = '0-0'; }
+    if (!oppRoster) { delete h.matchup.opponent.roster; delete h.matchup.opponent.team_season; }
+    if (stale) h.stale = true;
+    return h;
+  };
+  const fid = S4.home.matchup.fixture_id;
+  const say = (seq, name, text) => ({ seq, name, text, at: `2026-09-30T19:5${seq}:00Z` });
+  const room = (patch = {}) => ({ id: 'r1', code: 'WHRF58', mode: 'casual', best_of: 3, status: 'open', you_host: true, edition: 'league',
+    league: { fixture_id: fid, week: 3 }, members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Sniper', ready: false, field: null, you: false }], ...patch });
+  const snap = (s) => ({ link: 'connected', error: null, presence_on: true, relay_error: null,
+    snapshot: { player: { name: 'Adam', region: 'na-east' }, ticket: null, room: null, match: null, chat: [], queue_depth: { ranked: 0, casual: 0 }, ...s } });
+  const match = (patch) => ({ id: 'm1', mode: 'casual', status: 'running', relay_state: 'running', best_of: 3, you_host: true, opponent: 'Sniper',
+    series: [1, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0, your_accepted: true, your_ready: true, league: { fixture_id: fid, week: 3 }, ...patch });
+  const G = (name, { h = home(), mm = snap({ room: room(), chat: [say(1, 'Sniper', 'gimme 2 min'), say(2, 'Adam', 'bet')] }), extra = {} } = {}) => ({
+    name, url: 'league.html', scope: 'main', ...extra,
+    data: { league_member: true, league_home: h, league_edition_status: LEAGUE_EDITION, open_website: null, mm_state: mm,
+      league_logo: { __byArg: 'teamId', values: S4.logos }, league_portrait: { __byArg: 'poid', values: GD.faces } } });
+  const both = [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Sniper', ready: true, field: null, you: false }];
+  return [
+    G('league-gameday-week1', { h: home({ wk1: true }) }),
+    G('league-gameday-season'),
+    G('league-gameday-ready', { mm: snap({ room: room({ members: both }), chat: [say(1, 'Sniper', 'ready')] }) }),
+    G('league-gameday-guest', { mm: snap({ room: room({ you_host: false, members: [{ name: 'Sniper', ready: true, field: null, you: false }, { name: 'Adam', ready: false, field: null, you: true }] }) }) }),
+    G('league-gameday-rejoin', { h: home({ wk1: true }) }),
+    G('league-gameday-opp-missing', { h: home({ oppRoster: false }) }),
+    G('league-gameday-stale', { h: home({ stale: true }) }),
+    G('league-gameday-match', { mm: snap({ match: match({}) }) }),
+    G('league-gameday-final', { mm: snap({ match: match({ relay_state: 'complete', status: 'complete', series: [2, 1], winner_seat: 0, rematch_available: false }) }) }),
+    G('league-gameday-small', { extra: { viewport: { width: 800, height: 560 } } }),
+  ];
+}
+
 function leagueStates() {
   const S4 = leagueS4();
   const LEAGUE_HOME = S4.home;

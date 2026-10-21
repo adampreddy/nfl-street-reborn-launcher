@@ -119,6 +119,8 @@ body.page-league #main{padding:28px}
    Lineups either side, the tale of the tape between them, the launcher's own room card and chat below. Team colours
    arrive as --tc (a plain hex from the site) and tint only that team's wash, portrait backdrop and tape bar. */
 .gd{flex:1;min-height:0;display:flex;flex-direction:column;gap:14px}
+body.page-league #main:has(.gd){padding:20px 28px 22px}
+.gd-stale{margin-left:auto;margin-right:16px;color:var(--warn)}
 .gd-top{display:flex;align-items:center;justify-content:space-between;gap:16px;height:22px;font-size:12.5px;color:var(--fg-3)}
 .gd-back{background:none;border:0;padding:0;font:500 13px Inter,system-ui,sans-serif;color:var(--fg-2);cursor:pointer}
 .gd-back:hover{color:var(--fg)}
@@ -145,12 +147,12 @@ body.page-league #main{padding:28px}
 .gd-tape-h{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
 .gd-tape-h h2{margin:0;font:600 14.5px Inter,system-ui,sans-serif}
 .gd-tape-h span{font-size:12.5px;color:var(--fg-3)}
-.gd-vs{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;margin-bottom:12px}
+.gd-vs{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;margin-bottom:10px}
 .gd-vs .l,.gd-vs .r{display:flex;align-items:center;gap:8px}.gd-vs .r{justify-content:flex-end}
 .gd-vs .team-logo.gd-vs-logo{width:28px;height:28px}
 .gd-vs b{font-size:13px;font-weight:600}
 .gd-vs i{font:700 11px Inter,system-ui,sans-serif;font-style:normal;letter-spacing:.14em;color:var(--fg-3)}
-.gd-st{padding:7px 0;border-top:1px solid var(--stroke)}
+.gd-st{padding:6px 0;border-top:1px solid var(--stroke)}
 .gd-st-lab{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--fg-2);margin-bottom:5px}
 .gd-st-lab span{font-size:13px;font-weight:600;color:var(--fg-3)}.gd-st-lab span.w{color:var(--fg)}
 .gd-bars{display:grid;grid-template-columns:1fr 1fr;gap:4px;height:5px}

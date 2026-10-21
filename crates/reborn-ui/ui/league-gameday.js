@@ -76,8 +76,9 @@ export function drawGameDay(g, chat, { mmAct, logoFor, portraitFor, onBack, stal
   return el('div', { class: 'gd' },
     el('div', { class: 'gd-top' },
       el('button', { type: 'button', class: 'gd-back', 'data-key': 'gd-league', text: '‹ League', onclick: onBack }),
+      // Old league data says so in the top line (one screen at 1280x800, no extra row).
+      g.stale && staleLine ? el('span', { class: 'gd-stale', role: 'status', text: staleLine }) : null,
       el('span', { class: 'num', text: g.title })),
-    g.stale && staleLine ? el('p', { class: 'partial', role: 'status', text: staleLine }) : null,
     el('div', { class: 'gd-board' },
       side(g.me, { right: false, logoFor, portraitFor }),
       tapeCard(g, { logoFor }),
