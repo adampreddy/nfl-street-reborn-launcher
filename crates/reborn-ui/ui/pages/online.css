@@ -222,6 +222,19 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-room>.on-talk{contain:size;min-height:280px}
 @media (max-width:1000px){.on-room>.on-talk{height:320px}}
 .on-roomrow{flex-wrap:nowrap;align-items:stretch}
+/* In a room (Adam 10-20 "clean this up"): the room takes the page's width (the Leaderboard steps aside until you leave),
+   Start / ready / Leave sit at the foot of the room card, and a Start still waiting on the crew reads as quiet glass,
+   not a washed-out red slab. */
+.on-grid:has(.on-room){grid-template-columns:minmax(0,1fr)}
+.on-grid:has(.on-room)>#leaderboard-slot{display:none}
+#mode-slot:has(.on-room){flex:0 0 auto;min-height:0}
+#mode-slot .on-room{flex:0 0 auto}
+.on-room{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}
+.on-roomcard .on-card-h span{white-space:nowrap}
+.on-roomcard .on-codebig{font-size:30px}
+.on-roomfoot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px}
+.on-roomfoot .on-note{margin:0}
+.on-roomrow .btn.on-go:disabled{background:var(--glass-1);border-color:var(--stroke);color:var(--fg-3);box-shadow:none;opacity:1}
 .on-roomrow .btn{white-space:nowrap;height:52px}
 .on-roomrow .btn.on-go{flex:1;min-width:0}
 @media (max-width:1000px){.on-roomrow{flex-wrap:wrap}}

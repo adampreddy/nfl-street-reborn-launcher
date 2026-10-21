@@ -659,22 +659,6 @@ function drawRoom(r, chat) {
     ? el('div', { class: 'on-kindrow' }, el('span', { class: 'k-label', text: 'Game' }),
       tabs('mm-room-kind', Object.keys(KINDS), kind, (name) => changeKind(r.id, KINDS[name]), { label: 'Quick game or Pickup', disabled: started }))
     : null;
-  const room = el('section', { class: 'glass on-card', 'aria-label': 'Your room' },
-    el('div', { class: 'on-card-h' },
-      el('h2', { text: leagueGame ? `League game · Week ${leagueGame.week ?? '?'}` : leagueRoom ? 'League friendly' : `Your room · ${kind}` }),
-      leagueGame ? el('span', { text: 'League rules · Best of 3' })
-        : leagueRoom ? el('span', { text: r.ruleset === 'raw' ? 'Raw game' : 'League settings' })
-        : r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
-    kindControl,
-    el('div', { class: 'on-coderow' },
-      el('strong', { class: 'on-codebig', text: r.code }),
-      el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
-    el('span', { class: 'k-label', text: capacity > 2 ? `Your crew · ${r.members.length} of ${capacity}` : 'Your crew' }),
-    members);
-  // on-talk: the chat card takes the room card's height and scrolls inside it (pages/online.css), never the page.
-  const talk = el('section', { class: 'glass on-card on-talk', 'aria-label': 'Chat' },
-    el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
-    chatBox(`room:${r.id}`, chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
   const row = el('div', { class: 'on-row on-roomrow' },
     r.you_host === true ? el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'room-start', 'data-primary': 'true', text: 'Start',
       disabled: !everyoneReady(r), onclick: () => act('mm_room_action', { roomId: r.id, action: 'start', value: null }) }) : null,
@@ -685,7 +669,25 @@ function drawRoom(r, chat) {
   const note = capacity > 2
     ? 'Up to 4 players. 2v2 works. Everyone ready, then the host kicks it off.'
     : 'Both ready, then the host kicks it off.';
-  return [el('div', { class: 'on-room' }, room, talk), row, el('p', { class: 'on-note', text: note })];
+  const room = el('section', { class: 'glass on-card on-roomcard', 'aria-label': 'Your room' },
+    el('div', { class: 'on-card-h' },
+      el('h2', { text: leagueGame ? `League game · Week ${leagueGame.week ?? '?'}` : leagueRoom ? 'League friendly' : `Your room · ${kind}` }),
+      leagueGame ? el('span', { text: 'League rules · Best of 3' })
+        : leagueRoom ? el('span', { text: r.ruleset === 'raw' ? 'Raw game' : 'League settings' })
+        : r.mode === 'ranked' ? el('span', { text: 'Ranked' }) : null),
+    kindControl,
+    el('div', { class: 'on-coderow' },
+      el('strong', { class: 'on-codebig', text: r.code }),
+      el('div', { class: 'on-bt' }, copyButton('copy-code', 'Copy code', r.code), inviteLink(r.code) ? copyButton('copy-invite', 'Copy invite link', inviteLink(r.code)) : null)),
+    el('span', { class: 'k-label', text: capacity > 2 ? `Your crew · ${r.members.length} of ${capacity}` : 'Your crew' }),
+    members,
+    // Start, ready and Leave sit at the foot of the room card, the note under them (Adam 10-20: one card, not a loose row).
+    el('div', { class: 'on-roomfoot' }, row, el('p', { class: 'on-note', text: note })));
+  // on-talk: the chat card takes the room card's height and scrolls inside it (pages/online.css), never the page.
+  const talk = el('section', { class: 'glass on-card on-talk', 'aria-label': 'Chat' },
+    el('div', { class: 'on-card-h' }, el('h2', { text: 'Chat' })),
+    chatBox(`room:${r.id}`, chat, (t) => act('mm_room_action', { roomId: r.id, action: 'chat', value: t })));
+  return [el('div', { class: 'on-room' }, room, talk)];
 }
 
 // The host switches the room's game. A server without the route (before the backend update) refuses it: one quiet
