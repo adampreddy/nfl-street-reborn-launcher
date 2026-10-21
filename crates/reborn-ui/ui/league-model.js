@@ -219,7 +219,17 @@ function seriesWords([you, opp]) {
  *  files' state: while they are missing, behind or installing, the install button takes the action slot, except when
  *  a game already runs from the installed files (live, or a room already open). `needsUpdate`: a room refused our
  *  league files (league_version_mismatch) for a newer build than the release check knows. */
-export function bannerState(home, { stale = false, edition = null, progress = null, needsUpdate = false } = {}) {
+export function bannerState(home, opts = {}) {
+  const s = bannerStateFrom(home, opts);
+  // Your fixture's room is open (the 1 s snapshot says so) but you stepped back to the home: Open room leads, whatever
+  // the 60 s-old league answer still says (final review 10-21: the waiting host had only Cancel).
+  if (opts.roomOpen === true && !s.actions.some((x) => x.key === 'open' || x.key === 'back')) {
+    return { ...s, actions: [{ key: 'open', label: 'Open room', primary: true, disabled: false }, ...s.actions.map((x) => ({ ...x, primary: false }))] };
+  }
+  return s;
+}
+
+function bannerStateFrom(home, { stale = false, edition = null, progress = null, needsUpdate = false } = {}) {
   const m = home?.matchup;
   const c = cardState(home, { stale });
   const owner = oppName(m);

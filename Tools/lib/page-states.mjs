@@ -303,6 +303,7 @@ function gamedayStates() {
     G('league-gameday-stale', { h: home({ stale: true }) }),
     G('league-gameday-match', { mm: snap({ match: match({}) }) }),
     G('league-gameday-final', { mm: snap({ match: match({ relay_state: 'complete', status: 'complete', series: [2, 1], winner_seat: 0, rematch_available: false }) }) }),
+    G('league-gameday-cancelled', { mm: snap({ match: match({ relay_state: 'void', status: 'void', series: [0, 0] }) }) }),
     G('league-gameday-small', { extra: { viewport: { width: 800, height: 560 } } }),
   ];
 }

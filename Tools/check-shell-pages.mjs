@@ -311,6 +311,10 @@ for (const [file, name] of PAGES) {
     // Game day (spec 2026-10-21): the fixture's room stays on the League tab; the page reads the snapshot again.
     const seen = p.seen.map(([c]) => c);
     check("Play {opponent} opens the room and stays on the League tab", seen.includes("league_room_open") && seen.lastIndexOf("mm_state") > seen.indexOf("league_room_open") && global.location.href !== "online.html", JSON.stringify(seen));
+    // Final review 10-21: the relay must know this page's launch choices (Online used to send them), and the banner
+    // must not keep the pre-room answer for a minute.
+    check("The League tab reports its launch preferences to the relay", seen.includes("mm_launch_prefs"), JSON.stringify(seen));
+    check("Play {opponent} reloads the league answer after the room opens", seen.lastIndexOf("league_home") > seen.indexOf("league_room_open"), JSON.stringify(seen));
   }
 
   p = await leaguePage({ league_edition_status: { installed: false, version: null, latest: "2026.10.08", update_available: false, size_bytes: 1610612736, game_id: "NSRS04" } });

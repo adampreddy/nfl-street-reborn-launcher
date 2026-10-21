@@ -6,7 +6,7 @@
 // Plan 3b's; none of them navigates. Your league FIXTURE's room stays on this page (game day, spec 2026-10-21): the
 // same mm_state snapshot and mm_room_action commands Online uses, drawn by league-gameday.js. A friendly still hands
 // over to the Online page.
-import { call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
+import { bridge, call, el, get, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
 import { makePoller } from './live-common.js';
 import { teamLogo } from './match-rows.js';
 import { createSignIn } from './sign-in.js';
@@ -14,7 +14,7 @@ import {
   bannerState, isUpdateRequired, pageMode, runningInstall, seasonLine, siteUrl, standingsRows, teamCardLine, updateRequiredLine,
   weekBest, weekGames, withInstalled,
 } from './league-model.js';
-import { gameDay } from './league-gameday-model.js';
+import { gameDay, gameDayKey, matchState } from './league-gameday-model.js';
 import { drawGameDay } from './league-gameday.js';
 import { settleChat } from './room-card.js';
 
@@ -76,7 +76,8 @@ let snap = null, snapKey = '', homeFor = null, doneMatch = null, mmTimer = 0;
 async function pollMm() {
   let next = null;
   try { const st = await quietCall('mm_state'); next = st && typeof st === 'object' ? st.snapshot ?? null : null; } catch (_) { next = null; }
-  const key = JSON.stringify(next ?? null);
+  // Only what game day draws decides a redraw: presence and queue counts change all the time (final review 10-21).
+  const key = gameDayKey(next);
   if (key === snapKey) return;
   snap = next; snapKey = key;
   draw();
@@ -97,6 +98,8 @@ async function mmAct(cmd, args) {
   state.actionError = null;
   try { await call(cmd, args); } catch (e) { state.actionError = reason(e); }
   snapKey = ''; await pollMm(); draw();
+  // A room or match left: the banner reads the league answer again now, not in a minute.
+  if (args?.action === 'leave') load().catch(() => {});
 }
 
 // The release check (network): on page load, after an install and after a version refusal only (3a final fix M2).
@@ -226,8 +229,9 @@ const play = () => act('primary', async () => {
   const code = r?.code || r?.room?.code;
   if (r?.action === 'join' && code) await joinLeagueRoom(code);
   homeFor = null; snapKey = ''; await pollMm();
+  load().catch(() => {});
 });
-const join = (room) => act('primary', async () => { await joinLeagueRoom(room.code); homeFor = null; snapKey = ''; await pollMm(); });
+const join = (room) => act('primary', async () => { await joinLeagueRoom(room.code); homeFor = null; snapKey = ''; await pollMm(); load().catch(() => {}); });
 const cancel = (room) => act('cancel', async () => { await call('mm_room_action', { roomId: room.room_id ?? room.id, action: 'leave' });
   // The leave went through. A reload that fails now is a refresh problem (the banner), never Cancel's.
   await load().catch(() => {});
@@ -287,7 +291,7 @@ function actionButton(a, s, home) {
 
 function banner(home) {
   const stale = Boolean(state.error) || home.stale === true;
-  const s = bannerState(home, { stale, edition: state.edition, progress: state.progress, needsUpdate: state.needsUpdate });
+  const s = bannerState(home, { stale, edition: state.edition, progress: state.progress, needsUpdate: state.needsUpdate, roomOpen: Boolean(gameDay(home, snap)) });
   const m = home.matchup || {};
   const you = { ...(home.team || {}), team_id: home.team?.id };
   const bg = el('div', { class: 'lg-banner-bg', 'aria-hidden': 'true' }, teamLogo(logoTeam(you), ''), m.opponent ? teamLogo(logoTeam(m.opponent), '') : null);
@@ -380,7 +384,7 @@ function view() {
   const g = gameDayNow();
   if (g) {
     return [drawGameDay(g, snap?.chat ?? [], { mmAct, logoFor, portraitFor, staleLine: 'League site unreachable, showing saved data',
-      onBack: () => { if (g.match && (g.match.relay_state === 'complete' || g.match.relay_state === 'held')) doneMatch = g.match.id; else homeFor = viewId(g); draw(); } }),
+      onBack: () => { if (g.match && matchState(g.match).done) doneMatch = g.match.id; else homeFor = viewId(g); draw(); load().catch(() => {}); } }),
       state.actionError ? el('p', { class: 'refusal', role: 'alert', text: state.actionError }) : null].filter(Boolean);
   }
   // One amber line for old data, whichever way it is old (the core's cached answer, or a refresh that failed).
@@ -410,6 +414,9 @@ screen?.addEventListener?.('click', (e) => {
 
 markCurrent();
 wireCoreFold();
+// The relay opens Dolphin by itself when the series starts and must use this player's runtime, game and graphics
+// preset; Online used to report them, and a league game may now never open Online (final review 10-21).
+if (bridge) call('mm_launch_prefs', { runtime: get('runtime'), game: get('game'), preset: get('preset') || 'balanced' }).catch(() => {});
 poller.start();
 startMm();
 document.addEventListener('visibilitychange', () => (document.hidden ? (poller.stop(), stopMm()) : (poller.start(), startMm())));

@@ -192,3 +192,16 @@ test('bannerState: a room that refused our league files offers Update even befor
   assert.deepEqual(acts(s), [['install', 'Update league files', true, false]]);
   assert.deepEqual(acts(bannerState(H(), { edition: READY })).map((a) => a[0]), ['offline', 'friendly', 'play'], 'no refusal, no update');
 });
+
+test('bannerState: your room is open (the snapshot says so) but you stepped back: Open room leads, whatever the 60 s-old answer says (final review)', () => {
+  const waiting = bannerState(withMu({ room: { ...ROOM, host_discord_user_id: '111' } }), { edition: READY, roomOpen: true });
+  assert.deepEqual(acts(waiting), [['open', 'Open room', true, false], ['cancel', 'Cancel', false, false]]);
+  const st = bannerState(withMu({ room: { ...ROOM, host_discord_user_id: OPP_ID } }), { edition: READY, stale: true, roomOpen: true });
+  assert.equal(acts(st)[0][0], 'open');
+  const before = bannerState(H(), { edition: READY, roomOpen: true });
+  assert.deepEqual(acts(before)[0], ['open', 'Open room', true, false], 'the answer has not caught up with the room yet');
+  assert.ok(acts(before).slice(1).every((a) => a[2] === false), 'one primary');
+  const lobby = bannerState(withMu({ room: { ...ROOM, members: 2, state: 'lobby', host_discord_user_id: OPP_ID } }), { edition: READY, roomOpen: true });
+  assert.deepEqual(acts(lobby), [['open', 'Open room', true, false]], 'never two Open room buttons');
+  assert.deepEqual(acts(bannerState(withMu({ room: { ...ROOM, host_discord_user_id: '111' } }), { edition: READY })), [['cancel', 'Cancel', false, false]], 'no room in the snapshot: unchanged');
+});

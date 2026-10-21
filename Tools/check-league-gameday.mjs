@@ -70,6 +70,10 @@ for (const s of STATES.gameday) {
       if (!t.includes('Final') || !t.includes('Back to League')) p.push('no Final / Back to League');
       if (/Rematch/.test(t)) p.push('offers Rematch');
       break;
+    case 'league-gameday-cancelled':
+      if (!t.includes('Match cancelled') || !t.includes('Back to League')) p.push('a cancelled match does not say so or offer Back to League');
+      if (/Starting…|Leave match/.test(t)) p.push('a cancelled match still reads as starting');
+      break;
     case 'league-gameday-small': {
       const [a, b] = await page.$$eval('.gd-side', (n) => n.map((x) => x.getBoundingClientRect().top));
       if (!(b > a)) p.push('the two lineups do not stack at 800x560');

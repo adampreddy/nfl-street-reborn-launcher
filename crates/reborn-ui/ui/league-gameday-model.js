@@ -67,3 +67,21 @@ export function gameDay(home, snap) {
     tape: tape(home.team_season, opp?.team_season), oppMissing: !Array.isArray(opp?.roster),
     stale: home.stale === true, room, match };
 }
+
+/** A series' words and whether it is over: Starting…, Game N of 3, Final, Match cancelled (void/abandoned), Held for review. */
+export function matchState(m) {
+  const st = m?.relay_state;
+  if (st === 'complete') return { words: 'Final', done: true };
+  if (st === 'void' || st === 'abandoned') return { words: 'Match cancelled', done: true };
+  if (st === 'held') return { words: 'Held for review', done: true };
+  if (st === 'running' || st === 'intermission') {
+    const s = Array.isArray(m.series) ? m.series : [0, 0];
+    return { words: `Game ${n(s[0]) + n(s[1]) + 1} of 3`, done: false };
+  }
+  return { words: 'Starting…', done: false };
+}
+
+/** What a game-day redraw depends on: the room, the match and the chat, never presence or queue counts. */
+export function gameDayKey(snap) {
+  return JSON.stringify({ room: snap?.room ?? null, match: snap?.match ?? null, chat: snap?.chat ?? null });
+}

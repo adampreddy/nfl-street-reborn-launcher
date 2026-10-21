@@ -101,3 +101,25 @@ test('gameDay: an older site without the opponent lineup; stale data is marked',
   assert.equal(g.tape, null);
   assert.equal(g.stale, true);
 });
+
+test('matchState: the words and whether the series is over (final review: a cancelled match is not "Starting…")', async () => {
+  const { matchState } = await import('./league-gameday-model.js');
+  assert.deepEqual(matchState({ relay_state: 'room_formed', series: [0, 0] }), { words: 'Starting…', done: false });
+  assert.deepEqual(matchState({ relay_state: 'running', series: [1, 0] }), { words: 'Game 2 of 3', done: false });
+  assert.deepEqual(matchState({ relay_state: 'intermission', series: [1, 1] }), { words: 'Game 3 of 3', done: false });
+  assert.deepEqual(matchState({ relay_state: 'complete', series: [2, 1] }), { words: 'Final', done: true });
+  assert.deepEqual(matchState({ relay_state: 'void', series: [0, 0] }), { words: 'Match cancelled', done: true });
+  assert.deepEqual(matchState({ relay_state: 'abandoned', series: [0, 0] }), { words: 'Match cancelled', done: true });
+  assert.deepEqual(matchState({ relay_state: 'held', series: [1, 0] }), { words: 'Held for review', done: true });
+});
+
+test('gameDayKey: presence and queue counts never redraw; the room, the match and the chat do (final review)', async () => {
+  const { gameDayKey } = await import('./league-gameday-model.js');
+  const base = { room: { id: 'r1', members: [{ name: 'Adam', ready: false }] }, match: null, chat: [], online: { count: 3, players: [] }, queue_depth: { ranked: 0 } };
+  const k = gameDayKey(base);
+  assert.equal(gameDayKey({ ...base, online: { count: 4, players: [{ name: 'Tuna', activity: 'queued' }] }, queue_depth: { ranked: 2 } }), k);
+  assert.notEqual(gameDayKey({ ...base, room: { ...base.room, members: [{ name: 'Adam', ready: true }] } }), k);
+  assert.notEqual(gameDayKey({ ...base, chat: [{ seq: 1, text: 'yo' }] }), k);
+  assert.notEqual(gameDayKey({ ...base, room: null, match: { id: 'm1', relay_state: 'running' } }), k);
+  assert.equal(gameDayKey(null), gameDayKey(undefined));
+});

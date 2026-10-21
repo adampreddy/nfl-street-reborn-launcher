@@ -6,6 +6,7 @@ import { el } from './shell.js';
 import { teamLogo } from './match-rows.js';
 import { heldNotice } from './online-model.js';
 import { drawRoomCard } from './room-card.js';
+import { matchState } from './league-gameday-model.js';
 
 // Only a plain hex colour reaches CSS (the site's team colour), never anything else the answer carries.
 const tc = (c) => (/^#[0-9a-f]{6}$/i.test(String(c ?? '')) ? `--tc:${c}` : null);
@@ -41,19 +42,10 @@ function tapeCard(g, { logoFor }) {
       el('div', { class: 'gd-bars', 'aria-hidden': 'true' }, bar(r.mineWidth, cA, r.mineBetter), bar(r.theirsWidth, cB, r.theirsBetter)))));
 }
 
-const SERIES_WORDS = (m) => {
-  if (m.relay_state === 'complete') return 'Final';
-  if (m.relay_state === 'running' || m.relay_state === 'intermission') {
-    const s = Array.isArray(m.series) ? m.series : [0, 0];
-    return `Game ${Number(s[0] || 0) + Number(s[1] || 0) + 1} of 3`;
-  }
-  return 'Starting…';
-};
-
 function matchCard(m, { mmAct, onBack }) {
   const s = Array.isArray(m.series) ? m.series : [0, 0];
   const held = m.relay_state === 'held' ? heldNotice(m) : null;
-  const done = m.relay_state === 'complete' || held;
+  const { words, done } = matchState(m);
   const btns = [];
   if (m.relay_state === 'pairing' && !m.your_accepted) {
     btns.push(el('button', { type: 'button', class: 'btn primary', 'data-key': 'gd-accept', 'data-primary': 'true', text: 'Accept',
@@ -64,7 +56,7 @@ function matchCard(m, { mmAct, onBack }) {
     onclick: () => mmAct('mm_match_action', { matchId: m.id, action: 'leave', value: null }) }));
   return el('section', { class: 'glass gd-match', role: 'status', 'aria-label': 'Your series' },
     el('div', { class: 'gd-m-score num', text: `${s[0] ?? 0}-${s[1] ?? 0}` }),
-    el('div', { class: 'gd-m-text' }, el('b', { text: held ? held.title : SERIES_WORDS(m) }), held ? el('p', { text: held.text }) : null),
+    el('div', { class: 'gd-m-text' }, el('b', { text: held ? held.title : words }), held ? el('p', { text: held.text }) : null),
     el('div', { class: 'gd-m-btns' }, ...btns));
 }
 
